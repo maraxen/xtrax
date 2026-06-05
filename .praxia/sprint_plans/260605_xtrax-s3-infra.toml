@@ -1,3 +1,8 @@
+# STALE — DO NOT REGENERATE
+# This TOML source predates oracle R1/R2 revisions applied directly to the emitted JS.
+# Authoritative version: .praxia/dynamic_workflows/260605_xtrax-s3-infra.js
+# Running `praxia dw emit` would revert all oracle fixes. Do not emit from this file.
+
 [sprint]
 sprint_id = "260605_xtrax-s3-infra"
 sprint_num = 3
