@@ -12,6 +12,7 @@ dependencies = [
     "orbax-checkpoint>=0.6.0",
     "grain>=0.2.0",
     "numpy>=1.26",
+    "pytest-asyncio>=0.23",
 ]
 
 [project.optional-dependencies]
