@@ -1,4 +1,5 @@
-import jax
+import inspect
+
 import jax.numpy as jnp
 import optax
 
@@ -59,23 +60,30 @@ class TestMakeOptimizer:
 
     def test_clip_order_clip_first(self):
         """Clipping should be applied BEFORE the base optimizer in the chain."""
-        # This tests that clip_by_global_norm is first in the chain.
-        # Create a base with distinctive name for inspection.
+        # With clip-first ordering:
+        #   gradient 100.0 -> clip_by_global_norm(1.0) -> 1.0 -> SGD(lr=0.01) -> ~-0.01
+        # With base-first ordering (wrong):
+        #   gradient 100.0 -> SGD(lr=0.01) -> -1.0 -> clip_by_global_norm(1.0) -> -1.0
+        #
+        # The difference: clip-first produces smaller updates (~0.01),
+        # base-first produces larger (1.0).
         base = optax.sgd(learning_rate=0.01)
         result = make_optimizer(base, clip_norm=1.0)
 
-        # For optax.chain, the transformations are applied in order.
-        # We verify by checking the result has clipping capability.
-        # The best way is to inspect the chain structure if available,
-        # but we can also test behavior: small gradients unchanged, large clipped.
-        state = result.init({"w": jnp.array(1.0)})
+        params = {"w": jnp.array(1.0)}
+        state = result.init(params)
 
-        # Large gradient should be clipped
+        # Use a very large gradient to make ordering differences clear
         large_grads = {"w": jnp.array(100.0)}
         updates, _ = result.update(large_grads, state)
-        # Clipped gradient should be smaller than input
-        assert jnp.abs(updates["w"]) < jnp.abs(large_grads["w"]), (
-            "Large gradient should be clipped"
+
+        # With clip-first: gradient clipped to 1.0, then SGD with lr=0.01 -> ~-0.01
+        # Assert update magnitude is approximately 0.01 (small), not 1.0 (large)
+        # This pins the clip-first ordering specifically.
+        assert jnp.abs(float(updates["w"])) < 0.02, (
+            f"With clip-first ordering, update should be ~-0.01, "
+            f"got {float(updates['w'])}. "
+            "This verifies clipping is applied BEFORE SGD."
         )
 
 
@@ -84,18 +92,53 @@ class TestAdamwWithSchedule:
 
     def test_weight_decay_default_1e2(self):
         """Default weight_decay should be 1e-2 (NOT 1e-4)."""
-        opt = adamw_with_schedule(
-            peak_lr=1e-3,
-            warmup_steps=100,
-            total_steps=1000,
+        # Primary assertion: inspect the function signature directly
+        sig = inspect.signature(adamw_with_schedule)
+        wd_default = sig.parameters['weight_decay'].default
+        assert wd_default == 1e-2, (
+            f"weight_decay default must be 1e-2, got {wd_default}"
         )
-        # Create dummy params to inspect the state
-        params = {"w": jnp.array(1.0)}
-        opt.init(params)
-        # The weight_decay is set in adamw. We verify by examining behavior:
-        # with larger WD, weight magnitude should decay faster.
-        # A simpler test: just verify the call succeeds and returns a transformer.
-        assert isinstance(opt, optax.GradientTransformation)
+
+        # Behavioral test: verify WD=1e-2 causes measurable decay vs WD=1e-4
+        # Create two optimizers with different weight decays
+        opt_default = adamw_with_schedule(
+            peak_lr=1e-3,
+            warmup_steps=1,
+            total_steps=10,
+        )
+        opt_small_wd = adamw_with_schedule(
+            peak_lr=1e-3,
+            warmup_steps=1,
+            total_steps=10,
+            weight_decay=1e-4,
+        )
+
+        # Initialize with a 2D weight (will have WD applied)
+        params = {"w": jnp.array([[1.0, 2.0], [3.0, 4.0]])}
+        state_default = opt_default.init(params)
+        state_small_wd = opt_small_wd.init(params)
+
+        # Zero gradient forces weight decay only (no gradient-based update)
+        zero_grad = {"w": jnp.zeros((2, 2))}
+
+        # Run multiple steps so WD effect is observable
+        # (Adam takes time to build up m1, m2)
+        for _ in range(5):
+            updates_default, state_default = opt_default.update(
+                zero_grad, state_default, params
+            )
+            updates_small_wd, state_small_wd = opt_small_wd.update(
+                zero_grad, state_small_wd, params
+            )
+
+        # With zero gradient over multiple steps, weight decay drives the update.
+        # Higher decay (1e-2) should produce larger magnitude updates than 1e-4.
+        default_norm = jnp.linalg.norm(updates_default["w"])
+        small_norm = jnp.linalg.norm(updates_small_wd["w"])
+        assert default_norm > small_norm, (
+            "Weight decay 1e-2 should produce larger magnitude updates "
+            "than 1e-4 with zero gradients"
+        )
 
     def test_decay_steps_is_total_steps(self):
         """decay_steps should equal total_steps (INCLUDING warmup)."""
@@ -116,18 +159,52 @@ class TestAdamwWithSchedule:
         assert isinstance(opt, optax.GradientTransformation)
 
     def test_mask_passed_to_adamw(self):
-        """wd_mask should be passed to optax.adamw."""
-        def custom_mask(params):
-            return jax.tree.map(lambda x: x.ndim > 1, params)
+        """wd_mask should be passed to optax.adamw.
 
-        opt = adamw_with_schedule(
+        The mask should actually prevent weight decay on masked params.
+        """
+        # Behavioral test: create params with 2D weight and 1D bias.
+        # With no_bias_wd_mask, 1D bias should NOT get weight decay,
+        # but 2D weight should. Verify by comparing update magnitudes.
+        opt_with_mask = adamw_with_schedule(
             peak_lr=1e-3,
-            warmup_steps=100,
-            total_steps=1000,
-            wd_mask=custom_mask,
+            warmup_steps=1,
+            total_steps=10,
+            weight_decay=1e-1,  # Large decay to make effect observable
+            clip_norm=None,     # Disable clipping to isolate WD effect
+            wd_mask=no_bias_wd_mask,
         )
 
-        assert isinstance(opt, optax.GradientTransformation)
+        # Create params: 2D weight and 1D bias
+        params = {
+            "weight": jnp.ones((5, 5)),  # 2D -> will have WD applied
+            "bias": jnp.ones(5),          # 1D -> will NOT have WD applied
+        }
+        state = opt_with_mask.init(params)
+
+        # Zero gradient: WD is the only force driving updates
+        zero_grad = {
+            "weight": jnp.zeros((5, 5)),
+            "bias": jnp.zeros(5),
+        }
+
+        # Run multiple steps so WD effect becomes observable
+        updates = None
+        for _ in range(5):
+            updates, state = opt_with_mask.update(zero_grad, state, params)
+
+        # With zero gradient and high WD=0.1 over multiple steps:
+        # - weight (2D) gets WD applied -> measurable update
+        # - bias (1D) does NOT get WD -> much smaller update (ideally zero)
+        weight_update_norm = jnp.linalg.norm(updates["weight"])
+        bias_update_norm = jnp.linalg.norm(updates["bias"])
+
+        assert weight_update_norm > bias_update_norm, (
+            f"Weight decay mask not working: 2D weight update norm "
+            f"({weight_update_norm}) should exceed 1D bias update norm "
+            f"({bias_update_norm}). "
+            "This verifies the mask prevents WD on 1D biases."
+        )
 
     def test_all_parameters_respected(self):
         """Verify that b1, b2, eps are passed through."""
