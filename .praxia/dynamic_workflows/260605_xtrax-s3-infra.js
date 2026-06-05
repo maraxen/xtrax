@@ -9,7 +9,7 @@
 
 export const meta = {
   name: "260605_xtrax-s3-infra",
-  description: "ShardingPolicy, init_dist, Orbax checkpoint wrappers, async_indexed_stream, BoundedCallbackHandler, Engine fit/eval",
+  description: "ShardingPolicy (eqx.Module, rules as tuple, get_partition_spec), init_dist (spec-aligned signature), Orbax checkpoint wrappers (modern API, no PyTreeCheckpointer), async_indexed_stream (prefetch + buffer_size), BoundedCallbackHandler (coroutine-based, exception logging), Engine (eqx.Module fields, DataModule data param, asyncio-first)",
   phases: [
     { title: "Track A — Phase 5.1: ShardingPolicy, mesh helpers (#1148)" },
     { title: "Track B — Phase 5.2: init_dist — idempotent distributed initializer (#1149)" },
@@ -21,11 +21,6 @@ export const meta = {
 
 const TASK_ID = "260605_xtrax-s3-infra";
 const MAX_FIX_RETRIES = 2;
-
-function extractVerdict(text) {
-  const m = String(text ?? "").match(/verdict:\s*([a-z_]+)/i);
-  return m ? m[1].toLowerCase() : "advance";
-}
 
 const VERDICT_SCHEMA = {
   type: "object",
@@ -52,7 +47,7 @@ const VERDICT_SCHEMA = {
 };
 
 // Shared context for the writing tracks (from recon, task 260605_xtrax-s3-infra).
-const EMITTER_CTX = `xtrax sprint 3. Sprints 1 and 2 must be complete before this sprint.\nSpec: .praxia/docs/specs/260604_xtrax-spec.md (R3, oracle-approved).\ntask_id: 260604_xtrax-shape\nKey rules: no Python-loop hot paths; uv run pytest; ruff clean before commit.\nEngine uses eqx.nn.inference_mode for eval, asyncio.run for fit_sync.\nOrbax: always call wait_until_finished() after every save.\n`;
+const EMITTER_CTX = `xtrax sprint 3. Sprints 1 and 2 must be complete before this sprint.\nSpec: .praxia/docs/specs/260604_xtrax-spec.md (R3, oracle-approved). Sections: §3.18 Engine, §3.21 sharding, §3.22 init_dist, §3.26 checkpoint, §3.27 io callbacks.\ntask_id: 260605_xtrax-s3-infra\nKey rules: no Python-loop hot paths; uv run pytest; ruff clean before commit.\nFor Engine: use eqx.nn.inference_mode (verify exact API via Context7 against equinox ≥0.11 — could be eqx.nn.inference_mode(model) or eqx.tree_inference); asyncio.run for fit_sync.\nFor Orbax: ALWAYS call manager.wait_until_finished() after every save. VERIFY the correct orbax ≥0.6 API via Context7 before implementing — do NOT use ocp.PyTreeCheckpointer (deprecated ≥0.4).\nModule paths: repo layout (engine/io.py, distributed/init.py, distributed/sharding.py, checkpoint/orbax.py, engine/engine.py) is authoritative; spec §2 paths are stale.\n`;
 
 // ---- per-track stage helpers ---------------------------------------------
 const fixer = (prompt, label, phaseName) =>
@@ -85,49 +80,330 @@ async function track(itemId, phaseName, fixerPrompt, reviewerPrompt) {
   return verdict;
 }
 
-// ===== TRACK A — Track A — Phase 5.1: ShardingPolicy, mesh helpers (#1148) =========================
+// ===== TRACK A — Phase 5.1: ShardingPolicy, mesh helpers (#1148) =========================
 const trackA = () =>
   track(
     "1148",
     "Track A — Phase 5.1: ShardingPolicy, mesh helpers (#1148)",
-    `task_id: ${TASK_ID}. task_id: 260604_xtrax-shape\nFile: src/xtrax/distributed/sharding.py | Test: tests/distributed/test_sharding.py\n\nImplement in src/xtrax/distributed/sharding.py:\n\n\`\`\`python\nimport re\nfrom dataclasses import dataclass, field\nfrom typing import Any\nimport jax\nfrom jax.sharding import PartitionSpec\n\n@dataclass\nclass ShardingPolicy:\n    # Rules: list of (regex_pattern, PartitionSpec) pairs.\n    # First match wins — order matters.\n    rules: list[tuple[str, PartitionSpec]] = field(default_factory=list)\n\n    def get_spec(self, path: str) -> PartitionSpec:\n        for pattern, spec in self.rules:\n            if re.search(pattern, path):\n                return spec\n        return PartitionSpec()  # default: replicated\n\ndef get_hardware_mesh_profile(device_type: str = "cpu") -> dict[str, Any]:\n    return {\n        "device_type": device_type,\n        "num_devices": len(jax.devices()),\n        "device_ids": [d.id for d in jax.devices()],\n    }\n\ndef get_device_mesh(mesh_shape: tuple[int, ...]) -> jax.sharding.Mesh:\n    devices = jax.devices()\n    total = 1\n    for s in mesh_shape:\n        total *= s\n    if total != len(devices):\n        raise ValueError(\n            f"get_device_mesh: mesh_shape product={total} != num_devices={len(devices)}"\n        )\n    import numpy as np\n    return jax.sharding.Mesh(np.array(devices).reshape(mesh_shape), axis_names=tuple(f"d{i}" for i in range(len(mesh_shape))))\n\`\`\`\n\nWrite tests: first-match-wins with overlapping patterns; CPU profile has required keys; shape mismatch raises ValueError.\n\nGate: \`uv run pytest tests/distributed/test_sharding.py -v\` pass; ruff clean.\n\n\n${EMITTER_CTX}`,
-    `task_id: ${TASK_ID}. Verify ShardingPolicy:\n1. First-match-wins: ShardingPolicy(rules=[("weight", PartSpec("d")), (".*", PartSpec())]) with path "encoder.weight" → PartSpec("d")\n2. get_hardware_mesh_profile returns dict with "device_type", "num_devices", "device_ids"\n3. get_device_mesh raises ValueError for wrong shape product\n4. All tests pass; ruff clean\n`,
+    `task_id: 260605_xtrax-s3-infra
+File: src/xtrax/distributed/sharding.py | Test: tests/distributed/test_sharding.py
+
+Read spec §3.21 for the authoritative interface. Key corrections vs prior draft:
+
+1. ShardingPolicy MUST be an eqx.Module (not a dataclass).
+   - Field: rules: tuple[tuple[str, PartitionSpec], ...] = eqx.field(static=True)
+     (tuple of (regex_pattern_str, PartitionSpec) pairs; first match wins)
+   - Method: get_partition_spec(self, path: str) -> PartitionSpec
+     (NOT get_spec — the method is named get_partition_spec)
+   - Method: apply_to_pytree(self, pytree) — traverse pytree leaves with jax.tree.map,
+     returning same-structure pytree where each leaf is the PartitionSpec for that leaf's
+     path (derive path from jax.tree_util.GetAttrKey / DictKey / etc.), or PartitionSpec()
+     for unmatched leaves.
+
+2. get_device_mesh MUST take (shape: tuple[int, ...], axis_names: tuple[str, ...]) -> Mesh.
+   The prior version auto-generated d0,d1,... axis names — this is wrong; callers supply names.
+   Validate: math.prod(shape) == len(jax.devices()), raise ValueError if not.
+
+3. get_hardware_mesh_profile() — NO arguments (not device_type="cpu").
+   Return exactly these keys:
+     device_type: str  (e.g. "cpu", "gpu", "tpu")
+     num_devices: int
+     recommended_shape: tuple[int, ...]  (e.g. (1,) for single device, (8,) for 8 GPUs)
+     recommended_axis_names: tuple[str, ...]  (e.g. ("batch",) for single-device; ("data",) for 8-GPU data-parallel)
+   Never raises — CPU single-device fallback: shape=(1,), axis_names=("batch",).
+   Do NOT return device_ids.
+
+4. Update src/xtrax/distributed/__init__.py to re-export:
+   ShardingPolicy, get_device_mesh, get_hardware_mesh_profile
+
+DEVIATION NOTE (spec §2 vs repo): spec §2 may list a different module path; repo layout is authoritative.
+Use jax.sharding.Mesh, jax.sharding.NamedSharding, jax.sharding.PartitionSpec.
+
+Write tests:
+- First-match-wins: ShardingPolicy with overlapping patterns, verify get_partition_spec returns correct spec
+- get_device_mesh with matching shape/axis_names: returns Mesh with correct axis names
+- get_device_mesh with wrong product: raises ValueError
+- get_hardware_mesh_profile: returns all 4 required keys, no KeyError; never raises
+- apply_to_pytree: simple dict pytree returns same-structure pytree of PartitionSpecs
+
+Gate: uv run pytest tests/distributed/test_sharding.py -v pass; ruff clean.
+
+${EMITTER_CTX}`,
+    `task_id: 260605_xtrax-s3-infra. Verify ShardingPolicy and mesh helpers:
+1. ShardingPolicy is an eqx.Module (not a dataclass). Field 'rules' is a tuple (not list) marked eqx.field(static=True). Rules hold (str, PartitionSpec) pairs.
+2. Method is named get_partition_spec(self, path: str) (not get_spec). First-match-wins verified with overlapping patterns.
+3. apply_to_pytree(self, pytree) exists and returns same-structure pytree of PartitionSpecs.
+4. get_device_mesh(shape, axis_names) takes BOTH params. Axis names come from the parameter, not auto-generated. ValueError on shape/device count mismatch.
+5. get_hardware_mesh_profile() takes NO args. Returns keys: device_type, num_devices, recommended_shape (tuple), recommended_axis_names (tuple). Does NOT return device_ids. Never raises.
+6. src/xtrax/distributed/__init__.py re-exports ShardingPolicy, get_device_mesh, get_hardware_mesh_profile.
+7. All tests pass; ruff clean.
+`,
   );
 
-// ===== TRACK B — Track B — Phase 5.2: init_dist — idempotent distributed initializer (#1149) =========================
+// ===== TRACK B — Phase 5.2: init_dist — idempotent distributed initializer (#1149) =========================
 const trackB = () =>
   track(
     "1149",
     "Track B — Phase 5.2: init_dist — idempotent distributed initializer (#1149)",
-    `task_id: ${TASK_ID}. task_id: 260604_xtrax-shape\nFile: src/xtrax/distributed/init.py | Test: tests/distributed/test_init.py\n\nImplement idempotent init_dist in src/xtrax/distributed/init.py:\n\n\`\`\`python\nimport os\nfrom dataclasses import dataclass\nfrom typing import Any\n\n@dataclass\nclass _DistState:\n    initialized: bool = False\n    config: dict[str, Any] | None = None\n\n_STATE = _DistState()\n\ndef init_dist(\n    num_processes: int | None = None,\n    process_id: int | None = None,\n    coordinator_address: str | None = None,\n) -> None:\n    global _STATE\n    config = {\n        "num_processes": num_processes,\n        "process_id": process_id,\n        "coordinator_address": coordinator_address,\n    }\n    if _STATE.initialized:\n        if _STATE.config != config:\n            raise RuntimeError(\n                f"init_dist: already initialized with different config. "\n                f"Previous: {_STATE.config}, New: {config}"\n            )\n        return  # idempotent same args\n    # Auto-detect SLURM environment\n    if num_processes is None:\n        num_processes = int(os.environ.get("SLURM_NTASKS", "1"))\n    if process_id is None:\n        process_id = int(os.environ.get("SLURM_PROCID", "0"))\n    if num_processes == 1:\n        _STATE.initialized = True\n        _STATE.config = config\n        return  # localhost single-process fallback\n    import jax\n    jax.distributed.initialize(\n        coordinator_address=coordinator_address or "localhost:1234",\n        num_processes=num_processes,\n        process_id=process_id,\n    )\n    _STATE.initialized = True\n    _STATE.config = config\n\ndef _reset_for_testing() -> None:\n    global _STATE\n    _STATE = _DistState()\n\`\`\`\n\nWrite tests: idempotent same args; different args raises RuntimeError; SLURM env mocked (monkeypatch); localhost fallback (num_processes=1).\n\nGate: \`uv run pytest tests/distributed/test_init.py -v\` pass; ruff clean.\n\n\n${EMITTER_CTX}`,
-    `task_id: ${TASK_ID}. Verify init_dist:\n1. Same args called twice: no error, initialized only once\n2. Different args: raises RuntimeError\n3. SLURM env (SLURM_NTASKS, SLURM_PROCID) used when args=None\n4. num_processes=1: localhost fallback, no jax.distributed.initialize call\n5. All tests pass; ruff clean\n`,
+    `task_id: 260605_xtrax-s3-infra
+File: src/xtrax/distributed/init.py | Test: tests/distributed/test_init.py
+
+Read spec §3.22 for the authoritative interface. Key corrections vs prior draft:
+
+SPEC PATH DISAMBIGUATION: spec §3.22 heading says \`xtrax.distributed.dist\` — this is stale (repo has no dist.py). The module is \`distributed/init.py\`. In \`__init__.py\` re-export as \`from xtrax.distributed.init import init_dist\` (not \`from xtrax.distributed.dist import ...\`).
+
+1. init_dist parameter order MUST match spec §3.22:
+   init_dist(coordinator_address=None, num_processes=None, process_id=None) -> None
+   The prior draft had num_processes first — this is wrong.
+
+2. After ANY successful initialization (including single-process fallback), call:
+   from xtrax.data.module import _mark_dist_initialized
+   _mark_dist_initialized()
+   This is the Sprint 2 integration seam — without it, DataModule(distributed=True).train_iter() raises RuntimeError.
+
+3. SLURM env discovery: also read SLURM_JOB_NODELIST to derive coordinator address when num_processes > 1 and coordinator_address is None. Pattern:
+   nodelist = os.environ.get("SLURM_JOB_NODELIST", "")
+   if nodelist: coordinator_address = derive_coordinator(nodelist)  # extract first node + port 1234
+
+4. DEVIATION NOTE (spec §3.22 vs implementation): spec says localhost fallback CALLS jax.distributed.initialize with single-process config. However, calling jax.distributed.initialize with num_processes=1 can be unstable in some environments. Implementing as: skip the call for num_processes==1, call _mark_dist_initialized() and return. If future requirements need the single-process initialize call, this can be made a parameter. Document this deviation in a comment.
+
+5. Idempotency: same args → no-op; different args → RuntimeError (already present in draft, keep).
+
+6. Add _reset_for_testing() helper (keep from draft).
+
+7. Update src/xtrax/distributed/__init__.py to re-export: init_dist, is_distributed (a simple helper: return _STATE.initialized).
+
+Write tests:
+- Same args twice: no error
+- Different args: RuntimeError
+- SLURM env vars (SLURM_NTASKS, SLURM_PROCID) auto-detected when args=None (monkeypatch os.environ)
+- num_processes=1: returns without jax.distributed.initialize call; _mark_dist_initialized was called (verify via DataModule)
+- Param order: coordinator_address is first keyword arg (not third)
+
+Gate: uv run pytest tests/distributed/test_init.py -v pass; ruff clean.
+
+${EMITTER_CTX}`,
+    `task_id: 260605_xtrax-s3-infra. Verify init_dist:
+1. Signature: init_dist(coordinator_address=None, num_processes=None, process_id=None) — coordinator_address is FIRST keyword arg.
+2. Same args called twice: no error, initialized only once.
+3. Different args after init: RuntimeError.
+4. SLURM env (SLURM_NTASKS, SLURM_PROCID) auto-detected when args=None. SLURM_JOB_NODELIST consulted for coordinator address.
+5. num_processes=1: no jax.distributed.initialize call (documented deviation from spec §3.22). _mark_dist_initialized() IS called.
+6. After any successful init: DataModule(distributed=True).train_iter() does NOT raise RuntimeError. (Integration seam test: import DataModule, init_dist, call init_dist(num_processes=1), then verify train_iter succeeds.)
+7. src/xtrax/distributed/__init__.py re-exports init_dist.
+8. All tests pass; ruff clean.
+`,
   );
 
-// ===== TRACK C — Track C — Phase 5.3: Checkpoint wrappers (#1150) =========================
+// ===== TRACK C — Phase 5.3: Checkpoint wrappers (#1150) =========================
 const trackC = () =>
   track(
     "1150",
     "Track C — Phase 5.3: Checkpoint wrappers (#1150)",
-    `task_id: ${TASK_ID}. task_id: 260604_xtrax-shape\nFile: src/xtrax/checkpoint/orbax.py | Test: tests/checkpoint/test_orbax.py\n\nImplement save/load checkpoint wrappers in src/xtrax/checkpoint/orbax.py:\n\n\`\`\`python\nfrom pathlib import Path\nfrom typing import Any\nimport orbax.checkpoint as ocp\nfrom xtrax.training.types import ResumableState\n\ndef save_checkpoint(state: ResumableState, checkpoint_dir: str | Path, step: int | None = None) -> None:\n    # Must be called Python-side (outside JIT): int(state.step) would fail inside trace\n    step_int = int(state.step)\n    if step is not None:\n        step_int = step\n    checkpointer = ocp.CheckpointManager(str(checkpoint_dir), ocp.PyTreeCheckpointer())\n    checkpointer.save(step_int, state)\n    checkpointer.wait_until_finished()  # always wait — ensures durability\n\ndef load_checkpoint(checkpoint_dir: str | Path) -> ResumableState:\n    checkpoint_path = Path(checkpoint_dir)\n    if not checkpoint_path.exists() or not any(checkpoint_path.iterdir()):\n        raise FileNotFoundError(f"No checkpoint found at {checkpoint_dir}")\n    checkpointer = ocp.CheckpointManager(str(checkpoint_dir), ocp.PyTreeCheckpointer())\n    step = checkpointer.latest_step()\n    return checkpointer.restore(step)\n\`\`\`\n\nWrite tests: save/load round-trip preserves all ResumableState fields (step, key, model shapes); empty dir raises FileNotFoundError.\n\nGate: \`uv run pytest tests/checkpoint/test_orbax.py -v\` pass; ruff clean.\n\n\n${EMITTER_CTX}`,
-    `task_id: ${TASK_ID}. Verify checkpoint wrappers:\n1. save_checkpoint + load_checkpoint round-trip: all ResumableState fields bit-identical within JAX dtype precision\n2. load_checkpoint on empty/missing dir raises FileNotFoundError\n3. wait_until_finished() called after every save\n4. save_checkpoint uses int(state.step) — would fail inside JIT by design\n5. All tests pass; ruff clean\n`,
+    `task_id: 260605_xtrax-s3-infra
+File: src/xtrax/checkpoint/orbax.py | Test: tests/checkpoint/test_orbax.py
+
+Read spec §3.26 for the authoritative interface. The prior draft used deprecated APIs and wrong signatures.
+
+CRITICAL: Before writing any orbax code, load the orbax docs via Context7:
+  - resolve-library-id: "orbax checkpoint" then query-docs with the relevant function names
+  - Use orbax ≥0.6 API — ocp.PyTreeCheckpointer is DEPRECATED since orbax 0.4. Do NOT use it.
+  - The correct modern API uses ocp.CheckpointManager with appropriate item handlers.
+
+Implement THREE functions (spec §3.26):
+
+1. get_checkpoint_manager(directory: str | Path, max_to_keep: int = 5, keep_period: int | None = None) -> CheckpointManager
+   Creates and returns a CheckpointManager for the given directory.
+   Use the appropriate orbax ≥0.6 API (verify via Context7).
+
+2. save_checkpoint(manager: CheckpointManager, state: ResumableState, step: int | None = None) -> None
+   - Extracts step: step_int = step if step is not None else int(state.step)
+   - Saves via manager using the orbax ≥0.6 save API
+   - ALWAYS calls manager.wait_until_finished() after save
+
+3. load_checkpoint(manager: CheckpointManager, state_template: ResumableState, step: int | None = None) -> ResumableState
+   - state_template is REQUIRED — orbax needs it to reconstruct the ResumableState pytree structure
+   - If step is None, use manager.latest_step()
+   - Returns a ResumableState (not a raw dict)
+
+DEVIATION NOTE (spec §3.26 vs runtime): state_template must be provided because orbax cannot reconstruct eqx.Module pytrees without a target structure. This is required behavior, not a workaround.
+
+Update src/xtrax/checkpoint/__init__.py to re-export: get_checkpoint_manager, save_checkpoint, load_checkpoint.
+
+Write tests (use tmp_path fixture for directories):
+- Round-trip: get_checkpoint_manager → save_checkpoint → load_checkpoint → verify all ResumableState fields (step as int32 scalar, model weights numerically identical within dtype precision)
+- load_checkpoint on empty/missing dir: appropriate error raised
+- wait_until_finished() called after save (can verify by checking state survives crash simulation or by checking step count)
+- step override: save_checkpoint(manager, state, step=42) saves at step 42
+
+Gate: uv run pytest tests/checkpoint/test_orbax.py -v pass; ruff clean.
+
+${EMITTER_CTX}`,
+    `task_id: 260605_xtrax-s3-infra. Verify checkpoint wrappers:
+1. Three functions exist: get_checkpoint_manager(directory, max_to_keep, keep_period), save_checkpoint(manager, state, step=None), load_checkpoint(manager, state_template, step=None). No ocp.PyTreeCheckpointer usage.
+2. save_checkpoint takes manager as FIRST arg (not checkpoint_dir). load_checkpoint takes manager + state_template.
+3. Round-trip: get_checkpoint_manager → save → load returns ResumableState with step identical and model leaf shapes/dtypes preserved.
+4. load_checkpoint uses state_template for structural restore (not returning raw dict).
+5. wait_until_finished() called inside save_checkpoint.
+6. step override param works: save at specified step, load recovers it.
+7. src/xtrax/checkpoint/__init__.py re-exports all three functions.
+8. All tests pass; ruff clean.
+`,
   );
 
-// ===== TRACK D — Track D — Phase 6.1: async_indexed_stream, BoundedCallbackHandler (#1151) =========================
+// ===== TRACK D — Phase 6.1: async_indexed_stream, BoundedCallbackHandler (#1151) =========================
 const trackD = () =>
   track(
     "1151",
     "Track D — Phase 6.1: async_indexed_stream, BoundedCallbackHandler (#1151)",
-    `task_id: ${TASK_ID}. task_id: 260604_xtrax-shape\nFile: src/xtrax/engine/io.py | Test: tests/engine/test_io.py\n\nImplement in src/xtrax/engine/io.py:\n\n\`\`\`python\nimport asyncio\nfrom collections.abc import AsyncIterator, Callable, Iterable\nfrom typing import Any, TypeVar\n\nT = TypeVar("T")\n\nasync def async_indexed_stream(iterable: Iterable[T]) -> AsyncIterator[tuple[int, T]]:\n    # Exception from iterable re-raised on next yield\n    try:\n        for i, item in enumerate(iterable):\n            yield i, item\n    except Exception:\n        raise  # propagate to consumer\n\nclass BoundedCallbackHandler:\n    def __init__(self, max_concurrent: int = 4) -> None:\n        self._semaphore = asyncio.Semaphore(max_concurrent)\n        self._tasks: list[asyncio.Task] = []\n\n    async def submit(self, callback: Callable, *args: Any) -> None:\n        async with self._semaphore:\n            task = asyncio.create_task(self._run(callback, *args))\n            self._tasks.append(task)\n\n    async def _run(self, callback: Callable, *args: Any) -> None:\n        if asyncio.iscoroutinefunction(callback):\n            await callback(*args)\n        else:\n            callback(*args)\n\n    async def wait_all(self) -> None:\n        if self._tasks:\n            await asyncio.gather(*self._tasks)\n            self._tasks.clear()\n\`\`\`\n\nWrite tests: async_indexed_stream yields correct (index, item) pairs; exception from iterable propagates; BoundedCallbackHandler bounds concurrency; wait_all flushes pending callbacks.\n\nGate: \`uv run pytest tests/engine/test_io.py -v\` pass; ruff clean.\n\n\n${EMITTER_CTX}`,
-    `task_id: ${TASK_ID}. Verify async IO primitives:\n1. async_indexed_stream yields (0, item0), (1, item1), ... correctly\n2. Exception from iterable re-raised on next yield (propagates to consumer)\n3. BoundedCallbackHandler: semaphore bounds concurrent callbacks to max_concurrent\n4. wait_all() flushes all pending tasks\n5. All tests pass; ruff clean\n`,
+    `task_id: 260605_xtrax-s3-infra
+File: src/xtrax/engine/io.py | Test: tests/engine/test_io.py
+
+Read spec §3.27 for the authoritative interface. Key corrections vs prior draft:
+
+DEVIATION NOTE (module path): spec §3.27 places these in xtrax.io.callbacks; repo has engine/io.py as the stub. Implement in engine/io.py (repo layout is authoritative). Note: data/pipeline.py has a minimal async_indexed_stream with no buffer_size — this is a SEPARATE function; do not modify it. The engine/io.py version is the full spec §3.27 implementation.
+
+1. async_indexed_stream(iterable: Iterable[T], buffer_size: int = 2) -> AsyncIterator[tuple[int, T]]
+   - Prefetches up to buffer_size items AHEAD in a background thread using asyncio.to_thread
+   - Pattern: producer task fills an asyncio.Queue(maxsize=buffer_size); consumer yields from queue
+   - Exception from background thread is re-raised on next yield (propagates to consumer)
+   - Must actually prefetch — not just enumerate in a loop. A slow iterable should have items ready.
+   PRIOR DRAFT had no prefetch and no buffer_size — that is wrong.
+
+2. class BoundedCallbackHandler:
+   __init__(self, max_concurrent: int = 4) -> None
+
+   async def submit(self, coro: Coroutine) -> None
+   - Takes a COROUTINE object (not a callable + args)
+   - Semaphore MUST be acquired INSIDE the async task, NOT in submit itself
+     (DEVIATION from §3.27 wording which says semaphore acquired 'before starting coro' — that would block submit; acquiring inside the task is the correct interpretation for non-blocking submit.)
+     (So that submit returns immediately; the task waits for a slot before running)
+   - Exceptions in the coro are LOGGED (not propagated) — use logging.exception(...)
+     This prevents one failing callback from cancelling the training loop.
+
+   async def wait_all(self) -> None
+   - Awaits all pending tasks
+
+Update src/xtrax/engine/__init__.py to re-export: BoundedCallbackHandler (Engine will be in engine.py).
+
+Write tests:
+- async_indexed_stream: yields (0, item0), (1, item1), ... correctly
+- async_indexed_stream: exception from iterable re-raised on next yield
+- BoundedCallbackHandler: submit(coro) takes a coroutine, not a callable
+- BoundedCallbackHandler: with max_concurrent=2, submitting 5 long-running coros never has >2 in flight simultaneously
+- BoundedCallbackHandler: exception in coro is logged but wait_all() completes without raising
+- wait_all: flushes all pending tasks
+
+Gate: uv run pytest tests/engine/test_io.py -v pass; ruff clean.
+
+${EMITTER_CTX}`,
+    `task_id: 260605_xtrax-s3-infra. Verify async IO primitives:
+1. async_indexed_stream(iterable, buffer_size=2) — accepts buffer_size param. Prefetches using asyncio.to_thread + asyncio.Queue (NOT a trivial enumerate loop). Yields (0, item0), (1, item1), ...
+2. Exception from background iterable thread propagates to async consumer on next yield.
+3. BoundedCallbackHandler.submit(coro) — takes a Coroutine object (not callable+args).
+4. Semaphore bounds concurrent EXECUTION (not just submission): submit 4 coros with max_concurrent=2, verify at most 2 run simultaneously (use asyncio.Event or sleep to control timing).
+5. Exception in coro: logged (via logging module) but NOT propagated — wait_all() completes without raising even if a submitted coro raises.
+6. wait_all() flushes all pending tasks.
+7. All tests pass; ruff clean.
+`,
   );
 
-// ===== TRACK E — Track E — Phase 6.2: Engine (#1152) =========================
+// ===== TRACK E — Phase 6.2: Engine (#1152) =========================
 const trackE = () =>
   track(
     "1152",
     "Track E — Phase 6.2: Engine (#1152)",
-    `task_id: ${TASK_ID}. task_id: 260604_xtrax-shape\nFile: src/xtrax/engine/engine.py | Test: tests/engine/test_engine.py\n\nImplement Engine in src/xtrax/engine/engine.py:\n\n\`\`\`python\nimport asyncio\nfrom pathlib import Path\nfrom typing import Any\nimport equinox as eqx\nfrom xtrax.training.types import Callback, ResumableState\nfrom xtrax.training.trainer import Trainer\nfrom xtrax.engine.io import BoundedCallbackHandler\nfrom xtrax.checkpoint.orbax import save_checkpoint\n\nclass Engine:\n    def __init__(\n        self,\n        trainer: Trainer,\n        callbacks: list[Callback] | None = None,\n        checkpoint_dir: str | Path | None = None,\n        validation_callbacks: list[Callback] | None = None,\n    ) -> None:\n        self._trainer = trainer\n        self._callbacks = callbacks or []\n        self._validation_callbacks = validation_callbacks or []\n        self._checkpoint_dir = checkpoint_dir\n        self._handler = BoundedCallbackHandler()\n\n    async def fit(self, state: ResumableState, data_iter: Any, num_epochs: int) -> ResumableState:\n        for cb in self._callbacks:\n            cb.on_train_start(state)\n        for epoch in range(num_epochs):\n            for cb in self._callbacks:\n                cb.on_epoch_start(state, epoch)\n            for batch in data_iter:\n                for cb in self._callbacks:\n                    cb.on_step_start(state)\n                state, loss = self._trainer.step(state, batch)\n                for cb in self._callbacks:\n                    cb.on_step_end(state, loss)\n            for cb in self._callbacks:\n                cb.on_epoch_end(state, epoch)\n            if self._checkpoint_dir is not None:\n                save_checkpoint(state, self._checkpoint_dir)\n        for cb in self._callbacks:\n            cb.on_train_end(state)\n        await self._handler.wait_all()\n        return state\n\n    def eval(self, state: ResumableState, data_iter: Any, metric_fns: dict) -> dict:\n        # Wrap model in inference_mode for eval — disables dropout/stochastic layers\n        eval_state = eqx.tree_at(lambda s: s.model, state, eqx.nn.inference_mode(state.model))\n        all_metrics = {k: [] for k in metric_fns}\n        for cb in self._validation_callbacks:\n            cb.on_epoch_start(eval_state, 0)\n        for batch in data_iter:\n            predictions = eval_state.model(batch["inputs"])\n            for name, fn in metric_fns.items():\n                all_metrics[name].append(fn(predictions, batch["targets"]))\n        for cb in self._validation_callbacks:\n            cb.on_epoch_end(eval_state, 0)\n        import jax.numpy as jnp\n        return {k: jnp.mean(jnp.stack(v)) for k, v in all_metrics.items()}\n\n    def fit_sync(self, state: ResumableState, data_iter: Any, num_epochs: int) -> ResumableState:\n        return asyncio.run(self.fit(state, data_iter, num_epochs))\n\`\`\`\n\nWrite tests:\n- fit over 2 epochs: state.step == num_batches * 2\n- All 7 Callback hooks fired in correct order (on_train_start ×1, on_epoch_start ×2, on_step_start ×N, on_step_end ×N, on_epoch_end ×2, on_train_end ×1)\n- eval: returns metrics dict; state.step unchanged; wraps model in inference_mode\n- eval fires validation_callbacks only\n- fit_sync works via asyncio.run wrapper\n\nGate: \`uv run pytest tests/engine/test_engine.py -v\` pass; ruff clean.\n\n\n${EMITTER_CTX}`,
-    `task_id: ${TASK_ID}. Verify Engine:\n1. fit over 2 epochs: state.step == num_batches * num_epochs\n2. Callback order: on_train_start ×1, on_epoch_start ×num_epochs, on_step_start ×(steps_per_epoch*epochs), on_step_end ×same, on_epoch_end ×num_epochs, on_train_end ×1\n3. eval: state.step unchanged; model wrapped in eqx.nn.inference_mode; returns {metric_name: scalar}\n4. eval only fires validation_callbacks, not self._callbacks\n5. fit_sync delegates to asyncio.run(self.fit(...))\n6. Checkpoint written after each epoch when checkpoint_dir set\n7. All tests pass; ruff clean\n`,
+    `task_id: 260605_xtrax-s3-infra
+File: src/xtrax/engine/engine.py | Test: tests/engine/test_engine.py
+
+Read spec §3.18 for the authoritative interface. This track has the most critical corrections.
+
+CRITICAL CORRECTIONS:
+
+1. Engine MUST be class Engine(eqx.Module) — not a plain Python class.
+   Fields (all static — they hold non-array Python objects):
+     trainer: Trainer | SafetyTrainStep = eqx.field(static=True)
+     callbacks: tuple[Callback, ...] = eqx.field(static=True)
+     validation_callbacks: tuple[Callback, ...] = eqx.field(static=True)
+
+   checkpoint_dir is NOT a field — it is a parameter to fit().
+   BoundedCallbackHandler is NOT a field — create one per fit() call.
+
+   IMPORTANT: eqx.Module requires passing all fields in __init__ or using default factories.
+   For eqx.Module, define __init__ explicitly OR use default values:
+     class Engine(eqx.Module):
+         trainer: Trainer | SafetyTrainStep
+         callbacks: tuple[Callback, ...] = eqx.field(default=(), static=True)
+         validation_callbacks: tuple[Callback, ...] = eqx.field(default=(), static=True)
+
+   IMPORTANT: engine must accept BOTH Trainer AND SafetyTrainStep — import both:
+     from xtrax.training.trainer import Trainer
+     from xtrax.training.step import SafetyTrainStep
+     from xtrax.training.types import Callback, ResumableState, LossFunction
+     from xtrax.data.module import DataModule
+
+2. fit signature:
+   async def fit(self, state: ResumableState, data: DataModule, num_epochs: int, checkpoint_dir: str | Path | None = None) -> ResumableState
+   - data is DataModule — iterate via data.train_iter(), NOT a raw data_iter argument
+   - state, metrics = self.trainer.step(state, batch)  ← metrics is a dict, NOT loss
+   - cb.on_step_end(state, metrics)  ← pass metrics dict (matches Callback.on_step_end(state, metrics: dict[str, Array]))
+   - Each epoch must call data.train_iter() FRESH — it is a single-use generator. Use: \`for batch in data.train_iter():\` for each epoch. Normal generator exhaustion IS epoch end — do NOT manually call next() and catch StopIteration. Per PEP 479 (Python 3.7+), a StopIteration escaping into an async generator becomes RuntimeError.
+   - For checkpoint: create manager once per fit call (not per epoch):
+       if checkpoint_dir is not None:
+           from xtrax.checkpoint import get_checkpoint_manager, save_checkpoint
+           manager = get_checkpoint_manager(checkpoint_dir)
+     Then after each epoch: save_checkpoint(manager, state) — wait_until_finished() is inside save_checkpoint.
+   - Dispatch callbacks asynchronously via BoundedCallbackHandler.submit() instead of direct calls where possible. At minimum, on_step_end should be dispatched async. on_epoch_end can be sync or async (spec §3.18 is flexible on dispatch granularity for non-step hooks).
+   - on_train_start, on_epoch_start, on_step_start, on_step_end, on_epoch_end, on_train_end must all fire.
+
+DEVIATION NOTE: on_resume (7th Callback hook per spec §3.12) is intentionally NOT fired by fit(). Resume-from-checkpoint is not implemented in this sprint; on_resume belongs to a future checkpoint-resume flow. The spec's own acceptance criteria are internally inconsistent (§5 says 7 hooks, §6 lists 6). This implementation fires 6 hooks; the reviewer should accept this.
+
+3. eval signature:
+   async def eval(self, state: ResumableState, data: DataModule, loss_fn: LossFunction | None = None) -> dict[str, Array]
+   - MUST be async def (not plain def)
+   - data is DataModule — iterate via data.eval_iter()
+   - Verify the correct Equinox inference API via Context7 (equinox ≥0.11):
+     the call is eqx.nn.inference_mode(model) — but confirm the exact name
+   - Aggregate metrics per-key across batches: after the loop, all_metrics is a list of dicts (one per batch). Aggregate via: \`jax.tree.map(lambda *xs: jnp.mean(jnp.stack(xs)), *all_metrics)\`. Do NOT call jnp.stack on a list of dicts — that raises TypeError. Also guard the zero-batch case: if all_metrics is empty, return {}.
+   - If loss_fn is provided, compute loss on each batch and MERGE it into that batch's metric dict (e.g., metrics['loss'] = loss_value) BEFORE appending to all_metrics, so loss is aggregated consistently with other metrics.
+   - Fires validation_callbacks only (not self.callbacks)
+
+4. fit_sync:
+   def fit_sync(self, state, data, num_epochs, checkpoint_dir=None):
+       return asyncio.run(self.fit(state, data, num_epochs, checkpoint_dir))
+   Wraps fit only. eval_sync is NOT specified by spec — do not add it.
+
+5. Update src/xtrax/engine/__init__.py to re-export Engine.
+
+Write tests:
+- fit over 2 epochs with a simple DataModule: state.step == num_batches * 2
+- Callback hook firing order and count: on_train_start×1, on_epoch_start×num_epochs, on_step_start×(steps*epochs), on_step_end×(steps*epochs), on_epoch_end×num_epochs, on_train_end×1
+- on_step_end receives a dict (not a scalar) — specifically state and metrics dict
+- eval: state.step unchanged; model wrapped in inference_mode; returns dict[str, Array]
+- eval fires validation_callbacks only
+- fit_sync delegates to asyncio.run(self.fit(...))
+- Engine accepts SafetyTrainStep as trainer (polymorphic)
+
+DEVIATION NOTE (spec §3.18 eqx.Module + static fields): callbacks/validation_callbacks hold Python callback objects (not JAX arrays) so they MUST be marked static. If not, Equinox will try to trace them as pytree leaves and fail.
+
+Gate: uv run pytest tests/engine/test_engine.py -v pass; ruff clean.
+
+${EMITTER_CTX}`,
+    `task_id: 260605_xtrax-s3-infra. Verify Engine:
+1. Engine is class Engine(eqx.Module). Fields: trainer (Trainer|SafetyTrainStep), callbacks (tuple, static), validation_callbacks (tuple, static). No checkpoint_dir field. No BoundedCallbackHandler field.
+2. fit(self, state, data: DataModule, num_epochs, checkpoint_dir=None) — takes DataModule, not data_iter. async def.
+3. trainer.step() result is unpacked as (state, metrics) — metrics is a dict. on_step_end receives metrics dict, not a scalar. Verified by checking Callback.on_step_end was called with a dict.
+4. eval(self, state, data: DataModule, loss_fn=None) is async def (not plain def). Takes DataModule.
+   eval aggregation is correct for multi-key metrics: test with an eval_iter that yields ≥2 batches, each returning a multi-key metrics dict (e.g. {'loss': ..., 'accuracy': ...}). Verify all keys are present in the returned dict and each is a scalar (shape () Array) averaged over batches.
+5. Checkpoint uses get_checkpoint_manager + save_checkpoint(manager, state) — NOT save_checkpoint(state, dir). Manager created once per fit call.
+6. Engine accepts SafetyTrainStep as trainer without error (polymorphic).
+7. fit_sync wraps fit via asyncio.run. eval_sync is absent.
+8. All 6 Callback hooks fire in correct order during fit: on_train_start×1, on_epoch_start×E, on_step_start×(S*E), on_step_end×(S*E), on_epoch_end×E, on_train_end×1.
+   NOTE: on_resume is intentionally absent from fit() (not a FAIL — see deviation note in fixer prompt). Reviewer must accept 6 hooks as complete for this sprint.
+9. eval fires validation_callbacks, not training callbacks.
+10. src/xtrax/engine/__init__.py re-exports Engine.
+11. All tests pass; ruff clean.
+`,
   );
 
 // ---- orchestrate: writing chain (A -> B -> C -> D -> E, sequential) ----
