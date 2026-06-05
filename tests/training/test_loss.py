@@ -1,6 +1,7 @@
 """Tests for loss combinators."""
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -43,9 +44,8 @@ class TestWeightedLoss:
         loss_fn = WeightedLoss(loss_fn=simple_loss, weight=2.5)
         # Filter out all JAX arrays — weight should not appear
         array_leaves = eqx.filter(loss_fn, eqx.is_array)
-        # weight should be None or not in array leaves
-        filtered = eqx.filter(array_leaves, eqx.is_array)
-        assert filtered == filtered
+        # Directly assert that no JAX array leaves exist
+        assert jax.tree_util.tree_leaves(array_leaves) == []
 
         # More direct: weight is a Python float, not an Array
         assert isinstance(loss_fn.weight, float)
