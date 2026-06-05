@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from xtrax.tiling.iterator import VmapIterator, SafeMapIterator, BucketIterator
+from xtrax.tiling.iterator import BucketIterator, SafeMapIterator, VmapIterator
 
 
 class TestVmapIterator:
