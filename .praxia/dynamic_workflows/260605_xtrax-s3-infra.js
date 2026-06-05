@@ -150,6 +150,8 @@ File: src/xtrax/distributed/init.py | Test: tests/distributed/test_init.py
 
 Read spec §3.22 for the authoritative interface. Key corrections vs prior draft:
 
+SPEC PATH DISAMBIGUATION: spec §3.22 heading says `xtrax.distributed.dist` — this is stale (repo has no dist.py). The module is `distributed/init.py`. In `__init__.py` re-export as `from xtrax.distributed.init import init_dist` (not `from xtrax.distributed.dist import ...`).
+
 1. init_dist parameter order MUST match spec §3.22:
    init_dist(coordinator_address=None, num_processes=None, process_id=None) -> None
    The prior draft had num_processes first — this is wrong.
@@ -274,6 +276,7 @@ DEVIATION NOTE (module path): spec §3.27 places these in xtrax.io.callbacks; re
    async def submit(self, coro: Coroutine) -> None
    - Takes a COROUTINE object (not a callable + args)
    - Semaphore MUST be acquired INSIDE the async task, NOT in submit itself
+     (DEVIATION from §3.27 wording which says semaphore acquired 'before starting coro' — that would block submit; acquiring inside the task is the correct interpretation for non-blocking submit.)
      (So that submit returns immediately; the task waits for a slot before running)
    - Exceptions in the coro are LOGGED (not propagated) — use logging.exception(...)
      This prevents one failing callback from cancelling the training loop.
@@ -344,14 +347,16 @@ CRITICAL CORRECTIONS:
    - data is DataModule — iterate via data.train_iter(), NOT a raw data_iter argument
    - state, metrics = self.trainer.step(state, batch)  ← metrics is a dict, NOT loss
    - cb.on_step_end(state, metrics)  ← pass metrics dict (matches Callback.on_step_end(state, metrics: dict[str, Array]))
-   - StopIteration from data.train_iter() should be caught and treated as epoch end
+   - Each epoch must call data.train_iter() FRESH — it is a single-use generator. Use: `for batch in data.train_iter():` for each epoch. Normal generator exhaustion IS epoch end — do NOT manually call next() and catch StopIteration. Per PEP 479 (Python 3.7+), a StopIteration escaping into an async generator becomes RuntimeError.
    - For checkpoint: create manager once per fit call (not per epoch):
        if checkpoint_dir is not None:
-           from xtrax.checkpoint.orbax import get_checkpoint_manager, save_checkpoint
+           from xtrax.checkpoint import get_checkpoint_manager, save_checkpoint
            manager = get_checkpoint_manager(checkpoint_dir)
      Then after each epoch: save_checkpoint(manager, state) — wait_until_finished() is inside save_checkpoint.
    - Dispatch callbacks asynchronously via BoundedCallbackHandler.submit() instead of direct calls where possible. At minimum, on_step_end should be dispatched async. on_epoch_end can be sync or async (spec §3.18 is flexible on dispatch granularity for non-step hooks).
    - on_train_start, on_epoch_start, on_step_start, on_step_end, on_epoch_end, on_train_end must all fire.
+
+DEVIATION NOTE: on_resume (7th Callback hook per spec §3.12) is intentionally NOT fired by fit(). Resume-from-checkpoint is not implemented in this sprint; on_resume belongs to a future checkpoint-resume flow. The spec's own acceptance criteria are internally inconsistent (§5 says 7 hooks, §6 lists 6). This implementation fires 6 hooks; the reviewer should accept this.
 
 3. eval signature:
    async def eval(self, state: ResumableState, data: DataModule, loss_fn: LossFunction | None = None) -> dict[str, Array]
@@ -359,8 +364,8 @@ CRITICAL CORRECTIONS:
    - data is DataModule — iterate via data.eval_iter()
    - Verify the correct Equinox inference API via Context7 (equinox ≥0.11):
      the call is eqx.nn.inference_mode(model) — but confirm the exact name
-   - Aggregate metrics via jax.tree.map(jnp.mean, jnp.stack(list_of_metrics))
-   - If loss_fn is provided, compute loss on each batch and include in metrics
+   - Aggregate metrics per-key across batches: after the loop, all_metrics is a list of dicts (one per batch). Aggregate via: `jax.tree.map(lambda *xs: jnp.mean(jnp.stack(xs)), *all_metrics)`. Do NOT call jnp.stack on a list of dicts — that raises TypeError. Also guard the zero-batch case: if all_metrics is empty, return {}.
+   - If loss_fn is provided, compute loss on each batch and MERGE it into that batch's metric dict (e.g., metrics['loss'] = loss_value) BEFORE appending to all_metrics, so loss is aggregated consistently with other metrics.
    - Fires validation_callbacks only (not self.callbacks)
 
 4. fit_sync:
@@ -389,10 +394,12 @@ ${EMITTER_CTX}`,
 2. fit(self, state, data: DataModule, num_epochs, checkpoint_dir=None) — takes DataModule, not data_iter. async def.
 3. trainer.step() result is unpacked as (state, metrics) — metrics is a dict. on_step_end receives metrics dict, not a scalar. Verified by checking Callback.on_step_end was called with a dict.
 4. eval(self, state, data: DataModule, loss_fn=None) is async def (not plain def). Takes DataModule.
+   eval aggregation is correct for multi-key metrics: test with an eval_iter that yields ≥2 batches, each returning a multi-key metrics dict (e.g. {'loss': ..., 'accuracy': ...}). Verify all keys are present in the returned dict and each is a scalar (shape () Array) averaged over batches.
 5. Checkpoint uses get_checkpoint_manager + save_checkpoint(manager, state) — NOT save_checkpoint(state, dir). Manager created once per fit call.
 6. Engine accepts SafetyTrainStep as trainer without error (polymorphic).
 7. fit_sync wraps fit via asyncio.run. eval_sync is absent.
 8. All 6 Callback hooks fire in correct order during fit: on_train_start×1, on_epoch_start×E, on_step_start×(S*E), on_step_end×(S*E), on_epoch_end×E, on_train_end×1.
+   NOTE: on_resume is intentionally absent from fit() (not a FAIL — see deviation note in fixer prompt). Reviewer must accept 6 hooks as complete for this sprint.
 9. eval fires validation_callbacks, not training callbacks.
 10. src/xtrax/engine/__init__.py re-exports Engine.
 11. All tests pass; ruff clean.
