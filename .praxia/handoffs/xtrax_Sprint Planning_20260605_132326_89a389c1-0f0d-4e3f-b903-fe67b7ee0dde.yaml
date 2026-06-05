@@ -1,0 +1,65 @@
+---
+workspace: xtrax
+session_id: dd9219c4-216c-4fbe-bc59-c10c42c0d347
+status: in_progress
+immediately_relevant:
+- file: .praxia/docs/specs/260604_xtrax-spec.md
+  lines:
+  - 1
+  - 50
+  reason: Oracle-approved R3 spec — canonical source of truth for all implementation contracts. Fixer prompts reference this file.
+- file: .praxia/dynamic_workflows/260605_xtrax-s1-foundation.js
+  lines:
+  - 1
+  - 30
+  reason: Sprint 1 PCW workflow — oracle-approved, ready to run. TASK_ID=260604_xtrax-shape, SPRINT_ID=260605_xtrax-s1-foundation, fail-fast gating on Track A.
+- file: .praxia/dynamic_workflows/260605_xtrax-s2-core.js
+  lines:
+  - 1
+  - 30
+  reason: Sprint 2 PCW workflow — emitted but NOT oracle-reviewed. Must be critiqued before running.
+- file: .praxia/dynamic_workflows/260605_xtrax-s3-infra.js
+  lines:
+  - 1
+  - 30
+  reason: Sprint 3 PCW workflow — emitted but NOT oracle-reviewed. Must be critiqued before running.
+- file: .praxia/sprint_plans/260605_xtrax-s1-foundation.toml
+  lines:
+  - 1
+  - 20
+  reason: 'Sprint 1 TOML source — if JS needs re-emit after TOML edits, run: cd /home/marielle/projects/xtrax && praxia dw emit-sprint .praxia/sprint_plans/260605_xtrax-s1-foundation.toml'
+active_dispatches: []
+task_id: 260604_xtrax-shape
+phase: Sprint Planning
+goal_statement: Define xtrax repo shape, write oracle-approved formal spec, create full backlog (27 items), compose 3 sprint plans with fixer/reviewer prompts, emit PCW workflow JS, and oracle-approve the Sprint 1 workflow before execution.
+context_refs:
+- phase: Spec Authoring
+  task_id: 260604_xtrax-shape
+  summary: 3-round oracle critique cycle on spec; R3 approved. 27 module contracts, 7 dev phases, dependency declarations.
+failed_attempts:
+- attempt_id: dw_compose_sprint_backlog_ids
+  description: Called mcp__praxia__dw_compose_sprint with payload field 'backlog_ids' to pass item IDs
+  outcome: 'item_count: 0 — field was silently ignored, empty sprint TOML created'
+  reason_failed: 'Correct field name is ''items'' (Vec<i32>), not ''backlog_ids''. Source: praxia-mcp-tools/src/dw_compose_sprint.rs SubmitPayload struct.'
+  do_not_retry: true
+  evidence_ref: 'Use payload: {workspace_id, sprint_id, items: [1128, 1129, ...]}'
+- attempt_id: write_tool_to_main_project
+  description: Used Write tool to write sprint TOML to /home/marielle/projects/xtrax/.praxia/sprint_plans/
+  outcome: 'Blocked: ''This session is now isolated in worktree. Edit the worktree copy instead.'''
+  reason_failed: Write tool enforces worktree isolation — cannot write to main project path from worktree session.
+  do_not_retry: true
+  evidence_ref: Use Bash with heredoc or Python to write to main project paths from a worktree session.
+open_questions:
+- Sprints 2 and 3 JS likely have the same MAJOR issues as Sprint 1 pre-fix (double task_id, no fail-fast gating) — oracle will confirm.
+- Phase 7 items (1153=StageBundle __init_subclass__, 1154=MultiTaskLoss weight schedule) are P3 and deferred — no sprint TOML created yet.
+- The spec is copied to main branch .praxia/docs/specs/; the worktree branch logical-riding-simon also has it. These may diverge if spec is updated — use main branch copy as canonical going forward.
+deferred:
+- description: 'Phase 7 backlog items (1153, 1154): StageBundle __init_subclass__ validation and MultiTaskLoss dynamic weight schedule'
+  rationale: P3 priority — only after Phase 0-6 fully green. No sprint TOML created.
+  recommended_phase: Sprint 4 (post Phase 6 completion)
+- description: Grain-based distributed pipeline implementation in DataModule (create_distributed_pipeline is a stub returning dataset as-is)
+  rationale: Real grain shard-by-worker wiring deferred until Phase 5 distributed init is green
+  recommended_phase: Phase 5 follow-up or Sprint 4
+lessons_refs:
+- .praxia/lessons.jsonl
+---
