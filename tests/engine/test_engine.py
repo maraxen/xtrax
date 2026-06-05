@@ -1,7 +1,7 @@
 """Comprehensive tests for Engine (spec §3.18)."""
 
-import asyncio
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 import equinox as eqx
 import jax
@@ -10,11 +10,9 @@ import optax
 import pytest
 
 from xtrax.engine.engine import Engine
-from xtrax.training.trainer import Trainer
 from xtrax.training.step import SafetyTrainStep
+from xtrax.training.trainer import Trainer
 from xtrax.training.types import Callback, ResumableState
-from xtrax.data.module import DataModule
-
 
 # ============================================================================
 # Test Helpers
@@ -88,8 +86,12 @@ class DummyDataModule:
     def eval_iter(self) -> Iterator[dict[str, Any]]:
         """Generate dummy batches for evaluation."""
         for i in range(self.batch_count):
-            inputs = jax.random.normal(jax.random.PRNGKey(i + 200), (self.batch_size, 2))
-            targets = jax.random.normal(jax.random.PRNGKey(i + 300), (self.batch_size,))
+            inputs = jax.random.normal(
+                jax.random.PRNGKey(i + 200), (self.batch_size, 2)
+            )
+            targets = jax.random.normal(
+                jax.random.PRNGKey(i + 300), (self.batch_size,)
+            )
             yield {"inputs": inputs, "targets": targets}
 
 
@@ -293,7 +295,8 @@ class TestEngineFit:
 
         await engine.fit(state, data, num_epochs=1)
 
-        # Verify order: train_start, epoch_start, step_start, step_end, epoch_end, train_end
+        # Verify order: train_start, epoch_start, step_start, step_end,
+        # epoch_end, train_end
         call_names = [call[0] for call in cb.call_log]
         assert call_names[0] == "on_train_start"
         assert call_names[1] == "on_epoch_start"
@@ -441,8 +444,9 @@ class TestEngineEval:
         state = create_test_state()
         data = DummyDataModule(batch_count=1, batch_size=1)
 
-        # Note: eval doesn't explicitly fire callbacks (spec says it "fires validation_callbacks")
-        # but doesn't specify when/how. For now, test that eval completes successfully.
+        # Note: eval doesn't explicitly fire callbacks (spec says it fires
+        # validation_callbacks) but doesn't specify when/how. Test eval
+        # completes successfully.
         metrics = await engine.eval(state, data)
         assert isinstance(metrics, dict)
 
