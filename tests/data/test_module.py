@@ -1,10 +1,18 @@
 import pytest
 
+import xtrax.data.module as _mod
 from xtrax.data.module import DataModule, _mark_dist_initialized
 
 
 class TestDataModule:
     """Tests for DataModule iterator behavior and distributed guards."""
+
+    @pytest.fixture(autouse=True)
+    def reset_dist_flag(self):
+        """Reset the _dist_initialized flag before each test."""
+        _mod._dist_initialized = False
+        yield
+        _mod._dist_initialized = False
 
     def test_train_iter_yields_from_dataset(self):
         """train_iter yields items from the dataset."""
