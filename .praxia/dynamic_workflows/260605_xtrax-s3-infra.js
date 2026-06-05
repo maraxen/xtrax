@@ -150,7 +150,7 @@ File: src/xtrax/distributed/init.py | Test: tests/distributed/test_init.py
 
 Read spec §3.22 for the authoritative interface. Key corrections vs prior draft:
 
-SPEC PATH DISAMBIGUATION: spec §3.22 heading says `xtrax.distributed.dist` — this is stale (repo has no dist.py). The module is `distributed/init.py`. In `__init__.py` re-export as `from xtrax.distributed.init import init_dist` (not `from xtrax.distributed.dist import ...`).
+SPEC PATH DISAMBIGUATION: spec §3.22 heading says \`xtrax.distributed.dist\` — this is stale (repo has no dist.py). The module is \`distributed/init.py\`. In \`__init__.py\` re-export as \`from xtrax.distributed.init import init_dist\` (not \`from xtrax.distributed.dist import ...\`).
 
 1. init_dist parameter order MUST match spec §3.22:
    init_dist(coordinator_address=None, num_processes=None, process_id=None) -> None
@@ -347,7 +347,7 @@ CRITICAL CORRECTIONS:
    - data is DataModule — iterate via data.train_iter(), NOT a raw data_iter argument
    - state, metrics = self.trainer.step(state, batch)  ← metrics is a dict, NOT loss
    - cb.on_step_end(state, metrics)  ← pass metrics dict (matches Callback.on_step_end(state, metrics: dict[str, Array]))
-   - Each epoch must call data.train_iter() FRESH — it is a single-use generator. Use: `for batch in data.train_iter():` for each epoch. Normal generator exhaustion IS epoch end — do NOT manually call next() and catch StopIteration. Per PEP 479 (Python 3.7+), a StopIteration escaping into an async generator becomes RuntimeError.
+   - Each epoch must call data.train_iter() FRESH — it is a single-use generator. Use: \`for batch in data.train_iter():\` for each epoch. Normal generator exhaustion IS epoch end — do NOT manually call next() and catch StopIteration. Per PEP 479 (Python 3.7+), a StopIteration escaping into an async generator becomes RuntimeError.
    - For checkpoint: create manager once per fit call (not per epoch):
        if checkpoint_dir is not None:
            from xtrax.checkpoint import get_checkpoint_manager, save_checkpoint
@@ -364,7 +364,7 @@ DEVIATION NOTE: on_resume (7th Callback hook per spec §3.12) is intentionally N
    - data is DataModule — iterate via data.eval_iter()
    - Verify the correct Equinox inference API via Context7 (equinox ≥0.11):
      the call is eqx.nn.inference_mode(model) — but confirm the exact name
-   - Aggregate metrics per-key across batches: after the loop, all_metrics is a list of dicts (one per batch). Aggregate via: `jax.tree.map(lambda *xs: jnp.mean(jnp.stack(xs)), *all_metrics)`. Do NOT call jnp.stack on a list of dicts — that raises TypeError. Also guard the zero-batch case: if all_metrics is empty, return {}.
+   - Aggregate metrics per-key across batches: after the loop, all_metrics is a list of dicts (one per batch). Aggregate via: \`jax.tree.map(lambda *xs: jnp.mean(jnp.stack(xs)), *all_metrics)\`. Do NOT call jnp.stack on a list of dicts — that raises TypeError. Also guard the zero-batch case: if all_metrics is empty, return {}.
    - If loss_fn is provided, compute loss on each batch and MERGE it into that batch's metric dict (e.g., metrics['loss'] = loss_value) BEFORE appending to all_metrics, so loss is aggregated consistently with other metrics.
    - Fires validation_callbacks only (not self.callbacks)
 
