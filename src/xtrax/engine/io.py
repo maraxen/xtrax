@@ -3,8 +3,15 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Coroutine, Iterable
+from typing import TypeVar
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# Sentinel values for queue signaling
+_DONE = object()  # Signals end of iteration
+_ERROR = object()  # Marker for exceptions in queue
 
 
 async def async_indexed_stream[T](
@@ -31,32 +38,52 @@ async def async_indexed_stream[T](
     Raises:
         Any exception raised by the iterable will be re-raised on the next yield.
     """
-    # Create a queue to hold prefetched (index, item) pairs
-    queue: asyncio.Queue[tuple[int, T] | Exception] = asyncio.Queue(
-        maxsize=buffer_size
+    # Create a queue to hold prefetched items or sentinel values
+    queue: asyncio.Queue[tuple[int, T] | tuple[object, BaseException] | object] = (
+        asyncio.Queue(maxsize=buffer_size)
     )
 
-    # Track if the producer is done
-    producer_done = False
-    exception_holder: Exception | None = None
+    exception_holder: BaseException | None = None
 
     async def producer():
-        """Background task that prefetches items into the queue."""
-        nonlocal producer_done, exception_holder
+        """Background task that prefetches items into the queue.
+
+        Uses asyncio.to_thread to run the blocking iterator in a thread pool,
+        preventing the event loop from being blocked by slow iterables (e.g., file I/O).
+        """
+        nonlocal exception_holder
+
+        def fetch_next(iterator):
+            """Fetch next item from iterator; can be run in thread pool.
+
+            Returns the item or _DONE sentinel for iteration end.
+            This avoids raising StopIteration which can't cross thread boundaries.
+            """
+            try:
+                return next(iterator)
+            except StopIteration:
+                return _DONE
+
         try:
             iterator = iter(iterable)
             index = 0
             while True:
-                item = next(iterator)
+                # Run blocking next() in thread pool via asyncio.to_thread
+                item = await asyncio.to_thread(fetch_next, iterator)
+
+                # Check if iteration is complete
+                if item is _DONE:
+                    await queue.put(_DONE)
+                    break
+
+                # Successfully got item; add indexed item to queue
                 await queue.put((index, item))
                 index += 1
-        except StopIteration:
-            # Normal completion
-            producer_done = True
-        except Exception as e:
+        except BaseException as e:
             # Capture exception to re-raise in consumer
             exception_holder = e
-            producer_done = True
+            # Signal exception with sentinel tuple
+            await queue.put((_ERROR, e))
 
     # Start the producer task
     producer_task = asyncio.create_task(producer())
@@ -64,41 +91,28 @@ async def async_indexed_stream[T](
     try:
         # Consumer loop
         while True:
-            # Check if producer encountered an exception
-            if exception_holder is not None:
-                raise exception_holder
+            # Get next item from queue
+            item = await queue.get()
 
-            # Try to get an item from the queue
-            try:
-                item = queue.get_nowait()
-                # Check if it's actually a raised exception (shouldn't happen
-                # with current design, but keeping for safety)
-                if isinstance(item, Exception):
-                    raise item
-                index, value = item
-                yield (index, value)
-            except asyncio.QueueEmpty:
-                # Queue is empty; check if producer is done
-                if producer_done:
-                    break
-                # Wait for an item to become available
-                # Use a short wait to allow checking producer_done
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=0.01)
-                    if isinstance(item, Exception):
-                        raise item
-                    index, value = item
-                    yield (index, value)
-                except TimeoutError:
-                    # Timeout waiting for item; loop back to check producer_done
-                    continue
+            # Check for end of iteration
+            if item is _DONE:
+                break
+
+            # Check for exception marker
+            if isinstance(item, tuple) and len(item) == 2 and item[0] is _ERROR:
+                raise item[1]
+
+            # Normal item - unpack and yield
+            index, value = item
+            yield (index, value)
     finally:
-        # Ensure producer task is cancelled if we exit early
-        producer_task.cancel()
-        try:
-            await producer_task
-        except asyncio.CancelledError:
-            pass
+        # Ensure producer task is cleaned up
+        if not producer_task.done():
+            producer_task.cancel()
+            try:
+                await producer_task
+            except asyncio.CancelledError:
+                pass
 
 
 class BoundedCallbackHandler:
@@ -116,9 +130,9 @@ class BoundedCallbackHandler:
             max_concurrent: Maximum number of concurrent coroutines (default: 4).
         """
         self._semaphore = asyncio.Semaphore(max_concurrent)
-        self._pending_tasks: set[asyncio.Task] = set()
+        self._pending_tasks: set[asyncio.Task[None]] = set()
 
-    async def submit(self, coro: Coroutine) -> None:
+    async def submit(self, coro: Coroutine[None, None, None]) -> None:
         """Submit a coroutine to be executed with bounded concurrency.
 
         The semaphore is acquired inside the task (not before), so this method
