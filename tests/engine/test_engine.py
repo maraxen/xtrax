@@ -123,6 +123,57 @@ def create_test_state() -> ResumableState:
     )
 
 
+class MultiMetricLoss:
+    """Loss function that also tracks accuracy for multi-metric testing."""
+
+    def __call__(self, predictions: Any, targets: Any) -> jax.Array:
+        return jnp.mean((predictions - targets) ** 2)
+
+
+class MultiMetricTrainer(eqx.Module):
+    """Mock trainer that returns multiple metrics (loss + accuracy)."""
+
+    loss_fn: Any = eqx.field(static=True)
+    optimizer: Any = eqx.field(static=True)
+
+    def __init__(self, loss_fn: Any, optimizer: Any):
+        self.loss_fn = loss_fn
+        self.optimizer = optimizer
+
+    def step(
+        self, state: ResumableState, batch: dict[str, Any]
+    ) -> tuple[ResumableState, dict[str, jax.Array]]:
+        """Return metrics dict with both loss and accuracy."""
+        # Compute loss (simplified for testing)
+        predictions = state.model(batch["inputs"])
+        loss = self.loss_fn(predictions, batch["targets"])
+
+        # Compute accuracy (simplified: proportion of predictions within 0.5 of targets)
+        errors = jnp.abs(predictions - batch["targets"])
+        accuracy = jnp.mean(errors < 0.5).astype(jnp.float32)
+
+        # Return state with incremented step and multi-key metrics dict
+        new_state = eqx.tree_at(
+            lambda s: s.step, state, state.step + jnp.array(1, dtype=jnp.int32)
+        )
+        return new_state, {"loss": loss, "accuracy": accuracy}
+
+
+def create_test_engine_with_multi_metrics(
+    callbacks: tuple[Callback, ...] = (),
+    validation_callbacks: tuple[Callback, ...] = (),
+) -> Engine:
+    """Create a test Engine with a trainer that returns multi-key metrics."""
+    loss_fn = MultiMetricLoss()
+    optimizer = optax.adam(learning_rate=0.001)
+    trainer = MultiMetricTrainer(loss_fn=loss_fn, optimizer=optimizer)
+    return Engine(
+        trainer=trainer,
+        callbacks=callbacks,
+        validation_callbacks=validation_callbacks,
+    )
+
+
 # ============================================================================
 # Tests
 # ============================================================================
@@ -444,11 +495,11 @@ class TestEngineEval:
         state = create_test_state()
         data = DummyDataModule(batch_count=1, batch_size=1)
 
-        # Note: eval doesn't explicitly fire callbacks (spec says it fires
-        # validation_callbacks) but doesn't specify when/how. Test eval
-        # completes successfully.
+        # Note: eval fires validation_callbacks at start and end
         metrics = await engine.eval(state, data)
         assert isinstance(metrics, dict)
+        # Verify that at least one validation callback hook was invoked
+        assert len(val_cb.call_log) > 0
 
     async def test_eval_with_custom_loss_fn(self):
         """eval should accept optional loss_fn."""
@@ -472,6 +523,28 @@ class TestEngineEval:
         metrics = await engine.eval(state, data)
 
         assert metrics == {}
+
+    async def test_eval_aggregates_multi_key_metrics(self):
+        """eval should aggregate all keys in multi-key metrics dict across batches."""
+        # Use custom trainer that returns {"loss": ..., "accuracy": ...}
+        engine = create_test_engine_with_multi_metrics()
+        state = create_test_state()
+        # Use batch_count >= 2 to test aggregation across multiple batches
+        data = DummyDataModule(batch_count=2, batch_size=2)
+
+        metrics = await engine.eval(state, data)
+
+        # Both keys must be present
+        assert "loss" in metrics
+        assert "accuracy" in metrics
+        # Both must be scalar shape-() Arrays
+        loss_shape = metrics["loss"].shape
+        accuracy_shape = metrics["accuracy"].shape
+        assert loss_shape == (), f"Expected loss shape (), got {loss_shape}"
+        assert accuracy_shape == (), f"Expected accuracy shape (), got {accuracy_shape}"
+        # Both must be finite (no NaN/Inf)
+        assert jnp.isfinite(metrics["loss"])
+        assert jnp.isfinite(metrics["accuracy"])
 
 
 class TestEngineFitSync:

@@ -23,7 +23,7 @@ from xtrax.data.module import DataModule
 from xtrax.io.callbacks import BoundedCallbackHandler
 from xtrax.training.step import SafetyTrainStep
 from xtrax.training.trainer import Trainer
-from xtrax.training.types import Callback, ResumableState
+from xtrax.training.types import Callback, LossFunction, ResumableState
 
 
 class Engine(eqx.Module):
@@ -139,7 +139,7 @@ class Engine(eqx.Module):
         self,
         state: ResumableState,
         data: DataModule,
-        loss_fn: Any | None = None,
+        loss_fn: LossFunction | None = None,
     ) -> dict[str, Any]:
         """Evaluate model on a dataset (no training step).
 
@@ -147,6 +147,10 @@ class Engine(eqx.Module):
         Collects metrics per batch, then aggregates via jax.tree.map(jnp.mean).
 
         Fires validation_callbacks only (not self.callbacks).
+
+        Fires validation_callback hooks:
+          - on_train_start at start
+          - on_train_end at end
 
         Args:
             state: ResumableState with model to evaluate
@@ -156,35 +160,45 @@ class Engine(eqx.Module):
         Returns:
             Aggregated metrics dict[str, Array] with all keys averaged across batches
         """
-        # Wrap model in inference mode (disables dropout, stochastic layers, etc.)
-        inference_model = eqx.nn.inference_mode(state.model)
-        eval_state = eqx.tree_at(lambda s: s.model, state, inference_model)
+        # Fire on_train_start hook on validation_callbacks
+        for cb in self.validation_callbacks:
+            cb.on_train_start(state)
 
-        # Collect metrics from each batch
-        all_metrics = []
+        try:
+            # Wrap model in inference mode (disables dropout, stochastic layers, etc.)
+            inference_model = eqx.nn.inference_mode(state.model)
+            eval_state = eqx.tree_at(lambda s: s.model, state, inference_model)
 
-        for batch in data.eval_iter():
-            # Call trainer.step to get metrics (but this is just for metric computation,
-            # state doesn't actually get updated in eval context)
-            batch_state, batch_metrics = self.trainer.step(eval_state, batch)
+            # Collect metrics from each batch
+            all_metrics = []
 
-            # If loss_fn provided, compute and add loss to metrics
-            if loss_fn is not None:
-                predictions = inference_model(batch["inputs"])
-                loss = loss_fn(predictions, batch["targets"])
-                batch_metrics = {**batch_metrics, "loss": loss}
+            for batch in data.eval_iter():
+                # Call trainer.step to get metrics
+                # (just for metric computation, state doesn't get updated in eval)
+                batch_state, batch_metrics = self.trainer.step(eval_state, batch)
 
-            all_metrics.append(batch_metrics)
+                # If loss_fn provided, compute and add loss to metrics
+                if loss_fn is not None:
+                    predictions = inference_model(batch["inputs"])
+                    loss = loss_fn(predictions, batch["targets"])
+                    batch_metrics = {**batch_metrics, "loss": loss}
 
-        # Aggregate metrics across batches via jax.tree.map(jnp.mean(jnp.stack(...)))
-        if not all_metrics:
-            return {}
+                all_metrics.append(batch_metrics)
 
-        # Stack metrics and average across batch dimension
-        aggregated = jax.tree.map(
-            lambda *xs: jnp.mean(jnp.stack(xs)),
-            *all_metrics,
-        )
+            # Aggregate metrics across batches
+            if not all_metrics:
+                aggregated = {}
+            else:
+                # Stack metrics and average across batch dimension
+                aggregated = jax.tree.map(
+                    lambda *xs: jnp.mean(jnp.stack(xs)),
+                    *all_metrics,
+                )
+
+        finally:
+            # Fire on_train_end hook on validation_callbacks
+            for cb in self.validation_callbacks:
+                cb.on_train_end(state)
 
         return aggregated
 
