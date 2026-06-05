@@ -151,7 +151,7 @@ class BoundedCallbackHandler:
                 try:
                     await coro
                 except Exception:
-                    logger.exception("Exception in callback")
+                    logger.exception("callback error")
 
         task = asyncio.create_task(bounded_coro())
         self._pending_tasks.add(task)

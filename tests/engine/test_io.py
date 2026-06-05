@@ -123,18 +123,30 @@ class TestBoundedCallbackHandler:
         assert max_observed <= 2
 
     @pytest.mark.asyncio
-    async def test_exception_in_coro_is_logged_not_propagated(self):
-        """Exceptions in coroutines should be logged, not propagated."""
+    async def test_exception_in_coro_is_logged_not_propagated(self, caplog):
+        """Exceptions in coroutines should be logged, not propagated.
+
+        Spec §3.27 requires: 'Exceptions in coro are LOGGED (via logging module)
+        but NOT propagated'. This test verifies both halves of the requirement.
+        """
+        import logging
         handler = BoundedCallbackHandler(max_concurrent=1)
 
         async def failing_coro():
             raise RuntimeError("callback error")
 
-        # submit() should NOT raise; exception is logged, not propagated
-        await handler.submit(failing_coro())
+        # Enable DEBUG logging to capture the logger.exception() call
+        with caplog.at_level(logging.ERROR, logger="xtrax.engine.io"):
+            # submit() should NOT raise; exception is logged, not propagated
+            await handler.submit(failing_coro())
 
-        # wait_all should complete without raising
-        await handler.wait_all()
+            # wait_all should complete without raising
+            await handler.wait_all()
+
+        # Verify the exception WAS logged via the logging module
+        assert any(
+            "callback error" in r.message for r in caplog.records
+        ), "Exception should be logged to logging module"
 
     @pytest.mark.asyncio
     async def test_wait_all_waits_for_all_tasks(self):
