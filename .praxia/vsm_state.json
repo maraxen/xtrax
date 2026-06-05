@@ -1,0 +1,12 @@
+{
+  "workspace_id": "83b07045-c86a-4eb9-bb26-5c09a78d60b9",
+  "s1_boundaries": [
+    "python"
+  ],
+  "s4_scan_scope": "/home/marielle/projects/xtrax",
+  "initial_posture": "investigate",
+  "initial_gap_type": "SystemModel",
+  "planning_tier": "Tactical",
+  "schema_confidence": 1.0,
+  "initialized_at": "2026-06-04T22:18:00.814998078+00:00"
+}

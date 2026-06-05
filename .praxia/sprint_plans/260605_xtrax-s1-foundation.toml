@@ -1,0 +1,473 @@
+[sprint]
+sprint_id = "260605_xtrax-s1-foundation"
+sprint_num = 1
+name = "xtrax Sprint 1: Foundation (Phase 0-2)"
+description = "Scaffold, safe_map/safe_scan transforms, and full tiling layer (AxisStrategy, BatchPlanner, Iterators, Dedup, Dispatch)"
+context = """
+xtrax is a domain-agnostic, high-performance composable JAX library (Python 3.13+) that sits above JAX and Equinox. Spec at .praxia/docs/specs/260604_xtrax-spec.md (oracle-approved R3).
+
+Key invariants for all implementations:
+- jax>=0.4.36 required (lax.map batch_size= arg)
+- equinox>=0.11.0, optax>=0.2.3, orbax-checkpoint>=0.6.0, grain>=0.2.0
+- No Python-loop hot paths — use jax.tree.map, lax.scan, lax.map, optax.chain
+- uv run python / uv run pytest — never bare python/pytest
+- ruff format + ruff check before every commit
+- All files under src/xtrax/ using src layout; tests mirror under tests/
+- task_id: 260604_xtrax-shape
+"""
+max_fix_retries = 2
+
+[[tracks]]
+id = "a"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1128"
+phase_name = "Track A — Phase 0.1: Scaffold (#1128)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+Project root: /home/marielle/projects/xtrax
+
+Replace the blank scaffold with the full xtrax package structure.
+
+1. Replace pyproject.toml entirely:
+[project]
+name = "xtrax"
+version = "0.1.0"
+description = "High-performance composable JAX library"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "jax>=0.4.36", "jaxlib>=0.4.36", "equinox>=0.11.0",
+    "optax>=0.2.3", "orbax-checkpoint>=0.6.0", "grain>=0.2.0", "numpy>=1.26",
+]
+[project.optional-dependencies]
+dev = ["pytest>=8.0","pytest-asyncio>=0.23","ruff>=0.4.0","pyright>=1.1.360","jaxtyping>=0.2.28"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+[tool.hatch.build.targets.wheel]
+packages = ["src/xtrax"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+[tool.ruff]
+target-version = "py313"
+[tool.ruff.lint]
+select = ["E","F","I","UP"]
+
+2. Create src/xtrax/__init__.py with: __version__ = "0.1.0"
+
+3. Create empty __init__.py stubs in: src/xtrax/transforms/, src/xtrax/tiling/, src/xtrax/safety/, src/xtrax/stages/, src/xtrax/training/, src/xtrax/distributed/, src/xtrax/checkpoint/, src/xtrax/engine/, src/xtrax/data/
+
+4. Create stub .py files (content: "# stub") in each module under each subpackage:
+   transforms/: map.py, scan.py
+   tiling/: strategy.py, plan.py, iterator.py, dedup.py, dispatch.py
+   safety/: ops.py, manager.py, preemption.py
+   stages/: protocols.py, bundle.py
+   training/: types.py, trainer.py, step.py, loss.py, optim.py, grad.py
+   distributed/: sharding.py, init.py
+   checkpoint/: orbax.py
+   engine/: io.py, engine.py
+   data/: module.py, pipeline.py
+
+5. Create tests/__init__.py and matching test stub directories/files mirroring src/xtrax/ layout (tests/transforms/test_map.py etc, all containing "# tests").
+
+6. Create ruff.toml:
+target-version = "py313"
+[lint]
+select = ["E","F","I","UP"]
+
+Gate: `uv run ruff check .` exits 0; `uv run pytest --collect-only` exits 0 (0 tests).
+"""
+reviewer_prompt = """
+Verify scaffold:
+1. pyproject.toml has jax>=0.4.36, hatchling build backend, packages=["src/xtrax"]
+2. src/xtrax/ has 9 subpackage __init__.py files
+3. All stub module files exist
+4. tests/ mirror exists with __init__.py files
+5. ruff.toml exists
+6. Run: `uv run ruff check .` — must exit 0
+7. Run: `uv run pytest --collect-only` — must exit 0
+"""
+return_key = "1128"
+
+[[tracks]]
+id = "b"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1129"
+phase_name = "Track B — Phase 1.1: safe_map (#1129)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/transforms/map.py | Test: tests/transforms/test_map.py
+
+Implement safe_map in src/xtrax/transforms/map.py:
+
+```python
+from collections.abc import Callable
+from typing import TypeVar
+import jax
+
+PyTree = TypeVar("PyTree")
+
+def safe_map(fn: Callable, xs: PyTree, batch_size: int | None = None) -> PyTree:
+    n = jax.tree.leaves(xs)[0].shape[0]
+    if batch_size is None or n <= batch_size:
+        return jax.vmap(fn)(xs)
+    if n % batch_size != 0:
+        raise ValueError(
+            f"safe_map: n={n} is not divisible by batch_size={batch_size}. "
+            "Ensure cardinality is a multiple of batch_size."
+        )
+    return jax.lax.map(fn, xs, batch_size=batch_size)
+```
+
+Update src/xtrax/transforms/__init__.py:
+```python
+from xtrax.transforms.map import safe_map
+__all__ = ["safe_map"]
+```
+
+Write tests/transforms/test_map.py with tests for:
+- batch_size=None → vmap path (identity fn, compare with jax.vmap)
+- n<=batch_size → vmap path
+- n>batch_size, divisible → lax.map path, result matches vmap
+- n>batch_size, non-divisible → raises ValueError matching "not divisible"
+- pytree xs (dict with "a","b" keys)
+- shape invariant (output shape == input shape)
+
+Gate: `uv run pytest tests/transforms/test_map.py -v` all pass; `uv run ruff check src/xtrax/transforms/map.py` clean.
+"""
+reviewer_prompt = """
+Verify safe_map:
+1. batch_size=None or n<=batch_size → jax.vmap (NOT lax.map)
+2. n>batch_size AND divisible → jax.lax.map(fn, xs, batch_size=batch_size)
+3. n>batch_size AND non-divisible → ValueError with "not divisible"
+4. No Python loop in implementation
+5. `uv run pytest tests/transforms/test_map.py -v` — all tests pass
+6. `uv run ruff check src/xtrax/transforms/map.py` — clean
+"""
+return_key = "1129"
+
+[[tracks]]
+id = "c"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1130"
+phase_name = "Track C — Phase 1.2: safe_scan (#1130)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/transforms/scan.py | Test: tests/transforms/test_scan.py
+
+Implement safe_scan in src/xtrax/transforms/scan.py:
+
+```python
+from collections.abc import Callable
+from typing import TypeVar
+import jax
+
+Carry = TypeVar("Carry")
+X = TypeVar("X")
+Y = TypeVar("Y")
+
+def safe_scan(
+    fn: Callable[[Carry, X], tuple[Carry, Y]],
+    init: Carry,
+    xs: X,
+    length: int | None = None,
+    reverse: bool = False,
+    unroll: int | bool = 1,
+) -> tuple[Carry, Y]:
+    effective_length = length
+    if effective_length is None:
+        leaves = jax.tree.leaves(xs)
+        effective_length = leaves[0].shape[0] if leaves else 0
+    if effective_length == 0:
+        raise ValueError("safe_scan: xs has leading axis of length 0.")
+    return jax.lax.scan(fn, init, xs, length=length, reverse=reverse, unroll=unroll)
+```
+
+CRITICAL: Do NOT add `if init is None: raise`. None is a legal lax.scan carry.
+
+Update src/xtrax/transforms/__init__.py to also export safe_scan.
+
+Write tests/transforms/test_scan.py with tests for:
+- normal scan (compare with jax.lax.scan)
+- empty xs (length=0 inferred) → ValueError
+- length=0 explicit → ValueError
+- reverse=True
+- unroll>1 (same result as unroll=1)
+- init=None is legal (must not raise)
+
+Gate: `uv run pytest tests/transforms/test_scan.py -v` all pass; `uv run ruff check src/xtrax/transforms/scan.py` clean.
+"""
+reviewer_prompt = """
+Verify safe_scan:
+1. length==0 or inferred xs leading-axis==0 → ValueError before tracing
+2. init=None is NOT rejected (legal lax.scan carry) — test_init_none_is_legal must pass
+3. Delegates to jax.lax.scan with all kwargs passed through
+4. No `init is None` check anywhere in the code
+5. `uv run pytest tests/transforms/test_scan.py -v` — all tests pass
+6. `uv run ruff check src/xtrax/transforms/scan.py` — clean
+"""
+return_key = "1130"
+
+[[tracks]]
+id = "d"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1131"
+phase_name = "Track D — Phase 2.1: AxisStrategy types (#1131)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/tiling/strategy.py | Test: tests/tiling/test_strategy.py
+
+Implement AxisStrategy sealed union in src/xtrax/tiling/strategy.py:
+
+```python
+from __future__ import annotations
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
+
+@runtime_checkable
+class ScanTransition(Protocol):
+    def __call__(self, carry: Any, x: Any) -> tuple[Any, Any]: ...
+
+@runtime_checkable
+class DedupFn(Protocol):
+    def __call__(self, xs: Any) -> tuple[Any, Any]: ...
+
+@runtime_checkable
+class GatherFn(Protocol):
+    def __call__(self, ys: Any, gather_indices: Any) -> Any: ...
+
+@dataclass(frozen=True)
+class Vmap:
+    pass
+
+@dataclass(frozen=True)
+class SafeMap:
+    batch_size: int
+
+@dataclass(frozen=True)
+class Scan:
+    # NO batch_size field — intentional
+    transition: ScanTransition
+
+@dataclass(frozen=True)
+class DedupGather:
+    dedup_fn: DedupFn
+    gather_fn: GatherFn
+    k_bucket: int  # metadata only
+
+AxisStrategy = Vmap | SafeMap | Scan | DedupGather
+```
+
+Write tests/tiling/test_strategy.py verifying: all 4 variants instantiate; Scan has no batch_size field; all are frozen (mutation raises); isinstance checks pass.
+
+Gate: `uv run pytest tests/tiling/test_strategy.py -v` all pass; `uv run ruff check src/xtrax/tiling/strategy.py` clean.
+"""
+reviewer_prompt = """
+Verify AxisStrategy:
+1. Vmap: frozen, no fields
+2. SafeMap: frozen, batch_size: int
+3. Scan: frozen, transition field ONLY — NO batch_size field (critical)
+4. DedupGather: frozen, dedup_fn + gather_fn + k_bucket
+5. All are frozen dataclasses (mutation raises)
+6. `uv run pytest tests/tiling/test_strategy.py -v` — all tests pass
+7. `uv run ruff check src/xtrax/tiling/strategy.py` — clean
+Confirm: `hasattr(Scan(transition=lambda c,x:(c,x)), "batch_size")` is False.
+"""
+return_key = "1131"
+
+[[tracks]]
+id = "e"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1132"
+phase_name = "Track E — Phase 2.2: BatchPlan / BatchPlanner (#1132)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/tiling/plan.py | Test: tests/tiling/test_plan.py
+
+Implement BatchPlan and BatchPlanner in src/xtrax/tiling/plan.py.
+
+Selection rules (in priority order):
+1. spec.dedup_eligible → DedupGather (with placeholder dedup/gather fns)
+2. spec.cardinality <= self.batch_size → Vmap()
+3. cardinality % batch_size == 0 → SafeMap(batch_size)
+4. non-divisible → SafeMap(batch_size) + warnings.warn with "not divisible" in message
+   DEFERRED-FAILURE CONTRACT: this plan will raise ValueError at make_axis_dispatch time.
+
+Scan is NEVER returned by plan(). Pure Python — no jax tracing except optional memory_estimator device query.
+
+memory_estimator: when provided, returns estimated bytes for Vmap. If > device limit (default 4 GiB from jax.devices()[0].memory_stats()), prefer SafeMap. If query fails, fall back silently.
+
+AxisSpec: cardinality: int, batch_size: int, dedup_eligible: bool = False
+AxisDecision: spec: AxisSpec, strategy: AxisStrategy
+BatchPlan: decisions: list[AxisDecision]
+
+Write tests verifying all 4 rules, Scan-never-returned for all cardinalities, length matches specs, memory_estimator override.
+
+Gate: `uv run pytest tests/tiling/test_plan.py -v` all pass; `uv run ruff check src/xtrax/tiling/plan.py` clean.
+"""
+reviewer_prompt = """
+Verify BatchPlanner:
+1. Rule 1: dedup_eligible=True → DedupGather
+2. Rule 2: cardinality<=batch_size → Vmap
+3. Rule 3: divisible → SafeMap(batch_size)
+4. Rule 4: non-divisible → SafeMap + warnings.warn (deferred-failure contract in code comment)
+5. Scan NEVER returned — test for multiple cardinalities
+6. memory_estimator override tested
+7. plan() creates no JAX-traced values
+8. `uv run pytest tests/tiling/test_plan.py -v` — all tests pass
+9. `uv run ruff check src/xtrax/tiling/plan.py` — clean
+"""
+return_key = "1132"
+
+[[tracks]]
+id = "f"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1133"
+phase_name = "Track F — Phase 2.3: Iterators (#1133)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/tiling/iterator.py | Test: tests/tiling/test_iterator.py
+
+Implement in src/xtrax/tiling/iterator.py:
+
+VmapIterator(fn, xs): __iter__ → jax.vmap(fn)(xs) then yield each item (shape loses leading dim).
+SafeMapIterator(fn, xs, batch_size): __iter__ → safe_map(fn, xs, batch_size) then yield each; ValueError for non-divisible propagates.
+BucketIterator(boundaries, batch_sizes, fn, xs): raises ValueError at __init__ if len(batch_sizes) != len(boundaries)+1.
+
+Use jax.tree.map(lambda x: x[i], results) to yield individual items.
+
+Write tests for: VmapIterator shape; SafeMapIterator==VmapIterator when batch_size>=n; SafeMapIterator ValueError for non-divisible; BucketIterator construction ValueError; BucketIterator valid case.
+
+Gate: `uv run pytest tests/tiling/test_iterator.py -v` all pass; `uv run ruff check src/xtrax/tiling/iterator.py` clean.
+"""
+reviewer_prompt = """
+Verify Iterators:
+1. VmapIterator yields n items, each without leading batch dim
+2. SafeMapIterator == VmapIterator results when batch_size >= n
+3. SafeMapIterator propagates ValueError for non-divisible n
+4. BucketIterator raises ValueError at construction for len mismatch (boundaries=[10,20], batch_sizes=[8,16] → raises)
+5. `uv run pytest tests/tiling/test_iterator.py -v` — all tests pass
+6. `uv run ruff check src/xtrax/tiling/iterator.py` — clean
+"""
+return_key = "1133"
+
+[[tracks]]
+id = "g"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1134"
+phase_name = "Track G — Phase 2.4: Dedup (#1134)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/tiling/dedup.py | Test: tests/tiling/test_dedup.py
+
+Implement in src/xtrax/tiling/dedup.py:
+
+```python
+from dataclasses import dataclass
+
+def get_k_bucket(n: int) -> int:
+    # Mandated: integer bit_length — NOT 2**ceil(log2(n))
+    if n <= 0:
+        raise ValueError(f"get_k_bucket: n must be > 0, got {n}")
+    return 1 << (n - 1).bit_length()
+
+@dataclass(frozen=True)
+class DedupSpec:
+    k_bucket: int
+    max_unique: int
+    def __post_init__(self) -> None:
+        if self.k_bucket <= 0 or (self.k_bucket & (self.k_bucket - 1)) != 0:
+            raise ValueError(f"DedupSpec: k_bucket={self.k_bucket} must be a positive power of 2.")
+        if self.k_bucket < self.max_unique:
+            raise ValueError(f"DedupSpec: k_bucket={self.k_bucket} must be >= max_unique={self.max_unique}.")
+```
+
+Write tests verifying: get_k_bucket(7)==8, get_k_bucket(8)==8, get_k_bucket(9)==16, get_k_bucket(1)==1, get_k_bucket(0) raises, get_k_bucket(-1) raises; DedupSpec valid; k_bucket not power-of-2 raises; k_bucket < max_unique raises; k_bucket == max_unique valid.
+
+Gate: `uv run pytest tests/tiling/test_dedup.py -v` all pass; `uv run ruff check src/xtrax/tiling/dedup.py` clean.
+"""
+reviewer_prompt = """
+Verify Dedup:
+1. get_k_bucket uses `1 << (n-1).bit_length()` — verify no log2 or ** in implementation
+2. get_k_bucket(7)==8, (8)==8, (9)==16, (1)==1
+3. get_k_bucket(0) and (-1) raise ValueError
+4. DedupSpec: k_bucket not power-of-2 raises; k_bucket < max_unique raises; k_bucket == max_unique is valid
+5. `uv run pytest tests/tiling/test_dedup.py -v` — all tests pass
+6. `uv run ruff check src/xtrax/tiling/dedup.py` — clean
+"""
+return_key = "1134"
+
+[[tracks]]
+id = "h"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1135"
+phase_name = "Track H — Phase 2.5: make_axis_dispatch (#1135)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/tiling/dispatch.py | Test: tests/tiling/test_dispatch.py
+
+Implement make_axis_dispatch in src/xtrax/tiling/dispatch.py:
+
+```python
+from collections.abc import Callable
+from typing import Any
+import jax
+from xtrax.tiling.strategy import AxisStrategy, DedupGather, SafeMap, Scan, Vmap
+from xtrax.transforms.map import safe_map
+from xtrax.transforms.scan import safe_scan
+
+def make_axis_dispatch(strategy: AxisStrategy, fn: Callable, xs: Any, init: Any = None) -> Any:
+    if isinstance(strategy, Vmap):
+        return jax.vmap(fn)(xs)
+    elif isinstance(strategy, SafeMap):
+        return safe_map(fn, xs, batch_size=strategy.batch_size)
+    elif isinstance(strategy, Scan):
+        if init is None:
+            raise ValueError("make_axis_dispatch: Scan strategy requires a non-None init carry.")
+        # fn is IGNORED for Scan — use strategy.transition
+        return safe_scan(strategy.transition, init, xs)
+    elif isinstance(strategy, DedupGather):
+        deduped_xs, gather_indices = strategy.dedup_fn(xs)  # explicit unpacking
+        ys = safe_map(fn, deduped_xs)
+        return strategy.gather_fn(ys, gather_indices)
+    else:
+        raise TypeError(f"Unknown strategy type: {type(strategy)}")
+```
+
+Write tests for all 4 strategies: Vmap dispatches; SafeMap dispatches + ValueError for non-divisible; Scan with init=None raises; Scan with init uses strategy.transition (fn ignored); DedupGather with explicit dedup/gather fns.
+
+Gate: `uv run pytest tests/tiling/test_dispatch.py -v` all pass; `uv run ruff check src/xtrax/tiling/dispatch.py` clean.
+"""
+reviewer_prompt = """
+Verify make_axis_dispatch:
+1. Vmap → jax.vmap(fn)(xs)
+2. SafeMap → safe_map(fn, xs, batch_size=strategy.batch_size)
+3. Scan + init=None → ValueError
+4. Scan + init → safe_scan(strategy.transition, init, xs) — fn IS IGNORED
+5. DedupGather → deduped_xs, gather_indices = strategy.dedup_fn(xs) then safe_map then gather_fn
+6. `uv run pytest tests/tiling/test_dispatch.py -v` — all tests pass including Scan-ignores-fn test
+7. `uv run ruff check src/xtrax/tiling/dispatch.py` — clean
+"""
+return_key = "1135"
+
+[orchestration]
+sequential = ["a", "b", "c", "d", "g", "e", "f", "h"]
+concurrent = []

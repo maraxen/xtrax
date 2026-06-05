@@ -1,0 +1,81 @@
+{
+  "workspace_id": "83b07045-c86a-4eb9-bb26-5c09a78d60b9",
+  "schema_version": 1,
+  "preset": "web-service",
+  "worldview": {
+    "value": "Library / reusable component",
+    "confidence": 0.9,
+    "deferred": false,
+    "sources": [
+      "user_stated"
+    ]
+  },
+  "owner": {
+    "value": null,
+    "confidence": 0.0,
+    "deferred": true,
+    "sources": []
+  },
+  "eidos": {
+    "value": "Not a standalone app (requires integration)",
+    "confidence": 0.9,
+    "deferred": false,
+    "sources": [
+      "user_stated"
+    ]
+  },
+  "s5_policy": [],
+  "primary_function": {
+    "value": null,
+    "confidence": 0.0,
+    "deferred": true,
+    "sources": []
+  },
+  "operators": [
+    "developer",
+    "ci_pipeline",
+    "pytest_runner"
+  ],
+  "build_target": {
+    "value": "Library (crate / package / module)",
+    "confidence": 0.9,
+    "deferred": false,
+    "sources": [
+      "user_stated"
+    ]
+  },
+  "always_do": [
+    "ruff format before commit",
+    "pytest before merge"
+  ],
+  "ask_first": [
+    "delete files",
+    "push to remote"
+  ],
+  "never_do": [
+    "commit secrets",
+    "push to main without review"
+  ],
+  "consumers": {
+    "value": [
+      "External developers (open source / API consumers)"
+    ],
+    "confidence": 0.9,
+    "deferred": false,
+    "sources": [
+      "user_stated"
+    ]
+  },
+  "scan_scope": [
+    ".",
+    "!target",
+    "!node_modules",
+    "!.git",
+    "!__pycache__"
+  ],
+  "horizon": "project",
+  "coordination_mechanisms": [],
+  "quirks": [],
+  "quirks_initialized": false,
+  "pre_commit_level": null
+}

@@ -1,0 +1,702 @@
+[sprint]
+sprint_id = "260605_xtrax-s2-core"
+sprint_num = 2
+name = "xtrax Sprint 2: Safety + Training Core (Phase 3-4)"
+description = "Safe ops, SafetyManager, PreemptionHandler, StageBundle protocols, ResumableState, Trainer, accumulate_grads, loss combinators, optimizer utilities, DataModule"
+context = """
+xtrax sprint 2. Sprint 1 (scaffold + tiling) must be complete before this sprint runs.
+Spec: .praxia/docs/specs/260604_xtrax-spec.md (R3, oracle-approved).
+task_id: 260604_xtrax-shape
+Key rules: no Python-loop hot paths; uv run pytest; ruff clean before commit.
+All Phase 4 training code uses equinox (eqx.Module, filter_jit, filter_value_and_grad, apply_updates).
+Optimizer code delegates entirely to optax — no reimplementation.
+"""
+max_fix_retries = 2
+
+[[tracks]]
+id = "a"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1136"
+phase_name = "Track A — Phase 3.1: safe_norm, safe_reciprocal (#1136)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/safety/ops.py | Test: tests/safety/test_ops.py
+
+Implement numerically stable ops in src/xtrax/safety/ops.py:
+
+```python
+import jax.numpy as jnp
+import jax
+
+def safe_norm(x: jax.Array, axis: int | None = None, keepdims: bool = False) -> jax.Array:
+    # Use linalg.norm but prevent NaN gradient at zero by adding eps before sqrt
+    sq = jnp.sum(x * x, axis=axis, keepdims=keepdims)
+    return jnp.sqrt(sq + jnp.finfo(x.dtype).eps)
+
+def safe_reciprocal(x: jax.Array) -> jax.Array:
+    eps = jnp.finfo(x.dtype).eps
+    return jnp.where(jnp.abs(x) < eps, 1.0 / eps, 1.0 / x)
+```
+
+Update src/xtrax/safety/__init__.py to export both.
+
+Write tests/safety/test_ops.py:
+- safe_norm: grad at x=zeros is finite (not NaN) via jax.grad
+- safe_reciprocal(0.0) == 1/eps (not inf, not NaN)
+- safe_reciprocal(2.0) ≈ 0.5
+
+Gate: `uv run pytest tests/safety/test_ops.py -v` pass; `uv run ruff check src/xtrax/safety/ops.py` clean.
+"""
+reviewer_prompt = """
+Verify safe_norm and safe_reciprocal:
+1. jax.grad(safe_norm)(jnp.zeros(3)) is finite (no NaN)
+2. safe_reciprocal(jnp.zeros(())) == 1/jnp.finfo(jnp.float32).eps
+3. safe_reciprocal(jnp.array(2.0)) ≈ 0.5
+4. All tests pass; ruff clean
+"""
+return_key = "1136"
+
+[[tracks]]
+id = "b"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1138"
+phase_name = "Track B — Phase 3.3: PreemptionHandler (#1138)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/safety/preemption.py | Test: tests/safety/test_preemption.py
+
+Implement PreemptionHandler in src/xtrax/safety/preemption.py:
+
+```python
+import signal
+from collections.abc import Callable
+
+class PreemptionHandler:
+    def __init__(self, save_fn: Callable, rank: int = 0) -> None:
+        self._save_fn = save_fn
+        self._rank = rank
+        self._registered = False
+
+    def register(self) -> None:
+        if self._registered:
+            return  # idempotent
+        if self._rank == 0:
+            signal.signal(signal.SIGUSR1, self._handle)
+        self._registered = True
+
+    def _handle(self, signum, frame):
+        self._save_fn()
+```
+
+Write tests/safety/test_preemption.py:
+- SIGUSR1 triggers save_fn once (send os.kill(os.getpid(), signal.SIGUSR1))
+- rank=1: save_fn NOT called on SIGUSR1
+- register() is idempotent (call twice, only registered once)
+
+Gate: `uv run pytest tests/safety/test_preemption.py -v` pass; `uv run ruff check src/xtrax/safety/preemption.py` clean.
+"""
+reviewer_prompt = """
+Verify PreemptionHandler:
+1. SIGUSR1 → save_fn called exactly once
+2. rank=1 → save_fn NOT called on SIGUSR1
+3. register() idempotent — second call is a no-op
+4. All tests pass; ruff clean
+"""
+return_key = "1138"
+
+[[tracks]]
+id = "c"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1139"
+phase_name = "Track C — Phase 3.4: Stage protocols — TransformFn, RollingFn, FuseFn (#1139)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/stages/protocols.py | Test: tests/stages/test_protocols.py
+
+Implement generic tier-1 protocols in src/xtrax/stages/protocols.py:
+
+```python
+from typing import Generic, Protocol, TypeVar, runtime_checkable
+
+In = TypeVar("In")
+Out = TypeVar("Out")
+Carry = TypeVar("Carry")
+PerItem = TypeVar("PerItem")
+Combined = TypeVar("Combined")
+
+@runtime_checkable
+class TransformFn(Protocol[In, Out]):
+    def __call__(self, x: In) -> Out: ...
+
+@runtime_checkable
+class RollingFn(Protocol[Carry, In, Out]):
+    def __call__(self, carry: Carry, x: In) -> tuple[Carry, Out]: ...
+
+@runtime_checkable
+class FuseFn(Protocol[PerItem, Combined]):
+    def __call__(self, items: PerItem) -> Combined: ...
+```
+
+Update src/xtrax/stages/__init__.py.
+
+Write tests/stages/test_protocols.py: lambdas pass isinstance for all three protocols.
+
+Gate: `uv run pytest tests/stages/test_protocols.py -v` pass; ruff clean.
+"""
+reviewer_prompt = """
+Verify Stage protocols:
+1. All three are runtime_checkable
+2. lambda x: x passes isinstance(fn, TransformFn)
+3. lambda c, x: (c, x) passes isinstance(fn, RollingFn)
+4. lambda items: items passes isinstance(fn, FuseFn)
+5. All tests pass; ruff clean
+"""
+return_key = "1139"
+
+[[tracks]]
+id = "d"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1141"
+phase_name = "Track D — Phase 4.1: ResumableState, LossFunction, Callback (#1141)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/training/types.py | Test: tests/training/test_types.py
+
+Implement core training types in src/xtrax/training/types.py:
+
+```python
+from typing import Any, Protocol, runtime_checkable
+import jax
+import jax.numpy as jnp
+import equinox as eqx
+
+@runtime_checkable
+class LossFunction(Protocol):
+    def __call__(self, predictions: Any, targets: Any) -> jax.Array: ...
+
+@runtime_checkable
+class Callback(Protocol):
+    def on_train_start(self, state: "ResumableState") -> None: ...
+    def on_train_end(self, state: "ResumableState") -> None: ...
+    def on_epoch_start(self, state: "ResumableState", epoch: int) -> None: ...
+    def on_epoch_end(self, state: "ResumableState", epoch: int) -> None: ...
+    def on_step_start(self, state: "ResumableState") -> None: ...
+    def on_step_end(self, state: "ResumableState", loss: jax.Array) -> None: ...
+
+class ResumableState(eqx.Module):
+    step: jax.Array  # jnp.int32 scalar — DYNAMIC leaf, not static
+    key: jax.Array
+    model: eqx.Module
+    opt_state: Any
+    extras: dict[str, Any] = eqx.field(default_factory=dict)
+```
+
+Write tests: step is jnp.int32 Array (dynamic leaf, not static); LossFunction/Callback isinstance pass; ResumableState is valid eqx.Module.
+
+Gate: `uv run pytest tests/training/test_types.py -v` pass; ruff clean.
+"""
+reviewer_prompt = """
+Verify training types:
+1. ResumableState.step is jnp.int32 Array (dynamic JAX leaf, NOT static)
+2. Verify: `eqx.filter(state, eqx.is_array)` includes `step`
+3. LossFunction and Callback are runtime_checkable Protocol
+4. Lambdas pass isinstance checks
+5. All tests pass; ruff clean
+"""
+return_key = "1141"
+
+[[tracks]]
+id = "e"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1145"
+phase_name = "Track E — Phase 4.5: Optimizer utilities (#1145)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/training/optim.py | Test: tests/training/test_optim.py
+
+Implement optimizer utilities in src/xtrax/training/optim.py:
+
+```python
+from typing import Any
+import jax
+import optax
+
+PyTree = Any
+
+def no_bias_wd_mask(params: PyTree) -> PyTree:
+    # Mandated exactly: ndim != 1 → True (apply weight decay), 1-D → False (skip)
+    return jax.tree.map(lambda x: x.ndim != 1, params)
+
+def make_optimizer(base: optax.GradientTransformation, clip_norm: float = 1.0) -> optax.GradientTransformation:
+    # clip BEFORE base optimizer
+    return optax.chain(optax.clip_by_global_norm(clip_norm), base)
+
+def adamw_with_schedule(
+    peak_lr: float,
+    warmup_steps: int,
+    total_steps: int,
+    weight_decay: float = 1e-4,
+    b1: float = 0.9,
+    b2: float = 0.999,
+    eps: float = 1e-8,
+    clip_norm: float = 1.0,
+    wd_mask: Any = None,
+) -> optax.GradientTransformation:
+    if wd_mask is None:
+        wd_mask = no_bias_wd_mask
+    schedule = optax.warmup_cosine_decay_schedule(
+        init_value=0.0, peak_value=peak_lr,
+        warmup_steps=warmup_steps,
+        decay_steps=total_steps,  # total steps, NOT total-warmup
+        end_value=0.0,
+    )
+    base = optax.adamw(
+        learning_rate=schedule, weight_decay=weight_decay,
+        b1=b1, b2=b2, eps=eps,
+        mask=wd_mask,  # mask IS always passed — mandatory
+    )
+    return make_optimizer(base, clip_norm=clip_norm)
+
+def partition_labels(model: Any, label_fn: Any) -> Any:
+    return jax.tree.map(label_fn, model)
+```
+
+Write tests: no_bias_wd_mask({"w": ones((10,10)), "b": zeros(10)}) → {"w": True, "b": False}; make_optimizer chain order (clip first); adamw_with_schedule returns GradientTransformation; verify mask IS passed (use mock or check opt has wd_mask).
+
+Gate: `uv run pytest tests/training/test_optim.py -v` pass; ruff clean.
+"""
+reviewer_prompt = """
+Verify optimizer utilities:
+1. no_bias_wd_mask: {"w": shape(10,10), "b": shape(10)} → {"w": True, "b": False}
+2. make_optimizer: clip_by_global_norm FIRST in chain, then base
+3. adamw_with_schedule: decay_steps=total_steps (NOT total-warmup); mask IS passed
+4. All tests pass; ruff clean
+"""
+return_key = "1145"
+
+[[tracks]]
+id = "f"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1147"
+phase_name = "Track F — Phase 4.7: DataModule + streaming (#1147)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+Files: src/xtrax/data/module.py, src/xtrax/data/pipeline.py | Tests: tests/data/
+
+Implement in src/xtrax/data/module.py:
+
+```python
+from collections.abc import Iterator
+from typing import Any
+import jax.numpy as jnp
+
+class DataModule:
+    def __init__(self, dataset: Any, batch_size: int, distributed: bool = False) -> None:
+        self._dataset = dataset
+        self._batch_size = batch_size
+        self._distributed = distributed
+        self._dist_initialized = False
+
+    def mark_distributed_initialized(self) -> None:
+        self._dist_initialized = True
+
+    def train_iter(self) -> Iterator[Any]:
+        if self._distributed and not self._dist_initialized:
+            raise RuntimeError(
+                "DataModule: distributed=True requires init_dist() before train_iter()."
+            )
+        yield from self._dataset
+```
+
+Implement async_indexed_stream in src/xtrax/data/pipeline.py:
+```python
+from collections.abc import AsyncIterator, Iterable
+from typing import Any, TypeVar
+
+T = TypeVar("T")
+
+async def async_indexed_stream(iterable: Iterable[T]) -> AsyncIterator[tuple[int, T]]:
+    for i, item in enumerate(iterable):
+        yield i, item
+```
+
+Implement create_distributed_pipeline:
+```python
+def create_distributed_pipeline(dataset: Any, global_batch_size: int, num_devices: int) -> Any:
+    if global_batch_size % num_devices != 0:
+        raise ValueError(
+            f"create_distributed_pipeline: global_batch_size={global_batch_size} "
+            f"must be divisible by num_devices={num_devices}."
+        )
+    per_device_batch = global_batch_size // num_devices
+    return dataset  # stub — real sharding via grain in future phases
+```
+
+Write tests: train_iter yields; distributed=True without init raises RuntimeError; create_distributed_pipeline raises for non-divisible; async_indexed_stream yields (index, item) pairs; exception from iterable re-raised.
+
+Gate: `uv run pytest tests/data/ -v` pass; ruff clean.
+"""
+reviewer_prompt = """
+Verify DataModule and streaming:
+1. DataModule.train_iter yields items correctly
+2. DataModule(distributed=True).train_iter() raises RuntimeError before mark_distributed_initialized()
+3. create_distributed_pipeline raises ValueError for non-divisible global_batch_size/num_devices
+4. async_indexed_stream yields correct (index, item) pairs
+5. Exception from iterable is re-raised (propagates to consumer)
+6. All tests pass; ruff clean
+"""
+return_key = "1147"
+
+[[tracks]]
+id = "g"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1137"
+phase_name = "Track G — Phase 3.2: SafetyManager, with_safety (#1137)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/safety/manager.py | Test: tests/safety/test_manager.py
+
+Implement in src/xtrax/safety/manager.py:
+
+```python
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+import jax
+import jax.experimental.checkify as checkify
+
+@dataclass
+class SafetyManager:
+    enabled: bool = True
+
+def with_safety(fn: Callable, mgr: SafetyManager) -> Callable:
+    if not mgr.enabled:
+        return fn  # strict identity: return fn unchanged
+    checked_fn = checkify.checkify(fn, errors=checkify.float_checks)
+    @jax.jit
+    def wrapped(*args, **kwargs):
+        err, result = checked_fn(*args, **kwargs)
+        err.throw()
+        return result
+    return wrapped
+```
+
+Write tests:
+- SafetyManager(enabled=False) + with_safety(fn, mgr): returned callable IS fn (strict identity via `is`)
+- SafetyManager(enabled=True) wrapping a NaN-producing fn raises on host after jit call
+
+Gate: `uv run pytest tests/safety/test_manager.py -v` pass; ruff clean.
+"""
+reviewer_prompt = """
+Verify SafetyManager:
+1. SafetyManager(enabled=False): `with_safety(fn, mgr) is fn` — strict identity (not a wrapper)
+2. SafetyManager(enabled=True): NaN-producing jitted fn raises Python exception on host
+3. All tests pass; ruff clean
+"""
+return_key = "1137"
+
+[[tracks]]
+id = "h"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1140"
+phase_name = "Track H — Phase 3.5: StageBundle (#1140)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/stages/bundle.py | Test: tests/stages/test_bundle.py
+
+Implement StageBundle in src/xtrax/stages/bundle.py:
+
+```python
+from collections.abc import Callable
+from typing import Any
+import equinox as eqx
+
+class StageBundle(eqx.Module):
+    # Base class for typed optional-slot bags.
+    # Subclasses declare optional Callable fields; topology inferred from non-None fields.
+    # NO __call__ method — caller decides how to sequence stages.
+    # WARNING: Do NOT branch on field presence inside jax.jit — caller precondition.
+
+    def active_stages(self) -> dict[str, Callable]:
+        return {
+            name: val
+            for name, val in self.__dict__.items()
+            if isinstance(val, Callable) and val is not None
+        }
+
+    def has_stage(self, name: str) -> bool:
+        val = getattr(self, name, None)
+        return val is not None and callable(val)
+```
+
+Write tests: active_stages returns correct non-None callables; has_stage True/False; valid eqx.Module pytree; no __call__ method.
+
+Gate: `uv run pytest tests/stages/test_bundle.py -v` pass; ruff clean.
+"""
+reviewer_prompt = """
+Verify StageBundle:
+1. active_stages() returns only non-None callable fields
+2. has_stage() correct for present/absent slots
+3. StageBundle subclass is valid eqx.Module (jax.tree.leaves works)
+4. No __call__ method on StageBundle
+5. All tests pass; ruff clean
+"""
+return_key = "1140"
+
+[[tracks]]
+id = "i"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1142"
+phase_name = "Track I — Phase 4.2: Trainer (#1142)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/training/trainer.py | Test: tests/training/test_trainer.py
+
+Implement Trainer in src/xtrax/training/trainer.py:
+
+```python
+from typing import Any
+import jax
+import jax.numpy as jnp
+import equinox as eqx
+import optax
+from xtrax.training.types import LossFunction, ResumableState
+
+class Trainer(eqx.Module):
+    loss_fn: LossFunction
+    optimizer: optax.GradientTransformation
+
+    @eqx.filter_jit
+    def step(self, state: ResumableState, batch: Any) -> tuple[ResumableState, jax.Array]:
+        def loss_fn_inner(model):
+            predictions = model(batch["inputs"])
+            return self.loss_fn(predictions, batch["targets"])
+
+        loss, grads = eqx.filter_value_and_grad(loss_fn_inner)(state.model)
+        # Pass params as 3rd arg to optimizer.update — required for adamw and weight decay
+        updates, new_opt_state = self.optimizer.update(grads, state.opt_state, state.model)
+        new_model = eqx.apply_updates(state.model, updates)
+        new_state = eqx.tree_at(
+            lambda s: (s.model, s.opt_state, s.step),
+            state,
+            (new_model, new_opt_state, state.step + 1),
+        )
+        return new_state, loss
+```
+
+Write tests: step increments state.step by 1; loss decreases over 10 steps trivial regression (linear model, MSE); params passed as 3rd arg to optimizer.update (mock optax optimizer to verify).
+
+Gate: `uv run pytest tests/training/test_trainer.py -v` pass; ruff clean.
+"""
+reviewer_prompt = """
+Verify Trainer:
+1. state.step increments by exactly 1 per step call
+2. Loss decreases over 10 steps on trivial regression task
+3. optimizer.update called with (grads, opt_state, model) — 3rd arg is model/params
+4. eqx.apply_updates used (not manual parameter update)
+5. All tests pass; ruff clean
+"""
+return_key = "1142"
+
+[[tracks]]
+id = "j"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1144"
+phase_name = "Track J — Phase 4.4: Loss combinators (#1144)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/training/loss.py | Test: tests/training/test_loss.py
+
+Implement loss combinators in src/xtrax/training/loss.py:
+
+```python
+from typing import Any
+import jax
+import jax.numpy as jnp
+import equinox as eqx
+from xtrax.training.types import LossFunction
+
+class WeightedLoss(eqx.Module):
+    loss_fn: LossFunction
+    weight: jax.Array
+
+    def __call__(self, predictions: Any, targets: Any) -> jax.Array:
+        return self.weight * self.loss_fn(predictions, targets)
+
+class MultiTaskLoss(eqx.Module):
+    losses: tuple
+
+    def __call__(
+        self,
+        predictions: tuple,
+        targets: tuple,
+    ) -> jax.Array:
+        assert len(predictions) == len(targets) == len(self.losses), (
+            f"MultiTaskLoss: length mismatch predictions={len(predictions)}, "
+            f"targets={len(targets)}, losses={len(self.losses)}"
+        )
+        # Static-length tuple comprehension — unrolls at trace time, NOT a hot loop
+        return jnp.sum(jnp.stack([l(p, t) for l, p, t in zip(self.losses, predictions, targets)]))
+```
+
+Write tests: WeightedLoss == weight*loss; MultiTaskLoss == sum of weighted; both pass isinstance(LossFunction); tuple-length mismatch raises AssertionError.
+
+Gate: `uv run pytest tests/training/test_loss.py -v` pass; ruff clean.
+"""
+reviewer_prompt = """
+Verify loss combinators:
+1. WeightedLoss(weight=2.0, loss_fn): output == 2.0 * loss_fn(p, t)
+2. MultiTaskLoss: output == sum of each weighted loss applied to corresponding (p, t) pair
+3. Both pass isinstance(fn, LossFunction)
+4. len mismatch raises AssertionError
+5. Implementation uses list comprehension with zip (NOT jax.tree.map — wrong structure)
+6. All tests pass; ruff clean
+"""
+return_key = "1144"
+
+[[tracks]]
+id = "k"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1146"
+phase_name = "Track K — Phase 4.6: accumulate_grads (#1146)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/training/grad.py | Test: tests/training/test_grad.py
+
+Implement accumulate_grads in src/xtrax/training/grad.py using jax.lax.scan — NO Python for-loop:
+
+```python
+from collections.abc import Callable
+from typing import Any
+import jax
+import jax.numpy as jnp
+import equinox as eqx
+
+def accumulate_grads(
+    loss_fn: Callable,
+    params: Any,
+    microbatches: list,
+    filter_spec: Any = None,
+) -> tuple[Any, jax.Array]:
+    if filter_spec is None:
+        filter_spec = eqx.is_array
+
+    # Validate all microbatches are equal size
+    sizes = [jax.tree.leaves(mb)[0].shape[0] for mb in microbatches]
+    if len(set(sizes)) > 1:
+        raise ValueError(
+            f"accumulate_grads: all microbatches must be equal size, got sizes={sizes}"
+        )
+
+    # Stack microbatches into a leading-axis pytree for lax.scan
+    stacked = jax.tree.map(lambda *xs: jnp.stack(xs), *microbatches)
+
+    def scan_fn(carry, microbatch):
+        loss, grads = eqx.filter_value_and_grad(loss_fn)(params, microbatch)
+        return carry, (grads, loss)
+
+    _, (all_grads, all_losses) = jax.lax.scan(scan_fn, None, stacked)
+
+    # Mean over microbatches
+    mean_grads = jax.tree.map(lambda g: jnp.mean(g, axis=0), all_grads)
+    mean_loss = jnp.mean(all_losses)
+    return mean_grads, mean_loss
+```
+
+Write tests: lax.scan appears in jaxpr (use jax.make_jaxpr); atol=1e-5 vs full-batch with 4 equal microbatches of size 25; unequal sizes raises ValueError.
+
+Gate: `uv run pytest tests/training/test_grad.py -v` pass; ruff clean.
+"""
+reviewer_prompt = """
+Verify accumulate_grads:
+1. Implementation uses jax.lax.scan — verify via jax.make_jaxpr that 'scan' appears (NO Python for-loop)
+2. With 4 equal microbatches of size 25: result matches full-batch grad within atol=1e-5
+3. Unequal microbatch sizes raises ValueError
+4. Returns (mean_grads, mean_loss)
+5. All tests pass; ruff clean
+"""
+return_key = "1146"
+
+[[tracks]]
+id = "l"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1143"
+phase_name = "Track L — Phase 4.3: SafetyTrainStep, create_train_step (#1143)"
+fixer_prompt = """
+task_id: 260604_xtrax-shape
+File: src/xtrax/training/step.py | Test: tests/training/test_step.py
+
+Implement in src/xtrax/training/step.py:
+
+```python
+from typing import Any
+import jax
+import equinox as eqx
+import optax
+from xtrax.training.types import LossFunction, ResumableState
+from xtrax.training.trainer import Trainer
+from xtrax.safety.manager import SafetyManager, with_safety
+
+class SafetyTrainStep(eqx.Module):
+    _trainer: Trainer
+    _mgr: SafetyManager
+
+    def step(self, state: ResumableState, batch: Any) -> tuple[ResumableState, jax.Array]:
+        safe_step = with_safety(self._trainer.step, self._mgr)
+        return safe_step(state, batch)
+
+def create_train_step(
+    loss_fn: LossFunction,
+    optimizer: optax.GradientTransformation,
+    safety: bool = False,
+) -> Trainer | SafetyTrainStep:
+    trainer = Trainer(loss_fn=loss_fn, optimizer=optimizer)
+    if not safety:
+        return trainer
+    return SafetyTrainStep(_trainer=trainer, _mgr=SafetyManager(enabled=True))
+```
+
+Write tests: create_train_step(safety=False) returns Trainer; create_train_step(safety=True) returns SafetyTrainStep; both expose .step(state, batch) signature; SafetyTrainStep detects NaN in loss.
+
+Gate: `uv run pytest tests/training/test_step.py -v` pass; ruff clean.
+"""
+reviewer_prompt = """
+Verify create_train_step:
+1. safety=False → returns Trainer instance
+2. safety=True → returns SafetyTrainStep instance
+3. Both have .step(state, batch) → (state, loss) signature
+4. SafetyTrainStep with NaN-producing loss raises on host
+5. All tests pass; ruff clean
+"""
+return_key = "1143"
+
+[orchestration]
+# Phase 3 items (a=3.1, b=3.3, c=3.4) and independent Phase 4 items (d=4.1, e=4.5, f=4.7) first
+# Then g=3.2 (needs a=3.1), h=3.5 (needs c=3.4), i=4.2 (needs d=4.1), j=4.4 (needs d=4.1)
+# Then k=4.6 (needs i=4.2), l=4.3 (needs i=4.2 and g=3.2)
+sequential = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"]
+concurrent = []
