@@ -2,12 +2,24 @@
 
 import os
 import signal
-import threading
 import time
 
 import pytest
 
 from xtrax.safety.preemption import PreemptionHandler
+
+
+@pytest.fixture(autouse=True)
+def reset_signal_handlers():
+    """Save and restore signal handlers before/after each test.
+
+    This ensures test isolation and prevents order-dependent failures.
+    """
+    sigusr1_old = signal.signal(signal.SIGUSR1, signal.SIG_DFL)
+    sigterm_old = signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    yield
+    signal.signal(signal.SIGUSR1, sigusr1_old)
+    signal.signal(signal.SIGTERM, sigterm_old)
 
 
 class TestPreemptionHandler:
@@ -54,6 +66,10 @@ class TestPreemptionHandler:
         def save_fn():
             call_count[0] += 1
 
+        # Install SIG_IGN to prevent OS default signal handling (kill)
+        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
         handler = PreemptionHandler(save_fn, rank=1)
         handler.register()
 
@@ -65,7 +81,11 @@ class TestPreemptionHandler:
         os.kill(os.getpid(), signal.SIGTERM)
         time.sleep(0.01)
 
-        assert call_count[0] == 0, f"Expected save_fn never called with rank=1, got {call_count[0]} calls"
+        msg = (
+            f"Expected save_fn never called with rank=1, "
+            f"got {call_count[0]} calls"
+        )
+        assert call_count[0] == 0, msg
 
     def test_register_idempotent(self):
         """Calling register() twice should register handler only once."""
@@ -83,7 +103,11 @@ class TestPreemptionHandler:
         time.sleep(0.01)
 
         # Handler should still be called exactly once (not twice)
-        assert call_count[0] == 1, f"Expected save_fn called once with idempotent register, got {call_count[0]}"
+        msg = (
+            f"Expected save_fn called once with idempotent register, "
+            f"got {call_count[0]}"
+        )
+        assert call_count[0] == 1, msg
 
     def test_preempted_property_false_before_signal(self):
         """preempted should be False before any signal is received."""
@@ -119,4 +143,5 @@ class TestPreemptionHandler:
         os.kill(os.getpid(), signal.SIGTERM)
         time.sleep(0.01)
 
-        assert call_count[0] == 1, f"Expected save_fn called at most once, got {call_count[0]} calls"
+        msg = f"Expected save_fn called at most once, got {call_count[0]} calls"
+        assert call_count[0] == 1, msg
