@@ -166,3 +166,74 @@ class TestMultiTaskLoss:
         )
 
         assert jnp.allclose(result, expected)
+
+    def test_weight_schedule_applied(self):
+        """MultiTaskLoss with weight_schedule should apply schedule multiplier."""
+        loss1 = WeightedLoss(loss_fn=simple_loss, weight=1.0)
+        loss2 = WeightedLoss(loss_fn=constant_loss, weight=2.0)
+
+        # weight_schedule returns a scalar multiplier
+        multi_loss = MultiTaskLoss(
+            losses=(loss1, loss2),
+            weight_schedule=lambda step: jnp.array(2.0)
+        )
+
+        preds1 = jnp.array([1.0, 2.0])
+        preds2 = jnp.array([3.0, 4.0])
+        targets1 = jnp.array([1.5, 2.5])
+        targets2 = jnp.array([3.5, 4.5])
+
+        result = multi_loss((preds1, preds2), (targets1, targets2), step=0)
+
+        # Expected: 2.0 * (sum of unscheduled losses)
+        unscheduled = loss1(preds1, targets1) + loss2(preds2, targets2)
+        expected = 2.0 * unscheduled
+
+        assert jnp.allclose(result, expected)
+
+    def test_weight_schedule_step_dependent(self):
+        """MultiTaskLoss weight_schedule should receive and use step parameter."""
+        loss1 = WeightedLoss(loss_fn=constant_loss, weight=1.0)
+
+        # weight_schedule depends on step: returns (step + 1)
+        multi_loss = MultiTaskLoss(
+            losses=(loss1,),
+            weight_schedule=lambda step: jnp.array(float(step + 1))
+        )
+
+        preds = jnp.array([1.0, 2.0])
+        targets = jnp.array([1.5, 2.5])
+
+        # At step=3, schedule should return 4.0
+        result = multi_loss((preds,), (targets,), step=3)
+
+        # Expected: 4.0 * (sum of unscheduled losses)
+        unscheduled = loss1(preds, targets)
+        expected = 4.0 * unscheduled
+
+        assert jnp.allclose(result, expected)
+
+    def test_weight_schedule_none_unchanged(self):
+        """MultiTaskLoss with weight_schedule=None ignores step parameter."""
+        loss1 = WeightedLoss(loss_fn=simple_loss, weight=1.0)
+        loss2 = WeightedLoss(loss_fn=constant_loss, weight=2.0)
+
+        multi_loss = MultiTaskLoss(losses=(loss1, loss2), weight_schedule=None)
+
+        preds1 = jnp.array([1.0, 2.0])
+        preds2 = jnp.array([3.0, 4.0])
+        targets1 = jnp.array([1.5, 2.5])
+        targets2 = jnp.array([3.5, 4.5])
+
+        # Call with step=5, should be same as without step
+        result_with_step = multi_loss((preds1, preds2), (targets1, targets2), step=5)
+        result_without_step = multi_loss((preds1, preds2), (targets1, targets2))
+
+        assert jnp.allclose(result_with_step, result_without_step)
+
+    def test_weight_schedule_none_is_default(self):
+        """MultiTaskLoss weight_schedule defaults to None."""
+        loss1 = WeightedLoss(loss_fn=simple_loss, weight=1.0)
+        multi_loss = MultiTaskLoss(losses=(loss1,))
+
+        assert multi_loss.weight_schedule is None
