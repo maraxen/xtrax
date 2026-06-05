@@ -391,8 +391,10 @@ def partition_labels(
     frozen_label: str = "frozen",
     train_label: str = "train",
 ) -> PyTree:
-    # Returns label pytree: each leaf is frozen_label or train_label.
-    # Compatible with optax.partition(transforms, label_tree).
+    # DEVIATION NOTE (spec §3.16 vs implementation): spec says "eqx.partition" but
+    # eqx.partition(model, filter) returns TWO pytrees (frozen, train) — not a label
+    # pytree. This function returns a STRING-LABEL pytree (each leaf is a str) for
+    # use with optax.partition(transforms, label_tree). jax.tree.map is correct here.
     return jax.tree.map(
         lambda leaf: frozen_label if frozen_filter(leaf) else train_label,
         model,
@@ -414,7 +416,9 @@ ${EMITTER_CTX}`,
 3. make_optimizer(base, clip_norm=1.0): clip_by_global_norm FIRST in chain, then base
 4. adamw_with_schedule: weight_decay default is 1e-2 (NOT 1e-4); decay_steps=total_steps
 5. mask IS passed to adamw (verify wd_mask appears in optimizer via test)
-6. partition_labels returns string-leaf pytree (all frozen_label when frozen_filter always True)
+6. partition_labels returns a STRING-LEAF pytree (each leaf is a str label, NOT a two-tuple
+   from eqx.partition). jax.tree.map is the correct impl for building a label map.
+   Verify: all leaves are strings when frozen_filter always True.
 7. All tests pass; ruff clean
 `,
   );
@@ -817,6 +821,10 @@ const trackL = () =>
 File: src/xtrax/training/step.py | Test: tests/training/test_step.py
 
 Implement in src/xtrax/training/step.py (spec §3.14).
+DEVIATION NOTE: spec §3.14 shows @eqx.filter_jit on step() directly, but err.throw() must
+run on the host (outside jit). The _step_jit pattern below supersedes that literal reading:
+_step_jit is filter_jit'd and returns (err, (state, metrics)); step() is a plain Python
+wrapper that calls _step_jit then err.throw() on the host. This is the correct C1 resolution.
 CRITICAL:
 (1) Fields MUST be trainer/safety_manager (PUBLIC names per spec — not _trainer/_mgr).
 (2) Do NOT call with_safety inside step() — that creates a new jitted wrapper every call.

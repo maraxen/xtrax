@@ -1,15 +1,15 @@
 """Tests for xtrax.tiling.strategy — AxisStrategy sealed union and variants."""
 
 import pytest
+
 from xtrax.tiling.strategy import (
-    Vmap,
+    DedupFn,
+    DedupGather,
+    GatherFn,
     SafeMap,
     Scan,
-    DedupGather,
-    AxisStrategy,
     ScanTransition,
-    DedupFn,
-    GatherFn,
+    Vmap,
 )
 
 

@@ -3,15 +3,14 @@
 import warnings
 
 import jax
-import pytest
 
 from xtrax.tiling.plan import (
-    AxisSpec,
     AxisDecision,
+    AxisSpec,
     BatchPlan,
     BatchPlanner,
 )
-from xtrax.tiling.strategy import Vmap, SafeMap, DedupGather
+from xtrax.tiling.strategy import DedupGather, SafeMap, Vmap
 
 
 class TestAxisSpec:
