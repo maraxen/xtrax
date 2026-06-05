@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-import pytest
+
 from xtrax.safety.ops import safe_norm, safe_reciprocal
 
 
@@ -72,7 +72,8 @@ class TestSafeReciprocal:
         """Verify reciprocal(2.0) ≈ 1/(2+eps) ≈ 0.5."""
         result = safe_reciprocal(2.0)
         expected = 1.0 / (2.0 + 1e-8)
-        assert jnp.allclose(result, expected, rtol=1e-6), f"Expected {expected}, got {result}"
+        msg = f"Expected {expected}, got {result}"
+        assert jnp.allclose(result, expected, rtol=1e-6), msg
 
     def test_safe_reciprocal_with_custom_eps(self):
         """Verify safe_reciprocal respects custom eps kwarg."""
