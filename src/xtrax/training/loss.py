@@ -1,5 +1,6 @@
 """Loss combinators for multi-task and weighted training."""
 
+from collections.abc import Callable
 from typing import Any
 
 import equinox as eqx
@@ -47,24 +48,36 @@ class MultiTaskLoss(eqx.Module):
     the contributions from all tasks. Length validation ensures
     predictions, targets, and losses are all the same length.
 
+    Optionally applies a dynamic weight schedule that scales the total loss
+    based on the training step.
+
     Attributes:
         losses: Tuple of WeightedLoss instances, one per task.
+        weight_schedule: Optional callable that takes step and returns a scalar
+            multiplier for the total loss. If None, no schedule is applied.
+            Must be eqx.field(static=True) as it holds a Python callable.
     """
     losses: tuple[WeightedLoss, ...]
+    weight_schedule: (
+        Callable[[int], Array] | None
+    ) = eqx.field(default=None, static=True)
 
     def __call__(
         self,
         predictions: tuple[PyTree, ...],
         targets: tuple[PyTree, ...],
+        step: int = 0,
     ) -> Array:
-        """Compute sum of all task losses.
+        """Compute sum of all task losses with optional dynamic weight schedule.
 
         Args:
             predictions: Tuple of predictions, one per task.
             targets: Tuple of targets, one per task.
+            step: Training step number for weight schedule. Default is 0.
 
         Returns:
-            Scalar Array = sum(loss_i(pred_i, target_i) for all i).
+            Scalar Array = sum(loss_i(pred_i, target_i) for all i), optionally
+            multiplied by weight_schedule(step) if schedule is not None.
 
         Raises:
             AssertionError: If len(predictions) != len(targets) != len(self.losses).
@@ -77,7 +90,7 @@ class MultiTaskLoss(eqx.Module):
         # Static-length tuple comprehension — unrolls at trace time.
         # This is NOT a data-axis hot loop (forbidden by spec §1);
         # it is structural unrolling over a fixed-length tuple.
-        return jnp.sum(
+        total = jnp.sum(
             jnp.stack(
                 [
                     loss(pred, target)
@@ -87,3 +100,10 @@ class MultiTaskLoss(eqx.Module):
                 ]
             )
         )
+
+        # weight_schedule returns a scalar multiplier; spec Task 7.2 is silent
+        # on semantics, so we apply schedule as total = total * schedule(step).
+        if self.weight_schedule is not None:
+            total = total * self.weight_schedule(step)
+
+        return total
