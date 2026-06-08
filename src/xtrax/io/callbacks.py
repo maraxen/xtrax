@@ -60,7 +60,7 @@ async def async_indexed_stream(  # noqa: UP047
     try:
         while True:
             # Get next item from queue with blocking thread fallback
-            item = await asyncio.to_thread(queue.get)
+            item = await queue.get()
 
             # None signals end of iteration
             if item is None:

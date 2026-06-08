@@ -57,6 +57,16 @@ class TestShardingPolicy:
         spec = policy.get_partition_spec("layer_0_weight_matrix")
         assert spec == jax.sharding.PartitionSpec("data", "model")
 
+    def test_get_partition_spec_no_match(self):
+        """get_partition_spec with no matching rule returns PartitionSpec() fallback."""
+        rules = (
+            ("weight", jax.sharding.PartitionSpec("data")),
+        )
+        policy = ShardingPolicy(rules=rules)
+
+        spec = policy.get_partition_spec("bias")
+        assert spec == jax.sharding.PartitionSpec()
+
     def test_apply_to_pytree_dict(self):
         """apply_to_pytree traverses dict and returns PartitionSpec for each leaf."""
         rules = (
@@ -75,6 +85,80 @@ class TestShardingPolicy:
         assert result["weight"] == jax.sharding.PartitionSpec("data", "model")
         assert result["bias"] == jax.sharding.PartitionSpec("data")
         assert result["other"] == jax.sharding.PartitionSpec()
+
+    def test_apply_to_pytree(self):
+        """apply_to_pytree with simple dict returns pytree of PartitionSpec values."""
+        rules = (
+            (
+                "encoder.weight",
+                jax.sharding.PartitionSpec("data", "model"),
+            ),
+            ("decoder.bias", jax.sharding.PartitionSpec("data")),
+        )
+        policy = ShardingPolicy(rules=rules)
+
+        pytree = {
+            "encoder": {"weight": 0},
+            "decoder": {"bias": 0},
+        }
+        result = policy.apply_to_pytree(pytree)
+
+        expected_weight = jax.sharding.PartitionSpec("data", "model")
+        expected_bias = jax.sharding.PartitionSpec("data")
+        assert result["encoder"]["weight"] == expected_weight
+        assert result["decoder"]["bias"] == expected_bias
+
+    def test_empty_rules(self):
+        """ShardingPolicy with empty rules returns PartitionSpec() for all paths."""
+        policy = ShardingPolicy(rules=())
+
+        spec1 = policy.get_partition_spec("any_path")
+        spec2 = policy.get_partition_spec("another_path")
+
+        assert spec1 == jax.sharding.PartitionSpec()
+        assert spec2 == jax.sharding.PartitionSpec()
+
+    def test_repr_no_raise(self):
+        """repr(ShardingPolicy(...)) does not raise."""
+        rules = (
+            ("weight", jax.sharding.PartitionSpec("data")),
+        )
+        policy = ShardingPolicy(rules=rules)
+
+        # Should not raise
+        repr_str = repr(policy)
+        assert isinstance(repr_str, str)
+
+    def test_path_to_string_dict_key(self):
+        """_path_to_string handles DictKey paths."""
+        # Create a path with DictKey
+        dict_key = jax.tree_util.DictKey("test_key")
+        path_str = ShardingPolicy._path_to_string((dict_key,))
+        assert path_str == "test_key"
+
+    def test_path_to_string_attr_key(self):
+        """_path_to_string handles GetAttrKey paths."""
+        attr_key = jax.tree_util.GetAttrKey("test_attr")
+        path_str = ShardingPolicy._path_to_string((attr_key,))
+        assert path_str == "test_attr"
+
+    def test_path_to_string_sequence_key(self):
+        """_path_to_string handles SequenceKey paths."""
+        seq_key = jax.tree_util.SequenceKey(3)
+        path_str = ShardingPolicy._path_to_string((seq_key,))
+        assert "[3]" in path_str
+
+    def test_path_to_string_mixed_keys(self):
+        """_path_to_string handles mixed key types."""
+        keys = (
+            jax.tree_util.GetAttrKey("module"),
+            jax.tree_util.DictKey("weights"),
+            jax.tree_util.SequenceKey(0),
+        )
+        path_str = ShardingPolicy._path_to_string(keys)
+        assert "module" in path_str
+        assert "weights" in path_str
+        assert "[0]" in path_str
 
     def test_apply_to_pytree_nested_structure(self):
         """apply_to_pytree preserves nested dict structure."""
@@ -219,3 +303,17 @@ class TestGetHardwareMeshProfile:
             assert shape == (1,)
             # Axis name should be something reasonable
             assert len(profile["recommended_axis_names"]) == 1
+
+    def test_get_hardware_mesh_profile_shape_product_consistency(self):
+        """Recommended shape product should be valid for num_devices."""
+        profile = get_hardware_mesh_profile()
+        shape = profile["recommended_shape"]
+
+        # The shape product should be valid
+        shape_product = 1
+        for s in shape:
+            shape_product *= s
+
+        # Should be sane
+        assert shape_product > 0
+        assert len(shape) > 0

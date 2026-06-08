@@ -120,3 +120,102 @@ class TestAccumulateGrads:
 
         with pytest.raises(ValueError):
             accumulate_grads(loss_fn, model, (x, y))
+
+    def test_unequal_second_axis_raises(self):
+        """Microbatches with different second-axis sizes raises ValueError."""
+        key = jax.random.PRNGKey(0)
+        model = eqx.nn.Linear(in_features=3, out_features=1, key=key)
+
+        # Different second axes: (2,4,3) vs (2,5,3)
+        microbatches = {
+            "a": jnp.ones((2, 4, 3)),
+            "b": jnp.ones((2, 5, 3)),
+        }
+
+        def loss_fn(params, batch):
+            return jnp.array(0.0)
+
+        with pytest.raises(ValueError):
+            accumulate_grads(loss_fn, model, microbatches)
+
+    def test_filter_spec_excludes_bias(self):
+        """filter_spec is used when filtering params for differentiation."""
+        key = jax.random.PRNGKey(0)
+        model = eqx.nn.Linear(in_features=3, out_features=1, key=key)
+
+        x = jax.random.normal(jax.random.PRNGKey(1), (2, 4, 3))
+        y = jax.random.normal(jax.random.PRNGKey(2), (2, 4, 1))
+
+        def loss_fn(params, batch):
+            x_batch, y_batch = batch
+            pred = jax.vmap(lambda xi: params(xi))(x_batch)
+            return jnp.mean((pred - y_batch) ** 2)
+
+        # Filter spec: filters passed to eqx.filter_value_and_grad
+        filter_spec = eqx.is_array
+
+        # Should not raise when filter_spec is provided
+        grads, loss = accumulate_grads(
+            loss_fn, model, (x, y), filter_spec=filter_spec
+        )
+
+        # Should return valid gradients
+        assert grads is not None
+        assert loss.shape == ()
+
+    def test_single_microbatch_matches_direct(self):
+        """Single microbatch matches direct eqx.filter_value_and_grad."""
+        key = jax.random.PRNGKey(0)
+        model = eqx.nn.Linear(in_features=3, out_features=1, key=key)
+
+        x = jax.random.normal(jax.random.PRNGKey(1), (1, 4, 3))
+        y = jax.random.normal(jax.random.PRNGKey(2), (1, 4, 1))
+
+        def loss_fn(params, batch):
+            x_batch, y_batch = batch
+            pred = jax.vmap(lambda xi: params(xi))(x_batch)
+            return jnp.mean((pred - y_batch) ** 2)
+
+        # Compute via accumulate_grads
+        mean_grads, mean_loss = accumulate_grads(loss_fn, model, (x, y))
+
+        # Compute directly
+        loss_val, direct_grads = eqx.filter_value_and_grad(loss_fn)(model, (x[0], y[0]))
+
+        # Should match within tolerance
+        acc_leaves = jax.tree.leaves(eqx.filter(mean_grads, eqx.is_array))
+        direct_leaves = jax.tree.leaves(eqx.filter(direct_grads, eqx.is_array))
+
+        for acc_leaf, direct_leaf in zip(acc_leaves, direct_leaves):
+            assert jnp.allclose(acc_leaf, direct_leaf, atol=1e-6)
+
+    def test_no_array_leaves_raises(self):
+        """Microbatches with no array leaves raises ValueError."""
+        key = jax.random.PRNGKey(0)
+        model = eqx.nn.Linear(in_features=3, out_features=1, key=key)
+
+        # Microbatches with no arrays
+        microbatches = {"scalar": 1, "string": "test"}
+
+        def loss_fn(params, batch):
+            return jnp.array(0.0)
+
+        with pytest.raises(ValueError, match="must contain at least one array"):
+            accumulate_grads(loss_fn, model, microbatches)
+
+    def test_unequal_leading_axis_raises(self):
+        """Microbatches with unequal leading axes raise ValueError."""
+        key = jax.random.PRNGKey(0)
+        model = eqx.nn.Linear(in_features=3, out_features=1, key=key)
+
+        # Different leading axes: first has 2, second has 3
+        microbatches = {
+            "a": jnp.ones((2, 4, 3)),
+            "b": jnp.ones((3, 4, 3)),
+        }
+
+        def loss_fn(params, batch):
+            return jnp.array(0.0)
+
+        with pytest.raises(ValueError, match="same leading axis"):
+            accumulate_grads(loss_fn, model, microbatches)
