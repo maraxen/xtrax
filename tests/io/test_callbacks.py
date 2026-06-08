@@ -7,8 +7,8 @@ import pytest
 from xtrax.io.callbacks import BoundedCallbackHandler, async_indexed_stream
 
 
-class TestAsyncIndexedStream:
-    """Tests for async_indexed_stream prefetching async iterator."""
+class TestAsyncIndexedStreamLegacyCallbacksShim:
+    """Tests for async_indexed_stream via legacy xtrax.io.callbacks shim path."""
 
     @pytest.mark.asyncio
     async def test_async_indexed_stream_normal(self):
