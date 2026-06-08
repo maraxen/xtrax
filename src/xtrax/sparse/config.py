@@ -10,3 +10,7 @@ class SparseConfig:
     nse_budget: int
     update_schedule: Callable[[int], bool]
     fallback_mode: Literal["dense_mask", "error"] = "dense_mask"
+
+    def __post_init__(self) -> None:
+        if self.nse_budget < 1:
+            raise ValueError(f"nse_budget must be >= 1, got {self.nse_budget}")
