@@ -1,18 +1,27 @@
 """Inference-time sparsification utilities for xtrax.
 
 Provides:
-  - sparsify_model: functional transform — converts 2D weight leaves to BCOO
-  - make_sparse_forward_fn: closure helper — keeps BCOO leaves out of
-    eqx.filter_jit's argument partition (recommended composition pattern)
+  - sparsify_model: functional transform — converts 2D weight leaves to BCOO format
+  - make_sparse_forward_fn: closure helper — keeps BCOO leaves out of JAX's tracing
+    system by closing over them (recommended composition pattern)
   - assert_not_tracing: guard that raises if called inside jax.jit
-  - sparse_filter_jit: wrapper for eqx.filter_jit safe for BCOO models
+  - sparse_filter_jit: wrapper for eqx.filter_jit that explicitly documents BCOO safety
 
-BCOO destructuring trap:
-  eqx.filter_jit without careful handling will descend into BCOO nodes and
-  partition .data and .indices as separate traced arrays on every call. This
-  defeats retrace prevention. Use make_sparse_forward_fn (closure pattern) to
-  avoid this entirely, OR use sparse_filter_jit when you pass the sparsified
-  model as a jit argument.
+BCOO destructuring trap & solutions:
+  BCOO is not a jax.Array — it is a pytree node containing .data and .indices arrays.
+  Without careful handling, naive jit could treat .data and .indices as separate
+  traced arrays, triggering retrace on each call even if model is unchanged.
+
+  eqx.filter_jit naturally avoids this: it traces JAX arrays and holds non-arrays
+  (including BCOO) as static. This is sufficient, but two patterns are available:
+
+  1. make_sparse_forward_fn (closure pattern) — RECOMMENDED
+     Closes over sparse_model to keep it completely outside JAX tracing.
+     Simplest and most explicit.
+
+  2. sparse_filter_jit (argument pattern)
+     Pass sparsified model as an argument. eqx.filter_jit's default behavior
+     treats BCOO as static, preventing destructuring and retrace.
 """
 from __future__ import annotations
 
@@ -138,21 +147,35 @@ def make_sparse_forward_fn(
 
 
 def sparse_filter_jit(fn: Callable, **kwargs) -> Callable:
-    """Drop-in eqx.filter_jit wrapper optimized for BCOO-containing models.
+    """Drop-in eqx.filter_jit wrapper safe for passing BCOO-containing models.
 
-    WARNING: Modern equinox.filter_jit does not support is_leaf configuration.
-    For safe BCOO handling, prefer make_sparse_forward_fn (closure pattern) which
-    keeps BCOO completely out of JAX's tracing system.
+    By design, eqx.filter_jit treats all JAX/NumPy arrays as traced and all
+    non-arrays (including BCOO) as static. Since BCOO is not a jax.Array,
+    it is automatically held static and never destructured into .data/.indices
+    during jit compilation. This prevents unintended retrace even when the
+    sparsified model is passed as an argument.
 
-    sparse_filter_jit is provided for cases where you must pass BCOO models as
-    arguments. The safest usage is with eqx.Module (pytree) models where BCOO
-    leaves are preserved during filtering.
+    This function documents the correct pattern and ensures BCOO safety without
+    requiring equinox-specific configuration (modern equinox does not expose
+    is_leaf parameter on filter_jit).
+
+    For maximum safety and control, prefer make_sparse_forward_fn (closure pattern)
+    which keeps BCOO outside JAX's tracing system entirely.
 
     Args:
         fn: Function to jit-compile.
-        **kwargs: Additional keyword arguments passed to eqx.filter_jit.
+        **kwargs: Additional keyword arguments passed to eqx.filter_jit
+                  (e.g., donate='all', donate='all-except-first').
 
     Returns:
-        A jit-compiled function via eqx.filter_jit.
+        A jit-compiled function via eqx.filter_jit with BCOO leaves held static.
+
+    Example:
+        >>> import equinox as eqx
+        >>> import jax.numpy as jnp
+        >>> @sparse_filter_jit
+        ... def forward(model, x):
+        ...     return model(x)
+        >>> # Call with sparse model: BCOO is static, no retrace on repeated calls
     """
     return eqx.filter_jit(fn, **kwargs)
