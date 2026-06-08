@@ -1,13 +1,4 @@
-from collections.abc import AsyncIterator, Iterable
 from typing import Any
-
-
-async def async_indexed_stream[T](
-    iterable: Iterable[T],
-) -> AsyncIterator[tuple[int, T]]:
-    """Async generator that yields (index, item) tuples from iterable."""
-    for i, item in enumerate(iterable):
-        yield i, item
 
 
 def create_distributed_pipeline(

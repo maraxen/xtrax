@@ -65,3 +65,31 @@ class TestSparsePolicy:
         )
         with pytest.raises(ValueError, match="nse_budget"):
             p.apply_mask(w, mask)
+
+    def test_make_mask_all_ties_exact_budget(self):
+        # All weights equal → tie-breaking is arbitrary but count must be exact.
+        p = _make_policy(budget=4)
+        w = jnp.ones((3, 3))          # 9 elements, all magnitude 1.0
+        mask = p.make_mask(w, step=0)
+        assert mask.shape == w.shape
+        assert mask.dtype == jnp.bool_
+        assert int(jnp.sum(mask)) == 4  # exactly nse_budget, not ≥
+
+    def test_apply_mask_padding_no_zero_zero_alias(self):
+        # nse_budget=4, but only 2 True values in mask — 2 padding slots → (0,0).
+        # weight[0,0] is non-zero but mask[0,0] is False.
+        # The padded (0,0) alias must be zeroed, so todense()[0,0] == 0.0.
+        p = _make_policy(budget=4)
+        w = jnp.array([[5.0, 2.0, 3.0],
+                        [0.0, 9.0, 0.0],
+                        [0.0, 0.0, 7.0]])
+        # Only (1,1) and (2,2) are True — 2 trues, 2 padding slots pointing to (0,0).
+        mask = jnp.array([[False, False, False],
+                           [False, True,  False],
+                           [False, False, True]])
+        result = p.apply_mask(w, mask)
+        assert isinstance(result, BCOO)
+        dense = result.todense()
+        assert float(dense[0, 0]) == 0.0, f"(0,0) alias leaked: {dense[0,0]}"
+        assert float(dense[1, 1]) == pytest.approx(9.0, abs=1e-6)
+        assert float(dense[2, 2]) == pytest.approx(7.0, abs=1e-6)
