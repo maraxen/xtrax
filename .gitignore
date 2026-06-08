@@ -10,3 +10,8 @@ wheels/
 .venv
 .claude/
 logs/
+
+# Cache and coverage artifacts
+.praxia/cache/
+.coverage
+.coverage_html/
