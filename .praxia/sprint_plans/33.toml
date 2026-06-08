@@ -1,0 +1,371 @@
+[sprint]
+sprint_id = "33"
+sprint_num = 7
+name = "xtrax Sprint 7: Inference-Time Sparsification"
+description = "Enable sparse weight application at inference time via sparsify_model functional transform, BucketIterator minimal implementation with static bucket padding, and integration tests verifying no-retrace guarantees and Engine.eval composition."
+context = """
+xtrax Sprint 7. Sprint 6 complete; main clean at 96.3% coverage.
+Spec: .praxia/docs/specs/260608_inference-time-sparsification-in-xtrax-h.md
+task_id: 260608_sparse-inference-brainstorm
+Key rules: uv run pytest; ruff clean before commit; no bare python.
+
+CRITICAL CONSTRAINTS:
+1. apply_mask is NOT jit-safe; must run Python-side only (branches on jnp.sum(mask) at runtime)
+2. SparsePolicy.apply_mask only supports 2D weight tensors (uses indices[:, 0], indices[:, 1])
+3. BCOO with fixed nse_budget has static indices shape — do not recompute inside jit
+4. Use is_leaf=lambda x: isinstance(x, BCOO) in tree_flatten to treat BCOO as atomic leaves
+5. xtrax does NOT own sparse matmul — BCOO is a container, callers handle matmul
+6. SparseMaskManager must NOT be called inside jit — it mutates Python-side dicts
+7. Non-2D leaves (biases, etc.) must be skipped with a warnings.warn, not crashed on
+"""
+max_fix_retries = 2
+
+[[tracks]]
+id = "a"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1353"
+phase_name = "Track A — sparsify_model inference transform (#1353)"
+fixer_prompt = """
+You are implementing the inference-time sparsification transform for xtrax (Sprint 7, Track A).
+task_id: 260608_sparse-inference-brainstorm
+Spec: .praxia/docs/specs/260608_inference-time-sparsification-in-xtrax-h.md (AC-1 through AC-8)
+
+=== CONTEXT ===
+- Existing sparse infrastructure: src/xtrax/sparse/policy.py, config.py, manager.py
+- SparsePolicy.apply_mask: NOT jit-safe; 2D-only; uses jnp.argwhere with fixed size
+- SparsePolicy.make_mask: argsort-based, returns exactly nse_budget True values
+- BCOO registration: jax.experimental.sparse.BCOO is a registered JAX pytree
+  → tree_flatten without is_leaf splits BCOO into data+indices arrays
+  → MUST use is_leaf=lambda x: isinstance(x, BCOO) to treat BCOO as atomic
+- apply_mask 2D constraint: indices[:, 0], indices[:, 1] → ndim==2 required
+- Non-2D leaves (1D biases): warn and skip, do not crash
+
+=== TASK ===
+Create src/xtrax/sparse/inference.py with:
+
+1. assert_not_tracing(leaves: list) -> None
+   - Iterate leaves; if any isinstance(leaf, jax.core.Tracer), raise RuntimeError:
+     "sparsify_model cannot be called inside jax.jit — call it before jit compilation"
+
+2. sparsify_model(model: eqx.Module, policy: SparsePolicy, leaf_filter=eqx.is_array) -> eqx.Module
+   - leaves, treedef = jax.tree_util.tree_flatten(model, is_leaf=lambda x: isinstance(x, BCOO))
+   - assert_not_tracing(leaves)
+   - Guard: if any(isinstance(leaf, BCOO) for leaf in leaves): raise ValueError("model already contains BCOO leaves — double sparsification detected")
+   - For each leaf (leaf_filter is the OUTER inclusion gate; ndim==2 is the inner sparsification gate):
+     * If NOT leaf_filter(leaf): new_leaf = leaf  (excluded entirely; no warning)
+     * Elif leaf_filter(leaf) and hasattr(leaf, "ndim") and leaf.ndim == 2:
+         mask = policy.make_mask(leaf, step=0)
+         new_leaf = policy.apply_mask(leaf, mask)
+     * Elif leaf_filter(leaf) and hasattr(leaf, "ndim") and leaf.ndim != 2:
+         warnings.warn(f"sparsify_model: skipping non-2D leaf (ndim={leaf.ndim}) — apply_mask requires 2D weights; leaf preserved as dense", stacklevel=2)
+         new_leaf = leaf
+     * Else: new_leaf = leaf
+   - return jax.tree_util.tree_unflatten(treedef, new_leaves)
+
+3. make_sparse_forward_fn(fn: Callable, sparse_model: eqx.Module) -> Callable
+   - Returns def _forward(inputs): return fn(sparse_model, inputs)
+   - IMPORTANT: Add this comment in the implementation body:
+     # Closing over sparse_model keeps BCOO leaves out of eqx.filter_jit's is_array
+     # partition. BCOO is not a jax.Array — passed as an argument it would be
+     # destructured into data+indices; as a closure constant it is treated as static.
+     # This is the load-bearing mechanism for AC-6 (no-retrace guarantee).
+   - Purpose: the closure pattern prevents filter_jit from re-partitioning BCOO on each call.
+
+Exports: add sparsify_model, make_sparse_forward_fn to src/xtrax/sparse/__init__.py __all__
+
+Create tests/sparse/test_inference.py:
+- test_sparsify_model_basic: eqx.nn.Linear(4, 4, key=...), SparseConfig(nse_budget=8), SparsePolicy(config), call sparsify_model; assert any leaf is BCOO instance
+- test_sparsify_model_todense_equals_masked_weight (AC-1 numerical): for each BCOO leaf in sparsified model, assert jnp.allclose(bcoo_leaf.todense(), original_dense_leaf * mask, atol=1e-6); compute mask = policy.make_mask(original_leaf, step=0) to reconstruct expected value; use jax.tree_util.tree_leaves with is_leaf=lambda x: isinstance(x, BCOO) to enumerate both original and sparse models in tandem
+- test_sparsify_model_no_double_sparsification: call sparsify_model twice; assert second call raises ValueError
+- test_sparsify_model_skips_non2d: model with 1D param; assert UserWarning emitted for non-2D
+- test_assert_not_tracing_outside_jit: assert_not_tracing([jnp.array(1.0)]) passes (no tracer)
+- test_sparsify_model_jit_guard: use jax.make_jaxpr or eqx.filter_jit callback to confirm raises RuntimeError when called inside jit (use eqx.filter_jit + closure that calls sparsify_model internally)
+- test_make_sparse_forward_fn_runs: sparsify model, wrap with make_sparse_forward_fn, call with dummy input; assert output shape
+- test_sparsify_model_bcoo_is_leaf_guard: create model whose first leaf is already BCOO; assert ValueError on double-sparsification path
+- test_sparsify_model_custom_leaf_filter (AC-8 parametric): (a) call with leaf_filter=lambda x: False → assert NO BCOO leaves in result (all leaves passed through unchanged); (b) call with leaf_filter=lambda x: hasattr(x, "ndim") and x.ndim >= 2 → assert same BCOO leaves as default (only 2D weights sparsified; apply_mask 2D-only constraint means non-2D filtered leaves warn and skip)
+
+Run: uv run pytest tests/sparse/test_inference.py -x -q
+Lint: uv run ruff check src/xtrax/sparse/inference.py --fix
+
+=== ACCEPTANCE CRITERIA ===
+AC-1 (presence): sparsify_model returns eqx.Module with ≥1 BCOO leaf for a model with ≥1 2D weight
+AC-1 (numerical): each BCOO leaf's .todense() == original_weight * policy.make_mask(weight, step=0) within atol=1e-6
+AC-2: sparsify_model raises RuntimeError when called inside jax.jit
+AC-3: Double sparsification raises ValueError immediately
+AC-7: Non-2D leaves emit UserWarning and are preserved as dense arrays
+AC-8 (parametric): custom leaf_filter honored as outer inclusion gate; leaf_filter=lambda x: False yields no BCOO leaves
+AC-8 (forward fn): make_sparse_forward_fn closes over sparse_model; calling it returns correct output shape
+"""
+reviewer_prompt = """
+You are verifying Track A of xtrax Sprint 7 (sparsify_model inference transform).
+task_id: 260608_sparse-inference-brainstorm
+Spec: .praxia/docs/specs/260608_inference-time-sparsification-in-xtrax-h.md
+
+Run: uv run pytest tests/sparse/test_inference.py -v
+Run: uv run ruff check src/xtrax/sparse/inference.py
+
+Verify each AC:
+AC-1 (presence): At least one BCOO leaf present after sparsify_model on a model with 2D weights — PASS/FAIL
+AC-1 (numerical): BCOO leaf .todense() == original_weight * mask within atol=1e-6 (float32) — PASS/FAIL
+AC-2: RuntimeError raised when sparsify_model called inside jit — PASS/FAIL
+AC-3: ValueError on double sparsification — PASS/FAIL
+AC-7: UserWarning emitted for non-2D leaves; leaves preserved as dense (not None, not crash) — PASS/FAIL
+AC-8 (parametric): sparsify_model(model, policy, leaf_filter=lambda x: False) → zero BCOO leaves — PASS/FAIL
+AC-8 (forward fn): make_sparse_forward_fn returns callable; output shape matches original model — PASS/FAIL
+
+Check src/xtrax/sparse/__init__.py: sparsify_model and make_sparse_forward_fn in __all__ — PASS/FAIL
+
+Structural checks:
+- leaf_filter is the OUTER inclusion gate (checked before ndim==2 branch) — PASS/FAIL
+- is_leaf=lambda x: isinstance(x, BCOO) used in tree_flatten call — PASS/FAIL
+- assert_not_tracing iterates leaves before any sparsification — PASS/FAIL
+- apply_mask called only for leaves that pass leaf_filter AND have ndim==2 — PASS/FAIL
+- make_sparse_forward_fn has closure comment explaining BCOO/filter_jit partition avoidance — PASS/FAIL
+
+Emit verdict: PASS (all ACs green, ruff clean) or NEEDS_WORK (list specific failures).
+"""
+return_key = "1353"
+
+[[tracks]]
+id = "b"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1354"
+phase_name = "Track B — BucketIterator minimal implementation (#1354)"
+fixer_prompt = """
+You are implementing BucketIterator.__iter__ for xtrax (Sprint 7, Track B).
+task_id: 260608_sparse-inference-brainstorm
+Spec: .praxia/docs/specs/260608_inference-time-sparsification-in-xtrax-h.md (AC-4, AC-5)
+
+=== CONTEXT ===
+File: src/xtrax/tiling/iterator.py
+BucketIterator is at line 90. The class already has:
+  - __init__ validating len(batch_sizes) == len(boundaries) + 1
+  - fields: boundaries: list[int], batch_sizes: list[int], fn: Callable, xs: Any
+  - __iter__ stub at line 121: yields nothing (yield from [])
+
+Design intent:
+- boundaries define static bucket sizes (e.g. [128, 256, 512])
+- batch_sizes[i] is the batch size for bucket i (len(boundaries)+1 entries)
+- For a given input, find the SMALLEST bucket whose boundary >= seq_len; pad up to that boundary
+- Yield (result, original_length_mask) so caller can trim padding
+- Static bucket sizes prevent XLA recompilation on length variation
+- bucket_idx >= len(boundaries) means input exceeds ALL buckets: raise ValueError
+- EXACT boundary (seq_len == boundary) IS valid: pad_amount==0, no error
+
+=== TASK ===
+Add these imports to the TOP-LEVEL of src/xtrax/tiling/iterator.py (NOT inline in __iter__):
+  import bisect
+  import warnings
+  (jax and jax.numpy are already imported at the top of the file — do NOT re-import them)
+
+Replace the __iter__ stub in src/xtrax/tiling/iterator.py with:
+
+def __iter__(self):
+    leaves = jax.tree_util.tree_leaves(self.xs)
+    if not leaves:
+        return
+
+    seq_len = leaves[0].shape[0]
+    # bisect_left finds the first boundary >= seq_len (exact match is valid, pad_amount=0)
+    bucket_idx = bisect.bisect_left(self.boundaries, seq_len)
+
+    if bucket_idx >= len(self.boundaries):
+        max_bucket = self.boundaries[-1]
+        warnings.warn(
+            f"BucketIterator: input length {seq_len} exceeds maximum bucket size {max_bucket}; "
+            "this input cannot be processed without recompilation risk",
+            stacklevel=2,
+        )
+        raise ValueError(
+            f"Input length {seq_len} exceeds maximum bucket size {max_bucket}. "
+            "Add a larger boundary or use a different iterator."
+        )
+
+    bucket_size = self.boundaries[bucket_idx]
+    pad_amount = bucket_size - seq_len
+
+    padded_xs = jax.tree_util.tree_map(
+        lambda x: jnp.pad(x, [(0, pad_amount)] + [(0, 0)] * (x.ndim - 1)),
+        self.xs,
+    )
+
+    original_length_mask = jnp.arange(bucket_size) < seq_len
+    result = self.fn(padded_xs)
+    yield (result, original_length_mask)
+
+Bisect correctness check:
+  seq_len=100, boundaries=[128,256,512] → bisect_left=0 → bucket_size=128 ✓
+  seq_len=128, boundaries=[128,256,512] → bisect_left=0 → bucket_size=128, pad_amount=0 ✓
+  seq_len=300, boundaries=[128,256,512] → bisect_left=2 → bucket_size=512 ✓
+  seq_len=512, boundaries=[128,256,512] → bisect_left=2 → bucket_size=512, pad_amount=0 ✓
+  seq_len=600, boundaries=[128,256,512] → bisect_left=3 → 3>=3 → raise ValueError ✓
+
+Add tests to tests/tiling/test_iterator.py (or create if missing):
+- test_bucket_iterator_pads_to_boundary: input len=100, boundaries=[128,256], batch_sizes=[8,4,2]; verify yielded result comes from fn called on shape-128 input; original_length_mask[:100] all True, [100:] all False
+- test_bucket_iterator_exact_boundary: input len=128, boundaries=[128,256], batch_sizes=[8,4,2]; assert pad_amount==0 (bucket_size=128, seq_len=128); result shape (128,...) correct
+- test_bucket_iterator_exact_max_boundary: input len=256, boundaries=[128,256], batch_sizes=[8,4,2]; assert NO ValueError raised; pad_amount==0; verify result shape
+- test_bucket_iterator_exceeds_max_raises: input len=600, boundaries=[128,256,512], batch_sizes=[4,2,1,1]; assert ValueError raised AND UserWarning emitted
+- test_bucket_iterator_empty_xs_yields_nothing: empty pytree ({}); assert no yields
+
+Run: uv run pytest tests/tiling/test_iterator.py -x -q -k bucket
+Lint: uv run ruff check src/xtrax/tiling/iterator.py --fix
+
+=== ACCEPTANCE CRITERIA ===
+AC-4: BucketIterator pads input to the smallest bucket >= seq_len via bisect.bisect_left; yields (result, mask) tuples; exact-boundary inputs (pad_amount==0) are accepted without error
+AC-5: Inputs exceeding max boundary emit UserWarning AND raise ValueError (no silent fallback)
+"""
+reviewer_prompt = """
+You are verifying Track B of xtrax Sprint 7 (BucketIterator implementation).
+task_id: 260608_sparse-inference-brainstorm
+Spec: .praxia/docs/specs/260608_inference-time-sparsification-in-xtrax-h.md
+
+Run: uv run pytest tests/tiling/test_iterator.py -v -k bucket
+Run: uv run ruff check src/xtrax/tiling/iterator.py
+
+Verify each AC:
+AC-4: BucketIterator yields (result, original_length_mask) tuples; mask shape == bucket_size; mask[:seq_len] all True — PASS/FAIL
+AC-4: bisect.bisect_LEFT used (not bisect_right, not linear scan) — verify by reading the implementation — PASS/FAIL
+AC-4: Exact-boundary input (seq_len == boundary) accepted; pad_amount==0; no error raised — PASS/FAIL
+AC-5: Input exceeding max boundary: both UserWarning emitted AND ValueError raised — PASS/FAIL
+AC-5: Empty xs pytree: iterator yields nothing (no crash) — PASS/FAIL
+
+Structural checks:
+- bisect and warnings imported at MODULE TOP-LEVEL (not inline in __iter__) — PASS/FAIL
+- jnp.pad call uses [(0, pad_amount)] + [(0, 0)] * (x.ndim - 1) for leading-axis padding only — PASS/FAIL
+- fn called on padded_xs (not original xs) — PASS/FAIL
+
+Emit verdict: PASS or NEEDS_WORK with specific failures.
+"""
+return_key = "1354"
+
+[[tracks]]
+id = "c"
+is_research = false
+
+[[tracks.items]]
+backlog_id = "1355"
+phase_name = "Track C — Integration tests (#1355)"
+fixer_prompt = """
+You are writing integration tests for xtrax Sprint 7 (Track C).
+task_id: 260608_sparse-inference-brainstorm
+Spec: .praxia/docs/specs/260608_inference-time-sparsification-in-xtrax-h.md (AC-6, AC-9)
+
+=== PREREQUISITE ===
+Track A (sparsify_model) and Track B (BucketIterator) must be complete before this track.
+
+=== CONTEXT ===
+AC-6: No-retrace guarantee — sparsify_model + make_sparse_forward_fn + eqx.filter_jit should compile once and not recompile across repeated calls with same-shaped inputs
+AC-9: Engine.eval composition — sparsify_model applied to a model before Engine.eval runs without error; sparse BCOO leaves survive eqx.nn.inference_mode
+
+Engine location: src/xtrax/engine/engine.py
+Engine.eval at line 138; uses eqx.nn.inference_mode(state.model) at line 169
+
+=== TASK ===
+Create tests/sparse/test_integration.py:
+
+test_no_retrace_across_calls():
+    import jax
+    from xtrax.sparse.inference import sparsify_model, make_sparse_forward_fn
+    from xtrax.sparse.policy import SparsePolicy
+    from xtrax.sparse.config import SparseConfig
+    import equinox as eqx
+
+    key = jax.random.PRNGKey(0)
+    model = eqx.nn.Linear(8, 8, key=key)
+    config = SparseConfig(nse_budget=32)
+    policy = SparsePolicy(config=config)
+
+    sparse_model = sparsify_model(model, policy)
+    fn = make_sparse_forward_fn(lambda m, x: m(x), sparse_model)
+
+    # Python-side mutation inside eqx.filter_jit only executes during tracing,
+    # not on cached compiled dispatch — this is a reliable retrace detector.
+    # counter > 1 means assumption A1 (BCOO static closure prevents retrace) is FALSE.
+    call_count = {"n": 0}
+    @eqx.filter_jit
+    def forward(x):
+        call_count["n"] += 1
+        return fn(x)
+
+    x = jax.numpy.ones((8,))
+    out1 = forward(x)
+    out2 = forward(x)
+    out3 = forward(x)
+
+    # call_count["n"] should be 1 (traced once) — Python-side counter only increments on trace
+    # NOTE: eqx.filter_jit traces on first call; subsequent calls with same shape skip trace
+    assert call_count["n"] == 1, f"Expected 1 trace, got {call_count['n']} — retrace detected"
+    assert out1.shape == out2.shape == out3.shape
+
+test_engine_eval_with_sparse_model():
+    # Verify sparsify_model output survives eqx.nn.inference_mode without error
+    # This tests AC-9: composition with Engine.eval pattern
+    import jax
+    import equinox as eqx
+    from xtrax.sparse.inference import sparsify_model
+    from xtrax.sparse.policy import SparsePolicy
+    from xtrax.sparse.config import SparseConfig
+
+    key = jax.random.PRNGKey(42)
+    model = eqx.nn.Linear(4, 4, key=key)
+    config = SparseConfig(nse_budget=8)
+    policy = SparsePolicy(config=config)
+
+    sparse_model = sparsify_model(model, policy)
+
+    # Apply inference_mode (same as Engine.eval does at line 169)
+    inference_model = eqx.nn.inference_mode(sparse_model)
+
+    # Verify BCOO leaves survive the transformation
+    import jax.numpy as jnp
+    from jax.experimental.sparse import BCOO
+    leaves = jax.tree_util.tree_leaves(inference_model, is_leaf=lambda x: isinstance(x, BCOO))
+    assert any(isinstance(leaf, BCOO) for leaf in leaves), "BCOO leaves lost after inference_mode"
+
+    # Run a forward pass
+    x = jnp.ones((4,))
+    @eqx.filter_jit
+    def forward(m, x):
+        return m(x)
+
+    out = forward(inference_model, x)
+    assert out.shape == (4,), f"Expected (4,), got {out.shape}"
+
+Run: uv run pytest tests/sparse/test_integration.py -v
+Lint: uv run ruff check tests/sparse/test_integration.py --fix
+
+=== ACCEPTANCE CRITERIA ===
+AC-6: eqx.filter_jit traces the forward function exactly once across 3 same-shape calls — PASS/FAIL
+AC-9: sparsify_model output can be passed through eqx.nn.inference_mode; BCOO leaves survive; forward pass executes — PASS/FAIL
+"""
+reviewer_prompt = """
+You are verifying Track C of xtrax Sprint 7 (integration tests for AC-6 and AC-9).
+task_id: 260608_sparse-inference-brainstorm
+Spec: .praxia/docs/specs/260608_inference-time-sparsification-in-xtrax-h.md
+
+Run: uv run pytest tests/sparse/test_integration.py -v
+Run: uv run ruff check tests/sparse/test_integration.py
+
+Verify each AC:
+AC-6: test_no_retrace_across_calls passes; trace counter is 1 after 3 calls — PASS/FAIL
+AC-9: test_engine_eval_with_sparse_model passes; BCOO leaves present after inference_mode; forward pass returns correct shape — PASS/FAIL
+
+Structural check:
+- is_leaf=lambda x: isinstance(x, BCOO) used in tree_leaves call for AC-9 assertion — PASS/FAIL
+- eqx.filter_jit used (not jax.jit directly) — PASS/FAIL
+
+Run full suite to detect regressions: uv run pytest tests/sparse/ -q
+Report any new failures outside test_integration.py as regressions.
+
+Emit verdict: PASS or NEEDS_WORK with specific failures.
+"""
+return_key = "1355"
+
+[orchestration]
+# A and B are independent (disjoint files); C depends on both A and B being complete.
+sequential = ["c"]
+concurrent = ["a", "b"]
