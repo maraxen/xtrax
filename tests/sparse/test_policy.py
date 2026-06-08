@@ -26,6 +26,7 @@ class TestSparsePolicy:
         mask = p.make_mask(w, step=0)
         assert mask.shape == w.shape
         assert mask.dtype == jnp.bool_
+        assert int(jnp.sum(mask)) == 4
 
     def test_apply_mask_bcoo_nse(self):
         p = _make_policy(budget=4)
