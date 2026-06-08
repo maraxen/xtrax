@@ -1,0 +1,52 @@
+---
+workspace: xtrax
+session_id: ba9d193a-a829-4f7f-92c4-1650b789b234
+status: complete
+immediately_relevant:
+- file: src/xtrax/sparse/inference.py
+  lines:
+  - 1
+  - 60
+  reason: 'New module: assert_not_tracing, sparsify_model, make_sparse_forward_fn. leaf_filter is the outer inclusion gate; ndim==2 is the inner sparsification gate. Closure pattern in make_sparse_forward_fn is load-bearing for AC-6 (no-retrace).'
+- file: src/xtrax/tiling/iterator.py
+  lines:
+  - 90
+  - 135
+  reason: BucketIterator.__iter__ uses bisect_left (not bisect_right) to find smallest bucket >= seq_len. Exact-boundary inputs (pad_amount==0) are valid. seq_len > max_boundary raises ValueError + UserWarning.
+- file: tests/sparse/test_integration.py
+  lines:
+  - 1
+  - 60
+  reason: AC-6 no-retrace test uses Python-side call_count inside eqx.filter_jit as trace detector. AC-9 asserts BCOO leaves survive eqx.nn.inference_mode.
+- file: .praxia/docs/specs/260608_inference-time-sparsification-in-xtrax-h.md
+  lines:
+  - 1
+  - 50
+  reason: 'Full Sprint 7 spec with 9 ACs, assumptions table (A1: BCOO static closure), and pre-mortem. Reference for any follow-on work.'
+active_dispatches: []
+task_id: 260608_sparse-inference-brainstorm
+phase: Sprint 7
+goal_statement: Enable inference-time sparsification in xtrax via sparsify_model functional transform and BucketIterator static-bucket padding, with full test coverage and no-retrace guarantees.
+context_refs:
+- phase: Sprint 6
+  task_id: 260608_xtrax-s6-closeout
+  summary: Sprint 6 closed clean at 96.3% coverage; sparse infrastructure (SparsePolicy, SparseMaskManager) in place but no inference-time API
+failed_attempts: []
+open_questions: []
+deferred:
+- description: 'eqx.filter/eqx.partition + BCOO leaves: without is_leaf guard, eqx.filter_jit passed a sparsified model as argument (not closure) will destructure BCOO into data+indices arrays silently'
+  rationale: Not needed for Sprint 7 scope — make_sparse_forward_fn closure pattern sidesteps this entirely.
+  recommended_phase: Sprint 8
+- description: logger.debug test deferred from Sprint 6
+  rationale: Minor; not on Sprint 7 critical path
+  recommended_phase: Sprint 8
+- description: TestAsyncIndexedStream rename deferred from Sprint 6
+  rationale: Cosmetic rename; not blocking anything
+  recommended_phase: Sprint 8
+lessons_refs: []
+next_steps:
+- 'Merge worktree branch worktree-sparse-inference-spec into main via PR (5 commits: spec, sprint plan, Track A, Track B, Track C + cleanup)'
+- 'Run full test suite on main after merge: uv run pytest --cov=src/xtrax to verify coverage gate holds'
+- 'Review two deferred items from Sprint 6: logger.debug test and TestAsyncIndexedStream rename'
+- 'Consider backlog item for future: eqx.filter/eqx.partition with BCOO leaves will destructure BCOO without is_leaf guard — document as a known trap or add a utility wrapper'
+---
