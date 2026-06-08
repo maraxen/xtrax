@@ -1,3 +1,5 @@
+import logging
+
 import jax.numpy as jnp
 
 from xtrax.sparse.config import SparseConfig
@@ -46,3 +48,17 @@ class TestSparseMaskManager:
         params = {"w": jnp.ones((3, 3))}
         mgr.step(params, step=0)
         assert mgr.current_masks() is not mgr.current_masks()
+
+    def test_step_logs_debug_for_skipped_1d_leaf(self, caplog):
+        mgr = _make_manager(budget=8)
+        params = {"weight": jnp.ones((4, 4)), "bias": jnp.ones((4,))}
+        with caplog.at_level(logging.DEBUG, logger="xtrax.sparse.manager"):
+            mgr.step(params, step=0)
+        assert any("skipping leaf" in r.message for r in caplog.records)
+
+    def test_step_logs_debug_when_path_filter_excludes_leaf(self, caplog):
+        mgr = _make_manager(budget=8)
+        params = {"weight": jnp.ones((4, 4)), "bias": jnp.ones((4,))}
+        with caplog.at_level(logging.DEBUG, logger="xtrax.sparse.manager"):
+            mgr.step(params, step=0, path_filter=lambda p: "weight" in p)
+        assert any("skipping leaf" in r.message for r in caplog.records)
