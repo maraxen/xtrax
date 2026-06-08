@@ -1,0 +1,49 @@
+---
+workspace: xtrax
+session_id: 1cdcdcf4-0000-0000-0000-s6-sprint-plan
+status: complete
+immediately_relevant:
+- file: src/xtrax/sparse/manager.py
+  lines:
+  - 1
+  - 55
+  reason: Sprint 6 final state — _path_str helper at line 15, logger.debug skip-branch at line 41; no test for the else-branch (auditor quality note)
+- file: src/xtrax/engine/io.py
+  lines:
+  - 1
+  - 116
+  reason: Canonical async_indexed_stream implementation post-consolidation; callbacks.py and engine/__init__.py re-export from here
+- file: tests/sparse/test_policy.py
+  lines:
+  - 1
+  - 90
+  reason: 'Two new edge-case tests: test_make_mask_all_ties_exact_budget and test_apply_mask_padding_no_zero_zero_alias'
+active_dispatches: []
+task_id: 260608_xtrax-s6-closeout
+phase: null
+goal_statement: Execute Sprint 6 (audit close-out + async consolidation), audit the result, merge to main, close backlog.
+context_refs:
+- phase: Sprint 5 — Phases 8-10 complete
+  task_id: 260608_xtrax-s5-sparse
+  summary: Sparse infrastructure delivered; audit NEEDS_REVISION — three deferred items became Sprint 6 scope
+failed_attempts:
+- attempt_id: s6-js-parse
+  description: Ran .praxia/dynamic_workflows/260608_xtrax-s6-closeout.js before escaping inline backticks
+  outcome: JS parse error at line 261:35 — unescaped backticks in template literal terminated the string early
+  reason_failed: Markdown inline code (single backticks) inside JS template literals must be escaped as \`. The two offending lines were in the Track B fixer prompt describing caplog assertions.
+  do_not_retry: true
+  evidence_ref: ''
+open_questions: []
+deferred:
+- description: Add a test asserting logger.debug fires for skipped leaves in SparseMaskManager.step()
+  rationale: Auditor quality note — below Sprint 6 scope threshold, not blocking
+  recommended_phase: Sprint 7 or next debt cleanup
+- description: Rename TestAsyncIndexedStream → TestIoCallbacks in tests/io/test_callbacks.py
+  rationale: Cosmetic misnomer; class tests BoundedCallbackHandler too. Non-blocking.
+  recommended_phase: Sprint 7 or next debt cleanup
+lessons_refs:
+- .praxia/lessons.jsonl
+next_steps:
+- 'Identify next project direction — no open backlog; candidate areas: (1) integrate sparse masking into training loop, (2) dynamic sparsity schedules, (3) structured sparsity patterns, (4) cluster experiments benchmarking sparsity vs. quality'
+- 'Address minor auditor quality notes if desired: (a) add test for logger.debug skip-branch in manager.py, (b) rename TestAsyncIndexedStream → TestIoCallbacks in tests/io/test_callbacks.py'
+---
