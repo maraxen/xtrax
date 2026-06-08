@@ -163,3 +163,110 @@ class TestBucketIterator:
         )
 
         assert bucket_iter is not None
+
+    def test_bucket_iterator_pads_to_boundary(self):
+        """BucketIterator pads input to smallest bucket >= seq_len."""
+        def fn(x):
+            return x * 2
+
+        input_data = jnp.arange(100)  # seq_len = 100
+        bucket_iter = BucketIterator(
+            boundaries=[128, 256, 512],
+            batch_sizes=[8, 4, 2, 1],
+            fn=fn,
+            xs=input_data,
+        )
+
+        # Collect all yields
+        results = list(bucket_iter)
+        assert len(results) == 1, f"Expected 1 yield, got {len(results)}"
+
+        result, original_length_mask = results[0]
+
+        # Should pad to 128 (smallest boundary >= 100)
+        assert (
+            result.shape[0] == 128
+        ), f"Expected padded shape (128,), got {result.shape}"
+
+        # Check mask: first 100 should be True, rest False
+        assert jnp.sum(original_length_mask) == 100
+        assert jnp.all(original_length_mask[:100])
+        assert jnp.all(~original_length_mask[100:])
+
+    def test_bucket_iterator_exact_boundary(self):
+        """BucketIterator accepts exact boundary (pad_amount=0)."""
+        def fn(x):
+            return x * 2
+
+        input_data = jnp.arange(128)  # seq_len = 128
+        bucket_iter = BucketIterator(
+            boundaries=[128, 256, 512],
+            batch_sizes=[8, 4, 2, 1],
+            fn=fn,
+            xs=input_data,
+        )
+
+        results = list(bucket_iter)
+        assert len(results) == 1
+
+        result, original_length_mask = results[0]
+
+        # Should not pad (exact match)
+        assert result.shape[0] == 128
+        assert jnp.all(original_length_mask)  # All True
+
+    def test_bucket_iterator_exact_max_boundary(self):
+        """BucketIterator accepts input at max boundary without error."""
+        def fn(x):
+            return x * 2
+
+        input_data = jnp.arange(256)  # seq_len = 256
+        bucket_iter = BucketIterator(
+            boundaries=[128, 256, 512],
+            batch_sizes=[8, 4, 2, 1],
+            fn=fn,
+            xs=input_data,
+        )
+
+        results = list(bucket_iter)
+        assert len(results) == 1
+
+        result, original_length_mask = results[0]
+
+        # Should pad to 256 (exact match, no padding)
+        assert result.shape[0] == 256
+        assert jnp.all(original_length_mask)
+
+    def test_bucket_iterator_exceeds_max_raises(self):
+        """BucketIterator raises ValueError when input exceeds max boundary."""
+        def fn(x):
+            return x
+
+        input_data = jnp.arange(600)  # seq_len = 600, max boundary = 512
+        bucket_iter = BucketIterator(
+            boundaries=[128, 256, 512],
+            batch_sizes=[4, 2, 1, 1],
+            fn=fn,
+            xs=input_data,
+        )
+
+        # Should raise ValueError AND emit UserWarning
+        with pytest.warns(UserWarning, match="exceeds maximum bucket size"):
+            with pytest.raises(ValueError, match="exceeds maximum bucket size"):
+                list(bucket_iter)
+
+    def test_bucket_iterator_empty_xs_yields_nothing(self):
+        """BucketIterator with empty pytree yields nothing."""
+        def fn(x):
+            return x
+
+        empty_xs = {}
+        bucket_iter = BucketIterator(
+            boundaries=[128, 256, 512],
+            batch_sizes=[8, 4, 2, 1],
+            fn=fn,
+            xs=empty_xs,
+        )
+
+        results = list(bucket_iter)
+        assert len(results) == 0

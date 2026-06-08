@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import bisect
+import warnings
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 
 from xtrax.transforms.map import safe_map
 
@@ -122,11 +125,41 @@ class BucketIterator:
         """Iterate over bucketed batches.
 
         Yields:
-            Batches processed with batch sizes appropriate for each bucket.
+            Tuples of (result, original_length_mask) where result is the output
+            of fn applied to the padded input, and original_length_mask is a
+            boolean array indicating which elements of the padded batch are
+            from the original (non-padded) input.
         """
-        # This is a placeholder implementation.
-        # In a real implementation, this would:
-        # 1. Sort/bucket elements by their size using length_fn
-        # 2. Apply fn to each bucket with the appropriate batch_size
-        # 3. Yield results
-        yield from []
+        leaves = jax.tree_util.tree_leaves(self.xs)
+        if not leaves:
+            return
+
+        seq_len = leaves[0].shape[0]
+        # bisect_left finds the first boundary >= seq_len
+        # (exact match is valid, pad_amount=0)
+        bucket_idx = bisect.bisect_left(self.boundaries, seq_len)
+
+        if bucket_idx >= len(self.boundaries):
+            max_bucket = self.boundaries[-1]
+            warnings.warn(
+                f"BucketIterator: input length {seq_len} exceeds maximum bucket "
+                f"size {max_bucket}; this input cannot be processed without "
+                "recompilation risk",
+                stacklevel=2,
+            )
+            raise ValueError(
+                f"Input length {seq_len} exceeds maximum bucket size {max_bucket}. "
+                "Add a larger boundary or use a different iterator."
+            )
+
+        bucket_size = self.boundaries[bucket_idx]
+        pad_amount = bucket_size - seq_len
+
+        padded_xs = jax.tree_util.tree_map(
+            lambda x: jnp.pad(x, [(0, pad_amount)] + [(0, 0)] * (x.ndim - 1)),
+            self.xs,
+        )
+
+        original_length_mask = jnp.arange(bucket_size) < seq_len
+        result = self.fn(padded_xs)
+        yield (result, original_length_mask)
