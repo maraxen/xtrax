@@ -101,7 +101,10 @@ class TestBucketIterator:
     """Test BucketIterator construction and ValueError."""
 
     def test_bucket_iterator_construction_validation(self):
-        """BucketIterator ValueError if len(batch_sizes) != len(boundaries) + 1."""
+        """
+        BucketIterator raises ValueError if len(batch_sizes) !=
+        len(boundaries) + 1.
+        """
         def fn(x):
             return x
         xs = jnp.arange(100)

@@ -222,3 +222,31 @@ class TestStageBundleValidation:
             class InvalidBundle(StageBundle):
                 stage1: Callable | None = None
                 untyped_field = None  # No type annotation
+
+    def test_invalid_non_optional_callable_raises(self):
+        """Field annotated as int (non-callable) raises TypeError at class def."""
+        with pytest.raises(TypeError):
+            class InvalidBundle(StageBundle):
+                field1: int  # Not Callable
+
+    def test_optional_int_raises(self):
+        """Field annotated as Optional[int] raises TypeError at class def."""
+
+        with pytest.raises(TypeError):
+            class InvalidBundle(StageBundle):
+                field1: int | None
+
+    def test_list_callable_raises(self):
+        """Field annotated as list[Callable] (not Optional) raises TypeError."""
+        with pytest.raises(TypeError):
+            class InvalidBundle(StageBundle):
+                field1: list[Callable]
+
+    def test_optional_callable_ok(self):
+        """Field annotated as Optional[Callable] does NOT raise (regression guard)."""
+
+        # Should not raise
+        class ValidBundle(StageBundle):
+            field1: Callable | None = None
+
+        assert isinstance(ValidBundle(), StageBundle)

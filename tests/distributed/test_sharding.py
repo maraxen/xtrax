@@ -57,6 +57,16 @@ class TestShardingPolicy:
         spec = policy.get_partition_spec("layer_0_weight_matrix")
         assert spec == jax.sharding.PartitionSpec("data", "model")
 
+    def test_get_partition_spec_no_match(self):
+        """get_partition_spec with no matching rule returns PartitionSpec() fallback."""
+        rules = (
+            ("weight", jax.sharding.PartitionSpec("data")),
+        )
+        policy = ShardingPolicy(rules=rules)
+
+        spec = policy.get_partition_spec("bias")
+        assert spec == jax.sharding.PartitionSpec()
+
     def test_apply_to_pytree_dict(self):
         """apply_to_pytree traverses dict and returns PartitionSpec for each leaf."""
         rules = (
@@ -75,6 +85,80 @@ class TestShardingPolicy:
         assert result["weight"] == jax.sharding.PartitionSpec("data", "model")
         assert result["bias"] == jax.sharding.PartitionSpec("data")
         assert result["other"] == jax.sharding.PartitionSpec()
+
+    def test_apply_to_pytree(self):
+        """apply_to_pytree with simple dict returns pytree of PartitionSpec values."""
+        rules = (
+            (
+                "encoder.weight",
+                jax.sharding.PartitionSpec("data", "model"),
+            ),
+            ("decoder.bias", jax.sharding.PartitionSpec("data")),
+        )
+        policy = ShardingPolicy(rules=rules)
+
+        pytree = {
+            "encoder": {"weight": 0},
+            "decoder": {"bias": 0},
+        }
+        result = policy.apply_to_pytree(pytree)
+
+        expected_weight = jax.sharding.PartitionSpec("data", "model")
+        expected_bias = jax.sharding.PartitionSpec("data")
+        assert result["encoder"]["weight"] == expected_weight
+        assert result["decoder"]["bias"] == expected_bias
+
+    def test_empty_rules(self):
+        """ShardingPolicy with empty rules returns PartitionSpec() for all paths."""
+        policy = ShardingPolicy(rules=())
+
+        spec1 = policy.get_partition_spec("any_path")
+        spec2 = policy.get_partition_spec("another_path")
+
+        assert spec1 == jax.sharding.PartitionSpec()
+        assert spec2 == jax.sharding.PartitionSpec()
+
+    def test_repr_no_raise(self):
+        """repr(ShardingPolicy(...)) does not raise."""
+        rules = (
+            ("weight", jax.sharding.PartitionSpec("data")),
+        )
+        policy = ShardingPolicy(rules=rules)
+
+        # Should not raise
+        repr_str = repr(policy)
+        assert isinstance(repr_str, str)
+
+    def test_path_to_string_dict_key(self):
+        """_path_to_string handles DictKey paths."""
+        # Create a path with DictKey
+        dict_key = jax.tree_util.DictKey("test_key")
+        path_str = ShardingPolicy._path_to_string((dict_key,))
+        assert path_str == "test_key"
+
+    def test_path_to_string_attr_key(self):
+        """_path_to_string handles GetAttrKey paths."""
+        attr_key = jax.tree_util.GetAttrKey("test_attr")
+        path_str = ShardingPolicy._path_to_string((attr_key,))
+        assert path_str == "test_attr"
+
+    def test_path_to_string_sequence_key(self):
+        """_path_to_string handles SequenceKey paths."""
+        seq_key = jax.tree_util.SequenceKey(3)
+        path_str = ShardingPolicy._path_to_string((seq_key,))
+        assert "[3]" in path_str
+
+    def test_path_to_string_mixed_keys(self):
+        """_path_to_string handles mixed key types."""
+        keys = (
+            jax.tree_util.GetAttrKey("module"),
+            jax.tree_util.DictKey("weights"),
+            jax.tree_util.SequenceKey(0),
+        )
+        path_str = ShardingPolicy._path_to_string(keys)
+        assert "module" in path_str
+        assert "weights" in path_str
+        assert "[0]" in path_str
 
     def test_apply_to_pytree_nested_structure(self):
         """apply_to_pytree preserves nested dict structure."""
@@ -169,6 +253,95 @@ class TestGetDeviceMesh:
 class TestGetHardwareMeshProfile:
     """Test get_hardware_mesh_profile: device info and fallback behavior."""
 
+    def test_get_hardware_mesh_profile_gpu_device_type(self, monkeypatch):
+        """get_hardware_mesh_profile normalizes GPU device_type."""
+        import unittest.mock
+
+        # Create a mock device that reports "cuda" as platform
+        mock_device = unittest.mock.MagicMock()
+        mock_device.platform = "cuda"
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "gpu"
+
+    def test_get_hardware_mesh_profile_tpu_device_type(self, monkeypatch):
+        """get_hardware_mesh_profile normalizes TPU device_type."""
+        import unittest.mock
+
+        # Create a mock device that reports "tpu" as platform
+        mock_device = unittest.mock.MagicMock()
+        mock_device.platform = "tpu"
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "tpu"
+
+    def test_get_hardware_mesh_profile_two_devices(self, monkeypatch):
+        """
+        get_hardware_mesh_profile with 2 devices selects (2,) shape
+        and ("data",) axis names (covers lines 149-151).
+        """
+        import unittest.mock
+
+        # Create 2 mock devices
+        mock_devices = [
+            unittest.mock.MagicMock(platform="cpu"),
+            unittest.mock.MagicMock(platform="cpu"),
+        ]
+
+        monkeypatch.setattr(jax, "devices", lambda: mock_devices)
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["num_devices"] == 2
+        assert profile["recommended_shape"] == (2,)
+        assert profile["recommended_axis_names"] == ("data",)
+
+    def test_get_hardware_mesh_profile_eight_devices(self, monkeypatch):
+        """
+        get_hardware_mesh_profile with 8 devices (divisible by 8)
+        selects (8,) shape (covers line 154).
+        """
+        import unittest.mock
+
+        # Create 8 mock devices (8 % 8 == 0)
+        mock_devices = [
+            unittest.mock.MagicMock(platform="cpu") for _ in range(8)
+        ]
+
+        monkeypatch.setattr(jax, "devices", lambda: mock_devices)
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["num_devices"] == 8
+        # 8 % 8 == 0, so line 152-155 condition is true
+        assert profile["recommended_shape"] == (8,)
+        assert profile["recommended_axis_names"] == ("data",)
+
+    def test_get_hardware_mesh_profile_exception_fallback(self, monkeypatch):
+        """
+        get_hardware_mesh_profile never raises; returns CPU fallback
+        on exception (covers lines 167-169).
+        """
+        # Make jax.devices() raise an exception
+        def raise_error():
+            raise RuntimeError("Device query failed")
+
+        monkeypatch.setattr(jax, "devices", raise_error)
+
+        # Should not raise; should return fallback
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "cpu"
+        assert profile["num_devices"] == 1
+        assert profile["recommended_shape"] == (1,)
+        assert profile["recommended_axis_names"] == ("batch",)
+
     def test_get_hardware_mesh_profile_has_required_keys(self):
         """get_hardware_mesh_profile returns all 4 required keys."""
         profile = get_hardware_mesh_profile()
@@ -231,6 +404,7 @@ class TestGetHardwareMeshProfile:
         profile = get_hardware_mesh_profile()
         assert profile["device_type"] == "gpu"
 
+
     def test_get_hardware_mesh_profile_device_type_tpu_normalization(
         self, monkeypatch
     ):
@@ -244,6 +418,7 @@ class TestGetHardwareMeshProfile:
         profile = get_hardware_mesh_profile()
         assert profile["device_type"] == "tpu"
 
+
     def test_get_hardware_mesh_profile_two_devices_data_parallel(self, monkeypatch):
         """Two devices should recommend (2,) shape with ('data',) axis."""
         from unittest.mock import Mock
@@ -256,17 +431,6 @@ class TestGetHardwareMeshProfile:
         assert profile["recommended_shape"] == (2,)
         assert profile["recommended_axis_names"] == ("data",)
 
-    def test_get_hardware_mesh_profile_eight_devices(self, monkeypatch):
-        """Eight devices (8 % 8 == 0) should recommend (8,) shape."""
-        from unittest.mock import Mock
-
-        devices = [Mock(platform="gpu") for _ in range(8)]
-        monkeypatch.setattr(jax, "devices", lambda: devices)
-
-        profile = get_hardware_mesh_profile()
-        assert profile["num_devices"] == 8
-        assert profile["recommended_shape"] == (8,)
-        assert profile["recommended_axis_names"] == ("data",)
 
     def test_get_hardware_mesh_profile_five_devices_default_case(self, monkeypatch):
         """Five devices (not 1, 2, or multiple of 8) hits default else branch."""
@@ -280,16 +444,6 @@ class TestGetHardwareMeshProfile:
         assert profile["recommended_shape"] == (5,)
         assert profile["recommended_axis_names"] == ("data",)
 
-    def test_get_hardware_mesh_profile_exception_fallback(self, monkeypatch):
-        """Any exception in get_hardware_mesh_profile should hit fallback block."""
-        monkeypatch.setattr(jax, "devices", lambda: 1 / 0)  # Raises ZeroDivisionError
-
-        profile = get_hardware_mesh_profile()
-        # Should use fallback values, not raise
-        assert profile["device_type"] == "cpu"
-        assert profile["num_devices"] == 1
-        assert profile["recommended_shape"] == (1,)
-        assert profile["recommended_axis_names"] == ("batch",)
 
     def test_path_to_string_with_dict_key(self):
         """_path_to_string should handle DictKey elements."""
@@ -297,17 +451,20 @@ class TestGetHardwareMeshProfile:
         result = ShardingPolicy._path_to_string(path)
         assert "weight" in result
 
+
     def test_path_to_string_with_getattr_key(self):
         """_path_to_string should handle GetAttrKey elements."""
         path = (jax.tree_util.GetAttrKey("layer"),)
         result = ShardingPolicy._path_to_string(path)
         assert "layer" in result
 
+
     def test_path_to_string_with_sequence_key(self):
         """_path_to_string should handle SequenceKey elements."""
         path = (jax.tree_util.SequenceKey(0),)
         result = ShardingPolicy._path_to_string(path)
         assert "[0]" in result
+
 
     def test_path_to_string_with_unknown_key_type(self):
         """_path_to_string should handle unknown key types by converting to str."""
@@ -319,6 +476,7 @@ class TestGetHardwareMeshProfile:
         path = (CustomKey(),)
         result = ShardingPolicy._path_to_string(path)
         assert "custom" in result
+
 
     def test_path_to_string_with_mixed_keys(self):
         """_path_to_string should handle mixed key types in path."""
@@ -333,6 +491,7 @@ class TestGetHardwareMeshProfile:
         assert "weight" in result
         assert "/" in result  # Should have separators
 
+
     def test_get_partition_spec_no_match_explicit(self):
         """get_partition_spec with empty rules should always return replicated spec."""
         rules = ()
@@ -340,6 +499,7 @@ class TestGetHardwareMeshProfile:
 
         spec = policy.get_partition_spec("anything")
         assert spec == jax.sharding.PartitionSpec()
+
 
     def test_apply_to_pytree_with_empty_rules(self):
         """apply_to_pytree with empty rules should return all replicated specs."""
@@ -351,6 +511,7 @@ class TestGetHardwareMeshProfile:
         assert result["a"] == jax.sharding.PartitionSpec()
         assert result["b"] == jax.sharding.PartitionSpec()
 
+
     def test_sharding_policy_repr_no_error(self):
         """repr(ShardingPolicy) should not raise."""
         policy = ShardingPolicy(
@@ -359,3 +520,112 @@ class TestGetHardwareMeshProfile:
         # Should not raise
         repr_str = repr(policy)
         assert isinstance(repr_str, str)
+    def test_get_hardware_mesh_profile_shape_product_consistency(self):
+        """Recommended shape product should be valid for num_devices."""
+        profile = get_hardware_mesh_profile()
+        shape = profile["recommended_shape"]
+
+        # The shape product should be valid
+        shape_product = 1
+        for s in shape:
+            shape_product *= s
+
+        # Should be sane
+        assert shape_product > 0
+        assert len(shape) > 0
+
+
+    def test_get_hardware_mesh_profile_gpu_string_normalization(self, monkeypatch):
+        """
+        get_hardware_mesh_profile normalizes 'gpu' string device_type
+        (covers lines 139).
+        """
+        import unittest.mock
+
+        # Create a mock device that reports "gpu" as platform
+        mock_device = unittest.mock.MagicMock()
+        mock_device.platform = "gpu"
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "gpu"
+
+
+    def test_get_hardware_mesh_profile_cuda_to_gpu_normalization(self, monkeypatch):
+        """
+        get_hardware_mesh_profile converts 'cuda' to 'gpu' via normalization
+        (covers lines 139 branch).
+        """
+        import unittest.mock
+
+        # Create a mock device that reports "cuda" as platform
+        mock_device = unittest.mock.MagicMock()
+        mock_device.platform = "cuda"
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "gpu"
+
+
+    def test_get_hardware_mesh_profile_tpu_string_normalization(self, monkeypatch):
+        """
+        get_hardware_mesh_profile preserves 'tpu' string device_type
+        (covers lines 141).
+        """
+        import unittest.mock
+
+        # Create a mock device that reports "tpu" as platform
+        mock_device = unittest.mock.MagicMock()
+        mock_device.platform = "tpu"
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "tpu"
+
+
+    def test_get_hardware_mesh_profile_four_devices_not_div_by_8(self, monkeypatch):
+        """
+        get_hardware_mesh_profile with 4 devices (not divisible by 8)
+        selects (4,) shape (covers line 158 branch, not 154).
+        """
+        import unittest.mock
+
+        # Create 4 mock devices (4 % 8 != 0)
+        mock_devices = [
+            unittest.mock.MagicMock(platform="cpu") for _ in range(4)
+        ]
+
+        monkeypatch.setattr(jax, "devices", lambda: mock_devices)
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["num_devices"] == 4
+        # 4 % 8 != 0, so line 157-159 condition (else branch) is taken
+        assert profile["recommended_shape"] == (4,)
+        assert profile["recommended_axis_names"] == ("data",)
+
+
+    def test_get_hardware_mesh_profile_single_device_no_attr(self, monkeypatch):
+        """
+        get_hardware_mesh_profile handles device without platform attribute
+        (fallback to 'cpu', covers line 135 branch).
+        """
+        import unittest.mock
+
+        # Create a mock device without platform attribute
+        mock_device = unittest.mock.MagicMock()
+        del mock_device.platform  # Remove the platform attribute
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        # Should default to cpu
+        assert profile["device_type"] == "cpu"
+

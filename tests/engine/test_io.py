@@ -143,10 +143,11 @@ class TestBoundedCallbackHandler:
             # wait_all should complete without raising
             await handler.wait_all()
 
-        # Verify the exception WAS logged via the logging module
+        # Verify the exception WAS logged via the logging module at ERROR level
         assert any(
-            "callback error" in r.message for r in caplog.records
-        ), "Exception should be logged to logging module"
+            "callback error" in r.message and r.levelno == logging.ERROR
+            for r in caplog.records
+        ), "Exception should be logged to logging module at ERROR level"
 
     @pytest.mark.asyncio
     async def test_wait_all_waits_for_all_tasks(self):

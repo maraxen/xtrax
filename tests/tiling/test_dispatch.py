@@ -151,7 +151,8 @@ class TestDedupGatherDispatch:
 
         result = make_axis_dispatch(strategy, fn, xs)
 
-        # Expected: dedup [1,2,3], map [2,4,6], gather [2,4,2,6,4,2]
+        # Expected: dedup to [1, 2, 3], map to [2, 4, 6],
+        # gather back to [2, 4, 2, 6, 4, 2]
         expected = jnp.array([2, 4, 2, 6, 4, 2])
         assert jnp.allclose(result, expected)
 
