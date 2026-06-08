@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 
 def _path_str(path) -> str:
-	"""Convert a JAX tree path to dotted string notation."""
-	return ".".join(p.key if hasattr(p, "key") else str(p) for p in path)
+    """Convert a JAX tree path to dotted string notation."""
+    return ".".join(p.key if hasattr(p, "key") else str(p) for p in path)
 
 
 class SparseMaskManager:
