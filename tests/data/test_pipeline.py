@@ -1,22 +1,6 @@
 import pytest
 
-from xtrax.data.pipeline import (
-    async_indexed_stream,
-    create_distributed_pipeline,
-)
-
-
-class TestAsyncIndexedStream:
-    """Tests for async_indexed_stream."""
-
-    @pytest.mark.asyncio
-    async def test_async_indexed_stream_yields_correct_indices_and_items(self):
-        """async_indexed_stream yields (index, item) tuples with correct indices."""
-        items = ["a", "b", "c"]
-        result = []
-        async for idx, item in async_indexed_stream(items):
-            result.append((idx, item))
-        assert result == [(0, "a"), (1, "b"), (2, "c")]
+from xtrax.data.pipeline import create_distributed_pipeline
 
 
 class TestCreateDistributedPipeline:

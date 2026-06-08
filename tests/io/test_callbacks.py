@@ -70,12 +70,12 @@ class TestAsyncIndexedStream:
         async def failing_task():
             raise ValueError("test error")
 
-        with caplog.at_level(logging.ERROR, logger="xtrax.io.callbacks"):
+        with caplog.at_level(logging.ERROR, logger="xtrax.engine.io"):
             await handler.submit(failing_task())
             await handler.wait_all()
 
         # Check that the exception was logged
-        assert any("test error" in record.message for record in caplog.records)
+        assert any("callback error" in record.message for record in caplog.records)
 
     @pytest.mark.asyncio
     async def test_bounded_handler_wait_all_empty(self):

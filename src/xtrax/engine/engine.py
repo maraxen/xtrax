@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 
 from xtrax.data.module import DataModule
-from xtrax.io.callbacks import BoundedCallbackHandler
+from xtrax.engine.io import BoundedCallbackHandler
 from xtrax.training.step import SafetyTrainStep
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import Callback, LossFunction, ResumableState
