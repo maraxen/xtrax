@@ -12,7 +12,8 @@ class TestVmapIterator:
 
     def test_vmap_iterator_yields_items(self):
         """VmapIterator should yield individual items from vmapped result."""
-        fn = lambda x: x * 2
+        def fn(x):
+            return x * 2
         xs = jnp.arange(4)  # shape (4,)
 
         iterator = VmapIterator()
@@ -27,7 +28,8 @@ class TestVmapIterator:
 
     def test_vmap_iterator_pytree_shape(self):
         """VmapIterator should handle pytree inputs."""
-        fn = lambda x: {"y": x["y"] * 2, "z": x["z"] + 1}
+        def fn(x):
+            return {"y": x["y"] * 2, "z": x["z"] + 1}
         xs = {"y": jnp.arange(3).reshape(3, 1), "z": jnp.ones((3, 2))}
 
         iterator = VmapIterator()
@@ -45,7 +47,8 @@ class TestSafeMapIterator:
 
     def test_safe_map_iterator_equals_vmap_when_batch_size_gte_n(self):
         """SafeMapIterator with batch_size >= n should equal VmapIterator."""
-        fn = lambda x: x * 2
+        def fn(x):
+            return x * 2
         xs = jnp.arange(10)
 
         vmap_iter = VmapIterator()
@@ -58,7 +61,8 @@ class TestSafeMapIterator:
 
     def test_safe_map_iterator_batch_size_equals_n(self):
         """SafeMapIterator with batch_size == n should equal VmapIterator."""
-        fn = lambda x: x * 2
+        def fn(x):
+            return x * 2
         xs = jnp.arange(10)
 
         vmap_iter = VmapIterator()
@@ -71,7 +75,8 @@ class TestSafeMapIterator:
 
     def test_safe_map_iterator_non_divisible_raises_valueerror(self):
         """SafeMapIterator should propagate ValueError for non-divisible n."""
-        fn = lambda x: x * 2
+        def fn(x):
+            return x * 2
         xs = jnp.arange(10)  # n=10
 
         safe_iter = SafeMapIterator(batch_size=3)  # 10 % 3 != 0
@@ -81,7 +86,8 @@ class TestSafeMapIterator:
 
     def test_safe_map_iterator_divisible_batch(self):
         """SafeMapIterator should work with divisible batch sizes."""
-        fn = lambda x: x * 2
+        def fn(x):
+            return x * 2
         xs = jnp.arange(10)
 
         safe_iter = SafeMapIterator(batch_size=5)
@@ -95,8 +101,9 @@ class TestBucketIterator:
     """Test BucketIterator construction and ValueError."""
 
     def test_bucket_iterator_construction_validation(self):
-        """BucketIterator should raise ValueError if len(batch_sizes) != len(boundaries) + 1."""
-        fn = lambda x: x
+        """BucketIterator ValueError if len(batch_sizes) != len(boundaries) + 1."""
+        def fn(x):
+            return x
         xs = jnp.arange(100)
 
         # boundaries has 2 elements, so batch_sizes should have 3
@@ -109,8 +116,9 @@ class TestBucketIterator:
             )
 
     def test_bucket_iterator_valid_construction(self):
-        """BucketIterator should construct successfully with correct batch_sizes length."""
-        fn = lambda x: x
+        """BucketIterator constructs with correct batch_sizes length."""
+        def fn(x):
+            return x
         xs = jnp.arange(100)
 
         # boundaries has 2 elements, batch_sizes has 3
@@ -125,7 +133,8 @@ class TestBucketIterator:
 
     def test_bucket_iterator_single_boundary(self):
         """BucketIterator with single boundary and two batch sizes."""
-        fn = lambda x: x
+        def fn(x):
+            return x
         xs = jnp.arange(100)
 
         bucket_iter = BucketIterator(
@@ -139,7 +148,8 @@ class TestBucketIterator:
 
     def test_bucket_iterator_empty_boundaries(self):
         """BucketIterator with no boundaries and one batch size."""
-        fn = lambda x: x
+        def fn(x):
+            return x
         xs = jnp.arange(100)
 
         bucket_iter = BucketIterator(

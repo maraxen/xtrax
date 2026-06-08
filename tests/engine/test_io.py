@@ -227,3 +227,26 @@ class TestBoundedCallbackHandler:
         await handler.submit(dummy())
         await handler.wait_all()
         assert coro_called == [1]
+
+    @pytest.mark.asyncio
+    async def test_async_indexed_stream_import_from_io_callbacks(self):
+        """Verify async_indexed_stream can be imported from xtrax.io.callbacks."""
+        from xtrax.io.callbacks import async_indexed_stream as aio_stream
+        result = []
+        async for idx, item in aio_stream([1, 2, 3]):
+            result.append((idx, item))
+        assert result == [(0, 1), (1, 2), (2, 3)]
+
+    @pytest.mark.asyncio
+    async def test_bounded_callback_handler_import_from_io_callbacks(self):
+        """Verify BoundedCallbackHandler can be imported from xtrax.io.callbacks."""
+        from xtrax.io.callbacks import BoundedCallbackHandler as BCH
+        handler = BCH(max_concurrent=1)
+        flag = [False]
+
+        async def set_flag():
+            flag[0] = True
+
+        await handler.submit(set_flag())
+        await handler.wait_all()
+        assert flag[0] is True

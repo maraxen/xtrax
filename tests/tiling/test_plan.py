@@ -201,7 +201,10 @@ class TestBatchPlanner:
         specs = [
             AxisSpec(name="batch", cardinality=100, batch_size=50),
             AxisSpec(name="seq", cardinality=512, batch_size=128),
-            AxisSpec(name="token", cardinality=1000, batch_size=32, dedup_eligible=True),
+            AxisSpec(
+                name="token", cardinality=1000, batch_size=32,
+                dedup_eligible=True
+            ),
         ]
         planner = BatchPlanner()
         plan = planner.plan(specs)
@@ -311,7 +314,10 @@ class TestBatchPlanner:
         specs = [
             AxisSpec(name="batch", cardinality=32, batch_size=100),  # Rule 2: Vmap
             AxisSpec(name="seq", cardinality=100, batch_size=25),    # Rule 3: SafeMap
-            AxisSpec(name="token", cardinality=500, batch_size=50, dedup_eligible=True),  # Rule 1: DedupGather
+            AxisSpec(
+                name="token", cardinality=500, batch_size=50,
+                dedup_eligible=True,  # Rule 1: DedupGather
+            ),
         ]
 
         planner = BatchPlanner()

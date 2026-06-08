@@ -219,3 +219,143 @@ class TestGetHardwareMeshProfile:
             assert shape == (1,)
             # Axis name should be something reasonable
             assert len(profile["recommended_axis_names"]) == 1
+
+    def test_get_hardware_mesh_profile_device_type_gpu_normalization(self, monkeypatch):
+        """GPU device type should be normalized to 'gpu' (not 'cuda')."""
+        from unittest.mock import Mock
+
+        mock_device = Mock()
+        mock_device.platform = "cuda"
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+        assert profile["device_type"] == "gpu"
+
+    def test_get_hardware_mesh_profile_device_type_tpu_normalization(
+        self, monkeypatch
+    ):
+        """TPU device type should be normalized to 'tpu'."""
+        from unittest.mock import Mock
+
+        mock_device = Mock()
+        mock_device.platform = "tpu"
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+        assert profile["device_type"] == "tpu"
+
+    def test_get_hardware_mesh_profile_two_devices_data_parallel(self, monkeypatch):
+        """Two devices should recommend (2,) shape with ('data',) axis."""
+        from unittest.mock import Mock
+
+        devices = [Mock(platform="gpu") for _ in range(2)]
+        monkeypatch.setattr(jax, "devices", lambda: devices)
+
+        profile = get_hardware_mesh_profile()
+        assert profile["num_devices"] == 2
+        assert profile["recommended_shape"] == (2,)
+        assert profile["recommended_axis_names"] == ("data",)
+
+    def test_get_hardware_mesh_profile_eight_devices(self, monkeypatch):
+        """Eight devices (8 % 8 == 0) should recommend (8,) shape."""
+        from unittest.mock import Mock
+
+        devices = [Mock(platform="gpu") for _ in range(8)]
+        monkeypatch.setattr(jax, "devices", lambda: devices)
+
+        profile = get_hardware_mesh_profile()
+        assert profile["num_devices"] == 8
+        assert profile["recommended_shape"] == (8,)
+        assert profile["recommended_axis_names"] == ("data",)
+
+    def test_get_hardware_mesh_profile_five_devices_default_case(self, monkeypatch):
+        """Five devices (not 1, 2, or multiple of 8) hits default else branch."""
+        from unittest.mock import Mock
+
+        devices = [Mock(platform="gpu") for _ in range(5)]
+        monkeypatch.setattr(jax, "devices", lambda: devices)
+
+        profile = get_hardware_mesh_profile()
+        assert profile["num_devices"] == 5
+        assert profile["recommended_shape"] == (5,)
+        assert profile["recommended_axis_names"] == ("data",)
+
+    def test_get_hardware_mesh_profile_exception_fallback(self, monkeypatch):
+        """Any exception in get_hardware_mesh_profile should hit fallback block."""
+        monkeypatch.setattr(jax, "devices", lambda: 1 / 0)  # Raises ZeroDivisionError
+
+        profile = get_hardware_mesh_profile()
+        # Should use fallback values, not raise
+        assert profile["device_type"] == "cpu"
+        assert profile["num_devices"] == 1
+        assert profile["recommended_shape"] == (1,)
+        assert profile["recommended_axis_names"] == ("batch",)
+
+    def test_path_to_string_with_dict_key(self):
+        """_path_to_string should handle DictKey elements."""
+        path = (jax.tree_util.DictKey("weight"),)
+        result = ShardingPolicy._path_to_string(path)
+        assert "weight" in result
+
+    def test_path_to_string_with_getattr_key(self):
+        """_path_to_string should handle GetAttrKey elements."""
+        path = (jax.tree_util.GetAttrKey("layer"),)
+        result = ShardingPolicy._path_to_string(path)
+        assert "layer" in result
+
+    def test_path_to_string_with_sequence_key(self):
+        """_path_to_string should handle SequenceKey elements."""
+        path = (jax.tree_util.SequenceKey(0),)
+        result = ShardingPolicy._path_to_string(path)
+        assert "[0]" in result
+
+    def test_path_to_string_with_unknown_key_type(self):
+        """_path_to_string should handle unknown key types by converting to str."""
+        # Create a mock key type that's not DictKey, GetAttrKey, or SequenceKey
+        class CustomKey:
+            def __str__(self):
+                return "custom"
+
+        path = (CustomKey(),)
+        result = ShardingPolicy._path_to_string(path)
+        assert "custom" in result
+
+    def test_path_to_string_with_mixed_keys(self):
+        """_path_to_string should handle mixed key types in path."""
+        path = (
+            jax.tree_util.DictKey("params"),
+            jax.tree_util.GetAttrKey("layer1"),
+            jax.tree_util.DictKey("weight"),
+        )
+        result = ShardingPolicy._path_to_string(path)
+        assert "params" in result
+        assert "layer1" in result
+        assert "weight" in result
+        assert "/" in result  # Should have separators
+
+    def test_get_partition_spec_no_match_explicit(self):
+        """get_partition_spec with empty rules should always return replicated spec."""
+        rules = ()
+        policy = ShardingPolicy(rules=rules)
+
+        spec = policy.get_partition_spec("anything")
+        assert spec == jax.sharding.PartitionSpec()
+
+    def test_apply_to_pytree_with_empty_rules(self):
+        """apply_to_pytree with empty rules should return all replicated specs."""
+        policy = ShardingPolicy(rules=())
+
+        pytree = {"a": 1, "b": 2}
+        result = policy.apply_to_pytree(pytree)
+
+        assert result["a"] == jax.sharding.PartitionSpec()
+        assert result["b"] == jax.sharding.PartitionSpec()
+
+    def test_sharding_policy_repr_no_error(self):
+        """repr(ShardingPolicy) should not raise."""
+        policy = ShardingPolicy(
+            rules=(("weight", jax.sharding.PartitionSpec("data")),)
+        )
+        # Should not raise
+        repr_str = repr(policy)
+        assert isinstance(repr_str, str)
