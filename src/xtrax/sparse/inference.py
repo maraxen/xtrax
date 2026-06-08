@@ -1,13 +1,18 @@
-"""Inference-time sparsification transform for xtrax models.
+"""Inference-time sparsification utilities for xtrax.
 
-This module provides tools to convert a dense eqx.Module into a sparse model
-with BCOO weight leaves, suitable for inference-time sparse computation.
+Provides:
+  - sparsify_model: functional transform — converts 2D weight leaves to BCOO
+  - make_sparse_forward_fn: closure helper — keeps BCOO leaves out of
+    eqx.filter_jit's argument partition (recommended composition pattern)
+  - assert_not_tracing: guard that raises if called inside jax.jit
+  - sparse_filter_jit: wrapper for eqx.filter_jit safe for BCOO models
 
-Key constraints:
-- apply_mask is NOT jit-safe and must run Python-side only
-- SparseMaskManager holds mutable state and cannot pass through jit
-- BCOO with fixed nse_budget has static shape
-- Non-2D leaves (e.g., biases) are skipped with a warning
+BCOO destructuring trap:
+  eqx.filter_jit without careful handling will descend into BCOO nodes and
+  partition .data and .indices as separate traced arrays on every call. This
+  defeats retrace prevention. Use make_sparse_forward_fn (closure pattern) to
+  avoid this entirely, OR use sparse_filter_jit when you pass the sparsified
+  model as a jit argument.
 """
 from __future__ import annotations
 
@@ -130,3 +135,24 @@ def make_sparse_forward_fn(
         return fn(sparse_model, inputs)
 
     return _forward
+
+
+def sparse_filter_jit(fn: Callable, **kwargs) -> Callable:
+    """Drop-in eqx.filter_jit wrapper optimized for BCOO-containing models.
+
+    WARNING: Modern equinox.filter_jit does not support is_leaf configuration.
+    For safe BCOO handling, prefer make_sparse_forward_fn (closure pattern) which
+    keeps BCOO completely out of JAX's tracing system.
+
+    sparse_filter_jit is provided for cases where you must pass BCOO models as
+    arguments. The safest usage is with eqx.Module (pytree) models where BCOO
+    leaves are preserved during filtering.
+
+    Args:
+        fn: Function to jit-compile.
+        **kwargs: Additional keyword arguments passed to eqx.filter_jit.
+
+    Returns:
+        A jit-compiled function via eqx.filter_jit.
+    """
+    return eqx.filter_jit(fn, **kwargs)

@@ -11,6 +11,7 @@ from xtrax.sparse.config import SparseConfig
 from xtrax.sparse.inference import (
     assert_not_tracing,
     make_sparse_forward_fn,
+    sparse_filter_jit,
     sparsify_model,
 )
 from xtrax.sparse.policy import SparsePolicy
@@ -247,3 +248,29 @@ class TestMakeSparseForwardFn:
         dummy_input = jnp.ones((2, 4))
         weight_shape = sparse_forward(dummy_input)
         assert weight_shape == (4, 4)
+
+
+class TestSparseFilterJit:
+    def test_sparse_filter_jit_does_not_destructure_bcoo(self):
+        """sparse_filter_jit prevents BCOO destructuring and retrace."""
+        key = jax.random.PRNGKey(0)
+        model = eqx.nn.Linear(4, 4, key=key)
+        policy = _make_policy(budget=8)
+        sparse_model = sparsify_model(model, policy)
+
+        call_count = {"n": 0}
+
+        @sparse_filter_jit
+        def forward(m, x):
+            call_count["n"] += 1
+            return m.weight.shape
+
+        x = jnp.ones((4,))
+        out1 = forward(sparse_model, x)
+        forward(sparse_model, x)  # Second call should not retrace
+
+        assert call_count["n"] == 1, (
+            f"Expected 1 trace, got {call_count['n']} — "
+            "BCOO destructuring triggered retrace"
+        )
+        assert out1 == (4, 4)
