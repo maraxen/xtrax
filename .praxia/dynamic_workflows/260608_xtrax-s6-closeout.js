@@ -258,8 +258,8 @@ Change line 73 from:
 to:
   with caplog.at_level(logging.ERROR, logger="xtrax.engine.io"):
 
-Line 78: the current assertion is `assert any("test error" in record.message ...)`.
-After consolidation, engine/io.py:154 logs `logger.exception("callback error")` —
+Line 78: the current assertion is \`assert any("test error" in record.message ...)\`.
+After consolidation, engine/io.py:154 logs \`logger.exception("callback error")\` —
 the format string is "callback error", not the exception text. Change line 78 from:
   assert any("test error" in record.message for record in caplog.records)
 to:
