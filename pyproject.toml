@@ -34,7 +34,8 @@ build-backend = "hatchling.build"
 packages = ["src/xtrax"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "benchmarks"]
+python_files = ["test_*.py", "*_test.py", "bench_*.py"]
 asyncio_mode = "auto"
 addopts = "--cov=xtrax --cov-report=term-missing --cov-report=html:.coverage_html --cov-branch"
 
