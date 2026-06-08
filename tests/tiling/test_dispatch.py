@@ -122,7 +122,9 @@ class TestScanDispatch:
         strategy = Scan(transition=transition)
 
         # Should work fine; fn is not called
-        result_carry, result_ys = make_axis_dispatch(strategy, ignored_fn, xs, init=init)
+        result_carry, result_ys = make_axis_dispatch(
+            strategy, ignored_fn, xs, init=init
+        )
         assert jnp.allclose(result_carry, jnp.sum(xs))
 
 
@@ -149,7 +151,8 @@ class TestDedupGatherDispatch:
 
         result = make_axis_dispatch(strategy, fn, xs)
 
-        # Expected: dedup to [1, 2, 3], map to [2, 4, 6], gather back to [2, 4, 2, 6, 4, 2]
+        # Expected: dedup to [1, 2, 3], map to [2, 4, 6],
+        # gather back to [2, 4, 2, 6, 4, 2]
         expected = jnp.array([2, 4, 2, 6, 4, 2])
         assert jnp.allclose(result, expected)
 

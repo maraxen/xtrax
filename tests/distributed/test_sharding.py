@@ -253,6 +253,95 @@ class TestGetDeviceMesh:
 class TestGetHardwareMeshProfile:
     """Test get_hardware_mesh_profile: device info and fallback behavior."""
 
+    def test_get_hardware_mesh_profile_gpu_device_type(self, monkeypatch):
+        """get_hardware_mesh_profile normalizes GPU device_type."""
+        import unittest.mock
+
+        # Create a mock device that reports "cuda" as platform
+        mock_device = unittest.mock.MagicMock()
+        mock_device.platform = "cuda"
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "gpu"
+
+    def test_get_hardware_mesh_profile_tpu_device_type(self, monkeypatch):
+        """get_hardware_mesh_profile normalizes TPU device_type."""
+        import unittest.mock
+
+        # Create a mock device that reports "tpu" as platform
+        mock_device = unittest.mock.MagicMock()
+        mock_device.platform = "tpu"
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "tpu"
+
+    def test_get_hardware_mesh_profile_two_devices(self, monkeypatch):
+        """
+        get_hardware_mesh_profile with 2 devices selects (2,) shape
+        and ("data",) axis names (covers lines 149-151).
+        """
+        import unittest.mock
+
+        # Create 2 mock devices
+        mock_devices = [
+            unittest.mock.MagicMock(platform="cpu"),
+            unittest.mock.MagicMock(platform="cpu"),
+        ]
+
+        monkeypatch.setattr(jax, "devices", lambda: mock_devices)
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["num_devices"] == 2
+        assert profile["recommended_shape"] == (2,)
+        assert profile["recommended_axis_names"] == ("data",)
+
+    def test_get_hardware_mesh_profile_eight_devices(self, monkeypatch):
+        """
+        get_hardware_mesh_profile with 8 devices (divisible by 8)
+        selects (8,) shape (covers line 154).
+        """
+        import unittest.mock
+
+        # Create 8 mock devices (8 % 8 == 0)
+        mock_devices = [
+            unittest.mock.MagicMock(platform="cpu") for _ in range(8)
+        ]
+
+        monkeypatch.setattr(jax, "devices", lambda: mock_devices)
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["num_devices"] == 8
+        # 8 % 8 == 0, so line 152-155 condition is true
+        assert profile["recommended_shape"] == (8,)
+        assert profile["recommended_axis_names"] == ("data",)
+
+    def test_get_hardware_mesh_profile_exception_fallback(self, monkeypatch):
+        """
+        get_hardware_mesh_profile never raises; returns CPU fallback
+        on exception (covers lines 167-169).
+        """
+        # Make jax.devices() raise an exception
+        def raise_error():
+            raise RuntimeError("Device query failed")
+
+        monkeypatch.setattr(jax, "devices", raise_error)
+
+        # Should not raise; should return fallback
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "cpu"
+        assert profile["num_devices"] == 1
+        assert profile["recommended_shape"] == (1,)
+        assert profile["recommended_axis_names"] == ("batch",)
+
     def test_get_hardware_mesh_profile_has_required_keys(self):
         """get_hardware_mesh_profile returns all 4 required keys."""
         profile = get_hardware_mesh_profile()
@@ -317,3 +406,93 @@ class TestGetHardwareMeshProfile:
         # Should be sane
         assert shape_product > 0
         assert len(shape) > 0
+
+    def test_get_hardware_mesh_profile_gpu_string_normalization(self, monkeypatch):
+        """
+        get_hardware_mesh_profile normalizes 'gpu' string device_type
+        (covers lines 139).
+        """
+        import unittest.mock
+
+        # Create a mock device that reports "gpu" as platform
+        mock_device = unittest.mock.MagicMock()
+        mock_device.platform = "gpu"
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "gpu"
+
+    def test_get_hardware_mesh_profile_cuda_to_gpu_normalization(self, monkeypatch):
+        """
+        get_hardware_mesh_profile converts 'cuda' to 'gpu' via normalization
+        (covers lines 139 branch).
+        """
+        import unittest.mock
+
+        # Create a mock device that reports "cuda" as platform
+        mock_device = unittest.mock.MagicMock()
+        mock_device.platform = "cuda"
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "gpu"
+
+    def test_get_hardware_mesh_profile_tpu_string_normalization(self, monkeypatch):
+        """
+        get_hardware_mesh_profile preserves 'tpu' string device_type
+        (covers lines 141).
+        """
+        import unittest.mock
+
+        # Create a mock device that reports "tpu" as platform
+        mock_device = unittest.mock.MagicMock()
+        mock_device.platform = "tpu"
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["device_type"] == "tpu"
+
+    def test_get_hardware_mesh_profile_four_devices_not_div_by_8(self, monkeypatch):
+        """
+        get_hardware_mesh_profile with 4 devices (not divisible by 8)
+        selects (4,) shape (covers line 158 branch, not 154).
+        """
+        import unittest.mock
+
+        # Create 4 mock devices (4 % 8 != 0)
+        mock_devices = [
+            unittest.mock.MagicMock(platform="cpu") for _ in range(4)
+        ]
+
+        monkeypatch.setattr(jax, "devices", lambda: mock_devices)
+
+        profile = get_hardware_mesh_profile()
+
+        assert profile["num_devices"] == 4
+        # 4 % 8 != 0, so line 157-159 condition (else branch) is taken
+        assert profile["recommended_shape"] == (4,)
+        assert profile["recommended_axis_names"] == ("data",)
+
+    def test_get_hardware_mesh_profile_single_device_no_attr(self, monkeypatch):
+        """
+        get_hardware_mesh_profile handles device without platform attribute
+        (fallback to 'cpu', covers line 135 branch).
+        """
+        import unittest.mock
+
+        # Create a mock device without platform attribute
+        mock_device = unittest.mock.MagicMock()
+        del mock_device.platform  # Remove the platform attribute
+
+        monkeypatch.setattr(jax, "devices", lambda: [mock_device])
+
+        profile = get_hardware_mesh_profile()
+
+        # Should default to cpu
+        assert profile["device_type"] == "cpu"
