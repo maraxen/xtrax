@@ -3,6 +3,7 @@
 ## Specs
 - [260604_xtrax-spec](specs/260604_xtrax-spec.md) — Full xtrax v0.2.0 specification (Phases 0–7, Sprints 1–4)
 - [260608_xtrax-s5-sparse](specs/260608_xtrax-s5-sparse.md) — Sprint 5: coverage completion, benchmarks, sparse infrastructure (Phase 8–10)
+- [260608_inference-time-sparsification](specs/260608_inference-time-sparsification-in-xtrax-h.md) — Sprint 7: sparsify_model functional API, BucketIterator minimal impl, jit-trace guard (inference-time sparsification)
 
 ## Plans
 ## Handoffs
