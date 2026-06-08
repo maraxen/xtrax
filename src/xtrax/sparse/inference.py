@@ -83,11 +83,11 @@ def sparsify_model(
         if not leaf_filter(leaf):
             # Leaf excluded by filter; pass through unchanged
             new_leaf = leaf
-        elif leaf_filter(leaf) and hasattr(leaf, "ndim") and leaf.ndim == 2:
+        elif hasattr(leaf, "ndim") and leaf.ndim == 2:
             # Sparsifiable leaf: 2D array, apply mask
             mask = policy.make_mask(leaf, step=0)
             new_leaf = policy.apply_mask(leaf, mask)
-        elif leaf_filter(leaf) and hasattr(leaf, "ndim") and leaf.ndim != 2:
+        elif hasattr(leaf, "ndim") and leaf.ndim != 2:
             # Filtered but non-2D: warn and skip (apply_mask requires 2D)
             warnings.warn(
                 f"sparsify_model: skipping non-2D leaf (ndim={leaf.ndim}) — "
