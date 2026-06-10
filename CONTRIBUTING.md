@@ -1,85 +1,97 @@
 # Contributing to xtrax
 
-Thank you for your interest in contributing! We welcome pull requests and issue reports.
+Thank you for contributing to xtrax! This document outlines our development workflow, testing standards, and release process.
 
 ## Development Setup
 
-Clone the repository and set up the development environment:
+Use `uv` for dependency and environment management:
 
 ```bash
 uv sync --extra dev
 ```
 
+This installs all runtime and dev dependencies, including testing, linting, type-checking, and documentation tools.
+
 ## Running Tests
 
-Run the full test suite:
+Run the full test suite with pytest:
 
 ```bash
 uv run pytest
 ```
 
-Tests include unit tests, integration tests, and benchmarks. All tests must pass before submitting a PR.
+**Coverage requirement:** 90% minimum. Tests are gated in CI.
+
+Current state: 414 tests passing, 96.5% coverage.
 
 ## Code Quality
 
-The project enforces strict code quality standards via:
-
 ### Linting and Formatting
+
+Check code style with ruff (lint and format):
 
 ```bash
 uv run ruff check .
 uv run ruff format .
 ```
 
+All code must pass ruff checks before commit.
+
 ### Type Checking
+
+Run pyright for type safety:
 
 ```bash
 uv run pyright
 ```
 
-### Coverage
+All code must pass type checking.
 
-The project enforces a minimum of **90% code coverage**. Coverage reports are generated automatically with pytest:
+## Building Documentation
 
-```bash
-uv run pytest
-```
-
-The HTML coverage report is available at `.coverage_html/index.html`.
-
-## Documentation
-
-Build documentation locally:
+Build docs locally with Sphinx:
 
 ```bash
+uv sync --only-group docs
 uv run sphinx-build -W -n -b html docs docs/_build
 ```
 
-The `-W` flag treats warnings as errors, and `-n` enables nitpicky mode. Documentation is auto-published to [https://xtrax.readthedocs.io](https://xtrax.readthedocs.io) on each release.
+- `-W`: Treat warnings as errors
+- `-n`: Show warnings about missing references
+- `-b html`: Build HTML output
 
-## Releasing
+Documentation is hosted on ReadTheDocs and published on every commit to main.
 
-Releases are automated via git tags:
+## Release Process
 
-1. Ensure all tests pass and coverage meets the 90% gate
-2. Tag the commit: `git tag v0.2.x` (or the appropriate version)
-3. Push the tag: `git push origin v0.2.x`
-4. GitHub Actions will automatically publish to PyPI via OIDC
+Releases are automated:
 
-## Code Style
+1. **Tag a release**: Create a git tag matching `v*` (e.g., `v0.2.0`)
+2. **Automated workflow**: `.github/workflows/publish.yml` triggers on tag push
+3. **TestPyPI**: Package is built and tested on TestPyPI first
+4. **PyPI**: If TestPyPI succeeds, published to PyPI via OIDC trusted publishing
 
-- Follow PEP 8 (enforced by ruff)
-- Type annotations required for all public functions
-- Docstrings for all public modules, classes, and functions
-- Import sorting via ruff's isort integration
+### Release Checklist
 
-## Reporting Issues
+Before tagging:
 
-Please include:
+- [ ] Bump version in `pyproject.toml`
+- [ ] Update `CHANGELOG.md` with release notes
+- [ ] Ensure all tests pass: `uv run pytest`
+- [ ] Ensure coverage meets gate: `uv run pytest --cov`
+- [ ] Build docs locally: `uv run sphinx-build -W -n -b html docs docs/_build`
+- [ ] Commit changes
+- [ ] Create tag: `git tag -a v0.X.Y -m "Release 0.X.Y"`
+- [ ] Push tag: `git push origin v0.X.Y`
 
-- A clear description of the issue
-- Steps to reproduce (if applicable)
-- Expected vs. actual behavior
-- Python version and relevant dependency versions
+## Code Style Guidelines
 
-Thank you for contributing!
+- Follow existing code patterns in the codebase
+- Use type hints consistently
+- Document public APIs with docstrings
+- Write clear, focused commits with descriptive messages
+- Test new functionality thoroughly
+
+## Questions?
+
+Open an issue on [GitHub](https://github.com/maraxen/xtrax/issues) or check the [docs](https://xtrax.readthedocs.io).
