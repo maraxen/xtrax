@@ -1,9 +1,9 @@
 # xtrax
 
 [![PyPI - Version](https://img.shields.io/pypi/v/xtrax.svg)](https://pypi.org/project/xtrax/)
-[![Tests](https://github.com/maraxen/xtrax/workflows/Test/badge.svg)](https://github.com/maraxen/xtrax/actions)
+[![Tests](https://github.com/maraxen/xtrax/actions/workflows/ci.yml/badge.svg)](https://github.com/maraxen/xtrax/actions)
 [![Docs](https://img.shields.io/readthedocs/xtrax.svg)](https://xtrax.readthedocs.io)
-[![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)](https://github.com/maraxen/xtrax)
+[![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen)](https://github.com/maraxen/xtrax)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/maraxen/xtrax/blob/main/LICENSE)
 
 A set of composable building blocks for JAX/Equinox training loops — engine + trainer orchestration, safety-checked steps, axis tiling strategies, inference-time sparsification, distributed/sharding helpers, streaming output callbacks, and orbax checkpointing — extracted from the author's research code.
