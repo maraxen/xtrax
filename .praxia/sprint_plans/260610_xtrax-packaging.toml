@@ -193,7 +193,7 @@ under deadline pressure (pre-mortem-c). This gate blocks N7.
 
 EMIT THIS CHECKLIST for the owner (do not attempt to perform it):
 1. On https://pypi.org → project `xtrax` → Publishing → add a GitHub Actions Trusted Publisher:
-     owner = <github-org-or-user>, repository = xtrax, workflow = publish.yml, environment = (match publish.yml).
+     owner = maraxen, repository = xtrax, workflow = publish.yml, environment = (match publish.yml).
 2. Repeat on https://test.pypi.org for the TestPyPI staging stage.
 3. If the `xtrax` project does not yet exist on PyPI, register the name via a first manual/TestPyPI upload OR
    pre-create the pending publisher.
@@ -205,7 +205,7 @@ reviewer_prompt = """
 Verify Track D (N9 — OIDC human gate). task_id: 260610_xtrax-packaging.
 
 This gate cannot be verified by command — it is an external PyPI configuration. PASS only if the project owner
-has explicitly confirmed that BOTH the PyPI and TestPyPI Trusted Publishers for owner/xtrax + publish.yml are
+has explicitly confirmed that BOTH the PyPI and TestPyPI Trusted Publishers for maraxen/xtrax + publish.yml are
 configured. Otherwise NEEDS_WORK (blocking). Do NOT auto-PASS. N7 (publish) must not run until this is PASS.
 """
 return_key = "1454"
@@ -228,7 +228,7 @@ TASK (repo root /home/marielle/projects/xtrax):
 2. In pyproject.toml [project] add:
      license = "Apache-2.0"   # SPDX expression
      keywords = ["jax", "equinox", "training", "sparse", "distributed"]
-     authors = [{ name = "<author>", email = "<email>" }]
+     authors = [{ name = "Marielle Russo", email = "67157875+maraxen@users.noreply.github.com" }]
      classifiers = [
        "Development Status :: 4 - Beta",
        "Programming Language :: Python :: 3.13",
@@ -236,7 +236,9 @@ TASK (repo root /home/marielle/projects/xtrax):
        "License :: OSI Approved :: Apache Software License",
        "Typing :: Typed",
      ]
-   Add [project.urls]: Homepage, Documentation, Repository, Issues, Changelog.
+   Add [project.urls]: Homepage = "https://github.com/maraxen/xtrax", Documentation = "https://xtrax.readthedocs.io",
+   Repository = "https://github.com/maraxen/xtrax", Issues = "https://github.com/maraxen/xtrax/issues",
+   Changelog = "https://github.com/maraxen/xtrax/blob/main/CHANGELOG.md".
 3. Create the marker file src/xtrax/py.typed (empty) and ENSURE it ships in the wheel. With hatchling src-layout add:
      [tool.hatch.build.targets.wheel.force-include]
      "src/xtrax/py.typed" = "xtrax/py.typed"
