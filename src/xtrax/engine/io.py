@@ -121,6 +121,23 @@ class BoundedCallbackHandler:
     Uses an asyncio.Semaphore to limit the number of concurrently running
     coroutines. Exceptions in submitted coroutines are logged but not
     propagated, allowing the training loop to continue.
+
+    Example:
+        Import from the public surface and use with asyncio:
+
+        >>> from xtrax.io import BoundedCallbackHandler
+        >>> import asyncio
+        >>> async def example():
+        ...     handler = BoundedCallbackHandler(max_concurrent=2)
+        ...     values = []
+        ...     async def callback(x):
+        ...         values.append(x)
+        ...     await handler.submit(callback(1))
+        ...     await handler.submit(callback(2))
+        ...     await handler.wait_all()
+        ...     return sorted(values)
+        >>> asyncio.run(example())
+        [1, 2]
     """
 
     def __init__(self, max_concurrent: int = 4) -> None:
