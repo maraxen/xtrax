@@ -1,0 +1,25 @@
+# Read the Docs configuration file
+# See https://docs.readthedocs.io/en/stable/config-file/v2/
+
+version: 2
+
+python:
+  version: "3.13"
+  install:
+    - method: uv
+      path: .
+      extra_requirements:
+        - docs
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.13"
+
+sphinx:
+  configuration: docs/conf.py
+  builder: html
+
+formats:
+  - pdf
+  - epub
