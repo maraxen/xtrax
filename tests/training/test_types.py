@@ -14,12 +14,14 @@ from xtrax.training.types import (
 # Helper classes for testing
 class SimpleLoss:
     """Concrete implementation of LossFunction."""
+
     def __call__(self, predictions, targets):
         return jnp.mean((predictions - targets) ** 2)
 
 
 class SimpleCallback:
     """Concrete implementation of Callback with all 7 hooks."""
+
     def __init__(self):
         self.call_log = []
 
@@ -55,8 +57,10 @@ class TestLossFunctionProtocol:
 
     def test_loss_function_lambda_protocol_check(self):
         """LossFunction isinstance check passes for callable."""
+
         def loss_fn(pred, targ):
             return jnp.mean((pred - targ) ** 2)
+
         assert isinstance(loss_fn, LossFunction)
 
     def test_loss_function_callable(self):

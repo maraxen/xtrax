@@ -13,6 +13,7 @@ class TestVmapDispatch:
 
     def test_vmap_dispatch_simple(self):
         """Vmap dispatches to jax.vmap(fn)."""
+
         def fn(x):
             return x * 2
 
@@ -25,6 +26,7 @@ class TestVmapDispatch:
 
     def test_vmap_dispatch_pytree(self):
         """Vmap works with nested pytrees."""
+
         def fn(carry):
             a, b = carry
             return (a * 2, b + 1)
@@ -43,6 +45,7 @@ class TestSafeMapDispatch:
 
     def test_safemap_no_chunking_when_small(self):
         """SafeMap with batch_size >= n uses vmap."""
+
         def fn(x):
             return x * 2
 
@@ -55,6 +58,7 @@ class TestSafeMapDispatch:
 
     def test_safemap_chunking_divisible(self):
         """SafeMap with divisible chunking matches vmap."""
+
         def fn(x):
             return x * 3
 
@@ -67,6 +71,7 @@ class TestSafeMapDispatch:
 
     def test_safemap_non_divisible_raises(self):
         """SafeMap with non-divisible batch raises ValueError."""
+
         def fn(x):
             return x * 2
 
@@ -82,6 +87,7 @@ class TestScanDispatch:
 
     def test_scan_dispatch_with_init(self):
         """Scan dispatch uses strategy.transition and init."""
+
         def transition(carry, x):
             return carry + x, x * 2
 
@@ -99,6 +105,7 @@ class TestScanDispatch:
 
     def test_scan_dispatch_requires_init(self):
         """Scan dispatch raises ValueError if init is None."""
+
         def transition(carry, x):
             return carry + x, x * 2
 
@@ -110,6 +117,7 @@ class TestScanDispatch:
 
     def test_scan_dispatch_ignores_fn(self):
         """Scan dispatch ignores the fn parameter."""
+
         def transition(carry, x):
             return carry + x, x * 2
 
@@ -133,6 +141,7 @@ class TestDedupGatherDispatch:
 
     def test_dedupgather_dispatch(self):
         """DedupGather dispatches through dedup -> map -> gather."""
+
         # Simple dedup: group by unique values
         def dedup_fn(xs):
             """Returns (unique_xs, indices_to_gather)."""
@@ -158,6 +167,7 @@ class TestDedupGatherDispatch:
 
     def test_dedupgather_unpacking(self):
         """DedupGather correctly unpacks dedup_fn output."""
+
         def dedup_fn(xs):
             # Return exactly two values
             unique = jnp.unique(xs)
@@ -196,17 +206,22 @@ class TestDispatchExhaustiveness:
 
     def test_scan_isinstance(self):
         """Scan is recognized."""
+
         def transition(carry, x):
             return carry, x
+
         strategy = Scan(transition=transition)
         assert isinstance(strategy, Scan)
 
     def test_dedupgather_isinstance(self):
         """DedupGather is recognized."""
+
         def dedup_fn(xs):
             return xs, jnp.arange(len(xs))
+
         def gather_fn(ys, indices):
             return ys
+
         strategy = DedupGather(dedup_fn=dedup_fn, gather_fn=gather_fn, k_bucket=8)
         assert isinstance(strategy, DedupGather)
 
@@ -230,6 +245,7 @@ class TestDispatchIntegration:
 
     def test_dispatch_safemap_with_neural_net_like(self):
         """Test SafeMap with neural net-like operation."""
+
         def fn(x):
             return jax.nn.relu(x)
 

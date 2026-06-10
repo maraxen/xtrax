@@ -12,6 +12,7 @@ class TestSafeScanBasic:
 
     def test_normal_scan_matches_jax_scan(self):
         """Normal scan should match jax.lax.scan exactly."""
+
         def add_carry(carry, x):
             """Add x to carry, output carry."""
             return carry + x, carry + x
@@ -30,25 +31,27 @@ class TestSafeScanBasic:
 
     def test_scan_with_pytree_carry(self):
         """Scan with pytree carry should work."""
+
         def step(carry, x):
             """Update carry dict with new values."""
             new_carry = {
-                'sum': carry['sum'] + x,
-                'count': carry['count'] + 1,
+                "sum": carry["sum"] + x,
+                "count": carry["count"] + 1,
             }
-            return new_carry, new_carry['sum']
+            return new_carry, new_carry["sum"]
 
-        init = {'sum': jnp.array(0.0), 'count': jnp.array(0)}
+        init = {"sum": jnp.array(0.0), "count": jnp.array(0)}
         xs = jnp.array([1.0, 2.0, 3.0])
 
         final_carry, ys = safe_scan(step, init, xs)
 
-        assert jnp.allclose(final_carry['sum'], jnp.array(6.0))
-        assert jnp.allclose(final_carry['count'], jnp.array(3))
+        assert jnp.allclose(final_carry["sum"], jnp.array(6.0))
+        assert jnp.allclose(final_carry["count"], jnp.array(3))
         assert jnp.allclose(ys, jnp.array([1.0, 3.0, 6.0]))
 
     def test_scan_with_none_carry_is_legal(self):
         """init=None should be a legal carry (not rejected by safe_scan)."""
+
         def step(carry, x):
             """No-op carry, just accumulate outputs."""
             return None, x * 2
@@ -68,6 +71,7 @@ class TestSafeScanEmptyInput:
 
     def test_empty_xs_inferred_length_raises_valueerror(self):
         """Inferred length 0 should raise ValueError before tracing."""
+
         def dummy_step(carry, x):
             return carry, x
 
@@ -79,6 +83,7 @@ class TestSafeScanEmptyInput:
 
     def test_explicit_length_zero_raises_valueerror(self):
         """Explicit length=0 should raise ValueError before tracing."""
+
         def dummy_step(carry, x):
             return carry, x
 
@@ -94,6 +99,7 @@ class TestSafeScanReverse:
 
     def test_reverse_true_matches_jax(self):
         """reverse=True should match jax.lax.scan behavior."""
+
         def step(carry, x):
             return carry + x, x
 
@@ -115,6 +121,7 @@ class TestSafeScanUnroll:
 
     def test_unroll_1_default_matches_no_unroll(self):
         """unroll=1 (default) should match unroll behavior."""
+
         def step(carry, x):
             return carry * x, carry * x
 
@@ -132,6 +139,7 @@ class TestSafeScanUnroll:
 
     def test_unroll_greater_than_1_matches_jax(self):
         """unroll>1 should match jax behavior."""
+
         def step(carry, x):
             return carry + x, carry + x
 
@@ -153,35 +161,37 @@ class TestSafeScanPytree:
 
     def test_pytree_xs_structure_preserved(self):
         """Pytree xs structure should be preserved in output."""
+
         def step(carry, x):
             """x is a dict, output is same structure."""
-            new_carry = carry + x['value']
-            return new_carry, {'doubled': x['value'] * 2, 'orig': x['value']}
+            new_carry = carry + x["value"]
+            return new_carry, {"doubled": x["value"] * 2, "orig": x["value"]}
 
         init = jnp.array(0.0)
         xs = {
-            'value': jnp.array([1.0, 2.0, 3.0]),
+            "value": jnp.array([1.0, 2.0, 3.0]),
         }
 
         final_carry, ys = safe_scan(step, init, xs)
 
         assert final_carry.shape == ()
-        assert 'doubled' in ys
-        assert 'orig' in ys
-        assert jnp.allclose(ys['doubled'], jnp.array([2.0, 4.0, 6.0]))
-        assert jnp.allclose(ys['orig'], jnp.array([1.0, 2.0, 3.0]))
+        assert "doubled" in ys
+        assert "orig" in ys
+        assert jnp.allclose(ys["doubled"], jnp.array([2.0, 4.0, 6.0]))
+        assert jnp.allclose(ys["orig"], jnp.array([1.0, 2.0, 3.0]))
 
     def test_nested_pytree_xs(self):
         """Nested pytree xs should work."""
+
         def step(carry, x):
-            val = x['nested']['inner'] + x['value']
+            val = x["nested"]["inner"] + x["value"]
             return carry + val, val
 
         init = jnp.array(0.0)
         xs = {
-            'value': jnp.array([1.0, 2.0]),
-            'nested': {
-                'inner': jnp.array([10.0, 20.0]),
+            "value": jnp.array([1.0, 2.0]),
+            "nested": {
+                "inner": jnp.array([10.0, 20.0]),
             },
         }
 

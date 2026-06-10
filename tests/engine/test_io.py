@@ -130,6 +130,7 @@ class TestBoundedCallbackHandler:
         but NOT propagated'. This test verifies both halves of the requirement.
         """
         import logging
+
         handler = BoundedCallbackHandler(max_concurrent=1)
 
         async def failing_coro():
@@ -233,6 +234,7 @@ class TestBoundedCallbackHandler:
     async def test_async_indexed_stream_import_from_io_callbacks(self):
         """Verify async_indexed_stream can be imported from xtrax.io.callbacks."""
         from xtrax.io.callbacks import async_indexed_stream as aio_stream
+
         result = []
         async for idx, item in aio_stream([1, 2, 3]):
             result.append((idx, item))
@@ -242,6 +244,7 @@ class TestBoundedCallbackHandler:
     async def test_bounded_callback_handler_import_from_io_callbacks(self):
         """Verify BoundedCallbackHandler can be imported from xtrax.io.callbacks."""
         from xtrax.io.callbacks import BoundedCallbackHandler as BCH
+
         handler = BCH(max_concurrent=1)
         flag = [False]
 

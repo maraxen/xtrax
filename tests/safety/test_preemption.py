@@ -81,10 +81,7 @@ class TestPreemptionHandler:
         os.kill(os.getpid(), signal.SIGTERM)
         time.sleep(0.01)
 
-        msg = (
-            f"Expected save_fn never called with rank=1, "
-            f"got {call_count[0]} calls"
-        )
+        msg = f"Expected save_fn never called with rank=1, got {call_count[0]} calls"
         assert call_count[0] == 0, msg
 
     def test_register_idempotent(self):

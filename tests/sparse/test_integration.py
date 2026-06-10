@@ -231,9 +231,9 @@ class TestEngineEvalComposition:
             if isinstance(leaf, BCOO)
         )
 
-        assert (
-            bcoo_leaves_before == bcoo_leaves_after
-        ), f"BCOO count changed: {bcoo_leaves_before} → {bcoo_leaves_after}"
+        assert bcoo_leaves_before == bcoo_leaves_after, (
+            f"BCOO count changed: {bcoo_leaves_before} → {bcoo_leaves_after}"
+        )
         assert bcoo_leaves_after > 0, "No BCOO leaves found after sparsification"
 
     def test_sparse_model_with_dropout_layer(self):

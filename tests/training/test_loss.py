@@ -160,9 +160,9 @@ class TestMultiTaskLoss:
         result = multi_loss(preds, targets)
 
         expected = (
-            loss1(preds[0], targets[0]) +
-            loss2(preds[1], targets[1]) +
-            loss3(preds[2], targets[2])
+            loss1(preds[0], targets[0])
+            + loss2(preds[1], targets[1])
+            + loss3(preds[2], targets[2])
         )
 
         assert jnp.allclose(result, expected)
@@ -174,8 +174,7 @@ class TestMultiTaskLoss:
 
         # weight_schedule returns a scalar multiplier
         multi_loss = MultiTaskLoss(
-            losses=(loss1, loss2),
-            weight_schedule=lambda step: jnp.array(2.0)
+            losses=(loss1, loss2), weight_schedule=lambda step: jnp.array(2.0)
         )
 
         preds1 = jnp.array([1.0, 2.0])
@@ -197,8 +196,7 @@ class TestMultiTaskLoss:
 
         # weight_schedule depends on step: returns (step + 1)
         multi_loss = MultiTaskLoss(
-            losses=(loss1,),
-            weight_schedule=lambda step: jnp.array(float(step + 1))
+            losses=(loss1,), weight_schedule=lambda step: jnp.array(float(step + 1))
         )
 
         preds = jnp.array([1.0, 2.0])

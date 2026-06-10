@@ -1,4 +1,5 @@
 """Tests for sparse inference time sparsification (AC-1 through AC-8)."""
+
 import warnings
 
 import equinox as eqx
@@ -39,6 +40,7 @@ class TestAssertNotTracing:
 
         def _tracer_test():
             traced_leaf = jnp.array([1.0, 2.0])
+
             # Manually create a Tracer by tracing through a pytree with an array
             def inner(x):
                 assert_not_tracing([x])

@@ -1,4 +1,5 @@
 """Distributed initialization for JAX multi-process training."""
+
 import os
 from typing import Any
 

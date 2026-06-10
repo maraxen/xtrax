@@ -24,6 +24,7 @@ class TestSafeNorm:
 
     def test_safe_norm_grad_at_zero_is_finite(self):
         """Verify gradient of safe_norm at x=zeros is finite (not NaN)."""
+
         def fn(x):
             return jnp.sum(safe_norm(x))
 
@@ -100,6 +101,7 @@ class TestSafeReciprocal:
 
     def test_safe_reciprocal_grad_is_finite(self):
         """Verify gradient of safe_reciprocal is finite."""
+
         def fn(x):
             return jnp.sum(safe_reciprocal(x))
 

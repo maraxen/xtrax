@@ -11,6 +11,7 @@ from xtrax.training.types import ResumableState
 
 class SimpleLinearModel(eqx.Module):
     """Minimal trainable model: y = w*x + b."""
+
     w: jax.Array
     b: jax.Array
 

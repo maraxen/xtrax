@@ -18,6 +18,7 @@ from xtrax.training.types import Callback, ResumableState
 # Test Helpers
 # ============================================================================
 
+
 class DummyLoss:
     """Simple MSE loss for testing."""
 
@@ -89,9 +90,7 @@ class DummyDataModule:
             inputs = jax.random.normal(
                 jax.random.PRNGKey(i + 200), (self.batch_size, 2)
             )
-            targets = jax.random.normal(
-                jax.random.PRNGKey(i + 300), (self.batch_size,)
-            )
+            targets = jax.random.normal(jax.random.PRNGKey(i + 300), (self.batch_size,))
             yield {"inputs": inputs, "targets": targets}
 
 

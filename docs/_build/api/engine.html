@@ -368,6 +368,24 @@ validation_callbacks: Tuple of validation callbacks (fired during eval)</p>
 <p>Uses an asyncio.Semaphore to limit the number of concurrently running
 coroutines. Exceptions in submitted coroutines are logged but not
 propagated, allowing the training loop to continue.</p>
+<p>.. admonition:: Example</p>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>  Import from the public surface and use with asyncio:
+
+  &gt;&gt;&gt; from xtrax.io import BoundedCallbackHandler
+  &gt;&gt;&gt; import asyncio
+  &gt;&gt;&gt; async def example():
+  ...     handler = BoundedCallbackHandler(max_concurrent=2)
+  ...     values = []
+  ...     async def callback(x):
+  ...         values.append(x)
+  ...     await handler.submit(callback(1))
+  ...     await handler.submit(callback(2))
+  ...     await handler.wait_all()
+  ...     return sorted(values)
+  &gt;&gt;&gt; asyncio.run(example())
+  [1, 2]
+</pre></div>
+</div>
 <p>.. py:method:: BoundedCallbackHandler.submit(coro)
 :module: xtrax.engine
 :async:</p>

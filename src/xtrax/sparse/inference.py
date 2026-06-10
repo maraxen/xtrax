@@ -23,6 +23,7 @@ BCOO destructuring trap & solutions:
      Pass sparsified model as an argument. eqx.filter_jit's default behavior
      treats BCOO as static, preventing destructuring and retrace.
 """
+
 from __future__ import annotations
 
 import warnings

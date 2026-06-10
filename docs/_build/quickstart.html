@@ -257,15 +257,89 @@
         <article role="main" id="furo-main-content">
           <section id="quick-start">
 <h1>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading">¶</a></h1>
-<p>(This page will be filled in by N4b — narrative prose content)</p>
-<section id="getting-started">
-<h2>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">¶</a></h2>
+<p>Get up and running with xtrax in 30 seconds.</p>
+<section id="installation">
+<h2>Installation<a class="headerlink" href="#installation" title="Link to this heading">¶</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>xtrax
+</pre></div>
+</div>
+<p>Requires Python 3.13+ and JAX.</p>
 </section>
-<section id="basic-example">
-<h2>Basic Example<a class="headerlink" href="#basic-example" title="Link to this heading">¶</a></h2>
+<section id="your-first-training-loop">
+<h2>Your First Training Loop<a class="headerlink" href="#your-first-training-loop" title="Link to this heading">¶</a></h2>
+<p>Here’s a complete example: define a model, create a trainer, and run a training step.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax</span><span class="w"> </span><span class="kn">import</span> <span class="n">Trainer</span><span class="p">,</span> <span class="n">Engine</span><span class="p">,</span> <span class="n">ResumableState</span><span class="p">,</span> <span class="n">adamw_with_schedule</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">equinox</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">eqx</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">jax</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">jax.numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">jnp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">optax</span>
+
+<span class="c1"># Define a simple model (two-layer MLP)</span>
+<span class="n">key</span> <span class="o">=</span> <span class="n">jax</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">key</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">key</span><span class="p">,</span> <span class="n">subkey</span> <span class="o">=</span> <span class="n">jax</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">eqx</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">MLP</span><span class="p">(</span>
+    <span class="n">input_size</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>
+    <span class="n">output_size</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+    <span class="n">width_size</span><span class="o">=</span><span class="mi">128</span><span class="p">,</span>
+    <span class="n">depth</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+    <span class="n">key</span><span class="o">=</span><span class="n">subkey</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="c1"># Define a loss function</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">mse_loss</span><span class="p">(</span><span class="n">predictions</span><span class="p">,</span> <span class="n">targets</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">jnp</span><span class="o">.</span><span class="n">mean</span><span class="p">((</span><span class="n">predictions</span> <span class="o">-</span> <span class="n">targets</span><span class="p">)</span> <span class="o">**</span> <span class="mi">2</span><span class="p">)</span>
+
+<span class="c1"># Create an optimizer with learning rate schedule</span>
+<span class="n">optimizer</span> <span class="o">=</span> <span class="n">adamw_with_schedule</span><span class="p">(</span>
+    <span class="n">peak_lr</span><span class="o">=</span><span class="mf">1e-3</span><span class="p">,</span>
+    <span class="n">warmup_steps</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span>
+    <span class="n">total_steps</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="c1"># Create the trainer</span>
+<span class="n">trainer</span> <span class="o">=</span> <span class="n">Trainer</span><span class="p">(</span><span class="n">loss_fn</span><span class="o">=</span><span class="n">mse_loss</span><span class="p">,</span> <span class="n">optimizer</span><span class="o">=</span><span class="n">optimizer</span><span class="p">)</span>
+
+<span class="c1"># Initialize training state</span>
+<span class="n">opt_state</span> <span class="o">=</span> <span class="n">optimizer</span><span class="o">.</span><span class="n">init</span><span class="p">(</span><span class="n">eqx</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">eqx</span><span class="o">.</span><span class="n">is_array</span><span class="p">))</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">ResumableState</span><span class="p">(</span>
+    <span class="n">step</span><span class="o">=</span><span class="n">jnp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span>
+    <span class="n">key</span><span class="o">=</span><span class="n">key</span><span class="p">,</span>
+    <span class="n">model</span><span class="o">=</span><span class="n">model</span><span class="p">,</span>
+    <span class="n">opt_state</span><span class="o">=</span><span class="n">opt_state</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="c1"># Create a batch</span>
+<span class="n">batch</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;inputs&quot;</span><span class="p">:</span> <span class="n">jnp</span><span class="o">.</span><span class="n">ones</span><span class="p">((</span><span class="mi">32</span><span class="p">,</span> <span class="mi">64</span><span class="p">)),</span>
+    <span class="s2">&quot;targets&quot;</span><span class="p">:</span> <span class="n">jnp</span><span class="o">.</span><span class="n">ones</span><span class="p">((</span><span class="mi">32</span><span class="p">,</span> <span class="mi">1</span><span class="p">)),</span>
+<span class="p">}</span>
+
+<span class="c1"># Run a training step</span>
+<span class="n">new_state</span><span class="p">,</span> <span class="n">metrics</span> <span class="o">=</span> <span class="n">trainer</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">batch</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Loss: </span><span class="si">{</span><span class="n">metrics</span><span class="p">[</span><span class="s1">&#39;loss&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="what-s-happening">
+<h2>What’s Happening<a class="headerlink" href="#what-s-happening" title="Link to this heading">¶</a></h2>
+<ol class="arabic simple">
+<li><p><strong>Model definition</strong>: We use Equinox to define a JAX model.</p></li>
+<li><p><strong>Loss function</strong>: Any callable that returns a scalar loss.</p></li>
+<li><p><strong>Optimizer</strong>: xtrax provides helpers like <code class="docutils literal notranslate"><span class="pre">adamw_with_schedule</span></code> that wrap Optax.</p></li>
+<li><p><strong>Trainer</strong>: Wraps the model, loss, and optimizer. The <code class="docutils literal notranslate"><span class="pre">.step()</span></code> method is JIT-compiled.</p></li>
+<li><p><strong>State</strong>: <code class="docutils literal notranslate"><span class="pre">ResumableState</span></code> bundles model parameters, optimizer state, and training metadata.</p></li>
+<li><p><strong>Training step</strong>: Call <code class="docutils literal notranslate"><span class="pre">.step(state,</span> <span class="pre">batch)</span></code> to compute gradients, update parameters, and return the new state.</p></li>
+</ol>
 </section>
 <section id="next-steps">
 <h2>Next Steps<a class="headerlink" href="#next-steps" title="Link to this heading">¶</a></h2>
+<ul class="simple">
+<li><p><strong>Distributed training</strong>: Use <code class="docutils literal notranslate"><span class="pre">Engine</span></code> for multi-process training with automatic checkpointing.</p></li>
+<li><p><strong>Composable batching</strong>: Use <code class="docutils literal notranslate"><span class="pre">AxisSpec</span></code> and <code class="docutils literal notranslate"><span class="pre">BatchPlanner</span></code> to apply vmap, batch-wise loops, or structured sparsity.</p></li>
+<li><p><strong>Data pipelines</strong>: Load data with <code class="docutils literal notranslate"><span class="pre">DataModule</span></code> and <code class="docutils literal notranslate"><span class="pre">create_distributed_pipeline</span></code>.</p></li>
+<li><p><strong>Safety checks</strong>: Enable NaN/Inf detection with <code class="docutils literal notranslate"><span class="pre">create_train_step(safety=True)</span></code>.</p></li>
+</ul>
 </section>
 </section>
 
@@ -325,8 +399,9 @@
           <div class="toc-tree">
             <ul>
 <li><a class="reference internal" href="#">Quick Start</a><ul>
-<li><a class="reference internal" href="#getting-started">Getting Started</a></li>
-<li><a class="reference internal" href="#basic-example">Basic Example</a></li>
+<li><a class="reference internal" href="#installation">Installation</a></li>
+<li><a class="reference internal" href="#your-first-training-loop">Your First Training Loop</a></li>
+<li><a class="reference internal" href="#what-s-happening">What’s Happening</a></li>
 <li><a class="reference internal" href="#next-steps">Next Steps</a></li>
 </ul>
 </li>

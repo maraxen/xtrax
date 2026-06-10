@@ -44,6 +44,4 @@ def safe_scan[Carry, X, Y](
         raise ValueError("safe_scan: xs has leading axis of length 0.")
 
     # Delegate to jax.lax.scan with all parameters
-    return jax.lax.scan(
-        fn, init, xs, length=length, reverse=reverse, unroll=unroll
-    )
+    return jax.lax.scan(fn, init, xs, length=length, reverse=reverse, unroll=unroll)

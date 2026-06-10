@@ -257,15 +257,168 @@
         <article role="main" id="furo-main-content">
           <section id="core-concepts">
 <h1>Core Concepts<a class="headerlink" href="#core-concepts" title="Link to this heading">¶</a></h1>
-<p>(This page will be filled in by N4b — narrative prose content)</p>
-<section id="key-ideas">
-<h2>Key Ideas<a class="headerlink" href="#key-ideas" title="Link to this heading">¶</a></h2>
+<p>This page introduces the key ideas that make xtrax powerful.</p>
+<section id="composable-training-infrastructure">
+<h2>Composable Training Infrastructure<a class="headerlink" href="#composable-training-infrastructure" title="Link to this heading">¶</a></h2>
+<p>xtrax builds a modular training stack on top of JAX and Equinox. Rather than a rigid training loop, we provide composable primitives:</p>
+<ul class="simple">
+<li><p><strong>Trainer</strong>: A lightweight wrapper around your model and loss. Computes gradients, applies updates, and returns the new state. 100% pure JAX — JIT-compiled every time.</p></li>
+<li><p><strong>ResumableState</strong>: Bundles model, optimizer state, training step counter, and arbitrary metadata. Designed for checkpointing and resumption.</p></li>
+<li><p><strong>Engine</strong>: A higher-level orchestrator that handles multiple epochs, callbacks, validation, and checkpointing automatically.</p></li>
+</ul>
+<p>This separation lets you choose your level of abstraction: start with <code class="docutils literal notranslate"><span class="pre">Trainer.step()</span></code> for fine-grained control, or use <code class="docutils literal notranslate"><span class="pre">Engine.fit()</span></code> for the full training harness.</p>
 </section>
-<section id="terminology">
-<h2>Terminology<a class="headerlink" href="#terminology" title="Link to this heading">¶</a></h2>
+<section id="axis-strategies-composable-tiling">
+<h2>Axis Strategies: Composable Tiling<a class="headerlink" href="#axis-strategies-composable-tiling" title="Link to this heading">¶</a></h2>
+<p>Real models and datasets have multiple axes that must be scheduled for compute. xtrax provides four <strong>axis strategies</strong> to handle them:</p>
+<ol class="arabic simple">
+<li><p><strong>Vmap</strong>: Vectorize the entire axis using <code class="docutils literal notranslate"><span class="pre">jax.vmap</span></code>. Fastest when memory permits.</p></li>
+<li><p><strong>SafeMap</strong>: Chunk the axis into batches and loop (<code class="docutils literal notranslate"><span class="pre">jax.lax.map</span></code> with batch-wise vmap). When an axis is too large to vectorize, SafeMap chunks it automatically.</p></li>
+<li><p><strong>Scan</strong>: Carry-bearing sequential iteration. For axes that must maintain state across steps (e.g., RNN hidden states).</p></li>
+<li><p><strong>DedupGather</strong>: When an axis has repeated elements, deduplicate them, compute on unique values only, then scatter results. Transparent speedup for skewed distributions.</p></li>
+</ol>
+<p>You declare an axis with <code class="docutils literal notranslate"><span class="pre">AxisSpec</span></code> — specify its cardinality, preferred batch size, and whether deduplication is eligible. The <code class="docutils literal notranslate"><span class="pre">BatchPlanner</span></code> automatically selects the best strategy:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax</span><span class="w"> </span><span class="kn">import</span> <span class="n">AxisSpec</span><span class="p">,</span> <span class="n">BatchPlanner</span>
+
+<span class="n">specs</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="n">AxisSpec</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;batch&quot;</span><span class="p">,</span> <span class="n">cardinality</span><span class="o">=</span><span class="mi">1024</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">256</span><span class="p">),</span>
+    <span class="n">AxisSpec</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;time&quot;</span><span class="p">,</span> <span class="n">cardinality</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">100</span><span class="p">),</span>
+<span class="p">]</span>
+
+<span class="n">planner</span> <span class="o">=</span> <span class="n">BatchPlanner</span><span class="p">()</span>
+<span class="n">plan</span> <span class="o">=</span> <span class="n">planner</span><span class="o">.</span><span class="n">plan</span><span class="p">(</span><span class="n">specs</span><span class="p">)</span>
+
+<span class="k">for</span> <span class="n">decision</span> <span class="ow">in</span> <span class="n">plan</span><span class="o">.</span><span class="n">decisions</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">decision</span><span class="o">.</span><span class="n">spec</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">decision</span><span class="o">.</span><span class="n">strategy</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The result is a <code class="docutils literal notranslate"><span class="pre">BatchPlan</span></code> — an executable schedule that can be dispatched via <code class="docutils literal notranslate"><span class="pre">make_axis_dispatch()</span></code>.</p>
 </section>
-<section id="design-principles">
-<h2>Design Principles<a class="headerlink" href="#design-principles" title="Link to this heading">¶</a></h2>
+<section id="sparse-inference-with-fixed-sparsity">
+<h2>Sparse Inference with Fixed Sparsity<a class="headerlink" href="#sparse-inference-with-fixed-sparsity" title="Link to this heading">¶</a></h2>
+<p>xtrax provides <strong>structured sparse matrix multiplication</strong> for inference, inference-only domains, and memory-constrained training. The sparse module applies a learned sparsity pattern with a fixed “number of stored elements” (nse) budget — guaranteeing constant XLA compile shapes even as sparsity patterns change.</p>
+<p>Key concept: <strong>masks are step-scheduled</strong>. Sparse masks can be recomputed on a fixed schedule (e.g., every N steps), and xtrax handles the transition safely:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">SparsePolicy</span></code> defines which elements to keep (top-k by magnitude).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SparseMaskManager</span></code> applies masks on a schedule and caches them Python-side.</p></li>
+<li><p>When true nonzeros exceed the budget, fall back to dense or error out — your choice.</p></li>
+</ul>
+<p>This is transparent to the model: just wrap your weight matrix with a mask, and xtrax handles layout, padding, and recompilation safety.</p>
+</section>
+<section id="distributed-training-with-mesh-sharding">
+<h2>Distributed Training with Mesh Sharding<a class="headerlink" href="#distributed-training-with-mesh-sharding" title="Link to this heading">¶</a></h2>
+<p>xtrax integrates JAX’s multi-process SPMD sharding. After calling <code class="docutils literal notranslate"><span class="pre">init_dist()</span></code>, models are automatically partitioned across devices:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax</span><span class="w"> </span><span class="kn">import</span> <span class="n">init_dist</span><span class="p">,</span> <span class="n">LogicalMesh</span>
+
+<span class="n">init_dist</span><span class="p">()</span>  <span class="c1"># Initialize multi-process communication</span>
+
+<span class="c1"># Define a device mesh (e.g., 2×4 devices)</span>
+<span class="n">mesh_shape</span> <span class="o">=</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">)</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">LogicalMesh</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="n">mesh_shape</span><span class="p">,</span> <span class="n">axis_names</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;batch&quot;</span><span class="p">,</span> <span class="s2">&quot;model&quot;</span><span class="p">))</span>
+
+<span class="c1"># Apply sharding policies to your model</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">xtrax</span><span class="w"> </span><span class="kn">import</span> <span class="n">ShardingPolicy</span>
+<span class="n">policy</span> <span class="o">=</span> <span class="n">ShardingPolicy</span><span class="p">(</span>
+    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
+        <span class="p">(</span><span class="s2">&quot;encoder.weight&quot;</span><span class="p">,</span> <span class="n">PartitionSpec</span><span class="p">(</span><span class="s2">&quot;model&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)),</span>
+        <span class="p">(</span><span class="s2">&quot;decoder.weight&quot;</span><span class="p">,</span> <span class="n">PartitionSpec</span><span class="p">(</span><span class="kc">None</span><span class="p">,</span> <span class="s2">&quot;model&quot;</span><span class="p">)),</span>
+    <span class="p">]</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Sharding policies are pattern-based: the first rule matching a parameter path wins. Full replication is the default for unmatched parameters.</p>
+</section>
+<section id="loss-composition-and-multi-task-learning">
+<h2>Loss Composition and Multi-Task Learning<a class="headerlink" href="#loss-composition-and-multi-task-learning" title="Link to this heading">¶</a></h2>
+<p>xtrax provides utilities for composing losses:</p>
+<ul class="simple">
+<li><p><strong>WeightedLoss</strong>: Scale any loss by a fixed weight.</p></li>
+<li><p><strong>MultiTaskLoss</strong>: Sum multiple weighted losses. Useful for multi-task learning.</p></li>
+</ul>
+<p>Both conform to the <code class="docutils literal notranslate"><span class="pre">LossFunction</span></code> protocol, so they work anywhere a loss is expected:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax</span><span class="w"> </span><span class="kn">import</span> <span class="n">LossFunction</span><span class="p">,</span> <span class="n">MultiTaskLoss</span><span class="p">,</span> <span class="n">WeightedLoss</span>
+
+<span class="n">task1_loss</span> <span class="o">=</span> <span class="n">WeightedLoss</span><span class="p">(</span><span class="n">my_loss_fn_1</span><span class="p">,</span> <span class="n">weight</span><span class="o">=</span><span class="mf">0.6</span><span class="p">)</span>
+<span class="n">task2_loss</span> <span class="o">=</span> <span class="n">WeightedLoss</span><span class="p">(</span><span class="n">my_loss_fn_2</span><span class="p">,</span> <span class="n">weight</span><span class="o">=</span><span class="mf">0.4</span><span class="p">)</span>
+<span class="n">combined</span> <span class="o">=</span> <span class="n">MultiTaskLoss</span><span class="p">(</span><span class="n">losses</span><span class="o">=</span><span class="p">(</span><span class="n">task1_loss</span><span class="p">,</span> <span class="n">task2_loss</span><span class="p">))</span>
+
+<span class="n">trainer</span> <span class="o">=</span> <span class="n">Trainer</span><span class="p">(</span><span class="n">loss_fn</span><span class="o">=</span><span class="n">combined</span><span class="p">,</span> <span class="n">optimizer</span><span class="o">=</span><span class="n">optimizer</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="safety-checks-nan-inf-detection">
+<h2>Safety Checks: NaN/Inf Detection<a class="headerlink" href="#safety-checks-nan-inf-detection" title="Link to this heading">¶</a></h2>
+<p>Training is fragile. Gradients can explode, weights can underflow, and bugs hide in the details. xtrax provides optional safety checks:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_train_step</span>
+
+<span class="n">trainer</span> <span class="o">=</span> <span class="n">create_train_step</span><span class="p">(</span>
+    <span class="n">loss_fn</span><span class="o">=</span><span class="n">loss</span><span class="p">,</span>
+    <span class="n">optimizer</span><span class="o">=</span><span class="n">optimizer</span><span class="p">,</span>
+    <span class="n">safety</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Enable NaN/Inf detection</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>With <code class="docutils literal notranslate"><span class="pre">safety=True</span></code>, every backward pass is guarded by <code class="docutils literal notranslate"><span class="pre">jax.experimental.checkify</span></code>, which flags NaN or Inf values in gradients and raises a Python exception on the host. Zero performance cost when disabled.</p>
+</section>
+<section id="data-pipelines-with-grain">
+<h2>Data Pipelines with Grain<a class="headerlink" href="#data-pipelines-with-grain" title="Link to this heading">¶</a></h2>
+<p>xtrax wraps Google’s Grain library for efficient data loading with built-in distributed support. A <code class="docutils literal notranslate"><span class="pre">DataModule</span></code> couples your dataset with batch configuration:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax</span><span class="w"> </span><span class="kn">import</span> <span class="n">DataModule</span>
+
+<span class="n">data</span> <span class="o">=</span> <span class="n">DataModule</span><span class="p">(</span>
+    <span class="n">dataset</span><span class="o">=</span><span class="n">my_dataset</span><span class="p">,</span>
+    <span class="n">batch_size</span><span class="o">=</span><span class="mi">32</span><span class="p">,</span>
+    <span class="n">num_epochs</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
+    <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">,</span>
+    <span class="n">distributed</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Auto-shard across processes</span>
+<span class="p">)</span>
+
+<span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">data</span><span class="o">.</span><span class="n">train_iter</span><span class="p">():</span>
+    <span class="c1"># Each process sees a different subset of the data</span>
+    <span class="n">state</span><span class="p">,</span> <span class="n">metrics</span> <span class="o">=</span> <span class="n">trainer</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">batch</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="checkpointing-and-resumption">
+<h2>Checkpointing and Resumption<a class="headerlink" href="#checkpointing-and-resumption" title="Link to this heading">¶</a></h2>
+<p>Training interruptions are inevitable. xtrax delegates checkpointing to Orbax (Google’s checkpoint library) and provides a simple interface:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax</span><span class="w"> </span><span class="kn">import</span> <span class="n">save_checkpoint</span><span class="p">,</span> <span class="n">load_checkpoint</span>
+
+<span class="c1"># Save after each epoch</span>
+<span class="n">checkpoint_manager</span> <span class="o">=</span> <span class="n">get_checkpoint_manager</span><span class="p">(</span><span class="n">directory</span><span class="o">=</span><span class="s2">&quot;./checkpoints&quot;</span><span class="p">)</span>
+<span class="n">save_checkpoint</span><span class="p">(</span><span class="n">checkpoint_manager</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="n">epoch</span><span class="p">)</span>
+
+<span class="c1"># Resume from a checkpoint</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">load_checkpoint</span><span class="p">(</span><span class="n">checkpoint_manager</span><span class="p">,</span> <span class="n">template_state</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="n">latest</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ResumableState</span></code> includes a <code class="docutils literal notranslate"><span class="pre">step</span></code> counter and <code class="docutils literal notranslate"><span class="pre">extras</span></code> dict for custom metadata, making it easy to resume training exactly where you left off.</p>
+</section>
+<section id="callbacks-and-monitoring">
+<h2>Callbacks and Monitoring<a class="headerlink" href="#callbacks-and-monitoring" title="Link to this heading">¶</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">Engine</span></code> fires lifecycle callbacks:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callback</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">LogMetricsCallback</span><span class="p">(</span><span class="n">Callback</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_step_end</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <span class="n">ResumableState</span><span class="p">,</span> <span class="n">metrics</span><span class="p">:</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">state</span><span class="o">.</span><span class="n">step</span> <span class="o">%</span> <span class="mi">100</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Step </span><span class="si">{</span><span class="n">state</span><span class="o">.</span><span class="n">step</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">metrics</span><span class="p">[</span><span class="s1">&#39;loss&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="n">engine</span> <span class="o">=</span> <span class="n">Engine</span><span class="p">(</span><span class="n">trainer</span><span class="o">=</span><span class="n">trainer</span><span class="p">,</span> <span class="n">callbacks</span><span class="o">=</span><span class="p">[</span><span class="n">LogMetricsCallback</span><span class="p">()])</span>
+</pre></div>
+</div>
+<p>All 7 callback hooks (<code class="docutils literal notranslate"><span class="pre">on_train_start</span></code>, <code class="docutils literal notranslate"><span class="pre">on_epoch_start</span></code>, <code class="docutils literal notranslate"><span class="pre">on_step_start</span></code>, etc.) fire in order, and they run Python-side — perfect for logging, early stopping, or metric aggregation.</p>
+</section>
+<section id="pure-functions-and-immutable-state">
+<h2>Pure Functions and Immutable State<a class="headerlink" href="#pure-functions-and-immutable-state" title="Link to this heading">¶</a></h2>
+<p>Every xtrax training step is a pure function: same inputs → same outputs, no side effects. This is JAX’s model, and xtrax follows it strictly. <code class="docutils literal notranslate"><span class="pre">ResumableState</span></code> is immutable; you never mutate a state in place. This design enables:</p>
+<ul class="simple">
+<li><p><strong>Reproducibility</strong>: Train the same model twice with the same seed and get identical results.</p></li>
+<li><p><strong>Checkpointing</strong>: Save and resume is trivial when state is immutable.</p></li>
+<li><p><strong>Distributed training</strong>: No synchronization headaches from mutable state.</p></li>
+<li><p><strong>Debugging</strong>: Replay any step by keeping the inputs.</p></li>
+</ul>
+<p>Every training loop is a fold: <code class="docutils literal notranslate"><span class="pre">state_0</span> <span class="pre">→</span> <span class="pre">step</span> <span class="pre">1</span> <span class="pre">→</span> <span class="pre">state_1</span> <span class="pre">→</span> <span class="pre">step</span> <span class="pre">2</span> <span class="pre">→</span> <span class="pre">state_2</span> <span class="pre">→</span> <span class="pre">...</span></code>.</p>
 </section>
 </section>
 
@@ -325,9 +478,16 @@
           <div class="toc-tree">
             <ul>
 <li><a class="reference internal" href="#">Core Concepts</a><ul>
-<li><a class="reference internal" href="#key-ideas">Key Ideas</a></li>
-<li><a class="reference internal" href="#terminology">Terminology</a></li>
-<li><a class="reference internal" href="#design-principles">Design Principles</a></li>
+<li><a class="reference internal" href="#composable-training-infrastructure">Composable Training Infrastructure</a></li>
+<li><a class="reference internal" href="#axis-strategies-composable-tiling">Axis Strategies: Composable Tiling</a></li>
+<li><a class="reference internal" href="#sparse-inference-with-fixed-sparsity">Sparse Inference with Fixed Sparsity</a></li>
+<li><a class="reference internal" href="#distributed-training-with-mesh-sharding">Distributed Training with Mesh Sharding</a></li>
+<li><a class="reference internal" href="#loss-composition-and-multi-task-learning">Loss Composition and Multi-Task Learning</a></li>
+<li><a class="reference internal" href="#safety-checks-nan-inf-detection">Safety Checks: NaN/Inf Detection</a></li>
+<li><a class="reference internal" href="#data-pipelines-with-grain">Data Pipelines with Grain</a></li>
+<li><a class="reference internal" href="#checkpointing-and-resumption">Checkpointing and Resumption</a></li>
+<li><a class="reference internal" href="#callbacks-and-monitoring">Callbacks and Monitoring</a></li>
+<li><a class="reference internal" href="#pure-functions-and-immutable-state">Pure Functions and Immutable State</a></li>
 </ul>
 </li>
 </ul>

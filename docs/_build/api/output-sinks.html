@@ -257,40 +257,64 @@
         <article role="main" id="furo-main-content">
           <section id="output-sinks">
 <h1>Output Sinks<a class="headerlink" href="#output-sinks" title="Link to this heading">¶</a></h1>
-<p>Output sinks manage checkpoint serialization and I/O operations.</p>
-<section id="checkpoint">
-<h2>Checkpoint<a class="headerlink" href="#checkpoint" title="Link to this heading">¶</a></h2>
-<p>.. py:module:: xtrax.checkpoint</p>
-<p>Checkpoint utilities for xtrax.</p>
-<p>.. py:function:: get_checkpoint_manager(directory, max_to_keep=5, keep_period=None)
-:module: xtrax.checkpoint</p>
-<p>Create and return a CheckpointManager for the given directory.</p>
-<p>:type directory: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:class\:\</span></code>str` | :py:class:`~pathlib.Path`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">directory:</span> <span class="pre">Directory</span> <span class="pre">to</span> <span class="pre">store</span> <span class="pre">checkpoints.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">max_to_keep:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`int`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">max_to_keep:</span> <span class="pre">Maximum</span> <span class="pre">number</span> <span class="pre">of</span> <span class="pre">checkpoints</span> <span class="pre">to</span> <span class="pre">keep.</span> <span class="pre">Defaults</span> <span class="pre">to</span> <span class="pre">5.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">keep_period:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`int` | :py:obj:`None``
-:param keep_period: Period (in steps) for keeping checkpoints. Defaults to None.</p>
-<p>:rtype: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:class\:\</span></code>~orbax.checkpoint.checkpoint_manager.CheckpointManager``
-:returns: A CheckpointManager instance with PyTreeCheckpointHandler configured.</p>
-<p>.. py:function:: save_checkpoint(manager, state, step=None)
-:module: xtrax.checkpoint</p>
-<p>Save a checkpoint to the manager.</p>
-<p>:type manager: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:class\:\</span></code>~orbax.checkpoint.checkpoint_manager.CheckpointManager`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">manager:</span> <span class="pre">CheckpointManager</span> <span class="pre">instance.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">state:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`~xtrax.training.types.ResumableState`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">state:</span> <span class="pre">ResumableState</span> <span class="pre">to</span> <span class="pre">save.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">step:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`int` | :py:obj:`None``
-:param step: Step number to save at. If None, uses int(state.step).</p>
-<p>:rtype: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:obj\:\</span></code>None``</p>
-<p>.. note::</p>
-<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>  This function must be called outside JAX-traced contexts.
-  Calls manager.wait_until_finished() after saving.
+<p>Output sinks manage how training results and state leave the system. This chapter covers two complementary surfaces:</p>
+<ol class="arabic simple">
+<li><p><strong>Streaming Callbacks</strong>: Observability and bounded concurrent operations (e.g., logging, checkpointing events)</p></li>
+<li><p><strong>Checkpoint Persistence</strong>: Durable state serialization and restoration for training resumption</p></li>
+</ol>
+<p>These two surfaces work together: callbacks stream observability during training, while checkpoints capture state for recovery.</p>
+<section id="streaming-callbacks">
+<h2>Streaming Callbacks<a class="headerlink" href="#streaming-callbacks" title="Link to this heading">¶</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">xtrax.io</span></code> module provides async utilities for bounded concurrent execution of streaming operations.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><strong>Canonical import path:</strong></p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax.io</span><span class="w"> </span><span class="kn">import</span> <span class="n">BoundedCallbackHandler</span><span class="p">,</span> <span class="n">async_indexed_stream</span>
 </pre></div>
 </div>
-<p>.. py:function:: load_checkpoint(manager, state_template, step=None)
-:module: xtrax.checkpoint</p>
-<p>Load a checkpoint from the manager.</p>
-<p>:type manager: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:class\:\</span></code>~orbax.checkpoint.checkpoint_manager.CheckpointManager`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">manager:</span> <span class="pre">CheckpointManager</span> <span class="pre">instance.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">state_template:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`~xtrax.training.types.ResumableState`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">state_template:</span> <span class="pre">Template</span> <span class="pre">ResumableState</span> <span class="pre">for</span> <span class="pre">pytree</span> <span class="pre">structure.</span>&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160; <span class="pre">Required</span> <span class="pre">for</span> <span class="pre">orbax</span> <span class="pre">to</span> <span class="pre">reconstruct</span> <span class="pre">the</span> <span class="pre">pytree.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">step:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`int` | :py:obj:`None``
-:param step: Step number to load. If None, uses latest_step().</p>
-<p>:rtype: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:class\:\</span></code>~xtrax.training.types.ResumableState``
-:returns: The loaded ResumableState.</p>
-<p>:raises FileNotFoundError: If checkpoint doesn’t exist or directory is empty.</p>
+</div>
+<p>These are thin re-exports from the canonical implementation in <code class="docutils literal notranslate"><span class="pre">xtrax.engine.io</span></code>. The <code class="docutils literal notranslate"><span class="pre">xtrax.io</span></code> module is the public-facing surface; <code class="docutils literal notranslate"><span class="pre">xtrax.engine.io</span></code> is the implementation. Import from <code class="docutils literal notranslate"><span class="pre">xtrax.io</span></code>.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+### Overview
+
+```{autosummary}
+xtrax.io.BoundedCallbackHandler
+xtrax.io.async_indexed_stream
+</pre></div>
+</div>
+<section id="boundedcallbackhandler">
+<h3>BoundedCallbackHandler<a class="headerlink" href="#boundedcallbackhandler" title="Link to this heading">¶</a></h3>
+<p>Manages bounded concurrent execution of async callbacks using an <code class="docutils literal notranslate"><span class="pre">asyncio.Semaphore</span></code>. Exceptions in submitted coroutines are logged but not propagated, allowing training loops to continue robustly.</p>
+<p>Use this when you need to run I/O-bound operations (logging, metric reporting, checkpoint triggers) without blocking the training loop, while limiting concurrency to avoid resource exhaustion.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax.io</span><span class="w"> </span><span class="kn">import</span> <span class="n">BoundedCallbackHandler</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+    <span class="n">handler</span> <span class="o">=</span> <span class="n">BoundedCallbackHandler</span><span class="p">(</span><span class="n">max_concurrent</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">log_metric</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">value</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
+        <span class="c1"># Simulate I/O work (e.g., write to metric store)</span>
+        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.01</span><span class="p">)</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">value</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="c1"># Submit callbacks - returns immediately</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">10</span><span class="p">):</span>
+        <span class="k">await</span> <span class="n">handler</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">log_metric</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;loss_step_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="mf">0.5</span> <span class="o">-</span> <span class="n">i</span> <span class="o">*</span> <span class="mf">0.01</span><span class="p">))</span>
+
+    <span class="c1"># Wait for all to complete</span>
+    <span class="k">await</span> <span class="n">handler</span><span class="o">.</span><span class="n">wait_all</span><span class="p">()</span>
+
+<span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">main</span><span class="p">())</span>
+</pre></div>
+</div>
 </section>
-<section id="io">
-<h2>IO<a class="headerlink" href="#io" title="Link to this heading">¶</a></h2>
+<section id="async-indexed-stream">
+<h3>async_indexed_stream<a class="headerlink" href="#async-indexed-stream" title="Link to this heading">¶</a></h3>
+<p>Async iterator that prefetches items from a blocking iterable into a queue, yielding <code class="docutils literal notranslate"><span class="pre">(index,</span> <span class="pre">item)</span></code> tuples. Uses <code class="docutils literal notranslate"><span class="pre">asyncio.to_thread</span></code> to prevent the event loop from being blocked by slow I/O (e.g., file reads, database queries).</p>
+<p>Use this when you need to parallelize I/O fetching with CPU-bound computation in an async training loop.</p>
+</section>
+<section id="full-api-reference">
+<h3>Full API Reference<a class="headerlink" href="#full-api-reference" title="Link to this heading">¶</a></h3>
 <p>.. py:module:: xtrax.io</p>
 <p>IO callbacks for xtrax.</p>
 <p>.. py:class:: BoundedCallbackHandler(max_concurrent=4)
@@ -301,6 +325,24 @@
 <p>Uses an asyncio.Semaphore to limit the number of concurrently running
 coroutines. Exceptions in submitted coroutines are logged but not
 propagated, allowing the training loop to continue.</p>
+<p>.. admonition:: Example</p>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>  Import from the public surface and use with asyncio:
+
+  &gt;&gt;&gt; from xtrax.io import BoundedCallbackHandler
+  &gt;&gt;&gt; import asyncio
+  &gt;&gt;&gt; async def example():
+  ...     handler = BoundedCallbackHandler(max_concurrent=2)
+  ...     values = []
+  ...     async def callback(x):
+  ...         values.append(x)
+  ...     await handler.submit(callback(1))
+  ...     await handler.submit(callback(2))
+  ...     await handler.wait_all()
+  ...     return sorted(values)
+  &gt;&gt;&gt; asyncio.run(example())
+  [1, 2]
+</pre></div>
+</div>
 <p>.. py:method:: BoundedCallbackHandler.submit(coro)
 :module: xtrax.io
 :async:</p>
@@ -344,6 +386,114 @@ re-raised to the consumer on the next yield.</p>
 :param buffer_size: Maximum number of items to prefetch ahead (default: 2).</p>
 <p>:Yields: (index, item) tuples where index is monotonically increasing from 0.</p>
 <p>:raises Any exception raised by the iterable will be re-raised on the next yield.:</p>
+</section>
+</section>
+<section id="checkpoint-persistence">
+<h2>Checkpoint Persistence<a class="headerlink" href="#checkpoint-persistence" title="Link to this heading">¶</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">xtrax.checkpoint</span></code> module provides utilities for saving and restoring training state using <a class="reference external" href="https://orbax.readthedocs.io/en/latest/">Orbax CheckpointManager</a>, a composable checkpoint library.</p>
+<p><strong>Canonical import path:</strong></p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">xtrax.checkpoint</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">get_checkpoint_manager</span><span class="p">,</span>
+    <span class="n">save_checkpoint</span><span class="p">,</span>
+    <span class="n">load_checkpoint</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<section id="overview">
+<h3>Overview<a class="headerlink" href="#overview" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper autosummary longtable docutils container">
+<table class="autosummary longtable docutils align-default">
+<tbody>
+<tr class="row-odd"><td><p>:py:obj:<code class="docutils literal notranslate"><span class="pre">xtrax.checkpoint.get_checkpoint_manager</span> <span class="pre">&lt;xtrax.checkpoint.get_checkpoint_manager&gt;</span></code>\ (...)</p></td>
+<td><p>Create and return a CheckpointManager for the given directory.</p></td>
+</tr>
+<tr class="row-even"><td><p>:py:obj:<code class="docutils literal notranslate"><span class="pre">xtrax.checkpoint.save_checkpoint</span> <span class="pre">&lt;xtrax.checkpoint.save_checkpoint&gt;</span></code>\ (manager, state)</p></td>
+<td><p>Save a checkpoint to the manager.</p></td>
+</tr>
+<tr class="row-odd"><td><p>:py:obj:<code class="docutils literal notranslate"><span class="pre">xtrax.checkpoint.load_checkpoint</span> <span class="pre">&lt;xtrax.checkpoint.load_checkpoint&gt;</span></code>\ (manager, ...)</p></td>
+<td><p>Load a checkpoint from the manager.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="checkpoint-round-trip-example">
+<h3>Checkpoint Round-Trip Example<a class="headerlink" href="#checkpoint-round-trip-example" title="Link to this heading">¶</a></h3>
+<p>This example demonstrates the full cycle: creating a manager, saving state, and restoring it.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">xtrax.checkpoint</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_checkpoint_manager</span><span class="p">,</span> <span class="n">save_checkpoint</span><span class="p">,</span> <span class="n">load_checkpoint</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
+
+<span class="c1"># Create a temporary directory for checkpoints</span>
+<span class="k">with</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">TemporaryDirectory</span><span class="p">()</span> <span class="k">as</span> <span class="n">tmpdir</span><span class="p">:</span>
+    <span class="c1"># 1. Create a checkpoint manager</span>
+    <span class="n">manager</span> <span class="o">=</span> <span class="n">get_checkpoint_manager</span><span class="p">(</span><span class="n">directory</span><span class="o">=</span><span class="n">tmpdir</span><span class="p">,</span> <span class="n">max_to_keep</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+
+    <span class="c1"># 2. Define a ResumableState (JAX pytree)</span>
+    <span class="c1"># For this example, use a simple dict; in practice, use your state object</span>
+    <span class="n">state_template</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;w&quot;</span><span class="p">:</span> <span class="mf">0.0</span><span class="p">},</span>
+        <span class="s2">&quot;step&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+    <span class="p">}</span>
+
+    <span class="c1"># 3. Save the first checkpoint</span>
+    <span class="n">state</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;w&quot;</span><span class="p">:</span> <span class="mf">1.5</span><span class="p">},</span> <span class="s2">&quot;step&quot;</span><span class="p">:</span> <span class="mi">100</span><span class="p">}</span>
+    <span class="n">save_checkpoint</span><span class="p">(</span><span class="n">manager</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
+
+    <span class="c1"># 4. Load the checkpoint</span>
+    <span class="n">loaded</span> <span class="o">=</span> <span class="n">load_checkpoint</span><span class="p">(</span><span class="n">manager</span><span class="p">,</span> <span class="n">state_template</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
+    <span class="k">assert</span> <span class="n">loaded</span><span class="p">[</span><span class="s2">&quot;step&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mi">100</span>
+    <span class="k">assert</span> <span class="n">loaded</span><span class="p">[</span><span class="s2">&quot;params&quot;</span><span class="p">][</span><span class="s2">&quot;w&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mf">1.5</span>
+
+    <span class="c1"># 5. Save another checkpoint</span>
+    <span class="n">state</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;w&quot;</span><span class="p">:</span> <span class="mf">2.5</span><span class="p">},</span> <span class="s2">&quot;step&quot;</span><span class="p">:</span> <span class="mi">200</span><span class="p">}</span>
+    <span class="n">save_checkpoint</span><span class="p">(</span><span class="n">manager</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="mi">200</span><span class="p">)</span>
+
+    <span class="c1"># 6. Load the latest checkpoint (no step specified)</span>
+    <span class="n">latest</span> <span class="o">=</span> <span class="n">load_checkpoint</span><span class="p">(</span><span class="n">manager</span><span class="p">,</span> <span class="n">state_template</span><span class="p">)</span>
+    <span class="k">assert</span> <span class="n">latest</span><span class="p">[</span><span class="s2">&quot;step&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="mi">200</span>
+</pre></div>
+</div>
+</section>
+<section id="id1">
+<h3>Full API Reference<a class="headerlink" href="#id1" title="Link to this heading">¶</a></h3>
+<p>.. py:module:: xtrax.checkpoint</p>
+<p>Checkpoint utilities for xtrax.</p>
+<p>.. py:function:: get_checkpoint_manager(directory, max_to_keep=5, keep_period=None)
+:module: xtrax.checkpoint</p>
+<p>Create and return a CheckpointManager for the given directory.</p>
+<p>:type directory: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:class\:\</span></code>str` | :py:class:`~pathlib.Path`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">directory:</span> <span class="pre">Directory</span> <span class="pre">to</span> <span class="pre">store</span> <span class="pre">checkpoints.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">max_to_keep:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`int`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">max_to_keep:</span> <span class="pre">Maximum</span> <span class="pre">number</span> <span class="pre">of</span> <span class="pre">checkpoints</span> <span class="pre">to</span> <span class="pre">keep.</span> <span class="pre">Defaults</span> <span class="pre">to</span> <span class="pre">5.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">keep_period:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`int` | :py:obj:`None``
+:param keep_period: Period (in steps) for keeping checkpoints. Defaults to None.</p>
+<p>:rtype: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:class\:\</span></code>~orbax.checkpoint.checkpoint_manager.CheckpointManager``
+:returns: A CheckpointManager instance with PyTreeCheckpointHandler configured.</p>
+<p>.. py:function:: save_checkpoint(manager, state, step=None)
+:module: xtrax.checkpoint</p>
+<p>Save a checkpoint to the manager.</p>
+<p>:type manager: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:class\:\</span></code>~orbax.checkpoint.checkpoint_manager.CheckpointManager`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">manager:</span> <span class="pre">CheckpointManager</span> <span class="pre">instance.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">state:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`~xtrax.training.types.ResumableState`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">state:</span> <span class="pre">ResumableState</span> <span class="pre">to</span> <span class="pre">save.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">step:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`int` | :py:obj:`None``
+:param step: Step number to save at. If None, uses int(state.step).</p>
+<p>:rtype: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:obj\:\</span></code>None``</p>
+<p>.. note::</p>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>  This function must be called outside JAX-traced contexts.
+  Calls manager.wait_until_finished() after saving.
+</pre></div>
+</div>
+<p>.. py:function:: load_checkpoint(manager, state_template, step=None)
+:module: xtrax.checkpoint</p>
+<p>Load a checkpoint from the manager.</p>
+<p>:type manager: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:class\:\</span></code>~orbax.checkpoint.checkpoint_manager.CheckpointManager`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">manager:</span> <span class="pre">CheckpointManager</span> <span class="pre">instance.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">state_template:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`~xtrax.training.types.ResumableState`<code class="docutils literal notranslate">&#160;&#160;&#160; <span class="pre">:param</span> <span class="pre">state_template:</span> <span class="pre">Template</span> <span class="pre">ResumableState</span> <span class="pre">for</span> <span class="pre">pytree</span> <span class="pre">structure.</span>&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160; <span class="pre">Required</span> <span class="pre">for</span> <span class="pre">orbax</span> <span class="pre">to</span> <span class="pre">reconstruct</span> <span class="pre">the</span> <span class="pre">pytree.</span>&#160;&#160;&#160; <span class="pre">:type</span> <span class="pre">step:</span> <span class="pre">:sphinx_autodoc_typehints_type:</span></code>:py:class:`int` | :py:obj:`None``
+:param step: Step number to load. If None, uses latest_step().</p>
+<p>:rtype: :sphinx_autodoc_typehints_type:<code class="docutils literal notranslate"><span class="pre">\:py\:class\:\</span></code>~xtrax.training.types.ResumableState``
+:returns: The loaded ResumableState.</p>
+<p>:raises FileNotFoundError: If checkpoint doesn’t exist or directory is empty.</p>
+</section>
+<section id="orbax-integration">
+<h3>Orbax Integration<a class="headerlink" href="#orbax-integration" title="Link to this heading">¶</a></h3>
+<p>These functions wrap Orbax’s <code class="docutils literal notranslate"><span class="pre">CheckpointManager</span></code> and <code class="docutils literal notranslate"><span class="pre">PyTreeCheckpointHandler</span></code>. For advanced usage (custom handlers, multiprocess synchronization, metrics):</p>
+<ul class="simple">
+<li><p><a class="reference external" href="https://orbax.readthedocs.io/en/latest/api_reference/checkpoint_manager.html">Orbax CheckpointManager API</a></p></li>
+<li><p><a class="reference external" href="https://orbax.readthedocs.io/en/latest/handlers.html">Orbax Handlers</a></p></li>
+</ul>
+</section>
 </section>
 </section>
 
@@ -403,8 +553,19 @@ re-raised to the consumer on the next yield.</p>
           <div class="toc-tree">
             <ul>
 <li><a class="reference internal" href="#">Output Sinks</a><ul>
-<li><a class="reference internal" href="#checkpoint">Checkpoint</a></li>
-<li><a class="reference internal" href="#io">IO</a></li>
+<li><a class="reference internal" href="#streaming-callbacks">Streaming Callbacks</a><ul>
+<li><a class="reference internal" href="#boundedcallbackhandler">BoundedCallbackHandler</a></li>
+<li><a class="reference internal" href="#async-indexed-stream">async_indexed_stream</a></li>
+<li><a class="reference internal" href="#full-api-reference">Full API Reference</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#checkpoint-persistence">Checkpoint Persistence</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#checkpoint-round-trip-example">Checkpoint Round-Trip Example</a></li>
+<li><a class="reference internal" href="#id1">Full API Reference</a></li>
+<li><a class="reference internal" href="#orbax-integration">Orbax Integration</a></li>
+</ul>
+</li>
 </ul>
 </li>
 </ul>

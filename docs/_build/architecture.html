@@ -257,15 +257,265 @@
         <article role="main" id="furo-main-content">
           <section id="architecture">
 <h1>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">¶</a></h1>
-<p>(This page will be filled in by N4b — narrative prose content)</p>
-<section id="system-overview">
-<h2>System Overview<a class="headerlink" href="#system-overview" title="Link to this heading">¶</a></h2>
+<p>xtrax is organized into eleven composable subpackages, each with a single responsibility.</p>
+<section id="package-organization">
+<h2>Package Organization<a class="headerlink" href="#package-organization" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>xtrax/
+  transforms/    — Low-level JAX wrappers: safe_map, safe_scan
+  tiling/        — Axis strategies and batching: AxisSpec, BatchPlanner, dispatch
+  stages/        — Generic pipeline protocols and bundles
+  training/      — Training loop: Trainer, ResumableState, losses, optimizers, callbacks
+  engine/        — High-level orchestrator: Engine, async iteration, checkpoint coordination
+  data/          — Data pipelines: DataModule, Grain integration, distributed sharding
+  distributed/   — Multi-process coordination: init_dist, mesh helpers, sharding policies
+  checkpoint/    — Checkpoint management: Orbax wrappers, save/load
+  safety/        — Numerics and debugging: safe_norm, NaN/Inf detection, preemption handling
+  sparse/        — Sparse matrix management: SparsePolicy, SparseMaskManager
+  io/            — I/O utilities: async callbacks, bounded concurrency
+</pre></div>
+</div>
 </section>
-<section id="component-layers">
-<h2>Component Layers<a class="headerlink" href="#component-layers" title="Link to this heading">¶</a></h2>
+<section id="design-philosophy">
+<h2>Design Philosophy<a class="headerlink" href="#design-philosophy" title="Link to this heading">¶</a></h2>
+<section id="composition-over-inheritance">
+<h3>1. Composition Over Inheritance<a class="headerlink" href="#composition-over-inheritance" title="Link to this heading">¶</a></h3>
+<p>xtrax uses <strong>protocols</strong> (structural subtyping) instead of base classes. This lets domain libraries (e.g., your model library) define their own types without depending on xtrax’s class hierarchy.</p>
+<p>For example, <code class="docutils literal notranslate"><span class="pre">LossFunction</span></code> is a protocol:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">LossFunction</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">predictions</span><span class="p">:</span> <span class="n">PyTree</span><span class="p">,</span> <span class="n">targets</span><span class="p">:</span> <span class="n">PyTree</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Array</span><span class="p">:</span>
+        <span class="o">...</span>
+</pre></div>
+</div>
+<p>Any callable that returns a scalar is a valid loss — no inheritance needed.</p>
 </section>
-<section id="data-flow">
-<h2>Data Flow<a class="headerlink" href="#data-flow" title="Link to this heading">¶</a></h2>
+<section id="static-shape-for-recompile-safety">
+<h3>2. Static Shape for Recompile Safety<a class="headerlink" href="#static-shape-for-recompile-safety" title="Link to this heading">¶</a></h3>
+<p>JAX’s JIT compiler traces and compiles based on shape. xtrax is aggressive about static shapes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">AxisSpec.batch_size</span></code> is static (passed to <code class="docutils literal notranslate"><span class="pre">&#64;jax.vmap</span></code> or <code class="docutils literal notranslate"><span class="pre">&#64;jax.lax.map</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SparsePolicy.nse_budget</span></code> is static (determines BCOO format).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DataModule.batch_size</span></code> is static.</p></li>
+</ul>
+<p>This prevents “shape explosion” — silent recompilations every time batch size changes or sparsity patterns shift.</p>
+</section>
+<section id="immutable-state-pure-functions">
+<h3>3. Immutable State, Pure Functions<a class="headerlink" href="#immutable-state-pure-functions" title="Link to this heading">¶</a></h3>
+<p>Training state is never mutated in place. Every <code class="docutils literal notranslate"><span class="pre">.step()</span></code> call is a pure function:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">new_state</span><span class="p">,</span> <span class="n">metrics</span> <span class="o">=</span> <span class="n">trainer</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">batch</span><span class="p">)</span>  <span class="c1"># state is unchanged</span>
+</pre></div>
+</div>
+<p>This enables safe checkpointing, reproducibility, and distributed training without synchronization headaches.</p>
+</section>
+<section id="delegation-not-reimplementation">
+<h3>4. Delegation, Not Reimplementation<a class="headerlink" href="#delegation-not-reimplementation" title="Link to this heading">¶</a></h3>
+<p>xtrax doesn’t reimplement solved problems:</p>
+<ul class="simple">
+<li><p><strong>Equinox</strong> handles JAX modules and AD filters.</p></li>
+<li><p><strong>Optax</strong> handles optimizers, schedules, and gradient transforms.</p></li>
+<li><p><strong>Orbax</strong> handles checkpointing and async saves.</p></li>
+<li><p><strong>Grain</strong> handles data loading and sharding.</p></li>
+<li><p><strong>JAX</strong> handles sparse arrays and distributed primitives.</p></li>
+</ul>
+<p>xtrax provides a <strong>composable glue layer</strong> that makes these libraries work together seamlessly.</p>
+</section>
+</section>
+<section id="layer-1-transforms">
+<h2>Layer 1: Transforms<a class="headerlink" href="#layer-1-transforms" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.transforms</span></code></p>
+<p>Provides safe wrappers around JAX’s map and scan operations:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">safe_map(fn,</span> <span class="pre">xs,</span> <span class="pre">batch_size)</span></code>: Vmap if xs is small; chunk and loop otherwise. Raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> if xs leading dimension isn’t divisible by batch_size.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">safe_scan(fn,</span> <span class="pre">init,</span> <span class="pre">xs)</span></code>: Identical to <code class="docutils literal notranslate"><span class="pre">jax.lax.scan</span></code>; wrapper validates pre-trace.</p></li>
+</ul>
+<p>These are low-level building blocks used by the tiling layer.</p>
+</section>
+<section id="layer-2-tiling-and-axis-strategies">
+<h2>Layer 2: Tiling and Axis Strategies<a class="headerlink" href="#layer-2-tiling-and-axis-strategies" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.tiling</span></code></p>
+<p>Defines how to schedule computation across axes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">AxisSpec</span></code>: Declares an axis with cardinality, batch size, and eligibility for deduplication.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">BatchPlanner</span></code>: Selects a strategy (Vmap, SafeMap, DedupGather) for each axis automatically.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">make_axis_dispatch()</span></code>: Executes the selected strategy on data.</p></li>
+</ul>
+<p>Example:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">specs</span> <span class="o">=</span> <span class="p">[</span><span class="n">AxisSpec</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;batch&quot;</span><span class="p">,</span> <span class="n">cardinality</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">batch_size</span><span class="o">=</span><span class="mi">256</span><span class="p">)]</span>
+<span class="n">plan</span> <span class="o">=</span> <span class="n">BatchPlanner</span><span class="p">()</span><span class="o">.</span><span class="n">plan</span><span class="p">(</span><span class="n">specs</span><span class="p">)</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">make_axis_dispatch</span><span class="p">(</span><span class="n">plan</span><span class="o">.</span><span class="n">decisions</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">strategy</span><span class="p">,</span> <span class="n">my_fn</span><span class="p">,</span> <span class="n">my_data</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="strategy-selection-rules">
+<h3>Strategy Selection Rules<a class="headerlink" href="#strategy-selection-rules" title="Link to this heading">¶</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">BatchPlanner</span></code> uses these rules (in order):</p>
+<ol class="arabic simple">
+<li><p>If <code class="docutils literal notranslate"><span class="pre">dedup_eligible=True</span></code>, use <code class="docutils literal notranslate"><span class="pre">DedupGather</span></code>.</p></li>
+<li><p>If <code class="docutils literal notranslate"><span class="pre">cardinality</span> <span class="pre">&lt;=</span> <span class="pre">batch_size</span></code>, use <code class="docutils literal notranslate"><span class="pre">Vmap</span></code>.</p></li>
+<li><p>If <code class="docutils literal notranslate"><span class="pre">cardinality</span> <span class="pre">&gt;</span> <span class="pre">batch_size</span></code> and divisible, use <code class="docutils literal notranslate"><span class="pre">SafeMap</span></code>.</p></li>
+<li><p>If <code class="docutils literal notranslate"><span class="pre">cardinality</span> <span class="pre">&gt;</span> <span class="pre">batch_size</span></code> and NOT divisible, use <code class="docutils literal notranslate"><span class="pre">SafeMap</span></code> with a warning (will error at dispatch time).</p></li>
+</ol>
+<p>For custom strategies (e.g., Scan for RNNs), construct <code class="docutils literal notranslate"><span class="pre">AxisDecision</span></code> directly.</p>
+</section>
+</section>
+<section id="layer-3-stages-and-pipelines">
+<h2>Layer 3: Stages and Pipelines<a class="headerlink" href="#layer-3-stages-and-pipelines" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.stages</span></code></p>
+<p>Defines generic pipeline protocols for composable transformations:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">TransformFn</span></code>: A stateless transformation (<code class="docutils literal notranslate"><span class="pre">x</span> <span class="pre">→</span> <span class="pre">y</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">RollingFn</span></code>: Stateful computation with carry (<code class="docutils literal notranslate"><span class="pre">carry,</span> <span class="pre">x</span> <span class="pre">→</span> <span class="pre">carry,</span> <span class="pre">y</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">FuseFn</span></code>: Combine multiple results (<code class="docutils literal notranslate"><span class="pre">[y1,</span> <span class="pre">y2,</span> <span class="pre">...]</span> <span class="pre">→</span> <span class="pre">z</span></code>).</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">StageBundle</span></code> is a typed container for optional pipeline stages. Domain libraries (e.g., your model library) subclass it:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">MyPipeline</span><span class="p">(</span><span class="n">StageBundle</span><span class="p">):</span>
+    <span class="n">encode</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">TransformFn</span><span class="p">]</span>
+    <span class="n">process</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">RollingFn</span><span class="p">]</span>
+    <span class="n">decode</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">TransformFn</span><span class="p">]</span>
+</pre></div>
+</div>
+<p>At Python dispatch time, check which stages are active and build the computation graph accordingly. Never branch on stage presence inside JAX traces — that violates JIT’s purity model.</p>
+</section>
+<section id="layer-4-training-core">
+<h2>Layer 4: Training Core<a class="headerlink" href="#layer-4-training-core" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.training</span></code></p>
+<p>The heart of xtrax. Provides:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ResumableState</span></code>: Immutable bundle of model, optimizer state, step counter, and metadata.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Trainer</span></code>: Wraps loss + optimizer. The <code class="docutils literal notranslate"><span class="pre">.step()</span></code> method is JIT-compiled.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SafetyTrainStep</span></code>: Wraps <code class="docutils literal notranslate"><span class="pre">Trainer</span></code> with NaN/Inf detection (optional).</p></li>
+<li><p>Loss combinators: <code class="docutils literal notranslate"><span class="pre">WeightedLoss</span></code>, <code class="docutils literal notranslate"><span class="pre">MultiTaskLoss</span></code>.</p></li>
+<li><p>Optimizer helpers: <code class="docutils literal notranslate"><span class="pre">adamw_with_schedule</span></code>, <code class="docutils literal notranslate"><span class="pre">no_bias_wd_mask</span></code>, <code class="docutils literal notranslate"><span class="pre">partition_labels</span></code>.</p></li>
+<li><p>Gradient accumulation: <code class="docutils literal notranslate"><span class="pre">accumulate_grads</span></code> for microbatch training.</p></li>
+</ul>
+<p>All loss functions conform to the <code class="docutils literal notranslate"><span class="pre">LossFunction</span></code> protocol. All training loops are pure functions of <code class="docutils literal notranslate"><span class="pre">(state,</span> <span class="pre">batch)</span> <span class="pre">→</span> <span class="pre">(state,</span> <span class="pre">metrics)</span></code>.</p>
+</section>
+<section id="layer-5-engine-and-orchestration">
+<h2>Layer 5: Engine and Orchestration<a class="headerlink" href="#layer-5-engine-and-orchestration" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.engine</span></code></p>
+<p>High-level training harness. <code class="docutils literal notranslate"><span class="pre">Engine</span></code> orchestrates:</p>
+<ul class="simple">
+<li><p><strong>Epoch loop</strong>: Multiple passes over data.</p></li>
+<li><p><strong>Callbacks</strong>: Lifecycle hooks (<code class="docutils literal notranslate"><span class="pre">on_train_start</span></code>, <code class="docutils literal notranslate"><span class="pre">on_epoch_end</span></code>, etc.).</p></li>
+<li><p><strong>Checkpointing</strong>: Automatic save after each epoch.</p></li>
+<li><p><strong>Validation</strong>: Separate eval loop with <code class="docutils literal notranslate"><span class="pre">validation_callbacks</span></code>.</p></li>
+<li><p><strong>Async coordination</strong>: Prevents callback pile-up with bounded concurrency.</p></li>
+</ul>
+<p>Example:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">engine</span> <span class="o">=</span> <span class="n">Engine</span><span class="p">(</span><span class="n">trainer</span><span class="o">=</span><span class="n">trainer</span><span class="p">,</span> <span class="n">callbacks</span><span class="o">=</span><span class="p">[</span><span class="n">LogMetrics</span><span class="p">(),</span> <span class="n">EarlyStopping</span><span class="p">()])</span>
+<span class="n">final_state</span> <span class="o">=</span> <span class="k">await</span> <span class="n">engine</span><span class="o">.</span><span class="n">fit</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">num_epochs</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">checkpoint_dir</span><span class="o">=</span><span class="s2">&quot;./ckpts&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">Engine.fit()</span></code> is async; use <code class="docutils literal notranslate"><span class="pre">fit_sync()</span></code> for blocking code.</p>
+</section>
+<section id="layer-6-data-pipelines">
+<h2>Layer 6: Data Pipelines<a class="headerlink" href="#layer-6-data-pipelines" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.data</span></code></p>
+<p>Couples datasets with batch configuration:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">DataModule</span></code>: Wraps a dataset with batch_size, num_epochs, seed, and collate function.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">BucketIterator</span></code>: Sorts data by length and batches into variable-sized groups (e.g., short sequences in larger batches, long sequences in smaller batches for fair memory usage).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">create_distributed_pipeline</span></code>: Uses Grain to shard data across processes.</p></li>
+</ul>
+<p>All iterators yield PyTrees of batches, compatible with <code class="docutils literal notranslate"><span class="pre">Trainer.step()</span></code>.</p>
+</section>
+<section id="layer-7-distributed-training">
+<h2>Layer 7: Distributed Training<a class="headerlink" href="#layer-7-distributed-training" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.distributed</span></code></p>
+<p>Multi-process training via JAX’s SPMD APIs:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">init_dist()</span></code>: Initialize distributed communication (idempotent).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">LogicalMesh</span></code>: Describes device topology.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ShardingPolicy</span></code>: Pattern-based rules for partitioning parameters across the mesh.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">get_device_mesh()</span></code>: Helpers for constructing mesh shapes.</p></li>
+</ul>
+<p>Delegation: xtrax just wraps JAX’s distributed primitives. The actual sharding is done by Equinox and JAX’s <code class="docutils literal notranslate"><span class="pre">device_put_sharded()</span></code>.</p>
+</section>
+<section id="layer-8-checkpointing">
+<h2>Layer 8: Checkpointing<a class="headerlink" href="#layer-8-checkpointing" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.checkpoint</span></code></p>
+<p>Orbax integration for checkpointing:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">save_checkpoint()</span></code>: Serialize state to disk (async in Orbax, synchronous in this interface).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">load_checkpoint()</span></code>: Deserialize state from disk.</p></li>
+</ul>
+<p>Orbax handles all the heavy lifting (async I/O, cloud storage, versioning). xtrax just provides convenient wrappers.</p>
+</section>
+<section id="layer-9-safety-and-debugging">
+<h2>Layer 9: Safety and Debugging<a class="headerlink" href="#layer-9-safety-and-debugging" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.safety</span></code></p>
+<p>Optional guards and numeric utilities:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">safe_norm(x)</span></code>: Compute norm with epsilon to prevent NaN at zero.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">safe_reciprocal(x)</span></code>: Compute <code class="docutils literal notranslate"><span class="pre">1/x</span></code> safely.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SafetyManager</span></code> + <code class="docutils literal notranslate"><span class="pre">with_safety()</span></code>: Wrap JIT functions with NaN/Inf detection via <code class="docutils literal notranslate"><span class="pre">jax.experimental.checkify</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">PreemptionHandler</span></code>: Catch SIGUSR1/SIGTERM and trigger checkpointing.</p></li>
+</ul>
+<p>All optional, zero overhead when disabled.</p>
+</section>
+<section id="layer-10-sparse-matrix-management">
+<h2>Layer 10: Sparse Matrix Management<a class="headerlink" href="#layer-10-sparse-matrix-management" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.sparse</span></code></p>
+<p>Structured sparsification for inference and constrained training:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">SparseConfig</span></code>: Specifies <code class="docutils literal notranslate"><span class="pre">nse_budget</span></code>, update schedule, and fallback mode.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SparsePolicy</span></code>: Computes and applies sparse masks.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SparseMaskManager</span></code>: Python-side coordinator that recomputes masks on schedule.</p></li>
+</ul>
+<p>Masks are step-scheduled and step-cached to prevent XLA retrace. When true nonzeros exceed the budget, either fall back to dense or error — your choice.</p>
+</section>
+<section id="layer-11-i-o-and-callbacks">
+<h2>Layer 11: I/O and Callbacks<a class="headerlink" href="#layer-11-i-o-and-callbacks" title="Link to this heading">¶</a></h2>
+<p><strong>Module</strong>: <code class="docutils literal notranslate"><span class="pre">xtrax.io</span></code></p>
+<p>Utilities for non-blocking I/O:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">async_indexed_stream()</span></code>: Async generator that prefetches from a blocking iterable.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">BoundedCallbackHandler</span></code>: Bounded concurrency coroutine executor (semaphore pattern).</p></li>
+</ul>
+<p>Used internally by <code class="docutils literal notranslate"><span class="pre">Engine</span></code> to dispatch callbacks asynchronously without blocking the training loop.</p>
+</section>
+<section id="data-flow-a-training-step">
+<h2>Data Flow: A Training Step<a class="headerlink" href="#data-flow-a-training-step" title="Link to this heading">¶</a></h2>
+<p>Here’s how a batch moves through xtrax:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mf">1.</span> <span class="n">DataModule</span> <span class="n">yields</span> <span class="n">batch</span> <span class="p">(</span><span class="n">PyTree</span><span class="p">)</span>
+<span class="mf">2.</span> <span class="n">Engine</span><span class="o">.</span><span class="n">fit</span><span class="p">()</span> <span class="n">calls</span> <span class="n">trainer</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">batch</span><span class="p">)</span>
+<span class="mf">3.</span> <span class="n">Trainer</span><span class="o">.</span><span class="n">_compute_loss</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">model</span><span class="p">,</span> <span class="n">batch</span><span class="p">)</span> <span class="n">inside</span> <span class="n">filter_jit</span>
+<span class="mf">4.</span> <span class="n">JAX</span> <span class="n">traces</span><span class="p">:</span> <span class="n">forward</span> <span class="k">pass</span><span class="p">,</span> <span class="n">backward</span><span class="p">,</span> <span class="n">optimizer</span> <span class="n">update</span>
+<span class="mf">5.</span> <span class="n">ResumableState</span> <span class="n">returned</span> <span class="k">with</span> <span class="n">incremented</span> <span class="n">step</span>
+<span class="mf">6.</span> <span class="n">Callbacks</span> <span class="n">fire</span> <span class="p">(</span><span class="n">Python</span><span class="o">-</span><span class="n">side</span><span class="p">,</span> <span class="n">outside</span> <span class="n">jit</span><span class="p">)</span>
+<span class="mf">7.</span> <span class="n">Engine</span><span class="o">.</span><span class="n">fit</span><span class="p">()</span> <span class="n">checks</span> <span class="n">checkpoint</span> <span class="n">schedule</span> <span class="ow">and</span> <span class="n">saves</span> <span class="k">if</span> <span class="n">needed</span>
+<span class="mf">8.</span> <span class="n">Loop</span> <span class="n">back</span> <span class="n">to</span> <span class="n">step</span> <span class="mi">1</span>
+</pre></div>
+</div>
+<p>All computation inside <code class="docutils literal notranslate"><span class="pre">filter_jit</span></code> is pure JAX. All I/O, callbacks, and state coordination happen Python-side.</p>
+</section>
+<section id="concurrency-and-async">
+<h2>Concurrency and Async<a class="headerlink" href="#concurrency-and-async" title="Link to this heading">¶</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">Engine.fit()</span></code> is async (coroutine) but not concurrent within a single process:</p>
+<ul class="simple">
+<li><p>Trainer steps run sequentially (one per batch).</p></li>
+<li><p>Callbacks run sequentially in their own async tasks, bounded by a semaphore.</p></li>
+<li><p>Checkpointing is async in Orbax but synchronously awaited in xtrax (trade-off: simpler semantics).</p></li>
+</ul>
+<p>For true parallelism, use multiple processes (via <code class="docutils literal notranslate"><span class="pre">init_dist()</span></code>) or distribute batches to multiple threads (outside xtrax’s scope).</p>
+</section>
+<section id="type-safety">
+<h2>Type Safety<a class="headerlink" href="#type-safety" title="Link to this heading">¶</a></h2>
+<p>xtrax uses type hints extensively:</p>
+<ul class="simple">
+<li><p><strong>Protocols</strong> (<code class="docutils literal notranslate"><span class="pre">LossFunction</span></code>, <code class="docutils literal notranslate"><span class="pre">Callback</span></code>, <code class="docutils literal notranslate"><span class="pre">TransformFn</span></code>) define contracts without base classes.</p></li>
+<li><p><strong>Generics</strong> (<code class="docutils literal notranslate"><span class="pre">PyTree</span></code>, <code class="docutils literal notranslate"><span class="pre">Array</span></code>, <code class="docutils literal notranslate"><span class="pre">ResumableState</span></code>) clarify pytree shapes.</p></li>
+<li><p><strong>Literal types</strong> (<code class="docutils literal notranslate"><span class="pre">fallback_mode:</span> <span class="pre">Literal[&quot;dense_mask&quot;,</span> <span class="pre">&quot;error&quot;]</span></code>) catch mistakes at static-analysis time.</p></li>
+</ul>
+<p>All public APIs are fully typed. Use <code class="docutils literal notranslate"><span class="pre">pyright</span></code> or <code class="docutils literal notranslate"><span class="pre">mypy</span></code> to catch bugs before runtime.</p>
+</section>
+<section id="performance-characteristics">
+<h2>Performance Characteristics<a class="headerlink" href="#performance-characteristics" title="Link to this heading">¶</a></h2>
+<ul class="simple">
+<li><p><strong>Trainer.step()</strong>: One JIT-compiled loop per model per batch-shape. Negligible Python overhead.</p></li>
+<li><p><strong>Engine.fit()</strong>: Callback overhead is bounded by the semaphore; typical overhead &lt;1%.</p></li>
+<li><p><strong>Distributed data</strong>: Grain handles sharding efficiently; xtrax adds &lt;1% overhead.</p></li>
+<li><p><strong>Sparse masks</strong>: Zero overhead when sparsity is constant (cached masks). Retrace only on schedule.</p></li>
+</ul>
+<p>xtrax is a thin, composable layer — performance is dominated by JAX and your model, not by xtrax.</p>
 </section>
 </section>
 
@@ -325,9 +575,32 @@
           <div class="toc-tree">
             <ul>
 <li><a class="reference internal" href="#">Architecture</a><ul>
-<li><a class="reference internal" href="#system-overview">System Overview</a></li>
-<li><a class="reference internal" href="#component-layers">Component Layers</a></li>
-<li><a class="reference internal" href="#data-flow">Data Flow</a></li>
+<li><a class="reference internal" href="#package-organization">Package Organization</a></li>
+<li><a class="reference internal" href="#design-philosophy">Design Philosophy</a><ul>
+<li><a class="reference internal" href="#composition-over-inheritance">1. Composition Over Inheritance</a></li>
+<li><a class="reference internal" href="#static-shape-for-recompile-safety">2. Static Shape for Recompile Safety</a></li>
+<li><a class="reference internal" href="#immutable-state-pure-functions">3. Immutable State, Pure Functions</a></li>
+<li><a class="reference internal" href="#delegation-not-reimplementation">4. Delegation, Not Reimplementation</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#layer-1-transforms">Layer 1: Transforms</a></li>
+<li><a class="reference internal" href="#layer-2-tiling-and-axis-strategies">Layer 2: Tiling and Axis Strategies</a><ul>
+<li><a class="reference internal" href="#strategy-selection-rules">Strategy Selection Rules</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#layer-3-stages-and-pipelines">Layer 3: Stages and Pipelines</a></li>
+<li><a class="reference internal" href="#layer-4-training-core">Layer 4: Training Core</a></li>
+<li><a class="reference internal" href="#layer-5-engine-and-orchestration">Layer 5: Engine and Orchestration</a></li>
+<li><a class="reference internal" href="#layer-6-data-pipelines">Layer 6: Data Pipelines</a></li>
+<li><a class="reference internal" href="#layer-7-distributed-training">Layer 7: Distributed Training</a></li>
+<li><a class="reference internal" href="#layer-8-checkpointing">Layer 8: Checkpointing</a></li>
+<li><a class="reference internal" href="#layer-9-safety-and-debugging">Layer 9: Safety and Debugging</a></li>
+<li><a class="reference internal" href="#layer-10-sparse-matrix-management">Layer 10: Sparse Matrix Management</a></li>
+<li><a class="reference internal" href="#layer-11-i-o-and-callbacks">Layer 11: I/O and Callbacks</a></li>
+<li><a class="reference internal" href="#data-flow-a-training-step">Data Flow: A Training Step</a></li>
+<li><a class="reference internal" href="#concurrency-and-async">Concurrency and Async</a></li>
+<li><a class="reference internal" href="#type-safety">Type Safety</a></li>
+<li><a class="reference internal" href="#performance-characteristics">Performance Characteristics</a></li>
 </ul>
 </li>
 </ul>

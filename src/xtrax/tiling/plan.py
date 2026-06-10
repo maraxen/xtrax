@@ -135,8 +135,8 @@ class BatchPlanner:
                 estimated_bytes = self.memory_estimator(spec)
                 # Get device memory limit (default 4 GiB)
                 try:
-                    device_limit = jax.devices()[0].memory_stats().get(
-                        "bytes_limit", 4 * (2**30)
+                    device_limit = (
+                        jax.devices()[0].memory_stats().get("bytes_limit", 4 * (2**30))
                     )
                 except Exception:
                     device_limit = 4 * (2**30)
@@ -153,8 +153,7 @@ class BatchPlanner:
                 # Memory estimator overrides: use SafeMap
                 strategy = SafeMap(batch_size=spec.batch_size)
                 reasoning = (
-                    "cardinality <= batch_size but "
-                    "memory_estimator override → SafeMap"
+                    "cardinality <= batch_size but memory_estimator override → SafeMap"
                 )
                 return AxisDecision(
                     spec=spec,
@@ -192,8 +191,7 @@ class BatchPlanner:
                 # Memory estimator is provided and under limit: prefer Vmap
                 strategy = Vmap()
                 reasoning = (
-                    "cardinality > batch_size and divisible but "
-                    "memory safe → Vmap"
+                    "cardinality > batch_size and divisible but memory safe → Vmap"
                 )
                 return AxisDecision(
                     spec=spec,

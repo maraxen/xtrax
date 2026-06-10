@@ -25,6 +25,7 @@ class WeightedLoss(eqx.Module):
         loss_fn: A callable implementing the LossFunction protocol.
         weight: A Python float (compile-time constant) multiplying the loss.
     """
+
     loss_fn: LossFunction
     weight: float = eqx.field(static=True)
 
@@ -57,10 +58,11 @@ class MultiTaskLoss(eqx.Module):
             multiplier for the total loss. If None, no schedule is applied.
             Must be eqx.field(static=True) as it holds a Python callable.
     """
+
     losses: tuple[WeightedLoss, ...]
-    weight_schedule: (
-        Callable[[int], Array] | None
-    ) = eqx.field(default=None, static=True)
+    weight_schedule: Callable[[int], Array] | None = eqx.field(
+        default=None, static=True
+    )
 
     def __call__(
         self,
@@ -94,9 +96,7 @@ class MultiTaskLoss(eqx.Module):
             jnp.stack(
                 [
                     loss(pred, target)
-                    for loss, pred, target in zip(
-                        self.losses, predictions, targets
-                    )
+                    for loss, pred, target in zip(self.losses, predictions, targets)
                 ]
             )
         )

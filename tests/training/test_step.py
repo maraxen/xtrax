@@ -16,6 +16,7 @@ from xtrax.training.types import ResumableState
 @pytest.fixture
 def simple_model():
     """A minimal trainable model."""
+
     class SimpleModel(eqx.Module):
         w: jax.Array
 
@@ -28,8 +29,10 @@ def simple_model():
 @pytest.fixture
 def loss_fn():
     """Simple MSE loss function."""
+
     def mse(predictions, targets):
         return jnp.mean((predictions - targets) ** 2)
+
     return mse
 
 
@@ -132,14 +135,17 @@ def test_safety_train_step_with_disabled_safety_delegates_to_trainer(
 
 def test_safety_train_step_with_nan_loss_raises(simple_model, optimizer):
     """SafetyTrainStep with NaN-producing loss raises on host (err.throw() fires)."""
+
     # Create a loss function that returns NaN via log(-1)
     # (checkify only detects NaN from operations, not literals)
     def nan_loss(predictions, targets):
         return jnp.log(-1.0)  # produces NaN that checkify detects
 
     step = create_train_step(
-        nan_loss, optimizer, safety=True,
-        safety_manager=SafetyManager(enabled=True, check_nans=True, check_infs=False)
+        nan_loss,
+        optimizer,
+        safety=True,
+        safety_manager=SafetyManager(enabled=True, check_nans=True, check_infs=False),
     )
 
     # Build a state and batch

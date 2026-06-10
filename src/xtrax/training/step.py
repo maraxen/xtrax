@@ -36,8 +36,8 @@ class SafetyTrainStep(eqx.Module):
     the JIT boundary, allowing proper exception handling on the host.
     """
 
-    trainer: Trainer              # PUBLIC field (spec §3.14)
-    safety_manager: SafetyManager # PUBLIC field (spec §3.14)
+    trainer: Trainer  # PUBLIC field (spec §3.14)
+    safety_manager: SafetyManager  # PUBLIC field (spec §3.14)
 
     @eqx.filter_jit
     def _step_jit(self, state: ResumableState, batch: Any):
@@ -118,8 +118,6 @@ def create_train_step(
 
     # safety=True: wrap in SafetyTrainStep
     if safety_manager is None:
-        safety_manager = SafetyManager(
-            enabled=True, check_nans=True, check_infs=True
-        )
+        safety_manager = SafetyManager(enabled=True, check_nans=True, check_infs=True)
 
     return SafetyTrainStep(trainer=trainer, safety_manager=safety_manager)

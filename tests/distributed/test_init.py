@@ -1,4 +1,5 @@
 """Tests for xtrax.distributed.init — init_dist initialization and discovery."""
+
 import os
 from unittest import mock
 
@@ -39,9 +40,7 @@ class TestInitDistRuntimeErrorOnDifferentArgs:
 
     def test_different_coordinator_address_raises(self):
         """Calling with different coordinator_address should raise RuntimeError."""
-        init_dist(
-            coordinator_address="localhost:1234", num_processes=1, process_id=0
-        )
+        init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=0)
         with pytest.raises(
             RuntimeError, match="already initialized with different args"
         ):
@@ -51,9 +50,7 @@ class TestInitDistRuntimeErrorOnDifferentArgs:
 
     def test_different_num_processes_raises(self):
         """Calling with different num_processes should raise RuntimeError."""
-        init_dist(
-            coordinator_address="localhost:1234", num_processes=1, process_id=0
-        )
+        init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=0)
         with pytest.raises(
             RuntimeError, match="already initialized with different args"
         ):
@@ -63,9 +60,7 @@ class TestInitDistRuntimeErrorOnDifferentArgs:
 
     def test_different_process_id_raises(self):
         """Calling with different process_id should raise RuntimeError."""
-        init_dist(
-            coordinator_address="localhost:1234", num_processes=1, process_id=0
-        )
+        init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=0)
         with pytest.raises(
             RuntimeError, match="already initialized with different args"
         ):
@@ -87,41 +82,50 @@ class TestInitDistSLURMEnvDiscovery:
 
     def test_slurm_ntasks_and_procid(self):
         """When SLURM_NTASKS and SLURM_PROCID set, discover num_processes."""
-        with mock.patch.dict(
-            os.environ,
-            {"SLURM_NTASKS": "4", "SLURM_PROCID": "2"},
-            clear=False,
-        ), mock.patch("xtrax.distributed.init.jax.distributed.initialize"):
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"SLURM_NTASKS": "4", "SLURM_PROCID": "2"},
+                clear=False,
+            ),
+            mock.patch("xtrax.distributed.init.jax.distributed.initialize"),
+        ):
             init_dist()
             # Should have discovered num_processes=4, process_id=2
             assert is_distributed() is True
 
     def test_slurm_nodelist_derives_coordinator(self):
         """When SLURM_JOB_NODELIST set with num_processes>1, derive from first node."""
-        with mock.patch.dict(
-            os.environ,
-            {
-                "SLURM_JOB_NODELIST": "node-001,node-002,node-003",
-                "SLURM_NTASKS": "3",
-                "SLURM_PROCID": "0",
-            },
-            clear=False,
-        ), mock.patch("xtrax.distributed.init.jax.distributed.initialize"):
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "SLURM_JOB_NODELIST": "node-001,node-002,node-003",
+                    "SLURM_NTASKS": "3",
+                    "SLURM_PROCID": "0",
+                },
+                clear=False,
+            ),
+            mock.patch("xtrax.distributed.init.jax.distributed.initialize"),
+        ):
             init_dist()
             # Should have derived coordinator_address from first node
             assert is_distributed() is True
 
     def test_slurm_single_node_list(self):
         """When SLURM_JOB_NODELIST is single node, should use it as coordinator."""
-        with mock.patch.dict(
-            os.environ,
-            {
-                "SLURM_JOB_NODELIST": "node-042",
-                "SLURM_NTASKS": "2",
-                "SLURM_PROCID": "1",
-            },
-            clear=False,
-        ), mock.patch("xtrax.distributed.init.jax.distributed.initialize"):
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "SLURM_JOB_NODELIST": "node-042",
+                    "SLURM_NTASKS": "2",
+                    "SLURM_PROCID": "1",
+                },
+                clear=False,
+            ),
+            mock.patch("xtrax.distributed.init.jax.distributed.initialize"),
+        ):
             init_dist()
             assert is_distributed() is True
 
@@ -140,9 +144,7 @@ class TestInitDistSingleProcessFallback:
     def test_all_args_none_single_process_fallback(self):
         """With all args=None and no SLURM env, fallback to single-process."""
         with mock.patch.dict(os.environ, {}, clear=True):
-            init_dist(
-                coordinator_address=None, num_processes=None, process_id=None
-            )
+            init_dist(coordinator_address=None, num_processes=None, process_id=None)
             # Should have marked distributed init without calling
             # jax.distributed.initialize
             assert is_distributed() is True
@@ -160,9 +162,7 @@ class TestInitDistSingleProcessFallback:
 
     def test_single_process_marks_distributed_init(self):
         """After init_dist with num_processes=1, dist should be marked initialized."""
-        init_dist(
-            coordinator_address="localhost:1234", num_processes=1, process_id=0
-        )
+        init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=0)
         # Verify via DataModule integration
         from xtrax.data.module import _dist_initialized
 

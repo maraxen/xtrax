@@ -5,9 +5,7 @@ import jax
 T: type
 
 
-def safe_map[T](
-    fn: Callable[[T], T], xs: T, batch_size: int | None = None
-) -> T:
+def safe_map[T](fn: Callable[[T], T], xs: T, batch_size: int | None = None) -> T:
     """Apply a function to a pytree using vmap or lax.map depending on size.
 
     Uses jax.vmap when batch_size is None or n <= batch_size. Otherwise uses

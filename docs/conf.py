@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 # Read version from importlib.metadata
 try:
     from importlib.metadata import version
+
     project_version = version("xtrax")
 except Exception:
     project_version = "0.2.0"

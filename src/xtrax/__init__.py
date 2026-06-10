@@ -110,6 +110,7 @@ def __getattr__(name):
     """Lazy import on attribute access."""
     if name in _LAZY:
         import importlib
+
         return getattr(importlib.import_module(_LAZY[name]), name)
     raise AttributeError(f"module 'xtrax' has no attribute {name!r}")
 

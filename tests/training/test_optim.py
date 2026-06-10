@@ -94,7 +94,7 @@ class TestAdamwWithSchedule:
         """Default weight_decay should be 1e-2 (NOT 1e-4)."""
         # Primary assertion: inspect the function signature directly
         sig = inspect.signature(adamw_with_schedule)
-        wd_default = sig.parameters['weight_decay'].default
+        wd_default = sig.parameters["weight_decay"].default
         assert wd_default == 1e-2, (
             f"weight_decay default must be 1e-2, got {wd_default}"
         )
@@ -171,14 +171,14 @@ class TestAdamwWithSchedule:
             warmup_steps=1,
             total_steps=10,
             weight_decay=1e-1,  # Large decay to make effect observable
-            clip_norm=None,     # Disable clipping to isolate WD effect
+            clip_norm=None,  # Disable clipping to isolate WD effect
             wd_mask=no_bias_wd_mask,
         )
 
         # Create params: 2D weight and 1D bias
         params = {
             "weight": jnp.ones((5, 5)),  # 2D -> will have WD applied
-            "bias": jnp.ones(5),          # 1D -> will NOT have WD applied
+            "bias": jnp.ones(5),  # 1D -> will NOT have WD applied
         }
         state = opt_with_mask.init(params)
 
@@ -269,8 +269,8 @@ class TestPartitionLabels:
         """Test with a realistic ndim-based frozen filter."""
         model = {
             "weight": jnp.ones((10, 10)),  # 2D
-            "bias": jnp.zeros(10),          # 1D
-            "scale": jnp.array(1.5),        # 0D
+            "bias": jnp.zeros(10),  # 1D
+            "scale": jnp.array(1.5),  # 0D
         }
 
         # Freeze only 1D params (typical for biases)

@@ -16,6 +16,7 @@ class LossFunction(Protocol):
     A loss function takes predictions and targets (both PyTrees)
     and returns a scalar Array.
     """
+
     def __call__(self, predictions: PyTree, targets: PyTree) -> Array: ...
 
 
@@ -27,6 +28,7 @@ class Callback(Protocol):
     Mutating state in a callback has no effect on training
     since state is immutable.
     """
+
     def on_train_start(self, state: "ResumableState") -> None: ...
     def on_train_end(self, state: "ResumableState") -> None: ...
     def on_resume(self, state: "ResumableState") -> None: ...
@@ -47,6 +49,7 @@ class ResumableState(eqx.Module):
     opt_state: Optimizer state (arbitrary PyTree).
     extras: Optional extra state dict (default: empty dict).
     """
+
     step: Array
     key: Array
     model: eqx.Module

@@ -55,9 +55,7 @@ class StageBundle(eqx.Module):
                         f"Optional[Callable], got {field_type}"
                     )
                 # Get the non-None type
-                callable_type = (
-                    args[0] if args[1] is type(None) else args[1]
-                )
+                callable_type = args[0] if args[1] is type(None) else args[1]
                 # Check if it's a Callable type
                 if not _is_callable_type(callable_type):
                     raise TypeError(
@@ -75,10 +73,10 @@ class StageBundle(eqx.Module):
         # This enforces strict typing for all fields
         for attr_name in dir(cls):
             # Skip magic methods, inherited attributes, non-field stuff
-            if attr_name.startswith('_'):
+            if attr_name.startswith("_"):
                 continue
             # Skip methods from parent classes that we expect to be there
-            if attr_name in ('active_stages', 'has_stage'):
+            if attr_name in ("active_stages", "has_stage"):
                 continue
             # Check if this is a class attribute not in annotations
             if hasattr(cls, attr_name) and attr_name not in annotations:
@@ -101,7 +99,8 @@ class StageBundle(eqx.Module):
     def active_stages(self) -> list[str]:
         """Return field names with non-None callable values. Python-side only."""
         return [
-            name for name, val in vars(self).items()
+            name
+            for name, val in vars(self).items()
             if val is not None and callable(val)
         ]
 

@@ -63,7 +63,7 @@ class TestSafeMapLaxPath:
         xs = jnp.arange(20).reshape(20, 1)
 
         def square(x):
-            return x ** 2
+            return x**2
 
         result = safe_map(square, xs, batch_size=5)
         expected = jax.vmap(square)(xs)

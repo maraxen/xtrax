@@ -9,6 +9,7 @@ from xtrax.stages.bundle import StageBundle
 
 class ConcreteStageBundle(StageBundle):
     """Concrete subclass for testing with typed stage slots."""
+
     stage_a: Callable | None = None
     stage_b: Callable | None = None
     stage_c: Callable | None = None
@@ -31,6 +32,7 @@ class TestActiveStages:
 
     def test_active_stages_returns_names_only(self):
         """active_stages should return only field names, not callables."""
+
         def dummy_fn():
             pass
 
@@ -46,6 +48,7 @@ class TestActiveStages:
 
     def test_active_stages_single_active(self):
         """active_stages should list one field when one is set."""
+
         def fn():
             pass
 
@@ -55,8 +58,10 @@ class TestActiveStages:
 
     def test_active_stages_multiple_active(self):
         """active_stages should list all non-None fields."""
+
         def fn1():
             pass
+
         def fn2():
             pass
 
@@ -70,10 +75,13 @@ class TestActiveStages:
 
     def test_active_stages_order_consistent(self):
         """active_stages should have consistent ordering."""
+
         def fn1():
             pass
+
         def fn2():
             pass
+
         def fn3():
             pass
 
@@ -95,6 +103,7 @@ class TestHasStage:
 
     def test_has_stage_true_when_set(self):
         """has_stage should return True when field is set to a callable."""
+
         def dummy_fn():
             pass
 
@@ -114,8 +123,10 @@ class TestHasStage:
 
     def test_has_stage_multiple_fields(self):
         """has_stage should distinguish between multiple fields."""
+
         def fn1():
             pass
+
         def fn2():
             pass
 
@@ -136,8 +147,10 @@ class TestStageBundlePytree:
 
     def test_stage_bundle_jax_tree_leaves(self):
         """jax.tree_util.tree_leaves should work on StageBundle."""
+
         def fn1():
             return 1
+
         def fn2():
             return 2
 
@@ -149,6 +162,7 @@ class TestStageBundlePytree:
 
     def test_stage_bundle_with_mixed_callables(self):
         """StageBundle should handle mix of None and callable fields."""
+
         def fn():
             pass
 
@@ -160,8 +174,10 @@ class TestStageBundlePytree:
 
     def test_stage_bundle_pytree_roundtrip(self):
         """StageBundle should support tree_flatten/tree_unflatten."""
+
         def fn1():
             pass
+
         def fn2():
             pass
 
@@ -194,6 +210,7 @@ class TestStageBundleValidation:
 
     def test_subclass_with_optional_callable_fields(self):
         """Subclass with Callable | None fields should be valid."""
+
         # This should not raise
         class ValidBundle(StageBundle):
             stage1: Callable | None = None
@@ -205,6 +222,7 @@ class TestStageBundleValidation:
     def test_subclass_with_non_callable_field_raises(self):
         """Subclass with non-Callable field raises TypeError at class definition."""
         with pytest.raises(TypeError):
+
             class InvalidBundle(StageBundle):
                 stage1: Callable | None = None
                 invalid_field: str = "not a callable"
@@ -212,6 +230,7 @@ class TestStageBundleValidation:
     def test_subclass_with_non_optional_callable_field_raises(self):
         """Subclass with non-optional Callable field raises TypeError."""
         with pytest.raises(TypeError):
+
             class InvalidBundle(StageBundle):
                 stage1: Callable  # Not Optional
                 stage2: Callable | None = None
@@ -219,6 +238,7 @@ class TestStageBundleValidation:
     def test_subclass_with_untyped_field_raises(self):
         """Subclass with untyped field raises TypeError at class definition."""
         with pytest.raises(TypeError):
+
             class InvalidBundle(StageBundle):
                 stage1: Callable | None = None
                 untyped_field = None  # No type annotation
@@ -226,6 +246,7 @@ class TestStageBundleValidation:
     def test_invalid_non_optional_callable_raises(self):
         """Field annotated as int (non-callable) raises TypeError at class def."""
         with pytest.raises(TypeError):
+
             class InvalidBundle(StageBundle):
                 field1: int  # Not Callable
 
@@ -233,12 +254,14 @@ class TestStageBundleValidation:
         """Field annotated as Optional[int] raises TypeError at class def."""
 
         with pytest.raises(TypeError):
+
             class InvalidBundle(StageBundle):
                 field1: int | None
 
     def test_list_callable_raises(self):
         """Field annotated as list[Callable] (not Optional) raises TypeError."""
         with pytest.raises(TypeError):
+
             class InvalidBundle(StageBundle):
                 field1: list[Callable]
 

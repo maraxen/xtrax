@@ -296,8 +296,8 @@ class TestBatchPlanner:
         def estimate_with_device_check(spec: AxisSpec) -> int:
             # This simulates what a real estimator might do
             try:
-                device_limit = jax.devices()[0].memory_stats().get(
-                    "bytes_limit", 4 * (2**30)
+                device_limit = (
+                    jax.devices()[0].memory_stats().get("bytes_limit", 4 * (2**30))
                 )
             except Exception:
                 device_limit = 4 * (2**30)
@@ -314,12 +314,8 @@ class TestBatchPlanner:
     def test_multiple_specs_independent_decisions(self):
         """Each spec gets its own decision independent of others."""
         specs = [
-            AxisSpec(
-                name="batch", cardinality=32, batch_size=100
-            ),  # Rule 2: Vmap
-            AxisSpec(
-                name="seq", cardinality=100, batch_size=25
-            ),  # Rule 3: SafeMap
+            AxisSpec(name="batch", cardinality=32, batch_size=100),  # Rule 2: Vmap
+            AxisSpec(name="seq", cardinality=100, batch_size=25),  # Rule 3: SafeMap
             AxisSpec(
                 name="token",
                 cardinality=500,

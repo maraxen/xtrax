@@ -262,21 +262,43 @@
 <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quick Start</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="quickstart.html#getting-started">Getting Started</a></li>
-<li class="toctree-l2"><a class="reference internal" href="quickstart.html#basic-example">Basic Example</a></li>
+<li class="toctree-l2"><a class="reference internal" href="quickstart.html#installation">Installation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="quickstart.html#your-first-training-loop">Your First Training Loop</a></li>
+<li class="toctree-l2"><a class="reference internal" href="quickstart.html#what-s-happening">What’s Happening</a></li>
 <li class="toctree-l2"><a class="reference internal" href="quickstart.html#next-steps">Next Steps</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="concepts.html">Core Concepts</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="concepts.html#key-ideas">Key Ideas</a></li>
-<li class="toctree-l2"><a class="reference internal" href="concepts.html#terminology">Terminology</a></li>
-<li class="toctree-l2"><a class="reference internal" href="concepts.html#design-principles">Design Principles</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#composable-training-infrastructure">Composable Training Infrastructure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#axis-strategies-composable-tiling">Axis Strategies: Composable Tiling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#sparse-inference-with-fixed-sparsity">Sparse Inference with Fixed Sparsity</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#distributed-training-with-mesh-sharding">Distributed Training with Mesh Sharding</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#loss-composition-and-multi-task-learning">Loss Composition and Multi-Task Learning</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#safety-checks-nan-inf-detection">Safety Checks: NaN/Inf Detection</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#data-pipelines-with-grain">Data Pipelines with Grain</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#checkpointing-and-resumption">Checkpointing and Resumption</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#callbacks-and-monitoring">Callbacks and Monitoring</a></li>
+<li class="toctree-l2"><a class="reference internal" href="concepts.html#pure-functions-and-immutable-state">Pure Functions and Immutable State</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="architecture.html#system-overview">System Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="architecture.html#component-layers">Component Layers</a></li>
-<li class="toctree-l2"><a class="reference internal" href="architecture.html#data-flow">Data Flow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#package-organization">Package Organization</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#design-philosophy">Design Philosophy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-1-transforms">Layer 1: Transforms</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-2-tiling-and-axis-strategies">Layer 2: Tiling and Axis Strategies</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-3-stages-and-pipelines">Layer 3: Stages and Pipelines</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-4-training-core">Layer 4: Training Core</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-5-engine-and-orchestration">Layer 5: Engine and Orchestration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-6-data-pipelines">Layer 6: Data Pipelines</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-7-distributed-training">Layer 7: Distributed Training</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-8-checkpointing">Layer 8: Checkpointing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-9-safety-and-debugging">Layer 9: Safety and Debugging</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-10-sparse-matrix-management">Layer 10: Sparse Matrix Management</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#layer-11-i-o-and-callbacks">Layer 11: I/O and Callbacks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#data-flow-a-training-step">Data Flow: A Training Step</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#concurrency-and-async">Concurrency and Async</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#type-safety">Type Safety</a></li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#performance-characteristics">Performance Characteristics</a></li>
 </ul>
 </li>
 </ul>
@@ -298,8 +320,8 @@
 <li class="toctree-l1"><a class="reference internal" href="api/safety.html">Safety</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api/stages.html">Stages</a></li>
 <li class="toctree-l1"><a class="reference internal" href="api/output-sinks.html">Output Sinks</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="api/output-sinks.html#checkpoint">Checkpoint</a></li>
-<li class="toctree-l2"><a class="reference internal" href="api/output-sinks.html#io">IO</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/output-sinks.html#streaming-callbacks">Streaming Callbacks</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api/output-sinks.html#checkpoint-persistence">Checkpoint Persistence</a></li>
 </ul>
 </li>
 </ul>

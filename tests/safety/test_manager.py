@@ -7,6 +7,7 @@ from xtrax.safety.manager import SafetyManager, with_safety
 
 def test_safety_manager_disabled_returns_identity():
     """SafetyManager(enabled=False) + wrap returns fn unchanged (strict identity)."""
+
     def dummy_fn(x):
         return x + 1.0
 
@@ -25,6 +26,7 @@ def test_safety_manager_is_eqx_module():
 
 def test_safety_manager_enabled_detects_nan():
     """SafetyManager(enabled=True) wrapping a NaN-producing fn raises on call."""
+
     def produces_nan(x):
         # Division by zero creates inf (caught by float_checks)
         return jnp.array(1.0) / jnp.array(0.0)
@@ -39,6 +41,7 @@ def test_safety_manager_enabled_detects_nan():
 
 def test_with_safety_alias():
     """with_safety is an alias for manager.wrap."""
+
     def dummy_fn(x):
         return x + 1.0
 

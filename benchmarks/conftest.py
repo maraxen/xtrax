@@ -23,6 +23,7 @@ class _TinyMLP(eqx.Module):
         def _forward(xi):
             xi = jax.nn.tanh(self.layers[0](xi))
             return self.layers[1](xi)
+
         return jax.vmap(_forward)(x)
 
 
@@ -44,6 +45,7 @@ def synthetic_batch():
 def trainer(tiny_model):
     def mse(pred, target):
         return jnp.mean((pred - target) ** 2)
+
     return Trainer(loss_fn=mse, optimizer=optax.adam(1e-3))
 
 

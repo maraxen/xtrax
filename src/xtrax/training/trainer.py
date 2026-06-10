@@ -24,6 +24,7 @@ class Trainer(eqx.Module):
         - Returns new ResumableState with incremented step and updated model/opt_state.
         - Metrics dict always includes at minimum {"loss": scalar}.
     """
+
     loss_fn: LossFunction
     optimizer: optax.GradientTransformation
 
@@ -44,6 +45,7 @@ class Trainer(eqx.Module):
               - new_state: ResumableState with step += 1, updated model and opt_state.
               - metrics: dict[str, Array] with at minimum {"loss": scalar}.
         """
+
         def loss_fn_inner(model):
             predictions = model(batch["inputs"])
             return self.loss_fn(predictions, batch["targets"])

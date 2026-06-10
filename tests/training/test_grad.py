@@ -13,9 +13,7 @@ class TestAccumulateGrads:
         """Verify 'scan' appears in jaxpr (not a Python for-loop)."""
         # Simple linear model
         key0 = jax.random.PRNGKey(0)
-        model = eqx.nn.MLP(
-            in_size=5, out_size=1, width_size=10, depth=2, key=key0
-        )
+        model = eqx.nn.MLP(in_size=5, out_size=1, width_size=10, depth=2, key=key0)
 
         # Create microbatches: shape (2, 4, 5) — 2 microbatches of size 4, input dim 5
         key = jax.random.PRNGKey(1)
@@ -34,7 +32,7 @@ class TestAccumulateGrads:
 
         # Check that 'scan' primitive appears in jaxpr
         jaxpr_str = str(jaxpr)
-        assert 'scan' in jaxpr_str, f"Expected 'scan' in jaxpr but got: {jaxpr_str}"
+        assert "scan" in jaxpr_str, f"Expected 'scan' in jaxpr but got: {jaxpr_str}"
 
     def test_equal_microbatches_matches_full_batch(self):
         """Verify result matches full-batch grad within atol=1e-5."""
@@ -155,9 +153,7 @@ class TestAccumulateGrads:
         filter_spec = eqx.is_array
 
         # Should not raise when filter_spec is provided
-        grads, loss = accumulate_grads(
-            loss_fn, model, (x, y), filter_spec=filter_spec
-        )
+        grads, loss = accumulate_grads(loss_fn, model, (x, y), filter_spec=filter_spec)
 
         # Should return valid gradients
         assert grads is not None

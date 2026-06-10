@@ -12,8 +12,10 @@ class TestVmapIterator:
 
     def test_vmap_iterator_yields_items(self):
         """VmapIterator should yield individual items from vmapped result."""
+
         def fn(x):
             return x * 2
+
         xs = jnp.arange(4)  # shape (4,)
 
         iterator = VmapIterator()
@@ -28,8 +30,10 @@ class TestVmapIterator:
 
     def test_vmap_iterator_pytree_shape(self):
         """VmapIterator should handle pytree inputs."""
+
         def fn(x):
             return {"y": x["y"] * 2, "z": x["z"] + 1}
+
         xs = {"y": jnp.arange(3).reshape(3, 1), "z": jnp.ones((3, 2))}
 
         iterator = VmapIterator()
@@ -47,8 +51,10 @@ class TestSafeMapIterator:
 
     def test_safe_map_iterator_equals_vmap_when_batch_size_gte_n(self):
         """SafeMapIterator with batch_size >= n should equal VmapIterator."""
+
         def fn(x):
             return x * 2
+
         xs = jnp.arange(10)
 
         vmap_iter = VmapIterator()
@@ -61,8 +67,10 @@ class TestSafeMapIterator:
 
     def test_safe_map_iterator_batch_size_equals_n(self):
         """SafeMapIterator with batch_size == n should equal VmapIterator."""
+
         def fn(x):
             return x * 2
+
         xs = jnp.arange(10)
 
         vmap_iter = VmapIterator()
@@ -75,8 +83,10 @@ class TestSafeMapIterator:
 
     def test_safe_map_iterator_non_divisible_raises_valueerror(self):
         """SafeMapIterator should propagate ValueError for non-divisible n."""
+
         def fn(x):
             return x * 2
+
         xs = jnp.arange(10)  # n=10
 
         safe_iter = SafeMapIterator(batch_size=3)  # 10 % 3 != 0
@@ -86,8 +96,10 @@ class TestSafeMapIterator:
 
     def test_safe_map_iterator_divisible_batch(self):
         """SafeMapIterator should work with divisible batch sizes."""
+
         def fn(x):
             return x * 2
+
         xs = jnp.arange(10)
 
         safe_iter = SafeMapIterator(batch_size=5)
@@ -105,8 +117,10 @@ class TestBucketIterator:
         BucketIterator raises ValueError if len(batch_sizes) !=
         len(boundaries) + 1.
         """
+
         def fn(x):
             return x
+
         xs = jnp.arange(100)
 
         # boundaries has 2 elements, so batch_sizes should have 3
@@ -120,8 +134,10 @@ class TestBucketIterator:
 
     def test_bucket_iterator_valid_construction(self):
         """BucketIterator constructs with correct batch_sizes length."""
+
         def fn(x):
             return x
+
         xs = jnp.arange(100)
 
         # boundaries has 2 elements, batch_sizes has 3
@@ -136,8 +152,10 @@ class TestBucketIterator:
 
     def test_bucket_iterator_single_boundary(self):
         """BucketIterator with single boundary and two batch sizes."""
+
         def fn(x):
             return x
+
         xs = jnp.arange(100)
 
         bucket_iter = BucketIterator(
@@ -151,8 +169,10 @@ class TestBucketIterator:
 
     def test_bucket_iterator_empty_boundaries(self):
         """BucketIterator with no boundaries and one batch size."""
+
         def fn(x):
             return x
+
         xs = jnp.arange(100)
 
         bucket_iter = BucketIterator(
@@ -166,6 +186,7 @@ class TestBucketIterator:
 
     def test_bucket_iterator_pads_to_boundary(self):
         """BucketIterator pads input to smallest bucket >= seq_len."""
+
         def fn(x):
             return x * 2
 
@@ -184,9 +205,9 @@ class TestBucketIterator:
         result, original_length_mask = results[0]
 
         # Should pad to 128 (smallest boundary >= 100)
-        assert (
-            result.shape[0] == 128
-        ), f"Expected padded shape (128,), got {result.shape}"
+        assert result.shape[0] == 128, (
+            f"Expected padded shape (128,), got {result.shape}"
+        )
 
         # Check mask: first 100 should be True, rest False
         assert jnp.sum(original_length_mask) == 100
@@ -195,6 +216,7 @@ class TestBucketIterator:
 
     def test_bucket_iterator_exact_boundary(self):
         """BucketIterator accepts exact boundary (pad_amount=0)."""
+
         def fn(x):
             return x * 2
 
@@ -217,6 +239,7 @@ class TestBucketIterator:
 
     def test_bucket_iterator_exact_max_boundary(self):
         """BucketIterator accepts input at max boundary without error."""
+
         def fn(x):
             return x * 2
 
@@ -239,6 +262,7 @@ class TestBucketIterator:
 
     def test_bucket_iterator_exceeds_max_raises(self):
         """BucketIterator raises ValueError when input exceeds max boundary."""
+
         def fn(x):
             return x
 
@@ -257,6 +281,7 @@ class TestBucketIterator:
 
     def test_bucket_iterator_empty_xs_yields_nothing(self):
         """BucketIterator with empty pytree yields nothing."""
+
         def fn(x):
             return x
 
