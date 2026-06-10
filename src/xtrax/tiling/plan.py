@@ -118,7 +118,7 @@ class BatchPlanner:
         if spec.dedup_eligible:
             strategy = DedupGather(
                 dedup_fn=lambda xs: (xs, None),
-                gather_fn=lambda ys, indices: ys,
+                gather_fn=lambda ys, gather_indices: ys,
                 k_bucket=256,  # Placeholder
             )
             return AxisDecision(

@@ -32,6 +32,7 @@ from typing import Any
 
 import equinox as eqx
 import jax
+import jax.core
 from jax.experimental.sparse import BCOO
 
 from xtrax.sparse.policy import SparsePolicy

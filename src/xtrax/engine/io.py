@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Coroutine, Iterable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,7 @@ async def async_indexed_stream[T](
         Any exception raised by the iterable will be re-raised on the next yield.
     """
     # Create a queue to hold prefetched items or sentinel values
-    queue: asyncio.Queue[tuple[int, T] | tuple[object, BaseException] | object] = (
-        asyncio.Queue(maxsize=buffer_size)
-    )
+    queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=buffer_size)
 
     exception_holder: BaseException | None = None
 
