@@ -16,3 +16,4 @@ logs/
 .coverage
 coverage.xml
 .coverage_html/
+docs/_build/
