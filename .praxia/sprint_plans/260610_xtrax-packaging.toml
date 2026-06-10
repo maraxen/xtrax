@@ -1,0 +1,379 @@
+[sprint]
+sprint_id = "260610_xtrax-packaging"
+sprint_num = 35
+name = "xtrax distribution-readiness"
+description = "pip-installable + PyPI + CI + docs"
+context = "[MANUAL: paste recon findings here before running emit-sprint]"
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "a"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1451"
+phase_name = "Track A — [N0] Remove stale committed .coverage + gitignore coverage artifacts (#1451)"
+fixer_prompt = '''
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N0 (task 260610_xtrax-packaging). Enforces pre-mortem-b ordering at the DAG level: the stale .coverage (27.5%) must be removed BEFORE the coverage gate (N6) is wired, else it red-bars CI day one. ACCEPTANCE: `git rm --cached .coverage` (and coverage.xml if tracked); .gitignore contains `.coverage` and `coverage.xml`; verify `git ls-files | grep -cE '(^|/)\.coverage'` == 0. Dispatch: cursor. Source spec: .praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]'''
+reviewer_prompt = '''
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N0 (task 260610_xtrax-packaging). Enforces pre-mortem-b ordering at the DAG level: the stale .coverage (27.5%) must be removed BEFORE the coverage gate (N6) is wired, else it red-bars CI day one. ACCEPTANCE: `git rm --cached .coverage` (and coverage.xml if tracked); .gitignore contains `.coverage` and `coverage.xml`; verify `git ls-files | grep -cE '(^|/)\.coverage'` == 0. Dispatch: cursor. Source spec: .praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. "new test exists and calls the handler directly"
+VERIFY: no regression — e.g. "existing tests still pass"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written.'''
+return_key = "1451"
+surface = "cursor"
+
+[[tracks]]
+id = "b"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1452"
+phase_name = "Track B — [N1] Version single-sourcing (__init__-as-truth, 0.2.0) + wheel verification (#1452)"
+fixer_prompt = '''
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N1 — ROOT GATE 1 (task 260610_xtrax-packaging). Resolves the 0.1.0/0.2.0 mismatch bug as part of packaging infra. Single-source via [tool.hatch.version] path="src/xtrax/__init__.py" + dynamic=["version"] in [project]; reconcile to 0.2.0; keep __version__="0.2.0" as the literal first executable line of __init__.py (above any re-export block). ACCEPTANCE: `uv build` green; clean-venv `python -c "import xtrax; print(xtrax.__version__)"` prints 0.2.0; `unzip -p dist/*.whl '**/METADATA' | grep '^Version:'`==0.2.0; `twine check dist/*` passes; `grep -rn '0\.1\.0' src/` empty. Dispatch: fixer (judgment/cross-cutting). Spec: .praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]'''
+reviewer_prompt = '''
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N1 — ROOT GATE 1 (task 260610_xtrax-packaging). Resolves the 0.1.0/0.2.0 mismatch bug as part of packaging infra. Single-source via [tool.hatch.version] path="src/xtrax/__init__.py" + dynamic=["version"] in [project]; reconcile to 0.2.0; keep __version__="0.2.0" as the literal first executable line of __init__.py (above any re-export block). ACCEPTANCE: `uv build` green; clean-venv `python -c "import xtrax; print(xtrax.__version__)"` prints 0.2.0; `unzip -p dist/*.whl '**/METADATA' | grep '^Version:'`==0.2.0; `twine check dist/*` passes; `grep -rn '0\.1\.0' src/` empty. Dispatch: fixer (judgment/cross-cutting). Spec: .praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. "new test exists and calls the handler directly"
+VERIFY: no regression — e.g. "existing tests still pass"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written.'''
+return_key = "1452"
+
+[[tracks]]
+id = "c"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1453"
+phase_name = "Track C — [N3] Hybrid + lazy public API surface (populate empty __init__ + PEP562 __getattr__) (#1453)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N3 — ROOT GATE 2 (task 260610_xtrax-packaging). Populate empty training/data/tiling __init__.py with curated __all__; expose curated flat top-level (Trainer, Engine, AxisSpec, BatchPlan + output-sink names) via PEP 562 module-level __getattr__ lazy re-exports. ACCEPTANCE: `from xtrax import Trainer, Engine` works; all 11 subpackages export non-empty __all__; runnable cold-import bound (clean process, JAX not pre-imported): `python -c 'import time; t=time.perf_counter(); import xtrax; e=time.perf_counter()-t; assert e<0.5, f\"cold import {e:.2f}s exceeds 500ms\"'`; no JAX device init on bare import. Dispatch: fixer (taste call + reads real APIs). Spec: .praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N3 — ROOT GATE 2 (task 260610_xtrax-packaging). Populate empty training/data/tiling __init__.py with curated __all__; expose curated flat top-level (Trainer, Engine, AxisSpec, BatchPlan + output-sink names) via PEP 562 module-level __getattr__ lazy re-exports. ACCEPTANCE: `from xtrax import Trainer, Engine` works; all 11 subpackages export non-empty __all__; runnable cold-import bound (clean process, JAX not pre-imported): `python -c 'import time; t=time.perf_counter(); import xtrax; e=time.perf_counter()-t; assert e<0.5, f\"cold import {e:.2f}s exceeds 500ms\"'`; no JAX device init on bare import. Dispatch: fixer (taste call + reads real APIs). Spec: .praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "1453"
+
+[[tracks]]
+id = "d"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1454"
+phase_name = "Track D — [N9] Configure PyPI + TestPyPI OIDC Trusted Publisher (human gate) (#1454)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N9 — HUMAN GATE (task 260610_xtrax-packaging). Out-of-band prerequisite that blocks N7 publish; prevents pre-mortem-c (forgotten config -> hasty token). ACCEPTANCE (owner-verified): PyPI Trusted Publisher configured for owner/xtrax repo + publish.yml workflow name + environment; same configured on test.pypi.org. Marked done by the project owner only. Dispatch: user_handoff PCW template (manual-approval gate, no automated agent). Spec: .praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N9 — HUMAN GATE (task 260610_xtrax-packaging). Out-of-band prerequisite that blocks N7 publish; prevents pre-mortem-c (forgotten config -> hasty token). ACCEPTANCE (owner-verified): PyPI Trusted Publisher configured for owner/xtrax repo + publish.yml workflow name + environment; same configured on test.pypi.org. Marked done by the project owner only. Dispatch: user_handoff PCW template (manual-approval gate, no automated agent). Spec: .praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "1454"
+
+[[tracks]]
+id = "e"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1455"
+phase_name = "Track E — [N2] Apache-2.0 LICENSE + pyproject metadata + py.typed-in-wheel (#1455)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N2 (task 260610_xtrax-packaging). Apache-2.0 LICENSE at root; license=\"Apache-2.0\" SPDX + classifiers (Dev Status, Programming Language :: Python :: 3.13, Intended Audience :: Science/Research, License :: OSI Approved :: Apache Software License, Typing :: Typed) + [project.urls] + authors; src/xtrax/py.typed retained in wheel via hatch force-include. ACCEPTANCE: `twine check dist/*` complete metadata; `unzip -l dist/*.whl | grep py.typed` returns exactly one result; `python -c \"import importlib.resources as r, xtrax; assert (r.files('xtrax')/'py.typed').is_file()\"`. Dispatch: cursor. Pins pre-mortem-d.
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N2 (task 260610_xtrax-packaging). Apache-2.0 LICENSE at root; license=\"Apache-2.0\" SPDX + classifiers (Dev Status, Programming Language :: Python :: 3.13, Intended Audience :: Science/Research, License :: OSI Approved :: Apache Software License, Typing :: Typed) + [project.urls] + authors; src/xtrax/py.typed retained in wheel via hatch force-include. ACCEPTANCE: `twine check dist/*` complete metadata; `unzip -l dist/*.whl | grep py.typed` returns exactly one result; `python -c \"import importlib.resources as r, xtrax; assert (r.files('xtrax')/'py.typed').is_file()\"`. Dispatch: cursor. Pins pre-mortem-d.
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "1455"
+surface = "cursor"
+
+[[tracks]]
+id = "f"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1456"
+phase_name = "Track F — [N6] Fresh coverage gate + minimal 3.13 ci.yml (#1456)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N6 (task 260610_xtrax-packaging). Minimal 3.13 ci.yml: ruff lint + ruff format-check + type-check + `pytest --cov --cov-fail-under=90`. Stale-artifact removal guaranteed upstream by N0. ACCEPTANCE: CI computes fresh coverage >=90% (real ~96.5%) and passes; ruff/type/test jobs green. Dispatch: cursor.
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N6 (task 260610_xtrax-packaging). Minimal 3.13 ci.yml: ruff lint + ruff format-check + type-check + `pytest --cov --cov-fail-under=90`. Stale-artifact removal guaranteed upstream by N0. ACCEPTANCE: CI computes fresh coverage >=90% (real ~96.5%) and passes; ruff/type/test jobs green. Dispatch: cursor.
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "1456"
+surface = "cursor"
+
+[[tracks]]
+id = "g"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1457"
+phase_name = "Track G — [N4a] Autodoc plumbing (Sphinx conf.py + autosummary + RTD + docs CI -W) (#1457)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N4a (task 260610_xtrax-packaging). Sphinx (autodoc+autosummary+napoleon, furo); conf.py; autosummary stubs; docs optional-dependency group in pyproject; API org by 11 subpackages with output-sink as top-level nav group; .readthedocs.yaml pins 3.13 + docs extra; docs CI job. ACCEPTANCE (pre-mortem-e parity): docs CI job runs `sphinx-build -W -n` in a FRESH venv built with `uv sync --only-group docs` (no dev deps) — same isolation .readthedocs.yaml uses; must be green before close. Dispatch: fixer (autodoc plumbing reads real API).
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N4a (task 260610_xtrax-packaging). Sphinx (autodoc+autosummary+napoleon, furo); conf.py; autosummary stubs; docs optional-dependency group in pyproject; API org by 11 subpackages with output-sink as top-level nav group; .readthedocs.yaml pins 3.13 + docs extra; docs CI job. ACCEPTANCE (pre-mortem-e parity): docs CI job runs `sphinx-build -W -n` in a FRESH venv built with `uv sync --only-group docs` (no dev deps) — same isolation .readthedocs.yaml uses; must be green before close. Dispatch: fixer (autodoc plumbing reads real API).
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "1457"
+
+[[tracks]]
+id = "h"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1458"
+phase_name = "Track H — [N4b] Narrative docs prose (quickstart + architecture, seeded from internal specs) (#1458)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N4b (task 260610_xtrax-packaging). Quickstart (flat-import snippet), architecture + concepts chapters, seeded from internal specs .praxia/docs/specs/260604_xtrax-spec.md and 260608_xtrax-s5-sparse.md with internal refs stripped. ACCEPTANCE: pages build under `sphinx-build -W -n`; quickstart code block is doctest-executable. Dispatch: cursor (bounded prose).
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N4b (task 260610_xtrax-packaging). Quickstart (flat-import snippet), architecture + concepts chapters, seeded from internal specs .praxia/docs/specs/260604_xtrax-spec.md and 260608_xtrax-s5-sparse.md with internal refs stripped. ACCEPTANCE: pages build under `sphinx-build -W -n`; quickstart code block is doctest-executable. Dispatch: cursor (bounded prose).
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "1458"
+surface = "cursor"
+
+[[tracks]]
+id = "i"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1459"
+phase_name = "Track I — [N5] Output-sink docs (io callbacks + orbax checkpoint) + re-export doctests in CI (#1459)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N5 (task 260610_xtrax-packaging). Unified 'Output sinks' chapter (io callbacks vs orbax checkpoints) + per-surface autodoc; canonical `from xtrax.io import ...` path + io->engine.io re-export boundary stated explicitly. ACCEPTANCE: re-export usage examples are doctests run in CI (pytest --doctest-modules / sphinx doctest) and pass; README streaming + checkpointing sections present. Dispatch: cursor. (User-flagged output-sink surface in scope.)
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N5 (task 260610_xtrax-packaging). Unified 'Output sinks' chapter (io callbacks vs orbax checkpoints) + per-surface autodoc; canonical `from xtrax.io import ...` path + io->engine.io re-export boundary stated explicitly. ACCEPTANCE: re-export usage examples are doctests run in CI (pytest --doctest-modules / sphinx doctest) and pass; README streaming + checkpointing sections present. Dispatch: cursor. (User-flagged output-sink surface in scope.)
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "1459"
+surface = "cursor"
+
+[[tracks]]
+id = "j"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1460"
+phase_name = "Track J — [N8] README + CHANGELOG + CONTRIBUTING + CITATION.cff + delete main.py (#1460)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N8 (task 260610_xtrax-packaging). README (tagline+badges -> why -> `pip install xtrax` (3.13) -> flat-import quickstart -> output-sink highlights -> docs links -> license); CHANGELOG (Keep-a-Changelog, [0.2.0] records 0.1.0->0.2.0); CONTRIBUTING (uv/ruff/coverage/tag-publish); CITATION.cff; delete main.py. ACCEPTANCE: README long-description renders on TestPyPI; badges resolve; main.py gone; CITATION version==0.2.0. Dispatch: cursor.
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N8 (task 260610_xtrax-packaging). README (tagline+badges -> why -> `pip install xtrax` (3.13) -> flat-import quickstart -> output-sink highlights -> docs links -> license); CHANGELOG (Keep-a-Changelog, [0.2.0] records 0.1.0->0.2.0); CONTRIBUTING (uv/ruff/coverage/tag-publish); CITATION.cff; delete main.py. ACCEPTANCE: README long-description renders on TestPyPI; badges resolve; main.py gone; CITATION version==0.2.0. Dispatch: cursor.
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "1460"
+surface = "cursor"
+
+[[tracks]]
+id = "k"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1461"
+phase_name = "Track K — [N7] publish.yml OIDC Trusted Publishing (TestPyPI -> PyPI, tag-triggered) (#1461)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N7 — terminal publish (task 260610_xtrax-packaging). publish.yml on v* tag-push builds sdist+wheel, uploads via OIDC Trusted Publishing (pypa/gh-action-pypi-publish, no token); TestPyPI staging stage runs FIRST. ACCEPTANCE: pre-release tag green to TestPyPI + clean-venv install succeeds; v0.2.0 green to PyPI; repo secrets show no long-lived PyPI token. Depends on N9 human OIDC config gate. Dispatch: cursor.
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N7 — terminal publish (task 260610_xtrax-packaging). publish.yml on v* tag-push builds sdist+wheel, uploads via OIDC Trusted Publishing (pypa/gh-action-pypi-publish, no token); TestPyPI staging stage runs FIRST. ACCEPTANCE: pre-release tag green to TestPyPI + clean-venv install succeeds; v0.2.0 green to PyPI; repo secrets show no long-lived PyPI token. Depends on N9 human OIDC config gate. Dispatch: cursor.
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "1461"
+surface = "cursor"
+
+[[tracks]]
+id = "l"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1462"
+phase_name = "Track L — [N10] Epic-done release-readiness gate (convergence) (#1462)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N10 — TERMINAL SINK (task 260610_xtrax-packaging). Closes the dangling docs/hygiene subgraph: the epic is NOT done until publish AND docs AND hygiene all land. ACCEPTANCE (all must hold): `pip install xtrax` from PyPI installs v0.2.0 and imports with __version__==0.2.0; hosted docs render full API + output-sink + quickstart; README renders on PyPI project page; main.py gone; CI green on main; coverage gate >=90% fresh. Dispatch: complete_workflow PCW template (convergence/rollup gate).
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+Distribution-readiness DAG node N10 — TERMINAL SINK (task 260610_xtrax-packaging). Closes the dangling docs/hygiene subgraph: the epic is NOT done until publish AND docs AND hygiene all land. ACCEPTANCE (all must hold): `pip install xtrax` from PyPI installs v0.2.0 and imports with __version__==0.2.0; hosted docs render full API + output-sink + quickstart; README renders on PyPI project page; main.py gone; CI green on main; coverage gate >=90% fresh. Dispatch: complete_workflow PCW template (convergence/rollup gate).
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "1462"
+
+[orchestration]
+sequential = []
+concurrent = []
