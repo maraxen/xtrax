@@ -30,3 +30,6 @@ jobs:
 
       - name: Test with coverage gate
         run: uv run pytest --cov=xtrax --cov-branch --cov-fail-under=90
+
+      - name: Doctest canonical import paths
+        run: uv run pytest --doctest-modules src/xtrax/io/ -q
