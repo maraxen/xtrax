@@ -2,6 +2,10 @@
 
 High-performance composable JAX library for advanced training workflows.
 
+```{note}
+**xtrax is alpha, experimental software.** Built primarily for the author's personal research use, APIs may change without notice between releases. No backward-compatibility guarantees pre-1.0. Issues and PRs welcome; support is best-effort.
+```
+
 ```{toctree}
 :maxdepth: 2
 :caption: Getting Started

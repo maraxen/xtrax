@@ -6,7 +6,11 @@
 [![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)](https://github.com/maraxen/xtrax)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/maraxen/xtrax/blob/main/LICENSE)
 
-High-performance composable JAX training library.
+A set of composable building blocks for JAX/Equinox training loops — engine + trainer orchestration, safety-checked steps, axis tiling strategies, inference-time sparsification, distributed/sharding helpers, streaming output callbacks, and orbax checkpointing — extracted from the author's research code.
+
+## Status
+
+**xtrax is alpha, experimental software** built primarily for the author's personal research use. APIs may change without notice between releases; no backward-compatibility guarantees pre-1.0. Issues and pull requests are welcome, but support is best-effort — the project exists first to serve the author's own JAX training workflows.
 
 ## Why xtrax?
 
