@@ -10,6 +10,7 @@ import jax
 
 from xtrax.tiling.strategy import (
     AxisStrategy,
+    Bucket,
     DedupGather,
     SafeMap,
     Vmap,
@@ -27,6 +28,10 @@ class AxisSpec:
         granularity: Alignment granularity (default 1, no constraint).
         heterogeneous: Whether elements have different sizes (default False).
         dedup_eligible: Whether this axis is eligible for deduplication (default False).
+        bucket_boundaries: Optional sorted, strictly-ascending bucket sizes. When
+            provided, the planner selects the Bucket strategy (length-padding to the
+            nearest boundary) instead of the cardinality-based rules. None disables
+            bucketing (default).
     """
 
     name: str
@@ -35,6 +40,32 @@ class AxisSpec:
     granularity: int = 1
     heterogeneous: bool = False
     dedup_eligible: bool = False
+    bucket_boundaries: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize and validate bucket_boundaries when provided."""
+        if self.bucket_boundaries is None:
+            return
+        boundaries = tuple(self.bucket_boundaries)
+        # Coerce to tuple so the frozen dataclass stays hashable even if a list
+        # was passed for ergonomics.
+        object.__setattr__(self, "bucket_boundaries", boundaries)
+        if len(boundaries) == 0:
+            raise ValueError(
+                f"AxisSpec(name={self.name!r}): bucket_boundaries must be non-empty."
+            )
+        if any(b <= 0 for b in boundaries):
+            raise ValueError(
+                f"AxisSpec(name={self.name!r}): bucket_boundaries must be positive, "
+                f"got {boundaries}."
+            )
+        if list(boundaries) != sorted(boundaries) or len(set(boundaries)) != len(
+            boundaries
+        ):
+            raise ValueError(
+                f"AxisSpec(name={self.name!r}): bucket_boundaries must be strictly "
+                f"ascending, got {boundaries}."
+            )
 
 
 @dataclass(frozen=True)
@@ -45,7 +76,7 @@ class AxisDecision:
         spec: The AxisSpec that was analyzed.
         batch_size: Final batch size used (from spec).
         reasoning: Human-readable explanation of the decision.
-        strategy: Selected AxisStrategy (Vmap, SafeMap, or DedupGather).
+        strategy: Selected AxisStrategy (Bucket, Vmap, SafeMap, or DedupGather).
     """
 
     spec: AxisSpec
@@ -69,12 +100,13 @@ class BatchPlanner:
     """Planner that selects tiling strategies based on axis properties.
 
     Selection rules (in priority order):
-    1. dedup_eligible=True → DedupGather
-    2. cardinality <= batch_size → Vmap
-    3. cardinality > batch_size AND divisible → SafeMap
-    4. non-divisible → SafeMap with warning (deferred-failure contract)
+    1. bucket_boundaries is not None → Bucket (length-padding)
+    2. dedup_eligible=True → DedupGather
+    3. cardinality <= batch_size → Vmap
+    4. cardinality > batch_size AND divisible → SafeMap
+    5. non-divisible → SafeMap with warning (deferred-failure contract)
 
-    When memory_estimator is provided, it overrides rule 2/3 decisions
+    When memory_estimator is provided, it overrides rule 3/4 decisions
     to prefer SafeMap if estimated Vmap memory exceeds device limit.
     """
 
@@ -114,7 +146,24 @@ class BatchPlanner:
     def _decide_strategy(self, spec: AxisSpec) -> AxisDecision:
         """Decide strategy for a single AxisSpec following selection rules."""
 
-        # Rule 1: dedup_eligible → DedupGather (with placeholder fns)
+        # Rule 1: explicit bucket_boundaries → Bucket (host-side length-padding).
+        # This is the strongest, most explicit signal and wins over dedup/cardinality
+        # rules: the caller has declared the variable-length axis and its buckets.
+        # Bucket is a host plan descriptor — padding happens before the JIT boundary
+        # via select_bucket()/bucketize(), not in make_axis_dispatch.
+        if spec.bucket_boundaries is not None:
+            boundaries = spec.bucket_boundaries
+            strategy = Bucket(boundaries=boundaries)
+            return AxisDecision(
+                spec=spec,
+                batch_size=spec.batch_size,
+                reasoning=(
+                    f"bucket_boundaries={boundaries} → Bucket (host-side padding)"
+                ),
+                strategy=strategy,
+            )
+
+        # Rule 2: dedup_eligible → DedupGather (with placeholder fns)
         if spec.dedup_eligible:
             strategy = DedupGather(
                 dedup_fn=lambda xs: (xs, None),
@@ -147,7 +196,7 @@ class BatchPlanner:
                 # Fall back silently to default rules
                 pass
 
-        # Rule 2: cardinality <= batch_size → Vmap (unless memory override)
+        # Rule 3: cardinality <= batch_size → Vmap (unless memory override)
         if spec.cardinality <= spec.batch_size:
             if should_prefer_safemap_for_memory:
                 # Memory estimator overrides: use SafeMap
@@ -170,10 +219,10 @@ class BatchPlanner:
                     strategy=strategy,
                 )
 
-        # Rule 3 & 4: cardinality > batch_size
+        # Rule 4 & 5: cardinality > batch_size
         # Check divisibility
         if spec.cardinality % spec.batch_size == 0:
-            # Rule 3: divisible → SafeMap (unless memory estimator allows Vmap)
+            # Rule 4: divisible → SafeMap (unless memory estimator allows Vmap)
             if should_prefer_safemap_for_memory:
                 # Memory estimate exceeds limit: use SafeMap
                 strategy = SafeMap(batch_size=spec.batch_size)
@@ -209,7 +258,7 @@ class BatchPlanner:
                     strategy=strategy,
                 )
         else:
-            # Rule 4: non-divisible → SafeMap + warning (deferred-failure contract)
+            # Rule 5: non-divisible → SafeMap + warning (deferred-failure contract)
             warnings.warn(
                 f"AxisSpec(name={spec.name!r}): cardinality={spec.cardinality} "
                 f"is not divisible by batch_size={spec.batch_size}. "

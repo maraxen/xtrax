@@ -3,6 +3,7 @@
 import pytest
 
 from xtrax.tiling.strategy import (
+    Bucket,
     DedupFn,
     DedupGather,
     GatherFn,
@@ -180,3 +181,30 @@ class TestAxisStrategyUnion:
 
         strategy = DedupGather(dedup_fn=dedup, gather_fn=gather, k_bucket=256)
         assert isinstance(strategy, DedupGather)
+
+    def test_bucket_is_axis_strategy(self):
+        """Bucket is a valid AxisStrategy."""
+        strategy = Bucket(boundaries=(8, 16))
+        assert isinstance(strategy, Bucket)
+
+
+class TestBucketStrategy:
+    """Bucket variant: instantiation, fields, and immutability."""
+
+    def test_bucket_instantiates(self):
+        """Bucket with boundaries instantiates."""
+        strategy = Bucket(boundaries=(8, 16, 32))
+        assert isinstance(strategy, Bucket)
+        assert strategy.boundaries == (8, 16, 32)
+
+    def test_bucket_frozen(self):
+        """Bucket is immutable."""
+        strategy = Bucket(boundaries=(8,))
+        with pytest.raises(Exception):  # FrozenInstanceError
+            strategy.boundaries = (16,)
+
+    def test_bucket_hashable(self):
+        """Bucket is hashable (frozen with a tuple field)."""
+        strategy = Bucket(boundaries=(8, 16))
+        # Should not raise — the tuple field makes the frozen dataclass hashable.
+        assert hash(strategy) == hash(Bucket(boundaries=(8, 16)))

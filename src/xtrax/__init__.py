@@ -28,6 +28,9 @@ __all__ = [
     "Vmap",
     "SafeMap",
     "DedupGather",
+    "Bucket",
+    "select_bucket",
+    "bucketize",
     # Sparse
     "SparseConfig",
     "SparsePolicy",
@@ -81,6 +84,9 @@ _LAZY = {
     "Vmap": "xtrax.tiling",
     "SafeMap": "xtrax.tiling",
     "DedupGather": "xtrax.tiling",
+    "Bucket": "xtrax.tiling",
+    "select_bucket": "xtrax.tiling",
+    "bucketize": "xtrax.tiling",
     # Sparse subpackage
     "SparseConfig": "xtrax.sparse",
     "SparsePolicy": "xtrax.sparse",

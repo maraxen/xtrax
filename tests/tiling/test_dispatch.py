@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import pytest
 
 from xtrax.tiling.dispatch import make_axis_dispatch
-from xtrax.tiling.strategy import DedupGather, SafeMap, Scan, Vmap
+from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Scan, Vmap
 
 
 class TestVmapDispatch:
@@ -189,6 +189,34 @@ class TestDedupGatherDispatch:
         # gathered: [15, 15, 13, 13, 17]
         expected = jnp.array([15, 15, 13, 13, 17])
         assert jnp.allclose(result, expected)
+
+
+class TestBucketDispatch:
+    """Bucket is host-side and must not execute in the device-tier dispatch."""
+
+    def test_bucket_dispatch_raises_with_guidance(self):
+        """make_axis_dispatch(Bucket, ...) raises TypeError pointing to host helpers."""
+
+        def fn(x):
+            return x * 2
+
+        xs = jnp.arange(5)
+        strategy = Bucket(boundaries=(8, 16))
+
+        with pytest.raises(TypeError, match="host-side"):
+            make_axis_dispatch(strategy, fn, xs)
+
+    def test_bucket_dispatch_error_mentions_bucketize(self):
+        """The error directs callers to select_bucket/bucketize."""
+
+        def fn(x):
+            return x
+
+        xs = jnp.arange(3)
+        strategy = Bucket(boundaries=(4,))
+
+        with pytest.raises(TypeError, match="bucketize"):
+            make_axis_dispatch(strategy, fn, xs)
 
 
 class TestDispatchExhaustiveness:

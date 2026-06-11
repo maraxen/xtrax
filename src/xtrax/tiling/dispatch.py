@@ -5,7 +5,14 @@ from typing import Any
 
 import jax
 
-from xtrax.tiling.strategy import AxisStrategy, DedupGather, SafeMap, Scan, Vmap
+from xtrax.tiling.strategy import (
+    AxisStrategy,
+    Bucket,
+    DedupGather,
+    SafeMap,
+    Scan,
+    Vmap,
+)
 from xtrax.transforms.map import safe_map
 from xtrax.transforms.scan import safe_scan
 
@@ -18,8 +25,15 @@ def make_axis_dispatch(
 ) -> Any:
     """Dispatch execution to the appropriate JAX transform based on strategy.
 
-    Exhaustively handles all four AxisStrategy variants: Vmap, SafeMap, Scan, and
-    DedupGather. Each variant applies a different execution pattern for axis iteration.
+    Handles the four device-tier AxisStrategy variants: Vmap, SafeMap, Scan, and
+    DedupGather. Each applies a different on-device execution pattern for axis
+    iteration.
+
+    ``Bucket`` is intentionally NOT executed here: bucketing is a host-side,
+    pre-JIT concern (JAX has no dynamic shapes inside ``jit``). Pad to a bucket
+    shape with ``select_bucket``/``bucketize`` on the host, then dispatch the
+    per-bucket compute with a device-tier strategy. Passing a ``Bucket`` raises
+    ``TypeError`` with that guidance.
 
     Args:
         strategy: The AxisStrategy to dispatch with.
@@ -35,7 +49,8 @@ def make_axis_dispatch(
     Raises:
         ValueError: For Scan if init is None; for SafeMap if xs leading axis
                     is not divisible by batch_size.
-        TypeError: If strategy is not a recognized AxisStrategy variant.
+        TypeError: For Bucket (host-side strategy); or if strategy is not a
+                   recognized AxisStrategy variant.
     """
     if isinstance(strategy, Vmap):
         # Vmap: vectorize over the leading axis
@@ -59,6 +74,16 @@ def make_axis_dispatch(
         deduped_xs, gather_indices = strategy.dedup_fn(xs)  # Explicit unpacking
         deduped_ys = safe_map(fn, deduped_xs, batch_size=None)  # vmap over deduped
         return strategy.gather_fn(deduped_ys, gather_indices)
+
+    elif isinstance(strategy, Bucket):
+        # Bucket is host-side: bucketing pads variable-length inputs *before* the
+        # JIT boundary, so it cannot be executed inside this device-tier dispatch.
+        raise TypeError(
+            "Bucket is a host-side strategy and is not executed by "
+            "make_axis_dispatch. Pad to a bucket shape on the host with "
+            "select_bucket()/bucketize() before your jitted step, then dispatch "
+            "the per-bucket compute with a device-tier strategy (e.g. Vmap/SafeMap)."
+        )
 
     else:
         raise TypeError(f"Unknown strategy type: {type(strategy)}")

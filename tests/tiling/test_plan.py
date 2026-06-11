@@ -3,6 +3,7 @@
 import warnings
 
 import jax
+import pytest
 
 from xtrax.tiling.plan import (
     AxisDecision,
@@ -10,7 +11,7 @@ from xtrax.tiling.plan import (
     BatchPlan,
     BatchPlanner,
 )
-from xtrax.tiling.strategy import DedupGather, SafeMap, Vmap
+from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Vmap
 
 
 class TestAxisSpec:
@@ -39,6 +40,45 @@ class TestAxisSpec:
         assert spec.granularity == 4
         assert spec.heterogeneous is True
         assert spec.dedup_eligible is True
+
+    def test_axis_spec_bucket_boundaries_default_none(self):
+        """AxisSpec.bucket_boundaries defaults to None."""
+        spec = AxisSpec(name="seq", cardinality=10, batch_size=4)
+        assert spec.bucket_boundaries is None
+
+    def test_axis_spec_bucket_boundaries_coerced_to_tuple(self):
+        """A list of bucket_boundaries is coerced to a tuple (stays hashable)."""
+        spec = AxisSpec(
+            name="seq", cardinality=10, batch_size=4, bucket_boundaries=[8, 16, 32]
+        )
+        assert spec.bucket_boundaries == (8, 16, 32)
+        assert hash(spec) == hash(spec)  # hashable: frozen + tuple field
+
+    def test_axis_spec_bucket_boundaries_empty_raises(self):
+        """Empty bucket_boundaries is rejected."""
+        with pytest.raises(ValueError, match="non-empty"):
+            AxisSpec(name="seq", cardinality=10, batch_size=4, bucket_boundaries=())
+
+    def test_axis_spec_bucket_boundaries_non_ascending_raises(self):
+        """Non-ascending bucket_boundaries is rejected."""
+        with pytest.raises(ValueError, match="strictly ascending"):
+            AxisSpec(
+                name="seq", cardinality=10, batch_size=4, bucket_boundaries=(16, 8)
+            )
+
+    def test_axis_spec_bucket_boundaries_duplicate_raises(self):
+        """Duplicate bucket_boundaries (not strictly ascending) is rejected."""
+        with pytest.raises(ValueError, match="strictly ascending"):
+            AxisSpec(
+                name="seq", cardinality=10, batch_size=4, bucket_boundaries=(8, 8, 16)
+            )
+
+    def test_axis_spec_bucket_boundaries_non_positive_raises(self):
+        """Non-positive bucket_boundaries is rejected."""
+        with pytest.raises(ValueError, match="positive"):
+            AxisSpec(
+                name="seq", cardinality=10, batch_size=4, bucket_boundaries=(0, 8)
+            )
 
 
 class TestAxisDecision:
@@ -121,6 +161,36 @@ class TestBatchPlanner:
         decision = plan.decisions[0]
         assert decision.spec is spec
         assert isinstance(decision.strategy, DedupGather)
+
+    def test_rule1_bucket_boundaries_returns_bucket(self):
+        """Rule 1: bucket_boundaries set → Bucket strategy."""
+        spec = AxisSpec(
+            name="seq",
+            cardinality=300,
+            batch_size=4,
+            bucket_boundaries=(128, 256, 512),
+        )
+        planner = BatchPlanner()
+        plan = planner.plan([spec])
+
+        assert len(plan.decisions) == 1
+        decision = plan.decisions[0]
+        assert isinstance(decision.strategy, Bucket)
+        assert decision.strategy.boundaries == (128, 256, 512)
+
+    def test_rule1_bucket_wins_over_dedup(self):
+        """bucket_boundaries takes precedence over dedup_eligible."""
+        spec = AxisSpec(
+            name="seq",
+            cardinality=300,
+            batch_size=4,
+            dedup_eligible=True,
+            bucket_boundaries=(512,),
+        )
+        planner = BatchPlanner()
+        plan = planner.plan([spec])
+
+        assert isinstance(plan.decisions[0].strategy, Bucket)
 
     def test_rule2_cardinality_le_batch_size_returns_vmap(self):
         """Rule 2: cardinality <= batch_size → Vmap."""
