@@ -66,8 +66,8 @@ class TestScanNoFieldLoss:
         strategy = Scan(transition=transition)
         assert not hasattr(strategy, "batch_size")
 
-    def test_scan_only_has_transition_and_frozen_fields(self):
-        """Scan only exposes transition field."""
+    def test_scan_only_has_transition_and_init_fields(self):
+        """Scan exposes transition and init fields."""
 
         def transition(carry, x):
             return carry, x
@@ -75,9 +75,9 @@ class TestScanNoFieldLoss:
         strategy = Scan(transition=transition)
         # Verify we can access transition
         assert callable(strategy.transition)
-        # Check that no other public field exists
+        # Check that both fields exist
         field_names = {f.name for f in strategy.__dataclass_fields__.values()}
-        assert field_names == {"transition"}
+        assert field_names == {"transition", "init"}
 
 
 class TestFrozenDataclasses:
@@ -186,6 +186,38 @@ class TestAxisStrategyUnion:
         """Bucket is a valid AxisStrategy."""
         strategy = Bucket(boundaries=(8, 16))
         assert isinstance(strategy, Bucket)
+
+
+class TestScanInitField:
+    """Scan.init field: optional configurable carry initialization."""
+
+    def test_scan_init_field_accessible(self):
+        """Scan with init field stores and exposes the init value."""
+
+        def transition(carry, x):
+            return carry, x
+
+        init_state = {"counter": 0}
+        strategy = Scan(transition=transition, init=init_state)
+        assert strategy.init is init_state
+
+    def test_scan_init_field_defaults_to_none(self):
+        """Scan without init field defaults to None for backward compatibility."""
+
+        def transition(carry, x):
+            return carry, x
+
+        strategy = Scan(transition=transition)
+        assert strategy.init is None
+
+    def test_scan_init_none_explicitly(self):
+        """Scan with explicit init=None works."""
+
+        def transition(carry, x):
+            return carry, x
+
+        strategy = Scan(transition=transition, init=None)
+        assert strategy.init is None
 
 
 class TestBucketStrategy:

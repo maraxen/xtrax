@@ -46,6 +46,7 @@ class Scan:
     """Scan strategy: carry-bearing sequential iteration (no batch_size field)."""
 
     transition: ScanTransition
+    init: Any | None = None
 
 
 @dataclass(frozen=True)

@@ -63,11 +63,14 @@ def make_axis_dispatch(
     elif isinstance(strategy, Scan):
         # Scan: carry-bearing sequential iteration
         # strategy.transition is the actual computation; fn is ignored
-        if init is None:
+        # Use strategy.init if available, else fall back to init parameter
+        carry_init = strategy.init if strategy.init is not None else init
+        if carry_init is None:
             raise ValueError(
-                "make_axis_dispatch: Scan strategy requires a non-None init carry."
+                "make_axis_dispatch: Scan strategy requires a non-None init carry. "
+                "Provide via Scan.init field or init parameter."
             )
-        return safe_scan(strategy.transition, init, xs)
+        return safe_scan(strategy.transition, carry_init, xs)
 
     elif isinstance(strategy, DedupGather):
         # DedupGather: three-phase: dedup -> map -> gather
