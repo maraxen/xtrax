@@ -9,6 +9,7 @@ from xtrax.tiling.strategy import (
     DedupGather,
     GatherFn,
     SafeMap,
+    Scan,
     ScanTransition,
     Vmap,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "BatchPlanner",
     "Vmap",
     "SafeMap",
+    "Scan",
     "DedupGather",
     "Bucket",
     "select_bucket",
