@@ -85,6 +85,18 @@ class TestSafeMapDispatch:
 class TestScanDispatch:
     """Test Scan strategy dispatch."""
 
+    def test_scan_init_field_accessible(self):
+        """Scan.init field should be accessible (backwards compat)."""
+        init_carry = {"counter": 0}
+        strategy = Scan(transition=None, init=init_carry)
+        assert strategy.init == init_carry
+
+    def test_scan_construction_without_args(self):
+        """Scan() with no arguments should work (backwards compat)."""
+        strategy = Scan()
+        assert strategy.transition is None
+        assert strategy.init is None
+
     def test_scan_dispatch_with_init(self):
         """Scan dispatch uses strategy.transition and init."""
 
@@ -102,6 +114,15 @@ class TestScanDispatch:
         expected_carry = jnp.sum(xs)
         assert jnp.allclose(result_carry, expected_carry)
         assert jnp.allclose(result_ys, xs * 2)
+
+    def test_scan_dispatch_requires_transition(self):
+        """Scan dispatch raises ValueError if transition is None."""
+        xs = jnp.arange(5, dtype=jnp.float32)
+        init = jnp.array(0.0)
+        strategy = Scan(transition=None, init=init)
+
+        with pytest.raises(ValueError, match="Scan strategy requires.*transition"):
+            make_axis_dispatch(strategy, None, xs, init=None)
 
     def test_scan_dispatch_requires_init(self):
         """Scan dispatch raises ValueError if init is None."""

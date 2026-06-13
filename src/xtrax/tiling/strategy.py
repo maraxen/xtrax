@@ -45,7 +45,7 @@ class SafeMap:
 class Scan:
     """Scan strategy: carry-bearing sequential iteration (no batch_size field)."""
 
-    transition: ScanTransition
+    transition: ScanTransition | None = None
     init: Any | None = None
 
 

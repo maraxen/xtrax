@@ -63,6 +63,11 @@ def make_axis_dispatch(
     elif isinstance(strategy, Scan):
         # Scan: carry-bearing sequential iteration
         # strategy.transition is the actual computation; fn is ignored
+        if strategy.transition is None:
+            raise ValueError(
+                "make_axis_dispatch: Scan strategy requires a non-None transition function. "
+                "Provide via Scan(transition=...) argument."
+            )
         # Use strategy.init if available, else fall back to init parameter
         carry_init = strategy.init if strategy.init is not None else init
         if carry_init is None:
