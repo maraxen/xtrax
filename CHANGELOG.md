@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-06-14
+
+### Added
+
+- **`CarrySpec`, `CarryShape`, `DedupSpec`** ported from `aminx.tiling` (T2.2-2.3): Three
+  new types for declaring pre-committed axis strategies before the `BatchPlanner` budget
+  loop.
+  - `CarrySpec(axis_name, init, transition, ordered_sinks)` — declares an axis as a
+    `jax.lax.scan` carry; `__post_init__` guards against heterogeneous axis names.
+  - `CarryShape(name, shape, dtype)` — typed carry-buffer descriptor; `materialize()`
+    returns a zero-initialized buffer.
+  - `DedupSpec` + `get_k_bucket` — declares an axis for dedup-gather; `get_k_bucket`
+    rounds cardinality up to the next power of 2.
+  ([`src/xtrax/tiling/carry.py`](src/xtrax/tiling/carry.py),
+   [`src/xtrax/tiling/carry_shape.py`](src/xtrax/tiling/carry_shape.py),
+   [`src/xtrax/tiling/dedup.py`](src/xtrax/tiling/dedup.py))
+
+- **`BatchPlanner` Phase 0 and Phase 0b** (T2.2-2.3): `BatchPlanner.plan()` now accepts
+  `carry_specs: list[CarrySpec] | None` and `dedup_specs: list[DedupSpec] | None`.
+  Phase 0 pre-commits declared carry axes to `Scan` before the cardinality/budget loop;
+  Phase 0b pre-commits dedup-eligible axes to `DedupGather`. Remaining axes proceed
+  through the existing budget rules unchanged.
+  ([`src/xtrax/tiling/plan.py`](src/xtrax/tiling/plan.py))
+
+- **Factory `make_axis_dispatch` + iterator types** (T2.4): `make_axis_dispatch(strategy)`
+  is now a pure factory — it takes a strategy and returns an iterator object, not a result.
+  Three iterator types ported from `aminx.tiling`:
+  - `VmapIterator` — wraps `jax.vmap`
+  - `SafeMapIterator` — chunk-order-stable chunked map
+  - `JaxScanIterator` — `jax.lax.scan`; returns `(final_carry, stacked_outputs)`
+  - `MapIterator` — eager Python-level map
+  `DispatchRejected` raised for `DedupGather` (handled upstream by `BatchPlanner`).
+  Backward-compat shim `axis_dispatch(strategy, fn, xs, init=None)` preserves the prior
+  eager 4-arg call.
+  ([`src/xtrax/tiling/dispatch.py`](src/xtrax/tiling/dispatch.py),
+   [`src/xtrax/tiling/iterator.py`](src/xtrax/tiling/iterator.py))
+
+- **`Scan.init` field** (T2.1): `Scan` strategy now carries an optional `init: Any | None`
+  for configurable carry initialization. Default `None` (zero-init, backward-compatible).
+  ([`src/xtrax/tiling/strategy.py`](src/xtrax/tiling/strategy.py))
+
+### Exports
+
+All new types and exceptions exported from `xtrax.tiling`:
+`CarrySpec`, `CarryShape`, `DedupSpec`, `get_k_bucket`,
+`VmapIterator`, `SafeMapIterator`, `JaxScanIterator`, `MapIterator`,
+`DispatchRejected`, `axis_dispatch`.
+
 ## [0.2.0] - 2026-06-10
 
 ### Added
