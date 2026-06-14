@@ -105,3 +105,6 @@ class DedupSpec:
             dedup_fn=self.dedup_fn if self.dedup_fn is not None else _default_dedup_fn,
             gather_fn=self.gather_fn if self.gather_fn is not None else _default_gather_fn,
         )
+
+
+__all__ = ["DedupSpec", "get_k_bucket"]

@@ -146,6 +146,31 @@ class TestBatchPlanner:
         assert isinstance(plan, BatchPlan)
         assert len(plan.decisions) == 0
 
+    def test_phase0_carry_spec_returns_scan(self):
+        """Phase 0: CarrySpec declared → Scan."""
+        from xtrax.tiling.carry import CarrySpec
+
+        spec = AxisSpec(name="n_samples", cardinality=10, batch_size=32)
+
+        def transition(carry, x):
+            return carry, x
+
+        carry_spec = CarrySpec(
+            axis_name="n_samples",
+            init=0,
+            transition=transition,
+        )
+
+        planner = BatchPlanner(carry_specs=[carry_spec])
+        plan = planner.plan([spec])
+
+        assert len(plan.decisions) == 1
+        decision = plan.decisions[0]
+        assert decision.spec is spec
+        # Phase 0 pre-demotes to Scan strategy
+        from xtrax.tiling.strategy import Scan
+        assert isinstance(decision.strategy, Scan)
+
     def test_phase0b_dedup_spec_returns_dedupgather(self):
         """Phase 0b: DedupSpec declared → DedupGather."""
         import numpy as np
