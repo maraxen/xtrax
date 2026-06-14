@@ -17,9 +17,9 @@ class ScanTransition(Protocol):
 
 @runtime_checkable
 class DedupFn(Protocol):
-    """Deduplication function: (xs) -> (deduped_xs, gather_indices)."""
+    """Deduplication function: (xs, unique_indices) -> deduped_xs."""
 
-    def __call__(self, xs: Any) -> tuple[Any, Any]: ...
+    def __call__(self, xs: Any, unique_indices: Any) -> Any: ...
 
 
 @runtime_checkable
