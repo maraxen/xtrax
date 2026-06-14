@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import jax
 
@@ -13,8 +14,13 @@ from xtrax.tiling.strategy import (
     Bucket,
     DedupGather,
     SafeMap,
+    Scan,
     Vmap,
 )
+
+if TYPE_CHECKING:
+    from xtrax.tiling.carry import CarrySpec
+    from xtrax.tiling.dedup import DedupSpec
 
 
 @dataclass(frozen=True)
@@ -113,6 +119,8 @@ class BatchPlanner:
     def __init__(
         self,
         memory_estimator: Callable[[AxisSpec], int] | None = None,
+        carry_specs: list[CarrySpec] | None = None,
+        dedup_specs: list[DedupSpec] | None = None,
     ) -> None:
         """Initialize the planner.
 
@@ -121,13 +129,21 @@ class BatchPlanner:
                 for a given AxisSpec. If provided and estimate exceeds device limit,
                 SafeMap is preferred over Vmap. If the estimator raises an exception,
                 falls back to default rules silently.
+            carry_specs: Optional list of CarrySpec objects declaring which axes
+                should use Scan strategy (Phase 0 pre-demotion).
+            dedup_specs: Optional list of DedupSpec objects declaring which axes
+                should use DedupGather strategy (Phase 0b pre-demotion).
         """
         self.memory_estimator = memory_estimator
+        self.carry_specs = carry_specs or []
+        self.dedup_specs = dedup_specs or []
 
     def plan(self, specs: Sequence[AxisSpec]) -> BatchPlan:
         """Generate a tiling plan for the given specs.
 
-        Pure Python — no JAX tracing. Scan is never returned.
+        Phase 0: Pre-demote axes with declared CarrySpec to Scan.
+        Phase 0b: Pre-demote axes with declared DedupSpec to DedupGather.
+        Phases 1+: Apply standard strategy selection rules to remaining axes.
 
         Args:
             specs: Sequence of AxisSpec objects to plan.
@@ -135,11 +151,53 @@ class BatchPlanner:
         Returns:
             BatchPlan with decisions for each spec.
         """
+        specs_by_name = {spec.name: spec for spec in specs}
         decisions = []
 
+        # Phase 0: Pre-demote axes with CarrySpec to Scan
+        carry_by_name = {cs.axis_name: cs for cs in self.carry_specs}
+        phase0_names = set()
         for spec in specs:
-            decision = self._decide_strategy(spec)
-            decisions.append(decision)
+            if spec.name in carry_by_name:
+                cs = carry_by_name[spec.name]
+                scan_strategy = Scan(
+                    init=cs.init,
+                    transition=cs.transition,
+                    ordered_sinks=cs.ordered_sinks,
+                )
+                decisions.append(
+                    AxisDecision(
+                        spec=spec,
+                        batch_size=1,
+                        reasoning=f"carry-bearing scan (CarrySpec declared for '{spec.name}')",
+                        strategy=scan_strategy,
+                    ),
+                )
+                phase0_names.add(spec.name)
+
+        # Phase 0b: Pre-demote axes with DedupSpec to DedupGather
+        dedup_by_name = {ds.axis_name: ds for ds in self.dedup_specs}
+        phase0b_names = set()
+        for spec in specs:
+            if spec.name in dedup_by_name and spec.name not in phase0_names:
+                ds = dedup_by_name[spec.name]
+                dg_strategy = ds.to_dedup_gather()
+                decisions.append(
+                    AxisDecision(
+                        spec=spec,
+                        batch_size=ds.k,
+                        reasoning=f"dedup-gather (DedupSpec declared for '{spec.name}', k={ds.k}, k_bucket={dg_strategy.k_bucket})",
+                        strategy=dg_strategy,
+                    ),
+                )
+                phase0b_names.add(spec.name)
+
+        # Apply standard rules to remaining axes
+        remaining_names = set(specs_by_name.keys()) - phase0_names - phase0b_names
+        for spec in specs:
+            if spec.name in remaining_names:
+                decision = self._decide_strategy(spec)
+                decisions.append(decision)
 
         return BatchPlan(decisions=tuple(decisions))
 
@@ -163,19 +221,12 @@ class BatchPlanner:
                 strategy=strategy,
             )
 
-        # Rule 2: dedup_eligible → DedupGather (with placeholder fns)
+        # Rule 2: dedup_eligible → skip (handled via Phase 0b DedupSpec)
+        # Note: DedupGather now requires explicit unique_indices, index_map, k via DedupSpec.
+        # Rule-based dedup_eligible without explicit DedupSpec falls through to standard rules.
         if spec.dedup_eligible:
-            strategy = DedupGather(
-                dedup_fn=lambda xs: (xs, None),
-                gather_fn=lambda ys, gather_indices: ys,
-                k_bucket=256,  # Placeholder
-            )
-            return AxisDecision(
-                spec=spec,
-                batch_size=spec.batch_size,
-                reasoning="dedup_eligible=True → DedupGather",
-                strategy=strategy,
-            )
+            # No special handling: fall through to cardinality-based rules
+            pass
 
         # Check memory estimate before deciding between Vmap and SafeMap
         should_prefer_safemap_for_memory = False
