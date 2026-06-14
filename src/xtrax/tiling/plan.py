@@ -145,19 +145,22 @@ class BatchPlanner:
         Phase 0b: Pre-demote axes with declared DedupSpec to DedupGather.
         Phases 1+: Apply standard strategy selection rules to remaining axes.
 
+        Spec order is preserved in decisions (Phase 0/0b then remaining rules,
+        all in the order specs were provided).
+
         Args:
             specs: Sequence of AxisSpec objects to plan.
 
         Returns:
             BatchPlan with decisions for each spec.
         """
-        specs_by_name = {spec.name: spec for spec in specs}
+        carry_by_name = {cs.axis_name: cs for cs in self.carry_specs}
+        dedup_by_name = {ds.axis_name: ds for ds in self.dedup_specs}
         decisions = []
 
-        # Phase 0: Pre-demote axes with CarrySpec to Scan
-        carry_by_name = {cs.axis_name: cs for cs in self.carry_specs}
-        phase0_names = set()
+        # Process specs in order, applying Phase 0/0b rules first, then standard rules
         for spec in specs:
+            # Phase 0: CarrySpec pre-demotion
             if spec.name in carry_by_name:
                 cs = carry_by_name[spec.name]
                 scan_strategy = Scan(
@@ -173,13 +176,10 @@ class BatchPlanner:
                         strategy=scan_strategy,
                     ),
                 )
-                phase0_names.add(spec.name)
+                continue
 
-        # Phase 0b: Pre-demote axes with DedupSpec to DedupGather
-        dedup_by_name = {ds.axis_name: ds for ds in self.dedup_specs}
-        phase0b_names = set()
-        for spec in specs:
-            if spec.name in dedup_by_name and spec.name not in phase0_names:
+            # Phase 0b: DedupSpec pre-demotion
+            if spec.name in dedup_by_name:
                 ds = dedup_by_name[spec.name]
                 dg_strategy = ds.to_dedup_gather()
                 decisions.append(
@@ -190,14 +190,11 @@ class BatchPlanner:
                         strategy=dg_strategy,
                     ),
                 )
-                phase0b_names.add(spec.name)
+                continue
 
-        # Apply standard rules to remaining axes
-        remaining_names = set(specs_by_name.keys()) - phase0_names - phase0b_names
-        for spec in specs:
-            if spec.name in remaining_names:
-                decision = self._decide_strategy(spec)
-                decisions.append(decision)
+            # Standard rules for remaining axes
+            decision = self._decide_strategy(spec)
+            decisions.append(decision)
 
         return BatchPlan(decisions=tuple(decisions))
 

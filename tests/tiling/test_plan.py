@@ -146,15 +146,30 @@ class TestBatchPlanner:
         assert isinstance(plan, BatchPlan)
         assert len(plan.decisions) == 0
 
-    def test_rule1_dedup_eligible_returns_dedupgather(self):
-        """Rule 1: dedup_eligible=True → DedupGather."""
+    def test_phase0b_dedup_spec_returns_dedupgather(self):
+        """Phase 0b: DedupSpec declared → DedupGather."""
+        import numpy as np
+        from xtrax.tiling.dedup import DedupSpec
+
         spec = AxisSpec(
             name="token",
             cardinality=1000,
             batch_size=32,
             dedup_eligible=True,
         )
-        planner = BatchPlanner()
+        # Create a DedupSpec for this axis: 3 unique elements out of 1000
+        unique_indices = np.array([0, 500, 999])
+        index_map = np.zeros(1000, dtype=np.int32)
+        index_map[500:] = 1
+        index_map[999:] = 2
+        dedup_spec = DedupSpec(
+            axis_name="token",
+            unique_indices=unique_indices,
+            index_map=index_map,
+            k=3,
+        )
+
+        planner = BatchPlanner(dedup_specs=[dedup_spec])
         plan = planner.plan([spec])
 
         assert len(plan.decisions) == 1
@@ -383,18 +398,32 @@ class TestBatchPlanner:
 
     def test_multiple_specs_independent_decisions(self):
         """Each spec gets its own decision independent of others."""
+        import numpy as np
+        from xtrax.tiling.dedup import DedupSpec
+
         specs = [
-            AxisSpec(name="batch", cardinality=32, batch_size=100),  # Rule 2: Vmap
-            AxisSpec(name="seq", cardinality=100, batch_size=25),  # Rule 3: SafeMap
+            AxisSpec(name="batch", cardinality=32, batch_size=100),  # Vmap
+            AxisSpec(name="seq", cardinality=100, batch_size=25),  # SafeMap
             AxisSpec(
                 name="token",
                 cardinality=500,
                 batch_size=50,
                 dedup_eligible=True,
-            ),  # Rule 1: DedupGather
+            ),  # DedupGather via Phase 0b
         ]
 
-        planner = BatchPlanner()
+        # Create DedupSpec for the token axis
+        unique_indices = np.array([0, 250])
+        index_map = np.zeros(500, dtype=np.int32)
+        index_map[250:] = 1
+        dedup_spec = DedupSpec(
+            axis_name="token",
+            unique_indices=unique_indices,
+            index_map=index_map,
+            k=2,
+        )
+
+        planner = BatchPlanner(dedup_specs=[dedup_spec])
         plan = planner.plan(specs)
 
         assert isinstance(plan.decisions[0].strategy, Vmap)

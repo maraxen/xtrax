@@ -39,19 +39,33 @@ class TestAxisStrategyInstantiation:
         assert strategy.transition is transition
 
     def test_dedupgather_instantiates(self):
-        """DedupGather with dedup_fn, gather_fn, k_bucket instantiates."""
+        """DedupGather with unique_indices, index_map, k, k_bucket, dedup_fn, gather_fn instantiates."""
+        import numpy as np
 
-        def dedup(xs):
-            return xs, None
+        def dedup(xs, indices):
+            return xs[indices]
 
-        def gather(ys, indices):
-            return ys
+        def gather(ys, index_map):
+            return ys[index_map]
 
-        strategy = DedupGather(dedup_fn=dedup, gather_fn=gather, k_bucket=256)
+        unique_indices = np.array([0, 5, 10])
+        index_map = np.array([0, 1, 2, 0, 1, 2])
+
+        strategy = DedupGather(
+            unique_indices=unique_indices,
+            index_map=index_map,
+            k=3,
+            k_bucket=4,
+            dedup_fn=dedup,
+            gather_fn=gather,
+        )
         assert isinstance(strategy, DedupGather)
+        np.testing.assert_array_equal(strategy.unique_indices, unique_indices)
+        np.testing.assert_array_equal(strategy.index_map, index_map)
+        assert strategy.k == 3
+        assert strategy.k_bucket == 4
         assert strategy.dedup_fn is dedup
         assert strategy.gather_fn is gather
-        assert strategy.k_bucket == 256
 
 
 class TestScanNoFieldLoss:
@@ -66,8 +80,8 @@ class TestScanNoFieldLoss:
         strategy = Scan(transition=transition)
         assert not hasattr(strategy, "batch_size")
 
-    def test_scan_only_has_transition_and_init_fields(self):
-        """Scan exposes transition and init fields."""
+    def test_scan_has_expected_fields(self):
+        """Scan exposes transition, init, and ordered_sinks fields."""
 
         def transition(carry, x):
             return carry, x
@@ -75,9 +89,9 @@ class TestScanNoFieldLoss:
         strategy = Scan(transition=transition)
         # Verify we can access transition
         assert callable(strategy.transition)
-        # Check that both fields exist
+        # Check that expected fields exist
         field_names = {f.name for f in strategy.__dataclass_fields__.values()}
-        assert field_names == {"transition", "init"}
+        assert field_names == {"transition", "init", "ordered_sinks"}
 
 
 class TestFrozenDataclasses:
@@ -107,16 +121,24 @@ class TestFrozenDataclasses:
 
     def test_dedupgather_frozen(self):
         """DedupGather is immutable."""
+        import numpy as np
 
-        def dedup(xs):
-            return xs, None
+        def dedup(xs, indices):
+            return xs[indices]
 
-        def gather(ys, indices):
-            return ys
+        def gather(ys, index_map):
+            return ys[index_map]
 
-        strategy = DedupGather(dedup_fn=dedup, gather_fn=gather, k_bucket=256)
+        strategy = DedupGather(
+            unique_indices=np.array([0, 5]),
+            index_map=np.array([0, 1, 0, 1]),
+            k=2,
+            k_bucket=2,
+            dedup_fn=dedup,
+            gather_fn=gather,
+        )
         with pytest.raises(Exception):
-            strategy.k_bucket = 512
+            strategy.k_bucket = 4
 
 
 class TestProtocolChecks:
@@ -172,14 +194,22 @@ class TestAxisStrategyUnion:
 
     def test_dedupgather_is_axis_strategy(self):
         """DedupGather is a valid AxisStrategy."""
+        import numpy as np
 
-        def dedup(xs):
-            return xs, None
+        def dedup(xs, indices):
+            return xs[indices]
 
-        def gather(ys, indices):
-            return ys
+        def gather(ys, index_map):
+            return ys[index_map]
 
-        strategy = DedupGather(dedup_fn=dedup, gather_fn=gather, k_bucket=256)
+        strategy = DedupGather(
+            unique_indices=np.array([0, 5]),
+            index_map=np.array([0, 1, 0, 1]),
+            k=2,
+            k_bucket=2,
+            dedup_fn=dedup,
+            gather_fn=gather,
+        )
         assert isinstance(strategy, DedupGather)
 
     def test_bucket_is_axis_strategy(self):

@@ -78,10 +78,13 @@ def make_axis_dispatch(
         return safe_scan(strategy.transition, carry_init, xs)
 
     elif isinstance(strategy, DedupGather):
-        # DedupGather: three-phase: dedup -> map -> gather
-        deduped_xs, gather_indices = strategy.dedup_fn(xs)  # Explicit unpacking
+        # DedupGather: three-phase dedup -> map -> gather
+        # Phase 1: dedup — select K unique elements from N using unique_indices
+        deduped_xs = strategy.dedup_fn(xs, strategy.unique_indices)
+        # Phase 2: map — apply fn to K unique elements
         deduped_ys = safe_map(fn, deduped_xs, batch_size=None)  # vmap over deduped
-        return strategy.gather_fn(deduped_ys, gather_indices)
+        # Phase 3: gather — scatter K results back to N positions using index_map
+        return strategy.gather_fn(deduped_ys, strategy.index_map)
 
     elif isinstance(strategy, Bucket):
         # Bucket is host-side: bucketing pads variable-length inputs *before* the

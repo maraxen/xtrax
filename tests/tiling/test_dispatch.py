@@ -162,22 +162,34 @@ class TestDedupGatherDispatch:
 
     def test_dedupgather_dispatch(self):
         """DedupGather dispatches through dedup -> map -> gather."""
+        import numpy as np
 
         # Simple dedup: group by unique values
-        def dedup_fn(xs):
-            """Returns (unique_xs, indices_to_gather)."""
-            unique, indices = jnp.unique(xs, return_inverse=True)
-            return unique, indices
+        def dedup_fn(xs, unique_indices):
+            """Select unique elements from xs by index."""
+            return xs[unique_indices]
 
-        def gather_fn(ys, indices):
-            """Scatter back to original shape using indices."""
-            return ys[indices]
+        def gather_fn(ys, index_map):
+            """Scatter unique results back to original positions."""
+            return ys[index_map]
 
         def fn(x):
             return x * 2
 
-        xs = jnp.array([1, 2, 1, 3, 2, 1])  # has duplicates
-        strategy = DedupGather(dedup_fn=dedup_fn, gather_fn=gather_fn, k_bucket=8)
+        xs = jnp.array([1, 2, 1, 3, 2, 1])  # has duplicates [1, 2, 3]
+        # Unique elements at indices [0, 1, 3]
+        unique_indices = np.array([0, 1, 3], dtype=np.int32)
+        # Map original positions to unique positions [0, 1, 0, 2, 1, 0]
+        index_map = np.array([0, 1, 0, 2, 1, 0], dtype=np.int32)
+
+        strategy = DedupGather(
+            unique_indices=unique_indices,
+            index_map=index_map,
+            k=3,
+            k_bucket=4,
+            dedup_fn=dedup_fn,
+            gather_fn=gather_fn,
+        )
 
         result = make_axis_dispatch(strategy, fn, xs)
 
@@ -188,21 +200,31 @@ class TestDedupGatherDispatch:
 
     def test_dedupgather_unpacking(self):
         """DedupGather correctly unpacks dedup_fn output."""
+        import numpy as np
 
-        def dedup_fn(xs):
-            # Return exactly two values
-            unique = jnp.unique(xs)
-            indices = jnp.searchsorted(unique, xs)
-            return unique, indices
+        def dedup_fn(xs, unique_indices):
+            return xs[unique_indices]
 
-        def gather_fn(ys, indices):
-            return ys[indices]
+        def gather_fn(ys, index_map):
+            return ys[index_map]
 
         def fn(x):
             return x + 10
 
         xs = jnp.array([5, 5, 3, 3, 7])
-        strategy = DedupGather(dedup_fn=dedup_fn, gather_fn=gather_fn, k_bucket=8)
+        # Unique values are [3, 5, 7] at indices [2, 0, 4]
+        unique_indices = np.array([2, 0, 4], dtype=np.int32)
+        # Map back: [5, 5, 3, 3, 7] -> [1, 1, 0, 0, 2]
+        index_map = np.array([1, 1, 0, 0, 2], dtype=np.int32)
+
+        strategy = DedupGather(
+            unique_indices=unique_indices,
+            index_map=index_map,
+            k=3,
+            k_bucket=4,
+            dedup_fn=dedup_fn,
+            gather_fn=gather_fn,
+        )
 
         result = make_axis_dispatch(strategy, fn, xs)
         # unique: [3, 5, 7], indices: [1, 1, 0, 0, 2]
@@ -264,14 +286,25 @@ class TestDispatchExhaustiveness:
 
     def test_dedupgather_isinstance(self):
         """DedupGather is recognized."""
+        import numpy as np
 
-        def dedup_fn(xs):
-            return xs, jnp.arange(len(xs))
+        def dedup_fn(xs, unique_indices):
+            return xs[unique_indices]
 
-        def gather_fn(ys, indices):
-            return ys
+        def gather_fn(ys, index_map):
+            return ys[index_map]
 
-        strategy = DedupGather(dedup_fn=dedup_fn, gather_fn=gather_fn, k_bucket=8)
+        unique_indices = np.array([0, 1], dtype=np.int32)
+        index_map = np.array([0, 1], dtype=np.int32)
+
+        strategy = DedupGather(
+            unique_indices=unique_indices,
+            index_map=index_map,
+            k=2,
+            k_bucket=2,
+            dedup_fn=dedup_fn,
+            gather_fn=gather_fn,
+        )
         assert isinstance(strategy, DedupGather)
 
 
