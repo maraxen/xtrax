@@ -4,12 +4,11 @@ MUST IMPORT matplotlib.use("Agg") FIRST, before any other matplotlib imports.
 This module requires optional eda extras: pip install xtrax[eda]
 """
 
-from __future__ import annotations
-
 import io
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 # CRITICAL: matplotlib backend must be set BEFORE importing pyplot
 import matplotlib
@@ -26,9 +25,9 @@ except ImportError as exc:
         "Install with: pip install xtrax[eda]"
     ) from exc
 
-from xtrax.tiling.plan import BatchPlan
 from xtrax.eda.stats import extract_plan_stats
-from xtrax.eda.types import PlanLogger, PlanStatsDict, _VALID_PANELS
+from xtrax.eda.types import _VALID_PANELS, PlanLogger, PlanStatsDict
+from xtrax.tiling.plan import BatchPlan
 
 # Required keys for a valid PlanStatsDict after transformation
 _REQUIRED_STATS_KEYS = frozenset(
@@ -62,8 +61,10 @@ def render(
 
     Args:
         plan: The BatchPlan to visualize.
-        view: The view type (currently only "dashboard" is implemented). Default "dashboard".
-        fmt: Output format — "png" (bytes), "svg" (bytes), or "html" (str). Default "png".
+        view: The view type (currently only "dashboard" is implemented).
+               Default "dashboard".
+        fmt: Output format — "png" (bytes), "svg" (bytes), or "html"
+               (str). Default "png".
         path: Optional file path to write output. If None, returns bytes/str in-memory.
                Must be set if metadata=True.
         stats_transform: Optional function to transform the stats dict before rendering.
@@ -71,7 +72,8 @@ def render(
                         contain all required keys. Default None (no transformation).
         metadata: If True, writes a .json sidecar with the stats dict alongside the
                  output file. Requires path to be set. Default False.
-        logger: Optional PlanLogger implementation for remote logging (tensorboard, wandb, etc.).
+        logger: Optional PlanLogger implementation for remote logging
+               (tensorboard, wandb, etc.).
                Called with figure data after rendering. Default None.
         step: Optional iteration/epoch number passed to logger. Default None.
         panels: Optional set of panel names to render. Valid names are
@@ -83,7 +85,8 @@ def render(
         output was written to path.
 
     Raises:
-        ValueError: If metadata=True but path is None, or if panels contains unknown names.
+        ValueError: If metadata=True but path is None, or if panels
+            contains unknown names.
         TypeError: If stats_transform returns a dict missing required keys.
     """
     # Validation
@@ -172,7 +175,10 @@ def render(
             if strategy_data:
                 strategies = list(strategy_data.keys())
                 counts = list(strategy_data.values())
-                sns.barplot(x=strategies, y=counts, ax=ax, hue=strategies, legend=False, palette="Set2")
+                sns.barplot(
+                    x=strategies, y=counts, ax=ax, hue=strategies,
+                    legend=False, palette="Set2"
+                )
                 ax.set_xlabel("Strategy Type")
                 ax.set_ylabel("Count")
                 ax.set_title("Strategy Distribution")
@@ -226,7 +232,10 @@ def render(
             if dedup_data:
                 axis_names = [d["axis_name"] for d in dedup_data]
                 ratios = [d["dedup_ratio"] for d in dedup_data]
-                sns.barplot(x=axis_names, y=ratios, ax=ax, hue=axis_names, legend=False, palette="muted")
+                sns.barplot(
+                    x=axis_names, y=ratios, ax=ax, hue=axis_names,
+                    legend=False, palette="muted"
+                )
                 ax.set_ylabel("Dedup Ratio (unique / total)")
                 ax.set_xlabel("Axis Name")
                 ax.set_title("Deduplication Efficiency")
@@ -250,7 +259,10 @@ def render(
             if bucket_data:
                 axis_names = [b["axis_name"] for b in bucket_data]
                 bucket_counts = [b["bucket_count"] for b in bucket_data]
-                sns.barplot(x=axis_names, y=bucket_counts, ax=ax, hue=axis_names, legend=False, palette="Set1")
+                sns.barplot(
+                    x=axis_names, y=bucket_counts, ax=ax, hue=axis_names,
+                    legend=False, palette="Set1"
+                )
                 ax.set_ylabel("Number of Buckets")
                 ax.set_xlabel("Axis Name")
                 ax.set_title("Bucket Configuration")
