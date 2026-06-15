@@ -7,7 +7,7 @@ from typing import Any
 import equinox as eqx
 
 from xtrax.stages.boundaries import AxisBoundary
-from xtrax.tiling import AxisSpec
+from xtrax.tiling import AxisSpec, CarrySpec
 
 
 class RunSpec(eqx.Module):
@@ -15,5 +15,5 @@ class RunSpec(eqx.Module):
 
     seed: int
     axes: list[AxisSpec]
-    carry_specs: dict[str, Any]
-    boundaries: list[AxisBoundary] | None
+    carry_specs: list[CarrySpec] = eqx.field(default_factory=list)
+    boundaries: list[AxisBoundary] | None = None

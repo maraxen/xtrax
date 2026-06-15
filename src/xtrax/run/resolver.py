@@ -8,7 +8,16 @@ from typing import Any, NewType, Protocol, runtime_checkable
 import equinox as eqx
 
 from xtrax.run.spec import RunSpec
+from xtrax.tiling import (
+    BucketIterator,
+    JaxScanIterator,
+    MapIterator,
+    SafeMapIterator,
+    ScanIterator,
+    VmapIterator,
+)
 
+# Values are JAX arrays, numpy arrays, or scalars — heterogeneous, so Any is intentional.
 FeatureBatch = NewType("FeatureBatch", dict[str, Any])
 
 
@@ -16,7 +25,7 @@ FeatureBatch = NewType("FeatureBatch", dict[str, Any])
 class RuntimeBundle:
     """Materialized execution context (produced before InputResolver fires)."""
 
-    iterator: Any
+    iterator: VmapIterator | SafeMapIterator | JaxScanIterator | BucketIterator | MapIterator | ScanIterator | None
     model: eqx.Module
 
 
