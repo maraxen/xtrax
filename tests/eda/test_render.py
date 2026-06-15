@@ -26,8 +26,8 @@ def simple_plan() -> BatchPlan:
 
     Criterion 1-3: Test basic rendering formats.
     """
-    spec1 = AxisSpec(name="batch", cardinality=64, batch_size=128)
-    spec2 = AxisSpec(name="seq", cardinality=512, batch_size=64)
+    spec1 = AxisSpec(name="batch", cardinality=64, default_batch_size=128)
+    spec2 = AxisSpec(name="seq", cardinality=512, default_batch_size=64)
 
     decision1 = AxisDecision(
         spec=spec1,

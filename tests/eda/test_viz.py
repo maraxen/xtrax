@@ -31,8 +31,8 @@ class MockLogger:
 @pytest.fixture
 def simple_plan() -> BatchPlan:
     """Create a simple 2-axis plan for testing."""
-    spec1 = AxisSpec(name="batch", cardinality=32, batch_size=16)
-    spec2 = AxisSpec(name="sequence", cardinality=128, batch_size=64)
+    spec1 = AxisSpec(name="batch", cardinality=32, default_batch_size=16)
+    spec2 = AxisSpec(name="sequence", cardinality=128, default_batch_size=64)
 
     decision1 = AxisDecision(
         spec=spec1, batch_size=16, reasoning="Fits in memory", strategy=Vmap()
@@ -58,7 +58,7 @@ def dedup_plan() -> BatchPlan:
     """Create a plan with DedupGather strategy."""
     import numpy as np
 
-    spec = AxisSpec(name="vocab", cardinality=10000, batch_size=64)
+    spec = AxisSpec(name="vocab", cardinality=10000, default_batch_size=64)
     unique_indices = np.array([0, 1, 2, 5, 7], dtype=np.int32)
     index_map = np.array([0, 1, 2, 0, 1, 2, 0, 1, 2, 0], dtype=np.int32)
 
@@ -87,7 +87,7 @@ def bucket_plan() -> BatchPlan:
     spec = AxisSpec(
         name="length",
         cardinality=512,
-        batch_size=128,
+        default_batch_size=128,
         bucket_boundaries=(64, 128, 256, 512),
     )
 

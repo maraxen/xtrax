@@ -66,7 +66,7 @@ class TestPlanToDataframe:
         pytest.importorskip("pandas")
         from xtrax.eda.export import plan_to_dataframe
 
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=32)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
         decision = AxisDecision(
             spec=spec,
             batch_size=32,
@@ -90,8 +90,8 @@ class TestPlanToDataframe:
         pytest.importorskip("pandas")
         from xtrax.eda.export import plan_to_dataframe
 
-        spec1 = AxisSpec(name="batch", cardinality=100, batch_size=32)
-        spec2 = AxisSpec(name="sequence", cardinality=1000, batch_size=256)
+        spec1 = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
+        spec2 = AxisSpec(name="sequence", cardinality=1000, default_batch_size=256)
 
         decision1 = AxisDecision(
             spec=spec1,
@@ -122,7 +122,7 @@ class TestPlanToDataframe:
         from xtrax.eda.export import plan_to_dataframe
 
         spec = AxisSpec(
-            name="batch", cardinality=100, batch_size=32, dedup_eligible=True
+            name="batch", cardinality=100, default_batch_size=32, dedup_eligible=True
         )
         unique_indices = np.array([0, 1, 2, 3, 4], dtype=np.int32)
         index_map = np.array([0, 1, 2, 3, 4, 0, 1, 2, 3, 4], dtype=np.int32)
@@ -165,7 +165,7 @@ class TestPlanToDataframe:
         spec = AxisSpec(
             name="sequence",
             cardinality=1000,
-            batch_size=256,
+            default_batch_size=256,
             bucket_boundaries=(256, 512, 1024),
         )
         strategy = Bucket(boundaries=(256, 512, 1024))
@@ -195,7 +195,7 @@ class TestPlanToDataframe:
         from xtrax.eda.export import plan_to_dataframe
 
         # Create two axes: one Vmap, one Bucket
-        spec1 = AxisSpec(name="batch", cardinality=100, batch_size=32)
+        spec1 = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
         decision1 = AxisDecision(
             spec=spec1,
             batch_size=32,
@@ -206,7 +206,7 @@ class TestPlanToDataframe:
         spec2 = AxisSpec(
             name="sequence",
             cardinality=1000,
-            batch_size=256,
+            default_batch_size=256,
             bucket_boundaries=(256, 512),
         )
         strategy2 = Bucket(boundaries=(256, 512))
@@ -241,7 +241,7 @@ class TestPlanToDataframe:
         decisions = tuple(
             AxisDecision(
                 spec=AxisSpec(
-                    name=f"axis{i}", cardinality=100 + i, batch_size=32
+                    name=f"axis{i}", cardinality=100 + i, default_batch_size=32
                 ),
                 batch_size=32,
                 reasoning=f"axis {i}",

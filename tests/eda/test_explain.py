@@ -21,7 +21,7 @@ class TestExplainPlan:
 
     def test_plan_with_non_empty_reasoning_unchanged(self):
         """explain_plan preserves non-empty reasoning fields."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=32)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
         decision = AxisDecision(
             spec=spec,
             batch_size=32,
@@ -37,7 +37,7 @@ class TestExplainPlan:
 
     def test_plan_with_empty_reasoning_substituted(self):
         """explain_plan substitutes empty reasoning with default message."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=32)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
         decision = AxisDecision(
             spec=spec,
             batch_size=32,
@@ -56,8 +56,8 @@ class TestExplainPlan:
 
     def test_plan_with_mixed_reasoning(self):
         """explain_plan handles mix of empty and non-empty reasoning."""
-        spec1 = AxisSpec(name="batch", cardinality=100, batch_size=32)
-        spec2 = AxisSpec(name="sequence", cardinality=500, batch_size=64)
+        spec1 = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
+        spec2 = AxisSpec(name="sequence", cardinality=500, default_batch_size=64)
 
         decision1 = AxisDecision(
             spec=spec1,
@@ -84,7 +84,7 @@ class TestExplainPlan:
 
     def test_explain_plan_returns_complete_plandstatsdict(self):
         """explain_plan returns complete PlanStatsDict with all fields."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=32)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
         decision = AxisDecision(
             spec=spec,
             batch_size=32,
@@ -108,7 +108,7 @@ class TestExplainPlan:
 
     def test_whitespace_only_reasoning_treated_as_empty(self):
         """explain_plan treats whitespace-only reasoning as empty."""
-        spec = AxisSpec(name="axis", cardinality=50, batch_size=16)
+        spec = AxisSpec(name="axis", cardinality=50, default_batch_size=16)
         decision = AxisDecision(
             spec=spec,
             batch_size=16,
