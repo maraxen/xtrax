@@ -1,6 +1,13 @@
 """Test protocols for tier-1 generic stages."""
 
-from xtrax.stages.protocols import FuseFn, RollingFn, TransformFn
+import warnings
+
+from xtrax.stages import RollingFn, TransformFn
+
+# Import FuseFn from new location (with deprecation warning suppression for test)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    from xtrax.stages import FuseFn
 
 
 class TestTransformFn:

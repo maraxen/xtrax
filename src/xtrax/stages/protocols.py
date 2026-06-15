@@ -5,6 +5,7 @@ stage collections (e.g., in domain libraries like aminx). No concrete
 implementations live in xtrax.
 """
 
+import warnings as _warnings
 from typing import Protocol, TypeVar, runtime_checkable
 
 In = TypeVar("In")
@@ -33,9 +34,6 @@ class RollingFn(Protocol[Carry, In, Out]):
     """
 
     def __call__(self, carry: Carry, x: In) -> tuple[Carry, Out]: ...
-
-
-import warnings as _warnings
 
 
 def __getattr__(name: str):

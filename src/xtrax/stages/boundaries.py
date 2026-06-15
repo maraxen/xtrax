@@ -22,13 +22,13 @@ from typing import Generic, Protocol, TypeVar, runtime_checkable
 import equinox as eqx
 
 S = TypeVar("S")  # stacked input type (pre-fuse)
-O = TypeVar("O")  # output type (post-fuse)
+Out_co = TypeVar("Out_co")  # output type (post-fuse)
 T = TypeVar("T")  # passthrough type (tap/sink)
 
 
 @runtime_checkable
-class Fuse(Protocol, Generic[S, O]):
-  """Pure axis-reducing transform. Stacked S -> single O.
+class Fuse(Protocol, Generic[S, Out_co]):  # noqa: UP046
+  """Pure axis-reducing transform. Stacked S -> single Out_co.
 
   Called once per axis completion, after all steps have run.
   Must be a pure JAX function — no side effects, no io_callback.
@@ -38,11 +38,11 @@ class Fuse(Protocol, Generic[S, O]):
   generic reduction protocol. Fuse is specifically for axis-level stacking operations.
   """
 
-  def __call__(self, stacked: S) -> O: ...
+  def __call__(self, stacked: S) -> Out_co: ...
 
 
 @runtime_checkable
-class Tap(Protocol, Generic[T]):
+class Tap(Protocol, Generic[T]):  # noqa: UP046
   """Identity transform with side effect. T -> T.
 
   Value continues downstream unchanged; side effect fires at each step.
@@ -57,7 +57,7 @@ class Tap(Protocol, Generic[T]):
 
 
 @runtime_checkable
-class Sink(Protocol, Generic[T]):
+class Sink(Protocol, Generic[T]):  # noqa: UP046
   """Terminal side effect. T -> None. Value leaves the pipeline.
 
   `ordered`: if True, requires SafeMap or Scan strategy on this axis.
