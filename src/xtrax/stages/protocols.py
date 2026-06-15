@@ -35,11 +35,19 @@ class RollingFn(Protocol[Carry, In, Out]):
     def __call__(self, carry: Carry, x: In) -> tuple[Carry, Out]: ...
 
 
-@runtime_checkable
-class FuseFn(Protocol[PerItem, Combined]):
-    """Protocol for a fusion/reduction function.
+import warnings as _warnings
 
-    Combines multiple per-item results into a single combined result.
-    """
 
-    def __call__(self, items: PerItem) -> Combined: ...
+def __getattr__(name: str):
+    """Fallback for deprecated FuseFn."""
+    if name == "FuseFn":
+        _warnings.warn(
+            "FuseFn is deprecated; import Fuse from xtrax.stages.boundaries instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        from xtrax.stages.boundaries import Fuse
+        return Fuse
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
