@@ -18,12 +18,12 @@ class TestAxisSpec:
     """AxisSpec dataclass creation and validation."""
 
     def test_axis_spec_instantiates_with_required_fields(self):
-        """AxisSpec instantiates with name, cardinality, batch_size."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=32)
+        """AxisSpec instantiates with name, cardinality, default_batch_size."""
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
         assert spec.name == "batch"
         assert spec.cardinality == 100
-        assert spec.batch_size == 32
-        assert spec.granularity == 1
+        assert spec.default_batch_size == 32
+        assert spec.tile_granularity == 1
         assert spec.heterogeneous is False
         assert spec.dedup_eligible is False
 
@@ -32,24 +32,24 @@ class TestAxisSpec:
         spec = AxisSpec(
             name="batch",
             cardinality=100,
-            batch_size=32,
-            granularity=4,
+            default_batch_size=32,
+            tile_granularity=4,
             heterogeneous=True,
             dedup_eligible=True,
         )
-        assert spec.granularity == 4
+        assert spec.tile_granularity == 4
         assert spec.heterogeneous is True
         assert spec.dedup_eligible is True
 
     def test_axis_spec_bucket_boundaries_default_none(self):
         """AxisSpec.bucket_boundaries defaults to None."""
-        spec = AxisSpec(name="seq", cardinality=10, batch_size=4)
+        spec = AxisSpec(name="seq", cardinality=10, default_batch_size=4)
         assert spec.bucket_boundaries is None
 
     def test_axis_spec_bucket_boundaries_coerced_to_tuple(self):
         """A list of bucket_boundaries is coerced to a tuple (stays hashable)."""
         spec = AxisSpec(
-            name="seq", cardinality=10, batch_size=4, bucket_boundaries=[8, 16, 32]
+            name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=[8, 16, 32]
         )
         assert spec.bucket_boundaries == (8, 16, 32)
         assert hash(spec) == hash(spec)  # hashable: frozen + tuple field
@@ -57,27 +57,27 @@ class TestAxisSpec:
     def test_axis_spec_bucket_boundaries_empty_raises(self):
         """Empty bucket_boundaries is rejected."""
         with pytest.raises(ValueError, match="non-empty"):
-            AxisSpec(name="seq", cardinality=10, batch_size=4, bucket_boundaries=())
+            AxisSpec(name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=())
 
     def test_axis_spec_bucket_boundaries_non_ascending_raises(self):
         """Non-ascending bucket_boundaries is rejected."""
         with pytest.raises(ValueError, match="strictly ascending"):
             AxisSpec(
-                name="seq", cardinality=10, batch_size=4, bucket_boundaries=(16, 8)
+                name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(16, 8)
             )
 
     def test_axis_spec_bucket_boundaries_duplicate_raises(self):
         """Duplicate bucket_boundaries (not strictly ascending) is rejected."""
         with pytest.raises(ValueError, match="strictly ascending"):
             AxisSpec(
-                name="seq", cardinality=10, batch_size=4, bucket_boundaries=(8, 8, 16)
+                name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(8, 8, 16)
             )
 
     def test_axis_spec_bucket_boundaries_non_positive_raises(self):
         """Non-positive bucket_boundaries is rejected."""
         with pytest.raises(ValueError, match="positive"):
             AxisSpec(
-                name="seq", cardinality=10, batch_size=4, bucket_boundaries=(0, 8)
+                name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(0, 8)
             )
 
 
@@ -86,7 +86,7 @@ class TestAxisDecision:
 
     def test_axis_decision_instantiates(self):
         """AxisDecision instantiates with spec, batch_size, reasoning, strategy."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=32)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
         strategy = Vmap()
         decision = AxisDecision(
             spec=spec,
@@ -110,7 +110,7 @@ class TestBatchPlan:
 
     def test_batch_plan_instantiates_with_decisions(self):
         """BatchPlan instantiates with decisions tuple."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=32)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
         decision = AxisDecision(
             spec=spec,
             batch_size=32,
@@ -150,7 +150,7 @@ class TestBatchPlanner:
         """Phase 0: CarrySpec declared → Scan."""
         from xtrax.tiling.carry import CarrySpec
 
-        spec = AxisSpec(name="n_samples", cardinality=10, batch_size=32)
+        spec = AxisSpec(name="n_samples", cardinality=10, default_batch_size=32)
 
         def transition(carry, x):
             return carry, x
@@ -179,7 +179,7 @@ class TestBatchPlanner:
         spec = AxisSpec(
             name="token",
             cardinality=1000,
-            batch_size=32,
+            default_batch_size=32,
             dedup_eligible=True,
         )
         # Create a DedupSpec for this axis: 3 unique elements out of 1000
@@ -207,7 +207,7 @@ class TestBatchPlanner:
         spec = AxisSpec(
             name="seq",
             cardinality=300,
-            batch_size=4,
+            default_batch_size=4,
             bucket_boundaries=(128, 256, 512),
         )
         planner = BatchPlanner()
@@ -223,7 +223,7 @@ class TestBatchPlanner:
         spec = AxisSpec(
             name="seq",
             cardinality=300,
-            batch_size=4,
+            default_batch_size=4,
             dedup_eligible=True,
             bucket_boundaries=(512,),
         )
@@ -234,7 +234,7 @@ class TestBatchPlanner:
 
     def test_rule2_cardinality_le_batch_size_returns_vmap(self):
         """Rule 2: cardinality <= batch_size → Vmap."""
-        spec = AxisSpec(name="batch", cardinality=32, batch_size=100)
+        spec = AxisSpec(name="batch", cardinality=32, default_batch_size=100)
         planner = BatchPlanner()
         plan = planner.plan([spec])
 
@@ -244,7 +244,7 @@ class TestBatchPlanner:
 
     def test_rule2_cardinality_equals_batch_size_returns_vmap(self):
         """Rule 2: cardinality == batch_size → Vmap."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=100)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=100)
         planner = BatchPlanner()
         plan = planner.plan([spec])
 
@@ -253,7 +253,7 @@ class TestBatchPlanner:
 
     def test_rule3_divisible_cardinality_returns_safemap(self):
         """Rule 3: cardinality > batch_size AND divisible → SafeMap."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=25)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=25)
         planner = BatchPlanner()
         plan = planner.plan([spec])
 
@@ -264,7 +264,7 @@ class TestBatchPlanner:
 
     def test_rule3_divisible_cardinality_ratio_4(self):
         """Rule 3: cardinality=200, batch_size=50 (divisible) → SafeMap."""
-        spec = AxisSpec(name="batch", cardinality=200, batch_size=50)
+        spec = AxisSpec(name="batch", cardinality=200, default_batch_size=50)
         planner = BatchPlanner()
         plan = planner.plan([spec])
 
@@ -274,7 +274,7 @@ class TestBatchPlanner:
 
     def test_rule4_non_divisible_cardinality_returns_safemap_with_warning(self):
         """Rule 4: non-divisible → SafeMap with warnings.warn."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=30)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=30)
         planner = BatchPlanner()
 
         with warnings.catch_warnings(record=True) as w:
@@ -292,7 +292,7 @@ class TestBatchPlanner:
 
     def test_rule4_non_divisible_large_remainder(self):
         """Rule 4: cardinality=101, batch_size=30 (remainder=11)."""
-        spec = AxisSpec(name="batch", cardinality=101, batch_size=30)
+        spec = AxisSpec(name="batch", cardinality=101, default_batch_size=30)
         planner = BatchPlanner()
 
         with warnings.catch_warnings(record=True) as w:
@@ -309,12 +309,12 @@ class TestBatchPlanner:
     def test_plan_decision_length_matches_specs(self):
         """BatchPlan.decisions length equals len(specs)."""
         specs = [
-            AxisSpec(name="batch", cardinality=100, batch_size=50),
-            AxisSpec(name="seq", cardinality=512, batch_size=128),
+            AxisSpec(name="batch", cardinality=100, default_batch_size=50),
+            AxisSpec(name="seq", cardinality=512, default_batch_size=128),
             AxisSpec(
                 name="token",
                 cardinality=1000,
-                batch_size=32,
+                default_batch_size=32,
                 dedup_eligible=True,
             ),
         ]
@@ -331,10 +331,10 @@ class TestBatchPlanner:
 
         # Test various cardinalities and conditions
         test_cases = [
-            AxisSpec(name="a", cardinality=10, batch_size=5),
-            AxisSpec(name="b", cardinality=100, batch_size=100),
-            AxisSpec(name="c", cardinality=100, batch_size=30),
-            AxisSpec(name="d", cardinality=1000, batch_size=32, dedup_eligible=True),
+            AxisSpec(name="a", cardinality=10, default_batch_size=5),
+            AxisSpec(name="b", cardinality=100, default_batch_size=100),
+            AxisSpec(name="c", cardinality=100, default_batch_size=30),
+            AxisSpec(name="d", cardinality=1000, default_batch_size=32, dedup_eligible=True),
         ]
 
         planner = BatchPlanner()
@@ -347,7 +347,7 @@ class TestBatchPlanner:
 
     def test_memory_estimator_none_uses_defaults(self):
         """When memory_estimator is None, use default selection rules."""
-        spec = AxisSpec(name="batch", cardinality=50, batch_size=100)
+        spec = AxisSpec(name="batch", cardinality=50, default_batch_size=100)
         planner = BatchPlanner(memory_estimator=None)
         plan = planner.plan([spec])
 
@@ -361,7 +361,7 @@ class TestBatchPlanner:
             # Always return a small value
             return 1000
 
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=50)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
         planner = BatchPlanner(memory_estimator=low_estimate)
         plan = planner.plan([spec])
 
@@ -377,7 +377,7 @@ class TestBatchPlanner:
             # Return value exceeding default 4 GiB limit
             return 10 * (2**30)  # 10 GiB
 
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=50)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
         planner = BatchPlanner(memory_estimator=high_estimate)
         plan = planner.plan([spec])
 
@@ -391,7 +391,7 @@ class TestBatchPlanner:
         def failing_estimate(spec: AxisSpec) -> int:
             raise RuntimeError("Device query failed")
 
-        spec = AxisSpec(name="batch", cardinality=50, batch_size=100)
+        spec = AxisSpec(name="batch", cardinality=50, default_batch_size=100)
         planner = BatchPlanner(memory_estimator=failing_estimate)
 
         # Should not raise — falls back silently
@@ -414,7 +414,7 @@ class TestBatchPlanner:
             # Return a value < device_limit
             return device_limit // 2
 
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=50)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
         planner = BatchPlanner(memory_estimator=estimate_with_device_check)
         plan = planner.plan([spec])
 
@@ -427,12 +427,12 @@ class TestBatchPlanner:
         from xtrax.tiling.dedup import DedupSpec
 
         specs = [
-            AxisSpec(name="batch", cardinality=32, batch_size=100),  # Vmap
-            AxisSpec(name="seq", cardinality=100, batch_size=25),  # SafeMap
+            AxisSpec(name="batch", cardinality=32, default_batch_size=100),  # Vmap
+            AxisSpec(name="seq", cardinality=100, default_batch_size=25),  # SafeMap
             AxisSpec(
                 name="token",
                 cardinality=500,
-                batch_size=50,
+                default_batch_size=50,
                 dedup_eligible=True,
             ),  # DedupGather via Phase 0b
         ]
@@ -457,7 +457,7 @@ class TestBatchPlanner:
 
     def test_reasoning_field_populated(self):
         """AxisDecision.reasoning field is populated."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=50)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
         planner = BatchPlanner()
         plan = planner.plan([spec])
 
@@ -469,9 +469,9 @@ class TestBatchPlanner:
 
     def test_batch_size_field_in_decision(self):
         """AxisDecision.batch_size reflects the final batch_size choice."""
-        spec = AxisSpec(name="batch", cardinality=100, batch_size=50)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
         planner = BatchPlanner()
         plan = planner.plan([spec])
 
         decision = plan.decisions[0]
-        assert decision.batch_size == spec.batch_size
+        assert decision.batch_size == spec.default_batch_size

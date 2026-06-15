@@ -30,8 +30,8 @@ class AxisSpec:
     Attributes:
         name: Human-readable axis name (e.g., "batch", "sequence").
         cardinality: Number of elements along this axis.
-        batch_size: Default batch size threshold and chunk size for SafeMap.
-        granularity: Alignment granularity (default 1, no constraint).
+        default_batch_size: Default batch size threshold and chunk size for SafeMap.
+        tile_granularity: Alignment granularity (default 1, no constraint).
         heterogeneous: Whether elements have different sizes (default False).
         dedup_eligible: Whether this axis is eligible for deduplication (default False).
         bucket_boundaries: Optional sorted, strictly-ascending bucket sizes. When
@@ -42,8 +42,8 @@ class AxisSpec:
 
     name: str
     cardinality: int
-    batch_size: int
-    granularity: int = 1
+    default_batch_size: int
+    tile_granularity: int = 1
     heterogeneous: bool = False
     dedup_eligible: bool = False
     bucket_boundaries: tuple[int, ...] | None = None
@@ -72,6 +72,24 @@ class AxisSpec:
                 f"AxisSpec(name={self.name!r}): bucket_boundaries must be strictly "
                 f"ascending, got {boundaries}."
             )
+
+    def __getattr__(self, name: str):
+        """Provide deprecation shim for old field names."""
+        if name == "batch_size":
+            warnings.warn(
+                "AxisSpec.batch_size is deprecated; use AxisSpec.default_batch_size",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return object.__getattribute__(self, "default_batch_size")
+        if name == "granularity":
+            warnings.warn(
+                "AxisSpec.granularity is deprecated; use AxisSpec.tile_granularity",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return object.__getattribute__(self, "tile_granularity")
+        raise AttributeError(f"type object 'AxisSpec' has no attribute {name!r}")
 
 
 @dataclass(frozen=True)
@@ -224,7 +242,7 @@ class BatchPlanner:
             strategy = Bucket(boundaries=boundaries)
             return AxisDecision(
                 spec=spec,
-                batch_size=spec.batch_size,
+                batch_size=spec.default_batch_size,
                 reasoning=(
                     f"bucket_boundaries={boundaries} → Bucket (host-side padding)"
                 ),
@@ -258,16 +276,16 @@ class BatchPlanner:
                 pass
 
         # Rule 3: cardinality <= batch_size → Vmap (unless memory override)
-        if spec.cardinality <= spec.batch_size:
+        if spec.cardinality <= spec.default_batch_size:
             if should_prefer_safemap_for_memory:
                 # Memory estimator overrides: use SafeMap
-                strategy = SafeMap(batch_size=spec.batch_size)
+                strategy = SafeMap(batch_size=spec.default_batch_size)
                 reasoning = (
                     "cardinality <= batch_size but memory_estimator override → SafeMap"
                 )
                 return AxisDecision(
                     spec=spec,
-                    batch_size=spec.batch_size,
+                    batch_size=spec.default_batch_size,
                     reasoning=reasoning,
                     strategy=strategy,
                 )
@@ -275,25 +293,25 @@ class BatchPlanner:
                 strategy = Vmap()
                 return AxisDecision(
                     spec=spec,
-                    batch_size=spec.batch_size,
+                    batch_size=spec.default_batch_size,
                     reasoning="cardinality <= batch_size → Vmap",
                     strategy=strategy,
                 )
 
         # Rule 4 & 5: cardinality > batch_size
         # Check divisibility
-        if spec.cardinality % spec.batch_size == 0:
+        if spec.cardinality % spec.default_batch_size == 0:
             # Rule 4: divisible → SafeMap (unless memory estimator allows Vmap)
             if should_prefer_safemap_for_memory:
                 # Memory estimate exceeds limit: use SafeMap
-                strategy = SafeMap(batch_size=spec.batch_size)
+                strategy = SafeMap(batch_size=spec.default_batch_size)
                 reasoning = (
                     "cardinality > batch_size and divisible but "
                     "memory_estimator override → SafeMap"
                 )
                 return AxisDecision(
                     spec=spec,
-                    batch_size=spec.batch_size,
+                    batch_size=spec.default_batch_size,
                     reasoning=reasoning,
                     strategy=strategy,
                 )
@@ -305,16 +323,16 @@ class BatchPlanner:
                 )
                 return AxisDecision(
                     spec=spec,
-                    batch_size=spec.batch_size,
+                    batch_size=spec.default_batch_size,
                     reasoning=reasoning,
                     strategy=strategy,
                 )
             else:
                 # No memory estimator: use default SafeMap
-                strategy = SafeMap(batch_size=spec.batch_size)
+                strategy = SafeMap(batch_size=spec.default_batch_size)
                 return AxisDecision(
                     spec=spec,
-                    batch_size=spec.batch_size,
+                    batch_size=spec.default_batch_size,
                     reasoning="cardinality > batch_size and divisible → SafeMap",
                     strategy=strategy,
                 )
@@ -322,19 +340,19 @@ class BatchPlanner:
             # Rule 5: non-divisible → SafeMap + warning (deferred-failure contract)
             warnings.warn(
                 f"AxisSpec(name={spec.name!r}): cardinality={spec.cardinality} "
-                f"is not divisible by batch_size={spec.batch_size}. "
+                f"is not divisible by batch_size={spec.default_batch_size}. "
                 f"This plan will raise ValueError at make_axis_dispatch time.",
                 RuntimeWarning,
                 stacklevel=3,
             )
-            strategy = SafeMap(batch_size=spec.batch_size)
+            strategy = SafeMap(batch_size=spec.default_batch_size)
             reasoning = (
                 "cardinality > batch_size but not divisible → "
                 "SafeMap (deferred failure)"
             )
             return AxisDecision(
                 spec=spec,
-                batch_size=spec.batch_size,
+                batch_size=spec.default_batch_size,
                 reasoning=reasoning,
                 strategy=strategy,
             )

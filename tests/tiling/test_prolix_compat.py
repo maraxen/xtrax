@@ -8,21 +8,21 @@ D7 criterion (spec 260611_aminx-xtrax-refactor.md:125-126):
 Both PASS and FAIL are valid outcomes: FAIL documents the gap.
 
 API translation from prolix.AxisSpec to xtrax.AxisSpec:
-  prolix default_batch_size=0 (vmap)    -> xtrax batch_size=cardinality
-  prolix default_batch_size=1 (safe_map) -> xtrax batch_size=1
-  prolix tile_granularity               -> xtrax granularity
+  prolix default_batch_size=0 (vmap)    -> xtrax default_batch_size=cardinality
+  prolix default_batch_size=1 (safe_map) -> xtrax default_batch_size=1
+  prolix tile_granularity               -> xtrax tile_granularity
 """
 from __future__ import annotations
 
 import xtrax.tiling as m
 from xtrax.tiling import AxisSpec, BatchPlanner
 
-N_ATOMS = AxisSpec(name="n_atoms", cardinality=60_000, batch_size=60_000, granularity=128, heterogeneous=False)
-N_BONDS = AxisSpec(name="n_bonds", cardinality=512, batch_size=512, granularity=64, heterogeneous=False)
-N_ANGLES = AxisSpec(name="n_angles", cardinality=512, batch_size=512, granularity=64, heterogeneous=False)
-N_TORSIONS = AxisSpec(name="n_torsions", cardinality=512, batch_size=512, granularity=64, heterogeneous=False)
-N_CONFORMERS = AxisSpec(name="n_conformers", cardinality=2048, batch_size=1, granularity=1, heterogeneous=True)
-N_MOLS = AxisSpec(name="n_mols", cardinality=64, batch_size=1, granularity=1, heterogeneous=True)
+N_ATOMS = AxisSpec(name="n_atoms", cardinality=60_000, default_batch_size=60_000, tile_granularity=128, heterogeneous=False)
+N_BONDS = AxisSpec(name="n_bonds", cardinality=512, default_batch_size=512, tile_granularity=64, heterogeneous=False)
+N_ANGLES = AxisSpec(name="n_angles", cardinality=512, default_batch_size=512, tile_granularity=64, heterogeneous=False)
+N_TORSIONS = AxisSpec(name="n_torsions", cardinality=512, default_batch_size=512, tile_granularity=64, heterogeneous=False)
+N_CONFORMERS = AxisSpec(name="n_conformers", cardinality=2048, default_batch_size=1, tile_granularity=1, heterogeneous=True)
+N_MOLS = AxisSpec(name="n_mols", cardinality=64, default_batch_size=1, tile_granularity=1, heterogeneous=True)
 PROLIX_6_AXES = [N_ATOMS, N_BONDS, N_ANGLES, N_TORSIONS, N_CONFORMERS, N_MOLS]
 
 
