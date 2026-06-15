@@ -30,6 +30,7 @@ api/transforms
 api/safety
 api/stages
 api/output-sinks
+api/eda
 ```
 
 ```{toctree}
@@ -37,6 +38,7 @@ api/output-sinks
 :caption: Advanced
 
 advanced/debugging
+advanced/eda-guide
 ```
 
 ## Features

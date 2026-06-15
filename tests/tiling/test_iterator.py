@@ -50,7 +50,7 @@ class TestSafeMapIterator:
     """Test SafeMapIterator shape, divisibility, and equivalence."""
 
     def test_safe_map_iterator_equals_vmap_when_batch_size_gte_n(self):
-        """SafeMapIterator with batch_size >= n should equal VmapIterator."""
+        """SafeMapIterator with tile >= n should equal VmapIterator."""
 
         def fn(x):
             return x * 2
@@ -60,13 +60,13 @@ class TestSafeMapIterator:
         vmap_iter = VmapIterator()
         vmap_result = vmap_iter(fn, xs)
 
-        safe_iter = SafeMapIterator(batch_size=20)
+        safe_iter = SafeMapIterator(tile=20)
         safe_result = safe_iter(fn, xs)
 
         assert jnp.allclose(vmap_result, safe_result)
 
     def test_safe_map_iterator_batch_size_equals_n(self):
-        """SafeMapIterator with batch_size == n should equal VmapIterator."""
+        """SafeMapIterator with tile == n should equal VmapIterator."""
 
         def fn(x):
             return x * 2
@@ -76,7 +76,7 @@ class TestSafeMapIterator:
         vmap_iter = VmapIterator()
         vmap_result = vmap_iter(fn, xs)
 
-        safe_iter = SafeMapIterator(batch_size=10)
+        safe_iter = SafeMapIterator(tile=10)
         safe_result = safe_iter(fn, xs)
 
         assert jnp.allclose(vmap_result, safe_result)
@@ -89,7 +89,7 @@ class TestSafeMapIterator:
 
         xs = jnp.arange(10)  # n=10
 
-        safe_iter = SafeMapIterator(batch_size=3)  # 10 % 3 != 0
+        safe_iter = SafeMapIterator(tile=3)  # 10 % 3 != 0
 
         with pytest.raises(ValueError, match="not divisible"):
             safe_iter(fn, xs)
@@ -102,7 +102,7 @@ class TestSafeMapIterator:
 
         xs = jnp.arange(10)
 
-        safe_iter = SafeMapIterator(batch_size=5)
+        safe_iter = SafeMapIterator(tile=5)
         result = safe_iter(fn, xs)
 
         expected = jax.vmap(fn)(xs)

@@ -1,12 +1,34 @@
-"""Tiling module for composable axis strategy selection and execution."""
+"""Tiling module for composable axis strategy selection and execution.
 
-from xtrax.tiling.dispatch import make_axis_dispatch
+CORE exports (stable, always available):
+    AxisSpec, BatchPlanner, BatchPlan, AxisDecision
+    Vmap, SafeMap, Scan, ScanTransition, Bucket, select_bucket, bucketize
+    make_axis_dispatch, axis_dispatch, DispatchRejected
+    CarrySpec, CarryShape
+    VmapIterator, SafeMapIterator, JaxScanIterator, BucketIterator, MapIterator, ScanIterator
+
+OPTIONAL (dedup/gather machinery — import from submodules):
+    xtrax.tiling.strategy: DedupGather, DedupFn, GatherFn
+    xtrax.tiling.dedup:    DedupSpec, get_k_bucket
+"""
+
+from xtrax.tiling.bucket import bucketize, select_bucket
+from xtrax.tiling.carry import CarrySpec
+from xtrax.tiling.carry_shape import CarryShape
+from xtrax.tiling.dispatch import DispatchRejected, axis_dispatch, make_axis_dispatch
+from xtrax.tiling.iterator import (
+    BucketIterator,
+    JaxScanIterator,
+    MapIterator,
+    SafeMapIterator,
+    ScanIterator,
+    VmapIterator,
+)
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan, BatchPlanner
 from xtrax.tiling.strategy import (
-    DedupFn,
-    DedupGather,
-    GatherFn,
+    Bucket,
     SafeMap,
+    Scan,
     ScanTransition,
     Vmap,
 )
@@ -18,9 +40,20 @@ __all__ = [
     "BatchPlanner",
     "Vmap",
     "SafeMap",
-    "DedupGather",
+    "Scan",
+    "Bucket",
+    "select_bucket",
+    "bucketize",
     "ScanTransition",
-    "DedupFn",
-    "GatherFn",
     "make_axis_dispatch",
+    "axis_dispatch",
+    "DispatchRejected",
+    "CarrySpec",
+    "CarryShape",
+    "VmapIterator",
+    "SafeMapIterator",
+    "JaxScanIterator",
+    "BucketIterator",
+    "MapIterator",
+    "ScanIterator",
 ]

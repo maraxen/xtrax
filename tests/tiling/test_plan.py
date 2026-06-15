@@ -3,6 +3,7 @@
 import warnings
 
 import jax
+import pytest
 
 from xtrax.tiling.plan import (
     AxisDecision,
@@ -10,7 +11,7 @@ from xtrax.tiling.plan import (
     BatchPlan,
     BatchPlanner,
 )
-from xtrax.tiling.strategy import DedupGather, SafeMap, Vmap
+from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Vmap
 
 
 class TestAxisSpec:
@@ -39,6 +40,45 @@ class TestAxisSpec:
         assert spec.granularity == 4
         assert spec.heterogeneous is True
         assert spec.dedup_eligible is True
+
+    def test_axis_spec_bucket_boundaries_default_none(self):
+        """AxisSpec.bucket_boundaries defaults to None."""
+        spec = AxisSpec(name="seq", cardinality=10, batch_size=4)
+        assert spec.bucket_boundaries is None
+
+    def test_axis_spec_bucket_boundaries_coerced_to_tuple(self):
+        """A list of bucket_boundaries is coerced to a tuple (stays hashable)."""
+        spec = AxisSpec(
+            name="seq", cardinality=10, batch_size=4, bucket_boundaries=[8, 16, 32]
+        )
+        assert spec.bucket_boundaries == (8, 16, 32)
+        assert hash(spec) == hash(spec)  # hashable: frozen + tuple field
+
+    def test_axis_spec_bucket_boundaries_empty_raises(self):
+        """Empty bucket_boundaries is rejected."""
+        with pytest.raises(ValueError, match="non-empty"):
+            AxisSpec(name="seq", cardinality=10, batch_size=4, bucket_boundaries=())
+
+    def test_axis_spec_bucket_boundaries_non_ascending_raises(self):
+        """Non-ascending bucket_boundaries is rejected."""
+        with pytest.raises(ValueError, match="strictly ascending"):
+            AxisSpec(
+                name="seq", cardinality=10, batch_size=4, bucket_boundaries=(16, 8)
+            )
+
+    def test_axis_spec_bucket_boundaries_duplicate_raises(self):
+        """Duplicate bucket_boundaries (not strictly ascending) is rejected."""
+        with pytest.raises(ValueError, match="strictly ascending"):
+            AxisSpec(
+                name="seq", cardinality=10, batch_size=4, bucket_boundaries=(8, 8, 16)
+            )
+
+    def test_axis_spec_bucket_boundaries_non_positive_raises(self):
+        """Non-positive bucket_boundaries is rejected."""
+        with pytest.raises(ValueError, match="positive"):
+            AxisSpec(
+                name="seq", cardinality=10, batch_size=4, bucket_boundaries=(0, 8)
+            )
 
 
 class TestAxisDecision:
@@ -106,21 +146,91 @@ class TestBatchPlanner:
         assert isinstance(plan, BatchPlan)
         assert len(plan.decisions) == 0
 
-    def test_rule1_dedup_eligible_returns_dedupgather(self):
-        """Rule 1: dedup_eligible=True → DedupGather."""
+    def test_phase0_carry_spec_returns_scan(self):
+        """Phase 0: CarrySpec declared → Scan."""
+        from xtrax.tiling.carry import CarrySpec
+
+        spec = AxisSpec(name="n_samples", cardinality=10, batch_size=32)
+
+        def transition(carry, x):
+            return carry, x
+
+        carry_spec = CarrySpec(
+            axis_name="n_samples",
+            init=0,
+            transition=transition,
+        )
+
+        planner = BatchPlanner(carry_specs=[carry_spec])
+        plan = planner.plan([spec])
+
+        assert len(plan.decisions) == 1
+        decision = plan.decisions[0]
+        assert decision.spec is spec
+        # Phase 0 pre-demotes to Scan strategy
+        from xtrax.tiling.strategy import Scan
+        assert isinstance(decision.strategy, Scan)
+
+    def test_phase0b_dedup_spec_returns_dedupgather(self):
+        """Phase 0b: DedupSpec declared → DedupGather."""
+        import numpy as np
+        from xtrax.tiling.dedup import DedupSpec
+
         spec = AxisSpec(
             name="token",
             cardinality=1000,
             batch_size=32,
             dedup_eligible=True,
         )
-        planner = BatchPlanner()
+        # Create a DedupSpec for this axis: 3 unique elements out of 1000
+        unique_indices = np.array([0, 500, 999])
+        index_map = np.zeros(1000, dtype=np.int32)
+        index_map[500:] = 1
+        index_map[999:] = 2
+        dedup_spec = DedupSpec(
+            axis_name="token",
+            unique_indices=unique_indices,
+            index_map=index_map,
+            k=3,
+        )
+
+        planner = BatchPlanner(dedup_specs=[dedup_spec])
         plan = planner.plan([spec])
 
         assert len(plan.decisions) == 1
         decision = plan.decisions[0]
         assert decision.spec is spec
         assert isinstance(decision.strategy, DedupGather)
+
+    def test_rule1_bucket_boundaries_returns_bucket(self):
+        """Rule 1: bucket_boundaries set → Bucket strategy."""
+        spec = AxisSpec(
+            name="seq",
+            cardinality=300,
+            batch_size=4,
+            bucket_boundaries=(128, 256, 512),
+        )
+        planner = BatchPlanner()
+        plan = planner.plan([spec])
+
+        assert len(plan.decisions) == 1
+        decision = plan.decisions[0]
+        assert isinstance(decision.strategy, Bucket)
+        assert decision.strategy.boundaries == (128, 256, 512)
+
+    def test_rule1_bucket_wins_over_dedup(self):
+        """bucket_boundaries takes precedence over dedup_eligible."""
+        spec = AxisSpec(
+            name="seq",
+            cardinality=300,
+            batch_size=4,
+            dedup_eligible=True,
+            bucket_boundaries=(512,),
+        )
+        planner = BatchPlanner()
+        plan = planner.plan([spec])
+
+        assert isinstance(plan.decisions[0].strategy, Bucket)
 
     def test_rule2_cardinality_le_batch_size_returns_vmap(self):
         """Rule 2: cardinality <= batch_size → Vmap."""
@@ -313,18 +423,32 @@ class TestBatchPlanner:
 
     def test_multiple_specs_independent_decisions(self):
         """Each spec gets its own decision independent of others."""
+        import numpy as np
+        from xtrax.tiling.dedup import DedupSpec
+
         specs = [
-            AxisSpec(name="batch", cardinality=32, batch_size=100),  # Rule 2: Vmap
-            AxisSpec(name="seq", cardinality=100, batch_size=25),  # Rule 3: SafeMap
+            AxisSpec(name="batch", cardinality=32, batch_size=100),  # Vmap
+            AxisSpec(name="seq", cardinality=100, batch_size=25),  # SafeMap
             AxisSpec(
                 name="token",
                 cardinality=500,
                 batch_size=50,
                 dedup_eligible=True,
-            ),  # Rule 1: DedupGather
+            ),  # DedupGather via Phase 0b
         ]
 
-        planner = BatchPlanner()
+        # Create DedupSpec for the token axis
+        unique_indices = np.array([0, 250])
+        index_map = np.zeros(500, dtype=np.int32)
+        index_map[250:] = 1
+        dedup_spec = DedupSpec(
+            axis_name="token",
+            unique_indices=unique_indices,
+            index_map=index_map,
+            k=2,
+        )
+
+        planner = BatchPlanner(dedup_specs=[dedup_spec])
         plan = planner.plan(specs)
 
         assert isinstance(plan.decisions[0].strategy, Vmap)

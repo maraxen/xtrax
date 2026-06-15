@@ -1,0 +1,839 @@
+[sprint]
+sprint_id = "260615_eda-v01"
+sprint_num = 1
+name = "EDA Visualization API — v0.1"
+description = "Implement the xtrax EDA subpackage: types, stats, explain, export, viz, __init__, and full test suite. Seaborn-backed render() with PlanStats-first design. Spec: .praxia/docs/specs/260615_xtrax-eda-api-revised.md"
+context = """
+task_id: 260615_eda-viz-api
+spec: .praxia/docs/specs/260615_xtrax-eda-api-revised.md (read this first)
+
+KEY ANCHORS:
+- pyproject.toml:23 — [project.optional-dependencies] (add eda key here)
+- pyproject.toml:19 — [dependency-groups] (mirror eda here too)
+- src/xtrax/tiling/plan.py — BatchPlan (decisions: tuple[AxisDecision,...]), AxisDecision (spec, batch_size, reasoning, strategy)
+- src/xtrax/tiling/strategy.py — AxisStrategy union: Vmap, SafeMap(batch_size), Scan(transition,init,ordered_sinks), DedupGather(unique_indices,index_map,k,k_bucket,...), Bucket(boundaries)
+- src/xtrax/tiling/carry.py — CarrySpec, DedupSpec
+- No src/xtrax/eda/ exists yet — all files are new
+
+CONSTRAINTS (enforced across all tracks):
+1. xtrax core stays free of viz deps — eda group is optional
+2. stats.py / explain.py / types.py work with stdlib+numpy only
+3. Output formats PNG (bytes), SVG (bytes), HTML (str)
+4. Python 3.13+ (repo requires-python = ">=3.13")
+5. Headless rendering mandatory (matplotlib.use("Agg"))
+6. AMD-3: __init__.py uses lazy wrappers for render() and plan_to_dataframe()
+"""
+max_fix_retries = 2
+worktree_shadow_mode = false
+
+# Execution order follows the dependency DAG:
+# a → b → c,d → e,f → g → h,i,j
+[orchestration]
+sequential = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+concurrent = []
+
+# ────────────────────────────────────────────────────────────────
+# TRACK A — pyproject.toml: add eda extras
+# ────────────────────────────────────────────────────────────────
+[[tracks]]
+id = "a"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1884"
+phase_name = "Track A — eda extras in pyproject.toml (#1884)"
+fixer_prompt = """
+task_id: 260615_eda-viz-api
+Edit only — no Write on existing files.
+
+FILE: pyproject.toml
+
+Add `eda` to the existing [project.optional-dependencies] section (currently at line 23)
+and mirror to the existing [dependency-groups] section (currently at line 19).
+
+[project.optional-dependencies] should gain:
+  eda = ["pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13"]
+
+[dependency-groups] should gain:
+  eda = ["pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13"]
+
+Do NOT touch any other entries. Do NOT restructure the file.
+
+After editing, confirm the eda key appears in both tables.
+"""
+reviewer_prompt = """
+task_id: 260615_eda-viz-api
+
+VERIFY 1: pyproject.toml contains `eda = [\"pandas>=2.0\", \"matplotlib>=3.8\", \"seaborn>=0.13\"]`
+          under [project.optional-dependencies].
+VERIFY 2: Same eda entry appears under [dependency-groups].
+VERIFY 3: `uv run python -c \"import xtrax\"` still succeeds (core import unbroken).
+VERIFY 4: No other [project.optional-dependencies] entries were changed.
+
+Run: grep -A1 'optional-dependencies' pyproject.toml
+Run: grep -A1 'dependency-groups' pyproject.toml
+
+PASS if all four VERIFY items are satisfied.
+FAIL if eda key is missing from either table or if core import breaks.
+"""
+return_key = "1884"
+
+# ────────────────────────────────────────────────────────────────
+# TRACK B — src/xtrax/eda/types.py
+# ────────────────────────────────────────────────────────────────
+[[tracks]]
+id = "b"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1886"
+phase_name = "Track B — src/xtrax/eda/types.py (#1886)"
+fixer_prompt = """
+task_id: 260615_eda-viz-api
+Create new file: src/xtrax/eda/types.py
+DO NOT import pandas, matplotlib, or seaborn anywhere in this file.
+
+Contents (implement exactly as specified):
+
+1. TypedDicts (all stdlib+numpy, no extras):
+   - AxisStatsEntry: name:str, strategy:str, cardinality:int, batch_size:int, reasoning:str, memory_estimate_bytes:int|None
+   - DedupStatsEntry: axis_name:str, dedup_ratio:float, unique_count:int, padded_count:int, total_count:int, padding_waste:int
+   - BucketStatsEntry: axis_name:str, bucket_count:int, bucket_boundaries:list[int]
+   - PlanStatsDict: axes:list[AxisStatsEntry], strategy_counts:dict[str,int], total_axes:int, memory_warnings:list[str], dedup_stats:list[DedupStatsEntry], bucket_stats:list[BucketStatsEntry]
+
+2. PanelName = Literal["strategy","cardinality","dedup","bucket","memory","reasoning"]
+   _VALID_PANELS: frozenset[str] = frozenset(("strategy","cardinality","dedup","bucket","memory","reasoning"))
+   (Do NOT use PanelName.__args__ — enumerate the frozenset explicitly to avoid runtime hacks)
+
+3. PlanLogger Protocol (structural, runtime_checkable):
+   log_figure(self, figure:bytes|str, fmt:str, step:int|None=None) -> None
+
+Also create src/xtrax/eda/__init__.py as an EMPTY placeholder (just a docstring:
+  \"\"\"xtrax.eda — EDA visualization subpackage.\"\"\")
+  This will be replaced in Track G.
+
+Also create tests/eda/__init__.py as an empty file.
+"""
+reviewer_prompt = """
+task_id: 260615_eda-viz-api
+
+VERIFY 1: `uv run python -c \"from xtrax.eda.types import PlanStatsDict, PlanLogger, PanelName\"` succeeds with NO eda extras installed.
+VERIFY 2: PlanStatsDict is a TypedDict with keys: axes, strategy_counts, total_axes, memory_warnings, dedup_stats, bucket_stats.
+VERIFY 3: _VALID_PANELS is a frozenset with exactly 6 elements matching PanelName literals.
+VERIFY 4: PlanLogger is a Protocol with log_figure(figure:bytes|str, fmt:str, step:int|None) -> None.
+VERIFY 5: src/xtrax/eda/__init__.py exists (placeholder).
+VERIFY 6: tests/eda/__init__.py exists.
+
+Run: uv run python -c "from xtrax.eda.types import PlanStatsDict, PlanLogger, PanelName, _VALID_PANELS; print(len(_VALID_PANELS))"
+Expected output: 6
+
+PASS if all VERIFY items are satisfied.
+FAIL if import fails or any type is missing.
+"""
+return_key = "1886"
+
+# ────────────────────────────────────────────────────────────────
+# TRACK C — src/xtrax/eda/stats.py
+# ────────────────────────────────────────────────────────────────
+[[tracks]]
+id = "c"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1888"
+phase_name = "Track C — src/xtrax/eda/stats.py (#1888)"
+fixer_prompt = """
+task_id: 260615_eda-viz-api
+Create new file: src/xtrax/eda/stats.py
+STDLIB + NUMPY ONLY — no pandas, matplotlib, seaborn imports anywhere.
+
+Read first:
+- src/xtrax/tiling/plan.py — BatchPlan, AxisDecision fields
+- src/xtrax/tiling/strategy.py — DedupGather (k, k_bucket, unique_indices, index_map), Bucket (boundaries), Vmap, SafeMap, Scan
+
+Implement:
+
+1. extract_plan_stats(plan: BatchPlan) -> PlanStatsDict
+   Walk plan.decisions. For each AxisDecision:
+   - Build AxisStatsEntry: name=decision.spec.name, strategy=type(decision.strategy).__name__,
+     cardinality=decision.spec.cardinality, batch_size=decision.batch_size,
+     reasoning=decision.reasoning, memory_estimate_bytes=None
+   - Accumulate strategy_counts[strategy_name] += 1
+   - If decision.strategy is DedupGather: call analyze_dedup(decision) and append to dedup_stats
+   - If decision.strategy is Bucket: call analyze_bucket(decision) and append to bucket_stats
+   Return PlanStatsDict with all fields populated. Empty plan -> all lists empty, total_axes=0.
+
+2. analyze_dedup(decision: AxisDecision) -> DedupStatsEntry
+   Raises TypeError if not isinstance(decision.strategy, DedupGather):
+     TypeError(f"analyze_dedup requires DedupGather strategy; got {type(decision.strategy).__name__}")
+   Fields:
+   - unique_count = decision.strategy.k
+   - padded_count = decision.strategy.k_bucket
+   - total_count = decision.spec.cardinality
+   - padding_waste = padded_count - unique_count
+   - dedup_ratio = 1.0 - (unique_count / total_count) if total_count > 0 else 0.0
+
+3. analyze_bucket(decision: AxisDecision) -> BucketStatsEntry
+   Raises TypeError if not isinstance(decision.strategy, Bucket):
+     TypeError(f"analyze_bucket requires Bucket strategy; got {type(decision.strategy).__name__}")
+   Fields:
+   - bucket_boundaries = list(decision.strategy.boundaries)
+   - bucket_count = len(decision.strategy.boundaries)
+"""
+reviewer_prompt = """
+task_id: 260615_eda-viz-api
+
+VERIFY 1: `uv run python -c \"from xtrax.eda.stats import extract_plan_stats, analyze_dedup, analyze_bucket\"` succeeds with no eda extras.
+VERIFY 2: extract_plan_stats(BatchPlan(decisions=())) returns PlanStatsDict with total_axes=0, all lists empty.
+VERIFY 3: analyze_dedup on a non-DedupGather AxisDecision raises TypeError.
+VERIFY 4: analyze_bucket on a non-Bucket AxisDecision raises TypeError.
+VERIFY 5: No imports of pandas, matplotlib, or seaborn in stats.py.
+
+Run: uv run pytest tests/eda/ -k stats -x -q 2>/dev/null || echo "no tests yet — import check only"
+Run: grep -E "^import (pandas|matplotlib|seaborn)" src/xtrax/eda/stats.py && echo FAIL || echo PASS
+
+PASS if all VERIFY items are satisfied and no forbidden imports found.
+FAIL if import fails, empty-plan crashes, or forbidden imports present.
+"""
+return_key = "1888"
+
+# ────────────────────────────────────────────────────────────────
+# TRACK D — src/xtrax/eda/export.py
+# ────────────────────────────────────────────────────────────────
+[[tracks]]
+id = "d"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1889"
+phase_name = "Track D — src/xtrax/eda/export.py (#1889)"
+fixer_prompt = """
+task_id: 260615_eda-viz-api
+Create new file: src/xtrax/eda/export.py
+Requires eda extras. pandas imported at module level behind a guard.
+
+Structure:
+  try:
+      import pandas as pd
+  except ImportError as exc:
+      raise ImportError(
+          "xtrax.eda.export requires visualization extras. "
+          "Install with: pip install xtrax[eda]"
+      ) from exc
+
+  from xtrax.eda.types import PlanStatsDict
+
+  def plan_to_dataframe(stats: PlanStatsDict) -> pd.DataFrame:
+      \"\"\"Convert PlanStatsDict to a pandas DataFrame. One row per axis.\"\"\"
+      # Build rows from stats["axes"] list
+      # Each AxisStatsEntry becomes one row
+      # Include all AxisStatsEntry fields as columns
+      # Append dedup/bucket info as extra columns where applicable (or NaN)
+      ...
+
+The function accepts PlanStatsDict (NOT BatchPlan). Pandas conversion is decoupled from stats.
+"""
+reviewer_prompt = """
+task_id: 260615_eda-viz-api
+
+VERIFY 1: `uv run python -c \"import xtrax.eda.export\"` with pandas absent raises ImportError containing "pip install xtrax[eda]".
+VERIFY 2: With eda extras: plan_to_dataframe returns a pd.DataFrame with one row per axis.
+VERIFY 3: Function accepts PlanStatsDict, not BatchPlan.
+
+Run: uv run python -c "
+import sys; sys.modules['pandas'] = None
+try:
+    import xtrax.eda.export
+    print('FAIL: should have raised')
+except ImportError as e:
+    print('PASS' if 'pip install' in str(e) else 'FAIL: wrong message')
+except Exception as e:
+    print(f'FAIL: {e}')
+"
+
+PASS if all VERIFY items satisfied.
+FAIL if ImportError is not raised when pandas is absent, or if it accepts BatchPlan directly.
+"""
+return_key = "1889"
+
+# ────────────────────────────────────────────────────────────────
+# TRACK E — src/xtrax/eda/explain.py
+# ────────────────────────────────────────────────────────────────
+[[tracks]]
+id = "e"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1890"
+phase_name = "Track E — src/xtrax/eda/explain.py (#1890)"
+fixer_prompt = """
+task_id: 260615_eda-viz-api
+Create new file: src/xtrax/eda/explain.py
+STDLIB + NUMPY ONLY — no eda extras imports.
+
+Implement:
+
+  from xtrax.tiling.plan import BatchPlan
+  from xtrax.eda.types import PlanStatsDict
+  from xtrax.eda.stats import extract_plan_stats
+
+  def explain_plan(plan: BatchPlan) -> PlanStatsDict:
+      stats = extract_plan_stats(plan)
+      # The 'reasoning' field in each AxisStatsEntry is already populated
+      # by extract_plan_stats via decision.reasoning.
+      # explain_plan's contract is that reasoning is ALWAYS non-empty string.
+      # If any entry has empty reasoning, substitute:
+      #   f"No reasoning recorded for axis '{entry['name']}'"
+      for entry in stats["axes"]:
+          if not entry["reasoning"]:
+              entry["reasoning"] = f"No reasoning recorded for axis '{entry['name']}'"
+      return stats
+
+explain_plan is intentionally thin — its value is the contract guarantee (non-empty reasoning)
+and the stable public name. Do not over-engineer.
+"""
+reviewer_prompt = """
+task_id: 260615_eda-viz-api
+
+VERIFY 1: `uv run python -c \"from xtrax.eda.explain import explain_plan\"` with no eda extras.
+VERIFY 2: explain_plan on a real BatchPlan returns PlanStatsDict where all axes[i].reasoning is non-empty.
+VERIFY 3: No imports of pandas, matplotlib, seaborn.
+
+Run: uv run python -c "
+from xtrax.tiling.plan import BatchPlan, AxisSpec, BatchPlanner
+from xtrax.eda.explain import explain_plan
+plan = BatchPlanner().plan([AxisSpec('batch', 64, 32)])
+stats = explain_plan(plan)
+assert all(e['reasoning'] for e in stats['axes']), 'reasoning empty'
+print('PASS')
+"
+
+PASS if assertion passes and import works without extras.
+FAIL if any reasoning field is empty or import requires extras.
+"""
+return_key = "1890"
+
+# ────────────────────────────────────────────────────────────────
+# TRACK F — src/xtrax/eda/viz.py
+# ────────────────────────────────────────────────────────────────
+[[tracks]]
+id = "f"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1891"
+phase_name = "Track F — src/xtrax/eda/viz.py (#1891)"
+fixer_prompt = """
+task_id: 260615_eda-viz-api
+Create new file: src/xtrax/eda/viz.py
+Requires eda extras (seaborn, matplotlib). Full render() implementation.
+
+Read first:
+- .praxia/docs/specs/260615_xtrax-eda-api-revised.md — Module Contracts / viz.py section
+- src/xtrax/eda/types.py — PlanStatsDict, PlanLogger, PanelName, _VALID_PANELS
+
+Structure:
+
+  import matplotlib
+  matplotlib.use("Agg")  # MUST be before any other matplotlib import
+
+  try:
+      import seaborn as sns
+      import matplotlib.pyplot as plt
+  except ImportError as exc:
+      raise ImportError(
+          "xtrax.eda.viz requires visualization extras. "
+          "Install with: pip install xtrax[eda]"
+      ) from exc
+
+  from __future__ import annotations
+  import io, json
+  from pathlib import Path
+  from typing import Callable, Literal
+  from xtrax.tiling.plan import BatchPlan
+  from xtrax.eda.types import PlanStatsDict, PlanLogger, _VALID_PANELS
+  from xtrax.eda.stats import extract_plan_stats
+
+  _REQUIRED_STATS_KEYS = frozenset({"axes","strategy_counts","total_axes","memory_warnings","dedup_stats","bucket_stats"})
+
+  def render(
+      plan: BatchPlan,
+      view: str = "dashboard",
+      fmt: Literal["png","svg","html"] = "png",
+      path: str | Path | None = None,
+      stats_transform: Callable[[PlanStatsDict], PlanStatsDict] | None = None,
+      metadata: bool = False,
+      logger: PlanLogger | None = None,
+      step: int | None = None,
+      panels: set[str] | None = None,
+  ) -> bytes | str | None:
+
+      # Validation
+      if metadata and path is None:
+          raise ValueError("metadata=True requires path to be set")
+      if panels is not None:
+          unknown = panels - _VALID_PANELS
+          if unknown:
+              raise ValueError(f"Unknown panel(s): {unknown!r}. Valid panels: {sorted(_VALID_PANELS)}")
+
+      # Extract stats
+      stats = extract_plan_stats(plan)
+
+      # Apply transform
+      if stats_transform is not None:
+          stats = stats_transform(stats)
+          missing = _REQUIRED_STATS_KEYS - stats.keys()
+          if missing:
+              raise TypeError(f"stats_transform must return PlanStatsDict with all required keys; missing: {missing!r}")
+
+      # Filter panels
+      active_panels = panels if panels is not None else set(_VALID_PANELS)
+
+      # Build figure: one subplot per active panel that has data
+      # Strategy panel: sns.barplot of strategy_counts
+      # Cardinality panel: sns.scatterplot of cardinality vs batch_size
+      # (other panels: skip if no data, show placeholder)
+      # EMPTY PLAN GUARD: if stats["total_axes"] == 0, render a placeholder figure
+      # with text "No axes in plan" — do NOT call seaborn with empty DataFrames.
+
+      # AMD-5: each panel's axes group gets data-panel="<name>" in SVG output.
+      # Implement by rendering each panel to SVG individually, wrapping in
+      # <g data-panel="strategy">...</g> etc., then combining.
+      # Simplest approach: render full figure to SVG, post-process with string replace
+      # to inject data-panel attrs on <g> elements by position.
+      # OR: use matplotlib's ax.set_gid(f"panel-{name}") before savefig — this sets
+      # the SVG id attribute, then rename id -> data-panel in post-process.
+
+      # Render
+      buf = io.BytesIO()
+      if fmt == "png":
+          plt.savefig(buf, format="png", bbox_inches="tight")
+          result: bytes | str = buf.getvalue()
+      elif fmt == "svg":
+          plt.savefig(buf, format="svg", bbox_inches="tight")
+          svg_bytes = buf.getvalue()
+          # Post-process: inject data-panel attributes
+          svg_str = svg_bytes.decode("utf-8")
+          # (inject data-panel via gid or string processing)
+          result = svg_str.encode("utf-8")
+      elif fmt == "html":
+          plt.savefig(buf, format="svg", bbox_inches="tight")
+          svg_content = buf.getvalue().decode("utf-8")
+          # inject data-panel attributes
+          result = f"<html><body>{svg_content}</body></html>"
+      plt.close("all")
+
+      # Write to path
+      if path is not None:
+          p = Path(path)
+          if fmt == "html":
+              p.write_text(result if isinstance(result, str) else result.decode())
+          else:
+              p.write_bytes(result if isinstance(result, bytes) else result.encode())
+          if metadata:
+              p.with_suffix(".json").write_text(json.dumps(stats, default=str))
+          if logger is not None:
+              logger.log_figure(figure=result, fmt=fmt, step=step)
+          return None
+      else:
+          if logger is not None:
+              logger.log_figure(figure=result, fmt=fmt, step=step)
+          return result
+
+IMPORTANT implementation notes:
+- matplotlib.use("Agg") MUST be the first matplotlib call in the file
+- plt.close("all") after every render to prevent figure accumulation
+- Empty plan guard: check stats["total_axes"] == 0 before any sns call
+- AMD-5: data-panel attributes in SVG — use ax.set_gid(f"panel-{name}") and post-process
+"""
+reviewer_prompt = """
+task_id: 260615_eda-viz-api
+
+VERIFY 1 (C1): render(plan, fmt="png") returns bytes starting with b'\\x89PNG'
+VERIFY 2 (C2): render(plan, fmt="svg") returns bytes starting with b'<svg' or b'<?xml'
+VERIFY 3 (C3): render(plan, fmt="html") returns str containing '<svg'
+VERIFY 4 (C9): render(BatchPlan(decisions=())) returns non-empty bytes without raising
+VERIFY 5 (C10): render(plan, metadata=True, path=None) raises ValueError
+VERIFY 6 (C11): render(plan, panels={"bad"}) raises ValueError with valid names in message
+VERIFY 7 (C12): importing xtrax.eda.viz with seaborn absent raises ImportError with 'pip install xtrax[eda]'
+VERIFY 8 (AMD-5): render(plan, fmt="svg") bytes contain b'data-panel='
+
+Run: uv run pytest tests/eda/ -x -q 2>&1 | tail -20
+(tests may not exist yet — manual spot-checks above are the gate)
+
+PASS if VERIFY 1-8 are all satisfied.
+FAIL if any render call crashes unexpectedly or data-panel attrs are absent from SVG.
+"""
+return_key = "1891"
+
+# ────────────────────────────────────────────────────────────────
+# TRACK G — src/xtrax/eda/__init__.py (lazy wrappers)
+# ────────────────────────────────────────────────────────────────
+[[tracks]]
+id = "g"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1892"
+phase_name = "Track G — src/xtrax/eda/__init__.py (#1892)"
+fixer_prompt = """
+task_id: 260615_eda-viz-api
+Edit (overwrite) the placeholder: src/xtrax/eda/__init__.py
+Replace the placeholder docstring with the full lazy-import contract (AMD-3).
+
+  \"\"\"xtrax.eda — EDA visualization subpackage.\"\"\"
+
+  from xtrax.eda.stats import extract_plan_stats, analyze_dedup, analyze_bucket
+  from xtrax.eda.explain import explain_plan
+  from xtrax.eda.types import PlanStatsDict, PlanLogger, PanelName
+
+  def render(*args, **kwargs):
+      \"\"\"Render a BatchPlan. Lazy import: requires pip install xtrax[eda].\"\"\"
+      from xtrax.eda.viz import render as _render
+      return _render(*args, **kwargs)
+
+  def plan_to_dataframe(*args, **kwargs):
+      \"\"\"Convert PlanStatsDict to DataFrame. Lazy import: requires pip install xtrax[eda].\"\"\"
+      from xtrax.eda.export import plan_to_dataframe as _ptdf
+      return _ptdf(*args, **kwargs)
+
+  __all__ = [
+      "extract_plan_stats", "analyze_dedup", "analyze_bucket",
+      "explain_plan", "render", "plan_to_dataframe",
+      "PlanStatsDict", "PlanLogger", "PanelName",
+  ]
+"""
+reviewer_prompt = """
+task_id: 260615_eda-viz-api
+
+VERIFY 1: `uv run python -c \"import xtrax.eda\"` with no eda extras succeeds.
+VERIFY 2: `uv run python -c \"from xtrax.eda import extract_plan_stats, explain_plan, PlanStatsDict\"` with no extras.
+VERIFY 3: `uv run python -c \"from xtrax.eda import render; render()\"` without extras raises ImportError with 'pip install xtrax[eda]'.
+VERIFY 4: `__all__` includes all 8 public names.
+
+Run: uv run python -c "
+import xtrax.eda
+from xtrax.eda import extract_plan_stats, explain_plan, PlanStatsDict, PlanLogger, PanelName
+from xtrax.eda import analyze_dedup, analyze_bucket
+print('eager imports OK')
+try:
+    from xtrax.eda import render; render()
+except ImportError as e:
+    print('lazy ImportError OK:', 'pip install' in str(e))
+except Exception as e:
+    print('unexpected:', e)
+"
+
+PASS if eager imports succeed and render() raises ImportError with pip message.
+FAIL if import xtrax.eda pulls in seaborn/matplotlib at module level.
+"""
+return_key = "1892"
+
+# ────────────────────────────────────────────────────────────────
+# TRACK H — tests/eda/test_stats.py
+# ────────────────────────────────────────────────────────────────
+[[tracks]]
+id = "h"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1893"
+phase_name = "Track H — tests/eda/test_stats.py (#1893)"
+fixer_prompt = """
+task_id: 260615_eda-viz-api
+Create new file: tests/eda/test_stats.py
+
+Write pytest tests covering:
+
+1. test_extract_plan_stats_empty_plan:
+   plan = BatchPlan(decisions=())
+   stats = extract_plan_stats(plan)
+   assert stats["total_axes"] == 0
+   assert stats["axes"] == []
+   assert stats["strategy_counts"] == {}
+   assert stats["dedup_stats"] == []
+   assert stats["bucket_stats"] == []
+
+2. test_extract_plan_stats_vmap:
+   Create AxisSpec("batch", cardinality=64, batch_size=128) (cardinality<=batch_size -> Vmap)
+   plan = BatchPlanner().plan([spec])
+   stats = extract_plan_stats(plan)
+   assert stats["total_axes"] == 1
+   assert stats["strategy_counts"]["Vmap"] == 1
+   assert stats["axes"][0]["name"] == "batch"
+   assert stats["axes"][0]["strategy"] == "Vmap"
+
+3. test_extract_plan_stats_safemap:
+   AxisSpec("seq", cardinality=512, batch_size=64) -> SafeMap
+   plan = BatchPlanner().plan([spec])
+   stats = extract_plan_stats(plan)
+   assert stats["strategy_counts"].get("SafeMap", 0) == 1
+
+4. test_analyze_dedup_type_error:
+   Create AxisDecision with strategy=Vmap()
+   with pytest.raises(TypeError, match="DedupGather"):
+       analyze_dedup(decision)
+
+5. test_analyze_bucket_type_error:
+   Create AxisDecision with strategy=Vmap()
+   with pytest.raises(TypeError, match="Bucket"):
+       analyze_bucket(decision)
+
+6. test_analyze_bucket_fields:
+   AxisSpec("tok", cardinality=100, batch_size=128, bucket_boundaries=(128,256,512))
+   plan = BatchPlanner().plan([spec])
+   decision = plan.decisions[0]
+   entry = analyze_bucket(decision)
+   assert entry["bucket_boundaries"] == [128, 256, 512]
+   assert entry["bucket_count"] == 3
+
+7. test_explain_plan_nonempty_reasoning:
+   plan = BatchPlanner().plan([AxisSpec("x", 64, 32)])
+   stats = explain_plan(plan)
+   assert all(e["reasoning"] for e in stats["axes"])
+
+8. test_no_extras_import (no extras needed):
+   # Just importing works — Criterion 4
+   import importlib
+   importlib.import_module("xtrax.eda.stats")
+   importlib.import_module("xtrax.eda.explain")
+   importlib.import_module("xtrax.eda.types")
+
+Use from xtrax.tiling.plan import BatchPlan, AxisSpec, BatchPlanner, AxisDecision
+Use from xtrax.tiling.strategy import Vmap, SafeMap, Bucket, DedupGather
+Use from xtrax.eda.stats import extract_plan_stats, analyze_dedup, analyze_bucket
+Use from xtrax.eda.explain import explain_plan
+"""
+reviewer_prompt = """
+task_id: 260615_eda-viz-api
+
+VERIFY 1: uv run pytest tests/eda/test_stats.py -v passes all 8 tests.
+VERIFY 2: No eda extras (pandas/matplotlib/seaborn) imported anywhere in test_stats.py.
+VERIFY 3: test_no_extras_import test succeeds confirming stdlib-only import chain.
+
+Run: uv run pytest tests/eda/test_stats.py -v 2>&1 | tail -20
+Run: grep -E "import (pandas|matplotlib|seaborn)" tests/eda/test_stats.py && echo FAIL || echo PASS
+
+PASS if all tests green and no forbidden imports.
+FAIL if any test fails or test file imports viz extras.
+"""
+return_key = "1893"
+
+# ────────────────────────────────────────────────────────────────
+# TRACK I — tests/eda/test_render.py (happy path)
+# ────────────────────────────────────────────────────────────────
+[[tracks]]
+id = "i"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1894"
+phase_name = "Track I — tests/eda/test_render.py happy path (#1894)"
+fixer_prompt = """
+task_id: 260615_eda-viz-api
+Create new file: tests/eda/test_render.py
+Use pytest.importorskip("seaborn") at module level to skip if eda extras absent.
+
+import pytest
+seaborn = pytest.importorskip("seaborn")
+
+from xtrax.tiling.plan import BatchPlan, AxisSpec, BatchPlanner
+from xtrax.eda.viz import render
+
+@pytest.fixture
+def simple_plan():
+    return BatchPlanner().plan([
+        AxisSpec("batch", cardinality=64, batch_size=128),   # -> Vmap
+        AxisSpec("seq",   cardinality=512, batch_size=64),   # -> SafeMap
+    ])
+
+Tests:
+
+1. test_render_png_returns_bytes(simple_plan):
+   result = render(simple_plan, fmt="png")
+   assert isinstance(result, bytes)
+   assert result[:8] == b'\\x89PNG\\r\\n\\x1a\\n'  # Criterion 1
+
+2. test_render_svg_returns_bytes(simple_plan):
+   result = render(simple_plan, fmt="svg")
+   assert isinstance(result, bytes)
+   assert result[:4] == b'<svg' or result[:5] == b'<?xml'  # Criterion 2
+
+3. test_render_html_returns_str(simple_plan):
+   result = render(simple_plan, fmt="html")
+   assert isinstance(result, str)
+   assert "<svg" in result  # Criterion 3
+
+4. test_stats_transform_applied(simple_plan, tmp_path):
+   # Criterion 5: transform modifies strategy_counts; output reflects it
+   def bump_vmap(stats):
+       stats = dict(stats)
+       stats["strategy_counts"] = {"Vmap": 99}
+       return stats
+   result = render(simple_plan, fmt="svg", stats_transform=bump_vmap)
+   svg = result.decode() if isinstance(result, bytes) else result
+   assert "99" in svg  # mutated value visible in SVG
+
+5. test_metadata_sidecar(simple_plan, tmp_path):
+   # Criterion 6
+   import json
+   out = tmp_path / "plan.png"
+   render(simple_plan, path=str(out), metadata=True)
+   assert out.exists()
+   sidecar = tmp_path / "plan.json"
+   assert sidecar.exists()
+   data = json.loads(sidecar.read_text())
+   assert "axes" in data and "strategy_counts" in data  # valid PlanStatsDict
+
+6. test_logger_called(simple_plan):
+   # Criterion 7
+   calls = []
+   class MockLogger:
+       def log_figure(self, figure, fmt, step=None):
+           calls.append((type(figure).__name__, fmt, step))
+   render(simple_plan, fmt="png", logger=MockLogger(), step=0)
+   assert len(calls) == 1
+   assert calls[0] == ("bytes", "png", 0)
+
+7. test_panels_filter_svg(simple_plan):
+   # Criterion 8 + AMD-5
+   result = render(simple_plan, fmt="svg", panels={"strategy"})
+   svg = result.decode() if isinstance(result, bytes) else result
+   assert 'data-panel="strategy"' in svg
+   assert 'data-panel="cardinality"' not in svg
+"""
+reviewer_prompt = """
+task_id: 260615_eda-viz-api
+
+VERIFY 1: uv run pytest tests/eda/test_render.py -v passes all 7 tests (or skips if no extras).
+VERIFY 2: Criteria 1-3 covered (PNG magic, SVG prefix, HTML str).
+VERIFY 3: Criterion 5 transform visible in output (test_stats_transform_applied).
+VERIFY 4: Criterion 6 sidecar written (test_metadata_sidecar).
+VERIFY 5: Criterion 7 logger called with correct types (test_logger_called).
+VERIFY 6: Criterion 8 data-panel attrs present/absent (test_panels_filter_svg).
+
+Run: uv run pytest tests/eda/test_render.py -v 2>&1 | tail -20
+
+PASS if all tests green (or skipped due to missing extras with clear SKIP message).
+FAIL if any non-skip test fails.
+"""
+return_key = "1894"
+
+# ────────────────────────────────────────────────────────────────
+# TRACK J — tests/eda/test_render_errors.py (unhappy path)
+# ────────────────────────────────────────────────────────────────
+[[tracks]]
+id = "j"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "1895"
+phase_name = "Track J — tests/eda/test_render_errors.py unhappy path (#1895)"
+fixer_prompt = """
+task_id: 260615_eda-viz-api
+Create new file: tests/eda/test_render_errors.py
+
+import pytest, sys, importlib
+seaborn = pytest.importorskip("seaborn")
+
+from xtrax.tiling.plan import BatchPlan, AxisSpec, BatchPlanner
+from xtrax.eda.viz import render
+from xtrax.eda.stats import analyze_dedup, analyze_bucket
+from xtrax.tiling.plan import AxisDecision, AxisSpec as AS
+from xtrax.tiling.strategy import Vmap
+
+@pytest.fixture
+def plan():
+    return BatchPlanner().plan([AxisSpec("batch", 64, 128)])
+
+Tests:
+
+1. test_render_empty_plan():
+   # Criterion 9
+   result = render(BatchPlan(decisions=()), fmt="png")
+   assert isinstance(result, bytes) and len(result) > 0
+
+2. test_metadata_without_path_raises(plan):
+   # Criterion 10
+   with pytest.raises(ValueError, match="metadata=True requires path"):
+       render(plan, metadata=True, path=None)
+
+3. test_invalid_panel_raises(plan):
+   # Criterion 11
+   with pytest.raises(ValueError) as exc_info:
+       render(plan, panels={"invalid_panel"})
+   msg = str(exc_info.value)
+   assert "invalid_panel" in msg
+   assert "strategy" in msg  # valid panels listed
+
+4. test_import_without_seaborn_raises():
+   # Criterion 12 — simulate missing seaborn via sys.modules
+   saved = sys.modules.pop("xtrax.eda.viz", None)
+   saved_sns = sys.modules.pop("seaborn", None)
+   sys.modules["seaborn"] = None  # block import
+   try:
+       with pytest.raises(ImportError, match="pip install xtrax\\[eda\\]"):
+           import xtrax.eda.viz
+           importlib.reload(xtrax.eda.viz)
+   finally:
+       if saved_sns is not None:
+           sys.modules["seaborn"] = saved_sns
+       else:
+           sys.modules.pop("seaborn", None)
+       if saved is not None:
+           sys.modules["xtrax.eda.viz"] = saved
+
+5. test_stats_transform_missing_key_raises(plan):
+   # AMD-6: transform returning incomplete dict raises TypeError
+   def bad_transform(stats):
+       return {"axes": []}  # missing required keys
+   with pytest.raises(TypeError, match="missing"):
+       render(plan, stats_transform=bad_transform)
+
+6. test_analyze_dedup_wrong_strategy():
+   # AMD-4
+   spec = AxisSpec("x", 64, 128)
+   decision = BatchPlanner().plan([spec]).decisions[0]
+   with pytest.raises(TypeError, match="DedupGather"):
+       analyze_dedup(decision)
+
+7. test_analyze_bucket_wrong_strategy():
+   # AMD-4
+   spec = AxisSpec("x", 64, 128)
+   decision = BatchPlanner().plan([spec]).decisions[0]
+   with pytest.raises(TypeError, match="Bucket"):
+       analyze_bucket(decision)
+"""
+reviewer_prompt = """
+task_id: 260615_eda-viz-api
+
+VERIFY 1: uv run pytest tests/eda/test_render_errors.py -v passes all 7 tests.
+VERIFY 2: Criteria 9-12 each covered by a dedicated test.
+VERIFY 3: AMD-4 and AMD-6 validations each covered.
+
+Run: uv run pytest tests/eda/test_render_errors.py -v 2>&1 | tail -20
+
+PASS if all tests green.
+FAIL if any test fails or if Criterion 12 test is flaky due to module-cache issues.
+"""
+return_key = "1895"

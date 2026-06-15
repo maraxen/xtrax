@@ -11,14 +11,14 @@ if TYPE_CHECKING:
 
 def get_checkpoint_manager(
     directory: str | Path,
-    max_to_keep: int = 5,
+    max_to_keep: int | None = 5,
     keep_period: int | None = None,
 ) -> ocp.CheckpointManager:
     """Create and return a CheckpointManager for the given directory.
 
     Args:
         directory: Directory to store checkpoints.
-        max_to_keep: Maximum number of checkpoints to keep. Defaults to 5.
+        max_to_keep: Maximum number of checkpoints to keep. None keeps all. Defaults to 5.
         keep_period: Period (in steps) for keeping checkpoints. Defaults to None.
 
     Returns:
