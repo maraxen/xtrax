@@ -19,9 +19,11 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [ "pytest-benchmark>=5.2.3", "pytest-cov>=7.1.0",]
 docs = [ "sphinx>=7", "furo", "sphinx-autodoc-typehints", "myst-parser",]
+eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 
 [project.optional-dependencies]
 dev = [ "pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "pytest-benchmark>=4.0", "ruff>=0.4.0", "ty", "jaxtyping>=0.2.28",]
+eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 
 [project.urls]
 Homepage = "https://github.com/maraxen/xtrax"

@@ -28,7 +28,12 @@ class DispatchRejected(Exception):
   """
 
 
-def make_axis_dispatch(strategy: AxisStrategy, *, axis: str = "") -> object:
+def make_axis_dispatch(
+    strategy: AxisStrategy,
+    *,
+    axis: str = "",
+    heterogeneous_axes: set[str] | None = None,
+) -> object:
   """Dispatch an AxisStrategy to a typed iterator.
 
   Converts a strategy (Vmap, SafeMap, Scan) into a corresponding iterator
@@ -41,7 +46,11 @@ def make_axis_dispatch(strategy: AxisStrategy, *, axis: str = "") -> object:
       One of Vmap, SafeMap, Scan, or DedupGather.
   axis : str, optional
       Name of the axis being dispatched. Default "". Used to detect
-      heterogeneous axes (e.g., state is heterogeneous; Scan is invalid there).
+      heterogeneous axes via heterogeneous_axes parameter.
+  heterogeneous_axes : set[str] | None, optional
+      Set of axis names that are heterogeneous (shapes vary per element).
+      If provided, Scan is rejected for any axis in this set.
+      Default None (no heterogeneous constraints).
 
   Returns
   -------
@@ -52,8 +61,8 @@ def make_axis_dispatch(strategy: AxisStrategy, *, axis: str = "") -> object:
   Raises
   ------
   DispatchRejected
-      If strategy is Scan and axis is heterogeneous (e.g., axis="state"),
-      or if strategy is DedupGather (which is handled by _dispatch_axis,
+      If strategy is Scan and axis is in heterogeneous_axes,
+      or if strategy is DedupGather (which is handled elsewhere,
       not by make_axis_dispatch).
 
   """
@@ -72,15 +81,15 @@ def make_axis_dispatch(strategy: AxisStrategy, *, axis: str = "") -> object:
       "Use DedupGather via BatchPlanner + _dispatch_axis, not make_axis_dispatch.",
     )
 
-  # Reject Scan on heterogeneous axes (state is the canonical heterogeneous axis).
+  # Reject Scan on heterogeneous axes.
   if isinstance(strategy, Scan):
-    if axis == "state":
+    het_axes = heterogeneous_axes or set()
+    if axis in het_axes:
       raise DispatchRejected(
         f"Cannot use Scan strategy on {axis} axis: {axis} axis contains "
         "heterogeneous (variable-shape) state elements. Scan requires "
         "static carry shape across all iterations.",
       )
-    # For future non-state heterogeneous axes, add more checks here.
 
   # Dispatch by strategy type.
   if isinstance(strategy, Vmap):

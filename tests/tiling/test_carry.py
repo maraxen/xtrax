@@ -7,7 +7,7 @@ from xtrax.tiling.strategy import ScanTransition
 
 
 class TestCarrySpecInstantiation:
-    """CarrySpec must instantiate with valid axis names."""
+    """CarrySpec instantiates with any axis name; validation is delegated to BatchPlanner."""
 
     def test_carryspec_instantiates_with_valid_axis(self):
         """CarrySpec instantiates with a non-heterogeneous axis name."""
@@ -24,29 +24,27 @@ class TestCarrySpecInstantiation:
         assert spec.transition is transition
         assert spec.ordered_sinks is True
 
-    def test_carryspec_rejects_heterogeneous_n_states(self):
-        """CarrySpec raises ValueError for 'n_states' (known heterogeneous axis)."""
+    def test_carryspec_instantiates_with_any_axis_name(self):
+        """CarrySpec instantiates with any axis name; validation is delegated to BatchPlanner."""
         def transition(carry, x):
             return carry, x
 
-        with pytest.raises(ValueError, match="heterogeneous.*n_states"):
-            CarrySpec(
-                axis_name="n_states",
-                init=0,
-                transition=transition,
-            )
+        # CarrySpec itself does not validate heterogeneous axes.
+        # Validation is delegated to BatchPlanner, which checks against
+        # the heterogeneous_axes parameter.
+        spec_states = CarrySpec(
+            axis_name="n_states",
+            init=0,
+            transition=transition,
+        )
+        assert spec_states.axis_name == "n_states"
 
-    def test_carryspec_rejects_heterogeneous_n_structures(self):
-        """CarrySpec raises ValueError for 'n_structures' (known heterogeneous axis)."""
-        def transition(carry, x):
-            return carry, x
-
-        with pytest.raises(ValueError, match="heterogeneous.*n_structures"):
-            CarrySpec(
-                axis_name="n_structures",
-                init=0,
-                transition=transition,
-            )
+        spec_structures = CarrySpec(
+            axis_name="n_structures",
+            init=0,
+            transition=transition,
+        )
+        assert spec_structures.axis_name == "n_structures"
 
     def test_carryspec_is_frozen(self):
         """CarrySpec is immutable (frozen dataclass)."""

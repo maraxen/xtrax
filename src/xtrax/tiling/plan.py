@@ -121,6 +121,7 @@ class BatchPlanner:
         memory_estimator: Callable[[AxisSpec], int] | None = None,
         carry_specs: list[CarrySpec] | None = None,
         dedup_specs: list[DedupSpec] | None = None,
+        heterogeneous_axes: set[str] | None = None,
     ) -> None:
         """Initialize the planner.
 
@@ -133,10 +134,14 @@ class BatchPlanner:
                 should use Scan strategy (Phase 0 pre-demotion).
             dedup_specs: Optional list of DedupSpec objects declaring which axes
                 should use DedupGather strategy (Phase 0b pre-demotion).
+            heterogeneous_axes: Optional set of axis names (strings) that contain
+                heterogeneous elements (variable shapes). These axes cannot use Scan
+                strategy. Default None (no heterogeneous constraints).
         """
         self.memory_estimator = memory_estimator
         self.carry_specs = carry_specs or []
         self.dedup_specs = dedup_specs or []
+        self.heterogeneous_axes = heterogeneous_axes or set()
 
     def plan(self, specs: Sequence[AxisSpec]) -> BatchPlan:
         """Generate a tiling plan for the given specs.
@@ -163,6 +168,14 @@ class BatchPlanner:
             # Phase 0: CarrySpec pre-demotion
             if spec.name in carry_by_name:
                 cs = carry_by_name[spec.name]
+                # Validate: Scan is invalid on heterogeneous axes
+                if spec.name in self.heterogeneous_axes:
+                    raise ValueError(
+                        f"Cannot create Scan strategy for axis '{spec.name}': "
+                        f"axis is heterogeneous (shapes vary per element), "
+                        f"but Scan requires static carry shape. "
+                        f"Remove this axis from CarrySpec or remove it from heterogeneous_axes."
+                    )
                 scan_strategy = Scan(
                     init=cs.init,
                     transition=cs.transition,
