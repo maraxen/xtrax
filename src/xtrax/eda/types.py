@@ -4,10 +4,10 @@ All type definitions use only stdlib and numpy — no pandas, matplotlib, or sea
 This module is importable from xtrax core without eda extras.
 """
 
-from typing import Literal, Protocol, TypedDict, runtime_checkable
+from typing import Literal, NotRequired, Protocol, TypedDict, runtime_checkable
 
 
-class AxisStatsEntry(TypedDict, total=False):
+class AxisStatsEntry(TypedDict):
     """Statistics for a single axis decision.
 
     Attributes:
@@ -26,7 +26,7 @@ class AxisStatsEntry(TypedDict, total=False):
     cardinality: int
     batch_size: int
     reasoning: str
-    memory_estimate_bytes: int | None
+    memory_estimate_bytes: NotRequired[int | None]
 
 
 class DedupStatsEntry(TypedDict):
@@ -34,7 +34,8 @@ class DedupStatsEntry(TypedDict):
 
     Attributes:
         axis_name: Name of the axis.
-        dedup_ratio: Ratio of unique elements to total (range [0, 1]).
+        dedup_ratio: 0.0–1.0; higher = more duplicates (more dedup benefit).
+            Computed as 1 - (unique / total).
         unique_count: Number of unique elements (k, pre-padding).
         padded_count: Padded bucket size (k_bucket).
         total_count: Total elements in original axis (n).
@@ -142,6 +143,5 @@ __all__ = [
     "BucketStatsEntry",
     "PlanStatsDict",
     "PanelName",
-    "_VALID_PANELS",
     "PlanLogger",
 ]
