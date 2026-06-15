@@ -332,6 +332,39 @@ class TestLogger:
             assert len(logger.figures) == 1
 
 
+
+class TestImportErrors:
+    """Test ImportError handling for missing dependencies."""
+
+    def test_render_requires_eda_extras(self):
+        """render() raises ImportError with pip install message when seaborn is absent."""
+        import sys
+        import subprocess
+        
+        # Run a fresh Python process where seaborn is unavailable
+        # This isolates the test from matplotlib's state
+        code = """
+import sys
+sys.modules['seaborn'] = None
+try:
+    from xtrax.eda.viz import render
+    sys.exit(1)  # Should not reach here
+except ImportError as e:
+    if 'pip install xtrax[eda]' in str(e):
+        sys.exit(0)  # Expected error message
+    else:
+        print(f"Wrong error message: {e}", file=sys.stderr)
+        sys.exit(2)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd="/home/marielle/projects/xtrax/.claude/worktrees/fixer-260615-eda-viz"
+        )
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+
+
 class TestSpecialCases:
     """Test special cases and edge cases."""
 
