@@ -7,7 +7,7 @@ via the eda extras.
 Requires eda extras: pip install xtrax[eda]
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 try:
     import pandas as pd
@@ -17,10 +17,8 @@ except ImportError as exc:
         "Install with: pip install xtrax[eda]"
     ) from exc
 
-from xtrax.eda.types import PlanStatsDict
 
-if TYPE_CHECKING:
-    import pandas as pd
+from xtrax.eda.types import PlanStatsDict
 
 
 def plan_to_dataframe(stats: PlanStatsDict) -> 'pd.DataFrame':
@@ -32,7 +30,8 @@ def plan_to_dataframe(stats: PlanStatsDict) -> 'pd.DataFrame':
     bucket_boundaries) are filled with NaN for axes that don't use those strategies.
 
     Args:
-        stats: A PlanStatsDict containing extracted statistics from extract_plan_stats().
+        stats: A PlanStatsDict containing extracted statistics from
+            extract_plan_stats().
 
     Returns:
         pandas.DataFrame with one row per axis. Columns include:
@@ -41,13 +40,18 @@ def plan_to_dataframe(stats: PlanStatsDict) -> 'pd.DataFrame':
             - cardinality: Axis cardinality (from AxisStatsEntry.cardinality)
             - batch_size: Batch size (from AxisStatsEntry.batch_size)
             - reasoning: Decision reasoning (from AxisStatsEntry.reasoning)
-            - memory_estimate_bytes: Memory estimate or NaN (from AxisStatsEntry.memory_estimate_bytes)
+            - memory_estimate_bytes: Memory estimate or NaN (from
+              AxisStatsEntry.memory_estimate_bytes)
             - dedup_ratio: Dedup ratio (from DedupStatsEntry, NaN if not DedupGather)
-            - unique_count: Unique element count (from DedupStatsEntry, NaN if not DedupGather)
-            - padded_count: Padded bucket size (from DedupStatsEntry, NaN if not DedupGather)
-            - padding_waste: Padding overhead (from DedupStatsEntry, NaN if not DedupGather)
+            - unique_count: Unique element count (from DedupStatsEntry,
+              NaN if not DedupGather)
+            - padded_count: Padded bucket size (from DedupStatsEntry,
+              NaN if not DedupGather)
+            - padding_waste: Padding overhead (from DedupStatsEntry,
+              NaN if not DedupGather)
             - bucket_count: Number of buckets (from BucketStatsEntry, NaN if not Bucket)
-            - bucket_boundaries: List of bucket boundaries (from BucketStatsEntry, NaN if not Bucket)
+            - bucket_boundaries: List of bucket boundaries (from
+              BucketStatsEntry, NaN if not Bucket)
 
     Raises:
         ImportError: If pandas is not installed. Install with: pip install xtrax[eda]

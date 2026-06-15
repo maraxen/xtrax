@@ -12,11 +12,13 @@ class AxisStatsEntry(TypedDict, total=False):
 
     Attributes:
         name: Human-readable axis name (e.g., "batch", "sequence").
-        strategy: Selected strategy type as string (e.g., "Vmap", "SafeMap", "Scan", "DedupGather", "Bucket").
+        strategy: Selected strategy type as string (e.g., "Vmap",
+            "SafeMap", "Scan", "DedupGather", "Bucket").
         cardinality: Number of elements along this axis.
         batch_size: Batch size used for this axis (if applicable).
         reasoning: Human-readable explanation of the decision.
-        memory_estimate_bytes: Estimated memory consumption (in bytes) for this axis (optional).
+        memory_estimate_bytes: Estimated memory consumption (in bytes)
+            for this axis (optional).
     """
 
     name: str
@@ -66,11 +68,14 @@ class PlanStatsDict(TypedDict):
 
     Attributes:
         axes: List of statistics for each axis decision.
-        strategy_counts: Histogram of strategy types used (e.g., {"Vmap": 2, "SafeMap": 1}).
+        strategy_counts: Histogram of strategy types used (e.g.,
+            {"Vmap": 2, "SafeMap": 1}).
         total_axes: Total number of axes in the plan.
         memory_warnings: List of human-readable memory concerns (empty if none).
-        dedup_stats: List of deduplication statistics (one per DedupGather axis, empty otherwise).
-        bucket_stats: List of bucketing statistics (one per Bucket axis, empty otherwise).
+        dedup_stats: List of deduplication statistics (one per
+            DedupGather axis, empty otherwise).
+        bucket_stats: List of bucketing statistics (one per Bucket
+            axis, empty otherwise).
     """
 
     axes: list[AxisStatsEntry]
@@ -105,7 +110,10 @@ class PlanLogger(Protocol):
             def __init__(self, api):
                 self.api = api
 
-            def log_figure(self, figure: bytes | str, fmt: str, step: int | None = None) -> None:
+            def log_figure(
+                self, figure: bytes | str, fmt: str,
+                step: int | None = None
+            ) -> None:
                 # figure is bytes for PNG/SVG, str for HTML
                 # fmt is "png", "svg", or "html"
                 # step is optional epoch/iteration number
