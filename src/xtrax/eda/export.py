@@ -1,8 +1,8 @@
 """Pandas DataFrame export for plan statistics.
 
 This module provides conversion from PlanStatsDict to pandas DataFrame format
-for advanced analysis and visualization. Pandas is optional and only imported
-when plan_to_dataframe() is called.
+for advanced analysis and visualization. Pandas is optional and must be installed
+via the eda extras.
 
 Requires eda extras: pip install xtrax[eda]
 """
@@ -10,6 +10,14 @@ Requires eda extras: pip install xtrax[eda]
 from __future__ import annotations
 
 from typing import Any
+
+try:
+    import pandas as pd
+except ImportError as exc:
+    raise ImportError(
+        "xtrax.eda.export requires visualization extras. "
+        "Install with: pip install xtrax[eda]"
+    ) from exc
 
 from xtrax.eda.types import PlanStatsDict
 
@@ -50,14 +58,6 @@ def plan_to_dataframe(stats: PlanStatsDict) -> Any:
         >>> df = plan_to_dataframe(stats)
         >>> print(df[["name", "strategy", "cardinality"]])
     """
-    try:
-        import pandas as pd
-    except ImportError as exc:
-        raise ImportError(
-            "xtrax.eda.export requires visualization extras. "
-            "Install with: pip install xtrax[eda]"
-        ) from exc
-
     # Build a list of rows, one per axis
     rows = []
     for axis_entry in stats["axes"]:
