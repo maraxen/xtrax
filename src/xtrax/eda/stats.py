@@ -5,7 +5,6 @@ visualization dependencies. It can be imported from xtrax core without the
 optional eda extras.
 """
 
-from __future__ import annotations
 
 from xtrax.tiling.plan import AxisDecision, BatchPlan
 from xtrax.tiling.strategy import Bucket, DedupGather

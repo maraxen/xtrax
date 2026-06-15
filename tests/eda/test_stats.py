@@ -455,5 +455,37 @@ class TestStatsTypeConsistency:
         assert all(isinstance(b, int) for b in result["bucket_boundaries"])
 
 
+
+
+def test_no_extras_import():
+    """Verify that xtrax.eda.stats does not import pandas/matplotlib/seaborn.
+
+    Criterion 3 requires that stats.py and its transitively imported modules
+    work with stdlib + numpy only. This test ensures no extra dependencies are
+    leaked into the import chain via a careless addition of pandas/matplotlib/
+    seaborn imports in stats.py or the types module it uses.
+    """
+    import sys
+    import importlib
+
+    # List of banned extras that must not be present after importing xtrax.eda.stats
+    banned_modules = ("pandas", "matplotlib", "seaborn")
+
+    # Clear any previously imported modules to start fresh
+    for module in banned_modules:
+        if module in sys.modules:
+            del sys.modules[module]
+
+    # Import the module
+    importlib.import_module("xtrax.eda.stats")
+
+    # Verify none of the banned modules were imported
+    for banned in banned_modules:
+        assert banned not in sys.modules, (
+            f"{banned} must not be imported by xtrax.eda.stats; "
+            f"this violates Constraint 2 (stats.py is stdlib+numpy only)"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
