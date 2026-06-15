@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`xtrax.eda` — EDA visualization subpackage** (optional extras: `pip install xtrax[eda]`):
+  A two-layer exploratory data analysis interface for inspecting `BatchPlan` outputs from
+  the tiling subsystem.
+
+  _Stats layer_ (stdlib + numpy only, no extras required):
+  - `extract_plan_stats(plan: BatchPlan) -> PlanStatsDict` — extracts strategy distribution,
+    axis metadata, dedup/bucket statistics, and memory warnings.
+  - `explain_plan(plan: BatchPlan) -> PlanStatsDict` — like `extract_plan_stats` with
+    guaranteed non-empty `reasoning` strings per axis.
+  - `analyze_dedup(decision: AxisDecision) -> DedupStatsEntry` — dedup ratio, padding waste,
+    unique vs padded counts.
+  - `analyze_bucket(decision: AxisDecision) -> BucketStatsEntry` — bucket boundaries and count.
+
+  _Viz layer_ (requires `pip install xtrax[eda]`):
+  - `render(plan, fmt, path, stats_transform, metadata, logger, panels) -> bytes | str | None`
+    — single entry point for PNG (bytes), SVG (bytes), HTML (str) output. Seaborn/matplotlib
+    backend; headless via `Agg`. Supports post-stats transform hook, JSON metadata sidecar,
+    panel filtering, and a structural `PlanLogger` protocol for wandb/tensorboard adapters.
+  - `plan_to_dataframe(stats: PlanStatsDict) -> pd.DataFrame` — one row per axis.
+
+  _Types_ (no extras):
+  - `PlanStatsDict` — fully-typed `TypedDict` for the stats surface.
+  - `PlanLogger` — structural `Protocol`; xtrax never imports wandb or tensorboard.
+  - `PanelName` — `Literal["strategy","cardinality","dedup","bucket","memory","reasoning"]`.
+
+  (`src/xtrax/eda/`, `tests/eda/`, `docs/advanced/eda-guide.md`, `docs/api/eda.md`)
+
+### Changed
+
+- `pyproject.toml`: Added `eda` to both `[project.optional-dependencies]` and
+  `[dependency-groups]` (`pandas>=2.0`, `matplotlib>=3.8`, `seaborn>=0.13`).
+
 ## [0.2.1] - 2026-06-14
 
 ### Added
