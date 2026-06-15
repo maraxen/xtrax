@@ -3,7 +3,7 @@
 from xtrax.stages.boundaries import AxisBoundary, Fuse, Sink, Tap
 from xtrax.stages.protocols import RollingFn, TransformFn
 
-__all__ = ["TransformFn", "RollingFn", "Fuse", "Tap", "Sink", "AxisBoundary", "FuseFn"]
+__all__ = ["TransformFn", "RollingFn", "Fuse", "Tap", "Sink", "AxisBoundary"]
 
 
 def __getattr__(name: str):

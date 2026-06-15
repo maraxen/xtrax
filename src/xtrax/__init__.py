@@ -52,7 +52,6 @@ __all__ = [
     # Stages
     "TransformFn",
     "RollingFn",
-    "FuseFn",
 ]
 
 _LAZY = {
@@ -108,7 +107,6 @@ _LAZY = {
     # Stages subpackage
     "TransformFn": "xtrax.stages",
     "RollingFn": "xtrax.stages",
-    "FuseFn": "xtrax.stages",
 }
 
 
