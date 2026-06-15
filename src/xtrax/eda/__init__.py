@@ -11,16 +11,21 @@ Visualization APIs (requires optional eda extras):
     plot_plan_dashboard: Render fixed-layout dashboard.
 """
 
-from xtrax.eda.stats import analyze_bucket, analyze_dedup, extract_plan_stats
+from xtrax.eda.stats import (
+    analyze_bucket,
+    analyze_dedup,
+    extract_plan_stats,
+)
 from xtrax.eda.types import (
+    _VALID_PANELS,
     AxisStatsEntry,
     BucketStatsEntry,
     DedupStatsEntry,
     PanelName,
     PlanLogger,
     PlanStatsDict,
-    _VALID_PANELS,
 )
+
 
 # Lazy wrapper for plan_to_dataframe — provides error message if pandas not available
 def plan_to_dataframe(stats: PlanStatsDict):

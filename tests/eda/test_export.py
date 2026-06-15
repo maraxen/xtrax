@@ -15,13 +15,35 @@ class TestPlanToDataframe:
 
     def test_requires_pandas_extras(self):
         """plan_to_dataframe import requires eda extras."""
-        # This test verifies the ImportError is raised correctly.
+        # Test that the ImportError is raised when pandas is missing.
+        # Use sys.modules patching to simulate absent pandas in the current interpreter.
+        import sys
+        import importlib
+        
+        # Save original pandas module (if it exists)
+        original_pandas = sys.modules.get('pandas')
+        
         try:
-            from xtrax.eda.export import plan_to_dataframe
-            # If we get here, pandas is available (eda extras installed).
-            assert callable(plan_to_dataframe)
-        except ImportError as exc:
-            assert "xtrax[eda]" in str(exc)
+            # Patch sys.modules to hide pandas
+            sys.modules['pandas'] = None
+            
+            # Force reimport of export module to trigger the ImportError
+            if 'xtrax.eda.export' in sys.modules:
+                del sys.modules['xtrax.eda.export']
+            
+            # This should raise ImportError
+            with pytest.raises(ImportError, match=r"xtrax\[eda\]"):
+                from xtrax.eda.export import plan_to_dataframe  # noqa: F401
+        finally:
+            # Restore original pandas module
+            if original_pandas is not None:
+                sys.modules['pandas'] = original_pandas
+            elif 'pandas' in sys.modules:
+                del sys.modules['pandas']
+            
+            # Clean up the export module so other tests get a fresh import
+            if 'xtrax.eda.export' in sys.modules:
+                del sys.modules['xtrax.eda.export']
 
     def test_empty_plan_dataframe(self):
         """plan_to_dataframe with empty plan returns DataFrame with no rows."""

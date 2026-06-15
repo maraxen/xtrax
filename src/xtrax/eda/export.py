@@ -7,9 +7,7 @@ via the eda extras.
 Requires eda extras: pip install xtrax[eda]
 """
 
-from __future__ import annotations
-
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 try:
     import pandas as pd
@@ -21,8 +19,11 @@ except ImportError as exc:
 
 from xtrax.eda.types import PlanStatsDict
 
+if TYPE_CHECKING:
+    import pandas as pd
 
-def plan_to_dataframe(stats: PlanStatsDict) -> Any:
+
+def plan_to_dataframe(stats: PlanStatsDict) -> 'pd.DataFrame':
     """Convert PlanStatsDict to a pandas DataFrame.
 
     Transforms extracted plan statistics into a tabular format with one row per axis.

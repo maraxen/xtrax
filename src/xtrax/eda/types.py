@@ -4,9 +4,7 @@ All type definitions use only stdlib and numpy — no pandas, matplotlib, or sea
 This module is importable from xtrax core without eda extras.
 """
 
-from __future__ import annotations
-
-from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
+from typing import Literal, Protocol, TypedDict, runtime_checkable
 
 
 class AxisStatsEntry(TypedDict, total=False):
