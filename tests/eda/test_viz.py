@@ -340,7 +340,7 @@ class TestImportErrors:
         """render() raises ImportError with pip install message when seaborn is absent."""
         import sys
         import subprocess
-        
+
         # Run a fresh Python process where seaborn is unavailable
         # This isolates the test from matplotlib's state
         code = """
@@ -356,11 +356,13 @@ except ImportError as e:
         print(f"Wrong error message: {e}", file=sys.stderr)
         sys.exit(2)
 """
+        # Use project root (parent of tests/) as cwd for stable path across worktrees
+        project_root = Path(__file__).parent.parent.parent
         result = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True,
             text=True,
-            cwd="/home/marielle/projects/xtrax/.claude/worktrees/fixer-260615-eda-viz"
+            cwd=str(project_root)
         )
         assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
 
