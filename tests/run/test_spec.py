@@ -28,3 +28,23 @@ def test_input_resolver_protocol():
             return FeatureBatch({})
 
     assert isinstance(MyResolver(), InputResolver)
+
+
+def test_run_spec_pytree_roundtrip():
+    """RunSpec survives JAX tree_flatten/unflatten (eqx.Module pytree contract)."""
+    import jax
+
+    spec = RunSpec(seed=42, axes=[], carry_specs={}, boundaries=None)
+    leaves, treedef = jax.tree_util.tree_flatten(spec)
+    spec2 = treedef.unflatten(leaves)
+    assert spec2.seed == spec.seed
+    assert spec2.axes == spec.axes
+
+
+def test_runtime_bundle_constructs():
+    """RuntimeBundle constructs and exposes its fields."""
+    import equinox as eqx
+
+    bundle = RuntimeBundle(iterator=None, model=eqx.nn.Identity())
+    assert bundle.iterator is None
+    assert isinstance(bundle.model, eqx.Module)

@@ -9,7 +9,7 @@ import equinox as eqx
 
 from xtrax.run.spec import RunSpec
 
-FeatureBatch = NewType("FeatureBatch", dict)
+FeatureBatch = NewType("FeatureBatch", dict[str, Any])
 
 
 @dataclass
