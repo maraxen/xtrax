@@ -6,9 +6,8 @@ Core stats extraction (stdlib + numpy only):
     analyze_bucket: Analyze Bucket strategy decisions.
 
 Visualization APIs (requires optional eda extras):
-    plan_to_dataframe: Convert PlanStatsDict to pandas DataFrame.
     render: Render plan visualization to PNG/SVG/HTML.
-    plot_plan_dashboard: Render fixed-layout dashboard.
+    plan_to_dataframe: Convert PlanStatsDict to pandas DataFrame.
 """
 
 from xtrax.eda.stats import (
@@ -27,6 +26,18 @@ from xtrax.eda.types import (
 )
 
 
+# Lazy wrapper for render — provides error message if matplotlib/seaborn not available
+def render(*args, **kwargs):
+    """Render a BatchPlan to PNG, SVG, or HTML format.
+
+    Requires eda extras: pip install xtrax[eda]
+    
+    See xtrax.eda.viz.render for full documentation.
+    """
+    from xtrax.eda.viz import render as _render
+    return _render(*args, **kwargs)
+
+
 # Lazy wrapper for plan_to_dataframe — provides error message if pandas not available
 def plan_to_dataframe(stats: PlanStatsDict):
     """Convert PlanStatsDict to a pandas DataFrame.
@@ -43,6 +54,7 @@ __all__ = [
     "analyze_dedup",
     "analyze_bucket",
     # Visualization (requires eda extras)
+    "render",
     "plan_to_dataframe",
     # Types
     "AxisStatsEntry",
