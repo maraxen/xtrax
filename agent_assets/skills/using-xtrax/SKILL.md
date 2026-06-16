@@ -1,0 +1,1156 @@
+---
+name: using-xtrax
+description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, or analyzing batching plans via EDA. Covers: AxisSpec/BatchPlanner/BatchPlan, composition (Fuse/Tap/Sink/AxisBoundary), the run layer (RunSpec/InputResolver/StageBundle), training (Trainer/Engine/ResumableState), EDA, and sparsification. xtrax v0.3.0.
+xtrax_version: 0.3.0
+triggers:
+  - writing JAX pipeline with xtrax
+  - building domain library on xtrax
+  - AxisSpec / BatchPlanner / BatchPlan / AxisBoundary
+  - Fuse / Tap / Sink / RunSpec / CarrySpec
+  - explain_plan / render / EDA
+  - sparsify_model / SparsePolicy
+---
+
+# using-xtrax
+
+## TIER-1: Read First (Self-Contained)
+
+### Pre-Flight: Compatibility Assertion
+
+Before writing any xtrax code, verify your installation:
+
+```python
+import xtrax
+
+# Exact version check — this skill is written for v0.3.0
+assert xtrax.__version__ == "0.3.0", f"Expected xtrax 0.3.0, got {xtrax.__version__}"
+
+# Verify in live source: read src/xtrax/__init__.py:1 to confirm __version__ definition
+# This assertion is blind to forks maintaining the same version string without a code bump
+```
+
+If you see a version mismatch, verify current behavior directly in the source tree before proceeding with any code example in this skill.
+
+Also verify extras are installed if you plan to use EDA rendering:
+
+```bash
+# For plan visualization (explain_plan output + render)
+pip install xtrax[eda]
+```
+
+---
+
+### JAX Discipline for Domain Library Authors
+
+When building domain libraries on xtrax (custom `RunSpec`, `InputResolver`, `StageBundle`, `AxisBoundary`), three cross-cutting invariants must be preserved:
+
+#### 1. Static vs. Dynamic Fields in `eqx.Module`
+
+`AxisBoundary` (and any custom `eqx.Module` you create) separates fields into:
+- **Static fields** (`eqx.field(static=True)`): callables, Python values, never traced
+- **Dynamic fields**: JAX arrays, traced at jit time
+
+Example (verify: `src/xtrax/stages/boundaries.py:73-86` — this skill is a map, not the territory):
+```python
+class AxisBoundary(eqx.Module):
+    fuse: Fuse | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:84
+    tap: Tap | None = eqx.field(static=True, default=None)    # verify: src/xtrax/stages/boundaries.py:85
+    sink: Sink | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:86
+    # No dynamic leaves; tree_flatten returns empty leaves
+```
+
+Check your custom modules with:
+```python
+import jax.tree_util  # verify: src/xtrax/stages/boundaries.py:73-87 (AxisBoundary implementation)
+leaves = jax.tree_util.tree_leaves(my_boundary)
+assert len(leaves) == 0, "AxisBoundary must have no dynamic leaves"
+```
+
+#### 2. PyTree Invariant for AxisBoundary
+
+`AxisBoundary` must flatten to **zero JAX leaves** — it is a static-only structure:
+
+```python
+boundary = AxisBoundary(fuse=my_fuse_fn, tap=None, sink=None)
+leaves = jax.tree_util.tree_flatten(boundary)[0]
+assert leaves == [], "Expected no dynamic leaves in AxisBoundary"
+```
+
+This invariant ensures JIT does not retrace when `AxisBoundary` instances change — the structure is cached by Equinox.
+
+#### 3. JIT Boundary Rules
+
+Three distinct regions exist:
+
+- **Outside jit**: `sparsify_model(model, policy)` MUST run here. (verify: `src/xtrax/sparse/inference.py:44`)
+  ```python
+  🚫 HALTS RuntimeError if sparsify_model is called inside jax.jit
+  # Enforcement at src/xtrax/sparse/inference.py:44-55 (assert_not_tracing)
+  ```
+
+- **Inside jit**: `Fuse` functions (pure JAX axis reducers) run inside the trace.
+  ```python
+  # Fuse is a pure JAX function: Stacked[S] -> Out[O]
+  # Example: fuse stacked embeddings into a single representation
+  ```
+
+- **Boundary crossings**: `Tap` and `Sink` use `jax.experimental.io_callback` (host-side Python):
+  ```python
+  # Tap and Sink must implement ordered I/O via io_callback
+  # They run between JAX iterations but outside jit
+  ```
+
+Choose JIT decorator based on your model:
+- **`eqx.filter_jit`** (preferred): JAX arrays are traced, static fields are held constant. Ideal for models with callable static fields (like `AxisBoundary`).
+- **`jax.jit`**: All arrays traced, everything else is attempted to be traced (may fail if callables or static values change).
+
+```python
+# Preferred: filter_jit with static-only callables
+@eqx.filter_jit
+def inference_step(model: eqx.Module, x):
+    # model may have static fields (callables); filter_jit handles correctly
+    return model(x)
+
+# Safe for Trainer: Trainer.step is @eqx.filter_jit (verify: src/xtrax/training/trainer.py:31)
+```
+
+---
+
+### Which Primitive for Which Problem
+
+**Decision tree** (verify each branch against `src/xtrax/tiling/plan.py:123-150` BatchPlanner rules):
+
+```
+Is the axis variable-length (e.g., sequences of different sizes)?
+├─ YES: bucket_boundaries specified on AxisSpec?
+│   ├─ YES → Bucket strategy (length-padding via select_bucket/bucketize)
+│   └─ NO → Heterogeneous handling (Tap/Sink + padding outside jit)
+│
+└─ NO (cardinality fixed): dedup_eligible=True?
+    ├─ YES (repeated elements) → DedupGather strategy
+    │                              (Phase 0: identify unique items, Phase 1: vmap over K unique,
+    │                               Phase 2: scatter results back to original N positions)
+    │
+    └─ NO (all distinct): Check cardinality vs. default_batch_size:
+        ├─ cardinality <= batch_size → Vmap (fully parallel vectorization)
+        │
+        ├─ cardinality > batch_size AND divisible → SafeMap (chunked vmap, memory-bounded)
+        │
+        └─ cardinality > batch_size AND NOT divisible → SafeMap + deferred warning
+                                                        (last chunk is smaller; OK if handled)
+```
+
+**Key decision rule** (verify: `src/xtrax/tiling/plan.py:126-131`):
+
+1. **Bucket** — if `bucket_boundaries` is set (variable-length handling)
+2. **DedupGather** — if `dedup_eligible=True` (repeated elements)
+3. **Vmap** — if `cardinality <= batch_size` (small, fully-parallel)
+4. **SafeMap** — if `cardinality > batch_size` (large, chunked; memory-safe)
+
+---
+
+### Minimal Working Pattern (Fully Self-Contained)
+
+This pattern works **without any tier-2 imports or symbols**:
+
+```python
+import jax
+from xtrax.tiling.plan import AxisSpec, BatchPlanner, BatchPlan  # verify: src/xtrax/tiling/plan.py:26-120
+from xtrax.tiling.dispatch import make_axis_dispatch  # verify: src/xtrax/tiling/dispatch.py:31-102
+
+# Step 1: Define axis specification
+axis_spec = AxisSpec(
+    name="batch",
+    cardinality=100,           # 100 samples
+    default_batch_size=32,     # chunk size for SafeMap
+)
+
+# Step 2: Build batching plan
+planner = BatchPlanner()
+plan: BatchPlan = planner.plan([axis_spec])
+
+# Step 3: Extract decision for the axis
+decision = plan.decisions[0]
+print(f"Strategy: {type(decision.strategy).__name__}")
+print(f"Reasoning: {decision.reasoning}")
+
+# Step 4: Create dispatch iterator
+iterator = make_axis_dispatch(
+    decision.strategy,
+    axis="batch",
+    heterogeneous_axes=set(),
+)
+
+# Step 5: Apply iterator to a function
+def my_fn(x):
+    """Process a single sample."""
+    return x * 2
+
+samples = jax.numpy.ones((100, 10))  # (batch, features)
+results = iterator(my_fn, samples)   # (batch, features) → apply my_fn to each
+
+print(f"Output shape: {results.shape}")  # (100, 10)
+```
+
+**What happened:**
+- `AxisSpec` declared the axis (name, size, batch threshold)
+- `BatchPlanner.plan()` selected the best strategy (Vmap, SafeMap, etc.)
+- `make_axis_dispatch()` returned a typed iterator matching the strategy
+- Iterator applied `my_fn` to the axis, returning results
+
+This is the core loop. Extend it by:
+- Adding more axes to `plan([spec1, spec2, ...])` → multi-axis iteration
+- Wrapping results in `AxisBoundary` for post-processing (Fuse/Tap/Sink)
+- Using `Scan` strategy via `CarrySpec` for stateful iteration
+
+---
+
+### Workflow Index
+
+Choose your task:
+
+1. **Build a custom domain library** (RunSpec, InputResolver, StageBundle)  
+   → Read TIER-2: Run Layer (20%)
+
+2. **Run tiled inference without recompilation**  
+   → Read TIER-2: Tiling Layer (40%) + Run Layer (20%)
+
+3. **Implement a training loop**  
+   → Read TIER-2: Training Layer (25%)
+
+4. **Analyze a batching plan before committing**  
+   → Read TIER-2: EDA (10%)
+
+5. **Apply sparsification (structured pruning at inference)**  
+   → Read TIER-2: Sparse/Distributed/Checkpoint (5%)
+
+---
+
+## TIER-2: Deep Reference
+
+### Tiling Layer (40% of depth — AxisSpec, BatchPlanner, Strategies, Dispatch, Iterators, Carry, Dedup, Bucket)
+
+#### AxisSpec: Axis Specification
+
+Declare a single axis to be tiled:
+
+```python
+from xtrax.tiling.plan import AxisSpec  # verify: src/xtrax/tiling/plan.py:26-93
+
+spec = AxisSpec(
+    name="batch",                      # verify: src/xtrax/tiling/plan.py:43 (Human-readable axis name)
+    cardinality=1000,                  # Total elements on this axis
+    default_batch_size=32,             # Chunk size for SafeMap
+    tile_granularity=1,                # Alignment (default 1 = no constraint)
+    heterogeneous=False,               # Elements have varying shapes?
+    dedup_eligible=False,              # Repeated elements?
+    bucket_boundaries=None,            # Variable-length bucketing? (optional)
+)
+```
+
+Verify all fields: `src/xtrax/tiling/plan.py:26-49`
+
+**Deprecation notice — verify scoping**:
+
+⚠ WARN: `AxisSpec.batch_size` is **deprecated** (v0.3.0).  
+Use `AxisSpec.default_batch_size` instead.  
+Enforcement: `DeprecationWarning` from `src/xtrax/tiling/plan.py:76-91`
+
+**IMPORTANT SCOPE**: The `.batch_size` deprecation applies **only to `AxisSpec`**.  
+The following remain live, correct fields in v0.3.0 and require NO changes:
+- `AxisDecision.batch_size` — the chosen batch size for this axis
+- `SafeMap.batch_size` — the tile size in the SafeMap strategy
+- `AxisStatsEntry["batch_size"]` — EDA output field
+- `safe_map(batch_size=...)` — parameter to safe_map function
+
+⚠ WARN: `AxisSpec.granularity` is **deprecated** (v0.3.0).  
+Use `AxisSpec.tile_granularity` instead.  
+Enforcement: `DeprecationWarning` from `src/xtrax/tiling/plan.py:85-91`
+
+#### AxisSpec Validation
+
+🚫 HALTS: Empty `bucket_boundaries` raises `ValueError`.  
+Enforcement: `src/xtrax/tiling/plan.py:59-61`
+```python
+# This raises ValueError
+AxisSpec(name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=())
+```
+
+🚫 HALTS: Non-ascending `bucket_boundaries` raises `ValueError`.  
+Enforcement: `src/xtrax/tiling/plan.py:68-74`
+```python
+# This raises ValueError: boundaries must be strictly ascending
+AxisSpec(name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(16, 8))
+```
+
+🚫 HALTS: Non-positive values in `bucket_boundaries` raise `ValueError`.  
+Enforcement: `src/xtrax/tiling/plan.py:63-67`
+
+#### BatchPlanner: Strategy Selection
+
+`BatchPlanner.plan()` analyzes each `AxisSpec` and assigns a strategy:
+
+```python
+from xtrax.tiling.plan import BatchPlanner  # verify: src/xtrax/tiling/plan.py:123-150
+
+planner = BatchPlanner(
+    memory_estimator=None,      # verify: src/xtrax/tiling/plan.py:139 (Optional memory estimator)
+    carry_specs=None,           # Optional: list[CarrySpec] for Scan axes
+    dedup_specs=None,           # Optional: list[DedupSpec] for dedup configuration
+    heterogeneous_axes=None,    # Optional: set[str] of axes with variable shapes
+)
+
+plan = planner.plan([spec1, spec2, ...])
+```
+
+Verify: `src/xtrax/tiling/plan.py:123-150`
+
+**Output**: `BatchPlan` with `decisions: tuple[AxisDecision, ...]`  
+Each `AxisDecision` contains:
+- `spec: AxisSpec` — the input specification
+- `batch_size: int` — final chosen batch size
+- `reasoning: str` — human-readable explanation
+- `strategy: AxisStrategy` — Vmap | SafeMap | Scan | DedupGather | Bucket
+
+#### Strategies: The Five Axis Patterns
+
+**1. Vmap** — Fully parallel, stateless.  
+Selected when: `cardinality <= batch_size`  
+Behavior: `jax.vmap(fn)` over the axis. All elements processed in parallel.  
+Verify: `src/xtrax/tiling/strategy.py:42-46`
+
+```python
+from xtrax.tiling.strategy import Vmap  # verify: src/xtrax/tiling/strategy.py:42-46
+
+strategy = Vmap()
+# Applied via: results = jax.vmap(fn)(inputs)  # verify: src/xtrax/tiling/dispatch.py:95-96
+```
+
+**2. SafeMap** — Chunked vmap, memory-safe.  
+Selected when: `cardinality > batch_size`  
+Behavior: Chunks inputs into `batch_size` chunks, applies vmap to each chunk, concatenates.  
+Verify: `src/xtrax/tiling/strategy.py:49-53`
+
+```python
+from xtrax.tiling.strategy import SafeMap  # verify: src/xtrax/tiling/strategy.py:49-53
+
+strategy = SafeMap(batch_size=32)
+# Applied via: results = safe_map(fn, inputs, batch_size=32)  # verify: src/xtrax/transforms/map.py
+```
+
+Memory estimation (optional): Provide a `memory_estimator` to `BatchPlanner` to prevent Vmap if estimated memory > device limit.
+
+**3. Scan** — Carry-bearing sequential iteration.  
+Selected when: `CarrySpec` declares this axis as stateful (e.g., accumulating loss, sampling state).  
+Behavior: `jax.lax.scan(transition, init, xs)` threads carry through iterations.  
+Verify: `src/xtrax/tiling/strategy.py:56-62`
+
+```python
+from xtrax.tiling.strategy import Scan
+
+def transition(carry, x):
+    """(carry_in, x) -> (carry_out, y)"""
+    new_carry = carry + x
+    return new_carry, x * 2
+
+strategy = Scan(transition=transition, init=0.0)
+# Applied via: final_carry, results = jax.lax.scan(transition, init, xs)
+```
+
+Declare a Scan axis via `CarrySpec` (see below).
+
+**4. DedupGather** — Deduplication for repeated elements.  
+Selected when: `dedup_eligible=True` and `DedupSpec` identifies repeated elements.  
+Behavior: (Phase 0) Extract unique indices; (Phase 1) vmap over K unique; (Phase 2) gather back to N.  
+Verify: `src/xtrax/tiling/strategy.py:65-86`
+
+```python
+from xtrax.tiling.strategy import DedupGather
+
+strategy = DedupGather(
+    unique_indices=np.array([0, 1, 0, 2]),  # 4 elements → 3 unique
+    index_map=np.array([0, 1, 0, 2]),       # inverse: position i uses unique slot index_map[i]
+    k=3,                                    # raw unique count
+    k_bucket=4,                             # padded bucket (power of 2, >= k)
+    dedup_fn=_default_dedup_fn,            # select unique by index
+    gather_fn=_default_gather_fn,          # scatter results back
+)
+```
+
+🚫 HALTS: `DedupGather` cannot be passed to `make_axis_dispatch`.  
+It is handled by internal library dispatch, not for direct user iteration.  
+Enforcement: `src/xtrax/tiling/dispatch.py:78-82` raises `DispatchRejected`
+
+**5. Bucket** — Variable-length bucketing (host-side padding).  
+Selected when: `bucket_boundaries` is set on `AxisSpec`.  
+Behavior: Pads variable-length inputs to the nearest boundary, creating a fixed set of XLA programs.  
+Verify: `src/xtrax/tiling/strategy.py:88-107`
+
+```python
+from xtrax.tiling.strategy import Bucket
+from xtrax.tiling.bucket import select_bucket, bucketize
+
+boundaries = (32, 64, 128)  # Pad up to nearest boundary
+strategy = Bucket(boundaries=boundaries)
+
+# Host-side operation: select bucket, pad, send to jit
+bucket_idx = select_bucket(sequence_length=50, boundaries=boundaries)  # → 1 (64)
+padded_seq = bucketize(sequence, boundaries=boundaries)                # → (64,)
+```
+
+🚫 HALTS: `Bucket` cannot be passed to `make_axis_dispatch`.  
+It is a host-side strategy; padding and bucketing happen before JAX.  
+Enforcement: falls through to exhaustiveness `TypeError` at `src/xtrax/tiling/dispatch.py:101-102` (no dedicated branch — compare `DedupGather`, which raises `DispatchRejected` at lines 78-82).
+
+#### Dispatch: Converting Strategy to Iterator
+
+`make_axis_dispatch()` converts a strategy to a callable iterator:
+
+```python
+from xtrax.tiling.dispatch import make_axis_dispatch
+
+iterator = make_axis_dispatch(
+    strategy=decision.strategy,    # Vmap | SafeMap | Scan (NOT DedupGather or Bucket)
+    axis="batch",                   # Name of the axis (for error messages)
+    heterogeneous_axes={"state"},  # Set of axes with variable-shape elements
+)
+
+# Iterator is one of: VmapIterator, SafeMapIterator, JaxScanIterator
+results = iterator(fn, inputs, in_axes=0)
+```
+
+Verify: `src/xtrax/tiling/dispatch.py:31-102`
+
+**Rejection rules:**
+
+🚫 HALTS: `DedupGather` is rejected.  
+Enforcement: `src/xtrax/tiling/dispatch.py:78-82`  
+Reason: DedupGather is handled by internal library dispatch (`axis_dispatch`), not exposed to user `make_axis_dispatch`.
+
+🚫 HALTS: `Scan` on a heterogeneous axis is rejected.  
+Enforcement: `src/xtrax/tiling/dispatch.py:84-92`  
+Reason: `jax.lax.scan` requires static carry shape; variable-geometry state is incompatible.
+
+#### Iterators: Three Patterns
+
+**MapIterator** (stateless): Vmap and SafeMap
+
+```python
+from xtrax.tiling.iterator import VmapIterator, SafeMapIterator
+
+# VmapIterator: jax.vmap
+vmap_iter = VmapIterator()
+results = vmap_iter(fn, inputs, in_axes=0)  # fn applied in parallel
+
+# SafeMapIterator: chunked vmap
+safemap_iter = SafeMapIterator(tile=32)
+results = safemap_iter(fn, inputs, in_axes=0)  # fn applied in chunks of 32
+```
+
+Verify: `src/xtrax/tiling/iterator.py:28-59`
+
+**ScanIterator** (carry-bearing): Scan
+
+```python
+from xtrax.tiling.iterator import JaxScanIterator
+
+def transition(carry, x):
+    new_carry = carry + x.sum()
+    return new_carry, x * 2
+
+scan_iter = JaxScanIterator()
+final_carry, results = scan_iter(transition, init=0.0, xs=inputs)
+```
+
+Verify: `src/xtrax/tiling/iterator.py:62-81`
+
+#### CarrySpec: Declare Scan Axes
+
+Declare which axis uses `Scan` strategy (carry-bearing iteration):
+
+```python
+from xtrax.tiling.carry import CarrySpec
+from xtrax.tiling.strategy import ScanTransition
+
+def transition(carry: dict, x) -> tuple:
+    """(carry_in, x) -> (carry_out, y)"""
+    carry_in['loss'] += x['loss']
+    return carry_in, x
+
+carry_spec = CarrySpec(
+    axis_name="n_samples",
+    init={"loss": 0.0},                # Initial carry (must be static shape at trace time)
+    transition=transition,             # (carry, x) -> (carry, y)
+    ordered_sinks=True,                # Guarantee step order for io_callback?
+)
+
+# Pass to planner:
+planner = BatchPlanner(carry_specs=[carry_spec])
+plan = planner.plan([axis_spec_for_n_samples])
+```
+
+Verify: `src/xtrax/tiling/carry.py:21-45`
+
+🔬 HiTL: **CarrySpec init static shape**  
+**Trigger**: When `CarrySpec.init` contains shapes that are not provably static at Python time.  
+**Question**: "Verify that `init` shape is static at JAX trace time before `BatchPlanner.plan()`. Dynamic shapes fail at `jax.lax.scan` compilation. Is this shape static: {shape}?"  
+**Consequence**: Proceeding without confirmation may cause cryptic trace-time shape mismatch errors.  
+Block until confirmed.
+
+#### DedupSpec and get_k_bucket
+
+Configure deduplication for repeated elements:
+
+```python
+from xtrax.tiling.dedup import DedupSpec, get_k_bucket
+
+# Identify unique elements in a batch
+batch = jax.numpy.array([0, 1, 0, 2, 1, 1])
+unique_vals, unique_indices = jax.numpy.unique(batch, return_index=True)
+k = len(unique_indices)  # 3 unique elements
+
+# Configure dedup strategy (k_bucket is computed internally — do NOT pass it)
+spec = DedupSpec(
+    axis_name="batch",              # Must match AxisSpec.name of a dedup_eligible axis
+    unique_indices=unique_indices,  # (k,) indices of unique elements in original
+    index_map=...,                  # (n,) inverse: position i uses result from slot index_map[i]
+    k=k,                            # Number of distinct elements (== len(unique_indices))
+)
+
+# Pass to planner:
+planner = BatchPlanner(dedup_specs=[spec])
+plan = planner.plan([axis_spec_with_dedup_eligible_true])
+```
+
+Verify: `src/xtrax/tiling/dedup.py`
+
+🔬 HiTL: **DedupSpec k > 256**  
+**Trigger**: When `k > 256` (more than 256 unique elements).  
+**Question**: "k={k} exceeds 256 — power-of-2 bucketing wastes up to 2× compute here (see `src/xtrax/tiling/dedup.py:29` TODO). Proceed with powers-of-2 or define custom bucket boundaries?"  
+**Consequence**: Large k values use suboptimal bucketing. Custom buckets (e.g., geometric progression 1.5×) may reduce waste.  
+Block until confirmed.
+
+⚠ GAP: DedupGather large-k regime (k > 256)  
+Current implementation uses powers-of-2 bucketing (`get_k_bucket(k)` rounds up to next power).  
+For k > 256, this wastes up to 2× compute per element (worst case: k=257 → bucket=512).  
+**TODO** at `src/xtrax/tiling/dedup.py:29`: Implement geometric or mixed bucketing.  
+**Status**: Not fixed in v0.3.0 — use with caution for large k.
+
+#### Bucket: Variable-Length Axis Handling
+
+For axes with variable-length elements (e.g., sequences), use bucketing to limit recompilation:
+
+```python
+from xtrax.tiling.bucket import select_bucket, bucketize
+
+# Declare buckets on AxisSpec
+spec = AxisSpec(
+    name="seq",
+    cardinality=1000,
+    default_batch_size=32,
+    bucket_boundaries=(32, 64, 128, 256),  # Pad to nearest boundary
+)
+
+# At runtime: select bucket and pad
+seq_length = 50
+bucket_idx = select_bucket(seq_length, boundaries=spec.bucket_boundaries)  # → 1 (64)
+padded_seq = bucketize(sequence, boundaries=spec.bucket_boundaries)        # → (64,)
+```
+
+Verify: `src/xtrax/tiling/bucket.py`
+
+🔬 HiTL: **bucket_boundaries tradeoff**  
+**Trigger**: Setting `bucket_boundaries` on an AxisSpec.  
+**Question**: "Boundaries {boundaries} → {n_buckets} compiled XLA programs. Each adds compilation latency; each gap adds padding waste. Review tradeoff and confirm boundaries?"  
+**Consequence**: Too many buckets → compile overhead. Too few → large padding waste.  
+Block until confirmed.
+
+---
+
+### Run Layer (20% of depth — RunSpec, InputResolver, RuntimeBundle, FeatureBatch, SinkSpec, AxisBoundary, Fuse/Tap/Sink)
+
+#### RunSpec: Experiment Configuration
+
+Base class for experiment specifications (custom subclasses define your domain):
+
+```python
+from xtrax.run.spec import RunSpec
+
+class MyRunSpec(RunSpec):
+    """Custom experiment configuration."""
+    model_dim: int
+    learning_rate: float
+    # Add domain-specific fields alongside the inherited fields:
+    # seed: int, axes: list[AxisSpec], carry_specs: list[CarrySpec], boundaries: list[AxisBoundary] | None
+
+run = MyRunSpec(
+    seed=42,
+    axes=[
+        AxisSpec(name="batch", cardinality=1000, default_batch_size=32),
+        AxisSpec(name="seqlen", cardinality=512, default_batch_size=128),
+    ],
+    model_dim=768,
+    learning_rate=1e-4,
+)
+```
+
+Verify: `src/xtrax/run/spec.py`
+
+**Identity factory**: `RunSpec.from_spec(spec)` returns `spec` unchanged (no-op classmethod).  
+Verify: `src/xtrax/run/spec.py` (search `from_spec`)
+
+⚠ GAP: `RunSpec`, `CarrySpec`, `DedupSpec`, and stage boundaries are **not exported from top-level `xtrax`**.  
+Import via submodules (prefer shallow where available):
+```python
+from xtrax.run.spec import RunSpec
+from xtrax.tiling import CarrySpec        # re-exported from xtrax.tiling.__init__
+from xtrax.tiling.dedup import DedupSpec  # not re-exported at xtrax.tiling level
+from xtrax.stages.boundaries import AxisBoundary, Fuse, Tap, Sink
+```
+
+#### InputResolver: Data Iteration Protocol
+
+Implement the `singledispatch` protocol to resolve data sources:
+
+```python
+import functools
+from xtrax.run.resolver import InputResolver, RuntimeBundle, FeatureBatch
+from xtrax.run.spec import RunSpec
+
+# InputResolver is a Protocol — implement it as a callable class:
+class MyResolver:
+    """Custom data loader for your domain."""
+    
+    def __call__(self, spec: RunSpec, bundle: RuntimeBundle) -> FeatureBatch:
+        """Return a single FeatureBatch for a given RunSpec + RuntimeBundle."""
+        # Use functools.singledispatch at module level for spec-type dispatch
+        return resolve_batch(spec, bundle)
+
+@functools.singledispatch
+def resolve_batch(spec: RunSpec, bundle: RuntimeBundle) -> FeatureBatch:
+    raise NotImplementedError(f"No resolver for spec type {type(spec)}")
+
+@resolve_batch.register(MyRunSpec)
+def _(spec: MyRunSpec, bundle: RuntimeBundle) -> FeatureBatch:
+    batch = next(iter(bundle.iterator))  # Pull one batch from materialized iterator
+    return FeatureBatch({"inputs": batch})
+```
+
+Verify: `src/xtrax/run/resolver.py`
+
+#### RuntimeBundle: Iterator + Model
+
+Pair an iterator with a model:
+
+```python
+from xtrax.run.resolver import RuntimeBundle
+
+runtime = RuntimeBundle(
+    iterator=my_axis_iterator,  # MapIterator or ScanIterator
+    model=my_model,             # eqx.Module
+)
+```
+
+Verify: `src/xtrax/run/resolver.py`
+
+#### FeatureBatch: Type Alias
+
+`FeatureBatch` is `NewType("FeatureBatch", dict[str, Any])` — a dict-like structure with at minimum `{"inputs": ..., "targets": ...}`:
+
+```python
+from xtrax.run.resolver import FeatureBatch
+
+batch: FeatureBatch = {
+    "inputs": jax.numpy.ones((32, 10)),
+    "targets": jax.numpy.ones((32,)),
+}
+```
+
+Verify: `src/xtrax/run/resolver.py`
+
+#### SinkSpec: Output Format
+
+Declare how to save results:
+
+```python
+from xtrax.run.sink import SinkSpec
+
+sink = SinkSpec(
+    output_dir=Path("/path/to/outputs"),  # Directory for output files (None = no output)
+    format="h5",                           # "jsonl" | "h5" | "none"
+    flush_every=10,                        # Flush buffer every N steps (default: 1)
+)
+```
+
+Verify: `src/xtrax/run/sink.py`
+
+#### AxisBoundary: Per-Axis Operations
+
+Bundle optional post-processing, monitoring, and output operations for one axis:
+
+```python
+from xtrax.stages.boundaries import AxisBoundary, Fuse, Tap, Sink
+
+class MyFuse:
+    """Average across axis."""
+    def __call__(self, stacked):
+        return jax.numpy.mean(stacked, axis=0)
+
+class MyTap:
+    """Log values each step."""
+    ordered = True
+    def __call__(self, x):
+        print(f"Step output: {x.shape}")
+        return x
+
+class MySink:
+    """Write to file."""
+    ordered = True
+    def __call__(self, x):
+        # Use jax.experimental.io_callback
+        jax.experimental.io_callback(self._write, None, x)
+    def _write(self, x):
+        # Host-side: write x to disk
+        pass
+
+boundary = AxisBoundary(
+    fuse=MyFuse(),   # Pure JAX reducer (inside jit)
+    tap=MyTap(),     # Identity + side effect (outside jit, via io_callback)
+    sink=MySink(),   # Terminal side effect (outside jit, via io_callback)
+)
+```
+
+Verify: `src/xtrax/stages/boundaries.py:73-87`
+
+**Invariant**: `AxisBoundary` fields are **all static** (`eqx.field(static=True)`). It has no dynamic leaves.
+
+⚠ GAP: `make_inference_plan` validator referenced in `src/xtrax/stages/boundaries.py:79` does not exist in src.  
+Topology validation (e.g., ordered tap/sink + Vmap conflict) is **runtime-only** in v0.3.0 — no plan-time checks.
+
+🔬 HiTL: **Ordered Tap/Sink + Vmap Conflict**  
+**Trigger**: Using `AxisBoundary(tap=..., ordered=True)` or `AxisBoundary(sink=..., ordered=True)` paired with `Vmap` strategy on the same axis.  
+**Question**: "`make_inference_plan` validator (referenced at `src/xtrax/stages/boundaries.py:79`) does not exist in src. Ordered tap/sink + Vmap conflict will only be caught at runtime. Manually verify topology before running?"  
+**Consequence**: Proceeding without confirmation may cause runtime errors: vmap does not preserve step order, so ordered I/O fails.  
+Block until confirmed.
+
+#### Fuse, Tap, Sink Protocols
+
+**Fuse[S, O]** — Pure axis reducer (JAX-traced, inside jit).  
+Signature: `Stacked[S] -> Out[O]`  
+Example: Average stacked embeddings into a single representation.
+
+**Tap[T]** — Identity + side effect (outside jit, host-side).  
+Signature: `T -> T` (passthrough)  
+Fields: `ordered: bool` (require step order?)  
+Example: Log intermediate tensors to disk.
+
+**Sink[T]** — Terminal side effect (outside jit, host-side).  
+Signature: `T -> None` (consumes value, leaves pipeline)  
+Fields: `ordered: bool` (require step order?)  
+Example: Write final results to H5.
+
+Verify: `src/xtrax/stages/boundaries.py:29-70`
+
+#### StageBundle: Composable Stages
+
+Bundle stages together:
+
+```python
+from xtrax.stages.bundle import StageBundle
+
+# Define domain-specific stages
+stages = StageBundle(
+    stages=[stage1, stage2, stage3],
+    active_stages=lambda spec: {0, 1, 2},  # Which stages run for this spec?
+)
+
+# At runtime: iterate active stages
+for stage in stages.active_stages(spec):
+    x = stage(x)
+```
+
+Verify: `src/xtrax/stages/bundle.py`
+
+---
+
+### Training Layer (25% of depth — ResumableState, Trainer, SafetyTrainStep, Engine, Callbacks, Optax)
+
+#### ResumableState: Training State
+
+Immutable training state that can be saved and restored:
+
+```python
+from xtrax.training.types import ResumableState  # verify: src/xtrax/training/types.py
+
+state = ResumableState(
+    step=jnp.int32(0),         # jnp.int32 scalar — dynamic leaf; plain 0 (Python int) also accepted
+    key=jax.random.key(0),     # PRNG key
+    model=my_model,            # eqx.Module (trainable parameters)
+    opt_state=None,            # Optimizer state (optax format)
+)
+```
+
+Verify: `src/xtrax/training/types.py`
+
+**Mutation pattern** (using `eqx.tree_at`):
+
+```python
+import equinox as eqx
+
+# Update model and step in state
+new_state = eqx.tree_at(
+    lambda s: (s.model, s.step),
+    state,
+    (new_model, state.step + 1),
+)
+```
+
+Verify: `src/xtrax/training/trainer.py:67-70`
+
+#### Trainer: Single-Model Training Step
+
+Execute one supervised training step:
+
+```python
+from xtrax.training.types import LossFunction  # verify: src/xtrax/training/types.py
+from xtrax.training.trainer import Trainer  # verify: src/xtrax/training/trainer.py:12-74
+import optax
+
+loss_fn: LossFunction = lambda pred, target: jnp.mean((pred - target) ** 2)
+optimizer = optax.adam(learning_rate=1e-4)
+
+trainer = Trainer(loss_fn=loss_fn, optimizer=optimizer)
+
+# Execute step
+new_state, metrics = trainer.step(state, batch)  # verify: src/xtrax/training/trainer.py:31-74
+# metrics = {"loss": scalar}
+# new_state.step incremented by 1
+```
+
+Verify: `src/xtrax/training/trainer.py:12-74`
+
+**Invariant**: `Trainer.step` is `@eqx.filter_jit` decorated (trace only JAX arrays).
+
+#### SafetyTrainStep: Gradient Safety
+
+Numerical safety wrappers for gradient computation:
+
+```python
+from xtrax.training.types import SafetyTrainStep
+
+# Gradient clipping, NaN detection, etc.
+safety = SafetyTrainStep(
+    grad_clip_norm=1.0,      # Clip gradients by norm
+    check_nans=True,          # Detect NaN losses
+)
+
+# Applied inside Trainer.step or Engine
+```
+
+Verify: `src/xtrax/training.types`
+
+#### Engine: Async Training Loop
+
+High-level training orchestration with callbacks:
+
+```python
+from xtrax.engine.engine import Engine
+import asyncio
+
+engine = Engine(
+    trainer=trainer,
+    data_loader=resolver,
+    callbacks=[callback1, callback2],
+)
+
+# Async iteration
+async def train():
+    async for new_state, metrics in engine.fit(state, num_epochs=10):
+        print(f"Step {new_state.step}, Loss: {metrics['loss']}")
+
+# Blocking alternative: fit_sync
+for new_state, metrics in engine.fit_sync(state, num_epochs=10):
+    print(f"Step {new_state.step}, Loss: {metrics['loss']}")
+```
+
+Verify: `src/xtrax/engine/engine.py`
+
+⚠ NOTE: `Engine.fit` is **async**. Use `fit_sync()` for blocking usage.
+
+#### Callback Protocol
+
+Extend training with custom hooks:
+
+```python
+from xtrax.training.types import Callback
+
+class LoggingCallback(Callback):
+    """Log metrics every N steps."""
+    
+    def on_step_end(self, state, metrics):
+        if state.step % 100 == 0:
+            print(f"Step {state.step}: {metrics}")
+
+    def on_epoch_end(self, state, epoch: int):
+        print(f"Epoch {epoch} end")
+
+trainer = Trainer(...)
+engine = Engine(trainer=trainer, callbacks=[LoggingCallback()])
+```
+
+Verify: `src/xtrax/training/types.py`
+
+**Callback hooks** (7 total, verify: `src/xtrax/training/types.py:32-40`):
+- `on_train_start(state)` — Before training begins
+- `on_train_end(state)` — After all training
+- `on_resume(state)` — When resuming from a checkpoint
+- `on_epoch_start(state, epoch: int)` — Before epoch (note `epoch` arg)
+- `on_epoch_end(state, epoch: int)` — After epoch (note `epoch` arg)
+- `on_step_start(state)` — Before step
+- `on_step_end(state, metrics)` — After step, receives metrics dict
+
+⚠ NOTE: Callback hooks run **Python-side, outside JAX traces**. Mutating state in callbacks has no effect on training.
+
+#### Optax Integration
+
+Create learning rate schedules and optimizer chains:
+
+```python
+from xtrax.training import make_optimizer, adamw_with_schedule
+import optax
+
+# Simple Adam
+opt = optax.adam(learning_rate=1e-4)
+
+# Adam with learning rate schedule
+schedule = optax.exponential_decay(
+    init_value=1e-4,
+    transition_steps=1000,
+    decay_rate=0.96,
+)
+opt_with_schedule = optax.chain(
+    optax.clip_by_global_norm(1.0),  # Gradient clipping
+    optax.adam(learning_rate=schedule),
+)
+
+# Utility functions
+opt = make_optimizer(learning_rate=1e-4)
+opt = adamw_with_schedule(init_lr=1e-4, warmup_steps=1000, total_steps=10000)
+```
+
+Verify: `src/xtrax/training/optim.py` (definitions); re-exported at `src/xtrax/training/__init__.py:4`
+
+---
+
+### EDA: Plan Analysis and Visualization (10% of depth)
+
+#### extract_plan_stats: Structured Analysis
+
+Extract statistics from a `BatchPlan`:
+
+```python
+from xtrax.eda.stats import extract_plan_stats  # verify: src/xtrax/eda/stats.py
+
+plan = planner.plan([spec1, spec2, ...])
+stats = extract_plan_stats(plan)
+
+# stats is a dict[str, Any] with:
+# {
+#   "axes": [
+#       {"name": "batch", "cardinality": 100, "batch_size": 32, "reasoning": "...", ...},  # verify: src/xtrax/eda/types.py
+#       ...
+#   ],
+#   ...
+# }
+```
+
+Verify: `src/xtrax/eda/stats.py`
+
+#### explain_plan: Guaranteed Non-Empty Reasoning
+
+Wrapper around `extract_plan_stats` ensuring all reasoning fields are non-empty:
+
+```python
+from xtrax.eda.explain import explain_plan
+
+stats = explain_plan(plan)
+# All stats["axes"][i]["reasoning"] are guaranteed non-empty strings
+```
+
+Verify: `src/xtrax/eda/explain.py:14-41`
+
+#### EDA-as-Planning-Audit Workflow
+
+Before committing to a batching strategy, audit the plan:
+
+```python
+# Step 1: Build plan
+plan = planner.plan([spec1, spec2, ...])
+
+# Step 2: Inspect reasoning
+stats = explain_plan(plan)
+for axis in stats["axes"]:
+    print(f"{axis['name']}: {axis['strategy']} ({axis['reasoning']})")
+
+# Step 3: Visualize (if xtrax[eda] installed)
+from xtrax.eda import render  # implemented in viz.py, re-exported via eda/__init__.py
+
+html = render(plan)
+with open("plan.html", "w") as f:
+    f.write(html)
+```
+
+**Benefit**: Catch suboptimal strategy choices (e.g., SafeMap when Vmap would fit) before first JIT compilation.
+
+#### analyze_dedup, analyze_bucket
+
+Per-axis statistics:
+
+```python
+from xtrax.eda.stats import analyze_dedup, analyze_bucket
+
+# Dedup analysis
+dedup_stats = analyze_dedup(decision)  # For DedupGather decisions
+
+# Bucket analysis
+bucket_stats = analyze_bucket(decision)  # For Bucket decisions
+```
+
+Verify: `src/xtrax/eda/stats.py`
+
+#### render: HTML Visualization
+
+Generate interactive HTML plan visualization:
+
+```python
+from xtrax.eda import render  # implemented in viz.py, re-exported via eda/__init__.py
+
+html = render(plan)
+# html is a string of HTML
+```
+
+⚠ WARN: `render()` requires `pip install xtrax[eda]` (extras).  
+Import is lazy — no error at module load time, but `render()` call will fail if extras not installed.
+
+#### plan_to_dataframe: Pandas Export
+
+Export plan stats to a pandas DataFrame:
+
+```python
+from xtrax.eda.stats import plan_to_dataframe
+
+df = plan_to_dataframe(plan)
+# DataFrame with columns: name, cardinality, strategy, batch_size, reasoning, ...
+```
+
+Verify: `src/xtrax/eda/stats.py`
+
+---
+
+### Sparse / Distributed / Checkpoint (5% of depth — Pointer Pattern)
+
+#### Sparsification: Structured Pruning
+
+Convert a dense model to sparse (BCOO) format at inference time:
+
+```python
+from xtrax.sparse import sparsify_model, make_sparse_forward_fn  # verify: src/xtrax/sparse/inference.py
+from xtrax.sparse.policy import SparsePolicy
+import equinox as eqx
+
+policy = SparsePolicy(target_sparsity=0.9)
+
+# BEFORE jit: sparsify the model  # verify: src/xtrax/sparse/inference.py:44-55
+sparse_model = sparsify_model(model, policy)
+
+# RECOMMENDED: Use closure pattern
+forward_fn = make_sparse_forward_fn(sparse_model)
+result = jax.jit(forward_fn)(x)
+
+# ALTERNATIVE: Pass to eqx.filter_jit (holds BCOO as static)
+@eqx.filter_jit
+def inference(x):
+    return sparse_model(x)
+
+result = inference(x)
+```
+
+Verify: `src/xtrax/sparse/inference.py`
+
+🚫 HALTS: `sparsify_model` **cannot** be called inside `jax.jit`.  
+Enforcement: `RuntimeError` from `assert_not_tracing` at `src/xtrax/sparse/inference.py:44-55`  
+Reason: BCOO structure is non-static, must be created on host.
+
+#### Distributed: Multi-Device Training
+
+Initialize distributed context:
+
+```python
+from xtrax import init_dist, is_distributed, LogicalMesh, with_manual_axes
+
+init_dist(backend="xmap")  # or "pjit"
+
+if is_distributed():
+    mesh = LogicalMesh(shape=(2, 4))  # 2×4 device mesh
+    with with_manual_axes(mesh):
+        # Distributed training code
+        pass
+```
+
+Verify: `src/xtrax/distributed/` (full reference deferred to source)
+
+#### Checkpoint: Save/Load Training State
+
+Persist training state for resumption:
+
+```python
+from xtrax import save_checkpoint, load_checkpoint
+
+# Save
+save_checkpoint(state, directory="/path/to/ckpt")
+
+# Load
+state = load_checkpoint(directory="/path/to/ckpt")
+```
+
+Verify: `src/xtrax/checkpoint/` (see orbax docs for full checkpoint manager API)
+
+---
+
+## Summary
+
+This skill provides a complete, self-contained reference for xtrax v0.3.0.
+
+**Use TIER-1 to**:
+- Verify compatibility (pre-flight)
+- Learn JAX discipline for domain library authors
+- Understand which primitive solves which problem
+- Build your first axis-tiling loop
+- Find the right TIER-2 section for your task
+
+**Use TIER-2 to**:
+- Deep-dive into one component (tiling, training, EDA, etc.)
+- Find enforcement-backed callouts (🚫 HALTS / ⚠ WARN)
+- Identify human-in-the-loop investigation stops (🔬 HiTL)
+- Locate source code verification points (`verify: src/...:line`)
+
+**All code examples cite their source**: The skill is a map, not the territory. Read the live source at the referenced file:line when in doubt.
+
+---
+
+## Technical Gaps (Known Limitations in v0.3.0)
+
+| Gap | Location | Status |
+|-----|----------|--------|
+| `make_inference_plan` topology validator missing | `src/xtrax/stages/boundaries.py:79` | Validation is runtime-only; no plan-time checks for ordered tap/sink + Vmap conflicts |
+| DedupGather large-k regime (k > 256) uses suboptimal power-of-2 bucketing | `src/xtrax/tiling/dedup.py:29` | TODO: implement geometric or mixed bucketing for k > 256 |
+| Top-level exports missing (RunSpec, CarrySpec, DedupSpec, AxisBoundary) | `src/xtrax/__init__.py:3-55` | By design; use submodule imports: `from xtrax.run.spec import RunSpec`, etc. |
+
+---
+
+## For More Information
+
+- **JAX discipline**: See TIER-1 section "JAX Discipline for Domain Library Authors"
+- **Decision tree**: See TIER-1 section "Which Primitive for Which Problem"
+- **Minimal working example**: See TIER-1 section "Minimal Working Pattern"
+- **Live source code**: All code examples cite `verify: src/...:<line>`; read the source at those locations for current behavior
