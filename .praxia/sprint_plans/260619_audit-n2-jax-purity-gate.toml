@@ -1,0 +1,67 @@
+[sprint]
+sprint_id = "260619_audit-n2-jax-purity-gate"
+sprint_num = 11
+name = "xtrax Loop Sprint 11: N2.2 D2 JAX-purity gate"
+description = "Jaxlint JL001–JL012 purity gate with baseline ratchet on jax_purity.jl_violation_count."
+context = """
+Autonomous loop task_id: 260617_xtrax-composition-mission
+Spec: D2 = jaxlint JL001-012 + baseline ratchet (assert_not_tracing deferred)
+Pattern: src/xtrax/devtools/gates/correctness.py (#1581)
+Baseline metric already seeded: jax_purity.jl_violation_count
+L1 autonomous.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "jax_purity"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1582"
+phase_name = "[audit-fw N2.2] D2 JAX-purity & tracing gate"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1582 [audit-fw N2.2] D2 JAX-purity & tracing gate
+
+Spec: jaxlint JL001–JL012 ratchet on jax_purity.jl_violation_count; defer assert_not_tracing/batch-dict probes.
+
+## Refactor (DRY)
+Extract shared jaxlint runner from correctness.py into src/xtrax/devtools/gates/_jaxlint.py:
+- run_jaxlint_json(target, root) -> list[dict]
+- map_severity(level) -> Severity
+- file_line(finding) -> str
+Update correctness.py to import from _jaxlint (behavior unchanged; all correctness tests must still pass).
+
+## New gate
+- src/xtrax/devtools/gates/jax_purity.py
+  - METRIC_KEY = "jax_purity.jl_violation_count"
+  - DIMENSION = "jax_purity"
+  - filter_jl_purity_errors(findings): JL001–JL012 inclusive (regex ^JL00[1-9]$|^JL01[0-2]$ or parse numeric suffix)
+  - run_jax_purity_gate(...) -> GateResult (same shape as correctness)
+- scripts/audit_jax_purity_gate.py CLI (mirror audit_correctness_gate.py flags)
+- tests/audit/test_jax_purity_gate.py (mirror test_correctness_gate.py patterns with mocks)
+- Justfile: audit-jax-purity-gate recipe
+
+## Verification
+- uv run pytest tests/audit/test_jax_purity_gate.py tests/audit/test_correctness_gate.py -v
+- just audit-jax-purity-gate exits 0
+- ruff clean on gates/
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1582:
+1. _jaxlint shared module; correctness gate still passes all tests
+2. jax_purity gate filters JL001-JL012, uses jax_purity.jl_violation_count baseline
+3. just audit-jax-purity-gate + pytest pass
+PASS/FAIL with evidence.
+"""
+return_key = "1582"
+
+[orchestration]
+sequential = ["jax_purity"]
+concurrent = []
