@@ -32,6 +32,7 @@ dev = [
  "jaxtyping>=0.2.28",
  "import-linter>=2.1",
  "jaxlint>=0.1.0a1",
+ "chex>=0.1.86",
 ]
 eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 
@@ -57,7 +58,7 @@ addopts = "--cov=xtrax --cov-report=term-missing --cov-report=html:.coverage_htm
 [tool.coverage.run]
 source = [ "xtrax",]
 branch = true
-omit = [ "*/tests/*", "*/__init__.py",]
+omit = [ "*/tests/*", "*/__init__.py", "xtrax/devtools/*",]
 
 [tool.coverage.report]
 show_missing = true
@@ -98,8 +99,13 @@ source_modules = [
 ]
 forbidden_modules = ["xtrax.eda"]
 
+[tool.port]
+target = "port/port_target.toml"
+
 [tool.hatch.build.targets.wheel]
+# port/ is dev-only (Epic #2180); only src/xtrax ships in the wheel.
 packages = [ "src/xtrax",]
+exclude = [ "src/xtrax/devtools",]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/xtrax/py.typed" = "xtrax/py.typed"

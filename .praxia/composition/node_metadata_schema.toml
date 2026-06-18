@@ -1,0 +1,42 @@
+# Graph-native node metadata slot definitions (composition layer).
+# Spec: .praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md
+# Cross-ref: .praxia/composition/capability_registry.toml [node_metadata]
+
+[schema]
+version = "0.1.0"
+schema_version = "1"
+
+[[slots]]
+id = "nl_description"
+required = true
+type = "string"
+min_length = 1
+
+[[slots]]
+id = "mathjax_label"
+required = false
+type = "string"
+
+[[slots]]
+id = "citations"
+required = false
+type = "array"
+item_type = "citation"
+
+[[slots]]
+id = "script_usage"
+required = false
+type = "object"
+fields = { language = "string", excerpt = "string" }
+
+[[slots]]
+id = "audit_verdict"
+required = false
+type = "enum"
+values = ["PASS", "FAIL", "NEEDS_WORK"]
+
+[[slots]]
+id = "bathos_sidecar_ref"
+required = false
+type = "string"
+description = "Path relative to repository root"
