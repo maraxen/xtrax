@@ -1,9 +1,9 @@
 # .praxia/composition/capability_registry.toml
-# Composition-layer agent identities (v0.1) — NOT part of xtrax core package.
+# Composition-layer agent identities (v0.2) — NOT part of xtrax core package.
 # Spec: .praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md
 
 [registry]
-version = "0.1.0"
+version = "0.2.0"
 schema_version = "1"
 
 [[identities]]
@@ -45,6 +45,34 @@ skills = ["orchestration", "verification-before-completion"]
 mcp_tool_profile = "audit"
 kb_sources = ["transduction"]
 description = "Walks composition graph; empirical pytest promotion for node metadata contracts."
+
+[[identities]]
+id = "reference-vendor"
+semver = "0.2.0"
+skills = ["jax-port", "using-xtrax"]
+mcp_tool_profile = "implement"
+kb_sources = ["knowledge", "context7"]
+description = "Vendors and seals oracle reference under port/reference/; exclusive write identity for P0-ORACLE."
+
+[[identities]]
+id = "specification-specialist"
+semver = "0.2.0"
+skills = ["using-xtrax", "scientific-writing"]
+mcp_tool_profile = "orchestration"
+kb_sources = ["knowledge", "nlm", "transduction"]
+description = "Produces jaxtyping contracts and spec appendices; paper results tables masked in P1-SPEC."
+
+[[identities]]
+id = "test-designer"
+semver = "0.2.0"
+skills = ["test-driven-development", "using-xtrax"]
+mcp_tool_profile = "audit"
+kb_sources = ["knowledge", "transduction"]
+description = "Designs graded T1–T5 parity pytest plans for P3-PARITY blocking gates."
+
+[hooks.subagent_stop.port_validation]
+schema_doc = "port/docs/hook_schema_port_validation.md"
+workflow = "port_validation"
 
 [node_metadata]
 # Required slots on composition graph nodes (lowering input, not UI widgets)

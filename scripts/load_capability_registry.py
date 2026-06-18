@@ -53,12 +53,20 @@ class NodeMetadataSchema:
 
 
 @dataclass(frozen=True)
+class HookSchema:
+    id: str
+    schema_doc: str
+    workflow: str
+
+
+@dataclass(frozen=True)
 class CapabilityRegistry:
     version: str
     schema_version: str
     identities: tuple[Identity, ...]
     node_metadata: NodeMetadata
     node_metadata_schema: NodeMetadataSchema
+    hook_schemas: dict[str, HookSchema]
 
 
 def _require_str(data: dict[str, Any], key: str, *, context: str) -> str:
@@ -192,6 +200,40 @@ def load_node_metadata_schema(path: Path | None = None) -> NodeMetadataSchema:
         schema_version=schema_version,
         slots=slots,
     )
+
+
+def _parse_hook_schema(hook_id: str, raw: dict[str, Any]) -> HookSchema:
+    ctx = f"hooks.subagent_stop.{hook_id}"
+    schema_doc = _require_str(raw, "schema_doc", context=ctx)
+    workflow = _require_str(raw, "workflow", context=ctx)
+    schema_path = ROOT / schema_doc
+    if not schema_path.is_file():
+        raise ValueError(f"{ctx}: schema_doc path does not exist: {schema_doc}")
+    return HookSchema(id=hook_id, schema_doc=schema_doc, workflow=workflow)
+
+
+def _parse_hook_schemas(data: dict[str, Any]) -> dict[str, HookSchema]:
+    hooks_raw = data.get("hooks")
+    if hooks_raw is None:
+        return {}
+    if not isinstance(hooks_raw, dict):
+        raise ValueError("hooks must be a table")
+
+    subagent_stop = hooks_raw.get("subagent_stop")
+    if subagent_stop is None:
+        return {}
+    if not isinstance(subagent_stop, dict):
+        raise ValueError("hooks.subagent_stop must be a table")
+
+    hook_schemas: dict[str, HookSchema] = {}
+    for hook_id, hook_raw in subagent_stop.items():
+        if not isinstance(hook_id, str) or not hook_id.strip():
+            raise ValueError("hooks.subagent_stop keys must be non-empty strings")
+        if not isinstance(hook_raw, dict):
+            raise ValueError(f"hooks.subagent_stop.{hook_id} must be a table")
+        hook_schemas[hook_id.strip()] = _parse_hook_schema(hook_id.strip(), hook_raw)
+
+    return hook_schemas
 
 
 def _align_registry_slots_with_schema(
@@ -338,6 +380,7 @@ def load_capability_registry(path: Path | None = None) -> CapabilityRegistry:
     )
     node_metadata_schema = load_node_metadata_schema()
     _align_registry_slots_with_schema(node_metadata, node_metadata_schema)
+    hook_schemas = _parse_hook_schemas(data)
 
     return CapabilityRegistry(
         version=version,
@@ -345,6 +388,7 @@ def load_capability_registry(path: Path | None = None) -> CapabilityRegistry:
         identities=identities,
         node_metadata=node_metadata,
         node_metadata_schema=node_metadata_schema,
+        hook_schemas=hook_schemas,
     )
 
 
@@ -355,6 +399,8 @@ def main() -> None:
         f"node metadata schema v{registry.node_metadata_schema.version} "
         f"({len(registry.node_metadata_schema.slots)} slots)"
     )
+    if registry.hook_schemas:
+        print(f"hook schemas ({len(registry.hook_schemas)}): {', '.join(registry.hook_schemas)}")
 
 
 if __name__ == "__main__":
