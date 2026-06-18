@@ -1,25 +1,14 @@
 [loop]
 version = "1.0"
 task_id = "260617_xtrax-composition-mission"
-current_phase = "TRIAGE"
-last_subphase = "verdict_processed"
+current_phase = "EXECUTE"
+last_subphase = "workflow_invoked"
 last_artifact_path = ".praxia/sprint_plans/260618_2180-port-validation-wave1.toml"
-iteration_count = 4
-last_activation = "2026-06-18T20:30:00Z"
+iteration_count = 5
+last_activation = "2026-06-18T21:00:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
-[loop.lock]
-token = ""
-expiry_ts = ""
-
-[loop.metrics]
-backlog_items_closed_per_iteration = 3
-consecutive_zero_progress_iterations = 0
-last_items_closed = 3
-
-[loop.sprint]
-last_completed_partial = "260618_2180-port-validation-wave1"
-closed_items = [2266, 2267, 2268]
-pending_items = [2269, 2271]
+[loop.selected]
+item_ids = [2269, 2271]
 epic_id = 2180
