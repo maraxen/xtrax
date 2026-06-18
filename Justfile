@@ -38,6 +38,11 @@ audit-jax-purity-gate:
     uv run pytest tests/audit/test_jax_purity_gate.py tests/audit/test_correctness_gate.py -v
     uv run python scripts/audit_jax_purity_gate.py --no-write-baseline
 
+audit-type-hardening-gate:
+    uv run ruff check src/xtrax/devtools/gates/type_hardening.py scripts/audit_type_hardening_gate.py tests/audit/test_type_hardening_gate.py tests/audit/test_beartype_hook.py tests/conftest.py src/xtrax/devtools/_beartype_probe.py
+    uv run pytest tests/audit/test_type_hardening_gate.py tests/audit/test_beartype_hook.py -v
+    uv run python scripts/audit_type_hardening_gate.py --no-write-baseline
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 

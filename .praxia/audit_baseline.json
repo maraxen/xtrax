@@ -19,6 +19,11 @@
       "comparator": "maximize",
       "key": "type_hardening.annotation_coverage_pct",
       "value": 0.0
+    },
+    "type_hardening.shape_specificity_pct": {
+      "comparator": "maximize",
+      "key": "type_hardening.shape_specificity_pct",
+      "value": 0.0
     }
   },
   "schema_version": 1,
