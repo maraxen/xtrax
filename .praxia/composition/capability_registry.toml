@@ -1,0 +1,52 @@
+# .praxia/composition/capability_registry.toml
+# Composition-layer agent identities (v0.1) — NOT part of xtrax core package.
+# Spec: .praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md
+
+[registry]
+version = "0.1.0"
+schema_version = "1"
+
+[[identities]]
+id = "composer-orchestrator"
+semver = "0.1.0"
+skills = ["orchestration", "using-xtrax"]
+mcp_tool_profile = "orchestration"
+kb_sources = ["transduction", "knowledge"]
+description = "Routes composition sessions; reads lowered graph, dispatches specialists."
+
+[[identities]]
+id = "jax-purity-reviewer"
+semver = "0.1.0"
+skills = ["using-jax", "using-xtrax", "jaxlint/using-jaxlint"]
+mcp_tool_profile = "audit"
+kb_sources = ["knowledge"]
+description = "Validates traced functions stay pure; flags host leakage into JIT boundaries."
+
+[[identities]]
+id = "host-prep-fixer"
+semver = "0.1.0"
+skills = ["using-xtrax", "exporting-jax"]
+mcp_tool_profile = "implement"
+kb_sources = ["knowledge", "nlm"]
+description = "Implements annotated host-side input-prep functions above the JIT core."
+
+[[identities]]
+id = "export-bundle-inferrer"
+semver = "0.1.0"
+skills = ["exporting-jax", "using-xtrax"]
+mcp_tool_profile = "implement"
+kb_sources = ["knowledge", "context7"]
+description = "Infers CLI/auto-bundle from inspected functions and jax.export artifacts."
+
+[[identities]]
+id = "graph-auditor"
+semver = "0.1.0"
+skills = ["orchestration", "verification-before-completion"]
+mcp_tool_profile = "audit"
+kb_sources = ["transduction"]
+description = "Walks composition graph; empirical pytest promotion for node metadata contracts."
+
+[node_metadata]
+# Required slots on composition graph nodes (lowering input, not UI widgets)
+required_slots = ["nl_description"]
+optional_slots = ["mathjax_label", "citations", "script_usage", "audit_verdict", "bathos_sidecar_ref"]
