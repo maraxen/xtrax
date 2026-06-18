@@ -13,6 +13,9 @@ audit-jaxlint:
 audit-emit-contract:
     uv run pytest tests/audit/test_emit_contract.py -v
 
+audit-baseline-contract:
+    uv run pytest tests/audit/test_baseline_engine.py -v
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 

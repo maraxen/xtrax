@@ -1,0 +1,21 @@
+{
+  "metrics": {
+    "documentation.interrogate_coverage_pct": {
+      "comparator": "maximize",
+      "key": "documentation.interrogate_coverage_pct",
+      "value": 0.0
+    },
+    "jax_purity.jl_violation_count": {
+      "comparator": "minimize",
+      "key": "jax_purity.jl_violation_count",
+      "value": 0.0
+    },
+    "type_hardening.annotation_coverage_pct": {
+      "comparator": "maximize",
+      "key": "type_hardening.annotation_coverage_pct",
+      "value": 0.0
+    }
+  },
+  "schema_version": 1,
+  "updated_at": "2026-06-19T00:00:00+00:00"
+}
