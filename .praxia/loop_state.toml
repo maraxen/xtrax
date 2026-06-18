@@ -3,9 +3,9 @@ version = "1.0"
 task_id = "260617_xtrax-composition-mission"
 current_phase = "TRIAGE"
 last_subphase = "verdict_processed"
-last_artifact_path = ".praxia/audit_baseline.json"
-iteration_count = 8
-last_activation = "2026-06-19T00:00:00Z"
+last_artifact_path = "src/xtrax/devtools/tombstone.py"
+iteration_count = 9
+last_activation = "2026-06-19T12:00:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
@@ -15,10 +15,10 @@ expiry_ts = ""
 timeout_minutes = 45
 
 [loop.metrics]
-backlog_items_closed_per_iteration = 1
+backlog_items_closed_per_iteration = 2
 consecutive_zero_progress_iterations = 0
 max_zero_progress = 3
-last_items_closed = 1
+last_items_closed = 2
 remediate_attempt = 0
 
 [loop.fingerprint]
@@ -26,9 +26,8 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-last_completed = "260619_audit-n1-baseline-engine"
-closed_items = [1578]
+last_completed = "260619_audit-n1-routing-tombstone"
+closed_items = [1579, 1580]
 epic_id = 1573
-wave1_complete = true
-wave2_complete = true
-next_candidates = [1579, 1580, 2181]
+n1_complete = true
+next_candidates = [1591, 1581, 2179]

@@ -1,0 +1,156 @@
+[sprint]
+sprint_id = "260619_audit-n1-routing-tombstone"
+sprint_num = 9
+name = "xtrax Loop Sprint 9: N1.3 routing matrix + N1.4 tombstone ledger"
+description = "Complete CC5 routing engine for dimension domains; tombstone ledger with emit integration."
+context = """
+Autonomous loop task_id: 260617_xtrax-composition-mission
+Spec: .praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md
+Epic: audit-framework-foundation (#1573)
+Prior: #1577 emit, #1578 baseline, #2280 port-only routing rows (interim — maintain, extend)
+L1 autonomous — no gate wait.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "routing"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1579"
+phase_name = "[audit-fw N1.3] audit/routing.toml + severity×track matrix"
+workflow_hint = "refactor_with_audit"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1579 [audit-fw N1.3] audit/routing.toml + severity×track matrix
+
+Spec: .praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md (CC5 matrix)
+Existing: audit/routing.toml has domain=port interim rows (#2280); tests/audit/test_routing_toml.py
+
+## Goal
+Complete the CC5 routing substrate: full dimension-domain matrix + Python resolve engine.
+
+## File anchors
+- audit/routing.toml — KEEP existing domain=port rows; ADD domain=dimension rows for default track×severity routing
+- src/xtrax/devtools/routing.py (new)
+- tests/audit/test_routing_toml.py — extend for dimension rows
+- tests/audit/test_routing_engine.py (new)
+- Justfile — `audit-routing-contract` recipe
+- audit/README.md — document matrix + TD-2180-03 ownership note
+
+## routing.toml dimension rows (domain=dimension)
+Add rows covering deterministic + judgment tracks × info/minor/major/critical:
+- deterministic + critical/major → block_ci
+- deterministic + minor → found_issues
+- deterministic + info → found_issues
+- judgment + critical/major → backlog_node
+- judgment + minor/info → found_issues
+Use `signal = "severity"` and `condition` matching severity literal (or omit signal for default severity match).
+Bump matrix version to 0.2.0.
+
+## routing.py API
+1. `DEFAULT_ROUTING_PATH = Path("audit/routing.toml")`
+2. `@dataclass RouteRow: domain, track, severity, destination, signal="", condition=""`
+3. `load_routing_matrix(path=...) -> list[RouteRow]`
+4. `resolve_destination(*, domain: str, track: SourceTrack, severity: Severity, signals: dict[str,str] | None = None) -> str`
+   - Match most specific row: domain + track + severity; optional signal/condition when signals dict provided (port rows)
+   - Fall back domain=dimension rows when domain-specific row missing
+   - Loud-fail ValueError if no row matches
+5. Reuse Severity/SourceTrack from xtrax.devtools.emit
+
+## Tests
+- Dimension rows exist for all 8 track×severity combos (4 severities × 2 tracks)
+- resolve_destination("dimension", "deterministic", "major") == "block_ci"
+- resolve_destination("port", "deterministic", "major", signals={"tier_verdict.status": "FAIL"}) works with port rows
+- Invalid combo raises ValueError
+
+## Verification
+- `uv run ruff check src/xtrax/devtools/routing.py tests/audit/test_routing_*.py`
+- `uv run pytest tests/audit/test_routing_toml.py tests/audit/test_routing_engine.py -v`
+- `just audit-routing-contract` exits 0
+
+Do NOT commit.
+Suggested commit message: feat(audit): N1.3 CC5 routing matrix + resolve engine (#1579)
+"""
+reviewer_prompt = """
+VERIFY #1579:
+1. audit/routing.toml has domain=dimension rows for deterministic+judgment × all severities; port rows preserved
+2. src/xtrax/devtools/routing.py load + resolve_destination works
+3. tests pass; just audit-routing-contract exits 0
+4. ruff clean on new files
+PASS/FAIL with command evidence.
+"""
+return_key = "1579"
+
+[[tracks]]
+id = "tombstone"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1580"
+phase_name = "[audit-fw N1.4] tombstone ledger + governance"
+workflow_hint = "refactor_with_audit"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1580 [audit-fw N1.4] tombstone ledger + governance
+Depends: #1579 routing (same sprint, run after routing track)
+
+Spec: .praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md (Q4 tombstone ledger)
+Reference: src/xtrax/devtools/emit.py (finding_id, append_finding)
+
+## Goal
+Tombstone ledger at .praxia/audit_tombstones.jsonl with governance fields; emit skips tombstoned finding_ids.
+
+## File anchors
+- src/xtrax/devtools/tombstone.py (new)
+- .praxia/audit_tombstones.jsonl — seed empty file OR one comment line is NOT valid JSONL; use empty file or no seed lines
+- tests/audit/test_tombstone_ledger.py (new)
+- src/xtrax/devtools/emit.py — add optional tombstone filter to append_finding (minimal change)
+- Justfile — `audit-tombstone-contract` recipe
+
+## tombstone.py API
+1. `DEFAULT_TOMBSTONE_PATH = Path(".praxia/audit_tombstones.jsonl")`
+2. `@dataclass TombstoneEntry: finding_id, reason, actor, recorded_at, disposition` where disposition ∈ accepted|wontfix|out_of_scope
+3. `load_tombstones(path=...) -> set[str]` — returns finding_id set
+4. `is_tombstoned(finding_id, path=...) -> bool`
+5. `append_tombstone(entry, path=...) -> None` — atomic append; validates finding_id non-empty
+6. `filter_tombstoned(findings: list[AuditFinding], path=...) -> list[AuditFinding]` — drops tombstoned
+
+## emit.py integration
+- `append_finding(record, audits_path=..., tombstone_path=...)` skips append when is_tombstoned(record.finding_id)
+- Do NOT break existing emit contract tests — tombstone_path defaults to DEFAULT_TOMBSTONE_PATH; empty file = no tombstones
+
+## Tests
+- append_tombstone + is_tombstoned round-trip
+- append_finding skips tombstoned finding_id
+- append_finding still writes non-tombstoned findings
+- governance fields persisted in JSONL
+
+## Verification
+- `uv run pytest tests/audit/test_tombstone_ledger.py tests/audit/test_emit_contract.py -v`
+- `just audit-tombstone-contract` exits 0
+- ruff clean
+
+Do NOT commit.
+Suggested commit message: feat(audit): N1.4 tombstone ledger + emit governance (#1580)
+"""
+reviewer_prompt = """
+VERIFY #1580:
+1. tombstone.py with load/is_tombstoned/append/filter
+2. append_finding skips tombstoned finding_ids; existing emit tests still pass
+3. tests/audit/test_tombstone_ledger.py passes
+4. just audit-tombstone-contract exits 0
+PASS/FAIL with evidence.
+"""
+return_key = "1580"
+
+[orchestration]
+sequential = ["routing", "tombstone"]
+concurrent = []

@@ -69,9 +69,9 @@ slug = "audit-framework-foundation"
 title = "EPIC: xtrax systematic audit framework (N0–N5 foundation + judgment track)"
 backlog_id = 1573
 status = "active"
-phase = "N1_baseline_landed"
+phase = "N1_complete"
 child_backlog_ids = [1573, 1574, 1575, 1576]
-notes = "N0.1–N0.4 closed iter2; N1.1 emit (#1577) + node metadata (#2177) closed iter3; N1.2 baseline (#1578) closed iter8. Next: N1.3 routing matrix (#1579) or N2 dimension gates."
+notes = "N1.1–N1.4 closed (emit #1577, baseline #1578, routing #1579, tombstone #1580). Next: N2 dimension gates (#1581+) or N4 rubrics (#1591)."
 
 [[queue]]
 rank = 2
