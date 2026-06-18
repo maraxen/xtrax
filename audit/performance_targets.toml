@@ -1,0 +1,9 @@
+[gate]
+schema = "performance-gate-v0"
+version = "0.1.0"
+max_traces_default = 1
+
+[[probes]]
+qualname = "xtrax.devtools.gates._performance_probes.sparse_filter_jit_kernel"
+max_traces = 1
+trace_probe = "xtrax.devtools.gates._performance_probes:probe_sparse_filter_jit_kernel"

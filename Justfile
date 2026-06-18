@@ -43,6 +43,11 @@ audit-type-hardening-gate:
     uv run pytest tests/audit/test_type_hardening_gate.py tests/audit/test_beartype_hook.py -v
     uv run python scripts/audit_type_hardening_gate.py --no-write-baseline
 
+audit-performance-gate:
+    uv run ruff check src/xtrax/devtools/gates/_trace_probe.py src/xtrax/devtools/gates/_performance_probes.py src/xtrax/devtools/gates/performance.py scripts/audit_performance_gate.py tests/audit/test_performance_gate.py
+    uv run pytest tests/audit/test_performance_gate.py -v
+    uv run python scripts/audit_performance_gate.py --no-write-baseline
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 

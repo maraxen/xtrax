@@ -15,6 +15,11 @@
       "key": "jax_purity.jl_violation_count",
       "value": 0.0
     },
+    "performance.trace_violation_count": {
+      "comparator": "minimize",
+      "key": "performance.trace_violation_count",
+      "value": 0.0
+    },
     "type_hardening.annotation_coverage_pct": {
       "comparator": "maximize",
       "key": "type_hardening.annotation_coverage_pct",
