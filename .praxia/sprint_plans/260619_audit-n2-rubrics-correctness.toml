@@ -1,0 +1,122 @@
+[sprint]
+sprint_id = "260619_audit-n2-rubrics-correctness"
+sprint_num = 10
+name = "xtrax Loop Sprint 10: N4.2 rubrics + N2.1 D1 Correctness gate"
+description = "Judgment rubric anchor tables for eight dimensions; D1 deterministic correctness gate via jaxlint JL."
+context = """
+Autonomous loop task_id: 260617_xtrax-composition-mission
+Spec: .praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md
+Epic: audit-framework-foundation (#1573), N1 complete
+L1 autonomous.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "rubrics"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1591"
+phase_name = "[audit-fw N4.2] audit/rubrics/<dim>.toml anchor tables"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1591 [audit-fw N4.2] audit/rubrics/<dim>.toml anchor tables
+
+Spec: judgment dims need RubricScorer anchor tables per dimension (spec 260611).
+
+## Goal
+Eight rubric TOML files under audit/rubrics/ with score anchors (1–5) for judgment-track scoring.
+
+## Dimensions (filenames)
+correctness.toml, jax_purity.toml, type_hardening.toml, performance.toml,
+documentation.toml, api_ergonomics.toml, test_rigor.toml, structure_complexity.toml
+
+## Schema per file
+```toml
+[rubric]
+dimension = "correctness"  # slug matching filename stem
+version = "0.1.0"
+dim_label = "D1 Correctness / bug-surface"
+
+[[anchors]]
+score = 1
+criterion = "..."
+evidence_hint = "..."
+
+# scores 1..5 required
+```
+
+## Code
+- src/xtrax/devtools/rubrics.py: `RubricAnchor`, `RubricTable`, `load_rubric(path)`, `load_all_rubrics(dir=Path("audit/rubrics"))`
+- tests/audit/test_rubric_tables.py: all 8 files parse; each has 5 anchors; load_all returns 8
+- Justfile: `audit-rubrics-contract`
+- audit/README.md: brief rubrics section
+
+## Verification
+- ruff clean; pytest test_rubric_tables.py; just audit-rubrics-contract
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1591: 8 rubric TOMLs with 5 anchors each; rubrics.py loader; tests + just recipe pass.
+PASS/FAIL with evidence.
+"""
+return_key = "1591"
+
+[[tracks]]
+id = "correctness"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1581"
+phase_name = "[audit-fw N2.1] D1 Correctness gate"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1581 [audit-fw N2.1] D1 Correctness gate
+Depends: #1591 rubrics (same sprint, run after rubrics track)
+
+Spec: D1 = jaxlint JL counts (correctness/bug-surface family) + baseline ratchet.
+
+## Goal
+Deterministic correctness gate script that counts JL violations, emits findings, ratchets baseline.
+
+## Files
+- scripts/audit_correctness_gate.py — CLI gate
+- src/xtrax/devtools/gates/correctness.py — `run_correctness_gate(target, audits_path, baseline_path) -> GateResult`
+- tests/audit/test_correctness_gate.py
+- .praxia/audit_baseline.json — add metric `correctness.jl_violation_count` comparator=minimize value=0
+- Justfile: `audit-correctness-gate` recipe
+
+## Gate behavior
+1. Run jaxlint JSON on target (default src/xtrax), filter findings where rule_id starts with "JL" (jaxlint correctness/purity rules)
+2. Count errors as violation_count
+3. For each error finding, call emit_metric_finding(dim="correctness", severity from jaxlint level mapped to info/minor/major)
+4. Load baseline; evaluate_metric for correctness.jl_violation_count; FAIL (exit 1) if regression vs baseline
+5. If pass and count improved, optionally tighten baseline via update_metric (or leave to bootstrap script — at minimum evaluate must pass)
+6. append_finding for each violation (or batch summary finding if many — prefer one aggregate metric finding + optional detail in payload)
+
+Keep scope minimal: jaxlint JL count + baseline ratchet; defer hypothesis/checkify to follow-up.
+
+## Verification
+- uv run pytest tests/audit/test_correctness_gate.py -v
+- just audit-correctness-gate exits 0 on clean tree
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1581: correctness gate script runs jaxlint JL, baseline metric correctness.jl_violation_count, exit 0 clean, tests pass.
+PASS/FAIL with evidence.
+"""
+return_key = "1581"
+
+[orchestration]
+sequential = ["rubrics", "correctness"]
+concurrent = []
