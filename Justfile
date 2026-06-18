@@ -38,6 +38,9 @@ audit-port-parity:
 audit-port-emit-contract:
     uv run pytest tests/contract/test_port_emit_schema.py -v
 
+audit-port-bridge:
+    uv run python scripts/lint_port_bridge_map.py
+
 # Install all skills from agent_assets/skills/ to ~/.claude/skills/
 install-skills *args:
     uv run python scripts/install_skills.py {{args}}

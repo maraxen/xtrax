@@ -1,0 +1,14 @@
+# port/bridge/composition_map.toml — opt-in Phase 2 composition bridge
+#
+# Maps production symbol qualnames (src/xtrax/) to composition graph node_id strings
+# in .praxia/composition/. Empty [symbols] in v0.1; binding deferred until #2174 Phase 2.
+#
+# Schema:
+#   [symbols]
+#   "xtrax.<module>.<attr>" = "<composition_node_id>"
+#
+# Example rows (commented — uncomment when wiring kernels in Phase 2):
+# [symbols]
+# "xtrax.transforms.map.safe_map" = "transforms.safe_map"
+
+[symbols]
