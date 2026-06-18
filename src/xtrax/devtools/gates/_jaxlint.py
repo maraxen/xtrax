@@ -19,7 +19,12 @@ def map_severity(jaxlint_level: str) -> Severity:
     return "info"
 
 
-def run_jaxlint_json(target: Path, *, root: Path) -> list[dict[str, Any]]:
+def run_jaxlint_json(
+    target: Path,
+    *,
+    root: Path,
+    performance_only: bool = True,
+) -> list[dict[str, Any]]:
     cmd = [
         "uv",
         "run",
@@ -27,9 +32,10 @@ def run_jaxlint_json(target: Path, *, root: Path) -> list[dict[str, Any]]:
         "check",
         "--format",
         "json",
-        "--no-doc",
-        str(target),
     ]
+    if performance_only:
+        cmd.append("--no-doc")
+    cmd.append(str(target))
     proc = subprocess.run(
         cmd,
         cwd=root,
