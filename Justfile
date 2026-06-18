@@ -22,6 +22,22 @@ validate-node-metadata-schema:
 audit-foundation: audit-imports audit-no-future-annotations audit-jaxlint
     uv run pytest tests/audit/ -v
 
+# Port validation gates (Epic #2180 Wave 1)
+audit-port: audit-port-oracle-seal audit-port-static audit-port-parity audit-port-emit-contract
+
+audit-port-oracle-seal:
+    uv run python scripts/audit_port_oracle_seal.py --target port/port_target.toml
+
+audit-port-static:
+    uv run python scripts/audit_jaxlint_json.py --paths-from port/port_target.toml
+    uv run python scripts/audit_port_trace_count.py
+
+audit-port-parity:
+    uv run pytest port/tests/ -v --tb=short
+
+audit-port-emit-contract:
+    uv run pytest tests/contract/test_port_emit_schema.py -v
+
 # Install all skills from agent_assets/skills/ to ~/.claude/skills/
 install-skills *args:
     uv run python scripts/install_skills.py {{args}}

@@ -18,6 +18,8 @@ import chex
 import jax
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 DEFAULT_PORT_TARGET = ROOT / "port" / "port_target.toml"
 SCHEMA_VERSION = "audit_port_trace_count_v0"
 ERROR_TAXONOMY_CLASS = "compilation_leak"

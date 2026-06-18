@@ -1,11 +1,11 @@
-# Template — copy and customize per port wave. Tiers T1→T2→T3→(T4 if ad_critical)→T5
-# are derived at runtime; do not add an editable tiers list here.
+# Active port wave — safe_map MVP leaf kernel (Epic #2180 Wave 1).
+# Tiers T1→T2→T3→(T4 if ad_critical)→T5 are derived at runtime.
 
 [port]
 wave_id = "wave_001_example"
-oracle_id = "ref:port/reference/<kernel>:v0.1.0:sha256:<content_hash>"
-symbol_qualname = "xtrax.<module>.<fn>"
-reference_subtree = "port/reference/<kernel>"
+oracle_id = "ref:port/reference/safe_map:v0.1.0:sha256:52fd5458018d46d3c333287f803152eb38f66b618f540363521d825b518aea34"
+symbol_qualname = "xtrax.transforms.map.safe_map"
+reference_subtree = "reference/safe_map"
 
 [capabilities]
 stochastic = false

@@ -1,0 +1,20 @@
+{
+  "cases": [
+    {
+      "name": "identity_float32",
+      "xs": [1.0, 2.0, 3.0, 4.0],
+      "fn": "identity",
+      "dtype": "float32"
+    },
+    {
+      "name": "scale_float64",
+      "xs": [0.5, 1.5, 2.5],
+      "fn": "double",
+      "dtype": "float64"
+    }
+  ],
+  "fn_registry": {
+    "identity": "lambda x: x",
+    "double": "lambda x: x * 2.0"
+  }
+}

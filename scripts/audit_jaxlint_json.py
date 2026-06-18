@@ -8,12 +8,14 @@ import importlib.metadata
 import json
 import subprocess
 import sys
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TARGET = ROOT / "src" / "xtrax"
+DEFAULT_PORT_TARGET = ROOT / "port" / "port_target.toml"
 SCHEMA_VERSION = "audit_jaxlint_v0"
 
 
@@ -63,6 +65,54 @@ def run_jaxlint(
     return proc.returncode, findings
 
 
+def resolve_port_target(explicit: Path | None) -> Path:
+    if explicit is not None:
+        return explicit.resolve()
+    pyproject = ROOT / "pyproject.toml"
+    if pyproject.is_file():
+        pyproject_data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        configured = pyproject_data.get("tool", {}).get("port", {}).get("target")
+        if configured:
+            return (ROOT / configured).resolve()
+    return DEFAULT_PORT_TARGET.resolve()
+
+
+def load_manifest(port_root: Path, wave_id: str) -> dict[str, Any]:
+    manifest_path = port_root / "manifests" / f"{wave_id}.toml"
+    if not manifest_path.is_file():
+        raise SystemExit(f"manifest not found for wave_id={wave_id!r}: {manifest_path}")
+    return tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def resolve_targets_from_port_target(port_target_path: Path) -> list[Path]:
+    port_config = tomllib.loads(port_target_path.read_text(encoding="utf-8"))
+    port_section = port_config.get("port", {})
+    wave_id = port_section.get("wave_id")
+    if not isinstance(wave_id, str) or not wave_id:
+        raise SystemExit("port_target.toml [port] wave_id is required")
+
+    manifest = load_manifest(port_target_path.parent, wave_id)
+    kernels = manifest.get("kernels")
+    if not isinstance(kernels, list) or not kernels:
+        raise SystemExit(f"manifest {wave_id} has no [[kernels]] entries")
+
+    targets: list[Path] = []
+    seen: set[Path] = set()
+    for entry in kernels:
+        if not isinstance(entry, dict):
+            continue
+        module_path = entry.get("module_path")
+        if not isinstance(module_path, str) or not module_path:
+            continue
+        target = (ROOT / module_path).resolve()
+        if target not in seen:
+            seen.add(target)
+            targets.append(target)
+    if not targets:
+        raise SystemExit(f"manifest {wave_id} has no module_path targets for jaxlint")
+    return targets
+
+
 def build_envelope(
     target: Path,
     *,
@@ -90,8 +140,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "target",
         nargs="?",
-        default=str(DEFAULT_TARGET),
-        help="Path to scan (default: src/xtrax)",
+        default=None,
+        help="Path to scan (default: src/xtrax, unless --paths-from is set)",
+    )
+    parser.add_argument(
+        "--paths-from",
+        type=Path,
+        default=None,
+        help="Load jaxlint targets from port_target.toml wave manifest module_path entries",
     )
     parser.add_argument(
         "--performance-only",
@@ -112,16 +168,42 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    target = Path(args.target).resolve()
     performance_only = not args.full
 
-    exit_code, findings = run_jaxlint(target, performance_only=performance_only)
+    if args.paths_from is not None:
+        port_target = resolve_port_target(args.paths_from)
+        if not port_target.is_file():
+            raise SystemExit(f"port target not found: {port_target}")
+        targets = resolve_targets_from_port_target(port_target)
+    else:
+        target_arg = args.target if args.target is not None else str(DEFAULT_TARGET)
+        targets = [Path(target_arg).resolve()]
+
+    combined_findings: list[dict[str, Any]] = []
+    worst_exit = 0
+    scanned: list[str] = []
+    resolved_targets: list[Path] = []
+    for target in targets:
+        if not target.exists():
+            raise SystemExit(f"jaxlint target not found: {target}")
+        exit_code, findings = run_jaxlint(target, performance_only=performance_only)
+        worst_exit = max(worst_exit, exit_code)
+        rel = str(target.relative_to(ROOT))
+        scanned.append(rel)
+        resolved_targets.append(target)
+        for finding in findings:
+            tagged = dict(finding)
+            tagged.setdefault("target", rel)
+            combined_findings.append(tagged)
+
     envelope = build_envelope(
-        target,
+        resolved_targets[0],
         performance_only=performance_only,
-        exit_code=exit_code,
-        findings=findings,
+        exit_code=worst_exit,
+        findings=combined_findings,
     )
+    if len(scanned) > 1:
+        envelope["targets"] = scanned
 
     payload = json.dumps(envelope, indent=2)
     if args.output:
@@ -132,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     # Foundation gate: performance-only must be clean (no JL errors).
     if performance_only and envelope["error_count"] > 0:
         return 1
-    return 0 if exit_code == 0 else exit_code
+    return 0 if worst_exit == 0 else worst_exit
 
 
 if __name__ == "__main__":
