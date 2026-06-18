@@ -4,7 +4,7 @@
 
 [priorities]
 version = "1.0"
-updated_at = "2026-06-18T13:20:00Z"
+updated_at = "2026-06-18T14:00:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
@@ -97,6 +97,49 @@ skills = ["using-xtrax"]
 notes = "Agent-facing skill and EDA DAG; informs composition-layer docs and auto-bundle UX."
 
 # ---------------------------------------------------------------------------
+# Research epics (deep research + brainstorm before implementation)
+# ---------------------------------------------------------------------------
+
+[[queue]]
+rank = 4
+slug = "implementation-validation-pipeline"
+title = "EPIC [research]: Implementation validation pipeline (robust jax-port + audit integration)"
+backlog_id = 2180
+status = "queued"
+phase = "spec_complete_wave1_sprint"
+depends_on_epics = ["audit-framework-foundation"]
+spec_path = ".praxia/docs/specs/260618_hmw-design-unified-implementation-valida.md"
+design_path = ".praxia/docs/designs/260618_2180_port_validation_design.md"
+nlm_seed = ".praxia/research/nlm_seed_2180_2181.md"
+skills = ["jax-port", "using-jaxlint", "verification-before-completion", "test-driven-development", "orchestration", "using-bathos"]
+research_outputs = [
+  "gap analysis: audit-fw eight dimensions vs jax-port phases 0-8",
+  "subagent + hook contract for port_validation PCW template",
+  "integration with composition layer, capability registry, graph-auditor",
+  "contemplex spec + adversarial review → backlog DAG",
+]
+notes = "No existing epic before 2026-06-18. Extends audit framework into algorithm port lifecycle; stronger than skill-only jax-port."
+
+[[queue]]
+rank = 4
+slug = "agentic-autoresearch"
+title = "EPIC [research]: Agentic algorithm evolution & autoresearch (xtrax + bathos)"
+backlog_id = 2181
+status = "queued"
+phase = "awaiting_deep_research"
+depends_on_epics = ["pure-jax-composition-layer", "agent-composition-tooling", "implementation-validation-pipeline"]
+spec_path = ""
+nlm_seed = ".praxia/research/nlm_seed_2180_2181.md"
+skills = ["using-bathos", "using-jax", "orchestration", "brainstorming", "using-contemplex"]
+research_outputs = [
+  "autoresearch / evolutionary ML landscape synthesis",
+  "safety frame: autonomous evolution vs human gates",
+  "bathos + composition node campaign DAG model",
+  "contemplex brainstorm → staff design → spec → backlog DAG",
+]
+notes = "Composable JAX engine enables experiment composition; bathos for lineage. Research-only until NLM + brainstorm complete."
+
+# ---------------------------------------------------------------------------
 # Cross-cutting themes (folded into epics above)
 # ---------------------------------------------------------------------------
 
@@ -127,6 +170,20 @@ title = "Agent identities, skills, KBs, and evolvable tooling for JAX/xtrax comp
 primary_epic = 2175
 skills = ["orchestration", "using-contemplex", "context7-mcp"]
 notes = "Research epic; feeds agentic validation, NL authoring, and tool evolution on the chain-map surface (#2174)."
+
+[[themes]]
+slug = "port-validation-pipeline"
+title = "Robust jax-port + audit integration for algorithm implementation validation"
+primary_epic = 2180
+skills = ["jax-port", "using-jaxlint", "test-driven-development"]
+notes = "Research epic; extends audit-fw into vendored-reference + parity + agentic port gates."
+
+[[themes]]
+slug = "agentic-autoresearch"
+title = "Agentic algorithm evolution and closed-loop autoresearch"
+primary_epic = 2181
+skills = ["using-bathos", "orchestration", "using-contemplex"]
+notes = "Research epic; compose experiments on xtrax graphs with bathos campaigns."
 
 # ---------------------------------------------------------------------------
 # Deferred / maintenance (not on main epic queue)

@@ -1,0 +1,86 @@
+[sprint]
+sprint_id = "260618_2180-port-validation-wave2"
+sprint_num = 4
+name = "xtrax #2180 Wave 2: orchestration + PCW stub"
+description = "Wave 2 — hook schema, routing domain rows, capability registry 0.2.0, port_validation PCW JS stub."
+context = """
+Autonomous loop task_id: 260617_xtrax-composition-mission
+Epic: #2180 — depends on Wave 1 (#2266-#2271) complete.
+Spec Appendix A flat hook payload; design revision 3.
+Wave 2 AC: AC-7, AC-10, AC-12 (orchestration + routing).
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+# Wave 2 DAG: 2275 → {2280, 2277} parallel → 2278
+
+[[tracks]]
+id = "hooks"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "2275"
+phase_name = "[#2180.6] Hook schema documentation"
+workflow_hint = "port_validation"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2275. Author port/docs/hook_schema_port_validation.md.
+Normative flat payload per spec Appendix A; optional wrapper metadata documented separately.
+"""
+reviewer_prompt = "VERIFY #2275: hook schema doc matches Appendix A flat JSON + walker rules."
+return_key = "2275"
+
+[[tracks]]
+id = "routingregistry"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "2280"
+phase_name = "[#2180.10] audit/routing.toml domain=port rows"
+workflow_hint = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2280. Extend audit/routing.toml with domain=port CC5 rows.
+P5-ROUTE artifact path: .praxia/port/routing/<wave_id>_<finding_id>.toml (AC-12).
+"""
+reviewer_prompt = "VERIFY #2280: routing.toml domain=port rows; routing artifact path documented."
+return_key = "2280"
+
+[[tracks.items]]
+backlog_id = "2277"
+phase_name = "[#2180.7] Capability registry 0.2.0"
+workflow_hint = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2277. Bump registry to 0.2.0; add reference-vendor, specification-specialist, test-designer.
+Register [hooks.subagent_stop.port_validation] → hook schema doc.
+"""
+reviewer_prompt = "VERIFY #2277: registry 0.2.0 validates; hook registration present; tests pass."
+return_key = "2277"
+
+[[tracks]]
+id = "pcw"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "2278"
+phase_name = "[#2180.8] port_validation PCW YAML + JS"
+workflow_hint = "port_validation"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2278. agent_assets/workflows/port_validation.yaml + dw emit.
+7-step FSM; hook validation on flat Appendix A payload; P3 repair max 2 cycles.
+P1-SPEC math/pseudocode gate (AC-10); P5-ROUTE routing artifact (AC-12).
+"""
+reviewer_prompt = "VERIFY #2278: YAML exists; emitted JS stub; 7-step FSM; flat hook payload validation."
+return_key = "2278"
+
+[orchestration]
+sequential = ["hooks", "routingregistry", "pcw"]
+concurrent = []

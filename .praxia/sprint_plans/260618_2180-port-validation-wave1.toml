@@ -1,0 +1,137 @@
+[sprint]
+sprint_id = "260618_2180-port-validation-wave1"
+sprint_num = 3
+name = "xtrax #2180 Wave 1: port validation MVP scaffold"
+description = "Wave 1 mechanical MVP — port/ scaffold, emit stub, trace gate, parity harness, CI audit-port. AC subset: 1-6,8-9,11."
+context = """
+Autonomous loop task_id: 260617_xtrax-composition-mission
+Epic: #2180 Implementation validation pipeline (jax-port + audit-fw)
+Spec: .praxia/docs/specs/260618_hmw-design-unified-implementation-valida.md
+Design: .praxia/docs/designs/260618_2180_port_validation_design.md (revision 3)
+Adversarial reconciliation d′→e→f 2026-06-18: #1577 soft dep, manifest_hash, oracle-seal CI step.
+Wave 1 MVP AC: AC-1, AC-2, AC-3, AC-4, AC-5, AC-6, AC-8, AC-9, AC-11.
+L1 autonomous — no gate wait.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+# Wave 1 DAG: 2266 → {2267, 2268} parallel → 2269 → 2271
+
+[[tracks]]
+id = "scaffold"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "2266"
+phase_name = "[#2180.1] Scaffold port/ dev-only subtree"
+workflow_hint = "bugfix_simple"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2266 [#2180.1] Scaffold port/ dev-only subtree
+
+Spec AC-1, AC-2. Create port/reference/, port/tests/, port/emit/, port/manifests/, port/docs/.
+Add port/port_target.toml template: wave_id, ad_critical, oracle_id, symbol_qualname, max_traces.
+[capabilities] stochastic=false, dynamic_shape=false. No editable tiers list.
+Keep port/ out of wheel; document dev-extra install.
+"""
+reviewer_prompt = """
+VERIFY #2266: port/ tree exists; port_target.toml with capability flags; pyproject dev extra; port/ excluded from wheel.
+PASS/FAIL with evidence.
+"""
+return_key = "2266"
+
+[[tracks]]
+id = "emittrace"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "2267"
+phase_name = "[#2180.2] port_emit stub + contract test"
+workflow_hint = "port_validation"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2267 [#2180.2] port_emit.py stub
+
+Spec AC-6, AC-9. port/emit/port_emit.py appends domain=port to .praxia/audits.jsonl.
+finding_id = hash(dim + qualname + rule_id + tolerance_policy) per #1573 + N1.1 port amendment.
+tests/contract/test_port_emit_schema.py. Delegate to audit.emit when #1577 importable (soft — not blocking).
+"""
+reviewer_prompt = """
+VERIFY #2267: port_emit writes valid JSONL; contract test passes; dual validation when audit.emit present.
+PASS/FAIL.
+"""
+return_key = "2267"
+
+[[tracks.items]]
+backlog_id = "2268"
+phase_name = "[#2180.3] chex trace-count gate"
+workflow_hint = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2268 [#2180.3] chex assert_max_traces gate
+
+Spec AC-5. scripts/audit_port_trace_count.py; manifest via port_target.toml wave_id.
+chex in dev deps; tests/audit/test_port_trace_count.py. max_traces default 1.
+"""
+reviewer_prompt = """
+VERIFY #2268: trace-count script runs; chex in dev deps; test passes.
+PASS/FAIL.
+"""
+return_key = "2268"
+
+[[tracks]]
+id = "parity"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "2269"
+phase_name = "[#2180.4] Graded parity harness T1-T3+T5"
+workflow_hint = "port_validation"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2269 [#2180.4] parity harness
+
+Spec AC-3, AC-4, AC-11. port/tests/conftest.py blocking tiers derived from ad_critical.
+First test_parity kernel stub. Wire emit on tier completion.
+Manifest port/manifests/<wave_id>.toml with manifest_hash (not content_hash).
+MVP: leaf numeric kernel; stochastic=false, dynamic_shape=false.
+"""
+reviewer_prompt = """
+VERIFY #2269: conftest tier ordering; T4 skip unless ad_critical; emit wired; manifest_hash artifact.
+PASS/FAIL.
+"""
+return_key = "2269"
+
+[[tracks]]
+id = "ci"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "2271"
+phase_name = "[#2180.5] just audit-port + CI"
+workflow_hint = "bugfix_simple"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2271 [#2180.5] audit-port CI
+
+Spec AC-8, AC-9. Justfile: audit-port-oracle-seal, audit-port-static, audit-port-parity, audit-port-emit-contract.
+Manifest resolution via port_target.toml wave_id. Dual emit validation when audit.emit present.
+GitHub Actions path-filtered dev-extra job; wheel-smoke.
+"""
+reviewer_prompt = """
+VERIFY #2271: just audit-port runs including oracle-seal; CI job with path filters; AC-9 dual validation path.
+PASS/FAIL.
+"""
+return_key = "2271"
+
+[orchestration]
+sequential = ["scaffold", "emittrace", "parity", "ci"]
+concurrent = []

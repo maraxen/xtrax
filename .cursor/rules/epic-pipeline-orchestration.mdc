@@ -1,0 +1,41 @@
+---
+description: Epic research pipeline — parent orchestrates subagents only; strict phase gates
+alwaysApply: true
+---
+
+# Epic research pipeline (orchestrator-only parent)
+
+When the user requests the full epic pipeline (research → brainstorm → design → adversarial → register → compose), the **parent thread orchestrates only**. Subagents produce all substantive artifacts.
+
+## Phase order (strict gates)
+
+| Phase | Subagent(s) | Gate before next |
+|-------|-------------|------------------|
+| a. Research | `recon` ∥ `librarian` (+ NLM / praxia search / WebSearch) | Research note path exists |
+| b. Brainstorm | contemplex facilitator → critic → synthesizer | `brainstorm_finalize` spec written |
+| c. **Design** | **`staff`** | **Design doc + child DAG slugs exist** |
+| d. Adversarial | **`spec-challenger` ∥ `spec-defender`** (read-only) | **Both spec AND design passed in** |
+| d′. Reconcile | **`staff`** (or `fixer` for surgical edits) | BLOCKER/MAJOR resolved in spec+design; MINOR → fix or `debt` |
+| e. Register | **`staff`** | Backlog epic + children with all fields |
+| f. Compose | **`staff`** or `planner` | Sprint TOML by wave → `dw emit-sprint` → `orch_session` queue |
+
+**Never run phase d in parallel with phase c.** Adversarial critique requires the staff design artifact.
+
+## Parent MAY do
+
+- `workspace_handshake`, `transduction_log` / phase logging with stable `task_id`
+- Launch subagents; paste inputs; collect handoffs
+- Gate transitions (FAIL → re-dispatch staff/planner)
+- `git commit` when user asks and outcome audit approves
+
+## Parent MUST NOT do
+
+- Edit spec, design, research notes, sprint TOML, or product code
+- Call `backlog add` / `backlog update` directly (delegate to **staff**)
+- Patch spec during adversarial review (delegate **staff** reconcile)
+- Skip staff design before adversarial review
+
+## Violations (learned #2180)
+
+- Parent edited spec + registered backlog + wrote sprint TOML → **wrong**
+- Challenger/defender launched parallel with staff design → **wrong order**

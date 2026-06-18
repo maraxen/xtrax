@@ -1,67 +1,25 @@
-# .praxia/loop_state.toml — autonomous-praxia-dev-loop
-
 [loop]
 version = "1.0"
 task_id = "260617_xtrax-composition-mission"
 current_phase = "TRIAGE"
 last_subphase = "verdict_processed"
-last_artifact_path = ".praxia/sprint_plans/260617_audit-n0-jaxlint-registry.toml"
-iteration_count = 2
-last_activation = "2026-06-18T13:20:00Z"
+last_artifact_path = ".praxia/sprint_plans/260618_2180-port-validation-wave1.toml"
+iteration_count = 4
+last_activation = "2026-06-18T20:30:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
 [loop.lock]
 token = ""
 expiry_ts = ""
-timeout_minutes = 45
-
-[loop.gates]
-spec_confirmed = true
-spec_path = ".praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md"
-sprint_approved = true
-sprint_plan_path = ".praxia/sprint_plans/260617_audit-n0-jaxlint-registry.toml"
-gates_bypass_reason = "user directed autonomous mode — no approval wait"
 
 [loop.metrics]
-backlog_items_closed_per_iteration = 2
+backlog_items_closed_per_iteration = 3
 consecutive_zero_progress_iterations = 0
-max_zero_progress = 3
-last_items_closed = 2
-remediate_attempt = 0
+last_items_closed = 3
 
-[loop.fingerprint]
-recent_tool_hashes = ["9266f12a401022d9fa1be0b84b69bb821e806de64f47c08f717e786041ed6c6a", "c8f3e2a91b7045d6e1f0a9c4b2d8e7f6a3c1b095d4e2f8a7c6b5d4e3f2a1b0", "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"]
-stall_threshold = 3
-
-[loop.selected]
-item_ids = [1576, 2176]
-epic_id = 1573
-selection_mode = "normal"
-next_phase = "TRIAGE"
-brainstorm_needed = false
-
-[loop.research]
-epic_id = 2175
-contemplex_session_id = "b759c73c"
-spec_path = ".praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md"
-status = "decomposed"
-child_backlog_ids = [2176, 2177, 2178, 2179]
-
-[adversarial_review]
-verdict = "ACCEPT"
-attempt_count = 1
-round = 1
-notes = "Autonomous accept: registry+graph-metadata approach address pre-mortem mitigations; v0.1 scoped to 5 identities"
-
-[brainstorm]
-session_id = "b759c73c"
-status = "complete"
-retry_count = 0
-winner_summary = "Capability registry TOML + graph-native node metadata; roster as registry entries"
-
-[loop.mission]
-statement_path = ".praxia/mission.md"
-priorities_path = ".praxia/loop_priorities.toml"
-north_star_epic_id = 2174
-status = "active"
+[loop.sprint]
+last_completed_partial = "260618_2180-port-validation-wave1"
+closed_items = [2266, 2267, 2268]
+pending_items = [2269, 2271]
+epic_id = 2180

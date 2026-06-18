@@ -1,0 +1,141 @@
+[sprint]
+sprint_id = "260618_audit-emit-graph-metadata"
+sprint_num = 3
+name = "xtrax Loop Sprint 3: N1.1 emit envelope + graph node metadata schema"
+description = "Sequential wave: #1577 audit emit contract (xtrax.devtools) then #2177 composition node metadata typed schema."
+context = """
+Autonomous loop task_id: 260617_xtrax-composition-mission
+Epics: audit-framework-foundation (#1573+) + agent-composition-tooling (#2175)
+Specs:
+  #1577 — .praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md (emit substrate §3.1)
+  #2177 — .praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md (graph-native node metadata)
+Preconditions: N0 foundation gates closed (#1573–#1576, #2176). worktree_safe: 1577=false, 2177=true → sequential.
+PATH resolution: implement emit at src/xtrax/devtools/emit.py (NOT audit/ or top-level audit package).
+L1 autonomous — no gate wait.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "emit"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1577"
+phase_name = "[audit-fw N1.1] xtrax.devtools.emit envelope + contract test"
+workflow_hint = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1577 [audit-fw N1.1] audit emit envelope + 2 constructors + contract test
+
+Spec: .praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md (contract-tested emit envelope)
+Reference (unmerged worktree): .claude/worktrees/xtrax-audit-framework/.praxia/docs/specs/260611_xtrax-audit-framework.md §3.1, §7, AC-1.1
+
+## File anchors
+- src/xtrax/devtools/__init__.py (new package marker)
+- src/xtrax/devtools/emit.py (single envelope + constructors)
+- tests/audit/test_emit_contract.py (merge-blocking contract test)
+- pyproject.toml ([tool.hatch.build.targets.wheel] exclude devtools from wheel; [tool.coverage.run] omit xtrax.devtools)
+- Justfile (`just audit-emit-contract` recipe)
+
+## Steps
+1. Create `src/xtrax/devtools/` package (`__init__.py`); keep devtools importable as `xtrax.devtools.emit` but EXCLUDED from the built wheel (extend hatch wheel packages / omit from coverage).
+2. Implement `src/xtrax/devtools/emit.py` with a frozen dataclass or pydantic envelope:
+   - Fields: schema_version:int, run_id:str, dim:str, severity:Literal["info","minor","major","critical"],
+     file_line:str, evidence:str, source_track:Literal["deterministic","judgment"], finding_id:str, payload:dict
+   - `emit_metric_finding(dim, severity, file_line, evidence, rule_id, symbol_qualname, payload)` — source_track="deterministic"
+   - `emit_judgment_finding(dim, severity, file_line, evidence, rubric_id, score, anchor_quote, symbol_qualname)` — source_track="judgment"
+   - `finding_id = stable hash(dim + symbol_qualname + rule_id)`; rubric_id substitutes rule_id for judgment findings
+   - Content-hash fallback `hash(dim + normalized_evidence)` when symbol_qualname absent
+   - Provide `append_finding(record, audits_path=Path(".praxia/audits.jsonl"))` for JSONL append (port/#2180 delegation target)
+3. Add `tests/audit/test_emit_contract.py`:
+   - Round-trip ONE golden metric record AND ONE golden judgment record
+   - Assert schema_version stamped; baseline-diff helper LOUD-FAILS (raises) on schema_version mismatch
+   - Assert two judgment findings on same (dim, symbol_qualname, rubric_id) → identical finding_id
+4. Add `just audit-emit-contract` running `uv run pytest tests/audit/test_emit_contract.py -v`
+5. Run `uv run ruff check src/xtrax/devtools/ tests/audit/test_emit_contract.py` and `uv run pytest tests/audit/test_emit_contract.py -v`
+
+Do NOT add a top-level `audit/` package or `audit/emit.py` — canonical path is `xtrax.devtools.emit`.
+
+## Commit
+Do NOT commit locally. Orchestrator commits after reviewer PASS with message:
+`feat(audit): N1.1 emit envelope contract in xtrax.devtools (#1577)`
+"""
+reviewer_prompt = """
+VERIFY #1577 [audit-fw N1.1] emit envelope:
+
+1. `src/xtrax/devtools/emit.py` exists with single shared envelope + `emit_metric_finding` and `emit_judgment_finding`
+2. `finding_id` uses structural hash(dim + symbol_qualname + rule_id); rubric_id substitutes rule_id for judgment; content-hash fallback for symbol-less findings
+3. `append_finding` appends valid JSONL to `.praxia/audits.jsonl` when invoked in tests (use tmp_path)
+4. `tests/audit/test_emit_contract.py` passes: metric + judgment golden round-trips; schema_version mismatch raises (not skips); id-stability for duplicate judgment keys
+5. `just audit-emit-contract` exits 0
+6. No top-level `audit/` package added; `uv run ruff check src/xtrax/devtools/` clean; devtools excluded from wheel
+
+PASS if all six checks hold with command evidence. FAIL otherwise listing which check failed.
+"""
+return_key = "1577"
+
+[[tracks]]
+id = "metadata"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "2177"
+phase_name = "[#2175.2] Graph-native node metadata schema (composition layer)"
+workflow_hint = "spec_driven_dev"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2177 [#2175.2] Graph-native node metadata schema (composition layer)
+
+Spec: .praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md (A+D merge: graph-native node metadata)
+Depends on: #2176 capability registry v0.1 (closed) — slot names already in `.praxia/composition/capability_registry.toml`
+
+## File anchors
+- .praxia/composition/node_metadata_schema.toml (typed slot definitions)
+- .praxia/composition/capability_registry.toml (cross-reference slot names only — do not duplicate identity tables)
+- scripts/load_capability_registry.py (extend loader to validate schema + registry slot alignment)
+- tests/composition/test_node_metadata_schema.py (new contract tests)
+- Justfile (`just validate-node-metadata-schema` recipe)
+
+## Steps
+1. Add `.praxia/composition/node_metadata_schema.toml` with `[schema] version/schema_version` and `[[slots]]` entries:
+   - required: `nl_description` (type string, min_length 1)
+   - optional: `mathjax_label` (string), `citations` (array of {doi|url|text}), `script_usage` (object with language + excerpt),
+     `audit_verdict` (enum PASS|FAIL|NEEDS_WORK), `bathos_sidecar_ref` (string path relative to repo root)
+2. Extend `scripts/load_capability_registry.py`:
+   - Add `load_node_metadata_schema()` and/or integrate into `load_capability_registry()` return type
+   - Validate required/optional slot names in capability_registry `[node_metadata]` match schema slot ids exactly
+   - Validate unknown slot types rejected; semver on schema version
+3. Add `tests/composition/test_node_metadata_schema.py`:
+   - Schema loads; required slot `nl_description` enforced
+   - Sample valid node metadata dict passes validation; missing required fails; unknown slot fails
+   - Registry slot list matches schema slot ids (no drift vs capability_registry.toml)
+4. Add `just validate-node-metadata-schema` (may call extended loader); keep `just validate-capability-registry` green
+5. Run `uv run pytest tests/composition/ -v` and `uv run ruff check scripts/load_capability_registry.py`
+
+Composition layer only — no changes under `src/xtrax/` core package.
+
+## Commit
+Do NOT commit locally. Orchestrator commits after reviewer PASS with message:
+`feat(composition): graph node metadata schema + loader validation (#2177)`
+"""
+reviewer_prompt = """
+VERIFY #2177 [#2175.2] graph node metadata schema:
+
+1. `.praxia/composition/node_metadata_schema.toml` exists with typed `[[slots]]` for all registry slot names
+2. `scripts/load_capability_registry.py` validates schema and asserts registry `[node_metadata]` required/optional slots match schema ids
+3. `tests/composition/test_node_metadata_schema.py` passes (valid sample, missing required fails, unknown slot fails, registry alignment)
+4. `just validate-node-metadata-schema` exits 0; `just validate-capability-registry` still exits 0
+5. `uv run pytest tests/composition/ -v` green; no `src/xtrax/` core changes
+
+PASS if all five checks hold with evidence. FAIL otherwise.
+"""
+return_key = "2177"
+
+[orchestration]
+sequential = ["emit", "metadata"]
+concurrent = []
