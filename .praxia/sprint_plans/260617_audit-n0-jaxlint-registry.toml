@@ -1,0 +1,68 @@
+[sprint]
+sprint_id = "260617_audit-n0-jaxlint-registry"
+sprint_num = 2
+name = "xtrax Loop Sprint 2: N0.4 jaxlint + capability registry loader"
+description = "Wave 2: jaxlint PyPI dev dep + JSON runner; capability registry v0.1 loader + validation tests."
+context = """
+Autonomous loop task_id: 260617_xtrax-composition-mission
+Epic: audit-framework-foundation (#1576) + agent-composition-tooling (#2176)
+L1 autonomous — no gate wait.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "a"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1576"
+phase_name = "N0.4 jaxlint integration (PyPI dev dep + JSON runner)"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1576 [audit-fw N0.4] jaxlint integration
+
+## Steps
+1. Ensure jaxlint in dev optional deps (pyproject.toml)
+2. Add scripts/audit_jaxlint_json.py emitting audit_jaxlint_v0 envelope
+3. Add [tool.jaxlint] stub in pyproject.toml
+4. Add `just audit-jaxlint` and wire into `just audit-foundation`
+5. Add tests/audit/test_jaxlint_runner.py (performance-only mode clean on src/xtrax)
+"""
+reviewer_prompt = """
+VERIFY #1576:
+1. jaxlint in dev deps; `uv run jaxlint --version` works
+2. `just audit-jaxlint` exits 0
+3. tests/audit/test_jaxlint_runner.py passes
+4. audit-foundation includes jaxlint
+PASS/FAIL with evidence.
+"""
+return_key = "1576"
+
+[[tracks.items]]
+backlog_id = "2176"
+phase_name = "Capability registry TOML v0.1 loader + validation"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2176 [#2175.1] Capability registry TOML v0.1
+
+## Steps
+1. Add scripts/load_capability_registry.py (tomllib loader + semver/profile validation)
+2. Add tests/composition/test_capability_registry.py (5 identities, node_metadata slots)
+3. Add `just validate-capability-registry`
+4. Registry stays at .praxia/composition/capability_registry.toml (outside xtrax package)
+"""
+reviewer_prompt = """
+VERIFY #2176:
+1. load_capability_registry.py validates 5 identities
+2. tests/composition/ passes
+3. `just validate-capability-registry` exits 0
+PASS/FAIL with evidence.
+"""
+return_key = "2176"
+
+[orchestration]
+sequential = ["a"]
+concurrent = []

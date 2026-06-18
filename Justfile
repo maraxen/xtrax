@@ -7,7 +7,13 @@ audit-imports:
 audit-no-future-annotations:
     uv run pytest tests/audit/test_no_future_annotations.py -v
 
-audit-foundation: audit-imports audit-no-future-annotations
+audit-jaxlint:
+    uv run python scripts/audit_jaxlint_json.py --performance-only
+
+validate-capability-registry:
+    uv run python scripts/load_capability_registry.py
+
+audit-foundation: audit-imports audit-no-future-annotations audit-jaxlint
     uv run pytest tests/audit/ -v
 
 # Install all skills from agent_assets/skills/ to ~/.claude/skills/

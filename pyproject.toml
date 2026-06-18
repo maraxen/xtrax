@@ -22,7 +22,17 @@ docs = [ "sphinx>=7", "furo", "sphinx-autodoc-typehints", "myst-parser",]
 eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 
 [project.optional-dependencies]
-dev = [ "pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "pytest-benchmark>=4.0", "ruff>=0.4.0", "ty", "jaxtyping>=0.2.28", "import-linter>=2.1",]
+dev = [
+ "pytest>=8.0",
+ "pytest-asyncio>=0.23",
+ "pytest-cov>=5.0",
+ "pytest-benchmark>=4.0",
+ "ruff>=0.4.0",
+ "ty",
+ "jaxtyping>=0.2.28",
+ "import-linter>=2.1",
+ "jaxlint>=0.1.0a1",
+]
 eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 
 [project.urls]
@@ -60,6 +70,11 @@ select = [ "E", "F", "I", "UP",]
 [tool.ruff.lint.per-file-ignores]
 # jaxtyping shape strings use forward refs and undefined names in annotations
 "tests/**/*.py" = ["F722", "F821"]
+
+[tool.jaxlint]
+# N0.4 foundation: performance sensors gate via `just audit-jaxlint` (--no-doc).
+# Documentation rules (JD/JM) ratchet in audit-fw N2+ waves.
+ignore = []
 
 [tool.importlinter]
 root_package = "xtrax"

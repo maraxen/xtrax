@@ -4,7 +4,7 @@
 
 [priorities]
 version = "1.0"
-updated_at = "2026-06-17T21:00:00Z"
+updated_at = "2026-06-18T13:20:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
@@ -69,9 +69,9 @@ slug = "audit-framework-foundation"
 title = "EPIC: xtrax systematic audit framework (N0–N5 foundation + judgment track)"
 backlog_id = 1573
 status = "active"
-phase = "N0_wave1_complete"
+phase = "N0_wave2_complete"
 child_backlog_ids = [1573, 1574, 1575, 1576]
-notes = "N0.1–N0.3 closed in loop iteration 1 (autonomous). Next: N0.4 jaxlint integration."
+notes = "N0.1–N0.4 closed in loop iteration 2 (autonomous). Next: N1.1 audit emit envelope (#1577) + #2177 graph metadata schema."
 
 [[queue]]
 rank = 2
