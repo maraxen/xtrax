@@ -3,9 +3,9 @@ version = "1.0"
 task_id = "260617_xtrax-composition-mission"
 current_phase = "TRIAGE"
 last_subphase = "verdict_processed"
-last_artifact_path = "src/xtrax/devtools/gates/jax_purity.py"
-iteration_count = 11
-last_activation = "2026-06-19T20:00:00Z"
+last_artifact_path = "src/xtrax/devtools/gates/type_hardening.py"
+iteration_count = 12
+last_activation = "2026-06-19T22:00:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
@@ -26,8 +26,8 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-last_completed = "260619_audit-n2-jax-purity-gate"
-closed_items = [1582]
+last_completed = "260619_audit-n2-type-hardening-gate"
+closed_items = [1583]
 epic_id = 1573
-n2_gates_closed = 2
-next_candidates = [1583, 1584, 2179]
+n2_gates_closed = 3
+next_candidates = [1584, 1585, 2179]
