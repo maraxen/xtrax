@@ -1,0 +1,65 @@
+[sprint]
+sprint_id = "260619_audit-n2-documentation-gate"
+sprint_num = 14
+name = "xtrax Loop Sprint 14: N2.5 D5 Documentation gate"
+description = "Interrogate docstring coverage% ratchet + optional jaxlint JD/JM violation count."
+context = """
+task_id: 260617_xtrax-composition-mission
+Spec D5: interrogate METERS coverage% for ratchet baseline; jaxlint JD/JM presence/format.
+Baseline metric documentation.interrogate_coverage_pct already seeded (maximize).
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "documentation"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1585"
+phase_name = "[audit-fw N2.5] D5 Documentation gate"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1585 [audit-fw N2.5] D5 Documentation gate
+
+## Goal
+Deterministic documentation gate: interrogate coverage% (blocking ratchet) + jaxlint JD/JM error count (minimize, secondary).
+
+## Deps
+Add `interrogate` to [project.optional-dependencies] dev; uv lock.
+
+## Code
+- src/xtrax/devtools/gates/_interrogate.py — run_interrogate_coverage(package: Path, root: Path) -> float
+  Parse interrogate stdout for actual coverage % (regex on "actual: XX.X%") or use interrogate Python API
+- src/xtrax/devtools/gates/documentation.py
+  - COVERAGE_METRIC_KEY = "documentation.interrogate_coverage_pct"
+  - JD_METRIC_KEY = "documentation.jd_violation_count" (add to baseline minimize 0)
+  - run_documentation_gate(target, audits_path, baseline_path) -> GateResult
+  - Run interrogate on target (default src/xtrax)
+  - Run jaxlint --full JSON via gates/_jaxlint.run_jaxlint_json with performance_only=False; filter rule_id startswith JD or JM and severity error
+  - Emit metric findings; evaluate both baseline metrics (maximize coverage, minimize jd count)
+  - Gate passes only if BOTH metrics pass ratchet
+- scripts/audit_documentation_gate.py CLI
+- tests/audit/test_documentation_gate.py — mock interrogate + jaxlint; regression tests
+- Justfile: audit-documentation-gate
+- .praxia/audit_baseline.json add documentation.jd_violation_count minimize 0
+
+## Verification
+- pytest tests/audit/test_documentation_gate.py -v
+- just audit-documentation-gate exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1585: interrogate coverage ratchet + JD violation count, tests and just recipe pass.
+PASS/FAIL with evidence.
+"""
+return_key = "1585"
+
+[orchestration]
+sequential = ["documentation"]
+concurrent = []

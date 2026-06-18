@@ -3,9 +3,9 @@ version = "1.0"
 task_id = "260617_xtrax-composition-mission"
 current_phase = "TRIAGE"
 last_subphase = "verdict_processed"
-last_artifact_path = "src/xtrax/devtools/gates/performance.py"
-iteration_count = 13
-last_activation = "2026-06-20T00:00:00Z"
+last_artifact_path = "src/xtrax/devtools/gates/documentation.py"
+iteration_count = 14
+last_activation = "2026-06-20T02:00:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
@@ -26,8 +26,8 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-last_completed = "260619_audit-n2-performance-gate"
-closed_items = [1584]
+last_completed = "260619_audit-n2-documentation-gate"
+closed_items = [1585]
 epic_id = 1573
-n2_gates_closed = 4
-next_candidates = [1585, 1586, 2179]
+n2_gates_closed = 5
+next_candidates = [1586, 1587, 2179]
