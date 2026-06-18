@@ -1,0 +1,47 @@
+# CC5 severity×track routing matrix (audit-fw spec 260611).
+# Maps (domain, track, severity, signal/condition) → disposition destination.
+#
+# P5-ROUTE (port_validation PCW) applies domain=port rows after P4-EMIT and writes
+# supervisor decision artifacts to:
+#   .praxia/port/routing/<wave_id>_<finding_id>.toml
+#
+# Proposed interim defaults per epic #2180 — audit-fw maintainer review (TD-2180-03).
+
+[matrix]
+schema = "cc5-routing-v0"
+version = "0.1.0"
+
+# --- domain=port (implementation validation / parity wave) ---
+
+[[routes]]
+domain = "port"
+track = "deterministic"
+severity = "major"
+signal = "tier_verdict.status"
+condition = "FAIL"
+destination = "block_ci"
+
+[[routes]]
+domain = "port"
+track = "deterministic"
+severity = "major"
+signal = "tier_verdict.status"
+condition = "FAIL"
+destination = "backlog_node"
+notes = "P5-ROUTE when repair_cycles exhausted or human_escalation_reason is set"
+
+[[routes]]
+domain = "port"
+track = "deterministic"
+severity = "minor"
+signal = "static_gate.verdict"
+condition = "WARN"
+destination = "found_issues"
+
+[[routes]]
+domain = "port"
+track = "deterministic"
+severity = "info"
+signal = "label"
+condition = "observation"
+destination = "found_issues"
