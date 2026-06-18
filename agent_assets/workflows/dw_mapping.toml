@@ -1,0 +1,3 @@
+# PCW template → emitted Claude Code dynamic .js workflow (xtrax port_validation)
+[template_to_js]
+port_validation = "port-validation"

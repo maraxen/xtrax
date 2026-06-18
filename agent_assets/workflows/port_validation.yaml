@@ -1,0 +1,189 @@
+name: port_validation
+version: "0.1.0"
+description: "Implementation validation pipeline: oracle seal → spec → topo manifest → static gates → graded parity → emit → route (design §1.3)"
+depth_class: leaf
+budgets:
+  max_total_rewinds: 6
+  max_cost_usd: 12.0
+  max_walltime_s: 9000
+trigger_predicates:
+  keywords: ["port", "parity", "oracle", "jax-port", "validation", "implementation"]
+  required_capabilities: ["implementation", "auditing"]
+
+# Phase gate map (design §1.3):
+#   P0-ORACLE gate | P1-SPEC gate | P1.5-TOPO artifact (no gate) | P2-STATIC gate
+#   P3-PARITY gate + hook validation (flat Appendix A) + port-repair max 2 cycles
+#   P4-EMIT gate | P5-ROUTE gate (audit/routing.toml domain=port)
+# Hook schema: port/docs/hook_schema_port_validation.md
+
+nodes:
+  - kind: role_step
+    id: p0_oracle
+    role: reference-vendor
+    agent_type: reference-vendor
+    role_capability: implementation
+    gate:
+      kind: standard
+      verdict_enum: [advance, needs_work]
+      structured_output_schema: null
+    prompt_hint: |
+      P0-ORACLE: Seal port/reference/ oracle; baseline I/O from vendored execution.
+      Exclusive write on port/reference/; record oracle_id hash in port/port_target.toml.
+
+  - kind: role_step
+    id: p1_spec
+    role: specification-specialist
+    agent_type: specification-specialist
+    role_capability: spec_writing
+    gate:
+      kind: standard
+      verdict_enum: [advance, needs_revision]
+      structured_output_schema: null
+    prompt_hint: |
+      P1-SPEC: jaxtyping contracts tied to oracle baselines; paper results tables masked.
+      Record paper_mask_enforced: true in wave manifest.
+
+  - kind: role_step
+    id: p1_5_topo
+    role: recon
+    agent_type: recon
+    role_capability: kb_research
+    gate:
+      kind: standard
+      verdict_enum: [advance]
+      structured_output_schema: null
+    prompt_hint: |
+      P1.5-TOPO (artifact, not a gate): Write port/manifests/<wave_id>.toml with topo-sorted qualnames.
+      Include manifest_hash (SHA-256 of canonical TOML), task_id, paper_mask_enforced.
+
+  - kind: role_step
+    id: p2_static
+    role: jax-purity-reviewer
+    agent_type: jax-purity-reviewer
+    role_capability: auditing
+    gate:
+      kind: standard
+      verdict_enum: [advance, needs_work]
+      structured_output_schema: null
+    prompt_hint: |
+      P2-STATIC: jaxlint clean (scripts/audit_jaxlint_json.py) + chex trace gate
+      (scripts/audit_port_trace_count.py) scoped to manifest modules.
+
+  - kind: role_step
+    id: p3_parity
+    role: test-designer
+    agent_type: test-designer
+    role_capability: test_design
+    gate:
+      kind: standard
+      verdict_enum: [advance, port_repair, human_escalation]
+      structured_output_schema: null
+    prompt_hint: |
+      P3-PARITY: Blocking T1→T2→T3→(T4 if ad_critical)→T5 pytest in port/tests/.
+      subagent-stop flat payload per port/docs/hook_schema_port_validation.md (Appendix A).
+      port-repair capped at 2 cycles per tier FAIL before human_escalation.
+
+  - kind: role_step
+    id: p4_emit
+    role: graph-auditor
+    agent_type: graph-auditor
+    role_capability: auditing
+    gate:
+      kind: standard
+      verdict_enum: [advance, needs_work]
+      structured_output_schema: null
+    prompt_hint: |
+      P4-EMIT: Append domain=port records via port/emit/port_emit.py → .praxia/audits.jsonl.
+      Cross-check hook PASS vs emit FAIL for same tier (walker condition 4).
+
+  - kind: role_step
+    id: p5_route
+    role: composer-orchestrator
+    agent_type: composer-orchestrator
+    role_capability: orchestration
+    gate:
+      kind: standard
+      verdict_enum: [advance]
+      structured_output_schema: null
+    prompt_hint: |
+      P5-ROUTE: Apply audit/routing.toml domain=port CC5 rows.
+      Write .praxia/port/routing/<wave_id>_<finding_id>.toml supervisor artifacts.
+
+edges:
+  - from: p0_oracle
+    to: p1_spec
+    condition:
+      kind: on_verdict
+      verdict: advance
+
+  - from: p0_oracle
+    to: p0_oracle
+    condition:
+      kind: on_verdict
+      verdict: needs_work
+
+  - from: p1_spec
+    to: p1_5_topo
+    condition:
+      kind: on_verdict
+      verdict: advance
+
+  - from: p1_spec
+    to: p1_spec
+    condition:
+      kind: on_verdict
+      verdict: needs_revision
+
+  - from: p1_5_topo
+    to: p2_static
+    condition:
+      kind: on_verdict
+      verdict: advance
+
+  - from: p2_static
+    to: p3_parity
+    condition:
+      kind: on_verdict
+      verdict: advance
+
+  - from: p2_static
+    to: p2_static
+    condition:
+      kind: on_verdict
+      verdict: needs_work
+
+  - from: p3_parity
+    to: p4_emit
+    condition:
+      kind: on_verdict
+      verdict: advance
+
+  - from: p3_parity
+    to: p3_parity
+    condition:
+      kind: on_verdict
+      verdict: port_repair
+
+  - from: p3_parity
+    to: p5_route
+    condition:
+      kind: on_verdict
+      verdict: human_escalation
+
+  - from: p4_emit
+    to: p5_route
+    condition:
+      kind: on_verdict
+      verdict: advance
+
+  - from: p4_emit
+    to: p3_parity
+    condition:
+      kind: on_verdict
+      verdict: needs_work
+
+  - from: p5_route
+    to: __terminal__
+    condition:
+      kind: on_verdict
+      verdict: advance
