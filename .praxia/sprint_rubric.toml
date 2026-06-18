@@ -1,0 +1,12 @@
+# .praxia/sprint_rubric.toml — dual sprint governor for autonomous loop
+
+[rubric]
+version = "1.0"
+DIFFICULTY_BUDGET = 6
+ITEM_CAP = 3
+staleness_threshold_days = 21
+
+[rubric.DIFFICULTY_COST]
+quick = 1
+standard = 3
+extended = 5

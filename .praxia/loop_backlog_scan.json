@@ -1,0 +1,11 @@
+{
+  "task_id": "260617_xtrax-composition-mission",
+  "generated_at": "2026-06-17T20:00:00Z",
+  "executable_items": [
+    {"id": 1573, "title": "[audit-fw N0.1] import-linter cycle-block foundation gate", "category": "infrastructure", "difficulty": "quick", "priority": "P1", "depends_on": [], "spec_path": ".praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md"},
+    {"id": 1574, "title": "[audit-fw N0.2] no-`from __future__ import annotations` guard", "category": "infrastructure", "difficulty": "quick", "priority": "P1", "depends_on": [], "spec_path": ".praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md"},
+    {"id": 1575, "title": "[audit-fw N0.3] ruff F722/F821 per-file ignores for jaxtyping modules", "category": "infrastructure", "difficulty": "quick", "priority": "P1", "depends_on": [1573], "spec_path": ".praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md"}
+  ],
+  "blocked_items": [],
+  "executable_count": 3
+}

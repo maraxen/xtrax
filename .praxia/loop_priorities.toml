@@ -1,0 +1,143 @@
+# .praxia/loop_priorities.toml — autonomous loop epic roadmap
+# Source: user mission statement + backlog sync (2026-06-17)
+# PM/triage reads this file when selecting the next epic after VERIFY closeout.
+
+[priorities]
+version = "1.0"
+updated_at = "2026-06-17T21:00:00Z"
+autonomy_level = "L1"
+autonomy_mode = "autonomous"
+
+[invariants]
+xtrax_version = "0.3.0"
+compiler_boundary = "src/xtrax/ core stays free of UI, chain-map, and plugin-state concerns"
+pure_jax_authoring = "domain code composes traced functions; host prep is explicit and outside JIT"
+no_autonomous_push_or_merge_to_main = true
+default_ci = "uv run pytest"
+
+# ---------------------------------------------------------------------------
+# North-star epic (queued — awaits loop instructions and foundation gates)
+# ---------------------------------------------------------------------------
+
+[[queue]]
+rank = 0
+slug = "pure-jax-composition-layer"
+title = "EPIC: Pure-JAX composition layer — host prep, auto CLI, chain-map UI"
+backlog_id = 2174
+status = "queued"
+phase = "awaiting_loop_instructions"
+depends_on_epics = ["audit-framework-foundation", "distribution-readiness"]
+skills = ["using-xtrax", "using-jax", "exporting-jax", "brainstorming", "using-bathos"]
+pillars = [
+  "clear compiler vs composition separation of concerns",
+  "auto-inference bundle from inspected functions / jax.export → CLI",
+  "annotated host-side input-prep function composition",
+  "chain-map UI (Max / Blueprint / Blender inspired) with MathJax + NL + citations",
+  "agentic validation audit and script usage metadata on nodes",
+  "plugin state (e.g. bathos) lives on composition nodes",
+]
+notes = "User sentiment captured 2026-06-17. Do not start until audit + distribution foundation epics clear or user overrides."
+related_epic_ids = [2175]
+
+[[queue]]
+rank = 0
+slug = "agent-composition-tooling"
+title = "EPIC [research]: Agent identities, skills, KBs, and evolvable tooling for JAX/xtrax composition"
+backlog_id = 2175
+status = "decomposed"
+phase = "backlog_dag_registered"
+spec_path = ".praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md"
+child_backlog_ids = [2176, 2177, 2178, 2179]
+depends_on_epics = []
+blocks_epic_ids = [2174]
+skills = ["orchestration", "using-contemplex", "context7-mcp", "using-xtrax", "brainstorming"]
+research_outputs = [
+  "landscape recon: existing agent roles, skills, KB, MCP tools relevant to JAX/xtrax authoring",
+  "capability model: identity ↔ skill ↔ knowledge base ↔ evolvable tool surface",
+  "decomposition into implementable backlog DAG with explicit integration points to #2174",
+  "spec gate: brainstorm + adversarial review before any implementation sprint",
+]
+notes = "Not implementation-ready. Research and decomposition epic; agentic chain-map validation and composition assistance depend on this."
+
+# ---------------------------------------------------------------------------
+# Foundation epics (current engineering debt — stabilize before composition UX)
+# ---------------------------------------------------------------------------
+
+[[queue]]
+rank = 1
+slug = "audit-framework-foundation"
+title = "EPIC: xtrax systematic audit framework (N0–N5 foundation + judgment track)"
+backlog_id = 1573
+status = "active"
+phase = "N0_wave1_complete"
+child_backlog_ids = [1573, 1574, 1575, 1576]
+notes = "N0.1–N0.3 closed in loop iteration 1 (autonomous). Next: N0.4 jaxlint integration."
+
+[[queue]]
+rank = 2
+slug = "distribution-readiness"
+title = "EPIC: xtrax distribution readiness (N0–N10 release convergence)"
+backlog_id = 1451
+status = "queued"
+depends_on_epic = 1573
+child_backlog_ids = [1451, 1452, 1453, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462]
+spec_path = ".praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md"
+skills = ["using-xtrax", "verification-before-completion"]
+notes = "LICENSE, API surface, docs, CI, PyPI OIDC — composition layer should target a 1.x-stable core."
+
+[[queue]]
+rank = 3
+slug = "using-xtrax-skill"
+title = "EPIC: using-xtrax skill — fundamentals + EDA connection"
+backlog_id = 1919
+status = "queued"
+depends_on_epic = 1451
+spec_path = ".praxia/docs/specs/260615_design-the-using-xtrax-skill-an-exportab.md"
+skills = ["using-xtrax"]
+notes = "Agent-facing skill and EDA DAG; informs composition-layer docs and auto-bundle UX."
+
+# ---------------------------------------------------------------------------
+# Cross-cutting themes (folded into epics above)
+# ---------------------------------------------------------------------------
+
+[[themes]]
+slug = "jax-export-auto-bundle"
+title = "JAX export / inspection → auto CLI and host adapters"
+primary_epic = 2174
+skills = ["exporting-jax", "using-jax"]
+notes = "Use JAX compilation primitives without coupling xtrax core planner to export internals."
+
+[[themes]]
+slug = "chain-map-ux"
+title = "Visual function-chain composer with MathJax, NL, citations, audit hooks"
+primary_epic = 2174
+skills = ["brainstorming", "frontend-design"]
+notes = "Authoring UX only; lowered graph is what the compiler consumes."
+
+[[themes]]
+slug = "bathos-plugin-state"
+title = "Experiment tracking as node-attached plugin state"
+primary_epic = 2174
+skills = ["using-bathos"]
+notes = "Bathos sidecars/campaigns bind to composition nodes, not script globals."
+
+[[themes]]
+slug = "agentic-composition-assist"
+title = "Agent identities, skills, KBs, and evolvable tooling for JAX/xtrax composition"
+primary_epic = 2175
+skills = ["orchestration", "using-contemplex", "context7-mcp"]
+notes = "Research epic; feeds agentic validation, NL authoring, and tool evolution on the chain-map surface (#2174)."
+
+# ---------------------------------------------------------------------------
+# Deferred / maintenance (not on main epic queue)
+# ---------------------------------------------------------------------------
+
+[[deferred]]
+backlog_id = 1376
+title = "Document BCOO destructuring trap with eqx.filter_jit + sparsified model"
+target_sprint = "maintenance"
+
+[[deferred]]
+backlog_id = 1374
+title = "TestAsyncIndexedStream rename alignment"
+target_sprint = "maintenance"

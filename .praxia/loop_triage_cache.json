@@ -1,0 +1,20 @@
+{
+  "task_id": "260617_xtrax-composition-mission",
+  "generated_at": "2026-06-17T20:00:00Z",
+  "prioritized_items": [
+    {"id": 1573, "title": "[audit-fw N0.1] import-linter cycle-block foundation gate", "category": "infrastructure", "difficulty": "quick", "source": "backlog", "recommended_action": "sprint_now", "rationale": "Rank-1 foundation epic; blocks all audit dimensions", "priority": "P1"},
+    {"id": 1574, "title": "[audit-fw N0.2] no-from-__future__-import-annotations guard", "category": "infrastructure", "difficulty": "quick", "source": "backlog", "recommended_action": "sprint_now", "rationale": "Foundation gate for jaxtyping track", "priority": "P1"},
+    {"id": 1575, "title": "[audit-fw N0.3] ruff F722/F821 per-file ignores for jaxtyping", "category": "infrastructure", "difficulty": "quick", "source": "backlog", "recommended_action": "sprint_now", "rationale": "Depends on N0.2; enables type-hardening", "priority": "P1"},
+    {"id": 2175, "title": "EPIC [research]: Agent identities, skills, KBs, evolvable tooling", "category": "research", "difficulty": "extended", "source": "backlog", "recommended_action": "research_epic", "rationale": "Parallel contemplex track; blocks #2174 agentic features", "priority": "P2"},
+    {"id": 2174, "title": "Pure-JAX composition layer", "category": "feature", "difficulty": "extended", "source": "backlog", "recommended_action": "defer", "rationale": "Blocked on audit foundation + distribution + #2175 research", "priority": "P2"}
+  ],
+  "sprint_cohort": [
+    {"id": 1573, "title": "import-linter cycle-block", "difficulty": "quick", "epic": "audit-framework-foundation"},
+    {"id": 1574, "title": "no-__future__ guard", "difficulty": "quick", "epic": "audit-framework-foundation"},
+    {"id": 1575, "title": "ruff jaxtyping ignores", "difficulty": "quick", "epic": "audit-framework-foundation"}
+  ],
+  "research_epic_next": {"id": 2175, "phase": "brainstorm", "session_id": "b759c73c", "rationale": "Contemplex architectural brainstorm in progress"},
+  "deferred": [
+    {"id": 2174, "reason": "Depends on audit foundation, distribution readiness, and #2175 research decomposition"}
+  ]
+}
