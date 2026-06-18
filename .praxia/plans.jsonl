@@ -9,3 +9,4 @@
 {"plan_id":"260619_audit-n2-rubrics-correctness","sprint":"260619_audit-n2-rubrics-correctness","task_id":"260617_xtrax-composition-mission","tracks":[{"id":"rubrics","items":["1591"]},{"id":"correctness","items":["1581"]}]}
 {"plan_id":"260619_audit-n2-jax-purity-gate","sprint":"260619_audit-n2-jax-purity-gate","task_id":"260617_xtrax-composition-mission","tracks":[{"id":"jax_purity","items":["1582"]}]}
 {"plan_id":"260619_audit-n2-type-hardening-gate","sprint":"260619_audit-n2-type-hardening-gate","task_id":"260617_xtrax-composition-mission","tracks":[{"id":"type_hardening","items":["1583"]}]}
+{"plan_id":"260619_audit-n2-performance-gate","sprint":"260619_audit-n2-performance-gate","task_id":"260617_xtrax-composition-mission","tracks":[{"id":"performance","items":["1584"]}]}

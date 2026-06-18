@@ -1,0 +1,74 @@
+[sprint]
+sprint_id = "260619_audit-n2-performance-gate"
+sprint_num = 13
+name = "xtrax Loop Sprint 13: N2.4 D4 Performance gate"
+description = "Trace-count gate for configured kernels + recorded wall-time median (non-blocking)."
+context = """
+task_id: 260617_xtrax-composition-mission
+Spec D4: trace/recompile COUNT blocking; wall-time benchmark medians recorded-not-blocked.
+Reuse chex.assert_max_traces pattern from scripts/audit_port_trace_count.py.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "performance"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1584"
+phase_name = "[audit-fw N2.4] D4 Performance & recompilation gate"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1584 [audit-fw N2.4] D4 Performance & recompilation gate
+
+## Goal
+Audit-fw performance gate: blocking trace-count violations + recorded wall-time median.
+
+## Config
+audit/performance_targets.toml:
+```toml
+[gate]
+schema = "performance-gate-v0"
+version = "0.1.0"
+max_traces_default = 1
+
+[[probes]]
+qualname = "xtrax.sparse.inference.sparse_filter_jit"
+max_traces = 1
+# optional trace_probe = "module:callable" for custom probe inputs
+```
+
+## Code
+- src/xtrax/devtools/gates/performance.py
+  - load_performance_targets(path)
+  - run_trace_probe(qualname, max_traces, trace_probe?) using chex.assert_max_traces (import logic from audit_port_trace_count or factor shared helper into gates/_trace_probe.py)
+  - run_performance_gate(targets_path, audits_path, baseline_path) -> GateResult
+  - METRIC_KEY = "performance.trace_violation_count" (minimize) — count kernels failing trace gate
+  - Record wall_time_median_ms via time.perf_counter on one representative probe (recorded-not-blocked): emit info finding with payload recorded_only=true; metric performance.wall_time_median_ms (best_ever comparator) optional in baseline
+- scripts/audit_performance_gate.py CLI
+- .praxia/audit_baseline.json add performance.trace_violation_count minimize 0
+- tests/audit/test_performance_gate.py — mock trace failures; integration with stable jnp kernel passes
+- Justfile: audit-performance-gate
+
+Defer full benchmark suite; one probe timing is enough for recorded-not-blocked signal.
+
+## Verification
+- pytest tests/audit/test_performance_gate.py -v
+- just audit-performance-gate exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1584: performance_targets.toml, trace gate with baseline ratchet, recorded wall-time emit, tests + just recipe pass.
+PASS/FAIL with evidence.
+"""
+return_key = "1584"
+
+[orchestration]
+sequential = ["performance"]
+concurrent = []
