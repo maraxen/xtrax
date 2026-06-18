@@ -1,0 +1,29 @@
+[rubric]
+dimension = "performance"
+version = "0.1.0"
+dim_label = "D4 Performance & recompilation"
+
+[[anchors]]
+score = 1
+criterion = "Unbounded recompilation — structure-changing inputs inside jitted loops or scans."
+evidence_hint = "Trace-count gate fails; chex.assert_max_traces exceeded on public kernel."
+
+[[anchors]]
+score = 2
+criterion = "Frequent re-traces likely — dynamic shapes or Python closures recreated per step."
+evidence_hint = "Benchmark regression or trace probe shows >1 trace for stable workload."
+
+[[anchors]]
+score = 3
+criterion = "Acceptable for alpha — some compile cost but bounded for nominal batch shapes."
+evidence_hint = "Wall-time median recorded; trace count at baseline for default inputs."
+
+[[anchors]]
+score = 4
+criterion = "Efficient — stable traces, no redundant jit wrappers, sensible static args."
+evidence_hint = "Trace gate passes; benchmark within best-ever or recorded-not-blocked band."
+
+[[anchors]]
+score = 5
+criterion = "Optimized — minimal compile surface, documented static boundaries, probe-verified."
+evidence_hint = "Single trace on representative inputs; no JL performance-family warnings."

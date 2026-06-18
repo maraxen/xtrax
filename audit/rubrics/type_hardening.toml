@@ -1,0 +1,29 @@
+[rubric]
+dimension = "type_hardening"
+version = "0.1.0"
+dim_label = "D3 Type-hardening"
+
+[[anchors]]
+score = 1
+criterion = "Public API lacks jaxtyping annotations; beartype hook would not enforce contracts."
+evidence_hint = "Untyped public parameters/returns on exported symbols; F722/F821 risk."
+
+[[anchors]]
+score = 2
+criterion = "Sparse annotations — only some public symbols typed; shape specificity absent."
+evidence_hint = "Annotation coverage well below baseline; generic Array aliases only."
+
+[[anchors]]
+score = 3
+criterion = "Baseline annotation coverage met but shape axes underspecified."
+evidence_hint = "Coverage% passes ratchet; Float/Int used where Shaped arrays need axis names."
+
+[[anchors]]
+score = 4
+criterion = "Strong typing — public surface annotated with meaningful shape/dtype contracts."
+evidence_hint = "beartype-clean on public paths; shape-specificity% at or above baseline."
+
+[[anchors]]
+score = 5
+criterion = "Exemplary — full public annotation, shape-specific axes, diff-gate shows no regression."
+evidence_hint = "AddedTypesTest or LibCST diff shows net-new types only where justified."

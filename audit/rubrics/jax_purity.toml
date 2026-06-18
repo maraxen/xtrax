@@ -1,0 +1,29 @@
+[rubric]
+dimension = "jax_purity"
+version = "0.1.0"
+dim_label = "D2 JAX-purity & tracing"
+
+[[anchors]]
+score = 1
+criterion = "Severe tracing/purity violation — Python side effects or dynamic control flow inside jitted code."
+evidence_hint = "JL001–JL012 error, assert_not_tracing failure, or host callback in transform path."
+
+[[anchors]]
+score = 2
+criterion = "Likely recompilation or batch-contract leak; guard missing at a transform boundary."
+evidence_hint = "Trace-count probe fails, or batch-dict key drift between planner and kernel."
+
+[[anchors]]
+score = 3
+criterion = "Moderate purity risk — questionable static argument use or shape-dependent Python branch."
+evidence_hint = "jaxlint warning on static/dynamic boundary; needs human review at API edge."
+
+[[anchors]]
+score = 4
+criterion = "Minor purity smell — pattern works today but violates documented JAX idioms."
+evidence_hint = "JL warning with clear remediation; no current test failure."
+
+[[anchors]]
+score = 5
+criterion = "Clean — guards present, static args explicit, trace structure stable under probe."
+evidence_hint = "No JL findings; trace gate and assert_not_tracing checks pass for the symbol."

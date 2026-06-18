@@ -1,0 +1,29 @@
+[rubric]
+dimension = "structure_complexity"
+version = "0.1.0"
+dim_label = "D8 Structure & complexity"
+
+[[anchors]]
+score = 1
+criterion = "Unmaintainable — high cognitive complexity, import cycle, or god-module coupling."
+evidence_hint = "import-linter cycle; complexipy/ruff C901 far above ceiling."
+
+[[anchors]]
+score = 2
+criterion = "Heavy module — deep nesting, many responsibilities, poor separation."
+evidence_hint = "PLR0912/PLR0915 violations; fan-in from unrelated subsystems."
+
+[[anchors]]
+score = 3
+criterion = "Acceptable complexity — localized hotspots, no new cycles."
+evidence_hint = "At complexity baseline; net-new code within per-file ceiling."
+
+[[anchors]]
+score = 4
+criterion = "Well-factored — single responsibility, shallow call graphs on public paths."
+evidence_hint = "complexipy score improved or held; no new ruff complexity warnings."
+
+[[anchors]]
+score = 5
+criterion = "Exemplary structure — small modules, clear boundaries, easy to extend."
+evidence_hint = "Best-ever complexity ratchet tightened; advisor cites clear layering."

@@ -1,5 +1,10 @@
 {
   "metrics": {
+    "correctness.jl_violation_count": {
+      "comparator": "minimize",
+      "key": "correctness.jl_violation_count",
+      "value": 0.0
+    },
     "documentation.interrogate_coverage_pct": {
       "comparator": "maximize",
       "key": "documentation.interrogate_coverage_pct",

@@ -24,6 +24,15 @@ audit-tombstone-contract:
     uv run ruff check src/xtrax/devtools/tombstone.py tests/audit/test_tombstone_ledger.py src/xtrax/devtools/emit.py
     uv run pytest tests/audit/test_tombstone_ledger.py tests/audit/test_emit_contract.py -v
 
+audit-rubrics-contract:
+    uv run ruff check src/xtrax/devtools/rubrics.py tests/audit/test_rubric_tables.py
+    uv run pytest tests/audit/test_rubric_tables.py -v
+
+audit-correctness-gate:
+    uv run ruff check src/xtrax/devtools/gates/correctness.py scripts/audit_correctness_gate.py tests/audit/test_correctness_gate.py
+    uv run pytest tests/audit/test_correctness_gate.py -v
+    uv run python scripts/audit_correctness_gate.py --no-write-baseline
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 

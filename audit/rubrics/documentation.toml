@@ -1,0 +1,29 @@
+[rubric]
+dimension = "documentation"
+version = "0.1.0"
+dim_label = "D5 Documentation"
+
+[[anchors]]
+score = 1
+criterion = "Missing or misleading docs on modified public API; interrogate/ruff D failures."
+evidence_hint = "No module/class docstring; JD/JM jaxlint errors on changed symbols."
+
+[[anchors]]
+score = 2
+criterion = "Placeholder docstrings — presence without meaning; coverage below ratchet."
+evidence_hint = "One-line stubs; interrogate coverage% below baseline."
+
+[[anchors]]
+score = 3
+criterion = "Adequate mechanical docs — parameters listed but examples/math missing."
+evidence_hint = "Passes interrogate gate; RubricScorer notes thin Args/Returns sections."
+
+[[anchors]]
+score = 4
+criterion = "Good docs — clear API description, shapes noted, one worked example."
+evidence_hint = "LLM-judge score ≥4 with RubricScorer evidence on diff-modified files."
+
+[[anchors]]
+score = 5
+criterion = "Exemplary — narrative + math (JM) where needed; cross-links and invariants stated."
+evidence_hint = "Reviewer cites concrete doc improvements; no JD/JM errors on public surface."

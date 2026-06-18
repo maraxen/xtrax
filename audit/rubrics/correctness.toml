@@ -1,0 +1,29 @@
+[rubric]
+dimension = "correctness"
+version = "0.1.0"
+dim_label = "D1 Correctness / bug-surface"
+
+[[anchors]]
+score = 1
+criterion = "No executable evidence; claims are speculative or contradicted by passing tests."
+evidence_hint = "Reviewer cannot cite a failing pytest or reproducible failure mode."
+
+[[anchors]]
+score = 2
+criterion = "Weak signal only — stylistic concern or hypothetical bug without a concrete repro path."
+evidence_hint = "Observation logged; no failing test and no jaxlint JL error at the site."
+
+[[anchors]]
+score = 3
+criterion = "Plausible bug-surface issue with partial evidence (static JL hit or flaky repro)."
+evidence_hint = "jaxlint JL error or intermittent pytest failure; promotion to bug label pending."
+
+[[anchors]]
+score = 4
+criterion = "Strong correctness concern with deterministic static or metamorphic evidence."
+evidence_hint = "JL violation with clear message, or property-test counterexample on a public API."
+
+[[anchors]]
+score = 5
+criterion = "Confirmed defect — failing pytest reproduces the issue on the cited symbol."
+evidence_hint = "Pull-based empirical oracle: minimal failing test committed or attached to finding."

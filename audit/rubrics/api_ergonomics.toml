@@ -1,0 +1,29 @@
+[rubric]
+dimension = "api_ergonomics"
+version = "0.1.0"
+dim_label = "D6 API ergonomics"
+
+[[anchors]]
+score = 1
+criterion = "Hostile API — too many positional params, unclear defaults, leaky internals exposed."
+evidence_hint = ">5 required params; callers must know implementation details."
+
+[[anchors]]
+score = 2
+criterion = "Awkward surface — inconsistent naming, Config objects fragmented across modules."
+evidence_hint = "code-architecture-advisor flags param sprawl or parallel config types."
+
+[[anchors]]
+score = 3
+criterion = "Usable but uneven — public API works with boilerplate the skill could hide."
+evidence_hint = "≤5 params on main entrypoints; minor naming inconsistencies."
+
+[[anchors]]
+score = 4
+criterion = "Cohesive — small composable types, kwargs where appropriate, clear defaults."
+evidence_hint = "Advisor score 4; new user can call primary API without reading internals."
+
+[[anchors]]
+score = 5
+criterion = "Delightful — minimal surface, discoverable patterns, matches xtrax skill idioms."
+evidence_hint = "Advisor score 5; exemplar compared to peer modules in the same layer."

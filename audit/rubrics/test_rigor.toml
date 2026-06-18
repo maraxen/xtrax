@@ -1,0 +1,29 @@
+[rubric]
+dimension = "test_rigor"
+version = "0.1.0"
+dim_label = "D7 Test rigor & coverage"
+
+[[anchors]]
+score = 1
+criterion = "Untested public behavior — no contract test, coverage gap on changed symbols."
+evidence_hint = "pytest-cov branch% drop; registry diff shows removed tests without replacement."
+
+[[anchors]]
+score = 2
+criterion = "Happy-path only — no edge cases, property tests, or failure modes exercised."
+evidence_hint = "Single assert per symbol; mutation observation (nightly) would likely survive."
+
+[[anchors]]
+score = 3
+criterion = "Baseline coverage met — branches on changed code covered, some negative cases."
+evidence_hint = "Coverage% at ratchet; tests exist but lack parametrized invariants."
+
+[[anchors]]
+score = 4
+criterion = "Strong suite — contract tests for public API, graded parity where applicable."
+evidence_hint = "test-designer score 4; edge shapes and error paths explicitly asserted."
+
+[[anchors]]
+score = 5
+criterion = "Rigorous — property/metamorphic tests, mutation-resistant critical paths."
+evidence_hint = "Designer score 5; failing test reproduces any promoted correctness finding."
