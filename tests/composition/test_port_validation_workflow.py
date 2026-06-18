@@ -44,7 +44,6 @@ def test_port_validation_js_exists_with_seven_phases() -> None:
     assert "validatePortHookPayload" in js
     assert "port/docs/hook_schema_port_validation.md" in js
     assert "audit/routing.toml" in js
-    phase_titles = re.findall(r"title:\s*\"([^\"]+)\"", js)
     meta_block = js.split("export const meta")[1].split("};")[0]
     meta_titles = re.findall(r"title:\s*\"([^\"]+)\"", meta_block)
     assert len(meta_titles) == 7

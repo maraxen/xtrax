@@ -1,0 +1,105 @@
+[sprint]
+sprint_id = "260619_audit-n1-baseline-engine"
+sprint_num = 8
+name = "xtrax Loop Sprint 8: N1.2 baseline engine + audit_baseline.json"
+description = "Single track: #1578 baseline ratchet substrate with per-metric comparators."
+context = """
+Autonomous loop task_id: 260617_xtrax-composition-mission
+Epic: audit-framework-foundation (#1573)
+Spec: .praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md
+  (baseline-JSON ratchet with per-metric comparators — settled structure)
+Depends: #1577 N1.1 emit envelope (completed)
+PATH: src/xtrax/devtools/baseline.py (alongside emit.py)
+L1 autonomous — no gate wait.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "baseline"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1578"
+phase_name = "[audit-fw N1.2] baseline engine + per-metric comparators + audit_baseline.json"
+workflow_hint = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1578 [audit-fw N1.2] baseline engine + per-metric comparators + audit_baseline.json
+
+Spec: .praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md
+Reference pattern: src/xtrax/devtools/emit.py (N1.1), tests/audit/test_emit_contract.py
+
+## Goal
+Implement the baseline-JSON ratchet substrate: load/save `.praxia/audit_baseline.json`, per-metric
+comparators (`minimize`, `maximize`, `best_ever`), and loud-fail on schema drift (reuse
+`assert_schema_version_compatible` from xtrax.devtools.emit).
+
+## File anchors
+- src/xtrax/devtools/baseline.py (new module)
+- .praxia/audit_baseline.json (seed baseline with schema_version=1 and 2-3 example metrics)
+- tests/audit/test_baseline_engine.py (contract tests)
+- Justfile (`just audit-baseline-contract` recipe)
+- pyproject.toml (ensure devtools stays wheel-excluded; coverage omit if needed)
+
+## API (baseline.py)
+1. `BASELINE_SCHEMA_VERSION = 1`
+2. `Comparator = Literal["minimize", "maximize", "best_ever"]`
+3. `@dataclass MetricEntry: key: str, value: float, comparator: Comparator`
+4. `@dataclass AuditBaseline: schema_version: int, updated_at: str, metrics: dict[str, MetricEntry]`
+5. `load_baseline(path: Path = Path(".praxia/audit_baseline.json")) -> AuditBaseline`
+6. `save_baseline(baseline: AuditBaseline, path: Path = ...) -> None` (atomic tmp-rename write)
+7. `compare_metric(baseline_value: float, observed: float, comparator: Comparator) -> bool`
+   - minimize: observed <= baseline_value passes (regression if observed > baseline)
+   - maximize: observed >= baseline_value passes
+   - best_ever: passes if observed improves baseline in comparator's favorable direction
+     (same as minimize/maximize semantics but also returns whether baseline should tighten)
+8. `evaluate_metric(baseline: AuditBaseline, key: str, observed: float) -> tuple[bool, bool]`
+   returns (passes_gate, should_update_baseline)
+9. `update_metric(baseline: AuditBaseline, key: str, observed: float, comparator: Comparator) -> AuditBaseline`
+   - creates entry if missing (bootstrap)
+   - tightens per comparator when observed is strictly better
+10. `assert_baseline_schema_compatible(record_version: int) -> None` — delegates to emit helper
+
+## Seed audit_baseline.json
+Include at least:
+- `jax_purity.jl_violation_count` comparator=minimize value=0
+- `type_hardening.annotation_coverage_pct` comparator=maximize value=0.0
+- `documentation.interrogate_coverage_pct` comparator=maximize value=0.0
+
+## Tests (test_baseline_engine.py)
+- Round-trip load/save preserves metrics
+- minimize: higher observed fails; lower passes and tightens on update
+- maximize: lower observed fails; higher passes and tightens
+- schema_version mismatch loud-fails (SchemaVersionMismatchError)
+- missing metric bootstraps on first evaluate/update
+- atomic save does not leave corrupt partial file (use tmp_path)
+
+## Verification
+- `uv run ruff check src/xtrax/devtools/baseline.py tests/audit/test_baseline_engine.py`
+- `uv run pytest tests/audit/test_baseline_engine.py -v`
+- `just audit-baseline-contract` exits 0
+
+Do NOT commit — orchestrator commits after reviewer PASS.
+Suggested commit message: feat(audit): N1.2 baseline engine + audit_baseline.json (#1578)
+"""
+reviewer_prompt = """
+VERIFY #1578 [audit-fw N1.2] baseline engine:
+
+1. `src/xtrax/devtools/baseline.py` exists with load/save, compare_metric, evaluate_metric, update_metric
+2. `.praxia/audit_baseline.json` exists with schema_version=1 and >=3 seeded metrics
+3. Comparators minimize/maximize/best_ever behave per spec (tests prove regression detection)
+4. Schema drift raises SchemaVersionMismatchError (not silent skip)
+5. `tests/audit/test_baseline_engine.py` passes
+6. `just audit-baseline-contract` exits 0
+7. ruff clean on new files
+
+PASS if all seven checks hold with command evidence. FAIL otherwise listing which check failed.
+"""
+return_key = "1578"
+
+[orchestration]
+sequential = ["baseline"]
+concurrent = []

@@ -69,9 +69,9 @@ slug = "audit-framework-foundation"
 title = "EPIC: xtrax systematic audit framework (N0–N5 foundation + judgment track)"
 backlog_id = 1573
 status = "active"
-phase = "N0_wave2_complete"
+phase = "N1_baseline_landed"
 child_backlog_ids = [1573, 1574, 1575, 1576]
-notes = "N0.1–N0.4 closed in loop iteration 2 (autonomous). Next: N1.1 audit emit envelope (#1577) + #2177 graph metadata schema."
+notes = "N0.1–N0.4 closed iter2; N1.1 emit (#1577) + node metadata (#2177) closed iter3; N1.2 baseline (#1578) closed iter8. Next: N1.3 routing matrix (#1579) or N2 dimension gates."
 
 [[queue]]
 rank = 2
@@ -106,7 +106,7 @@ slug = "implementation-validation-pipeline"
 title = "EPIC [research]: Implementation validation pipeline (robust jax-port + audit integration)"
 backlog_id = 2180
 status = "queued"
-phase = "wave1_complete"
+phase = "wave2_complete"
 depends_on_epics = ["audit-framework-foundation"]
 spec_path = ".praxia/docs/specs/260618_hmw-design-unified-implementation-valida.md"
 design_path = ".praxia/docs/designs/260618_2180_port_validation_design.md"
