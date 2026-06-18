@@ -9,7 +9,7 @@
 
 [matrix]
 schema = "cc5-routing-v0"
-version = "0.1.0"
+version = "0.2.0"
 
 # --- domain=port (implementation validation / parity wave) ---
 
@@ -44,4 +44,54 @@ track = "deterministic"
 severity = "info"
 signal = "label"
 condition = "observation"
+destination = "found_issues"
+
+# --- domain=dimension (default track×severity matrix) ---
+
+[[routes]]
+domain = "dimension"
+track = "deterministic"
+severity = "critical"
+destination = "block_ci"
+
+[[routes]]
+domain = "dimension"
+track = "deterministic"
+severity = "major"
+destination = "block_ci"
+
+[[routes]]
+domain = "dimension"
+track = "deterministic"
+severity = "minor"
+destination = "found_issues"
+
+[[routes]]
+domain = "dimension"
+track = "deterministic"
+severity = "info"
+destination = "found_issues"
+
+[[routes]]
+domain = "dimension"
+track = "judgment"
+severity = "critical"
+destination = "backlog_node"
+
+[[routes]]
+domain = "dimension"
+track = "judgment"
+severity = "major"
+destination = "backlog_node"
+
+[[routes]]
+domain = "dimension"
+track = "judgment"
+severity = "minor"
+destination = "found_issues"
+
+[[routes]]
+domain = "dimension"
+track = "judgment"
+severity = "info"
 destination = "found_issues"

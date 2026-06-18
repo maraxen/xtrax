@@ -16,6 +16,14 @@ audit-emit-contract:
 audit-baseline-contract:
     uv run pytest tests/audit/test_baseline_engine.py -v
 
+audit-routing-contract:
+    uv run ruff check src/xtrax/devtools/routing.py tests/audit/test_routing_toml.py tests/audit/test_routing_engine.py
+    uv run pytest tests/audit/test_routing_toml.py tests/audit/test_routing_engine.py -v
+
+audit-tombstone-contract:
+    uv run ruff check src/xtrax/devtools/tombstone.py tests/audit/test_tombstone_ledger.py src/xtrax/devtools/emit.py
+    uv run pytest tests/audit/test_tombstone_ledger.py tests/audit/test_emit_contract.py -v
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 

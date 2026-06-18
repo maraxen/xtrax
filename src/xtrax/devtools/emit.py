@@ -167,8 +167,16 @@ def emit_judgment_finding(
 def append_finding(
     record: AuditFinding,
     audits_path: Path = Path(".praxia/audits.jsonl"),
+    tombstone_path: Path | None = None,
 ) -> None:
     """Append one JSONL finding record (port/#2180 delegation target)."""
+    from xtrax.devtools.tombstone import DEFAULT_TOMBSTONE_PATH, is_tombstoned
+
+    resolved_tombstone_path = (
+        DEFAULT_TOMBSTONE_PATH if tombstone_path is None else tombstone_path
+    )
+    if is_tombstoned(record.finding_id, path=resolved_tombstone_path):
+        return
     audits_path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(finding_to_dict(record), sort_keys=True)
     with audits_path.open("a", encoding="utf-8") as handle:
