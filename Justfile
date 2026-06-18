@@ -33,6 +33,11 @@ audit-correctness-gate:
     uv run pytest tests/audit/test_correctness_gate.py -v
     uv run python scripts/audit_correctness_gate.py --no-write-baseline
 
+audit-jax-purity-gate:
+    uv run ruff check src/xtrax/devtools/gates/_jaxlint.py src/xtrax/devtools/gates/jax_purity.py scripts/audit_jax_purity_gate.py tests/audit/test_jax_purity_gate.py
+    uv run pytest tests/audit/test_jax_purity_gate.py tests/audit/test_correctness_gate.py -v
+    uv run python scripts/audit_jax_purity_gate.py --no-write-baseline
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 

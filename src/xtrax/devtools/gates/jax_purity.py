@@ -1,7 +1,8 @@
-"""D1 correctness gate: jaxlint JL count + baseline ratchet (N2.1 / #1581)."""
+"""D2 JAX-purity gate: jaxlint JL001–JL012 + baseline ratchet (N2.2 / #1582)."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,8 +23,10 @@ from xtrax.devtools.gates._jaxlint import (
     run_jaxlint_json as _run_jaxlint_json,
 )
 
-METRIC_KEY = "correctness.jl_violation_count"
-DIMENSION = "correctness"
+METRIC_KEY = "jax_purity.jl_violation_count"
+DIMENSION = "jax_purity"
+
+_JL_PURITY_RULE = re.compile(r"^JL00[1-9]$|^JL01[0-2]$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,18 +38,18 @@ class GateResult:
     metric_key: str = METRIC_KEY
 
 
-def filter_jl_errors(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep jaxlint error findings whose rule_id starts with JL."""
+def filter_jl_purity_errors(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep jaxlint error findings for purity rules JL001–JL012 inclusive."""
     errors: list[dict[str, Any]] = []
     for finding in findings:
         rule_id = str(finding.get("rule_id", ""))
         severity = str(finding.get("severity", "")).lower()
-        if rule_id.startswith("JL") and severity == "error":
+        if _JL_PURITY_RULE.match(rule_id) and severity == "error":
             errors.append(finding)
     return errors
 
 
-def run_correctness_gate(
+def run_jax_purity_gate(
     target: Path,
     audits_path: Path,
     baseline_path: Path = DEFAULT_BASELINE_PATH,
@@ -55,10 +58,10 @@ def run_correctness_gate(
     run_id: str | None = None,
     write_baseline: bool = True,
 ) -> GateResult:
-    """Run jaxlint JL error count, emit findings, evaluate baseline ratchet."""
+    """Run jaxlint JL001–JL012 error count, emit findings, evaluate baseline ratchet."""
     resolved_root = root or Path.cwd()
     raw_findings = _run_jaxlint_json(target.resolve(), root=resolved_root)
-    jl_errors = filter_jl_errors(raw_findings)
+    jl_errors = filter_jl_purity_errors(raw_findings)
     violation_count = len(jl_errors)
 
     emitted = 0
@@ -72,7 +75,7 @@ def run_correctness_gate(
             evidence=message,
             rule_id=rule_id,
             symbol_qualname="",
-            payload={"violation_kind": "jaxlint_jl"},
+            payload={"violation_kind": "jaxlint_jl_purity"},
             run_id=run_id,
         )
         append_finding(record, audits_path=audits_path)
