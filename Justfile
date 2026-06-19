@@ -97,6 +97,11 @@ audit-empirical-oracle:
     uv run pytest tests/audit/test_empirical_oracle.py -v
     uv run python scripts/audit_empirical_oracle.py --self-test
 
+audit-docs-judgment:
+    uv run ruff check src/xtrax/devtools/docs_judgment.py scripts/audit_docs_judgment.py tests/audit/test_docs_judgment.py
+    uv run pytest tests/audit/test_docs_judgment.py -v
+    uv run python scripts/audit_docs_judgment.py --self-test --no-emit
+
 audit-ruff-schedule:
     uv run ruff check src/xtrax/devtools/ruff_schedule.py scripts/audit_ruff_schedule.py tests/audit/test_ruff_schedule.py
     uv run pytest tests/audit/test_ruff_schedule.py -v

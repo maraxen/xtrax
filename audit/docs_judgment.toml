@@ -1,0 +1,12 @@
+# Documentation judgment pipeline (audit-fw spec N4.5 #1596).
+# Stage 1: RubricScorer structural score from jaxlint JD/JM + interrogate coverage.
+# Stage 2: injectable semantic judge (stub in CI; reviewer agent in production).
+
+[judgment]
+schema_version = 1
+version = "0.1.0"
+dimension = "documentation"
+agent_role = "reviewer"
+pass_threshold = 4
+rubric_path = "audit/rubrics/documentation.toml"
+structural_signals = ["jd_jm_errors", "interrogate_coverage_pct"]
