@@ -79,12 +79,12 @@ slug = "distribution-readiness"
 title = "EPIC: xtrax distribution readiness (N0–N10 release convergence)"
 backlog_id = 1451
 status = "active"
-phase = "N7_complete"
+phase = "N10_audit_complete"
 depends_on_epic = 1573
-child_backlog_ids = [1451, 1452, 1453, 1455, 1454, 1462]
+child_backlog_ids = [1451, 1452, 1453, 1455, 1454]
 spec_path = ".praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md"
 skills = ["using-xtrax", "verification-before-completion"]
-notes = "N7 publish OIDC gate complete (#1461). BLOCKED: no push/tag until #1462 epic audit + #1454 human OIDC config."
+notes = "N10 release-readiness audit complete (#1462). Verdict BLOCKED: ruff/ty + human #1454. See .praxia/release_readiness_report.md"
 
 [[queue]]
 rank = 3
