@@ -1,0 +1,189 @@
+[readiness]
+version = "0.1.0"
+epic_id = 1451
+epic_title = "xtrax distribution readiness (N0-N10)"
+report_json = ".praxia/release_readiness_report.json"
+report_markdown = ".praxia/release_readiness_report.md"
+prerequisite_sync = ["dev", "eda"]
+prerequisite_groups = ["docs"]
+
+[readiness.verdict]
+require_automated_pass = true
+block_on_open_human_gates = true
+
+[[backlog_items]]
+id = 1451
+slug = "n0_coverage_hygiene"
+title = "[N0] Remove stale committed .coverage + gitignore coverage artifacts"
+gate = "audit-coverage-hygiene"
+expected_status = "completed"
+blocking = true
+
+[[backlog_items]]
+id = 1452
+slug = "n1_version_wheel"
+title = "[N1] Version single-sourcing + wheel verification"
+gate = "audit-version-wheel"
+expected_status = "completed"
+blocking = true
+
+[[backlog_items]]
+id = 1453
+slug = "n3_public_api"
+title = "[N3] Hybrid + lazy public API surface"
+gate = "audit-public-api"
+expected_status = "completed"
+blocking = true
+
+[[backlog_items]]
+id = 1455
+slug = "n2_packaging_metadata"
+title = "[N2] Apache-2.0 LICENSE + pyproject metadata + py.typed-in-wheel"
+gate = "audit-packaging-metadata"
+expected_status = "completed"
+blocking = true
+
+[[backlog_items]]
+id = 1457
+slug = "n4a_docs_plumbing"
+title = "[N4a] Sphinx autodoc plumbing + docs CI -W"
+gate = "audit-docs-build"
+expected_status = "completed"
+blocking = true
+slow = true
+
+[[backlog_items]]
+id = 1458
+slug = "n4b_narrative_docs"
+title = "[N4b] Narrative docs prose (quickstart + architecture)"
+gate = "audit-narrative-docs"
+expected_status = "completed"
+blocking = true
+
+[[backlog_items]]
+id = 1459
+slug = "n5_output_sink_docs"
+title = "[N5] Output-sink docs + re-export doctests in CI"
+gate = "audit-output-sink-docs"
+expected_status = "completed"
+blocking = true
+
+[[backlog_items]]
+id = 1460
+slug = "n8_project_hygiene"
+title = "[N8] README/CHANGELOG/CONTRIBUTING/CITATION hygiene"
+gate = "audit-project-hygiene"
+expected_status = "completed"
+blocking = true
+
+[[backlog_items]]
+id = 1461
+slug = "n7_publish_oidc"
+title = "[N7] publish.yml OIDC Trusted Publishing (TestPyPI -> PyPI)"
+gate = "audit-publish-oidc"
+expected_status = "completed"
+blocking = true
+
+[[backlog_items]]
+id = 1454
+slug = "n9_human_oidc"
+title = "[N9] Configure PyPI + TestPyPI OIDC Trusted Publisher (human gate)"
+gate_type = "human"
+expected_status = "open"
+blocking = true
+notes = "One-time Trusted Publisher config on TestPyPI and PyPI before first tag push."
+
+[[backlog_items]]
+id = 1462
+slug = "n10_release_readiness"
+title = "[N10] Epic-done release-readiness gate (convergence)"
+gate_type = "meta"
+expected_status = "in_progress"
+blocking = true
+notes = "This convergence audit; completes when report is generated and blockers are tracked."
+
+[[automated_checks]]
+name = "import_cycles"
+recipe = "audit-imports"
+category = "foundation"
+blocking = true
+
+[[automated_checks]]
+name = "no_future_annotations"
+recipe = "audit-no-future-annotations"
+category = "foundation"
+blocking = true
+
+[[automated_checks]]
+name = "jaxlint_performance"
+recipe = "audit-jaxlint"
+category = "foundation"
+blocking = true
+
+[[automated_checks]]
+name = "ruff_lint"
+command = "uv run ruff check ."
+category = "ci_lint"
+blocking = true
+
+[[automated_checks]]
+name = "ruff_format"
+command = "uv run ruff format --check ."
+category = "ci_lint"
+blocking = true
+
+[[automated_checks]]
+name = "ty_check"
+command = "uv run ty check src/"
+category = "ci_lint"
+blocking = true
+
+[[automated_checks]]
+name = "coverage_tier1"
+recipe = "audit-coverage-tier1"
+category = "coverage"
+blocking = true
+slow = true
+
+[[automated_checks]]
+name = "coverage_tier2"
+recipe = "audit-coverage-tier2"
+category = "coverage"
+blocking = true
+slow = true
+
+[[automated_checks]]
+name = "io_reexport_doctest"
+command = "uv run pytest --doctest-modules src/xtrax/io/ -q"
+category = "docs"
+blocking = true
+
+[[automated_checks]]
+name = "audit_contracts"
+recipe = "audit-deterministic"
+category = "deterministic_track"
+blocking = true
+slow = true
+
+[[automated_checks]]
+name = "added_types_diff"
+recipe = "audit-added-types-diff"
+category = "type_hardening"
+blocking = true
+
+[readiness.workflow_markers]
+ci_workflow = ".github/workflows/ci.yml"
+publish_workflow = ".github/workflows/publish.yml"
+docs_workflow = ".github/workflows/docs.yml"
+required_ci_markers = [
+  "audit-deterministic",
+  "audit-coverage-tier1",
+  "audit-coverage-tier2",
+  "--doctest-modules src/xtrax/io/",
+]
+required_publish_markers = [
+  "publish-testpypi",
+  "publish-pypi",
+  "id-token: write",
+  "test.pypi.org/legacy",
+]

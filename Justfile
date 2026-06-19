@@ -2,7 +2,7 @@
 
 # Foundation audit gates (N0)
 audit-imports:
-    uv run lint-imports
+    uv run --extra dev lint-imports
 
 audit-no-future-annotations:
     uv run pytest tests/audit/test_no_future_annotations.py -v
@@ -170,6 +170,11 @@ audit-publish-oidc:
     uv run ruff check scripts/audit_publish_oidc.py tests/distribution/test_publish_oidc.py
     uv run pytest tests/distribution/test_publish_oidc.py -v
     uv run python scripts/audit_publish_oidc.py
+
+audit-release-readiness:
+    uv run ruff check scripts/audit_release_readiness.py tests/distribution/test_release_readiness.py
+    uv run pytest tests/distribution/test_release_readiness.py -v
+    uv run python scripts/audit_release_readiness.py
 
 audit-coverage-dag:
     uv run python scripts/audit_coverage_dag.py
