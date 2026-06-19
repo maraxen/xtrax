@@ -12,6 +12,7 @@ def test_justfile_defines_audit_deterministic_recipe() -> None:
         "audit-imports",
         "audit-no-future-annotations",
         "audit-jaxlint",
+        "audit-coverage-hygiene",
         "pytest tests/audit/",
         "audit-bootstrap-dry",
         "audit-ruff-schedule",

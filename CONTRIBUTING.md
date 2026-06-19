@@ -45,7 +45,7 @@ The project enforces a minimum of **90% code coverage**. Coverage reports are ge
 uv run pytest
 ```
 
-The HTML coverage report is available at `.coverage_html/index.html`.
+The HTML coverage report is available at `.coverage_html/index.html`. Coverage artifacts (`.coverage`, `coverage.xml`, `.coverage_html/`) are local-only and must not be committed.
 
 ## Documentation
 

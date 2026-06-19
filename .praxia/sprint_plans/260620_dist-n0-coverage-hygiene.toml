@@ -1,0 +1,65 @@
+[sprint]
+sprint_id = "260620_dist-n0-coverage-hygiene"
+sprint_num = 28
+name = "xtrax Loop Sprint 28: Distribution N0 coverage hygiene"
+description = "Enforce no committed coverage artifacts + gitignore contract (#1451)."
+context = """
+task_id: 260617_xtrax-composition-mission
+Epic pivot: distribution-readiness #1451 (child #1451 N0).
+.gitignore already lists .coverage, coverage.xml, .coverage_html/.
+.coverage was untracked in d30df73 — need durable gate so stale artifacts cannot re-enter.
+Spec AC: git ls-files has zero .coverage; gitignore contains patterns; gate in CI track.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "coverage_hygiene"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1451"
+phase_name = "[N0] Remove stale committed .coverage + gitignore coverage artifacts"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1451 [N0] Remove stale committed .coverage + gitignore coverage artifacts
+
+## Goal
+Durable enforcement that coverage artifacts are never committed; prerequisite for future 90% gate (#1456).
+
+## Deliverables
+1. `distribution/coverage_hygiene.toml` — [hygiene] version, required_gitignore_patterns=[.coverage, coverage.xml, .coverage_html/], forbidden_tracked_globs
+
+2. `scripts/audit_coverage_hygiene.py`
+   - load config from distribution/coverage_hygiene.toml
+   - assert each required pattern appears in .gitignore (line match or path suffix)
+   - run `git ls-files` and fail if any tracked path matches forbidden patterns (.coverage, coverage.xml, .coverage_html/*)
+   - CLI exits 0 with PASS message
+
+3. `tests/distribution/test_coverage_hygiene.py` — unit tests for gitignore check + tracked-file scan (use tmp repos)
+
+4. `Justfile`: `audit-coverage-hygiene` recipe
+
+5. Wire `just audit-coverage-hygiene` into `audit-deterministic` (after foundation gates)
+
+6. CONTRIBUTING.md — one line noting coverage artifacts are local-only (if not already clear)
+
+## Verification
+- pytest tests/distribution/test_coverage_hygiene.py -v
+- just audit-coverage-hygiene exits 0
+- just audit-deterministic still passes
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1451: hygiene gate, tests, just recipe, audit-deterministic wired. PASS/FAIL.
+"""
+return_key = "1451"
+
+[orchestration]
+sequential = ["coverage_hygiene"]
+concurrent = []

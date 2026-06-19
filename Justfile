@@ -129,8 +129,11 @@ audit-graph-auditor:
 audit-foundation: audit-imports audit-no-future-annotations audit-jaxlint
     uv run pytest tests/audit/ -v
 
+audit-coverage-hygiene:
+    uv run python scripts/audit_coverage_hygiene.py
+
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-coverage-hygiene
     uv run pytest tests/audit/ -v
     just audit-bootstrap-dry
     just audit-ruff-schedule

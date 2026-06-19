@@ -1,0 +1,4 @@
+[hygiene]
+version = "0.1.0"
+required_gitignore_patterns = [".coverage", "coverage.xml", ".coverage_html/"]
+forbidden_tracked_globs = [".coverage", "coverage.xml", ".coverage_html/*"]
