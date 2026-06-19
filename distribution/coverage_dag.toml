@@ -1,5 +1,5 @@
 [dag]
-version = "0.1.0"
+version = "0.2.0"
 state_path = ".praxia/coverage_last_measured.json"
 
 [[tiers]]
@@ -11,21 +11,32 @@ pytest_args = ["tests/audit/", "-q"]
 
 [[tiers]]
 id = "tier1_core"
-description = "Core product tests (blocking target for future gate)"
+description = "Shipped product code (excludes optional eda + dev-only devtools)"
 measure_coverage = true
 uv_sync_extras = ["dev"]
 pytest_args = ["tests/", "-q", "--ignore=tests/eda", "--ignore=port/tests"]
+coverage_packages = ["xtrax"]
+coverage_omit = [
+    "*/xtrax/eda/*",
+    "*/xtrax/devtools/*",
+    "*/tests/*",
+    "*/__init__.py",
+]
 target_line_pct = 90.0
-target_branch_pct = 75.0
-enforce_line_pct = 85.0
-enforce_branch_pct = 65.0
+target_branch_pct = 80.0
+enforce_line_pct = 90.0
+enforce_branch_pct = 80.0
 
 [[tiers]]
 id = "tier2_eda"
-description = "EDA optional-extra tests"
+description = "EDA optional-extra (measured separately; enforcement next)"
 measure_coverage = true
 uv_sync_extras = ["dev", "eda"]
 pytest_args = ["tests/eda/", "-q"]
+coverage_packages = ["xtrax.eda"]
+coverage_omit = ["*/tests/*", "*/__init__.py"]
+target_line_pct = 90.0
+target_branch_pct = 75.0
 
 [[tiers]]
 id = "tier3_port"

@@ -75,3 +75,12 @@ State is written to `.praxia/coverage_last_measured.json` on each `just audit-co
 - `audit-deterministic` — runs coverage DAG report **after** `tests/audit/` (exit 0)
 
 **Explicitly deferred:** `.github/workflows/ci.yml` `--cov-fail-under=90` unchanged.
+
+---
+
+## Phase 2 delivered (sprint 34 — #2333)
+
+- **Scoped tier1 gate:** `just audit-coverage-tier1` enforces **90% line / 80% branch** on shipped product only (`xtrax` minus `eda` + `devtools`).
+- **CI:** `lint-format-type-test` job runs `just audit-coverage-tier1` instead of monolithic `--cov-fail-under=90`.
+- **Measured (2026-06-19):** tier1_core **95.2%** line / **89.4%** branch, 792 tests, 0 failures.
+- **Deferred:** tier2_eda enforcement (separate tier, next iteration).

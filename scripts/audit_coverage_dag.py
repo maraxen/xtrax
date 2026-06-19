@@ -28,6 +28,8 @@ class Tier:
     measure_coverage: bool
     uv_sync_extras: tuple[str, ...]
     pytest_args: tuple[str, ...]
+    coverage_packages: tuple[str, ...] = ()
+    coverage_omit: tuple[str, ...] = ()
     target_line_pct: float | None = None
     target_branch_pct: float | None = None
     enforce_line_pct: float | None = None
@@ -108,6 +110,26 @@ def load_coverage_dag(config_path: Path) -> CoverageDag:
         if not all(isinstance(item, str) and item for item in pytest_args):
             raise ValueError(f"tiers[{tier_id!r}].pytest_args must contain strings")
 
+        packages = raw.get("coverage_packages", [])
+        if packages is None:
+            packages = []
+        if not isinstance(packages, list):
+            raise ValueError(f"tiers[{tier_id!r}].coverage_packages must be a list")
+        if measure_coverage and not packages:
+            raise ValueError(
+                f"tiers[{tier_id!r}].coverage_packages required when measure_coverage=true"
+            )
+        if not all(isinstance(item, str) and item for item in packages):
+            raise ValueError(f"tiers[{tier_id!r}].coverage_packages must contain strings")
+
+        omit = raw.get("coverage_omit", [])
+        if omit is None:
+            omit = []
+        if not isinstance(omit, list):
+            raise ValueError(f"tiers[{tier_id!r}].coverage_omit must be a list")
+        if not all(isinstance(item, str) and item for item in omit):
+            raise ValueError(f"tiers[{tier_id!r}].coverage_omit must contain strings")
+
         tiers.append(
             Tier(
                 id=tier_id,
@@ -115,6 +137,8 @@ def load_coverage_dag(config_path: Path) -> CoverageDag:
                 measure_coverage=measure_coverage,
                 uv_sync_extras=tuple(extras),
                 pytest_args=tuple(pytest_args),
+                coverage_packages=tuple(packages),
+                coverage_omit=tuple(omit),
                 target_line_pct=_optional_float(
                     raw.get("target_line_pct"), "target_line_pct", tier_id
                 ),
@@ -148,6 +172,21 @@ def run_uv_sync(root: Path, extras: tuple[str, ...]) -> tuple[bool, str]:
     return True, ""
 
 
+def write_coverage_config(path: Path, tier: Tier) -> None:
+    """Write a tier-scoped coverage config (omit/source packages)."""
+    lines = ["[run]", "branch = True"]
+    if tier.coverage_packages:
+        if len(tier.coverage_packages) == 1:
+            lines.append(f"source = {tier.coverage_packages[0]}")
+        else:
+            lines.append("source =")
+            lines.extend(f"    {package}" for package in tier.coverage_packages)
+    if tier.coverage_omit:
+        lines.append("omit =")
+        lines.extend(f"    {pattern}" for pattern in tier.coverage_omit)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def run_tier_pytest(
     root: Path,
     tier: Tier,
@@ -167,6 +206,7 @@ def run_tier_pytest(
     env = {**os.environ, "PYTEST_ADDOPTS": ""}
     cmd = ["uv", "run", "pytest", *tier.pytest_args, "-o", "addopts="]
     cov_path: Path | None = None
+    cov_config_path: Path | None = None
 
     if tier.measure_coverage:
         handle = tempfile.NamedTemporaryFile(
@@ -176,10 +216,20 @@ def run_tier_pytest(
         )
         cov_path = Path(handle.name)
         handle.close()
+        config_handle = tempfile.NamedTemporaryFile(
+            suffix=".ini",
+            prefix="coverage-dag-config-",
+            delete=False,
+        )
+        cov_config_path = Path(config_handle.name)
+        config_handle.close()
+        write_coverage_config(cov_config_path, tier)
+        for package in tier.coverage_packages:
+            cmd.append(f"--cov={package}")
         cmd.extend(
             [
-                "--cov=xtrax",
                 "--cov-branch",
+                f"--cov-config={cov_config_path}",
                 f"--cov-report=json:{cov_path}",
             ]
         )
@@ -216,6 +266,8 @@ def run_tier_pytest(
     finally:
         if cov_path is not None:
             cov_path.unlink(missing_ok=True)
+        if cov_config_path is not None:
+            cov_config_path.unlink(missing_ok=True)
 
 
 def evaluate_enforce(tier: Tier, result: TierResult) -> TierResult:
@@ -223,6 +275,10 @@ def evaluate_enforce(tier: Tier, result: TierResult) -> TierResult:
         return result
 
     failures: list[str] = []
+    if result.tests_failed > 0 or result.pytest_exit_code != 0:
+        failures.append(
+            f"pytest failed ({result.tests_failed} failures, exit {result.pytest_exit_code})"
+        )
     if tier.enforce_line_pct is not None:
         if result.line_pct is None:
             failures.append("line coverage missing")
