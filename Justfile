@@ -82,6 +82,11 @@ validate-node-metadata-schema:
 validate-episodic-memory-contract:
     uv run python scripts/load_episodic_memory_contract.py
 
+audit-graph-auditor:
+    uv run ruff check scripts/graph_auditor.py tests/composition/conftest.py tests/composition/test_graph_auditor.py
+    uv run pytest tests/composition/test_graph_auditor.py -v
+    uv run python scripts/graph_auditor.py .praxia/composition/samples/valid_graph.json
+
 audit-foundation: audit-imports audit-no-future-annotations audit-jaxlint
     uv run pytest tests/audit/ -v
 
