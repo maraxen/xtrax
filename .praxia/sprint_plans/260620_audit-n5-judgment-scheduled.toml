@@ -1,0 +1,75 @@
+[sprint]
+sprint_id = "260620_audit-n5-judgment-scheduled"
+sprint_num = 27
+name = "xtrax Loop Sprint 27: N5.2 scheduled judgment job"
+description = "Cron workflow + judgment staleness metric + audit-judgment-scheduled meta-recipe."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1598 [audit-fw N5.2] Judgment-track scheduled job + staleness metric.
+Completes audit-fw N5; epic #1573 judgment+deterministic tracks both wired.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "judgment_scheduled"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1598"
+phase_name = "[audit-fw N5.2] Judgment-track scheduled job + staleness metric"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1598 [audit-fw N5.2] Judgment-track scheduled job + staleness metric
+
+## Goal
+Non-blocking scheduled judgment run with persisted last-run timestamp and staleness evaluation.
+
+## Deliverables
+1. `audit/judgment_schedule.toml`
+   - [schedule] version, max_staleness_days=21, cron_hint="0 6 * * 1"
+   - components: judgment_dispatch_emit, refute_promote_self_test, docs_judgment_self_test
+
+2. `src/xtrax/devtools/judgment_scheduled.py`
+   - DEFAULT_STATE_PATH = .praxia/judgment_last_run.toml
+   - STALENESS_METRIC = judgment.staleness_days (minimize)
+   - load/save JudgmentRunState(last_run_at ISO, run_id)
+   - run_scheduled_judgment(audits_path, *, emit_dispatch=True) -> ScheduledJudgmentResult
+     - validate judgment wiring (audit_judgment --no-emit path)
+     - optional emit via run_judgment_dispatch(emit_observations=True)
+     - subprocess or import refute_promote + docs_judgment self-tests (must pass)
+     - record last_run_at now
+     - evaluate staleness vs max_staleness_days (always pass on fresh record; metric written to baseline)
+   - update_staleness_baseline(baseline_path) using age since last_run
+
+3. `scripts/audit_judgment_scheduled.py` CLI (--no-emit for dry)
+
+4. `.github/workflows/audit-judgment.yml`
+   - on: schedule weekly + workflow_dispatch
+   - run: just audit-judgment-scheduled
+
+5. `Justfile`: `audit-judgment-scheduled`
+
+6. `tests/audit/test_judgment_scheduled.py`
+
+7. Add judgment.staleness_days to .praxia/audit_baseline.json (minimize, seed 0.0)
+
+## Verification
+- pytest tests/audit/test_judgment_scheduled.py -v
+- just audit-judgment-scheduled exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1598: scheduled workflow, staleness state/metric, tests, just recipe exits 0.
+PASS/FAIL with evidence.
+"""
+return_key = "1598"
+
+[orchestration]
+sequential = ["judgment_scheduled"]
+concurrent = []

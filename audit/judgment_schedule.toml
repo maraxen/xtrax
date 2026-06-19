@@ -1,0 +1,20 @@
+# Judgment-track scheduled run configuration (audit-fw N5.2 / #1598).
+# Weekly non-blocking judgment validation + self-tests; staleness tracked in baseline.
+
+[schedule]
+schema_version = 1
+version = "0.1.0"
+max_staleness_days = 21
+cron_hint = "0 6 * * 1"
+
+[[components]]
+id = "judgment_dispatch_emit"
+notes = "Validate dispatch wiring; optionally emit armed observations."
+
+[[components]]
+id = "refute_promote_self_test"
+notes = "Golden candidates through refute-or-promote protocol."
+
+[[components]]
+id = "docs_judgment_self_test"
+notes = "Structural + stub semantic docs judgment pipeline."

@@ -87,6 +87,11 @@ audit-judgment:
     uv run pytest tests/audit/test_judgment_dispatch.py -v
     uv run python scripts/audit_judgment.py --no-emit
 
+audit-judgment-scheduled:
+    uv run ruff check src/xtrax/devtools/judgment_scheduled.py scripts/audit_judgment_scheduled.py tests/audit/test_judgment_scheduled.py
+    uv run pytest tests/audit/test_judgment_scheduled.py -v
+    uv run python scripts/audit_judgment_scheduled.py --no-emit
+
 audit-refute-promote:
     uv run ruff check src/xtrax/devtools/refute_promote.py scripts/audit_refute_promote.py tests/audit/test_refute_promote.py
     uv run pytest tests/audit/test_refute_promote.py -v

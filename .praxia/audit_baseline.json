@@ -1,5 +1,10 @@
 {
   "metrics": {
+    "api_ergonomics.param_sprawl_violation_count": {
+      "comparator": "minimize",
+      "key": "api_ergonomics.param_sprawl_violation_count",
+      "value": 0.0
+    },
     "correctness.jl_violation_count": {
       "comparator": "minimize",
       "key": "correctness.jl_violation_count",
@@ -8,11 +13,6 @@
     "documentation.interrogate_coverage_pct": {
       "comparator": "maximize",
       "key": "documentation.interrogate_coverage_pct",
-      "value": 0.0
-    },
-    "api_ergonomics.param_sprawl_violation_count": {
-      "comparator": "minimize",
-      "key": "api_ergonomics.param_sprawl_violation_count",
       "value": 0.0
     },
     "documentation.jd_violation_count": {
@@ -25,29 +25,14 @@
       "key": "jax_purity.jl_violation_count",
       "value": 0.0
     },
+    "judgment.staleness_days": {
+      "comparator": "minimize",
+      "key": "judgment.staleness_days",
+      "value": 0.0
+    },
     "performance.trace_violation_count": {
       "comparator": "minimize",
       "key": "performance.trace_violation_count",
-      "value": 0.0
-    },
-    "type_hardening.annotation_coverage_pct": {
-      "comparator": "maximize",
-      "key": "type_hardening.annotation_coverage_pct",
-      "value": 0.0
-    },
-    "type_hardening.shape_specificity_pct": {
-      "comparator": "maximize",
-      "key": "type_hardening.shape_specificity_pct",
-      "value": 0.0
-    },
-    "test_rigor.branch_coverage_pct": {
-      "comparator": "maximize",
-      "key": "test_rigor.branch_coverage_pct",
-      "value": 0.0
-    },
-    "test_rigor.line_coverage_pct": {
-      "comparator": "maximize",
-      "key": "test_rigor.line_coverage_pct",
       "value": 0.0
     },
     "structure.cognitive_complexity_max": {
@@ -59,8 +44,28 @@
       "comparator": "minimize",
       "key": "structure.ruff_complexity_violation_count",
       "value": 11.0
+    },
+    "test_rigor.branch_coverage_pct": {
+      "comparator": "maximize",
+      "key": "test_rigor.branch_coverage_pct",
+      "value": 0.0
+    },
+    "test_rigor.line_coverage_pct": {
+      "comparator": "maximize",
+      "key": "test_rigor.line_coverage_pct",
+      "value": 0.0
+    },
+    "type_hardening.annotation_coverage_pct": {
+      "comparator": "maximize",
+      "key": "type_hardening.annotation_coverage_pct",
+      "value": 0.0
+    },
+    "type_hardening.shape_specificity_pct": {
+      "comparator": "maximize",
+      "key": "type_hardening.shape_specificity_pct",
+      "value": 0.0
     }
   },
   "schema_version": 1,
-  "updated_at": "2026-06-19T00:00:00+00:00"
+  "updated_at": "2026-06-19T11:50:49+00:00"
 }

@@ -1,0 +1,22 @@
+name: Audit Judgment
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  audit-judgment-scheduled:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      - name: Install dev dependencies
+        run: uv sync --extra dev
+
+      - name: Scheduled judgment track
+        run: just audit-judgment-scheduled

@@ -27,6 +27,7 @@ LEGACY_ALLOWLIST = {
     "src/xtrax/devtools/gates/test_rigor.py",
     "src/xtrax/devtools/gates/type_hardening.py",
     "src/xtrax/devtools/judgment.py",
+    "src/xtrax/devtools/judgment_scheduled.py",
     "src/xtrax/devtools/refute_promote.py",
     "src/xtrax/devtools/routing.py",
     "src/xtrax/devtools/rubrics.py",
