@@ -25,6 +25,21 @@ jobs:
               - 'scripts/audit_port_oracle_seal.py'
               - 'Justfile'
 
+  audit-deterministic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      - name: Install dev dependencies
+        run: uv sync --extra dev
+
+      - name: Deterministic audit track
+        run: just audit-deterministic
+
   lint-format-type-test:
     runs-on: ubuntu-latest
     steps:

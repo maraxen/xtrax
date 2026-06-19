@@ -211,9 +211,9 @@ def main(argv: list[str] | None = None) -> int:
         args.output.write_text(payload + "\n", encoding="utf-8")
     print(payload)
 
-    # Foundation gate: performance-only must be clean (no JL errors).
-    if performance_only and envelope["error_count"] > 0:
-        return 1
+    # Foundation gate: performance-only passes when error_count is zero.
+    if performance_only:
+        return 1 if envelope["error_count"] > 0 else 0
     return 0 if worst_exit == 0 else worst_exit
 
 

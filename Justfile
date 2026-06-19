@@ -124,6 +124,16 @@ audit-graph-auditor:
 audit-foundation: audit-imports audit-no-future-annotations audit-jaxlint
     uv run pytest tests/audit/ -v
 
+# CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint
+    uv run pytest tests/audit/ -v
+    just audit-bootstrap-dry
+    just audit-ruff-schedule
+    just validate-capability-registry
+    just validate-episodic-memory-contract
+    just audit-graph-auditor
+    just audit-port-emit-contract
+
 # Port validation gates (Epic #2180 Wave 1)
 audit-port: audit-port-oracle-seal audit-port-static audit-port-parity audit-port-emit-contract
 
