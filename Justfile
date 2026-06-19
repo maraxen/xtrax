@@ -58,6 +58,16 @@ audit-api-ergonomics-gate:
     uv run pytest tests/audit/test_api_ergonomics_gate.py -v
     uv run python scripts/audit_api_ergonomics_gate.py --no-write-baseline
 
+audit-test-rigor-gate:
+    uv run ruff check src/xtrax/devtools/gates/test_rigor.py scripts/audit_test_rigor_gate.py tests/audit/test_test_rigor_gate.py
+    uv run pytest tests/audit/test_test_rigor_gate.py -v
+    uv run python scripts/audit_test_rigor_gate.py --no-write-baseline
+
+audit-test-rigor-gate-quick:
+    uv run ruff check src/xtrax/devtools/gates/test_rigor.py scripts/audit_test_rigor_gate.py tests/audit/test_test_rigor_gate.py
+    uv run pytest tests/audit/test_test_rigor_gate.py -v
+    uv run python scripts/audit_test_rigor_gate.py --quick --no-write-baseline
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 

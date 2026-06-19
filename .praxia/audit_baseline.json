@@ -39,6 +39,16 @@
       "comparator": "maximize",
       "key": "type_hardening.shape_specificity_pct",
       "value": 0.0
+    },
+    "test_rigor.branch_coverage_pct": {
+      "comparator": "maximize",
+      "key": "test_rigor.branch_coverage_pct",
+      "value": 0.0
+    },
+    "test_rigor.line_coverage_pct": {
+      "comparator": "maximize",
+      "key": "test_rigor.line_coverage_pct",
+      "value": 0.0
     }
   },
   "schema_version": 1,
