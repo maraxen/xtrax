@@ -80,7 +80,7 @@ _LAZY = {
     "BatchPlanner": "xtrax.tiling",
     "Vmap": "xtrax.tiling",
     "SafeMap": "xtrax.tiling",
-    "DedupGather": "xtrax.tiling",
+    "DedupGather": "xtrax.tiling.strategy",
     "Bucket": "xtrax.tiling",
     "select_bucket": "xtrax.tiling",
     "bucketize": "xtrax.tiling",

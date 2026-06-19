@@ -17,13 +17,16 @@ axis-level reduction after stacking; FuseFn is a more generic reduction protocol
 
 from __future__ import annotations
 
-from typing import Generic, Protocol, TypeVar, runtime_checkable
+from collections.abc import Callable
+from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 import equinox as eqx
 
 S = TypeVar("S")  # stacked input type (pre-fuse)
 Out_co = TypeVar("Out_co")  # output type (post-fuse)
 T = TypeVar("T")  # passthrough type (tap/sink)
+
+BoundaryCallable = Callable[..., Any]
 
 
 @runtime_checkable
@@ -81,9 +84,9 @@ class AxisBoundary(eqx.Module):
   - fuse on a Scan axis: fuse receives the stacked ys after the full scan
   """
 
-  fuse: Fuse | None = eqx.field(static=True, default=None)
-  tap: Tap | None = eqx.field(static=True, default=None)
-  sink: Sink | None = eqx.field(static=True, default=None)
+  fuse: Fuse | BoundaryCallable | None = eqx.field(static=True, default=None)
+  tap: Tap | BoundaryCallable | None = eqx.field(static=True, default=None)
+  sink: Sink | BoundaryCallable | None = eqx.field(static=True, default=None)
 
 
 __all__ = ["AxisBoundary", "Fuse", "Sink", "Tap"]

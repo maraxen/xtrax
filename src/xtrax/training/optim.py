@@ -1,7 +1,6 @@
 from collections.abc import Callable
 from typing import Any
 
-import equinox as eqx
 import jax
 import optax
 
@@ -97,7 +96,7 @@ def adamw_with_schedule(
 
 
 def partition_labels(
-    model: eqx.Module,
+    model: PyTree,
     frozen_filter: Callable[[Any], bool],
     frozen_label: str = "frozen",
     train_label: str = "train",

@@ -1,0 +1,15 @@
+[sprint]
+sprint_id = "260620_tier1-test-fixes"
+sprint_num = 33
+name = "xtrax Loop Sprint 33: Fix tier1 failing tests"
+description = "Unblock coverage enforcement (#2333) by fixing 19 tier1 test failures."
+context = """
+task_id: 260617_xtrax-composition-mission
+Root causes: beartype/jaxtyping strict hints vs test ergonomics; DedupGather CORE export conflict.
+"""
+max_fix_retries = 1
+
+[[tracks.items]]
+backlog_id = "2333"
+phase_name = "Fix tier1 test failures (prerequisite)"
+fixer_prompt = "See parent orchestrator — fixes applied in parent thread."

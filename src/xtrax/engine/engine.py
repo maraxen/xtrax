@@ -12,8 +12,9 @@ Key invariants:
 """
 
 import asyncio
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import equinox as eqx
 import jax
@@ -24,6 +25,22 @@ from xtrax.engine.io import BoundedCallbackHandler
 from xtrax.training.step import SafetyTrainStep
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import Callback, LossFunction, ResumableState
+
+
+@runtime_checkable
+class TrainStepLike(Protocol):
+    """Trainer or duck-typed step implementation used by Engine."""
+
+    def step(self, state: ResumableState, batch: Any) -> tuple[ResumableState, Any]: ...
+
+
+@runtime_checkable
+class DataIterLike(Protocol):
+    """DataModule or duck-typed data provider used by Engine."""
+
+    def train_iter(self) -> Iterator[Any]: ...
+
+    def eval_iter(self) -> Iterator[Any]: ...
 
 
 class Engine(eqx.Module):
@@ -39,14 +56,14 @@ class Engine(eqx.Module):
         validation_callbacks: Tuple of validation callbacks (fired during eval)
     """
 
-    trainer: Trainer | SafetyTrainStep = eqx.field(static=True)
+    trainer: Trainer | SafetyTrainStep | TrainStepLike = eqx.field(static=True)
     callbacks: tuple[Callback, ...] = eqx.field(static=True)
     validation_callbacks: tuple[Callback, ...] = eqx.field(default=(), static=True)
 
     async def fit(
         self,
         state: ResumableState,
-        data: DataModule,
+        data: DataModule | DataIterLike,
         num_epochs: int,
         checkpoint_dir: str | Path | None = None,
     ) -> ResumableState:
@@ -138,7 +155,7 @@ class Engine(eqx.Module):
     async def eval(
         self,
         state: ResumableState,
-        data: DataModule,
+        data: DataModule | DataIterLike,
         loss_fn: LossFunction | None = None,
     ) -> dict[str, Any]:
         """Evaluate model on a dataset (no training step).
@@ -205,7 +222,7 @@ class Engine(eqx.Module):
     def fit_sync(
         self,
         state: ResumableState,
-        data: DataModule,
+        data: DataModule | DataIterLike,
         num_epochs: int,
         checkpoint_dir: str | Path | None = None,
     ) -> ResumableState:

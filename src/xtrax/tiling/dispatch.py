@@ -102,7 +102,9 @@ def make_axis_dispatch(
   raise TypeError(f"Unknown strategy type: {type(strategy)}")
 
 
-def axis_dispatch(strategy: AxisStrategy, fn: Callable, xs: Any, init: Any = None) -> Any:
+def axis_dispatch(
+    strategy: AxisStrategy, fn: Callable[..., Any] | None, xs: Any, init: Any = None
+) -> Any:
   """Eager shim for backward compatibility with old 4-arg eager API.
 
   Preserves the old eager dispatch behavior for DedupGather and Bucket,

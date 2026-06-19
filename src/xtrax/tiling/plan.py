@@ -46,7 +46,7 @@ class AxisSpec:
     tile_granularity: int = 1
     heterogeneous: bool = False
     dedup_eligible: bool = False
-    bucket_boundaries: tuple[int, ...] | None = None
+    bucket_boundaries: tuple[int, ...] | list[int] | None = None
 
     def __post_init__(self) -> None:
         """Normalize and validate bucket_boundaries when provided."""
