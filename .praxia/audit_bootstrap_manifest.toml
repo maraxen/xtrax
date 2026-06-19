@@ -1,0 +1,52 @@
+[bootstrap]
+run_id = "e918209f-03cc-45ea-a6af-26ffb36b5a0e"
+updated_at = "2026-06-19T04:19:56+00:00"
+all_passed = true
+
+[[dimensions]]
+dimension = "correctness"
+passed = true
+metrics = { "correctness.jl_violation_count" = 0.0 }
+backlog_seed = ""
+
+[[dimensions]]
+dimension = "jax_purity"
+passed = true
+metrics = { "jax_purity.jl_violation_count" = 0.0 }
+backlog_seed = ""
+
+[[dimensions]]
+dimension = "type_hardening"
+passed = true
+metrics = { "type_hardening.annotation_coverage_pct" = 100.0, "type_hardening.shape_specificity_pct" = 100.0 }
+backlog_seed = ""
+
+[[dimensions]]
+dimension = "performance"
+passed = true
+metrics = { "performance.trace_violation_count" = 0.0, "performance.wall_time_median_ms" = 1.5 }
+backlog_seed = ""
+
+[[dimensions]]
+dimension = "documentation"
+passed = true
+metrics = { "documentation.interrogate_coverage_pct" = 90.0, "documentation.jd_violation_count" = 0.0 }
+backlog_seed = ""
+
+[[dimensions]]
+dimension = "api_ergonomics"
+passed = true
+metrics = { "api_ergonomics.param_sprawl_violation_count" = 0.0 }
+backlog_seed = ""
+
+[[dimensions]]
+dimension = "test_rigor"
+passed = true
+metrics = { "test_rigor.branch_coverage_pct" = 90.0, "test_rigor.line_coverage_pct" = 95.0 }
+backlog_seed = ""
+
+[[dimensions]]
+dimension = "structure_complexity"
+passed = true
+metrics = { "structure.cognitive_complexity_max" = 10.0, "structure.ruff_complexity_violation_count" = 0.0 }
+backlog_seed = ""

@@ -73,6 +73,15 @@ audit-structure-complexity-gate:
     uv run pytest tests/audit/test_structure_complexity_gate.py -v
     uv run python scripts/audit_structure_complexity_gate.py --no-write-baseline
 
+audit-bootstrap:
+    uv run ruff check src/xtrax/devtools/bootstrap.py scripts/audit_bootstrap.py tests/audit/test_bootstrap.py
+    uv run pytest tests/audit/test_bootstrap.py -v
+    uv run python scripts/audit_bootstrap.py
+
+audit-bootstrap-dry:
+    uv run ruff check src/xtrax/devtools/bootstrap.py scripts/audit_bootstrap.py tests/audit/test_bootstrap.py
+    uv run pytest tests/audit/test_bootstrap.py -v
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 
