@@ -1,0 +1,56 @@
+[publish]
+version = "0.1.0"
+workflow = ".github/workflows/publish.yml"
+human_prerequisite_backlog = 1454
+
+[publish.triggers]
+tag_pattern = "v*"
+require_workflow_dispatch = true
+publish_requires_tag_push = true
+
+[publish.build_markers]
+markers = [
+  "uv build",
+  "twine check",
+  "Wheel smoke test",
+  "import xtrax",
+  "upload-artifact",
+]
+
+[publish.testpypi_markers]
+markers = [
+  "publish-testpypi",
+  "name: testpypi",
+  "id-token: write",
+  "gh-action-pypi-publish",
+  "test.pypi.org/legacy",
+]
+
+[publish.pypi_markers]
+markers = [
+  "publish-pypi",
+  "name: pypi",
+  "gh-action-pypi-publish",
+]
+
+[publish.guard_markers]
+markers = [
+  "github.event_name == 'push'",
+  "startsWith(github.ref, 'refs/tags/v')",
+]
+
+[publish.forbidden]
+phrases = [
+  "pypi_token",
+  "password:",
+  "TWINE_PASSWORD",
+  "secrets.PYPI",
+]
+
+[publish.contributing_markers]
+markers = [
+  "TestPyPI",
+  "OIDC",
+  "just audit-deterministic",
+  "just audit-publish-oidc",
+]

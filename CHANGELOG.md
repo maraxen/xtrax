@@ -40,8 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Distribution readiness: tiered coverage gates (`tier1_core` 90/80, `tier2_eda` 90/75),
   docs plumbing gate (`just audit-docs-build`), narrative docs gate (`just audit-narrative-docs`),
-  output-sink docs gate (`just audit-output-sink-docs`), LibCST added-types diff gate, and
-  deterministic audit track expansion (`just audit-deterministic`).
+  output-sink docs gate (`just audit-output-sink-docs`), publish OIDC gate
+  (`just audit-publish-oidc`), LibCST added-types diff gate, and deterministic audit
+  track expansion (`just audit-deterministic`).
 - `pyproject.toml`: Added `eda` to both `[project.optional-dependencies]` and
   `[dependency-groups]` (`pandas>=2.0`, `matplotlib>=3.8`, `seaborn>=0.13`).
 

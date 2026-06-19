@@ -69,12 +69,29 @@ The `-W` flag treats warnings as errors, and `-n` enables nitpicky mode. Documen
 
 ## Releasing
 
-Releases are automated via git tags:
+Releases use OIDC Trusted Publishing (no stored PyPI tokens). **Do not push a
+release tag until the full distribution audit passes** (`just audit-deterministic`,
+`just audit-coverage-tier1`, and `just audit-publish-oidc`).
 
-1. Ensure `just audit-deterministic` and `just audit-coverage-tier1` pass
-2. Tag the commit: `git tag v0.3.x` (or the appropriate version)
-3. Push the tag: `git push origin v0.3.x`
-4. GitHub Actions will automatically publish to PyPI via OIDC
+### Human prerequisites (before first publish)
+
+Configure Trusted Publishers on both indexes (backlog **#1454**):
+
+1. [TestPyPI](https://test.pypi.org/manage/account/publishing/) — project `xtrax`,
+   workflow `.github/workflows/publish.yml`, environment `testpypi`
+2. [PyPI](https://pypi.org/manage/account/publishing/) — same workflow, environment `pypi`
+
+### Release checklist
+
+1. Ensure `just audit-deterministic`, `just audit-coverage-tier1`, and
+   `just audit-publish-oidc` pass locally
+2. Confirm TestPyPI and PyPI Trusted Publisher settings are configured (#1454)
+3. Tag the commit: `git tag v0.3.x` (match `src/xtrax/__init__.py`)
+4. Push the tag: `git push origin v0.3.x`
+5. GitHub Actions publishes to **TestPyPI** first, then **PyPI** via OIDC
+
+`workflow_dispatch` on the publish workflow runs build + wheel smoke only; upload
+jobs require a `v*` tag push.
 
 ## Code Style
 
