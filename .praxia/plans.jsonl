@@ -22,3 +22,4 @@
 {"plan_id":"260620_audit-n3-ruff-schedule","summary":"Sprint 23: N3.2 phased ruff enablement schedule + pyproject sync validator","task_id":"260617_xtrax-composition-mission"}
 {"plan_id":"260620_audit-n4-empirical-oracle","summary":"Sprint 24: N4.4 empirical oracle observation→bug promotion via failing pytest","task_id":"260617_xtrax-composition-mission"}
 {"plan_id":"260620_audit-n4-docs-judgment","summary":"Sprint 25: N4.5 docs judgment RubricScorer structural + semantic judge stub","task_id":"260617_xtrax-composition-mission"}
+{"plan_id":"260620_audit-n5-ci-deterministic","summary":"Sprint 26: N5.1 audit-deterministic CI job + jaxlint/allowlist fixes","task_id":"260617_xtrax-composition-mission"}

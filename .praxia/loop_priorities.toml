@@ -71,7 +71,7 @@ backlog_id = 1573
 status = "active"
 phase = "N3_started"
 child_backlog_ids = [1573, 1574, 1575, 1576]
-notes = "N4.5 docs judgment (#1596) closed. Next: N5.1 CI wiring (#1597) or N5.2 scheduled judgment (#1598)."
+notes = "N5.1 CI deterministic (#1597) closed. Next: N5.2 scheduled judgment (#1598)."
 
 [[queue]]
 rank = 2

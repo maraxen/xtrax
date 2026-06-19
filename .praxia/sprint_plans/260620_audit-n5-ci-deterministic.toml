@@ -1,0 +1,72 @@
+[sprint]
+sprint_id = "260620_audit-n5-ci-deterministic"
+sprint_num = 26
+name = "xtrax Loop Sprint 26: N5.1 CI deterministic track"
+description = "audit-deterministic Just meta-recipe + blocking ci.yml job."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1597 [audit-fw N5.1] Wire deterministic track into ci.yml (blocking).
+Deterministic = foundation gates + audit contract tests + dry bootstrap + ruff schedule + composition validators.
+Do NOT run live dimension gate CLIs that fail on tree debt (api_ergonomics, structure_complexity).
+Judgment track (refute-promote, docs-judgment emit) stays out of CI — scheduled job is #1598.
+Note: full `pytest tests/audit/` has 4 jaxlint/no-future failures — audit-deterministic must exit 0.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "ci_wiring"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1597"
+phase_name = "[audit-fw N5.1] Wire deterministic track into ci.yml"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1597 [audit-fw N5.1] Wire deterministic track into ci.yml (blocking)
+
+## Goal
+Add `just audit-deterministic` (CI-safe) and blocking GitHub Actions job.
+
+## Deliverables
+1. `Justfile` recipe `audit-deterministic`:
+   - audit-imports
+   - audit-no-future-annotations (or pytest that file only if just recipe heavy)
+   - audit-jaxlint
+   - pytest tests/audit/ EXCLUDING live jaxlint runner integration if needed — OR fix those 4 tests to pass in CI (prefer minimal fix)
+   - audit-bootstrap-dry
+   - audit-ruff-schedule
+   - validate-capability-registry
+   - validate-episodic-memory-contract
+   - audit-graph-auditor
+   - audit-port-emit-contract (lightweight contract)
+
+2. `.github/workflows/ci.yml` new job `audit-deterministic`:
+   - runs on all PR/push to main (not path-filtered)
+   - uv sync --extra dev
+   - run: just audit-deterministic
+   - needs: nothing (parallel to lint-format-type-test)
+
+3. `tests/audit/test_ci_deterministic_recipe.py` (optional smoke) — assert Justfile contains audit-deterministic with expected steps OR document in test that ci.yml references just audit-deterministic
+
+4. Fix blockers so `just audit-deterministic` exits 0:
+   - Investigate test_jaxlint_runner and test_no_future_annotations failures; minimal fix only
+
+## Verification
+- just audit-deterministic exits 0
+- ruff clean on touched files
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1597: audit-deterministic recipe exists, ci.yml job added, just audit-deterministic exits 0.
+PASS/FAIL with evidence.
+"""
+return_key = "1597"
+
+[orchestration]
+sequential = ["ci_wiring"]
+concurrent = []
