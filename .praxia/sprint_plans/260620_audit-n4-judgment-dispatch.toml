@@ -1,0 +1,69 @@
+[sprint]
+sprint_id = "260620_audit-n4-judgment-dispatch"
+sprint_num = 21
+name = "xtrax Loop Sprint 21: N4.1 judgment dispatch wiring"
+description = "judgment_dispatch.toml dimension→agent roster + audit-judgment validate/emit CLI."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1592 closed. #1590 wires judgment track dispatch (no LLM in CI — validate + observation emit).
+Spec: judgment findings emit as observation via emit_judgment_finding; routing uses judgment track.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "judgment_dispatch"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1590"
+phase_name = "[audit-fw N4.1] just audit-judgment + dispatch wiring"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1590 [audit-fw N4.1] `just audit-judgment` script + dispatch wiring
+
+## Goal
+Wire judgment-track dimension → agent roster; validate rubrics + routing; emit scheduled observation findings.
+
+## Deliverables
+1. `audit/judgment_dispatch.toml`
+   - [dispatch] schema_version, version
+   - [[dimensions]] dimension (matches rubric stem), agent_role, rubric_path, default_severity=info, label=observation
+   - All 8 dimensions from audit/rubrics/*.toml with roster agents per spec 260611 (oracle→correctness, auditor/reviewer mix, etc.)
+
+2. `src/xtrax/devtools/judgment.py`
+   - JudgmentDispatchEntry dataclass, load_judgment_dispatch()
+   - validate_judgment_wiring() — every dispatch dimension has rubric; agent_role non-empty
+   - run_judgment_dispatch(audits_path, *, emit_observations=True, run_id) -> JudgmentResult
+     - For each dimension: emit info-level judgment finding via emit_judgment_finding with score=0, anchor_quote from rubric score-3 anchor, evidence="judgment dispatch armed for {agent_role}"
+     - resolve_destination(domain=dimension, track=judgment, severity=info) for each (store in result)
+   - JudgmentResult: passed, entries, findings_emitted, destinations
+
+3. `scripts/audit_judgment.py` CLI (--no-emit to validate only)
+
+4. `tests/audit/test_judgment_dispatch.py`
+   - load dispatch for 8 dimensions
+   - validate wiring passes
+   - run with emit mocked or tmp audits path; assert judgment source_track + routing destination found_issues
+
+5. `Justfile`: `audit-judgment` (ruff + pytest + CLI --no-emit or default validate-only; add `--emit` flag for observation append)
+
+## Verification
+- pytest tests/audit/test_judgment_dispatch.py -v
+- just audit-judgment exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1590: dispatch TOML, judgment module, tests, just audit-judgment exits 0.
+PASS/FAIL with evidence.
+"""
+return_key = "1590"
+
+[orchestration]
+sequential = ["judgment_dispatch"]
+concurrent = []

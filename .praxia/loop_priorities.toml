@@ -71,7 +71,7 @@ backlog_id = 1573
 status = "active"
 phase = "N3_started"
 child_backlog_ids = [1573, 1574, 1575, 1576]
-notes = "N3.1 bootstrap (#1592) closed. Next: N3.2 ruff schedule (#1594) or N4.1 judgment dispatch (#1590)."
+notes = "N4.1 judgment dispatch (#1590) closed. Next: N4.3 Refute-or-Promote (#1593) or N3.2 ruff schedule (#1594)."
 
 [[queue]]
 rank = 2
