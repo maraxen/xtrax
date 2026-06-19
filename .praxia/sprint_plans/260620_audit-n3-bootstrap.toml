@@ -1,0 +1,63 @@
+[sprint]
+sprint_id = "260620_audit-n3-bootstrap"
+sprint_num = 20
+name = "xtrax Loop Sprint 20: N3.1 audit bootstrap"
+description = "Orchestrate all dimension gates, record baseline, emit per-dimension backlog seed manifest."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1592 [audit-fw N3.1] Bootstrap run: record baseline + seed epic-per-dimension backlog.
+All 8 N2 gates exist; bootstrap runs them with write_baseline=True and writes manifest.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "bootstrap"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1592"
+phase_name = "[audit-fw N3.1] Bootstrap run"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1592 [audit-fw N3.1] Bootstrap run: record baseline + seed epic-per-dimension backlog
+
+## Goal
+Single orchestrator runs all 8 dimension gates, tightens baseline, writes backlog-seed manifest.
+
+## Code
+- `src/xtrax/devtools/bootstrap.py`
+  - DimensionRun dataclass: dimension, passed, metrics: dict[str, float], findings_emitted, baseline_updated
+  - BootstrapResult: passed (all dims), runs: tuple[DimensionRun], manifest_path
+  - `run_audit_bootstrap(audits_path, baseline_path, root, *, write_baseline=True, test_rigor_quick=True) -> BootstrapResult`
+  - Invoke in order: correctness, jax_purity, type_hardening, performance, documentation, api_ergonomics, test_rigor (use tests/audit only when test_rigor_quick), structure_complexity
+  - After runs: write `.praxia/audit_bootstrap_manifest.toml` with:
+    - [bootstrap] run_id, updated_at, all_passed
+    - [[dimensions]] dimension, passed, metrics (inline table), backlog_seed (one-line remediation hint when not passed or metric at floor/ceiling debt)
+  - `passed` only if every dimension gate passed
+
+- `scripts/audit_bootstrap.py` CLI (--no-write-baseline, --full-test-rigor flags)
+
+- `tests/audit/test_bootstrap.py` — mock each gate runner; verify manifest written, all_passed logic
+
+- `Justfile`: `audit-bootstrap` (runs script with write baseline) and `audit-bootstrap-dry` (--no-write-baseline)
+
+## Verification
+- pytest tests/audit/test_bootstrap.py -v
+- just audit-bootstrap-dry exits 0 (or document if live gates fail — prefer dry in CI recipe; live bootstrap optional second line in just with comment)
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1592: bootstrap orchestrator, manifest emission, unit tests pass, dry just recipe exits 0.
+PASS/FAIL with evidence.
+"""
+return_key = "1592"
+
+[orchestration]
+sequential = ["bootstrap"]
+concurrent = []
