@@ -1,0 +1,76 @@
+[sprint]
+sprint_id = "260620_audit-n4-refute-or-promote"
+sprint_num = 22
+name = "xtrax Loop Sprint 22: N4.3 Refute-or-Promote protocol"
+description = "Assert/refute state machine for judgment candidates; observation label emit; persona pairs in TOML."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1593 [audit-fw N4.3] Refute-or-Promote + persona-divergence protocol.
+Spec 260611: promote only if survives refute; always label observation (not bug); persona ceiling documented.
+No live LLM dispatch in CI — injectable assert/refute callables + contract tests.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "refute_promote"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1593"
+phase_name = "[audit-fw N4.3] Refute-or-Promote + persona-divergence"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1593 [audit-fw N4.3] Refute-or-Promote + persona-divergence protocol
+
+## Goal
+Implement judgment reliability protocol as testable state machine (assert → refute → promote|drop).
+
+## Deliverables
+1. `audit/refute_or_promote.toml`
+   - [protocol] version, schema_version, ceiling_note (all-Claude necessary-not-sufficient prose)
+   - [[persona_pairs]] dimension (or "*" default), assert_role, refute_role
+   - Default: assert=auditor, refute=oracle; dimension overrides where judgment_dispatch differs
+
+2. `src/xtrax/devtools/refute_promote.py`
+   - JudgmentCandidate dataclass
+   - RefutePromoteVerdict: promoted, dropped, label, assert_role, refute_role, phase_log
+   - AssertFn / RefuteFn type aliases (bool return semantics per module docstring)
+   - load_refute_promote_protocol() -> list persona pairs
+   - resolve_persona_pair(dimension) -> (assert_role, refute_role)
+   - run_refute_or_promote(candidate, *, assert_fn, refute_fn, assert_role, refute_role) -> RefutePromoteVerdict
+     - promoted iff assert_fn True AND refute_fn False (refute did NOT kill)
+   - promote_and_emit(candidate, verdict, audits_path, run_id) -> AuditFinding | None (only when promoted; payload includes label=observation, assert_role, refute_role, protocol=refute_or_promote)
+
+3. `scripts/audit_refute_promote.py` CLI
+   - `--self-test` runs built-in golden candidates through stub fns; exits 0
+   - optional `--candidate-json` path for one candidate
+
+4. `tests/audit/test_refute_promote.py`
+   - refute kills → dropped, no emit
+   - assert fails → dropped
+   - survives → promoted observation emit with label in payload
+   - persona pair resolves per dimension
+   - committed TOML loads
+
+5. `Justfile`: `audit-refute-promote` (ruff + pytest + CLI --self-test)
+
+## Verification
+- pytest tests/audit/test_refute_promote.py -v
+- just audit-refute-promote exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1593: refute-or-promote state machine, TOML personas, tests, just recipe.
+PASS/FAIL with evidence.
+"""
+return_key = "1593"
+
+[orchestration]
+sequential = ["refute_promote"]
+concurrent = []

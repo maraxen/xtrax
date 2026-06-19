@@ -3,9 +3,9 @@ version = "1.0"
 task_id = "260617_xtrax-composition-mission"
 current_phase = "TRIAGE"
 last_subphase = "verdict_processed"
-last_artifact_path = "src/xtrax/devtools/judgment.py"
-iteration_count = 21
-last_activation = "2026-06-20T07:00:00Z"
+last_artifact_path = "src/xtrax/devtools/refute_promote.py"
+iteration_count = 22
+last_activation = "2026-06-20T07:30:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
@@ -26,8 +26,8 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-last_completed = "260620_audit-n4-judgment-dispatch"
-closed_items = [1590]
+last_completed = "260620_audit-n4-refute-or-promote"
+closed_items = [1593]
 epic_id = 1573
 n2_gates_closed = 8
-next_candidates = [1593, 1594, 1595]
+next_candidates = [1594, 1595, 1596]

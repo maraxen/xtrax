@@ -18,3 +18,4 @@
 {"plan_id":"260620_graph-auditor-validation-harness","summary":"Sprint 19: #2178 graph-auditor pytest harness + JSON sample graph","task_id":"260617_xtrax-composition-mission"}
 {"plan_id":"260620_audit-n3-bootstrap","summary":"Sprint 20: N3.1 audit bootstrap orchestrator + manifest","task_id":"260617_xtrax-composition-mission"}
 {"plan_id":"260620_audit-n4-judgment-dispatch","summary":"Sprint 21: N4.1 judgment dispatch TOML + audit-judgment CLI","task_id":"260617_xtrax-composition-mission"}
+{"plan_id":"260620_audit-n4-refute-or-promote","summary":"Sprint 22: N4.3 Refute-or-Promote assert/refute state machine + observation emit","task_id":"260617_xtrax-composition-mission"}
