@@ -71,7 +71,7 @@ backlog_id = 1573
 status = "active"
 phase = "N2_started"
 child_backlog_ids = [1573, 1574, 1575, 1576]
-notes = "N2.1–N2.6 closed (#1581–#1586). Next: N2.7 test-rigor (#1587) or N2.8 structure (#1588) or #2179 research."
+notes = "N2.1–N2.7 closed (#1581–#1587). Next: N2.8 structure (#1588) or #2179 research."
 
 [[queue]]
 rank = 2

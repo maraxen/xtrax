@@ -1,0 +1,59 @@
+[sprint]
+sprint_id = "260619_audit-n2-test-rigor-gate"
+sprint_num = 16
+name = "xtrax Loop Sprint 16: N2.7 D7 Test-rigor gate"
+description = "pytest-cov line + branch coverage% ratchet for src/xtrax."
+context = """
+task_id: 260617_xtrax-composition-mission
+Spec D7: branch/line coverage ratchet. Mutation testing deferred (recorded-only nightly).
+Uses existing pytest + pytest-cov in pyproject.toml.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "test_rigor"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1587"
+phase_name = "[audit-fw N2.7] D7 Test-rigor & coverage gate"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1587 [audit-fw N2.7] D7 Test-rigor & coverage gate
+
+## Goal
+Run pytest with coverage JSON report; ratchet line% and branch% against baseline.
+
+## Code
+- src/xtrax/devtools/gates/test_rigor.py
+  - run_pytest_coverage(root: Path, tests_path: Path = tests/) -> CoverageStats(line_pct, branch_pct, tests_run, tests_failed)
+  - subprocess: uv run pytest <tests_path> --cov=xtrax --cov-branch --cov-report=json:<tmp> -q (no addopts duplication: use env PYTEST_ADDOPTS="" or -o addopts= to avoid double cov HTML)
+  - LINE_METRIC = "test_rigor.line_coverage_pct" (maximize)
+  - BRANCH_METRIC = "test_rigor.branch_coverage_pct" (maximize)
+  - run_test_rigor_gate(audits_path, baseline_path, root) -> GateResult
+  - Emit metric findings; gate passes only if BOTH metrics pass ratchet
+- scripts/audit_test_rigor_gate.py CLI (--quick uses tests/audit only for fast CI recipe; default runs tests/)
+- .praxia/audit_baseline.json add both metrics maximize 0
+- tests/audit/test_test_rigor_gate.py — mock coverage JSON parser + regression tests (do NOT run full suite in unit tests)
+- Justfile: audit-test-rigor-gate (full) and audit-test-rigor-gate-quick (tests/audit only)
+
+## Verification
+- pytest tests/audit/test_test_rigor_gate.py -v
+- just audit-test-rigor-gate-quick exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1587: coverage gate with dual baseline metrics, quick recipe passes, unit tests pass.
+PASS/FAIL with evidence.
+"""
+return_key = "1587"
+
+[orchestration]
+sequential = ["test_rigor"]
+concurrent = []
