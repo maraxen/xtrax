@@ -161,6 +161,11 @@ audit-narrative-docs:
     uv run pytest tests/distribution/test_narrative_docs.py -v
     uv run python scripts/audit_narrative_docs.py
 
+audit-output-sink-docs:
+    uv run ruff check scripts/audit_output_sink_docs.py tests/distribution/test_output_sink_docs.py
+    uv run pytest tests/distribution/test_output_sink_docs.py -v
+    uv run python scripts/audit_output_sink_docs.py
+
 audit-coverage-dag:
     uv run python scripts/audit_coverage_dag.py
 
@@ -174,7 +179,7 @@ audit-coverage-tier2:
     uv run python scripts/audit_coverage_dag.py --tier tier2_eda --enforce tier2_eda
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-added-types-diff
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-added-types-diff
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry

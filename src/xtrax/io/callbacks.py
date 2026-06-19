@@ -18,6 +18,14 @@ Example:
     ...     return len(executed)
     >>> asyncio.run(test())
     1
+
+    Stream blocking iterables without blocking the event loop:
+
+    >>> from xtrax.io import async_indexed_stream
+    >>> async def collect():
+    ...     return [item async for item in async_indexed_stream(["a", "b"])]
+    >>> asyncio.run(collect())
+    [(0, 'a'), (1, 'b')]
 """
 
 from xtrax.engine.io import BoundedCallbackHandler, async_indexed_stream

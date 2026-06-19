@@ -1,0 +1,40 @@
+[output_sink]
+version = "0.1.0"
+chapter_path = "docs/api/output-sinks.md"
+index_path = "docs/index.md"
+ci_workflow = ".github/workflows/ci.yml"
+callbacks_module = "src/xtrax/io/callbacks.py"
+engine_io_module = "src/xtrax/engine/io.py"
+checkpoint_init = "src/xtrax/checkpoint/__init__.py"
+min_chapter_bytes = 2500
+
+[output_sink.chapter_markers]
+markers = [
+  "Streaming Callbacks",
+  "Checkpoint Persistence",
+  "from xtrax.io import BoundedCallbackHandler",
+  "from xtrax.checkpoint import",
+  "xtrax.engine.io",
+  "{autosummary}",
+  "{automodule} xtrax.io",
+  "{automodule} xtrax.checkpoint",
+]
+
+[output_sink.index_markers]
+markers = ["api/output-sinks"]
+
+[output_sink.ci_markers]
+markers = [
+  "Doctest canonical import paths",
+  "--doctest-modules src/xtrax/io/",
+]
+
+[output_sink.doctest_modules]
+paths = ["src/xtrax/io/callbacks.py", "src/xtrax/engine/io.py"]
+
+[output_sink.doctest_markers]
+markers = ["from xtrax.io import BoundedCallbackHandler"]
+
+[output_sink.reexport]
+source = "from xtrax.engine.io import BoundedCallbackHandler, async_indexed_stream"
+symbols = ["BoundedCallbackHandler", "async_indexed_stream"]
