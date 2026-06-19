@@ -35,7 +35,7 @@ def _write_contract(repo_root: Path) -> Path:
 
 def test_load_coverage_dag_reads_committed_toml() -> None:
     dag = load_coverage_dag(CONFIG_PATH)
-    assert dag.version == "0.2.0"
+    assert dag.version == "0.2.1"
     assert dag.state_path == ".praxia/coverage_last_measured.json"
     assert len(dag.tiers) == 4
     tier_ids = [tier.id for tier in dag.tiers]
@@ -53,7 +53,8 @@ def test_load_coverage_dag_reads_committed_toml() -> None:
 
     tier2 = dag.tiers[2]
     assert tier2.coverage_packages == ("xtrax.eda",)
-    assert tier2.enforce_line_pct is None
+    assert tier2.enforce_line_pct == 90.0
+    assert tier2.enforce_branch_pct == 75.0
 
     tier0 = dag.tiers[0]
     assert tier0.measure_coverage is False

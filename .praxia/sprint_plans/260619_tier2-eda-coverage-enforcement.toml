@@ -1,0 +1,19 @@
+[sprint]
+id = "260619_tier2-eda-coverage-enforcement"
+task_id = "260617_xtrax-composition-mission"
+backlog_id = 1456
+description = "Wire tier2_eda scoped coverage enforcement at 90/75 in CI."
+epic_id = 1451
+
+[deliverables]
+files = [
+  "distribution/coverage_dag.toml",
+  "Justfile",
+  ".github/workflows/ci.yml",
+  "tests/distribution/test_coverage_dag.py",
+  "tests/audit/test_ci_deterministic_recipe.py",
+]
+
+[verification]
+commands = ["just audit-coverage-tier2", "just audit-deterministic"]
+measured = "tier2_eda 95.8% line / 91.7% branch, 0 fail"

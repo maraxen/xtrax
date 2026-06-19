@@ -1,5 +1,5 @@
 [dag]
-version = "0.2.0"
+version = "0.2.1"
 state_path = ".praxia/coverage_last_measured.json"
 
 [[tiers]]
@@ -29,7 +29,7 @@ enforce_branch_pct = 80.0
 
 [[tiers]]
 id = "tier2_eda"
-description = "EDA optional-extra (measured separately; enforcement next)"
+description = "EDA optional-extra (scoped coverage gate)"
 measure_coverage = true
 uv_sync_extras = ["dev", "eda"]
 pytest_args = ["tests/eda/", "-q"]
@@ -37,6 +37,8 @@ coverage_packages = ["xtrax.eda"]
 coverage_omit = ["*/tests/*", "*/__init__.py"]
 target_line_pct = 90.0
 target_branch_pct = 75.0
+enforce_line_pct = 90.0
+enforce_branch_pct = 75.0
 
 [[tiers]]
 id = "tier3_port"

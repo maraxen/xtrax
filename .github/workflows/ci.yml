@@ -64,6 +64,9 @@ jobs:
       - name: Tier1 tests with coverage gate
         run: just audit-coverage-tier1
 
+      - name: Tier2 EDA tests with coverage gate
+        run: just audit-coverage-tier2
+
       - name: Doctest canonical import paths
         run: uv run pytest --doctest-modules src/xtrax/io/ -q
 

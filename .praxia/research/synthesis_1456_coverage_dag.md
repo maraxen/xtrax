@@ -84,3 +84,11 @@ State is written to `.praxia/coverage_last_measured.json` on each `just audit-co
 - **CI:** `lint-format-type-test` job runs `just audit-coverage-tier1` instead of monolithic `--cov-fail-under=90`.
 - **Measured (2026-06-19):** tier1_core **95.2%** line / **89.4%** branch, 792 tests, 0 failures.
 - **Deferred:** tier2_eda enforcement (separate tier, next iteration).
+
+---
+
+## Phase 3 delivered (sprint 35 — tier2_eda)
+
+- **Scoped tier2 gate:** `just audit-coverage-tier2` enforces **90% line / 75% branch** on `xtrax.eda` only.
+- **CI:** `lint-format-type-test` job runs tier2 after tier1 (`uv sync` pulls `eda` extra via tier manifest).
+- **Measured (2026-06-19):** tier2_eda **95.8%** line / **91.7%** branch, 0 failures.

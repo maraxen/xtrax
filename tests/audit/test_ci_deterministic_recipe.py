@@ -34,6 +34,12 @@ def test_justfile_defines_audit_coverage_tier1() -> None:
     assert "--tier tier1_core --enforce tier1_core" in text
 
 
+def test_justfile_defines_audit_coverage_tier2() -> None:
+    text = (ROOT / "Justfile").read_text(encoding="utf-8")
+    assert "audit-coverage-tier2:" in text
+    assert "--tier tier2_eda --enforce tier2_eda" in text
+
+
 def test_ci_yml_runs_audit_deterministic() -> None:
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "audit-deterministic:" in text
@@ -44,3 +50,8 @@ def test_ci_yml_runs_tier1_coverage_gate() -> None:
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "just audit-coverage-tier1" in text
     assert "--cov-fail-under=90" not in text
+
+
+def test_ci_yml_runs_tier2_eda_coverage_gate() -> None:
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "just audit-coverage-tier2" in text

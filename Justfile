@@ -150,6 +150,9 @@ audit-coverage-dag-all:
 audit-coverage-tier1:
     uv run python scripts/audit_coverage_dag.py --tier tier1_core --enforce tier1_core
 
+audit-coverage-tier2:
+    uv run python scripts/audit_coverage_dag.py --tier tier2_eda --enforce tier2_eda
+
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
 audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api
     uv run pytest tests/audit/ -v
