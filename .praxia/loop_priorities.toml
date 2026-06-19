@@ -68,10 +68,10 @@ rank = 1
 slug = "audit-framework-foundation"
 title = "EPIC: xtrax systematic audit framework (N0–N5 foundation + judgment track)"
 backlog_id = 1573
-status = "active"
-phase = "N3_started"
+status = "winding_down"
+phase = "N5_complete"
 child_backlog_ids = [1573, 1574, 1575, 1576]
-notes = "N5.1 CI deterministic (#1597) closed. Next: N5.2 scheduled judgment (#1598)."
+notes = "N5 complete (#1597 CI deterministic, #1598 scheduled judgment). Remaining: #1589 N2.4 D3' diff-gate. Next epic: distribution-readiness #1451."
 
 [[queue]]
 rank = 2
