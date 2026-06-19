@@ -20,3 +20,4 @@
 {"plan_id":"260620_audit-n4-judgment-dispatch","summary":"Sprint 21: N4.1 judgment dispatch TOML + audit-judgment CLI","task_id":"260617_xtrax-composition-mission"}
 {"plan_id":"260620_audit-n4-refute-or-promote","summary":"Sprint 22: N4.3 Refute-or-Promote assert/refute state machine + observation emit","task_id":"260617_xtrax-composition-mission"}
 {"plan_id":"260620_audit-n3-ruff-schedule","summary":"Sprint 23: N3.2 phased ruff enablement schedule + pyproject sync validator","task_id":"260617_xtrax-composition-mission"}
+{"plan_id":"260620_audit-n4-empirical-oracle","summary":"Sprint 24: N4.4 empirical oracle observation→bug promotion via failing pytest","task_id":"260617_xtrax-composition-mission"}

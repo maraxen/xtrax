@@ -1,0 +1,70 @@
+[sprint]
+sprint_id = "260620_audit-n4-empirical-oracle"
+sprint_num = 24
+name = "xtrax Loop Sprint 24: N4.4 empirical oracle promotion"
+description = "Pull-based observation→bug promotion when failing pytest repro provided."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1595 [audit-fw N4.4] Empirical-oracle (failing-pytest) promotion path.
+Spec: bug label requires failing pytest; pull-based budget-capped; observation logging always cheap.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "empirical_oracle"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1595"
+phase_name = "[audit-fw N4.4] Empirical-oracle promotion path"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1595 [audit-fw N4.4] Empirical-oracle (failing-pytest) promotion path
+
+## Goal
+Pull-based promotion from observation → bug when a reproducing failing pytest is supplied and verified.
+
+## Deliverables
+1. `audit/empirical_oracle.toml`
+   - [oracle] version, max_promotions_per_run (budget cap, default 3)
+   - promotion_requires = "failing_pytest"
+   - executable_check = "is this finding reproducible as a failing test?" routing hint
+
+2. `src/xtrax/devtools/empirical_oracle.py`
+   - PromotionRequest(finding_id, candidate: JudgmentCandidate, repro_test_path: Path)
+   - ReproResult(passed_gate: bool, exit_code: int, output_snippet: str)
+   - run_pytest_repro(test_path, *, cwd) -> ReproResult — subprocess uv run pytest <path> -q; passed_gate True iff exit_code != 0 (test fails)
+   - BugPromotionVerdict(promoted, label, budget_remaining, repro: ReproResult)
+   - attempt_bug_promotion(request, audits_path, *, budget, run_id) -> BugPromotionVerdict
+     - Only promotes if repro fails (as expected) AND budget > 0
+     - Emit via emit_judgment_finding with payload label=bug, promoted_from=finding_id, repro_test_path, repro_exit_code
+   - load_oracle_config()
+
+3. `tests/fixtures/audit_repro_fail.py` — minimal pytest that always fails (for self-test)
+
+4. `scripts/audit_empirical_oracle.py` CLI --self-test (runs fixture repro), optional --promote-json
+
+5. `tests/audit/test_empirical_oracle.py` — mock subprocess + budget cap tests
+
+6. `Justfile`: `audit-empirical-oracle`
+
+## Verification
+- pytest tests/audit/test_empirical_oracle.py -v
+- just audit-empirical-oracle exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1595: empirical oracle promotion, failing repro gate, budget cap, tests pass.
+PASS/FAIL with evidence.
+"""
+return_key = "1595"
+
+[orchestration]
+sequential = ["empirical_oracle"]
+concurrent = []

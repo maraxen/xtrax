@@ -71,7 +71,7 @@ backlog_id = 1573
 status = "active"
 phase = "N3_started"
 child_backlog_ids = [1573, 1574, 1575, 1576]
-notes = "N3.2 ruff schedule (#1594) closed. Next: N4.4 empirical oracle (#1595) or N4.5 docs judgment (#1596)."
+notes = "N4.4 empirical oracle (#1595) closed. Next: N4.5 docs judgment (#1596) or N5.1 CI wiring (#1597)."
 
 [[queue]]
 rank = 2
