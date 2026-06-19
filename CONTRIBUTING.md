@@ -34,18 +34,27 @@ uv run ruff format .
 ### Type Checking
 
 ```bash
-uv run pyright
+uv run ty check src/
 ```
 
 ### Coverage
 
-The project enforces a minimum of **90% code coverage**. Coverage reports are generated automatically with pytest:
+Tiered coverage gates enforce scoped product and optional-extra surfaces:
 
 ```bash
-uv run pytest
+just audit-coverage-tier1   # shipped xtrax (excl. eda/devtools)
+just audit-coverage-tier2   # xtrax.eda optional extra
 ```
 
-The HTML coverage report is available at `.coverage_html/index.html`. Coverage artifacts (`.coverage`, `coverage.xml`, `.coverage_html/`) are local-only and must not be committed.
+The HTML coverage report from pytest is available at `.coverage_html/index.html`.
+Coverage artifacts (`.coverage`, `coverage.xml`, `.coverage_html/`) are local-only
+and must not be committed.
+
+### Deterministic audit track
+
+```bash
+just audit-deterministic
+```
 
 ## Documentation
 
@@ -62,9 +71,9 @@ The `-W` flag treats warnings as errors, and `-n` enables nitpicky mode. Documen
 
 Releases are automated via git tags:
 
-1. Ensure all tests pass and coverage meets the 90% gate
-2. Tag the commit: `git tag v0.2.x` (or the appropriate version)
-3. Push the tag: `git push origin v0.2.x`
+1. Ensure `just audit-deterministic` and `just audit-coverage-tier1` pass
+2. Tag the commit: `git tag v0.3.x` (or the appropriate version)
+3. Push the tag: `git push origin v0.3.x`
 4. GitHub Actions will automatically publish to PyPI via OIDC
 
 ## Code Style

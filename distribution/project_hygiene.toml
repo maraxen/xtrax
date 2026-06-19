@@ -1,0 +1,34 @@
+[hygiene]
+version = "0.1.0"
+version_source = "src/xtrax/__init__.py"
+version_attribute = "__version__"
+forbidden_root_paths = ["main.py"]
+required_files = [
+  "README.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "CITATION.cff",
+  "LICENSE",
+]
+min_readme_bytes = 500
+
+[hygiene.readme_markers]
+markers = [
+  "pip install xtrax",
+  "readthedocs.io",
+  "Apache",
+  "CONTRIBUTING.md",
+  "CHANGELOG.md",
+]
+
+[hygiene.changelog_markers]
+markers = [
+  "Keep a Changelog",
+  "[Unreleased]",
+]
+
+[hygiene.citation_keys]
+keys = ["cff-version", "title", "version", "repository-code", "license"]
+
+[hygiene.pyproject_urls]
+required = ["Documentation", "Changelog", "Repository"]

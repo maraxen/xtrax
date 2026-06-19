@@ -16,6 +16,7 @@ def test_justfile_defines_audit_deterministic_recipe() -> None:
         "audit-version-wheel",
         "audit-packaging-metadata",
         "audit-public-api",
+        "audit-project-hygiene",
         "audit-added-types-diff",
         "pytest tests/audit/",
         "audit-coverage-dag",

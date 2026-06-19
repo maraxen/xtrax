@@ -1,0 +1,21 @@
+[sprint]
+id = "260619_dist-n8-project-hygiene"
+task_id = "260617_xtrax-composition-mission"
+backlog_id = 1460
+description = "N8 README/CHANGELOG/CONTRIBUTING/CITATION hygiene gate (#1460)."
+epic_id = 1451
+
+[deliverables]
+files = [
+  "distribution/project_hygiene.toml",
+  "scripts/audit_project_hygiene.py",
+  "tests/distribution/test_project_hygiene.py",
+  "README.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "CITATION.cff",
+  "Justfile",
+]
+
+[verification]
+commands = ["just audit-project-hygiene"]

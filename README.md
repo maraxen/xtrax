@@ -3,7 +3,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/xtrax.svg)](https://pypi.org/project/xtrax/)
 [![Tests](https://github.com/maraxen/xtrax/actions/workflows/ci.yml/badge.svg)](https://github.com/maraxen/xtrax/actions)
 [![Docs](https://img.shields.io/readthedocs/xtrax.svg)](https://xtrax.readthedocs.io)
-[![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen)](https://github.com/maraxen/xtrax)
+[![Coverage](https://img.shields.io/badge/coverage-tier1%2095%25-brightgreen)](https://github.com/maraxen/xtrax)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/maraxen/xtrax/blob/main/LICENSE)
 
 A set of composable building blocks for JAX/Equinox training loops — engine + trainer orchestration, safety-checked steps, axis tiling strategies, inference-time sparsification, distributed/sharding helpers, streaming output callbacks, and orbax checkpointing — extracted from the author's research code.
@@ -59,6 +59,14 @@ Save and restore training state with orbax checkpoints via `save_checkpoint()` a
 
 Full API documentation and tutorials are available at [https://xtrax.readthedocs.io](https://xtrax.readthedocs.io).
 
+## Project links
+
+- [GitHub repository](https://github.com/maraxen/xtrax)
+- [Issue tracker](https://github.com/maraxen/xtrax/issues)
+- [Changelog](CHANGELOG.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Citation metadata](CITATION.cff)
+
 ## License
 
 Licensed under the [Apache License 2.0](https://github.com/maraxen/xtrax/blob/main/LICENSE).
@@ -71,6 +79,7 @@ If you use xtrax in research, please cite it:
 @software{xtrax,
   title = {xtrax: High-Performance Composable JAX Training},
   author = {Russo, Marielle},
+  version = {0.3.0},
   year = {2026},
   url = {https://github.com/maraxen/xtrax}
 }
