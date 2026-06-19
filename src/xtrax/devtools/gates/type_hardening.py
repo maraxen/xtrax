@@ -160,6 +160,29 @@ def _record_annotation(
     )
 
 
+def inspect_public_callable(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    qualname: str,
+) -> list[str]:
+    """Return human-readable violations for a single public callable."""
+    violations: list[str] = []
+    for arg in _iter_signature_params(fn):
+        if arg.annotation is None:
+            violations.append(f"{qualname}: parameter `{arg.arg}` missing annotation")
+        elif _is_array_annotation(arg.annotation) and not _annotation_has_shape(
+            arg.annotation
+        ):
+            violations.append(
+                f"{qualname}: parameter `{arg.arg}` array annotation lacks shape axes"
+            )
+    if fn.returns is None:
+        violations.append(f"{qualname}: missing return annotation")
+    elif _is_array_annotation(fn.returns) and not _annotation_has_shape(fn.returns):
+        violations.append(f"{qualname}: return array annotation lacks shape axes")
+    return violations
+
+
 def _scan_function(
     stats: AnnotationStats,
     fn: ast.FunctionDef | ast.AsyncFunctionDef,

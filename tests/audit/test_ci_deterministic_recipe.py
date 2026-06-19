@@ -16,6 +16,7 @@ def test_justfile_defines_audit_deterministic_recipe() -> None:
         "audit-version-wheel",
         "audit-packaging-metadata",
         "audit-public-api",
+        "audit-added-types-diff",
         "pytest tests/audit/",
         "audit-coverage-dag",
         "audit-bootstrap-dry",
@@ -50,6 +51,18 @@ def test_ci_yml_runs_tier1_coverage_gate() -> None:
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "just audit-coverage-tier1" in text
     assert "--cov-fail-under=90" not in text
+
+
+def test_ci_audit_deterministic_uses_full_git_history() -> None:
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    audit_job = text.split("audit-deterministic:", 1)[1].split("lint-format-type-test:", 1)[0]
+    assert "fetch-depth: 0" in audit_job
+
+
+def test_justfile_defines_audit_added_types_diff() -> None:
+    text = (ROOT / "Justfile").read_text(encoding="utf-8")
+    assert "audit-added-types-diff:" in text
+    assert "audit_added_types_diff.py" in text
 
 
 def test_ci_yml_runs_tier2_eda_coverage_gate() -> None:

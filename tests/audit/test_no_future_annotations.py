@@ -18,6 +18,7 @@ LEGACY_ALLOWLIST = {
     "src/xtrax/devtools/gates/_jaxlint.py",
     "src/xtrax/devtools/gates/_performance_probes.py",
     "src/xtrax/devtools/gates/_trace_probe.py",
+    "src/xtrax/devtools/gates/added_types_diff.py",
     "src/xtrax/devtools/gates/api_ergonomics.py",
     "src/xtrax/devtools/gates/correctness.py",
     "src/xtrax/devtools/gates/documentation.py",

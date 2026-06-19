@@ -9,5 +9,5 @@ def strict_vec(x: Float[jax.Array, "3"]) -> Float[jax.Array, "3"]:
     return x
 
 
-def bad_call() -> jax.Array:
+def bad_call() -> Float[jax.Array, "5"]:
     return strict_vec(jnp.ones(5))

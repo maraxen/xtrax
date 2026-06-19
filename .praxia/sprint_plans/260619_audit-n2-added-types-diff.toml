@@ -1,0 +1,18 @@
+[sprint]
+id = "260619_audit-n2-added-types-diff"
+task_id = "260617_xtrax-composition-mission"
+backlog_id = 1589
+description = "D3' AddedTypesTest LibCST merge-base diff gate (#1589)."
+epic_id = 1573
+
+[deliverables]
+files = [
+  "src/xtrax/devtools/gates/added_types_diff.py",
+  "scripts/audit_added_types_diff.py",
+  "tests/audit/test_added_types_diff.py",
+  "Justfile",
+  ".github/workflows/ci.yml",
+]
+
+[verification]
+commands = ["just audit-added-types-diff", "just audit-deterministic"]

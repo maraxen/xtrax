@@ -20,6 +20,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+from jaxtyping import Shaped
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ class CarryShape:
   shape: tuple[int, ...]
   dtype: Any  # jnp.dtype
 
-  def materialize(self) -> jax.Array:
+  def materialize(self) -> Shaped[jax.Array, "..."]:
     """Materialize a zero-filled JAX array with this shape and dtype.
 
     Returns:

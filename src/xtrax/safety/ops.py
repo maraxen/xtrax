@@ -1,11 +1,13 @@
 import jax.numpy as jnp
-from jax import Array
-from jax.typing import ArrayLike
+from jaxtyping import Array, Float
 
 
 def safe_norm(
-    x: ArrayLike, axis=None, keepdims: bool = False, eps: float = 1e-8
-) -> Array:
+    x: Float[Array, "..."],
+    axis: int | tuple[int, ...] | None = None,
+    keepdims: bool = False,
+    eps: float = 1e-8,
+) -> Float[Array, "..."]:
     """Numerically stable norm computation.
 
     Computes jnp.sqrt(jnp.sum(x**2, axis=axis, keepdims=keepdims) + eps**2).
@@ -23,7 +25,9 @@ def safe_norm(
     return jnp.sqrt(jnp.sum(x**2, axis=axis, keepdims=keepdims) + eps**2)
 
 
-def safe_reciprocal(x: ArrayLike, eps: float = 1e-8) -> Array:
+def safe_reciprocal(
+    x: Float[Array, "..."] | float, eps: float = 1e-8
+) -> Float[Array, "..."]:
     """Numerically stable reciprocal computation.
 
     Computes 1.0 / (x + eps) using a smooth, unconditional formula with no branching.

@@ -43,6 +43,11 @@ audit-type-hardening-gate:
     uv run pytest tests/audit/test_type_hardening_gate.py tests/audit/test_beartype_hook.py -v
     uv run python scripts/audit_type_hardening_gate.py --no-write-baseline
 
+audit-added-types-diff:
+    uv run ruff check src/xtrax/devtools/gates/added_types_diff.py scripts/audit_added_types_diff.py tests/audit/test_added_types_diff.py
+    uv run pytest tests/audit/test_added_types_diff.py -v
+    uv run python scripts/audit_added_types_diff.py --no-emit
+
 audit-performance-gate:
     uv run ruff check src/xtrax/devtools/gates/_trace_probe.py src/xtrax/devtools/gates/_performance_probes.py src/xtrax/devtools/gates/performance.py scripts/audit_performance_gate.py tests/audit/test_performance_gate.py
     uv run pytest tests/audit/test_performance_gate.py -v
@@ -154,7 +159,7 @@ audit-coverage-tier2:
     uv run python scripts/audit_coverage_dag.py --tier tier2_eda --enforce tier2_eda
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-added-types-diff
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry
