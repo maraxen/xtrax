@@ -1,0 +1,71 @@
+[sprint]
+sprint_id = "260620_composition-episodic-memory-contract"
+sprint_num = 18
+name = "xtrax Loop Sprint 18: #2179 episodic memory contract"
+description = "Research synthesis + validated TOML contract for NLM + transduction session memory."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #2179 [#2175.4] NLM + transduction episodic memory for composition sessions.
+Praxia owns transduction MCP; xtrax owns composition-layer contract + loader tests.
+Spec brainstorm: .praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md (idea C).
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "episodic_memory"
+is_research = true
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "2179"
+phase_name = "[#2175.4] NLM + transduction episodic memory"
+workflow_template = "research_with_contract"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2179 [#2175.4] NLM + transduction episodic memory for composition sessions
+
+## Goal
+Land research synthesis + machine-readable contract (mirror capability_registry pattern).
+
+## Deliverables
+1. `.praxia/research/synthesis_2179_episodic_memory.md`
+   - Problem: composition sessions need task_id-threaded recall across agent handoffs
+   - Layers: transduction JSONL (authoritative episodic log), vector KB (API surface), NLM notebooks (deep research)
+   - Refresh cadence: epic boundaries + session handoff
+   - Pre-mortem mitigations from spec 260618 (NLM rot, registry drift)
+   - Integration points to capability_registry kb_sources and graph-auditor
+
+2. `.praxia/composition/episodic_memory_contract.toml`
+   - schema_version, version
+   - [[channels]] for transduction phases: recon, plan, audit, research, daily — each with jsonl_path, query_tool, append_tool
+   - [[nlm_bindings]] notebook_id/tag pattern + refresh_policy
+   - [[session_rules]] task_id_format, handoff_path (.praxia/handoffs/), staleness_max_days
+   - identity_defaults mapping composer-orchestrator + graph-auditor kb_sources
+
+3. `scripts/load_episodic_memory_contract.py`
+   - dataclasses + load/validate (semver, known channels, non-empty paths)
+   - CLI: print summary when run directly
+
+4. `tests/composition/test_episodic_memory_contract.py`
+   - loads committed contract; rejects invalid fixture
+
+5. `Justfile` recipe: `validate-episodic-memory-contract`
+
+## Verification
+- pytest tests/composition/test_episodic_memory_contract.py -v
+- just validate-episodic-memory-contract
+- ruff clean on new scripts/tests
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #2179: synthesis doc exists, contract loads, tests pass, just recipe exits 0.
+PASS/FAIL with evidence.
+"""
+return_key = "2179"
+
+[orchestration]
+sequential = ["episodic_memory"]
+concurrent = []
