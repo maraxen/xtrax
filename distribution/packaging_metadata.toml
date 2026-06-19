@@ -1,0 +1,10 @@
+[packaging]
+version = "0.1.0"
+license_spdx = "Apache-2.0"
+license_file = "LICENSE"
+py_typed_source = "src/xtrax/py.typed"
+wheel_py_typed_path = "xtrax/py.typed"
+required_classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Typing :: Typed",
+]

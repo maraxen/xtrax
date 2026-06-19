@@ -1,0 +1,70 @@
+[sprint]
+sprint_id = "260620_dist-n2-packaging-metadata"
+sprint_num = 31
+name = "xtrax Loop Sprint 31: Distribution N2 LICENSE + py.typed gate"
+description = "Packaging metadata contract + wheel py.typed verification (#1455)."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1455 [N2] Apache-2.0 LICENSE + pyproject metadata + py.typed-in-wheel.
+Already present: LICENSE file, license=Apache-2.0, Typing::Typed classifier,
+src/xtrax/py.typed (empty PEP 561 marker), hatch force-include in pyproject.toml.
+Deliver durable gate; extend wheel audit to assert py.typed in installed wheel.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "packaging_metadata"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1455"
+phase_name = "[N2] Apache-2.0 LICENSE + pyproject metadata + py.typed-in-wheel"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1455 [N2] Apache-2.0 LICENSE + pyproject metadata + py.typed-in-wheel
+
+## Goal
+Enforce LICENSE + SPDX metadata + py.typed ships in wheel (PEP 561).
+
+## Deliverables
+1. `distribution/packaging_metadata.toml`
+   - [packaging] version, license_spdx="Apache-2.0", license_file="LICENSE"
+   - py_typed_source="src/xtrax/py.typed", wheel_py_typed_path="xtrax/py.typed"
+   - required_classifiers: ["License :: OSI Approved :: Apache Software License", "Typing :: Typed"]
+
+2. `scripts/audit_packaging_metadata.py`
+   - load contract
+   - assert LICENSE exists, contains "Apache License"
+   - assert py.typed source file exists
+   - parse pyproject: license field matches SPDX, classifiers present, hatch force-include maps py.typed
+   - `--wheel` (default for CLI): build wheel via uv build, assert xtrax/py.typed in wheel zip + METADATA License-Expression or License field mentions Apache
+   - `--source-only` for fast unit tests
+
+3. `tests/distribution/test_packaging_metadata.py`
+
+4. `Justfile`: `audit-packaging-metadata` (full wheel check)
+
+5. Wire into `audit-deterministic` after audit-version-wheel
+
+6. Optionally extend `scripts/audit_version_wheel.py` with py.typed wheel check OR keep separate — prefer separate gate per sprint.
+
+7. Update tests/audit/test_ci_deterministic_recipe.py
+
+## Verification
+- pytest tests/distribution/test_packaging_metadata.py -v
+- just audit-packaging-metadata exits 0
+- just audit-deterministic passes
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = "VERIFY #1455: packaging gate, py.typed in wheel, tests, deterministic wired. PASS/FAIL."
+return_key = "1455"
+
+[orchestration]
+sequential = ["packaging_metadata"]
+concurrent = []

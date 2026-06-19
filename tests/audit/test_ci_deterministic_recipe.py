@@ -14,6 +14,7 @@ def test_justfile_defines_audit_deterministic_recipe() -> None:
         "audit-jaxlint",
         "audit-coverage-hygiene",
         "audit-version-wheel",
+        "audit-packaging-metadata",
         "audit-public-api",
         "pytest tests/audit/",
         "audit-bootstrap-dry",

@@ -135,11 +135,14 @@ audit-coverage-hygiene:
 audit-version-wheel:
     uv run python scripts/audit_version_wheel.py
 
+audit-packaging-metadata:
+    uv run python scripts/audit_packaging_metadata.py
+
 audit-public-api:
     uv run python scripts/audit_public_api.py
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-coverage-hygiene audit-version-wheel audit-public-api
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api
     uv run pytest tests/audit/ -v
     just audit-bootstrap-dry
     just audit-ruff-schedule
