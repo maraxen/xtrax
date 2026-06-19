@@ -1,0 +1,31 @@
+[narrative]
+version = "0.1.0"
+min_page_bytes = 800
+
+[[pages]]
+path = "docs/quickstart.md"
+min_bytes = 1200
+required_markers = ["pip install", "Trainer", "ResumableState", "Engine"]
+
+[[pages]]
+path = "docs/architecture.md"
+min_bytes = 4000
+required_markers = ["BatchPlanner", "default_batch_size", "ResumableState", "Engine"]
+
+[[pages]]
+path = "docs/concepts.md"
+min_bytes = 3000
+required_markers = ["AxisSpec", "default_batch_size", "ResumableState", "Engine"]
+
+[[pages]]
+path = "docs/advanced/debugging.md"
+min_bytes = 400
+required_markers = ["recompil", "static"]
+
+[forbidden]
+phrases = [
+  "AxisSpec.batch_size",
+  "AxisSpec.granularity",
+  "will be filled in by N4b",
+  "pyright",
+]

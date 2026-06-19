@@ -78,7 +78,9 @@ print(f"Loss: {metrics['loss']:.4f}")
 
 ## Next Steps
 
-- **Distributed training**: Use `Engine` for multi-process training with automatic checkpointing.
+- Read {doc}`architecture` for the full package map and data-flow narrative.
+- Read {doc}`concepts` for tiling, sparsity, and distributed training ideas.
+- **Distributed training**: Use `Engine` for multi-epoch training with callbacks and checkpointing.
 - **Composable batching**: Use `AxisSpec` and `BatchPlanner` to apply vmap, batch-wise loops, or structured sparsity.
 - **Data pipelines**: Load data with `DataModule` and `create_distributed_pipeline`.
 - **Safety checks**: Enable NaN/Inf detection with `create_train_step(safety=True)`.

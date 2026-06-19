@@ -39,7 +39,7 @@ Any callable that returns a scalar is a valid loss — no inheritance needed.
 
 JAX's JIT compiler traces and compiles based on shape. xtrax is aggressive about static shapes:
 
-- `AxisSpec.batch_size` is static (passed to `@jax.vmap` or `@jax.lax.map`).
+- `AxisSpec.default_batch_size` is static (passed to `@jax.vmap` or `@jax.lax.map`).
 - `SparsePolicy.nse_budget` is static (determines BCOO format).
 - `DataModule.batch_size` is static.
 
@@ -91,7 +91,7 @@ Defines how to schedule computation across axes:
 Example:
 
 ```python
-specs = [AxisSpec(name="batch", cardinality=1000, batch_size=256)]
+specs = [AxisSpec(name="batch", cardinality=1000, default_batch_size=256)]
 plan = BatchPlanner().plan(specs)
 result = make_axis_dispatch(plan.decisions[0].strategy, my_fn, my_data)
 ```
@@ -101,9 +101,9 @@ result = make_axis_dispatch(plan.decisions[0].strategy, my_fn, my_data)
 The `BatchPlanner` uses these rules (in order):
 
 1. If `dedup_eligible=True`, use `DedupGather`.
-2. If `cardinality <= batch_size`, use `Vmap`.
-3. If `cardinality > batch_size` and divisible, use `SafeMap`.
-4. If `cardinality > batch_size` and NOT divisible, use `SafeMap` with a warning (will error at dispatch time).
+2. If `cardinality <= default_batch_size`, use `Vmap`.
+3. If `cardinality > default_batch_size` and divisible, use `SafeMap`.
+4. If `cardinality > default_batch_size` and NOT divisible, use `SafeMap` with a warning (will error at dispatch time).
 
 For custom strategies (e.g., Scan for RNNs), construct `AxisDecision` directly.
 
@@ -271,7 +271,7 @@ xtrax uses type hints extensively:
 - **Generics** (`PyTree`, `Array`, `ResumableState`) clarify pytree shapes.
 - **Literal types** (`fallback_mode: Literal["dense_mask", "error"]`) catch mistakes at static-analysis time.
 
-All public APIs are fully typed. Use `pyright` or `mypy` to catch bugs before runtime.
+All public APIs are fully typed. Use `ty` or `mypy` to catch bugs before runtime.
 
 ## Performance Characteristics
 

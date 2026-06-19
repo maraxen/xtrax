@@ -27,8 +27,8 @@ You declare an axis with `AxisSpec` — specify its cardinality, preferred batch
 from xtrax import AxisSpec, BatchPlanner
 
 specs = [
-    AxisSpec(name="batch", cardinality=1024, batch_size=256),
-    AxisSpec(name="time", cardinality=100, batch_size=100),
+    AxisSpec(name="batch", cardinality=1024, default_batch_size=256),
+    AxisSpec(name="time", cardinality=100, default_batch_size=100),
 ]
 
 planner = BatchPlanner()
