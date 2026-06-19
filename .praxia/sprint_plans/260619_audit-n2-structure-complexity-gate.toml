@@ -1,0 +1,60 @@
+[sprint]
+sprint_id = "260619_audit-n2-structure-complexity-gate"
+sprint_num = 17
+name = "xtrax Loop Sprint 17: N2.8 D8 Structure-complexity gate"
+description = "complexipy cognitive-complexity max + ruff C901/PLR0912/PLR0915 violation ratchet."
+context = """
+task_id: 260617_xtrax-composition-mission
+Spec D8: complexity ONLY (import-linter is N0 foundation, not this gate).
+Metrics: structure.cognitive_complexity_max (minimize), structure.ruff_complexity_violation_count (minimize).
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "structure_complexity"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1588"
+phase_name = "[audit-fw N2.8] D8 Structure & complexity gate"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1588 [audit-fw N2.8] D8 Structure & complexity gate
+
+## Goal
+Ratchet cognitive complexity (complexipy) and ruff complexity rules against baseline.
+
+## Code
+- Add `complexipy` to pyproject.toml dev extras if not present
+- src/xtrax/devtools/gates/structure_complexity.py
+  - run_complexipy_scan(root: Path) -> tuple[float, list[ComplexityHit]]  # max score + per-function hits above threshold
+  - run_ruff_complexity_scan(root: Path) -> tuple[int, list[RuffHit]]  # subprocess ruff check --select C901,PLR0912,PLR0915
+  - COGNITIVE_METRIC = "structure.cognitive_complexity_max" (minimize)
+  - RUFF_METRIC = "structure.ruff_complexity_violation_count" (minimize)
+  - run_structure_complexity_gate(audits_path, baseline_path, root, *, cognitive_ceiling=25 for net-new emit only) -> GateResult
+  - Emit findings for violations above ceiling or net-new regressions vs baseline per-file map if feasible; at minimum emit aggregate metric findings like other gates
+- scripts/audit_structure_complexity_gate.py CLI
+- .praxia/audit_baseline.json add both metrics minimize 0
+- tests/audit/test_structure_complexity_gate.py — mock complexipy/ruff parsers + regression (no full tree scan in unit tests)
+- Justfile: audit-structure-complexity-gate
+
+## Verification
+- pytest tests/audit/test_structure_complexity_gate.py -v
+- just audit-structure-complexity-gate exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1588: dual complexity metrics, unit tests pass, just recipe exits 0.
+PASS/FAIL with evidence.
+"""
+return_key = "1588"
+
+[orchestration]
+sequential = ["structure_complexity"]
+concurrent = []

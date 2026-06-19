@@ -3,9 +3,9 @@ version = "1.0"
 task_id = "260617_xtrax-composition-mission"
 current_phase = "TRIAGE"
 last_subphase = "verdict_processed"
-last_artifact_path = "src/xtrax/devtools/gates/test_rigor.py"
-iteration_count = 16
-last_activation = "2026-06-20T04:30:00Z"
+last_artifact_path = "src/xtrax/devtools/gates/structure_complexity.py"
+iteration_count = 17
+last_activation = "2026-06-20T05:00:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
@@ -26,8 +26,8 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-last_completed = "260619_audit-n2-test-rigor-gate"
-closed_items = [1587]
+last_completed = "260619_audit-n2-structure-complexity-gate"
+closed_items = [1588]
 epic_id = 1573
-n2_gates_closed = 7
-next_candidates = [1588, 2179]
+n2_gates_closed = 8
+next_candidates = [2179]

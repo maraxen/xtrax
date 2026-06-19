@@ -12,3 +12,5 @@
 {"plan_id":"260619_audit-n2-performance-gate","sprint":"260619_audit-n2-performance-gate","task_id":"260617_xtrax-composition-mission","tracks":[{"id":"performance","items":["1584"]}]}
 {"plan_id":"260619_audit-n2-documentation-gate","sprint":"260619_audit-n2-documentation-gate","task_id":"260617_xtrax-composition-mission","tracks":[{"id":"documentation","items":["1585"]}]}
 {"plan_id":"260619_audit-n2-api-ergonomics-gate","sprint":"260619_audit-n2-api-ergonomics-gate","task_id":"260617_xtrax-composition-mission","tracks":[{"id":"api_ergonomics","items":["1586"]}]}
+{"plan_id":"260619_audit-n2-test-rigor-gate","summary":"Sprint 16: D7 test-rigor gate — pytest-cov line+branch ratchet","task_id":"260617_xtrax-composition-mission"}
+{"plan_id":"260619_audit-n2-structure-complexity-gate","summary":"Sprint 17: D8 structure-complexity gate — complexipy + ruff dual ratchet","task_id":"260617_xtrax-composition-mission"}
