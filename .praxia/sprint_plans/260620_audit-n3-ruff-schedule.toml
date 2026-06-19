@@ -1,0 +1,67 @@
+[sprint]
+sprint_id = "260620_audit-n3-ruff-schedule"
+sprint_num = 23
+name = "xtrax Loop Sprint 23: N3.2 incremental ruff schedule"
+description = "Phased ruff rule enablement schedule TOML + pyproject sync validator."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1594 [audit-fw N3.2] Incremental ruff-select enablement schedule.
+Current pyproject select = E, F, I, UP. Schedule documents future waves (D, C901, PLR*, B, etc.) without enabling yet.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "ruff_schedule"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1594"
+phase_name = "[audit-fw N3.2] Incremental ruff-select enablement schedule"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1594 [audit-fw N3.2] Incremental ruff-select enablement schedule
+
+## Goal
+Machine-readable phased ruff rule rollout + validator that pyproject matches active wave.
+
+## Deliverables
+1. `audit/ruff_enablement_schedule.toml`
+   - [schedule] version, active_wave_id
+   - [[waves]] id, status (active|pending|complete), select (list of rule prefixes), notes, ties_to_dimension (optional)
+   - Wave 0 active: E, F, I, UP (matches current pyproject)
+   - Pending waves: e.g. wave_doc (+D,D402), wave_complexity (+C901,PLR0912,PLR0915), wave_bugbear (+B) — documented not applied
+
+2. `src/xtrax/devtools/ruff_schedule.py`
+   - load_ruff_schedule(), RuffWave dataclass
+   - read_pyproject_select(pyproject_path) -> frozenset[str]
+   - validate_ruff_schedule_sync(schedule_path, pyproject_path) -> None (raises if active wave select != pyproject select)
+   - next_pending_wave() -> RuffWave | None
+
+3. `scripts/audit_ruff_schedule.py` CLI — validate sync, print active + next pending
+
+4. `tests/audit/test_ruff_schedule.py`
+   - committed schedule loads; active wave matches pyproject
+   - drift fixture fails validation
+
+5. `Justfile`: `audit-ruff-schedule`
+
+## Verification
+- pytest tests/audit/test_ruff_schedule.py -v
+- just audit-ruff-schedule exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1594: schedule TOML, sync validator, tests, just recipe exits 0.
+PASS/FAIL with evidence.
+"""
+return_key = "1594"
+
+[orchestration]
+sequential = ["ruff_schedule"]
+concurrent = []
