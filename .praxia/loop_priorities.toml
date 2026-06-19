@@ -79,12 +79,12 @@ slug = "distribution-readiness"
 title = "EPIC: xtrax distribution readiness (N0–N10 release convergence)"
 backlog_id = 1451
 status = "active"
-phase = "N3_complete"
+phase = "N2_complete"
 depends_on_epic = 1573
 child_backlog_ids = [1451, 1452, 1453, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462]
 spec_path = ".praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md"
 skills = ["using-xtrax", "verification-before-completion"]
-notes = "N3 public API (#1453) closed — lazy tier-1 contract gate; DedupGather fixed; phantom LogicalMesh/with_manual_axes removed. Next: #1455 LICENSE/py.typed."
+notes = "N2 LICENSE/py.typed (#1455) closed. Next: #1456 coverage CI gate or #1460 README/CHANGELOG."
 
 [[queue]]
 rank = 3
