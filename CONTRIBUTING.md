@@ -52,6 +52,7 @@ The HTML coverage report is available at `.coverage_html/index.html`. Coverage a
 Build documentation locally:
 
 ```bash
+uv sync --group docs --extra eda
 uv run sphinx-build -W -n -b html docs docs/_build
 ```
 

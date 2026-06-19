@@ -146,6 +146,11 @@ audit-packaging-metadata:
 audit-public-api:
     uv run python scripts/audit_public_api.py
 
+audit-docs-build:
+    uv run ruff check scripts/audit_docs_plumbing.py tests/distribution/test_docs_plumbing.py
+    uv run pytest tests/distribution/test_docs_plumbing.py -v
+    uv run python scripts/audit_docs_plumbing.py
+
 audit-coverage-dag:
     uv run python scripts/audit_coverage_dag.py
 

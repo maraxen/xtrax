@@ -1,0 +1,20 @@
+[sprint]
+id = "260619_dist-n4a-docs-plumbing"
+task_id = "260617_xtrax-composition-mission"
+backlog_id = 1457
+description = "N4a autodoc plumbing — Sphinx -W gate, RTD + docs CI contract (#1457)."
+epic_id = 1451
+
+[deliverables]
+files = [
+  "distribution/docs_plumbing.toml",
+  "scripts/audit_docs_plumbing.py",
+  "tests/distribution/test_docs_plumbing.py",
+  "Justfile",
+  ".github/workflows/docs.yml",
+  ".readthedocs.yaml",
+]
+
+[verification]
+commands = ["just audit-docs-build"]
+notes = "Docs CI installs docs+eda extras; sphinx-build -W -n passes"

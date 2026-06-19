@@ -67,6 +67,19 @@ For development:
 uv sync --all-groups
 ```
 
+Build documentation locally (warnings are errors):
+
+```bash
+just audit-docs-build
+```
+
+Or directly:
+
+```bash
+uv sync --group docs --extra eda
+uv run sphinx-build -W -n -b html docs docs/_build
+```
+
 ## Contributing
 
 See the [Contributing Guide](https://github.com/maraxen/xtrax/blob/main/CONTRIBUTING.md) for how to get involved.
