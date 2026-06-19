@@ -1,0 +1,35 @@
+[dag]
+version = "0.1.0"
+state_path = ".praxia/coverage_last_measured.json"
+
+[[tiers]]
+id = "tier0_audit"
+description = "Deterministic audit contracts (not a coverage surface)"
+measure_coverage = false
+uv_sync_extras = ["dev"]
+pytest_args = ["tests/audit/", "-q"]
+
+[[tiers]]
+id = "tier1_core"
+description = "Core product tests (blocking target for future gate)"
+measure_coverage = true
+uv_sync_extras = ["dev"]
+pytest_args = ["tests/", "-q", "--ignore=tests/eda", "--ignore=port/tests"]
+target_line_pct = 90.0
+target_branch_pct = 75.0
+enforce_line_pct = 85.0
+enforce_branch_pct = 65.0
+
+[[tiers]]
+id = "tier2_eda"
+description = "EDA optional-extra tests"
+measure_coverage = true
+uv_sync_extras = ["dev", "eda"]
+pytest_args = ["tests/eda/", "-q"]
+
+[[tiers]]
+id = "tier3_port"
+description = "Port validation tests (path-filtered in CI)"
+measure_coverage = false
+uv_sync_extras = ["dev"]
+pytest_args = ["port/tests/", "-q"]

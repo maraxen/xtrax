@@ -17,6 +17,7 @@ def test_justfile_defines_audit_deterministic_recipe() -> None:
         "audit-packaging-metadata",
         "audit-public-api",
         "pytest tests/audit/",
+        "audit-coverage-dag",
         "audit-bootstrap-dry",
         "audit-ruff-schedule",
         "validate-capability-registry",

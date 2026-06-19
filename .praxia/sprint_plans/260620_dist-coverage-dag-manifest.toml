@@ -1,0 +1,104 @@
+[sprint]
+sprint_id = "260620_dist-coverage-dag-manifest"
+sprint_num = 32
+name = "xtrax Loop Sprint 32: Coverage DAG manifest + baseline reporter"
+description = "Brainstorm-driven tiered coverage DAG; defer CI --cov-fail-under (#1456 phase 1)."
+context = """
+task_id: 260617_xtrax-composition-mission
+User steered: brainstorm coverage DAG before wiring 90% gate.
+Recon: full suite 87.9% line / 78.1% branch; tier1 (dev, ignore eda) 78.5%/66.9%;
+audit-deterministic ~10% is subset artifact. 11 failing core tests block enforcement.
+Spec: .praxia/docs/specs/260619_xtrax-test-coverage-dag-tiered-pytest-su.md
+Winner: Hybrid E→A — manifest + reporter now; CI enforcement next sprint.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "coverage_dag"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1456"
+phase_name = "[N6] Coverage DAG manifest + baseline reporter (phase 1)"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1456 phase 1 — Coverage DAG manifest (NOT CI --cov-fail-under yet)
+
+## Goal
+Tiered coverage measurement DAG so coverage % is not misleading; record baselines.
+
+## Deliverables
+1. `.praxia/research/synthesis_1456_coverage_dag.md` — short synthesis with measured baselines (tier0-3), blockers (11 failures), ratchet plan
+
+2. `distribution/coverage_dag.toml`
+   ```toml
+   [dag]
+   version = "0.1.0"
+   state_path = ".praxia/coverage_last_measured.json"
+
+   [[tiers]]
+   id = "tier0_audit"
+   description = "Deterministic audit contracts (not a coverage surface)"
+   measure_coverage = false
+   uv_sync_extras = ["dev"]
+   pytest_args = ["tests/audit/", "-q"]
+
+   [[tiers]]
+   id = "tier1_core"
+   description = "Core product tests (blocking target for future gate)"
+   measure_coverage = true
+   uv_sync_extras = ["dev"]
+   pytest_args = ["tests/", "-q", "--ignore=tests/eda", "--ignore=port/tests"]
+   target_line_pct = 90.0
+   target_branch_pct = 75.0
+   enforce_line_pct = 85.0   # future; not enforced this sprint
+   enforce_branch_pct = 65.0
+
+   [[tiers]]
+   id = "tier2_eda"
+   measure_coverage = true
+   uv_sync_extras = ["dev", "eda"]
+   pytest_args = ["tests/eda/", "-q"]
+
+   [[tiers]]
+   id = "tier3_port"
+   measure_coverage = false
+   uv_sync_extras = ["dev"]
+   pytest_args = ["port/tests/", "-q"]
+   ```
+
+3. `scripts/audit_coverage_dag.py`
+   - load DAG, for each tier with measure_coverage: run pytest with --cov=xtrax --cov-report=json to temp file, parse line/branch %
+   - tiers without coverage: run pytest collect-only or -q without cov (fast validate paths exist)
+   - write state_path JSON with timestamp + per-tier results + pytest_failed counts
+   - default CLI: `--report-only` always exit 0 (non-blocking), print table
+   - `--enforce tier1_core` optional: fail if below enforce_* floors (for future; test with mocks)
+   - `--tier tier1_core` measure single tier (fast dev)
+
+4. `tests/distribution/test_coverage_dag.py` — load config, mock pytest/json parse, enforce logic unit tests
+
+5. `Justfile`: `audit-coverage-dag` (report-only, tier1 only by default for speed OR all tiers with --all-tiers flag)
+
+6. Wire `just audit-coverage-dag` into `audit-deterministic` AFTER audit tests (report-only, must exit 0)
+
+7. Do NOT change `.github/workflows/ci.yml` --cov-fail-under yet
+
+8. Update tests/audit/test_ci_deterministic_recipe.py
+
+## Verification
+- pytest tests/distribution/test_coverage_dag.py -v
+- just audit-coverage-dag exits 0 (report-only)
+- just audit-deterministic passes
+
+Do NOT commit.
+"""
+reviewer_prompt = "VERIFY coverage DAG manifest, baselines recorded, CI unchanged, deterministic wired report-only. PASS/FAIL."
+return_key = "1456"
+
+[orchestration]
+sequential = ["coverage_dag"]
+concurrent = []

@@ -141,9 +141,16 @@ audit-packaging-metadata:
 audit-public-api:
     uv run python scripts/audit_public_api.py
 
+audit-coverage-dag:
+    uv run python scripts/audit_coverage_dag.py
+
+audit-coverage-dag-all:
+    uv run python scripts/audit_coverage_dag.py --all-tiers
+
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
 audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api
     uv run pytest tests/audit/ -v
+    just audit-coverage-dag
     just audit-bootstrap-dry
     just audit-ruff-schedule
     just validate-capability-registry
