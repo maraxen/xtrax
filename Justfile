@@ -92,6 +92,11 @@ audit-refute-promote:
     uv run pytest tests/audit/test_refute_promote.py -v
     uv run python scripts/audit_refute_promote.py --self-test
 
+audit-empirical-oracle:
+    uv run ruff check src/xtrax/devtools/empirical_oracle.py scripts/audit_empirical_oracle.py tests/audit/test_empirical_oracle.py
+    uv run pytest tests/audit/test_empirical_oracle.py -v
+    uv run python scripts/audit_empirical_oracle.py --self-test
+
 audit-ruff-schedule:
     uv run ruff check src/xtrax/devtools/ruff_schedule.py scripts/audit_ruff_schedule.py tests/audit/test_ruff_schedule.py
     uv run pytest tests/audit/test_ruff_schedule.py -v

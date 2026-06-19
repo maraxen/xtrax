@@ -1,0 +1,10 @@
+# Empirical-oracle promotion protocol (audit-fw spec N4.4 #1595).
+# Pull-based observation→bug promotion when a failing pytest repro is supplied.
+# Observation logging stays cheap; pytest execution is budget-capped per run.
+
+[oracle]
+schema_version = 1
+version = "0.1.0"
+max_promotions_per_run = 3
+promotion_requires = "failing_pytest"
+executable_check = "is this finding reproducible as a failing test?"
