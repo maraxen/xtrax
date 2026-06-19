@@ -79,12 +79,12 @@ slug = "distribution-readiness"
 title = "EPIC: xtrax distribution readiness (N0–N10 release convergence)"
 backlog_id = 1451
 status = "active"
-phase = "N0_complete"
+phase = "N1_complete"
 depends_on_epic = 1573
 child_backlog_ids = [1451, 1452, 1453, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462]
 spec_path = ".praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md"
 skills = ["using-xtrax", "verification-before-completion"]
-notes = "N0 coverage hygiene (#1451) closed. Next: N1 version single-sourcing (#1452)."
+notes = "N1 version+wheel (#1452) closed. Next: N3 API surface (#1453) or N2 LICENSE/py.typed (#1455)."
 
 [[queue]]
 rank = 3
