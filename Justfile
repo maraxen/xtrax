@@ -79,6 +79,9 @@ validate-capability-registry:
 validate-node-metadata-schema:
     uv run python -c "import sys; sys.path.insert(0, 'scripts'); from load_capability_registry import load_node_metadata_schema; s=load_node_metadata_schema(); print(f'node metadata schema v{s.version} ({len(s.slots)} slots)')"
 
+validate-episodic-memory-contract:
+    uv run python scripts/load_episodic_memory_contract.py
+
 audit-foundation: audit-imports audit-no-future-annotations audit-jaxlint
     uv run pytest tests/audit/ -v
 

@@ -1,0 +1,56 @@
+# .praxia/composition/episodic_memory_contract.toml
+# Composition-layer episodic memory contract (v0.1) — NOT part of xtrax core package.
+# Spec: .praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md (idea C)
+# Synthesis: .praxia/research/synthesis_2179_episodic_memory.md
+
+[contract]
+version = "0.1.0"
+schema_version = "1"
+
+[[channels]]
+id = "recon"
+jsonl_path = ".praxia/recon.jsonl"
+query_tool = "transduction_query"
+append_tool = "append_recon"
+
+[[channels]]
+id = "plan"
+jsonl_path = ".praxia/plans.jsonl"
+query_tool = "transduction_query"
+append_tool = "append_plan"
+
+[[channels]]
+id = "audit"
+jsonl_path = ".praxia/audits.jsonl"
+query_tool = "transduction_query"
+append_tool = "append_audit"
+
+[[channels]]
+id = "research"
+jsonl_path = ".praxia/research/synthesis.jsonl"
+query_tool = "transduction_query"
+append_tool = "append_research"
+
+[[channels]]
+id = "daily"
+jsonl_path = ".praxia/daily.jsonl"
+query_tool = "transduction_query"
+append_tool = "append_daily"
+
+[[nlm_bindings]]
+notebook_id = "2e509f42-31a5-42cd-b6b0-79a09dab6af9"
+tag_pattern = "xtrax-composition"
+refresh_policy = "epic_boundary_or_handoff"
+
+[session_rules]
+task_id_format = "YYMMDD_<slug>"
+handoff_path = ".praxia/handoffs/"
+staleness_max_days = 30
+
+[[identity_defaults]]
+identity_id = "composer-orchestrator"
+kb_sources = ["transduction", "knowledge"]
+
+[[identity_defaults]]
+identity_id = "graph-auditor"
+kb_sources = ["transduction"]
