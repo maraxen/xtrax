@@ -53,6 +53,11 @@ audit-documentation-gate:
     uv run pytest tests/audit/test_documentation_gate.py -v
     uv run python scripts/audit_documentation_gate.py --no-write-baseline
 
+audit-api-ergonomics-gate:
+    uv run ruff check src/xtrax/devtools/gates/api_ergonomics.py scripts/audit_api_ergonomics_gate.py tests/audit/test_api_ergonomics_gate.py
+    uv run pytest tests/audit/test_api_ergonomics_gate.py -v
+    uv run python scripts/audit_api_ergonomics_gate.py --no-write-baseline
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 

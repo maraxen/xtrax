@@ -99,7 +99,7 @@ def emit_metric_finding(
     file_line: str,
     evidence: str,
     rule_id: str,
-    symbol_qualname: str,
+    symbol_qualname: str = "",
     payload: dict[str, Any] | None = None,
     *,
     run_id: str | None = None,
@@ -134,10 +134,10 @@ def emit_judgment_finding(
     file_line: str,
     evidence: str,
     rubric_id: str,
-    score: int,
-    anchor_quote: str,
-    symbol_qualname: str,
     *,
+    score: int = 0,
+    anchor_quote: str = "",
+    symbol_qualname: str = "",
     run_id: str | None = None,
 ) -> AuditFinding:
     finding_id = compute_finding_id(

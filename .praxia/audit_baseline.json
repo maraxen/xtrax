@@ -10,6 +10,11 @@
       "key": "documentation.interrogate_coverage_pct",
       "value": 0.0
     },
+    "api_ergonomics.param_sprawl_violation_count": {
+      "comparator": "minimize",
+      "key": "api_ergonomics.param_sprawl_violation_count",
+      "value": 0.0
+    },
     "documentation.jd_violation_count": {
       "comparator": "minimize",
       "key": "documentation.jd_violation_count",
