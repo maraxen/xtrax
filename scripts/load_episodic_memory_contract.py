@@ -97,9 +97,7 @@ def _parse_channel(raw: dict[str, Any], index: int) -> TransductionChannel:
     append_tool = _require_str(raw, "append_tool", context=ctx)
     expected_append = CHANNEL_APPEND_TOOLS[channel_id]
     if append_tool != expected_append:
-        raise ValueError(
-            f"{ctx}: append_tool must be '{expected_append}', got '{append_tool}'"
-        )
+        raise ValueError(f"{ctx}: append_tool must be '{expected_append}', got '{append_tool}'")
 
     return TransductionChannel(
         id=channel_id,
@@ -179,9 +177,7 @@ def load_episodic_memory_contract(path: Path | None = None) -> EpisodicMemoryCon
     raw_nlm_bindings = data.get("nlm_bindings")
     if not isinstance(raw_nlm_bindings, list) or not raw_nlm_bindings:
         raise ValueError("nlm_bindings must be a non-empty list")
-    nlm_bindings = tuple(
-        _parse_nlm_binding(item, idx) for idx, item in enumerate(raw_nlm_bindings)
-    )
+    nlm_bindings = tuple(_parse_nlm_binding(item, idx) for idx, item in enumerate(raw_nlm_bindings))
 
     session_rules_raw = data.get("session_rules")
     if not isinstance(session_rules_raw, dict):
@@ -192,17 +188,14 @@ def load_episodic_memory_contract(path: Path | None = None) -> EpisodicMemoryCon
     if not isinstance(raw_identity_defaults, list) or not raw_identity_defaults:
         raise ValueError("identity_defaults must be a non-empty list")
     identity_defaults = tuple(
-        _parse_identity_defaults(item, idx)
-        for idx, item in enumerate(raw_identity_defaults)
+        _parse_identity_defaults(item, idx) for idx, item in enumerate(raw_identity_defaults)
     )
     identity_ids = [item.identity_id for item in identity_defaults]
     if len(identity_ids) != len(set(identity_ids)):
         raise ValueError("duplicate identity_defaults ids in contract")
     missing_identities = KNOWN_IDENTITY_IDS - set(identity_ids)
     if missing_identities:
-        raise ValueError(
-            f"missing required identity_defaults: {sorted(missing_identities)}"
-        )
+        raise ValueError(f"missing required identity_defaults: {sorted(missing_identities)}")
 
     return EpisodicMemoryContract(
         version=version,

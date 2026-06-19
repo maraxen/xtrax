@@ -33,9 +33,7 @@ class TestSparsePolicy:
     def test_apply_mask_bcoo_nse(self):
         p = _make_policy(budget=4)
         w = jnp.ones((3, 3))
-        mask = jnp.array(
-            [[True, True, False], [True, True, False], [False, False, False]]
-        )
+        mask = jnp.array([[True, True, False], [True, True, False], [False, False, False]])
         result = p.apply_mask(w, mask)
         assert isinstance(result, BCOO)
         assert result.nse == 4
@@ -43,18 +41,14 @@ class TestSparsePolicy:
     def test_apply_mask_todense_equivalence(self):
         p = _make_policy(budget=4)
         w = jnp.arange(1, 10, dtype=jnp.float32).reshape(3, 3)
-        mask = jnp.array(
-            [[True, True, False], [True, True, False], [False, False, False]]
-        )
+        mask = jnp.array([[True, True, False], [True, True, False], [False, False, False]])
         result = p.apply_mask(w, mask)
         assert jnp.allclose(result.todense(), w * mask, atol=1e-6)
 
     def test_apply_mask_dense_fallback(self):
         p = _make_policy(budget=2, fallback="dense_mask")
         w = jnp.ones((3, 3))
-        mask = jnp.array(
-            [[True, True, False], [True, True, False], [False, False, False]]
-        )
+        mask = jnp.array([[True, True, False], [True, True, False], [False, False, False]])
         result = p.apply_mask(w, mask)
         assert not isinstance(result, BCOO)
         assert jnp.allclose(result, w * mask, atol=1e-6)
@@ -62,9 +56,7 @@ class TestSparsePolicy:
     def test_apply_mask_error_fallback_raises(self):
         p = _make_policy(budget=2, fallback="error")
         w = jnp.ones((3, 3))
-        mask = jnp.array(
-            [[True, True, False], [True, True, False], [False, False, False]]
-        )
+        mask = jnp.array([[True, True, False], [True, True, False], [False, False, False]])
         with pytest.raises(ValueError, match="nse_budget"):
             p.apply_mask(w, mask)
 
@@ -84,9 +76,7 @@ class TestSparsePolicy:
         p = _make_policy(budget=4)
         w = jnp.array([[5.0, 2.0, 3.0], [0.0, 9.0, 0.0], [0.0, 0.0, 7.0]])
         # Only (1,1) and (2,2) are True — 2 trues, 2 padding slots pointing to (0,0).
-        mask = jnp.array(
-            [[False, False, False], [False, True, False], [False, False, True]]
-        )
+        mask = jnp.array([[False, False, False], [False, True, False], [False, False, True]])
         result = p.apply_mask(w, mask)
         assert isinstance(result, BCOO)
         dense = result.todense()

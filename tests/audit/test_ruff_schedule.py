@@ -34,9 +34,7 @@ def test_load_ruff_schedule_loads_committed_toml() -> None:
 def test_active_wave_matches_pyproject_select() -> None:
     schedule = load_ruff_schedule(SCHEDULE_PATH)
     pyproject_select = read_pyproject_select(PYPROJECT_PATH)
-    active = next(
-        wave for wave in schedule.waves if wave.id == schedule.active_wave_id
-    )
+    active = next(wave for wave in schedule.waves if wave.id == schedule.active_wave_id)
     assert active.status == "active"
     assert active.select == pyproject_select
     validate_ruff_schedule_sync(

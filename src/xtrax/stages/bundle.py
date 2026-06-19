@@ -83,9 +83,7 @@ class StageBundle(eqx.Module):
                 attr_value = getattr(cls, attr_name)
                 # Only reject actual values (not methods or inherited stuff)
                 # Methods won't be plain values, so check if it's data
-                if not callable(attr_value) or isinstance(
-                    attr_value, (classmethod, staticmethod)
-                ):
+                if not callable(attr_value) or isinstance(attr_value, (classmethod, staticmethod)):
                     # This is a class variable without a type annotation
                     # But we need to be careful not to flag inherited stuff
                     # Check if it's defined directly on this class
@@ -98,11 +96,7 @@ class StageBundle(eqx.Module):
 
     def active_stages(self) -> list[str]:
         """Return field names with non-None callable values. Python-side only."""
-        return [
-            name
-            for name, val in vars(self).items()
-            if val is not None and callable(val)
-        ]
+        return [name for name, val in vars(self).items() if val is not None and callable(val)]
 
     def has_stage(self, name: str) -> bool:
         """Return True if named field is a non-None callable. Python-side only."""

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from xtrax.eda.types import PlanStatsDict
+from xtrax.eda.viz import render
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
 from xtrax.tiling.strategy import (
     Bucket,
@@ -13,9 +15,6 @@ from xtrax.tiling.strategy import (
     SafeMap,
     Vmap,
 )
-from xtrax.eda.stats import extract_plan_stats
-from xtrax.eda.types import PlanLogger, PlanStatsDict
-from xtrax.eda.viz import render
 
 
 class MockLogger:
@@ -34,9 +33,7 @@ def simple_plan() -> BatchPlan:
     spec1 = AxisSpec(name="batch", cardinality=32, default_batch_size=16)
     spec2 = AxisSpec(name="sequence", cardinality=128, default_batch_size=64)
 
-    decision1 = AxisDecision(
-        spec=spec1, batch_size=16, reasoning="Fits in memory", strategy=Vmap()
-    )
+    decision1 = AxisDecision(spec=spec1, batch_size=16, reasoning="Fits in memory", strategy=Vmap())
     decision2 = AxisDecision(
         spec=spec2,
         batch_size=64,
@@ -267,6 +264,7 @@ class TestStatsTransform:
 
     def test_stats_transform_applied(self, simple_plan):
         """stats_transform should be applied to extracted stats."""
+
         def add_annotation(stats: PlanStatsDict) -> PlanStatsDict:
             stats["memory_warnings"] = ["Test warning added by transform"]
             return stats
@@ -276,6 +274,7 @@ class TestStatsTransform:
 
     def test_stats_transform_missing_keys_raises(self, simple_plan):
         """stats_transform returning incomplete dict should raise TypeError."""
+
         def incomplete_transform(stats: PlanStatsDict) -> PlanStatsDict:
             # Return dict missing required keys
             return {}
@@ -285,6 +284,7 @@ class TestStatsTransform:
 
     def test_stats_transform_can_filter_axes(self, simple_plan):
         """stats_transform can filter axes from stats."""
+
         def keep_first_axis(stats: PlanStatsDict) -> PlanStatsDict:
             stats["axes"] = stats["axes"][:1]
             return stats
@@ -332,14 +332,13 @@ class TestLogger:
             assert len(logger.figures) == 1
 
 
-
 class TestImportErrors:
     """Test ImportError handling for missing dependencies."""
 
     def test_render_requires_eda_extras(self):
         """render() raises ImportError with pip install message when seaborn is absent."""
-        import sys
         import subprocess
+        import sys
 
         # Run a fresh Python process where seaborn is unavailable
         # This isolates the test from matplotlib's state
@@ -359,10 +358,7 @@ except ImportError as e:
         # Use project root (parent of tests/) as cwd for stable path across worktrees
         project_root = Path(__file__).parent.parent.parent
         result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            cwd=str(project_root)
+            [sys.executable, "-c", code], capture_output=True, text=True, cwd=str(project_root)
         )
         assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
 

@@ -31,62 +31,62 @@ BoundaryCallable = Callable[..., Any]
 
 @runtime_checkable
 class Fuse(Protocol, Generic[S, Out_co]):  # noqa: UP046
-  """Pure axis-reducing transform. Stacked S -> single Out_co.
+    """Pure axis-reducing transform. Stacked S -> single Out_co.
 
-  Called once per axis completion, after all steps have run.
-  Must be a pure JAX function — no side effects, no io_callback.
-  Example: ArithmeticMeanEncodingFusion (stacked EncoderOutput → single EncoderOutput).
+    Called once per axis completion, after all steps have run.
+    Must be a pure JAX function — no side effects, no io_callback.
+    Example: ArithmeticMeanEncodingFusion (stacked EncoderOutput → single EncoderOutput).
 
-  Note: This is distinct from FuseFn in xtrax.stages.protocols, which is a more
-  generic reduction protocol. Fuse is specifically for axis-level stacking operations.
-  """
+    Note: This is distinct from FuseFn in xtrax.stages.protocols, which is a more
+    generic reduction protocol. Fuse is specifically for axis-level stacking operations.
+    """
 
-  def __call__(self, stacked: S) -> Out_co: ...
+    def __call__(self, stacked: S) -> Out_co: ...
 
 
 @runtime_checkable
 class Tap(Protocol, Generic[T]):  # noqa: UP046
-  """Identity transform with side effect. T -> T.
+    """Identity transform with side effect. T -> T.
 
-  Value continues downstream unchanged; side effect fires at each step.
-  `ordered`: if True, requires SafeMap or Scan strategy on this axis —
-  vmap does not preserve step order. Validator enforces this.
-  Implementations must use io_callback internally.
-  """
+    Value continues downstream unchanged; side effect fires at each step.
+    `ordered`: if True, requires SafeMap or Scan strategy on this axis —
+    vmap does not preserve step order. Validator enforces this.
+    Implementations must use io_callback internally.
+    """
 
-  ordered: bool
+    ordered: bool
 
-  def __call__(self, x: T) -> T: ...
+    def __call__(self, x: T) -> T: ...
 
 
 @runtime_checkable
 class Sink(Protocol, Generic[T]):  # noqa: UP046
-  """Terminal side effect. T -> None. Value leaves the pipeline.
+    """Terminal side effect. T -> None. Value leaves the pipeline.
 
-  `ordered`: if True, requires SafeMap or Scan strategy on this axis.
-  Implementations must use io_callback(ordered=self.ordered) internally.
-  Example: IoCallbackEncoderSink (writes encoded tensors to H5).
-  """
+    `ordered`: if True, requires SafeMap or Scan strategy on this axis.
+    Implementations must use io_callback(ordered=self.ordered) internally.
+    Example: IoCallbackEncoderSink (writes encoded tensors to H5).
+    """
 
-  ordered: bool
+    ordered: bool
 
-  def __call__(self, x: T) -> None: ...
+    def __call__(self, x: T) -> None: ...
 
 
 class AxisBoundary(eqx.Module):
-  """Per-axis pipeline boundary: optional fuse, tap, and sink.
+    """Per-axis pipeline boundary: optional fuse, tap, and sink.
 
-  All fields are static (eqx.field(static=True)) since they are callables,
-  not JAX arrays. Default: all None (no-op — axis passes through to next axis).
+    All fields are static (eqx.field(static=True)) since they are callables,
+    not JAX arrays. Default: all None (no-op — axis passes through to next axis).
 
-  Topology rules enforced by make_inference_plan validator:
-  - tap.ordered=True or sink.ordered=True + Vmap strategy → PlanTopologyError
-  - fuse on a Scan axis: fuse receives the stacked ys after the full scan
-  """
+    Topology rules enforced by make_inference_plan validator:
+    - tap.ordered=True or sink.ordered=True + Vmap strategy → PlanTopologyError
+    - fuse on a Scan axis: fuse receives the stacked ys after the full scan
+    """
 
-  fuse: Fuse | BoundaryCallable | None = eqx.field(static=True, default=None)
-  tap: Tap | BoundaryCallable | None = eqx.field(static=True, default=None)
-  sink: Sink | BoundaryCallable | None = eqx.field(static=True, default=None)
+    fuse: Fuse | BoundaryCallable | None = eqx.field(static=True, default=None)
+    tap: Tap | BoundaryCallable | None = eqx.field(static=True, default=None)
+    sink: Sink | BoundaryCallable | None = eqx.field(static=True, default=None)
 
 
 __all__ = ["AxisBoundary", "Fuse", "Sink", "Tap"]

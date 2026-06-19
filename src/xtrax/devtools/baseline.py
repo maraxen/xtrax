@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from xtrax.devtools.emit import assert_schema_version_compatible
 
@@ -73,14 +73,23 @@ def baseline_to_dict(baseline: AuditBaseline) -> dict[str, object]:
     return {
         "schema_version": baseline.schema_version,
         "updated_at": baseline.updated_at,
-        "metrics": {
-            key: asdict(entry) for key, entry in sorted(baseline.metrics.items())
-        },
+        "metrics": {key: asdict(entry) for key, entry in sorted(baseline.metrics.items())},
     }
 
 
+def _as_comparator(value: object) -> Comparator:
+    if value not in ("minimize", "maximize", "best_ever"):
+        msg = f"comparator must be minimize|maximize|best_ever, got {value!r}"
+        raise ValueError(msg)
+    return cast(Comparator, value)
+
+
 def baseline_from_dict(data: dict[str, object]) -> AuditBaseline:
-    schema_version = int(data["schema_version"])  # type: ignore[arg-type]
+    raw_schema = data["schema_version"]
+    if not isinstance(raw_schema, (int, str)):
+        msg = "schema_version must be an int or str"
+        raise ValueError(msg)
+    schema_version = int(raw_schema)
     assert_baseline_schema_compatible(schema_version)
     raw_metrics = data.get("metrics", {})
     if not isinstance(raw_metrics, dict):
@@ -91,10 +100,22 @@ def baseline_from_dict(data: dict[str, object]) -> AuditBaseline:
         if not isinstance(payload, dict):
             msg = f"metric {key!r} must be a mapping"
             raise ValueError(msg)
+        metric = cast(dict[str, object], payload)
+        raw_key = metric.get("key", key)
+        raw_value = metric.get("value")
+        raw_comparator = metric.get("comparator")
+        if raw_value is None or raw_comparator is None:
+            msg = f"metric {key!r} must include value and comparator"
+            raise ValueError(msg)
+        if not isinstance(raw_key, str):
+            raw_key = str(key)
+        if not isinstance(raw_value, (int, float, str)):
+            msg = f"metric {key!r} value must be numeric"
+            raise ValueError(msg)
         metrics[str(key)] = MetricEntry(
-            key=str(payload.get("key", key)),
-            value=float(payload["value"]),
-            comparator=payload["comparator"],  # type: ignore[arg-type]
+            key=raw_key,
+            value=float(raw_value),
+            comparator=_as_comparator(raw_comparator),
         )
     return AuditBaseline(
         schema_version=schema_version,

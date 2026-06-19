@@ -13,15 +13,14 @@ try:
     import pandas as pd
 except ImportError as exc:
     raise ImportError(
-        "xtrax.eda.export requires visualization extras. "
-        "Install with: pip install xtrax[eda]"
+        "xtrax.eda.export requires visualization extras. Install with: pip install xtrax[eda]"
     ) from exc
 
 
 from xtrax.eda.types import PlanStatsDict
 
 
-def plan_to_dataframe(stats: PlanStatsDict) -> 'pd.DataFrame':
+def plan_to_dataframe(stats: PlanStatsDict) -> "pd.DataFrame":
     """Convert PlanStatsDict to a pandas DataFrame.
 
     Transforms extracted plan statistics into a tabular format with one row per axis.
@@ -85,20 +84,22 @@ def plan_to_dataframe(stats: PlanStatsDict) -> 'pd.DataFrame':
     # Create base DataFrame from axes
     if not rows:
         # Return empty DataFrame with all expected columns
-        return pd.DataFrame(columns=[
-            "name",
-            "strategy",
-            "cardinality",
-            "batch_size",
-            "reasoning",
-            "memory_estimate_bytes",
-            "dedup_ratio",
-            "unique_count",
-            "padded_count",
-            "padding_waste",
-            "bucket_count",
-            "bucket_boundaries",
-        ])
+        return pd.DataFrame(
+            columns=[
+                "name",
+                "strategy",
+                "cardinality",
+                "batch_size",
+                "reasoning",
+                "memory_estimate_bytes",
+                "dedup_ratio",
+                "unique_count",
+                "padded_count",
+                "padding_waste",
+                "bucket_count",
+                "bucket_boundaries",
+            ]
+        )
 
     # Fill in dedup statistics where applicable
     dedup_by_name = {entry["axis_name"]: entry for entry in stats["dedup_stats"]}

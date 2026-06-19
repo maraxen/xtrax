@@ -56,9 +56,7 @@ class Trainer(eqx.Module):
         # Update: CRITICAL — pass eqx.filter(state.model, eqx.is_array) as 3rd arg
         # This ensures weight decay and other weight-aware optimizers work correctly
         filtered_params = eqx.filter(state.model, eqx.is_array)
-        updates, new_opt_state = self.optimizer.update(
-            grads, state.opt_state, filtered_params
-        )
+        updates, new_opt_state = self.optimizer.update(grads, state.opt_state, filtered_params)
 
         # Apply updates to model
         new_model = eqx.apply_updates(state.model, updates)

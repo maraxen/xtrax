@@ -25,7 +25,15 @@ FeatureBatch = NewType("FeatureBatch", dict[str, Any])
 class RuntimeBundle:
     """Materialized execution context (produced before InputResolver fires)."""
 
-    iterator: VmapIterator | SafeMapIterator | JaxScanIterator | BucketIterator | MapIterator | ScanIterator | None
+    iterator: (
+        VmapIterator
+        | SafeMapIterator
+        | JaxScanIterator
+        | BucketIterator
+        | MapIterator
+        | ScanIterator
+        | None
+    )
     model: eqx.Module
 
 

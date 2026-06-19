@@ -102,10 +102,7 @@ def bucketize(xs: Any, bucket_size: int) -> tuple[Any, np.ndarray]:
         )
 
     pad_amount = bucket_size - seq_len
-    padded_leaves = [
-        np.pad(arr, [(0, pad_amount)] + [(0, 0)] * (arr.ndim - 1))
-        for arr in arrays
-    ]
+    padded_leaves = [np.pad(arr, [(0, pad_amount)] + [(0, 0)] * (arr.ndim - 1)) for arr in arrays]
     padded_xs = jax.tree_util.tree_unflatten(treedef, padded_leaves)
     mask = np.arange(bucket_size) < seq_len
     return padded_xs, mask

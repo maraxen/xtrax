@@ -114,10 +114,7 @@ def blocking_tiers_from_config(port_config: dict[str, Any]) -> tuple[str, ...]:
     justification = parity.get("ad_critical_justification", "")
     if ad_critical:
         if not isinstance(justification, str) or not justification.strip():
-            msg = (
-                "port_target parity.ad_critical=true requires "
-                "non-empty ad_critical_justification"
-            )
+            msg = "port_target parity.ad_critical=true requires non-empty ad_critical_justification"
             raise ValueError(msg)
         return TIER_MARKERS
     return tuple(tier for tier in TIER_MARKERS if tier != "tier_4")

@@ -32,7 +32,7 @@ class DiffGateResult:
 class _PublicFunctionCollector(cst.CSTVisitor):
     def __init__(self) -> None:
         self.class_stack: list[str] = []
-        self.functions: dict[str, cst.FunctionDef | cst.AsyncFunctionDef] = {}
+        self.functions: dict[str, cst.FunctionDef] = {}
 
     def visit_ClassDef(self, node: cst.ClassDef) -> bool | None:
         if node.name.value.startswith("_"):
@@ -40,11 +40,11 @@ class _PublicFunctionCollector(cst.CSTVisitor):
         self.class_stack.append(node.name.value)
         return True
 
-    def leave_ClassDef(self, node: cst.ClassDef) -> None:
-        if self.class_stack and self.class_stack[-1] == node.name.value:
+    def leave_ClassDef(self, original_node: cst.ClassDef) -> None:
+        if self.class_stack and self.class_stack[-1] == original_node.name.value:
             self.class_stack.pop()
 
-    def _record(self, node: cst.FunctionDef | cst.AsyncFunctionDef) -> None:
+    def _record(self, node: cst.FunctionDef) -> None:
         name = node.name.value
         if name.startswith("_"):
             return
@@ -54,13 +54,10 @@ class _PublicFunctionCollector(cst.CSTVisitor):
     def visit_FunctionDef(self, node: cst.FunctionDef) -> None:
         self._record(node)
 
-    def visit_AsyncFunctionDef(self, node: cst.AsyncFunctionDef) -> None:
-        self._record(node)
-
 
 def _collect_public_functions(
     source: str,
-) -> dict[str, cst.FunctionDef | cst.AsyncFunctionDef]:
+) -> dict[str, cst.FunctionDef]:
     module = cst.parse_module(source)
     collector = _PublicFunctionCollector()
     module.visit(collector)
@@ -68,8 +65,8 @@ def _collect_public_functions(
 
 
 def _signature_changed(
-    old_fn: cst.FunctionDef | cst.AsyncFunctionDef,
-    new_fn: cst.FunctionDef | cst.AsyncFunctionDef,
+    old_fn: cst.FunctionDef,
+    new_fn: cst.FunctionDef,
 ) -> bool:
     if not old_fn.params.deep_equals(new_fn.params):
         return True
@@ -235,10 +232,7 @@ def run_added_types_diff_gate(
         return DiffGateResult(
             status="skip",
             merge_base=None,
-            skip_reason=(
-                "merge-base unavailable (shallow clone?); "
-                "configure fetch-depth:0 in CI"
-            ),
+            skip_reason=("merge-base unavailable (shallow clone?); configure fetch-depth:0 in CI"),
             files_checked=0,
             callables_checked=0,
             violations=(),

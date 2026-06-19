@@ -7,6 +7,7 @@ from collections.abc import Callable
 import jax
 import jax.numpy as jnp
 
+
 def probe_safe_map(target: Callable[..., object]) -> None:
     """Exercise jitted safe_map with a tiny batch (trace-count gate)."""
     xs = jnp.arange(4, dtype=jnp.float32)

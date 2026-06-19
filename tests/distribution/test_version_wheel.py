@@ -106,9 +106,7 @@ def test_parse_init_version_rejects_non_literal(tmp_path: Path) -> None:
 def test_read_hatch_version_path_reads_pyproject(tmp_path: Path) -> None:
     _write_minimal_pyproject(tmp_path, hatch_path="src/xtrax/__init__.py")
     pyproject_path = tmp_path / "pyproject.toml"
-    assert (
-        read_hatch_version_path(pyproject_path) == "src/xtrax/__init__.py"
-    )
+    assert read_hatch_version_path(pyproject_path) == "src/xtrax/__init__.py"
 
 
 def test_find_built_wheel_returns_latest(tmp_path: Path) -> None:

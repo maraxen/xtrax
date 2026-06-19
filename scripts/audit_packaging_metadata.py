@@ -142,9 +142,7 @@ def read_wheel_metadata_license_fields(
     wheel_path: Path,
 ) -> tuple[str | None, str | None]:
     with zipfile.ZipFile(wheel_path) as archive:
-        metadata_names = [
-            name for name in archive.namelist() if name.endswith("/METADATA")
-        ]
+        metadata_names = [name for name in archive.namelist() if name.endswith("/METADATA")]
         if not metadata_names:
             raise ValueError(f"no METADATA file found in {wheel_path}")
         raw = archive.read(metadata_names[0])
@@ -176,9 +174,7 @@ def audit_packaging_metadata(
     if not license_path.is_file():
         failures.append(f"license file missing: {contract.license_file}")
     elif not license_file_contains_apache(license_path):
-        failures.append(
-            f"license file {contract.license_file!r} missing 'Apache License' marker"
-        )
+        failures.append(f"license file {contract.license_file!r} missing 'Apache License' marker")
 
     if not py_typed_path.is_file():
         failures.append(f"py.typed source missing: {contract.py_typed_source}")
@@ -224,9 +220,7 @@ def audit_packaging_metadata(
         return False, failures
 
     if not wheel_contains_path(wheel_path, contract.wheel_py_typed_path):
-        failures.append(
-            f"wheel missing py.typed at {contract.wheel_py_typed_path!r}"
-        )
+        failures.append(f"wheel missing py.typed at {contract.wheel_py_typed_path!r}")
 
     try:
         apache_in_metadata = wheel_metadata_mentions_apache(wheel_path)

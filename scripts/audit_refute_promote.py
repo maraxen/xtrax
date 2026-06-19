@@ -100,10 +100,7 @@ def _run_self_test(protocol_path: Path) -> int:
             promoted += 1
         else:
             dropped += 1
-    print(
-        f"PASS: refute-or-promote self-test "
-        f"promoted={promoted} dropped={dropped}"
-    )
+    print(f"PASS: refute-or-promote self-test promoted={promoted} dropped={dropped}")
     return 0
 
 

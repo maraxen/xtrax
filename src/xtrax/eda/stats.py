@@ -5,7 +5,6 @@ visualization dependencies. It can be imported from xtrax core without the
 optional eda extras.
 """
 
-
 from xtrax.tiling.plan import AxisDecision, BatchPlan
 from xtrax.tiling.strategy import Bucket, DedupGather
 
@@ -112,8 +111,7 @@ def analyze_dedup(decision: AxisDecision) -> DedupStatsEntry:
     """
     if not isinstance(decision.strategy, DedupGather):
         raise TypeError(
-            f"analyze_dedup requires DedupGather strategy; "
-            f"got {type(decision.strategy).__name__}"
+            f"analyze_dedup requires DedupGather strategy; got {type(decision.strategy).__name__}"
         )
 
     strategy = decision.strategy
@@ -160,8 +158,7 @@ def analyze_bucket(decision: AxisDecision) -> BucketStatsEntry:
     """
     if not isinstance(decision.strategy, Bucket):
         raise TypeError(
-            f"analyze_bucket requires Bucket strategy; "
-            f"got {type(decision.strategy).__name__}"
+            f"analyze_bucket requires Bucket strategy; got {type(decision.strategy).__name__}"
         )
 
     strategy = decision.strategy

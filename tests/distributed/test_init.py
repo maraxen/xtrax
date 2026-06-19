@@ -41,32 +41,20 @@ class TestInitDistRuntimeErrorOnDifferentArgs:
     def test_different_coordinator_address_raises(self):
         """Calling with different coordinator_address should raise RuntimeError."""
         init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=0)
-        with pytest.raises(
-            RuntimeError, match="already initialized with different args"
-        ):
-            init_dist(
-                coordinator_address="localhost:5678", num_processes=1, process_id=0
-            )
+        with pytest.raises(RuntimeError, match="already initialized with different args"):
+            init_dist(coordinator_address="localhost:5678", num_processes=1, process_id=0)
 
     def test_different_num_processes_raises(self):
         """Calling with different num_processes should raise RuntimeError."""
         init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=0)
-        with pytest.raises(
-            RuntimeError, match="already initialized with different args"
-        ):
-            init_dist(
-                coordinator_address="localhost:1234", num_processes=2, process_id=0
-            )
+        with pytest.raises(RuntimeError, match="already initialized with different args"):
+            init_dist(coordinator_address="localhost:1234", num_processes=2, process_id=0)
 
     def test_different_process_id_raises(self):
         """Calling with different process_id should raise RuntimeError."""
         init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=0)
-        with pytest.raises(
-            RuntimeError, match="already initialized with different args"
-        ):
-            init_dist(
-                coordinator_address="localhost:1234", num_processes=1, process_id=1
-            )
+        with pytest.raises(RuntimeError, match="already initialized with different args"):
+            init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=1)
 
 
 class TestInitDistSLURMEnvDiscovery:
@@ -151,12 +139,8 @@ class TestInitDistSingleProcessFallback:
 
     def test_single_process_skips_jax_initialize(self):
         """With num_processes=1, should NOT call jax.distributed.initialize."""
-        with mock.patch(
-            "xtrax.distributed.init.jax.distributed.initialize"
-        ) as mock_initialize:
-            init_dist(
-                coordinator_address="localhost:1234", num_processes=1, process_id=0
-            )
+        with mock.patch("xtrax.distributed.init.jax.distributed.initialize") as mock_initialize:
+            init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=0)
             # Should NOT have called jax.distributed.initialize
             mock_initialize.assert_not_called()
 
@@ -170,12 +154,8 @@ class TestInitDistSingleProcessFallback:
 
     def test_num_processes_gt_1_calls_jax_initialize(self):
         """With num_processes>1, should call jax.distributed.initialize."""
-        with mock.patch(
-            "xtrax.distributed.init.jax.distributed.initialize"
-        ) as mock_initialize:
-            init_dist(
-                coordinator_address="localhost:1234", num_processes=2, process_id=0
-            )
+        with mock.patch("xtrax.distributed.init.jax.distributed.initialize") as mock_initialize:
+            init_dist(coordinator_address="localhost:1234", num_processes=2, process_id=0)
             # Should have called jax.distributed.initialize
             mock_initialize.assert_called_once()
 

@@ -100,10 +100,7 @@ class TestPreemptionHandler:
         time.sleep(0.01)
 
         # Handler should still be called exactly once (not twice)
-        msg = (
-            f"Expected save_fn called once with idempotent register, "
-            f"got {call_count[0]}"
-        )
+        msg = f"Expected save_fn called once with idempotent register, got {call_count[0]}"
         assert call_count[0] == 1, msg
 
     def test_preempted_property_false_before_signal(self):

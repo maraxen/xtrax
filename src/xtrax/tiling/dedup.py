@@ -89,7 +89,11 @@ class DedupSpec:
         padded slots produce valid results that no index_map position selects.
         index_map is NOT padded — it always has N entries referencing [0, k).
         """
-        from xtrax.tiling.strategy import DedupGather, _default_dedup_fn, _default_gather_fn
+        from xtrax.tiling.strategy import (
+            DedupGather,
+            _default_dedup_fn,
+            _default_gather_fn,
+        )
 
         k_bucket = get_k_bucket(self.k)
         padded = np.pad(

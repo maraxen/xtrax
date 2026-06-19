@@ -55,9 +55,7 @@ def load_publish_oidc_config(config_path: Path) -> PublishOidcConfig:
         raise ValueError("publish.triggers.tag_pattern must be a non-empty string")
     require_dispatch = triggers.get("require_workflow_dispatch")
     publish_requires_tag = triggers.get("publish_requires_tag_push")
-    if not isinstance(require_dispatch, bool) or not isinstance(
-        publish_requires_tag, bool
-    ):
+    if not isinstance(require_dispatch, bool) or not isinstance(publish_requires_tag, bool):
         raise ValueError(
             "publish.triggers require_workflow_dispatch and "
             "publish_requires_tag_push must be booleans"
@@ -121,12 +119,8 @@ def audit_publish_oidc(
     else:
         workflow_text = workflow_path.read_text(encoding="utf-8")
         if f"- '{config.tag_pattern}'" not in workflow_text:
-            failures.append(
-                f"{config.workflow} missing tag trigger pattern {config.tag_pattern!r}"
-            )
-        if config.require_workflow_dispatch and (
-            "workflow_dispatch" not in workflow_text
-        ):
+            failures.append(f"{config.workflow} missing tag trigger pattern {config.tag_pattern!r}")
+        if config.require_workflow_dispatch and ("workflow_dispatch" not in workflow_text):
             failures.append(f"{config.workflow} missing workflow_dispatch trigger")
         _check_markers(
             failures,
@@ -155,9 +149,7 @@ def audit_publish_oidc(
             )
         for phrase in config.forbidden_phrases:
             if phrase in workflow_text:
-                failures.append(
-                    f"{config.workflow} contains forbidden phrase: {phrase!r}"
-                )
+                failures.append(f"{config.workflow} contains forbidden phrase: {phrase!r}")
 
     contributing = root / "CONTRIBUTING.md"
     if not contributing.is_file():

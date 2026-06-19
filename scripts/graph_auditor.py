@@ -65,9 +65,7 @@ def load_graph_json(path: Path) -> CompositionGraph:
             raise ValueError(f"nodes[{index}]: missing or empty 'id'")
         metadata = raw.get("metadata")
         if not isinstance(metadata, dict):
-            raise ValueError(
-                f"nodes[{index}] ({node_id}): 'metadata' must be an object"
-            )
+            raise ValueError(f"nodes[{index}] ({node_id}): 'metadata' must be an object")
         nodes.append(GraphNode(id=node_id.strip(), metadata=metadata))
 
     return CompositionGraph(nodes=tuple(nodes))
@@ -85,10 +83,7 @@ def _check_duplicate_node_ids(graph: CompositionGraph) -> list[GraphAuditFinding
                 GraphAuditFinding(
                     node_id=node_id,
                     rule_id="duplicate_node_id",
-                    message=(
-                        f"node '{node_id}' appears {count} times; "
-                        "node ids must be unique"
-                    ),
+                    message=(f"node '{node_id}' appears {count} times; node ids must be unique"),
                     severity="critical",
                 )
             )
@@ -127,10 +122,7 @@ def _check_bathos_sidecar_ref(node: GraphNode) -> list[GraphAuditFinding]:
         GraphAuditFinding(
             node_id=node.id,
             rule_id="missing_bathos_sidecar_ref",
-            message=(
-                f"node '{node.id}': audit_verdict={verdict!r} "
-                "without bathos_sidecar_ref"
-            ),
+            message=(f"node '{node.id}': audit_verdict={verdict!r} without bathos_sidecar_ref"),
             severity="minor",
         )
     ]
@@ -179,10 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         f"(gate={len(fail_gate)}, minor={len(minor)})"
     )
     for finding in result.findings:
-        print(
-            f"  [{finding.severity}] {finding.node_id} "
-            f"{finding.rule_id}: {finding.message}"
-        )
+        print(f"  [{finding.severity}] {finding.node_id} {finding.rule_id}: {finding.message}")
 
     return 0 if result.passed else 1
 

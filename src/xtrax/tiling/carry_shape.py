@@ -25,27 +25,27 @@ from jaxtyping import Shaped
 
 @dataclass(frozen=True)
 class CarryShape:
-  """Metadata for a carry-bearing scan axis (shape + dtype, no value).
+    """Metadata for a carry-bearing scan axis (shape + dtype, no value).
 
-  Attributes:
-      name: Symbolic name of the carry (e.g., "sequence", "state").
-      shape: Shape tuple for the carry array (e.g., (L,), (S, H)).
-      dtype: Data type for the carry (e.g., jnp.int32, jnp.float32).
-
-  """
-
-  name: str
-  shape: tuple[int, ...]
-  dtype: Any  # jnp.dtype
-
-  def materialize(self) -> Shaped[jax.Array, "..."]:
-    """Materialize a zero-filled JAX array with this shape and dtype.
-
-    Returns:
-        A JAX array of zeros with the declared shape and dtype.
+    Attributes:
+        name: Symbolic name of the carry (e.g., "sequence", "state").
+        shape: Shape tuple for the carry array (e.g., (L,), (S, H)).
+        dtype: Data type for the carry (e.g., jnp.int32, jnp.float32).
 
     """
-    return jnp.zeros(self.shape, dtype=self.dtype)
+
+    name: str
+    shape: tuple[int, ...]
+    dtype: Any  # jnp.dtype
+
+    def materialize(self) -> Shaped[jax.Array, ...]:
+        """Materialize a zero-filled JAX array with this shape and dtype.
+
+        Returns:
+            A JAX array of zeros with the declared shape and dtype.
+
+        """
+        return jnp.zeros(self.shape, dtype=self.dtype)
 
 
 __all__ = ["CarryShape"]

@@ -30,6 +30,7 @@ def render(*args, **kwargs):
     Lazy import: requires pip install xtrax[eda]
     """
     from xtrax.eda.viz import render as _render
+
     return _render(*args, **kwargs)
 
 
@@ -39,11 +40,18 @@ def plan_to_dataframe(*args, **kwargs):
     Lazy import: requires pip install xtrax[eda]
     """
     from xtrax.eda.export import plan_to_dataframe as _ptdf
+
     return _ptdf(*args, **kwargs)
 
 
 __all__ = [
-    "extract_plan_stats", "analyze_dedup", "analyze_bucket",
-    "explain_plan", "render", "plan_to_dataframe",
-    "PlanStatsDict", "PlanLogger", "PanelName",
+    "extract_plan_stats",
+    "analyze_dedup",
+    "analyze_bucket",
+    "explain_plan",
+    "render",
+    "plan_to_dataframe",
+    "PlanStatsDict",
+    "PlanLogger",
+    "PanelName",
 ]

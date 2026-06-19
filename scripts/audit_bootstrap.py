@@ -58,10 +58,7 @@ def main(argv: list[str] | None = None) -> int:
 
     status = "PASS" if result.passed else "FAIL"
     failed = [run.dimension for run in result.runs if not run.passed]
-    print(
-        f"{status}: audit bootstrap all_passed={result.passed} "
-        f"manifest={result.manifest_path}"
-    )
+    print(f"{status}: audit bootstrap all_passed={result.passed} manifest={result.manifest_path}")
     if failed:
         print(f"failed dimensions: {', '.join(failed)}", file=sys.stderr)
     return 0 if result.passed else 1

@@ -101,11 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         repro_test_path=Path(str(payload["repro_test_path"])),
     )
     config = load_oracle_config(args.oracle_path)
-    budget = (
-        args.budget
-        if args.budget is not None
-        else config.max_promotions_per_run
-    )
+    budget = args.budget if args.budget is not None else config.max_promotions_per_run
     verdict = attempt_bug_promotion(
         request,
         args.audits_path,

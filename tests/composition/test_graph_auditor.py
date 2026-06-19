@@ -28,9 +28,7 @@ def test_missing_nl_description_fails_with_node_id(
 ) -> None:
     result = audit_graph(invalid_graph_missing_nl)
     assert not result.passed
-    metadata_findings = [
-        f for f in result.findings if f.rule_id == "validate_node_metadata"
-    ]
+    metadata_findings = [f for f in result.findings if f.rule_id == "validate_node_metadata"]
     assert len(metadata_findings) == 1
     assert metadata_findings[0].node_id == "bad-node"
     assert "bad-node" in metadata_findings[0].message
@@ -66,14 +64,8 @@ def test_pass_verdict_without_bathos_emits_minor_finding() -> None:
     assert minor[0].node_id == "audited"
 
 
-def test_load_graph_json_round_trip(
-    tmp_path: Path, valid_graph: CompositionGraph
-) -> None:
-    payload = {
-        "nodes": [
-            {"id": node.id, "metadata": node.metadata} for node in valid_graph.nodes
-        ]
-    }
+def test_load_graph_json_round_trip(tmp_path: Path, valid_graph: CompositionGraph) -> None:
+    payload = {"nodes": [{"id": node.id, "metadata": node.metadata} for node in valid_graph.nodes]}
     graph_path = tmp_path / "graph.json"
     graph_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

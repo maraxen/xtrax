@@ -60,9 +60,7 @@ class MultiTaskLoss(eqx.Module):
     """
 
     losses: tuple[WeightedLoss, ...]
-    weight_schedule: Callable[[int], Array] | None = eqx.field(
-        default=None, static=True
-    )
+    weight_schedule: Callable[[int], Array] | None = eqx.field(default=None, static=True)
 
     def __call__(
         self,

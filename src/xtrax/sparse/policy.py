@@ -33,10 +33,7 @@ class SparsePolicy(eqx.Module):
         # Callers must invoke apply_mask outside of jit.
         n_true = jnp.sum(mask)
         if self.config.fallback_mode == "error" and n_true > self.config.nse_budget:
-            msg = (
-                f"True nonzeros {int(n_true)} exceeds nse_budget "
-                f"{self.config.nse_budget}"
-            )
+            msg = f"True nonzeros {int(n_true)} exceeds nse_budget {self.config.nse_budget}"
             raise ValueError(msg)
         if n_true > self.config.nse_budget:
             return weights * mask  # dense_mask fallback

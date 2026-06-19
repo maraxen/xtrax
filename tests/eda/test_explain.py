@@ -1,6 +1,5 @@
 """Tests for xtrax.eda.explain — explain_plan function."""
 
-
 from xtrax.eda.explain import explain_plan
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
 from xtrax.tiling.strategy import SafeMap, Vmap
@@ -49,10 +48,7 @@ class TestExplainPlan:
         stats = explain_plan(plan)
 
         assert len(stats["axes"]) == 1
-        assert (
-            stats["axes"][0]["reasoning"]
-            == "No reasoning recorded for axis 'batch'"
-        )
+        assert stats["axes"][0]["reasoning"] == "No reasoning recorded for axis 'batch'"
 
     def test_plan_with_mixed_reasoning(self):
         """explain_plan handles mix of empty and non-empty reasoning."""
@@ -77,10 +73,7 @@ class TestExplainPlan:
 
         assert len(stats["axes"]) == 2
         assert stats["axes"][0]["reasoning"] == "cardinality < batch_size"
-        assert (
-            stats["axes"][1]["reasoning"]
-            == "No reasoning recorded for axis 'sequence'"
-        )
+        assert stats["axes"][1]["reasoning"] == "No reasoning recorded for axis 'sequence'"
 
     def test_explain_plan_returns_complete_plandstatsdict(self):
         """explain_plan returns complete PlanStatsDict with all fields."""

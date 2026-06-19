@@ -297,9 +297,7 @@ def test_run_audit_bootstrap_fails_when_any_dimension_fails(tmp_path: Path) -> N
     manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["bootstrap"]["all_passed"] is False
     jax_entry = next(
-        entry
-        for entry in manifest["dimensions"]
-        if entry["dimension"] == "jax_purity"
+        entry for entry in manifest["dimensions"] if entry["dimension"] == "jax_purity"
     )
     assert jax_entry["passed"] is False
     assert jax_entry["backlog_seed"].startswith("Fix JL001")

@@ -146,8 +146,7 @@ class TestBoundedCallbackHandler:
 
         # Verify the exception WAS logged via the logging module at ERROR level
         assert any(
-            "callback error" in r.message and r.levelno == logging.ERROR
-            for r in caplog.records
+            "callback error" in r.message and r.levelno == logging.ERROR for r in caplog.records
         ), "Exception should be logged to logging module at ERROR level"
 
     @pytest.mark.asyncio

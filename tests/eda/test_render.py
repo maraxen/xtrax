@@ -14,10 +14,10 @@ import pytest
 # Skip all tests in this module if seaborn is not installed
 seaborn = pytest.importorskip("seaborn")
 
+from xtrax.eda.types import PlanStatsDict
+from xtrax.eda.viz import render
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
 from xtrax.tiling.strategy import SafeMap, Vmap
-from xtrax.eda.viz import render
-from xtrax.eda.types import PlanLogger, PlanStatsDict
 
 
 @pytest.fixture
@@ -70,7 +70,7 @@ class TestRenderSVG:
         assert isinstance(result, bytes)
 
         # SVG can start with XML declaration or <svg directly
-        svg_str = result.decode('utf-8')
+        svg_str = result.decode("utf-8")
         assert result[:4] == b"<svg" or result[:5] == b"<?xml"
 
 
@@ -98,6 +98,7 @@ class TestStatsTransformApplied:
         and the modified values appear in the output (verified by looking
         for the mutated value in the SVG).
         """
+
         def bump_vmap(stats: PlanStatsDict) -> PlanStatsDict:
             # Mutate strategy_counts to have a test value
             stats = dict(stats)

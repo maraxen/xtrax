@@ -104,11 +104,14 @@ def _is_array_annotation(node: ast.expr | None) -> bool:
 def _subscript_has_shape_string(node: ast.Subscript) -> bool:
     slice_node = node.slice
     if isinstance(slice_node, ast.Tuple):
-        return any(
-            isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-            for elt in slice_node.elts
-        )
-    return isinstance(slice_node, ast.Constant) and isinstance(slice_node.value, str)
+        return any(_slice_elt_has_shape(elt) for elt in slice_node.elts)
+    return _slice_elt_has_shape(slice_node)
+
+
+def _slice_elt_has_shape(node: ast.expr) -> bool:
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str) or node.value is Ellipsis
+    return False
 
 
 def _annotation_has_shape(node: ast.expr | None) -> bool:
@@ -170,9 +173,7 @@ def inspect_public_callable(
     for arg in _iter_signature_params(fn):
         if arg.annotation is None:
             violations.append(f"{qualname}: parameter `{arg.arg}` missing annotation")
-        elif _is_array_annotation(arg.annotation) and not _annotation_has_shape(
-            arg.annotation
-        ):
+        elif _is_array_annotation(arg.annotation) and not _annotation_has_shape(arg.annotation):
             violations.append(
                 f"{qualname}: parameter `{arg.arg}` array annotation lacks shape axes"
             )
@@ -237,15 +238,9 @@ def scan_package_annotations(root: Path) -> AnnotationStats:
         module_stats = _scan_module(tree)
         total = AnnotationStats(
             public_params=total.public_params + module_stats.public_params,
-            annotated_params=(
-                total.annotated_params + module_stats.annotated_params
-            ),
-            array_annotations=(
-                total.array_annotations + module_stats.array_annotations
-            ),
-            shape_typed_arrays=(
-                total.shape_typed_arrays + module_stats.shape_typed_arrays
-            ),
+            annotated_params=(total.annotated_params + module_stats.annotated_params),
+            array_annotations=(total.array_annotations + module_stats.array_annotations),
+            shape_typed_arrays=(total.shape_typed_arrays + module_stats.shape_typed_arrays),
         )
     return total
 

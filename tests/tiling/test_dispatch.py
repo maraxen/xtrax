@@ -48,6 +48,7 @@ class TestVmapDispatch:
 
     def test_vmap_iterator_direct_call(self):
         """VmapIterator can be called directly as iterator(fn, xs)."""
+
         def fn(x):
             return x * 2
 
@@ -183,9 +184,7 @@ class TestScanDispatch:
         strategy = Scan(transition=transition)
 
         # Should work fine; fn is not called
-        result_carry, result_ys = axis_dispatch(
-            strategy, ignored_fn, xs, init=init
-        )
+        result_carry, result_ys = axis_dispatch(strategy, ignored_fn, xs, init=init)
         assert jnp.allclose(result_carry, jnp.sum(xs))
 
 

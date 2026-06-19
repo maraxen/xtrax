@@ -30,9 +30,7 @@ class TestNoBiasWdMask:
         """Scalars (0-D) should return True (ndim != 1)."""
         params = {"s": jnp.array(5.0)}
         mask = no_bias_wd_mask(params)
-        assert mask["s"] is True, (
-            "0D scalar has ndim=0 != 1, so should be True (apply WD)"
-        )
+        assert mask["s"] is True, "0D scalar has ndim=0 != 1, so should be True (apply WD)"
 
     def test_3d_array_true(self):
         """3-D arrays should return True (ndim != 1)."""
@@ -95,9 +93,7 @@ class TestAdamwWithSchedule:
         # Primary assertion: inspect the function signature directly
         sig = inspect.signature(adamw_with_schedule)
         wd_default = sig.parameters["weight_decay"].default
-        assert wd_default == 1e-2, (
-            f"weight_decay default must be 1e-2, got {wd_default}"
-        )
+        assert wd_default == 1e-2, f"weight_decay default must be 1e-2, got {wd_default}"
 
         # Behavioral test: verify WD=1e-2 causes measurable decay vs WD=1e-4
         # Create two optimizers with different weight decays
@@ -124,9 +120,7 @@ class TestAdamwWithSchedule:
         # Run multiple steps so WD effect is observable
         # (Adam takes time to build up m1, m2)
         for _ in range(5):
-            updates_default, state_default = opt_default.update(
-                zero_grad, state_default, params
-            )
+            updates_default, state_default = opt_default.update(zero_grad, state_default, params)
             updates_small_wd, state_small_wd = opt_small_wd.update(
                 zero_grad, state_small_wd, params
             )

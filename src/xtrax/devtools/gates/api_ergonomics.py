@@ -50,9 +50,7 @@ def _count_required_params(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
             continue
         positional.append(arg)
 
-    defaults = [None] * (len(positional) - len(fn.args.defaults)) + list(
-        fn.args.defaults
-    )
+    defaults = [None] * (len(positional) - len(fn.args.defaults)) + list(fn.args.defaults)
     required = sum(1 for default in defaults if default is None)
 
     kw_defaults = fn.args.kw_defaults or []

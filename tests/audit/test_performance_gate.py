@@ -126,12 +126,15 @@ def test_run_performance_gate_fails_on_mock_trace_failure(tmp_path: Path) -> Non
         max_traces=1,
     )
 
-    with patch(
-        "xtrax.devtools.gates.performance.run_trace_probe",
-        return_value=mock_failure,
-    ), patch(
-        "xtrax.devtools.gates.performance._measure_wall_time_median_ms",
-        return_value=1.0,
+    with (
+        patch(
+            "xtrax.devtools.gates.performance.run_trace_probe",
+            return_value=mock_failure,
+        ),
+        patch(
+            "xtrax.devtools.gates.performance._measure_wall_time_median_ms",
+            return_value=1.0,
+        ),
     ):
         result = run_performance_gate(
             targets_path=targets_path,
@@ -241,12 +244,15 @@ def test_run_performance_gate_emits_recorded_wall_time(tmp_path: Path) -> None:
         max_traces=1,
     )
 
-    with patch(
-        "xtrax.devtools.gates.performance.run_trace_probe",
-        return_value=mock_pass,
-    ), patch(
-        "xtrax.devtools.gates.performance._measure_wall_time_median_ms",
-        return_value=1.0,
+    with (
+        patch(
+            "xtrax.devtools.gates.performance.run_trace_probe",
+            return_value=mock_pass,
+        ),
+        patch(
+            "xtrax.devtools.gates.performance._measure_wall_time_median_ms",
+            return_value=1.0,
+        ),
     ):
         result = run_performance_gate(
             targets_path=TARGETS_PATH,

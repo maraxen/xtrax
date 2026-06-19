@@ -5,6 +5,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 DEFAULT_RUBRICS_DIR = Path("audit/rubrics")
 
@@ -33,11 +34,27 @@ def _parse_anchors(raw_anchors: object) -> tuple[RubricAnchor, ...]:
         if not isinstance(entry, dict):
             msg = "each anchor must be a mapping"
             raise ValueError(msg)
+        entry_map = cast(dict[str, object], entry)
+        score_raw = entry_map.get("score")
+        criterion_raw = entry_map.get("criterion")
+        evidence_raw = entry_map.get("evidence_hint")
+        if score_raw is None or criterion_raw is None or evidence_raw is None:
+            msg = "each anchor must include score, criterion, and evidence_hint"
+            raise ValueError(msg)
+        if not isinstance(score_raw, (int, str, float)):
+            msg = "anchor score must be numeric"
+            raise ValueError(msg)
+        if not isinstance(criterion_raw, str):
+            msg = "anchor criterion must be a string"
+            raise ValueError(msg)
+        if not isinstance(evidence_raw, str):
+            msg = "anchor evidence_hint must be a string"
+            raise ValueError(msg)
         anchors.append(
             RubricAnchor(
-                score=int(entry["score"]),
-                criterion=str(entry["criterion"]),
-                evidence_hint=str(entry["evidence_hint"]),
+                score=int(score_raw),
+                criterion=criterion_raw,
+                evidence_hint=evidence_raw,
             )
         )
     return tuple(anchors)

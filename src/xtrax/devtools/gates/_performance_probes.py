@@ -27,7 +27,7 @@ def _make_policy(budget: int) -> SparsePolicy:
 
 @sparse_filter_jit
 @chex.assert_max_traces(n=1)
-def sparse_filter_jit_kernel(m: eqx.Module, x: jnp.ndarray) -> tuple[int, ...]:
+def sparse_filter_jit_kernel(m: eqx.nn.Linear, x: jnp.ndarray) -> tuple[int, ...]:
     """Representative sparse_filter_jit kernel for trace-count gate."""
     return m.weight.shape
 

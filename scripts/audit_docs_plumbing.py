@@ -72,9 +72,7 @@ def load_docs_plumbing_config(config_path: Path) -> DocsPlumbingConfig:
     warn_is_error = docs.get("sphinx_warn_is_error")
     nitpicky = docs.get("sphinx_nitpicky")
     if not isinstance(warn_is_error, bool) or not isinstance(nitpicky, bool):
-        raise ValueError(
-            "docs.sphinx_warn_is_error and sphinx_nitpicky must be booleans"
-        )
+        raise ValueError("docs.sphinx_warn_is_error and sphinx_nitpicky must be booleans")
 
     return DocsPlumbingConfig(
         version=version,

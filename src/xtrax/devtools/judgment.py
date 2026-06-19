@@ -98,8 +98,7 @@ def validate_judgment_wiring(
         rubric_file = rubrics_dir / f"{entry.dimension}.toml"
         if entry.dimension not in rubrics:
             errors.append(
-                f"{entry.dimension}: no rubric table in {rubrics_dir} "
-                f"(expected {rubric_file.name})"
+                f"{entry.dimension}: no rubric table in {rubrics_dir} (expected {rubric_file.name})"
             )
         elif entry.rubric_path.name != f"{entry.dimension}.toml":
             errors.append(

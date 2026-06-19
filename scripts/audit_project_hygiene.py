@@ -26,9 +26,7 @@ def parse_init_version(init_path: Path, *, attribute: str = "__version__") -> st
                 value = node.value
                 if isinstance(value, ast.Constant) and isinstance(value.value, str):
                     return value.value
-                raise ValueError(
-                    f"{init_path}:{node.lineno}: {attribute} must be a string literal"
-                )
+                raise ValueError(f"{init_path}:{node.lineno}: {attribute} must be a string literal")
     raise ValueError(f"{attribute} assignment not found in {init_path}")
 
 
@@ -152,9 +150,7 @@ def audit_project_hygiene(
     if readme_path.is_file():
         readme_text = readme_path.read_text(encoding="utf-8")
         if readme_path.stat().st_size < config.min_readme_bytes:
-            failures.append(
-                f"README.md too small ({readme_path.stat().st_size} bytes)"
-            )
+            failures.append(f"README.md too small ({readme_path.stat().st_size} bytes)")
         for marker in config.readme_markers:
             if marker not in readme_text:
                 failures.append(f"README.md missing marker: {marker!r}")
@@ -170,13 +166,9 @@ def audit_project_hygiene(
     init_path = root / config.version_source
     if citation_path.is_file() and init_path.is_file():
         present_keys = _parse_citation_keys(citation_path)
-        missing_keys = [
-            key for key in config.citation_keys if key not in present_keys
-        ]
+        missing_keys = [key for key in config.citation_keys if key not in present_keys]
         if missing_keys:
-            failures.append(
-                "CITATION.cff missing keys: " + ", ".join(missing_keys)
-            )
+            failures.append("CITATION.cff missing keys: " + ", ".join(missing_keys))
         package_version = parse_init_version(
             init_path,
             attribute=config.version_attribute,

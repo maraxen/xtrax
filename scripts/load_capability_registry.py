@@ -151,9 +151,7 @@ def _parse_slot(raw: dict[str, Any], index: int) -> SlotDefinition:
             if not isinstance(field_name, str) or not field_name.strip():
                 raise ValueError(f"{ctx}: invalid object field name")
             if field_type != "string":
-                raise ValueError(
-                    f"{ctx}: unsupported field type '{field_type}' for '{field_name}'"
-                )
+                raise ValueError(f"{ctx}: unsupported field type '{field_type}' for '{field_name}'")
             fields[field_name.strip()] = field_type
 
     item_type: str | None = None
@@ -283,9 +281,7 @@ def _validate_slot_value(slot: SlotDefinition, value: Any, *, context: str) -> N
         if not isinstance(value, str):
             raise ValueError(f"{context}: expected string")
         if slot.min_length is not None and len(value.strip()) < slot.min_length:
-            raise ValueError(
-                f"{context}: string shorter than min_length {slot.min_length}"
-            )
+            raise ValueError(f"{context}: string shorter than min_length {slot.min_length}")
         return
 
     if slot.type == "enum":
@@ -309,9 +305,7 @@ def _validate_slot_value(slot: SlotDefinition, value: Any, *, context: str) -> N
             for field_name in slot.fields:
                 field_value = value.get(field_name)
                 if not isinstance(field_value, str) or not field_value.strip():
-                    raise ValueError(
-                        f"{context}.{field_name}: expected non-empty string"
-                    )
+                    raise ValueError(f"{context}.{field_name}: expected non-empty string")
         return
 
     raise ValueError(f"{context}: unsupported slot type '{slot.type}'")
@@ -353,9 +347,7 @@ def load_capability_registry(path: Path | None = None) -> CapabilityRegistry:
     if not isinstance(raw_identities, list) or not raw_identities:
         raise ValueError("identities must be a non-empty list")
 
-    identities = tuple(
-        _parse_identity(item, idx) for idx, item in enumerate(raw_identities)
-    )
+    identities = tuple(_parse_identity(item, idx) for idx, item in enumerate(raw_identities))
     ids = [ident.id for ident in identities]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate identity ids in registry")
@@ -364,12 +356,8 @@ def load_capability_registry(path: Path | None = None) -> CapabilityRegistry:
     if not isinstance(node_raw, dict):
         raise ValueError("missing [node_metadata] table")
 
-    required_slots = tuple(
-        _require_str_list(node_raw, "required_slots", context="node_metadata")
-    )
-    optional_slots = tuple(
-        _require_str_list(node_raw, "optional_slots", context="node_metadata")
-    )
+    required_slots = tuple(_require_str_list(node_raw, "required_slots", context="node_metadata"))
+    optional_slots = tuple(_require_str_list(node_raw, "optional_slots", context="node_metadata"))
     overlap = set(required_slots) & set(optional_slots)
     if overlap:
         raise ValueError(f"node_metadata slot overlap: {sorted(overlap)}")

@@ -45,7 +45,6 @@ def __getattr__(name: str):
             stacklevel=2,
         )
         from xtrax.stages.boundaries import Fuse
+
         return Fuse
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-

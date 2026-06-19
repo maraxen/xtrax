@@ -90,9 +90,7 @@ def score_structural_docs(
         score = 4
     else:
         score = 5
-    evidence = (
-        f"jd_jm_errors={jd_count}, interrogate_coverage_pct={coverage_pct:.1f}"
-    )
+    evidence = f"jd_jm_errors={jd_count}, interrogate_coverage_pct={coverage_pct:.1f}"
     return StructuralScore(
         score=score,
         anchor_quote=_anchor_for_score(rubric, score),
@@ -150,8 +148,7 @@ def run_docs_judgment(
             severity="info",
             file_line=file_line,
             evidence=(
-                f"structural={structural.score}; semantic={semantic_score}; "
-                f"{structural.evidence}"
+                f"structural={structural.score}; semantic={semantic_score}; {structural.evidence}"
             ),
             rubric_id=f"{config.dimension}.docs_judgment",
             score=semantic_score,

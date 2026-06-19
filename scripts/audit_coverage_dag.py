@@ -291,8 +291,7 @@ def evaluate_enforce(tier: Tier, result: TierResult) -> TierResult:
             failures.append("branch coverage missing")
         elif result.branch_pct < tier.enforce_branch_pct:
             failures.append(
-                f"branch {result.branch_pct:.1f}% < enforce floor "
-                f"{tier.enforce_branch_pct:.1f}%"
+                f"branch {result.branch_pct:.1f}% < enforce floor {tier.enforce_branch_pct:.1f}%"
             )
 
     if tier.enforce_line_pct is None and tier.enforce_branch_pct is None:

@@ -83,10 +83,7 @@ def _active_wave(schedule: RuffSchedule) -> RuffWave:
     for wave in schedule.waves:
         if wave.id == schedule.active_wave_id:
             return wave
-    msg = (
-        f"active_wave_id={schedule.active_wave_id!r} "
-        f"not found in [[waves]]"
-    )
+    msg = f"active_wave_id={schedule.active_wave_id!r} not found in [[waves]]"
     raise ValueError(msg)
 
 

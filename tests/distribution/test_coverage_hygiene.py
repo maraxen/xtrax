@@ -197,13 +197,8 @@ def test_audit_coverage_hygiene_fails_on_missing_gitignore_pattern(
         config_path=config_path,
     )
     assert passed is False
-    assert any(
-        "missing required coverage pattern: 'coverage.xml'" in item for item in failures
-    )
-    assert any(
-        "missing required coverage pattern: '.coverage_html/'" in item
-        for item in failures
-    )
+    assert any("missing required coverage pattern: 'coverage.xml'" in item for item in failures)
+    assert any("missing required coverage pattern: '.coverage_html/'" in item for item in failures)
 
 
 def test_script_subprocess_on_repo_exits_zero() -> None:

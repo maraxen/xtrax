@@ -109,9 +109,7 @@ def test_run_scheduled_judgment_no_emit_records_state(
     assert state.run_id == result.run_id
 
     baseline = load_baseline(baseline_path)
-    assert baseline.metrics[STALENESS_METRIC].value == pytest.approx(
-        0.0, abs=0.01
-    )
+    assert baseline.metrics[STALENESS_METRIC].value == pytest.approx(0.0, abs=0.01)
 
 
 def test_update_staleness_baseline_from_state(tmp_path: Path) -> None:
@@ -140,12 +138,8 @@ def test_update_staleness_baseline_from_state(tmp_path: Path) -> None:
         path=state_path,
     )
 
-    with patch(
-        "xtrax.devtools.judgment_scheduled.datetime"
-    ) as mock_datetime:
-        mock_datetime.now.return_value = datetime(
-            2026, 6, 19, 0, 0, 0, tzinfo=UTC
-        )
+    with patch("xtrax.devtools.judgment_scheduled.datetime") as mock_datetime:
+        mock_datetime.now.return_value = datetime(2026, 6, 19, 0, 0, 0, tzinfo=UTC)
         mock_datetime.fromisoformat = datetime.fromisoformat
         observed = update_staleness_baseline(
             baseline_path,

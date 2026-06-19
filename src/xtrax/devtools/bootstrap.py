@@ -73,20 +73,14 @@ _FAILURE_HINTS: dict[str, str] = {
     "documentation": "Improve interrogate docstring coverage and fix JD/JM violations.",
     "api_ergonomics": "Refactor param-sprawl public APIs to fewer required parameters.",
     "test_rigor": "Increase pytest line and branch coverage above baseline.",
-    "structure_complexity": (
-        "Refactor high cognitive-complexity and ruff C901/PLR091x hotspots."
-    ),
+    "structure_complexity": ("Refactor high cognitive-complexity and ruff C901/PLR091x hotspots."),
 }
 
 _DEBT_HINTS: dict[str, str] = {
     "correctness": "Ratchet ceiling debt: JL violations remain at baseline allowance.",
     "jax_purity": "Ratchet ceiling debt: purity JL hits remain at baseline allowance.",
-    "type_hardening": (
-        "Ratchet floor debt: annotation or shape metrics stuck at baseline."
-    ),
-    "performance": (
-        "Ratchet ceiling debt: trace violations remain at baseline allowance."
-    ),
+    "type_hardening": ("Ratchet floor debt: annotation or shape metrics stuck at baseline."),
+    "performance": ("Ratchet ceiling debt: trace violations remain at baseline allowance."),
     "documentation": "Ratchet floor/ceiling debt: doc coverage or JD hits at baseline.",
     "api_ergonomics": "Ratchet ceiling debt: param-sprawl count remains at baseline.",
     "test_rigor": "Ratchet floor debt: coverage percentages remain at baseline.",
@@ -164,10 +158,7 @@ def _format_toml_value(value: object) -> str:
 def _format_inline_table(metrics: dict[str, float]) -> str:
     if not metrics:
         return "{}"
-    parts = [
-        f'"{key}" = {_format_toml_value(value)}'
-        for key, value in sorted(metrics.items())
-    ]
+    parts = [f'"{key}" = {_format_toml_value(value)}' for key, value in sorted(metrics.items())]
     return "{ " + ", ".join(parts) + " }"
 
 
@@ -225,11 +216,7 @@ def run_audit_bootstrap(
     )
     resolved_run_id = run_id or str(uuid.uuid4())
     target = resolved_root / "src" / "xtrax"
-    tests_path = (
-        resolved_root / "tests" / "audit"
-        if test_rigor_quick
-        else resolved_root / "tests"
-    )
+    tests_path = resolved_root / "tests" / "audit" if test_rigor_quick else resolved_root / "tests"
     performance_targets = resolved_root / DEFAULT_TARGETS_PATH
 
     correctness = run_correctness_gate(

@@ -31,11 +31,23 @@ def install_skill(source: Path, target: Path, *, dry_run: bool) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
     parser.add_argument("--skill", metavar="NAME", help="Install only this skill subdirectory")
-    parser.add_argument("--source", type=Path, default=None, help="Override source dir (default: agent_assets/skills)")
-    parser.add_argument("--target", type=Path, default=Path.home() / ".claude" / "skills", help="Override target dir")
+    parser.add_argument(
+        "--source",
+        type=Path,
+        default=None,
+        help="Override source dir (default: agent_assets/skills)",
+    )
+    parser.add_argument(
+        "--target",
+        type=Path,
+        default=Path.home() / ".claude" / "skills",
+        help="Override target dir",
+    )
     args = parser.parse_args()
 
     project_root = find_project_root(Path(__file__).resolve().parent)

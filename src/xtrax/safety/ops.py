@@ -25,9 +25,7 @@ def safe_norm(
     return jnp.sqrt(jnp.sum(x**2, axis=axis, keepdims=keepdims) + eps**2)
 
 
-def safe_reciprocal(
-    x: Float[Array, "..."] | float, eps: float = 1e-8
-) -> Float[Array, "..."]:
+def safe_reciprocal(x: Float[Array, "..."] | float, eps: float = 1e-8) -> Float[Array, "..."]:
     """Numerically stable reciprocal computation.
 
     Computes 1.0 / (x + eps) using a smooth, unconditional formula with no branching.

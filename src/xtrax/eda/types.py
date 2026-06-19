@@ -88,9 +88,7 @@ class PlanStatsDict(TypedDict):
 
 
 # Valid panel names for dashboard composition.
-PanelName = Literal[
-    "strategy", "cardinality", "dedup", "bucket", "memory", "reasoning"
-]
+PanelName = Literal["strategy", "cardinality", "dedup", "bucket", "memory", "reasoning"]
 
 # Frozenset of valid panel names (explicit enumeration to avoid runtime hacks).
 _VALID_PANELS: frozenset[str] = frozenset(
@@ -124,9 +122,7 @@ class PlanLogger(Protocol):
                     self.api.log({"plan_image": wandb.Image(figure)}, step=step)
     """
 
-    def log_figure(
-        self, figure: bytes | str, fmt: str, step: int | None = None
-    ) -> None:
+    def log_figure(self, figure: bytes | str, fmt: str, step: int | None = None) -> None:
         """Log a rendered figure to a remote system.
 
         Args:

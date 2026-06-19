@@ -12,7 +12,6 @@ import jax
 from xtrax.tiling.strategy import (
     AxisStrategy,
     Bucket,
-    DedupGather,
     SafeMap,
     Scan,
     Vmap,
@@ -57,17 +56,13 @@ class AxisSpec:
         # was passed for ergonomics.
         object.__setattr__(self, "bucket_boundaries", boundaries)
         if len(boundaries) == 0:
-            raise ValueError(
-                f"AxisSpec(name={self.name!r}): bucket_boundaries must be non-empty."
-            )
+            raise ValueError(f"AxisSpec(name={self.name!r}): bucket_boundaries must be non-empty.")
         if any(b <= 0 for b in boundaries):
             raise ValueError(
                 f"AxisSpec(name={self.name!r}): bucket_boundaries must be positive, "
                 f"got {boundaries}."
             )
-        if list(boundaries) != sorted(boundaries) or len(set(boundaries)) != len(
-            boundaries
-        ):
+        if list(boundaries) != sorted(boundaries) or len(set(boundaries)) != len(boundaries):
             raise ValueError(
                 f"AxisSpec(name={self.name!r}): bucket_boundaries must be strictly "
                 f"ascending, got {boundaries}."
@@ -217,7 +212,10 @@ class BatchPlanner:
                     AxisDecision(
                         spec=spec,
                         batch_size=ds.k,
-                        reasoning=f"dedup-gather (DedupSpec declared for '{spec.name}', k={ds.k}, k_bucket={dg_strategy.k_bucket})",
+                        reasoning=(
+                            f"dedup-gather (DedupSpec for '{spec.name}', "
+                            f"k={ds.k}, k_bucket={dg_strategy.k_bucket})"
+                        ),
                         strategy=dg_strategy,
                     ),
                 )
@@ -238,14 +236,12 @@ class BatchPlanner:
         # Bucket is a host plan descriptor — padding happens before the JIT boundary
         # via select_bucket()/bucketize(), not in make_axis_dispatch.
         if spec.bucket_boundaries is not None:
-            boundaries = spec.bucket_boundaries
+            boundaries = tuple(spec.bucket_boundaries)
             strategy = Bucket(boundaries=boundaries)
             return AxisDecision(
                 spec=spec,
                 batch_size=spec.default_batch_size,
-                reasoning=(
-                    f"bucket_boundaries={boundaries} → Bucket (host-side padding)"
-                ),
+                reasoning=(f"bucket_boundaries={boundaries} → Bucket (host-side padding)"),
                 strategy=strategy,
             )
 
@@ -263,9 +259,7 @@ class BatchPlanner:
                 estimated_bytes = self.memory_estimator(spec)
                 # Get device memory limit (default 4 GiB)
                 try:
-                    device_limit = (
-                        jax.devices()[0].memory_stats().get("bytes_limit", 4 * (2**30))
-                    )
+                    device_limit = jax.devices()[0].memory_stats().get("bytes_limit", 4 * (2**30))
                 except Exception:
                     device_limit = 4 * (2**30)
 
@@ -280,9 +274,7 @@ class BatchPlanner:
             if should_prefer_safemap_for_memory:
                 # Memory estimator overrides: use SafeMap
                 strategy = SafeMap(batch_size=spec.default_batch_size)
-                reasoning = (
-                    "cardinality <= batch_size but memory_estimator override → SafeMap"
-                )
+                reasoning = "cardinality <= batch_size but memory_estimator override → SafeMap"
                 return AxisDecision(
                     spec=spec,
                     batch_size=spec.default_batch_size,
@@ -306,8 +298,7 @@ class BatchPlanner:
                 # Memory estimate exceeds limit: use SafeMap
                 strategy = SafeMap(batch_size=spec.default_batch_size)
                 reasoning = (
-                    "cardinality > batch_size and divisible but "
-                    "memory_estimator override → SafeMap"
+                    "cardinality > batch_size and divisible but memory_estimator override → SafeMap"
                 )
                 return AxisDecision(
                     spec=spec,
@@ -318,9 +309,7 @@ class BatchPlanner:
             elif self.memory_estimator is not None:
                 # Memory estimator is provided and under limit: prefer Vmap
                 strategy = Vmap()
-                reasoning = (
-                    "cardinality > batch_size and divisible but memory safe → Vmap"
-                )
+                reasoning = "cardinality > batch_size and divisible but memory safe → Vmap"
                 return AxisDecision(
                     spec=spec,
                     batch_size=spec.default_batch_size,
@@ -346,10 +335,7 @@ class BatchPlanner:
                 stacklevel=3,
             )
             strategy = SafeMap(batch_size=spec.default_batch_size)
-            reasoning = (
-                "cardinality > batch_size but not divisible → "
-                "SafeMap (deferred failure)"
-            )
+            reasoning = "cardinality > batch_size but not divisible → SafeMap (deferred failure)"
             return AxisDecision(
                 spec=spec,
                 batch_size=spec.default_batch_size,

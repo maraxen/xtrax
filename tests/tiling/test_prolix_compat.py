@@ -12,17 +12,50 @@ API translation from prolix.AxisSpec to xtrax.AxisSpec:
   prolix default_batch_size=1 (safe_map) -> xtrax default_batch_size=1
   prolix tile_granularity               -> xtrax tile_granularity
 """
+
 from __future__ import annotations
 
 import xtrax.tiling as m
 from xtrax.tiling import AxisSpec, BatchPlanner
 
-N_ATOMS = AxisSpec(name="n_atoms", cardinality=60_000, default_batch_size=60_000, tile_granularity=128, heterogeneous=False)
-N_BONDS = AxisSpec(name="n_bonds", cardinality=512, default_batch_size=512, tile_granularity=64, heterogeneous=False)
-N_ANGLES = AxisSpec(name="n_angles", cardinality=512, default_batch_size=512, tile_granularity=64, heterogeneous=False)
-N_TORSIONS = AxisSpec(name="n_torsions", cardinality=512, default_batch_size=512, tile_granularity=64, heterogeneous=False)
-N_CONFORMERS = AxisSpec(name="n_conformers", cardinality=2048, default_batch_size=1, tile_granularity=1, heterogeneous=True)
-N_MOLS = AxisSpec(name="n_mols", cardinality=64, default_batch_size=1, tile_granularity=1, heterogeneous=True)
+N_ATOMS = AxisSpec(
+    name="n_atoms",
+    cardinality=60_000,
+    default_batch_size=60_000,
+    tile_granularity=128,
+    heterogeneous=False,
+)
+N_BONDS = AxisSpec(
+    name="n_bonds",
+    cardinality=512,
+    default_batch_size=512,
+    tile_granularity=64,
+    heterogeneous=False,
+)
+N_ANGLES = AxisSpec(
+    name="n_angles",
+    cardinality=512,
+    default_batch_size=512,
+    tile_granularity=64,
+    heterogeneous=False,
+)
+N_TORSIONS = AxisSpec(
+    name="n_torsions",
+    cardinality=512,
+    default_batch_size=512,
+    tile_granularity=64,
+    heterogeneous=False,
+)
+N_CONFORMERS = AxisSpec(
+    name="n_conformers",
+    cardinality=2048,
+    default_batch_size=1,
+    tile_granularity=1,
+    heterogeneous=True,
+)
+N_MOLS = AxisSpec(
+    name="n_mols", cardinality=64, default_batch_size=1, tile_granularity=1, heterogeneous=True
+)
 PROLIX_6_AXES = [N_ATOMS, N_BONDS, N_ANGLES, N_TORSIONS, N_CONFORMERS, N_MOLS]
 
 
@@ -46,10 +79,13 @@ class TestProlixPlannerCompat:
     def test_n_conformers_batch_size_positive(self):
         plan = BatchPlanner().plan(PROLIX_6_AXES)
         d = _decision_for(plan, "n_conformers")
-        assert d.batch_size > 0, f"n_conformers batch_size={d.batch_size!r}; strategy={d.strategy!r}"
+        assert d.batch_size > 0, (
+            f"n_conformers batch_size={d.batch_size!r}; strategy={d.strategy!r}"
+        )
 
     def test_homogeneous_axes_use_vmap_strategy(self):
         from xtrax.tiling.strategy import Vmap
+
         plan = BatchPlanner().plan(PROLIX_6_AXES)
         for name in ("n_atoms", "n_bonds", "n_angles", "n_torsions"):
             d = _decision_for(plan, name)

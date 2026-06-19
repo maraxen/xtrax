@@ -39,7 +39,7 @@ class TestAxisStrategyInstantiation:
         assert strategy.transition is transition
 
     def test_dedupgather_instantiates(self):
-        """DedupGather with unique_indices, index_map, k, k_bucket, dedup_fn, gather_fn instantiates."""
+        """DedupGather with indices, index_map, k, k_bucket, dedup_fn, gather_fn."""
         import numpy as np
 
         def dedup(xs, indices):

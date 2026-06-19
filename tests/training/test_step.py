@@ -121,9 +121,7 @@ def test_safety_train_step_with_disabled_safety_delegates_to_trainer(
 ):
     """SafetyTrainStep with disabled safety delegates to trainer.step."""
     disabled_manager = SafetyManager(enabled=False, check_nans=False, check_infs=False)
-    step = create_train_step(
-        loss_fn, optimizer, safety=True, safety_manager=disabled_manager
-    )
+    step = create_train_step(loss_fn, optimizer, safety=True, safety_manager=disabled_manager)
 
     # With disabled safety, should call trainer.step directly
     new_state, metrics = step.step(state, batch)
@@ -171,9 +169,7 @@ def test_safety_train_step_with_nan_loss_raises(simple_model, optimizer):
 def test_create_train_step_with_custom_safety_manager(loss_fn, optimizer):
     """create_train_step(safety=True, safety_manager=...) uses custom manager."""
     custom_manager = SafetyManager(enabled=True, check_nans=True, check_infs=True)
-    step = create_train_step(
-        loss_fn, optimizer, safety=True, safety_manager=custom_manager
-    )
+    step = create_train_step(loss_fn, optimizer, safety=True, safety_manager=custom_manager)
 
     assert step.safety_manager is custom_manager
 
@@ -190,6 +186,4 @@ def test_trainer_and_safety_step_produce_same_loss_for_normal_batch(
     _, safe_metrics = safe_step.step(state, batch)
 
     # Losses should match (within floating point tolerance)
-    assert jnp.allclose(
-        trainer_metrics["loss"], safe_metrics["loss"], atol=1e-5, rtol=1e-5
-    )
+    assert jnp.allclose(trainer_metrics["loss"], safe_metrics["loss"], atol=1e-5, rtol=1e-5)

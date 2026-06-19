@@ -88,9 +88,7 @@ def _write_minimal_pyproject(
 def _write_license(repo_root: Path, *, text: str | None = None) -> Path:
     license_path = repo_root / "LICENSE"
     license_path.write_text(
-        text
-        if text is not None
-        else "                                 Apache License\n",
+        text if text is not None else "                                 Apache License\n",
         encoding="utf-8",
     )
     return license_path

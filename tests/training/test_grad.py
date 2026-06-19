@@ -26,9 +26,7 @@ class TestAccumulateGrads:
             return jnp.mean((pred - y) ** 2)
 
         # Get jaxpr
-        jaxpr = jax.make_jaxpr(
-            lambda: accumulate_grads(loss_fn, model, (microbatches, targets))
-        )()
+        jaxpr = jax.make_jaxpr(lambda: accumulate_grads(loss_fn, model, (microbatches, targets)))()
 
         # Check that 'scan' primitive appears in jaxpr
         jaxpr_str = str(jaxpr)
@@ -53,16 +51,12 @@ class TestAccumulateGrads:
             return jnp.mean((pred - y) ** 2)
 
         # Compute accumulated grads
-        accumulated_grads, accumulated_loss = accumulate_grads(
-            loss_fn, model, (x_all, y_all)
-        )
+        accumulated_grads, accumulated_loss = accumulate_grads(loss_fn, model, (x_all, y_all))
 
         # Compute full-batch grad (using same loss_fn with concatenated data)
         x_full = jnp.concatenate(x_all, axis=0)  # (100, 5)
         y_full = jnp.concatenate(y_all, axis=0)  # (100, 1)
-        full_loss_val, full_grads = eqx.filter_value_and_grad(loss_fn)(
-            model, (x_full, y_full)
-        )
+        full_loss_val, full_grads = eqx.filter_value_and_grad(loss_fn)(model, (x_full, y_full))
 
         # Compare: accumulated should match within tolerance
         # Extract leaves as flat lists and compare element-wise

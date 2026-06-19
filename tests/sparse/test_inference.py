@@ -60,9 +60,7 @@ class TestSparsifyModel:
         sparse_model = sparsify_model(model, policy)
 
         # Collect all leaves and check for BCOO
-        leaves = jax.tree_util.tree_leaves(
-            sparse_model, is_leaf=lambda x: isinstance(x, BCOO)
-        )
+        leaves = jax.tree_util.tree_leaves(sparse_model, is_leaf=lambda x: isinstance(x, BCOO))
         bcoo_leaves = [leaf for leaf in leaves if isinstance(leaf, BCOO)]
 
         # Linear(4, 4) has weight (4, 4) and bias (4,)
@@ -153,9 +151,7 @@ class TestSparsifyModel:
         class ModelWithBCOO(eqx.Module):
             bcoo_weight: BCOO
 
-        bcoo_leaf = BCOO(
-            (jnp.array([1.0, 2.0]), jnp.array([[0, 0], [1, 1]])), shape=(2, 2)
-        )
+        bcoo_leaf = BCOO((jnp.array([1.0, 2.0]), jnp.array([[0, 0], [1, 1]])), shape=(2, 2))
         model = ModelWithBCOO(bcoo_weight=bcoo_leaf)
 
         policy = _make_policy(budget=4)
@@ -172,9 +168,7 @@ class TestSparsifyModel:
         sparse_model = sparsify_model(model, policy, leaf_filter=lambda x: False)
 
         # Check that no BCOO leaves exist
-        leaves = jax.tree_util.tree_leaves(
-            sparse_model, is_leaf=lambda x: isinstance(x, BCOO)
-        )
+        leaves = jax.tree_util.tree_leaves(sparse_model, is_leaf=lambda x: isinstance(x, BCOO))
         bcoo_leaves = [leaf for leaf in leaves if isinstance(leaf, BCOO)]
         assert len(bcoo_leaves) == 0, "No BCOO leaves expected with leaf_filter=False"
 
@@ -272,7 +266,6 @@ class TestSparseFilterJit:
         forward(sparse_model, x)  # Second call should not retrace
 
         assert call_count["n"] == 1, (
-            f"Expected 1 trace, got {call_count['n']} — "
-            "BCOO destructuring triggered retrace"
+            f"Expected 1 trace, got {call_count['n']} — BCOO destructuring triggered retrace"
         )
         assert out1 == (4, 4)

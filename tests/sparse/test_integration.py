@@ -150,9 +150,7 @@ class TestEngineEvalComposition:
         inference_model = eqx.nn.inference_mode(sparse_model)
 
         # Verify BCOO leaves survive the transformation
-        leaves = jax.tree_util.tree_leaves(
-            inference_model, is_leaf=lambda x: isinstance(x, BCOO)
-        )
+        leaves = jax.tree_util.tree_leaves(inference_model, is_leaf=lambda x: isinstance(x, BCOO))
         assert any(isinstance(leaf, BCOO) for leaf in leaves), (
             "BCOO leaves lost after inference_mode — composition failed"
         )

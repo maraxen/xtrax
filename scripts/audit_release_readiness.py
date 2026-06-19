@@ -184,9 +184,7 @@ def load_release_readiness_config(config_path: Path) -> ReleaseReadinessConfig:
     def _marker_list(key: str) -> tuple[str, ...]:
         values = markers.get(key)
         if not isinstance(values, list) or not values:
-            raise ValueError(
-                f"readiness.workflow_markers.{key} must be a non-empty list"
-            )
+            raise ValueError(f"readiness.workflow_markers.{key} must be a non-empty list")
         return tuple(str(item) for item in values)
 
     return ReleaseReadinessConfig(
@@ -202,18 +200,14 @@ def load_release_readiness_config(config_path: Path) -> ReleaseReadinessConfig:
         backlog_items=tuple(backlog_items),
         automated_checks=tuple(automated_checks),
         ci_workflow=str(markers.get("ci_workflow", ".github/workflows/ci.yml")),
-        publish_workflow=str(
-            markers.get("publish_workflow", ".github/workflows/publish.yml")
-        ),
+        publish_workflow=str(markers.get("publish_workflow", ".github/workflows/publish.yml")),
         docs_workflow=str(markers.get("docs_workflow", ".github/workflows/docs.yml")),
         required_ci_markers=_marker_list("required_ci_markers"),
         required_publish_markers=_marker_list("required_publish_markers"),
     )
 
 
-def run_prerequisite_sync(
-    root: Path, config: ReleaseReadinessConfig
-) -> tuple[bool, str]:
+def run_prerequisite_sync(root: Path, config: ReleaseReadinessConfig) -> tuple[bool, str]:
     cmd = ["uv", "sync"]
     for extra in config.prerequisite_sync:
         cmd.append(f"--extra={extra}")
@@ -333,9 +327,7 @@ def compute_verdict(
         reasons.extend(workflow_failures)
 
     failed_blocking = [
-        item
-        for item in automated_results
-        if item["blocking"] and not item["passed"]
+        item for item in automated_results if item["blocking"] and not item["passed"]
     ]
     if config.require_automated_pass and failed_blocking:
         for item in failed_blocking:
@@ -344,9 +336,7 @@ def compute_verdict(
     open_human = [
         row
         for row in backlog_rows
-        if row["gate_type"] == "human"
-        and row["blocking"]
-        and row["status"] != "completed"
+        if row["gate_type"] == "human" and row["blocking"] and row["status"] != "completed"
     ]
     if config.block_on_open_human_gates and open_human:
         for row in open_human:
@@ -420,9 +410,7 @@ def render_markdown_report(payload: dict[str, Any]) -> str:
             line = tier.get("line_pct")
             branch = tier.get("branch_pct")
             if line is not None and branch is not None:
-                lines.append(
-                    f"- `{tier_id}`: line {line:.1f}% / branch {branch:.1f}%"
-                )
+                lines.append(f"- `{tier_id}`: line {line:.1f}% / branch {branch:.1f}%")
 
     lines.extend(
         [
@@ -466,9 +454,7 @@ def audit_release_readiness(
         verify_workflow_markers(root, config.ci_workflow, config.required_ci_markers)
     )
     workflow_failures.extend(
-        verify_workflow_markers(
-            root, config.publish_workflow, config.required_publish_markers
-        )
+        verify_workflow_markers(root, config.publish_workflow, config.required_publish_markers)
     )
     if not (root / config.docs_workflow).is_file():
         workflow_failures.append(f"missing workflow file: {config.docs_workflow}")

@@ -160,9 +160,7 @@ class TestMultiTaskLoss:
         result = multi_loss(preds, targets)
 
         expected = (
-            loss1(preds[0], targets[0])
-            + loss2(preds[1], targets[1])
-            + loss3(preds[2], targets[2])
+            loss1(preds[0], targets[0]) + loss2(preds[1], targets[1]) + loss3(preds[2], targets[2])
         )
 
         assert jnp.allclose(result, expected)

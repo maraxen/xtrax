@@ -143,9 +143,7 @@ def check_forbid_eager_imports_at_root(init_path: Path) -> list[str]:
                 if isinstance(target, ast.Name) and target.id in allowed:
                     break
             else:
-                failures.append(
-                    f"{init_path}:{node.lineno}: disallowed top-level assignment"
-                )
+                failures.append(f"{init_path}:{node.lineno}: disallowed top-level assignment")
             continue
         allowed_funcs = _ALLOWED_ROOT_TOP_LEVEL_NAMES
         if isinstance(node, ast.FunctionDef) and node.name in allowed_funcs:
@@ -154,14 +152,10 @@ def check_forbid_eager_imports_at_root(init_path: Path) -> list[str]:
             if isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 if module == "xtrax" or module.startswith("xtrax."):
-                    failures.append(
-                        f"{init_path}:{node.lineno}: forbidden eager import from xtrax"
-                    )
+                    failures.append(f"{init_path}:{node.lineno}: forbidden eager import from xtrax")
             for alias in node.names:
                 if isinstance(node, ast.Import) and alias.name.startswith("xtrax"):
-                    failures.append(
-                        f"{init_path}:{node.lineno}: forbidden eager import of xtrax"
-                    )
+                    failures.append(f"{init_path}:{node.lineno}: forbidden eager import of xtrax")
             continue
         failures.append(f"{init_path}:{node.lineno}: disallowed top-level statement")
     return failures

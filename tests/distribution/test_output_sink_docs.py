@@ -24,8 +24,9 @@ def _write_config(repo_root: Path) -> Path:
 
 
 def _write_output_sink_files(repo_root: Path) -> None:
-    chapter = textwrap.dedent(
-        """
+    chapter = (
+        textwrap.dedent(
+            """
         # Output Sinks
 
         Streaming Callbacks and Checkpoint Persistence.
@@ -51,15 +52,13 @@ def _write_output_sink_files(repo_root: Path) -> None:
         ```{automodule} xtrax.checkpoint
         ```
         """
-    ).strip() + "\n" * 80
+        ).strip()
+        + "\n" * 80
+    )
     (repo_root / "docs" / "api").mkdir(parents=True)
-    (repo_root / "docs" / "api" / "output-sinks.md").write_text(
-        chapter, encoding="utf-8"
-    )
+    (repo_root / "docs" / "api" / "output-sinks.md").write_text(chapter, encoding="utf-8")
     (repo_root / "docs").mkdir(parents=True, exist_ok=True)
-    (repo_root / "docs" / "index.md").write_text(
-        "api/output-sinks\n", encoding="utf-8"
-    )
+    (repo_root / "docs" / "index.md").write_text("api/output-sinks\n", encoding="utf-8")
     workflow_dir = repo_root / ".github" / "workflows"
     workflow_dir.mkdir(parents=True)
     (workflow_dir / "ci.yml").write_text(

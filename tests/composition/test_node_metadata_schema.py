@@ -57,6 +57,4 @@ def test_registry_slot_ids_match_schema() -> None:
 
     assert set(registry.node_metadata.required_slots) == schema_required
     assert set(registry.node_metadata.optional_slots) == schema_optional
-    assert schema_required | schema_optional == {
-        slot.id for slot in schema.slots
-    }
+    assert schema_required | schema_optional == {slot.id for slot in schema.slots}

@@ -6,20 +6,17 @@ and focus on edge cases and unhappy paths that should raise or validate graceful
 """
 
 import sys
-import tempfile
-from pathlib import Path
 
-import numpy as np
 import pytest
 
 # Skip all tests in this module if seaborn is not installed
 seaborn = pytest.importorskip("seaborn")
 
-from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
-from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Vmap
-from xtrax.eda.viz import render
-from xtrax.eda.stats import analyze_dedup, analyze_bucket
+from xtrax.eda.stats import analyze_bucket, analyze_dedup
 from xtrax.eda.types import PlanStatsDict
+from xtrax.eda.viz import render
+from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
+from xtrax.tiling.strategy import Vmap
 
 
 class TestRenderEmptyPlan:
@@ -111,7 +108,9 @@ class TestImportWithoutSeabornRaises:
             with pytest.raises(ImportError, match="pip install xtrax\\[eda\\]"):
                 # This will fail during the module import
                 import importlib
+
                 import xtrax.eda.viz as viz_module
+
                 importlib.reload(viz_module)
         finally:
             # Restore original state

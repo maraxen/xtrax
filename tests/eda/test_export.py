@@ -1,13 +1,11 @@
 """Tests for xtrax.eda.export — plan_to_dataframe."""
 
+import numpy as np
 import pytest
 
 from xtrax.eda.stats import extract_plan_stats
-from xtrax.eda.types import PlanStatsDict
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
 from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Vmap
-
-import numpy as np
 
 
 class TestPlanToDataframe:
@@ -18,32 +16,31 @@ class TestPlanToDataframe:
         # Test that the ImportError is raised when pandas is missing.
         # Use sys.modules patching to simulate absent pandas in the current interpreter.
         import sys
-        import importlib
-        
+
         # Save original pandas module (if it exists)
-        original_pandas = sys.modules.get('pandas')
-        
+        original_pandas = sys.modules.get("pandas")
+
         try:
             # Patch sys.modules to hide pandas
-            sys.modules['pandas'] = None
-            
+            sys.modules["pandas"] = None
+
             # Force reimport of export module to trigger the ImportError
-            if 'xtrax.eda.export' in sys.modules:
-                del sys.modules['xtrax.eda.export']
-            
+            if "xtrax.eda.export" in sys.modules:
+                del sys.modules["xtrax.eda.export"]
+
             # This should raise ImportError
             with pytest.raises(ImportError, match=r"xtrax\[eda\]"):
                 from xtrax.eda.export import plan_to_dataframe  # noqa: F401
         finally:
             # Restore original pandas module
             if original_pandas is not None:
-                sys.modules['pandas'] = original_pandas
-            elif 'pandas' in sys.modules:
-                del sys.modules['pandas']
-            
+                sys.modules["pandas"] = original_pandas
+            elif "pandas" in sys.modules:
+                del sys.modules["pandas"]
+
             # Clean up the export module so other tests get a fresh import
-            if 'xtrax.eda.export' in sys.modules:
-                del sys.modules['xtrax.eda.export']
+            if "xtrax.eda.export" in sys.modules:
+                del sys.modules["xtrax.eda.export"]
 
     def test_empty_plan_dataframe(self):
         """plan_to_dataframe with empty plan returns DataFrame with no rows."""
@@ -121,9 +118,7 @@ class TestPlanToDataframe:
         pytest.importorskip("pandas")
         from xtrax.eda.export import plan_to_dataframe
 
-        spec = AxisSpec(
-            name="batch", cardinality=100, default_batch_size=32, dedup_eligible=True
-        )
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32, dedup_eligible=True)
         unique_indices = np.array([0, 1, 2, 3, 4], dtype=np.int32)
         index_map = np.array([0, 1, 2, 3, 4, 0, 1, 2, 3, 4], dtype=np.int32)
 
@@ -192,6 +187,7 @@ class TestPlanToDataframe:
         """plan_to_dataframe fills NaN for dedup/bucket columns on non-applicable axes."""
         pytest.importorskip("pandas")
         import pandas as pd
+
         from xtrax.eda.export import plan_to_dataframe
 
         # Create two axes: one Vmap, one Bucket
@@ -240,9 +236,7 @@ class TestPlanToDataframe:
 
         decisions = tuple(
             AxisDecision(
-                spec=AxisSpec(
-                    name=f"axis{i}", cardinality=100 + i, default_batch_size=32
-                ),
+                spec=AxisSpec(name=f"axis{i}", cardinality=100 + i, default_batch_size=32),
                 batch_size=32,
                 reasoning=f"axis {i}",
                 strategy=Vmap(),

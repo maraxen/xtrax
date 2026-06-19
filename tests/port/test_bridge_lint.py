@@ -6,8 +6,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[2]
 _LINT_PATH = ROOT / "scripts" / "lint_port_bridge_map.py"
 _spec = importlib.util.spec_from_file_location("lint_port_bridge_map", _LINT_PATH)

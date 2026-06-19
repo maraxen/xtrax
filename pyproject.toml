@@ -53,6 +53,7 @@ Changelog = "https://github.com/maraxen/xtrax/blob/main/CHANGELOG.md"
 
 [tool.ruff]
 target-version = "py313"
+line-length = 100
 
 [tool.hatch.version]
 path = "src/xtrax/__init__.py"
@@ -79,6 +80,9 @@ select = [ "E", "F", "I", "UP",]
 [tool.ruff.lint.per-file-ignores]
 # jaxtyping shape strings use forward refs and undefined names in annotations
 "tests/**/*.py" = ["F722", "F821"]
+"tests/eda/test_render.py" = ["E402", "F841"]
+"tests/eda/test_render_errors.py" = ["E402"]
+"port/reference/**/*.py" = ["UP047"]
 
 [tool.jaxlint]
 # N0.4 foundation: performance sensors gate via `just audit-jaxlint` (--no-doc).

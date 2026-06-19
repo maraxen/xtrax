@@ -58,9 +58,7 @@ def load_narrative_docs_config(config_path: Path) -> NarrativeDocsConfig:
             raise ValueError(f"pages[{path!r}].min_bytes must be a positive integer")
         markers = raw.get("required_markers")
         if not isinstance(markers, list) or not markers:
-            raise ValueError(
-                f"pages[{path!r}].required_markers must be a non-empty list"
-            )
+            raise ValueError(f"pages[{path!r}].required_markers must be a non-empty list")
         if not all(isinstance(item, str) and item for item in markers):
             raise ValueError(f"pages[{path!r}].required_markers must contain strings")
         pages.append(
@@ -101,9 +99,7 @@ def audit_narrative_docs(
         text = path.read_text(encoding="utf-8")
         size = path.stat().st_size
         if size < page.min_bytes:
-            failures.append(
-                f"{page.path} too small ({size} bytes < {page.min_bytes})"
-            )
+            failures.append(f"{page.path} too small ({size} bytes < {page.min_bytes})")
         for marker in page.required_markers:
             if marker not in text:
                 failures.append(f"{page.path} missing marker: {marker!r}")

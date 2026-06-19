@@ -52,9 +52,7 @@ class SafetyTrainStep(eqx.Module):
         # Wrap trainer.step with checkify to detect NaN/Inf
         # In a jit-in-jit context, the inner trainer.step's filter_jit is
         # stripped by JAX, and checkify instruments the computation correctly.
-        checked_step = checkify.checkify(
-            self.trainer.step, errors=checkify.float_checks
-        )
+        checked_step = checkify.checkify(self.trainer.step, errors=checkify.float_checks)
         return checked_step(state, batch)  # returns (err, (new_state, metrics))
 
     def step(

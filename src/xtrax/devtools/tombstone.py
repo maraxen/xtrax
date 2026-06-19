@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from xtrax.devtools.emit import AuditFinding
 
@@ -29,11 +29,11 @@ def _utc_now_iso() -> str:
 
 
 def _validate_disposition(disposition: str) -> Disposition:
-    allowed = {"accepted", "wontfix", "out_of_scope"}
+    allowed: frozenset[Disposition] = frozenset({"accepted", "wontfix", "out_of_scope"})
     if disposition not in allowed:
         msg = f"disposition must be one of {sorted(allowed)}, got {disposition!r}"
         raise ValueError(msg)
-    return disposition  # type: ignore[return-value]
+    return cast(Disposition, disposition)
 
 
 def load_tombstones(path: Path = DEFAULT_TOMBSTONE_PATH) -> set[str]:

@@ -59,9 +59,7 @@ def load_output_sink_docs_config(config_path: Path) -> OutputSinkDocsConfig:
             raise ValueError(f"output_sink.{table_name} must be a table")
         markers = table.get("markers")
         if not isinstance(markers, list) or not markers:
-            raise ValueError(
-                f"output_sink.{table_name}.markers must be a non-empty list"
-            )
+            raise ValueError(f"output_sink.{table_name}.markers must be a non-empty list")
         return tuple(str(item) for item in markers)
 
     doctest_section = section.get("doctest_modules", {})
@@ -167,14 +165,11 @@ def audit_output_sink_docs(
         callbacks_text = callbacks.read_text(encoding="utf-8")
         if config.reexport_source not in callbacks_text:
             failures.append(
-                f"{config.callbacks_module} missing re-export: "
-                f"{config.reexport_source!r}"
+                f"{config.callbacks_module} missing re-export: {config.reexport_source!r}"
             )
         for symbol in config.reexport_symbols:
             if symbol not in callbacks_text:
-                failures.append(
-                    f"{config.callbacks_module} missing symbol reference: {symbol!r}"
-                )
+                failures.append(f"{config.callbacks_module} missing symbol reference: {symbol!r}")
         _check_markers(
             failures,
             rel_path=config.callbacks_module,
@@ -209,9 +204,7 @@ def audit_output_sink_docs(
             "load_checkpoint",
         ):
             if symbol not in checkpoint_text:
-                failures.append(
-                    f"{config.checkpoint_init} missing export: {symbol!r}"
-                )
+                failures.append(f"{config.checkpoint_init} missing export: {symbol!r}")
 
     if not skip_doctest:
         doctest_paths = [str(root / rel) for rel in config.doctest_modules]

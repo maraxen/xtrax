@@ -68,9 +68,7 @@ def parse_init_version(init_path: Path, *, attribute: str = "__version__") -> st
                 value = node.value
                 if isinstance(value, ast.Constant) and isinstance(value.value, str):
                     return value.value
-                raise ValueError(
-                    f"{init_path}:{node.lineno}: {attribute} must be a string literal"
-                )
+                raise ValueError(f"{init_path}:{node.lineno}: {attribute} must be a string literal")
     raise ValueError(f"{attribute} assignment not found in {init_path}")
 
 
@@ -110,9 +108,7 @@ def find_built_wheel(dist_dir: Path) -> Path | None:
 
 def read_wheel_metadata_version(wheel_path: Path) -> str:
     with zipfile.ZipFile(wheel_path) as archive:
-        metadata_names = [
-            name for name in archive.namelist() if name.endswith("/METADATA")
-        ]
+        metadata_names = [name for name in archive.namelist() if name.endswith("/METADATA")]
         if not metadata_names:
             raise ValueError(f"no METADATA file found in {wheel_path}")
         raw = archive.read(metadata_names[0])
@@ -200,8 +196,7 @@ def audit_version_wheel(
 
     if wheel_version != resolved_version:
         failures.append(
-            "wheel METADATA Version mismatch: "
-            f"expected {resolved_version!r}, got {wheel_version!r}"
+            f"wheel METADATA Version mismatch: expected {resolved_version!r}, got {wheel_version!r}"
         )
 
     if twine_is_available():
@@ -248,10 +243,7 @@ def main(argv: list[str] | None = None) -> int:
                 "hatch path matches (metadata-only)"
             )
         else:
-            print(
-                f"PASS: version wheel — __version__={label!r}; "
-                "wheel METADATA matches"
-            )
+            print(f"PASS: version wheel — __version__={label!r}; wheel METADATA matches")
         return 0
 
     print("FAIL: version wheel", file=sys.stderr)

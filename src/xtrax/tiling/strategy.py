@@ -34,9 +34,9 @@ def _default_dedup_fn(xs: Any, unique_indices: Any) -> Any:
     return jax.tree.map(lambda x: x[unique_indices], xs)
 
 
-def _default_gather_fn(ys_unique: Any, index_map: Any) -> Any:
+def _default_gather_fn(ys: Any, gather_indices: Any) -> Any:
     """Default gather function: scatter unique results back to original positions."""
-    return jax.tree.map(lambda y: y[index_map], ys_unique)
+    return jax.tree.map(lambda y: y[gather_indices], ys)
 
 
 @dataclass(frozen=True)

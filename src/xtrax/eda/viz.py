@@ -21,8 +21,7 @@ try:
     import seaborn as sns
 except ImportError as exc:
     raise ImportError(
-        "xtrax.eda.viz requires visualization extras. "
-        "Install with: pip install xtrax[eda]"
+        "xtrax.eda.viz requires visualization extras. Install with: pip install xtrax[eda]"
     ) from exc
 
 from xtrax.eda.stats import extract_plan_stats
@@ -158,9 +157,7 @@ def render(
         if panel_count == 0:
             panel_count = 2
 
-        fig, axes = plt.subplots(
-            panel_count, 1, figsize=(10, 4 * panel_count), tight_layout=True
-        )
+        fig, axes = plt.subplots(panel_count, 1, figsize=(10, 4 * panel_count), tight_layout=True)
 
         # Ensure axes is always a list
         if panel_count == 1:
@@ -176,8 +173,7 @@ def render(
                 strategies = list(strategy_data.keys())
                 counts = list(strategy_data.values())
                 sns.barplot(
-                    x=strategies, y=counts, ax=ax, hue=strategies,
-                    legend=False, palette="Set2"
+                    x=strategies, y=counts, ax=ax, hue=strategies, legend=False, palette="Set2"
                 )
                 ax.set_xlabel("Strategy Type")
                 ax.set_ylabel("Count")
@@ -233,8 +229,7 @@ def render(
                 axis_names = [d["axis_name"] for d in dedup_data]
                 ratios = [d["dedup_ratio"] for d in dedup_data]
                 sns.barplot(
-                    x=axis_names, y=ratios, ax=ax, hue=axis_names,
-                    legend=False, palette="muted"
+                    x=axis_names, y=ratios, ax=ax, hue=axis_names, legend=False, palette="muted"
                 )
                 ax.set_ylabel("Dedup Ratio (unique / total)")
                 ax.set_xlabel("Axis Name")
@@ -260,8 +255,12 @@ def render(
                 axis_names = [b["axis_name"] for b in bucket_data]
                 bucket_counts = [b["bucket_count"] for b in bucket_data]
                 sns.barplot(
-                    x=axis_names, y=bucket_counts, ax=ax, hue=axis_names,
-                    legend=False, palette="Set1"
+                    x=axis_names,
+                    y=bucket_counts,
+                    ax=ax,
+                    hue=axis_names,
+                    legend=False,
+                    palette="Set1",
                 )
                 ax.set_ylabel("Number of Buckets")
                 ax.set_xlabel("Axis Name")
@@ -301,9 +300,7 @@ def render(
             ax = axes[ax_idx]
             axes_data = stats["axes"]
             if axes_data:
-                reasoning_text = "\n".join(
-                    [f"{a['name']}: {a['reasoning']}" for a in axes_data]
-                )
+                reasoning_text = "\n".join([f"{a['name']}: {a['reasoning']}" for a in axes_data])
                 ax.text(
                     0.05,
                     0.95,
@@ -326,12 +323,12 @@ def render(
         plt.savefig(buf, format="svg", bbox_inches="tight")
         svg_bytes = buf.getvalue()
         svg_str = svg_bytes.decode("utf-8")
-        
+
         # Post-process SVG to inject data-panel attributes
         # Add a comment with panel names for each subplot group
         if panel_names:
             svg_str = _inject_panel_attributes(svg_str, panel_names)
-        
+
         result = svg_str.encode("utf-8")
     elif fmt == "html":
         plt.savefig(buf, format="svg", bbox_inches="tight")
@@ -385,7 +382,7 @@ def render(
 
 def _inject_panel_attributes(svg_str: str, panel_names: list[str]) -> str:
     """Post-process SVG to add data-panel attributes for each panel.
-    
+
     Wraps each subplot's top-level <g> element with a data-panel attribute.
     Since matplotlib generates multiple <g> elements per subplot, we inject
     a marker comment before the first <g> of each panel's content.
@@ -393,28 +390,28 @@ def _inject_panel_attributes(svg_str: str, panel_names: list[str]) -> str:
     # For each panel, insert a <!-- data-panel="name" --> marker
     # after the SVG declaration and metadata
     lines = svg_str.split("\n")
-    
+
     # Find where to insert markers (after initial SVG tags but before content)
     result_lines = []
     in_metadata = False
     panel_idx = 0
-    
+
     for i, line in enumerate(lines):
         result_lines.append(line)
-        
+
         # Mark end of metadata section
         if "</metadata>" in line:
             in_metadata = False
         if "<metadata>" in line:
             in_metadata = True
-            
+
         # After metadata and defs, before first <g> with actual content
         if not in_metadata and "</defs>" in line and panel_idx < len(panel_names):
             # Add panel markers after defs
             for panel_name in panel_names:
                 result_lines.append(f'  <!-- data-panel="{panel_name}" -->')
             panel_idx = len(panel_names)  # Only inject once
-    
+
     return "\n".join(result_lines)
 
 

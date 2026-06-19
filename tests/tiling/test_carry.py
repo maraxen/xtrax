@@ -3,7 +3,6 @@
 import pytest
 
 from xtrax.tiling.carry import CarrySpec
-from xtrax.tiling.strategy import ScanTransition
 
 
 class TestCarrySpecInstantiation:
@@ -11,6 +10,7 @@ class TestCarrySpecInstantiation:
 
     def test_carryspec_instantiates_with_valid_axis(self):
         """CarrySpec instantiates with a non-heterogeneous axis name."""
+
         def transition(carry, x):
             return carry, x
 
@@ -26,6 +26,7 @@ class TestCarrySpecInstantiation:
 
     def test_carryspec_instantiates_with_any_axis_name(self):
         """CarrySpec instantiates with any axis name; validation is delegated to BatchPlanner."""
+
         def transition(carry, x):
             return carry, x
 
@@ -48,6 +49,7 @@ class TestCarrySpecInstantiation:
 
     def test_carryspec_is_frozen(self):
         """CarrySpec is immutable (frozen dataclass)."""
+
         def transition(carry, x):
             return carry, x
 
@@ -61,6 +63,7 @@ class TestCarrySpecInstantiation:
 
     def test_carryspec_ordered_sinks_default_true(self):
         """CarrySpec.ordered_sinks defaults to True."""
+
         def transition(carry, x):
             return carry, x
 
@@ -73,6 +76,7 @@ class TestCarrySpecInstantiation:
 
     def test_carryspec_ordered_sinks_can_be_false(self):
         """CarrySpec.ordered_sinks can be set to False."""
+
         def transition(carry, x):
             return carry, x
 

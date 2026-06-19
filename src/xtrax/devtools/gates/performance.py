@@ -69,10 +69,7 @@ def load_performance_targets(path: Path) -> PerformanceTargets:
     version = str(gate.get("version", ""))
     max_traces_default = gate.get("max_traces_default", 1)
     if not isinstance(max_traces_default, int) or max_traces_default < 1:
-        msg = (
-            f"gate.max_traces_default must be a positive int, "
-            f"got {max_traces_default!r}"
-        )
+        msg = f"gate.max_traces_default must be a positive int, got {max_traces_default!r}"
         raise ValueError(msg)
 
     raw_probes = data.get("probes", [])
@@ -176,11 +173,7 @@ def run_performance_gate(
             )
         )
 
-    failures = [
-        result
-        for result in probe_results
-        if not result.skipped and not result.passed
-    ]
+    failures = [result for result in probe_results if not result.skipped and not result.passed]
     trace_violation_count = len(failures)
 
     emitted = 0
@@ -197,8 +190,7 @@ def run_performance_gate(
             severity="info",
             file_line=f"probe:{representative.qualname}",
             evidence=(
-                f"wall_time_median_ms={wall_time_median_ms:.3f} "
-                f"for {representative.qualname}"
+                f"wall_time_median_ms={wall_time_median_ms:.3f} for {representative.qualname}"
             ),
             rule_id=WALL_TIME_METRIC_KEY,
             symbol_qualname=representative.qualname,

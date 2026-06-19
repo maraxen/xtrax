@@ -56,7 +56,8 @@ def run_jaxlint(
         findings = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise SystemExit(
-            f"jaxlint did not emit valid JSON (exit {proc.returncode}):\n{proc.stdout}\n{proc.stderr}"
+            "jaxlint did not emit valid JSON "
+            f"(exit {proc.returncode}):\n{proc.stdout}\n{proc.stderr}"
         ) from exc
 
     if not isinstance(findings, list):

@@ -73,9 +73,7 @@ def check_gitignore_patterns(
 ) -> list[str]:
     lines = iter_gitignore_lines(gitignore_path)
     return [
-        pattern
-        for pattern in required_patterns
-        if not gitignore_contains_pattern(lines, pattern)
+        pattern for pattern in required_patterns if not gitignore_contains_pattern(lines, pattern)
     ]
 
 
@@ -118,9 +116,7 @@ def audit_coverage_hygiene(
     gitignore_path: Path | None = None,
 ) -> tuple[bool, list[str]]:
     config = load_hygiene_config(config_path)
-    resolved_gitignore = (
-        gitignore_path if gitignore_path is not None else root / ".gitignore"
-    )
+    resolved_gitignore = gitignore_path if gitignore_path is not None else root / ".gitignore"
 
     failures: list[str] = []
     missing_patterns = check_gitignore_patterns(
@@ -128,9 +124,7 @@ def audit_coverage_hygiene(
         config.required_gitignore_patterns,
     )
     for pattern in missing_patterns:
-        failures.append(
-            f".gitignore missing required coverage pattern: {pattern!r}"
-        )
+        failures.append(f".gitignore missing required coverage pattern: {pattern!r}")
 
     try:
         tracked = list_tracked_files(root)

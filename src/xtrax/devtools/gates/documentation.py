@@ -45,10 +45,7 @@ def filter_jd_jm_errors(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for finding in findings:
         rule_id = str(finding.get("rule_id", ""))
         severity = str(finding.get("severity", "")).lower()
-        if (
-            (rule_id.startswith("JD") or rule_id.startswith("JM"))
-            and severity == "error"
-        ):
+        if (rule_id.startswith("JD") or rule_id.startswith("JM")) and severity == "error":
             errors.append(finding)
     return errors
 

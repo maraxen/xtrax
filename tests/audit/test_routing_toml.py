@@ -6,9 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ROUTING_TOML = ROOT / "audit" / "routing.toml"
 
-VALID_DESTINATIONS = frozenset(
-    {"block_ci", "tombstone_eligible", "found_issues", "backlog_node"}
-)
+VALID_DESTINATIONS = frozenset({"block_ci", "tombstone_eligible", "found_issues", "backlog_node"})
 
 
 def _load_routing() -> dict:
@@ -48,18 +46,11 @@ def test_matrix_version_bumped() -> None:
 
 def test_dimension_domain_rows_cover_track_severity_matrix() -> None:
     data = _load_routing()
-    dimension_routes = [
-        row for row in data["routes"] if row.get("domain") == "dimension"
-    ]
+    dimension_routes = [row for row in data["routes"] if row.get("domain") == "dimension"]
     assert len(dimension_routes) == 8
 
-    combos = {
-        (row["track"], row["severity"])
-        for row in dimension_routes
-    }
-    expected = {
-        ("deterministic", sev) for sev in ("info", "minor", "major", "critical")
-    } | {
+    combos = {(row["track"], row["severity"]) for row in dimension_routes}
+    expected = {("deterministic", sev) for sev in ("info", "minor", "major", "critical")} | {
         ("judgment", sev) for sev in ("info", "minor", "major", "critical")
     }
     assert combos == expected

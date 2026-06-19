@@ -62,9 +62,7 @@ def main(argv: list[str] | None = None) -> int:
 
     status = "PASS" if result.passed else "FAIL"
     wall = (
-        f"{result.wall_time_median_ms:.3f}ms"
-        if result.wall_time_median_ms is not None
-        else "n/a"
+        f"{result.wall_time_median_ms:.3f}ms" if result.wall_time_median_ms is not None else "n/a"
     )
     print(
         f"{status}: {METRIC_KEY}={result.trace_violation_count} "

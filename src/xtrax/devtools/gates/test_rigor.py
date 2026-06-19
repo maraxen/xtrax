@@ -57,11 +57,7 @@ def parse_pytest_summary(output: str) -> tuple[int, int]:
     tests_failed = 0
     for line in reversed(output.splitlines()):
         stripped = line.strip()
-        if (
-            " passed" not in stripped
-            and " failed" not in stripped
-            and " error" not in stripped
-        ):
+        if " passed" not in stripped and " failed" not in stripped and " error" not in stripped:
             continue
         passed_m = re.search(r"(\d+) passed", stripped)
         failed_m = re.search(r"(\d+) failed", stripped)

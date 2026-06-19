@@ -205,9 +205,7 @@ class TestBucketIterator:
         result, original_length_mask = results[0]
 
         # Should pad to 128 (smallest boundary >= 100)
-        assert result.shape[0] == 128, (
-            f"Expected padded shape (128,), got {result.shape}"
-        )
+        assert result.shape[0] == 128, f"Expected padded shape (128,), got {result.shape}"
 
         # Check mask: first 100 should be True, rest False
         assert jnp.sum(original_length_mask) == 100

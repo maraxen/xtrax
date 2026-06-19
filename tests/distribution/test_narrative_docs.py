@@ -26,37 +26,49 @@ def _write_config(repo_root: Path) -> Path:
 def _write_narrative_pages(repo_root: Path) -> None:
     docs = repo_root / "docs"
     (docs / "advanced").mkdir(parents=True)
-    quickstart = textwrap.dedent(
-        """
+    quickstart = (
+        textwrap.dedent(
+            """
         # Quickstart
 
         pip install xtrax
 
         Trainer and ResumableState with Engine.fit_sync.
         """
-    ).strip() + "\n" * 40
-    architecture = textwrap.dedent(
-        """
+        ).strip()
+        + "\n" * 40
+    )
+    architecture = (
+        textwrap.dedent(
+            """
         # Architecture
 
         BatchPlanner chooses default_batch_size.
         ResumableState and Engine orchestrate training.
         """
-    ).strip() + "\n" * 120
-    concepts = textwrap.dedent(
-        """
+        ).strip()
+        + "\n" * 120
+    )
+    concepts = (
+        textwrap.dedent(
+            """
         # Concepts
 
         AxisSpec uses default_batch_size. ResumableState flows through Engine.
         """
-    ).strip() + "\n" * 90
-    debugging = textwrap.dedent(
-        """
+        ).strip()
+        + "\n" * 90
+    )
+    debugging = (
+        textwrap.dedent(
+            """
         # Debugging
 
         Watch for recompilation when static batch sizes change.
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
     (docs / "quickstart.md").write_text(quickstart, encoding="utf-8")
     (docs / "architecture.md").write_text(architecture, encoding="utf-8")
     (docs / "concepts.md").write_text(concepts, encoding="utf-8")

@@ -61,9 +61,7 @@ def max_traces_from_config(port_config: dict[str, Any]) -> int:
     parity = port_config.get("parity", {})
     value = parity.get("max_traces", DEFAULT_MAX_TRACES)
     if not isinstance(value, int) or value < 1:
-        raise SystemExit(
-            f"port_target parity.max_traces must be a positive int, got {value!r}"
-        )
+        raise SystemExit(f"port_target parity.max_traces must be a positive int, got {value!r}")
     return value
 
 
@@ -115,9 +113,7 @@ def import_qualname(qualname: str) -> Any:
 def import_probe(trace_probe: str) -> Callable[[], None]:
     module_path, sep, attr = trace_probe.partition(":")
     if not sep or not module_path or not attr:
-        raise ValueError(
-            f"trace_probe must be 'module.path:callable', got {trace_probe!r}"
-        )
+        raise ValueError(f"trace_probe must be 'module.path:callable', got {trace_probe!r}")
     module = importlib.import_module(module_path)
     probe = getattr(module, attr)
     if not callable(probe):
@@ -243,9 +239,7 @@ def audit_trace_counts(
 
     kernels = iter_kernels(port_config, manifest)
     results = [check_kernel(spec, max_traces=max_traces) for spec in kernels]
-    resolved_manifest = (
-        manifest_path if manifest_path and manifest_path.is_file() else None
-    )
+    resolved_manifest = manifest_path if manifest_path and manifest_path.is_file() else None
     envelope = build_envelope(
         port_target=port_target_path,
         wave_id=wave_id,
@@ -263,10 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         "--port-target",
         type=Path,
         default=None,
-        help=(
-            "Path to port_target.toml "
-            "(default: [tool.port].target or port/port_target.toml)"
-        ),
+        help=("Path to port_target.toml (default: [tool.port].target or port/port_target.toml)"),
     )
     parser.add_argument(
         "-o",

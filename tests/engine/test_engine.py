@@ -87,9 +87,7 @@ class DummyDataModule:
     def eval_iter(self) -> Iterator[dict[str, Any]]:
         """Generate dummy batches for evaluation."""
         for i in range(self.batch_count):
-            inputs = jax.random.normal(
-                jax.random.PRNGKey(i + 200), (self.batch_size, 2)
-            )
+            inputs = jax.random.normal(jax.random.PRNGKey(i + 200), (self.batch_size, 2))
             targets = jax.random.normal(jax.random.PRNGKey(i + 300), (self.batch_size,))
             yield {"inputs": inputs, "targets": targets}
 
@@ -152,9 +150,7 @@ class MultiMetricTrainer(eqx.Module):
         accuracy = jnp.mean(errors < 0.5).astype(jnp.float32)
 
         # Return state with incremented step and multi-key metrics dict
-        new_state = eqx.tree_at(
-            lambda s: s.step, state, state.step + jnp.array(1, dtype=jnp.int32)
-        )
+        new_state = eqx.tree_at(lambda s: s.step, state, state.step + jnp.array(1, dtype=jnp.int32))
         return new_state, {"loss": loss, "accuracy": accuracy}
 
 

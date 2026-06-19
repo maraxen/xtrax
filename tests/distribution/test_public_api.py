@@ -37,9 +37,7 @@ def _write_lazy_root_init(
     init_path = repo_root / "src" / "xtrax" / "__init__.py"
     init_path.parent.mkdir(parents=True, exist_ok=True)
     all_lines = ",\n    ".join(repr(name) for name in all_names)
-    lazy_lines = ",\n    ".join(
-        f"{name!r}: {module!r}" for name, module in lazy_map.items()
-    )
+    lazy_lines = ",\n    ".join(f"{name!r}: {module!r}" for name, module in lazy_map.items())
     init_path.write_text(
         "\n".join(
             [
@@ -57,10 +55,7 @@ def _write_lazy_root_init(
                 "    if name in _LAZY:",
                 "        import importlib",
                 "        return getattr(importlib.import_module(_LAZY[name]), name)",
-                (
-                    '    raise AttributeError('
-                    'f"module \'xtrax\' has no attribute {name!r}")'
-                ),
+                ("    raise AttributeError(f\"module 'xtrax' has no attribute {name!r}\")"),
                 "",
                 "def __dir__():",
                 "    return sorted(__all__)",

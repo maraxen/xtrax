@@ -175,9 +175,7 @@ def append_finding(
     """Append one JSONL finding record (port/#2180 delegation target)."""
     from xtrax.devtools.tombstone import DEFAULT_TOMBSTONE_PATH, is_tombstoned
 
-    resolved_tombstone_path = (
-        DEFAULT_TOMBSTONE_PATH if tombstone_path is None else tombstone_path
-    )
+    resolved_tombstone_path = DEFAULT_TOMBSTONE_PATH if tombstone_path is None else tombstone_path
     if is_tombstoned(record.finding_id, path=resolved_tombstone_path):
         return
     audits_path.parent.mkdir(parents=True, exist_ok=True)

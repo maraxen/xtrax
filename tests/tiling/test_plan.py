@@ -62,23 +62,17 @@ class TestAxisSpec:
     def test_axis_spec_bucket_boundaries_non_ascending_raises(self):
         """Non-ascending bucket_boundaries is rejected."""
         with pytest.raises(ValueError, match="strictly ascending"):
-            AxisSpec(
-                name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(16, 8)
-            )
+            AxisSpec(name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(16, 8))
 
     def test_axis_spec_bucket_boundaries_duplicate_raises(self):
         """Duplicate bucket_boundaries (not strictly ascending) is rejected."""
         with pytest.raises(ValueError, match="strictly ascending"):
-            AxisSpec(
-                name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(8, 8, 16)
-            )
+            AxisSpec(name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(8, 8, 16))
 
     def test_axis_spec_bucket_boundaries_non_positive_raises(self):
         """Non-positive bucket_boundaries is rejected."""
         with pytest.raises(ValueError, match="positive"):
-            AxisSpec(
-                name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(0, 8)
-            )
+            AxisSpec(name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(0, 8))
 
 
 class TestAxisDecision:
@@ -169,11 +163,13 @@ class TestBatchPlanner:
         assert decision.spec is spec
         # Phase 0 pre-demotes to Scan strategy
         from xtrax.tiling.strategy import Scan
+
         assert isinstance(decision.strategy, Scan)
 
     def test_phase0b_dedup_spec_returns_dedupgather(self):
         """Phase 0b: DedupSpec declared → DedupGather."""
         import numpy as np
+
         from xtrax.tiling.dedup import DedupSpec
 
         spec = AxisSpec(
@@ -406,9 +402,7 @@ class TestBatchPlanner:
         def estimate_with_device_check(spec: AxisSpec) -> int:
             # This simulates what a real estimator might do
             try:
-                device_limit = (
-                    jax.devices()[0].memory_stats().get("bytes_limit", 4 * (2**30))
-                )
+                device_limit = jax.devices()[0].memory_stats().get("bytes_limit", 4 * (2**30))
             except Exception:
                 device_limit = 4 * (2**30)
             # Return a value < device_limit
@@ -424,6 +418,7 @@ class TestBatchPlanner:
     def test_multiple_specs_independent_decisions(self):
         """Each spec gets its own decision independent of others."""
         import numpy as np
+
         from xtrax.tiling.dedup import DedupSpec
 
         specs = [

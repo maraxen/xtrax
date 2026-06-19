@@ -50,8 +50,7 @@ def assert_not_tracing(leaves: list[Any]) -> None:
     for leaf in leaves:
         if isinstance(leaf, jax.core.Tracer):
             raise RuntimeError(
-                "sparsify_model cannot be called inside jax.jit — "
-                "call it before jit compilation"
+                "sparsify_model cannot be called inside jax.jit — call it before jit compilation"
             )
 
 
@@ -80,18 +79,14 @@ def sparsify_model(
         ValueError: If model already contains BCOO leaves (double sparsification).
     """
     # Flatten the model to check for Tracers and existing BCOO leaves
-    leaves, treedef = jax.tree_util.tree_flatten(
-        model, is_leaf=lambda x: isinstance(x, BCOO)
-    )
+    leaves, treedef = jax.tree_util.tree_flatten(model, is_leaf=lambda x: isinstance(x, BCOO))
 
     # Check that we're not inside jit
     assert_not_tracing(leaves)
 
     # Guard: reject models that already contain BCOO leaves
     if any(isinstance(leaf, BCOO) for leaf in leaves):
-        raise ValueError(
-            "model already contains BCOO leaves — double sparsification detected"
-        )
+        raise ValueError("model already contains BCOO leaves — double sparsification detected")
 
     # Apply masks to each leaf
     new_leaves = []

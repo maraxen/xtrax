@@ -4,12 +4,6 @@ import numpy as np
 import pytest
 
 from xtrax.eda.stats import analyze_bucket, analyze_dedup, extract_plan_stats
-from xtrax.eda.types import (
-    AxisStatsEntry,
-    BucketStatsEntry,
-    DedupStatsEntry,
-    PlanStatsDict,
-)
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
 from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Vmap
 
@@ -87,9 +81,7 @@ class TestExtractPlanStats:
         """extract_plan_stats accumulates strategy counts correctly."""
         decisions = tuple(
             AxisDecision(
-                spec=AxisSpec(
-                    name=f"axis{i}", cardinality=100 + i, default_batch_size=32
-                ),
+                spec=AxisSpec(name=f"axis{i}", cardinality=100 + i, default_batch_size=32),
                 batch_size=32,
                 reasoning="test",
                 strategy=Vmap() if i < 3 else SafeMap(batch_size=32),
@@ -104,9 +96,7 @@ class TestExtractPlanStats:
 
     def test_dedup_stats_accumulated_in_extract(self):
         """extract_plan_stats accumulates dedup stats from DedupGather decisions."""
-        spec = AxisSpec(
-            name="batch", cardinality=100, default_batch_size=32, dedup_eligible=True
-        )
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32, dedup_eligible=True)
         unique_indices = np.array([0, 1, 2, 3, 4], dtype=np.int32)
         index_map = np.array([0, 1, 2, 3, 4, 0, 1, 2, 3, 4], dtype=np.int32)
 
@@ -298,9 +288,7 @@ class TestAnalyzeBucket:
 
     def test_analyze_bucket_single_boundary(self):
         """analyze_bucket works with single bucket boundary."""
-        spec = AxisSpec(
-            name="seq", cardinality=100, default_batch_size=32, bucket_boundaries=(64,)
-        )
+        spec = AxisSpec(name="seq", cardinality=100, default_batch_size=32, bucket_boundaries=(64,))
         strategy = Bucket(boundaries=(64,))
         decision = AxisDecision(
             spec=spec,
@@ -340,9 +328,7 @@ class TestAnalyzeBucket:
             strategy=Vmap(),
         )
 
-        with pytest.raises(
-            TypeError, match="analyze_bucket requires Bucket strategy; got Vmap"
-        ):
+        with pytest.raises(TypeError, match="analyze_bucket requires Bucket strategy; got Vmap"):
             analyze_bucket(decision)
 
     def test_analyze_bucket_rejects_safemap(self):
@@ -355,9 +341,7 @@ class TestAnalyzeBucket:
             strategy=SafeMap(batch_size=32),
         )
 
-        with pytest.raises(
-            TypeError, match="analyze_bucket requires Bucket strategy; got SafeMap"
-        ):
+        with pytest.raises(TypeError, match="analyze_bucket requires Bucket strategy; got SafeMap"):
             analyze_bucket(decision)
 
     def test_analyze_bucket_rejects_dedup_gather(self):
@@ -455,8 +439,6 @@ class TestStatsTypeConsistency:
         assert all(isinstance(b, int) for b in result["bucket_boundaries"])
 
 
-
-
 def test_no_extras_import():
     """Verify that xtrax.eda.stats does not import pandas/matplotlib/seaborn.
 
@@ -465,8 +447,8 @@ def test_no_extras_import():
     leaked into the import chain via a careless addition of pandas/matplotlib/
     seaborn imports in stats.py or the types module it uses.
     """
-    import sys
     import importlib
+    import sys
 
     # List of banned extras that must not be present after importing xtrax.eda.stats
     banned_modules = ("pandas", "matplotlib", "seaborn")

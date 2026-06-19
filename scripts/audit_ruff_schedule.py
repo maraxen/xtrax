@@ -44,20 +44,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     schedule = load_ruff_schedule(args.schedule_path)
-    active = next(
-        wave for wave in schedule.waves if wave.id == schedule.active_wave_id
-    )
+    active = next(wave for wave in schedule.waves if wave.id == schedule.active_wave_id)
     pending = next_pending_wave(args.schedule_path)
 
-    print(
-        f"PASS: ruff schedule sync "
-        f"active={active.id} select={sorted(active.select)}"
-    )
+    print(f"PASS: ruff schedule sync active={active.id} select={sorted(active.select)}")
     if pending is not None:
-        print(
-            f"next pending: {pending.id} select={sorted(pending.select)} "
-            f"notes={pending.notes!r}"
-        )
+        print(f"next pending: {pending.id} select={sorted(pending.select)} notes={pending.notes!r}")
     else:
         print("next pending: none")
     return 0

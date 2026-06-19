@@ -79,9 +79,7 @@ def init_dist(
                 process_id = int(slurm_procid)
             if coordinator_address is None:
                 if slurm_nodelist:
-                    coordinator_address = _derive_coordinator_from_nodelist(
-                        slurm_nodelist
-                    )
+                    coordinator_address = _derive_coordinator_from_nodelist(slurm_nodelist)
                 else:
                     coordinator_address = "localhost:1234"
         else:

@@ -20,28 +20,28 @@ from xtrax.tiling.strategy import ScanTransition
 
 @dataclass(frozen=True)
 class CarrySpec:
-  """Declare carry-bearing scan on a named axis.
+    """Declare carry-bearing scan on a named axis.
 
-  Attributes:
-      axis_name: Name of the axis (must match AxisSpec.name in the planner,
-          e.g. "n_noises", "n_samples", "n_temperatures").
-      init: Initial carry value. May contain JAX arrays (traced leaves).
-          Shape must be static at JAX trace time.
-      transition: (carry, x) -> (carry, y) function. Must be a ScanTransition.
-      ordered_sinks: If True, any Sink/Tap on this axis uses ordered=True
-          in io_callback (step-ordered guarantees). Default: True.
+    Attributes:
+        axis_name: Name of the axis (must match AxisSpec.name in the planner,
+            e.g. "n_noises", "n_samples", "n_temperatures").
+        init: Initial carry value. May contain JAX arrays (traced leaves).
+            Shape must be static at JAX trace time.
+        transition: (carry, x) -> (carry, y) function. Must be a ScanTransition.
+        ordered_sinks: If True, any Sink/Tap on this axis uses ordered=True
+            in io_callback (step-ordered guarantees). Default: True.
 
-  Note:
-      Validation that axis_name is not heterogeneous is performed by
-      BatchPlanner.plan(), which checks against the heterogeneous_axes
-      parameter passed at initialization.
+    Note:
+        Validation that axis_name is not heterogeneous is performed by
+        BatchPlanner.plan(), which checks against the heterogeneous_axes
+        parameter passed at initialization.
 
-  """
+    """
 
-  axis_name: str
-  init: Any
-  transition: ScanTransition
-  ordered_sinks: bool = True
+    axis_name: str
+    init: Any
+    transition: ScanTransition
+    ordered_sinks: bool = True
 
 
 __all__ = ["CarrySpec"]
