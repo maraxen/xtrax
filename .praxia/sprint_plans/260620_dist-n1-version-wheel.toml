@@ -1,0 +1,73 @@
+[sprint]
+sprint_id = "260620_dist-n1-version-wheel"
+sprint_num = 29
+name = "xtrax Loop Sprint 29: Distribution N1 version + wheel verification"
+description = "__init__-as-truth contract gate + build/install smoke (#1452)."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1452 [N1] Version single-sourcing + wheel verification.
+Already wired: [tool.hatch.version] path=src/xtrax/__init__.py, __version__=0.3.0 (keep current; do NOT downgrade to 0.2.0).
+Deliver build-verification gate inseparable from version single-sourcing per distribution spec idea 23.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "version_wheel"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1452"
+phase_name = "[N1] Version single-sourcing (__init__-as-truth) + wheel verification"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1452 [N1] Version single-sourcing + wheel verification
+
+## Goal
+Prove hatch reads __version__ from src/xtrax/__init__.py and the built wheel ships that version.
+
+## Deliverables
+1. `distribution/version_contract.toml`
+   - [version] version_source = "src/xtrax/__init__.py"
+   - attribute = "__version__"
+   - hatch_path_key = "tool.hatch.version.path" (documentation)
+
+2. `scripts/audit_version_wheel.py`
+   - load contract
+   - parse __version__ from __init__ via ast (no import side effects)
+   - assert pyproject.toml [tool.hatch.version].path matches contract
+   - run `uv build` (or hatch build) in subprocess
+   - read wheel METADATA Version field; must equal __version__
+   - optional fast path: `--metadata-only` skips build for unit tests
+   - `twine check dist/*` if twine importable, else skip with note
+   - PASS message with version
+
+3. `tests/distribution/test_version_wheel.py` — parse helpers, metadata-only checks, mocked wheel metadata
+
+4. `Justfile`: `audit-version-wheel` recipe (full build)
+
+5. Wire `just audit-version-wheel` into `audit-deterministic` (after audit-coverage-hygiene)
+
+6. Update `tests/audit/test_ci_deterministic_recipe.py` if it asserts recipe contents
+
+## Constraints
+- Keep __version__ = "0.3.0" — do NOT change to 0.2.0
+- Do NOT add py.typed (#1455 is separate)
+- ruff clean; pytest passes
+
+## Verification
+- pytest tests/distribution/test_version_wheel.py -v
+- just audit-version-wheel exits 0
+- just audit-deterministic passes
+
+Do NOT commit.
+"""
+reviewer_prompt = "VERIFY #1452: version contract, wheel gate, tests, audit-deterministic wired. PASS/FAIL."
+return_key = "1452"
+
+[orchestration]
+sequential = ["version_wheel"]
+concurrent = []

@@ -1,0 +1,5 @@
+[version]
+version = "0.1.0"
+version_source = "src/xtrax/__init__.py"
+attribute = "__version__"
+hatch_path_key = "tool.hatch.version.path"
