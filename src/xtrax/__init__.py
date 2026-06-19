@@ -41,8 +41,6 @@ __all__ = [
     # Distributed
     "init_dist",
     "is_distributed",
-    "LogicalMesh",
-    "with_manual_axes",
     # Transforms
     "safe_map",
     "safe_scan",
@@ -96,8 +94,6 @@ _LAZY = {
     # Distributed subpackage
     "init_dist": "xtrax.distributed",
     "is_distributed": "xtrax.distributed",
-    "LogicalMesh": "xtrax.distributed",
-    "with_manual_axes": "xtrax.distributed",
     # Transforms subpackage
     "safe_map": "xtrax.transforms",
     "safe_scan": "xtrax.transforms",

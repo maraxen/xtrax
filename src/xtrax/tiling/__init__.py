@@ -27,6 +27,7 @@ from xtrax.tiling.iterator import (
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan, BatchPlanner
 from xtrax.tiling.strategy import (
     Bucket,
+    DedupGather,
     SafeMap,
     Scan,
     ScanTransition,
@@ -40,6 +41,7 @@ __all__ = [
     "BatchPlanner",
     "Vmap",
     "SafeMap",
+    "DedupGather",
     "Scan",
     "Bucket",
     "select_bucket",

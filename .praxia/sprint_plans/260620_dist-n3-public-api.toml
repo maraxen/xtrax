@@ -1,0 +1,71 @@
+[sprint]
+sprint_id = "260620_dist-n3-public-api"
+sprint_num = 30
+name = "xtrax Loop Sprint 30: Distribution N3 public API contract"
+description = "public_api.toml + audit gate; fix DedupGather lazy export (#1453)."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1453 [N3] Hybrid + lazy public API surface.
+Root __init__ already has PEP562 __getattr__ + __all__ + _LAZY; training/data/tiling __init__ populated.
+BUG: `from xtrax import DedupGather` fails — _LAZY points to xtrax.tiling but DedupGather not re-exported there.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "public_api"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1453"
+phase_name = "[N3] Hybrid + lazy public API surface"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1453 [N3] Hybrid + lazy public API surface
+
+## Goal
+Document and enforce tier-1 lazy flat API; fix broken exports.
+
+## Fixes required
+1. Fix DedupGather: either re-export from xtrax.tiling.__init__ (add to __all__) OR point _LAZY["DedupGather"] to "xtrax.tiling.strategy". Prefer re-export from tiling if consistent with tier-1 surface.
+
+2. `distribution/public_api.toml`
+   - [api] version, lazy_root=true, root_module="xtrax"
+   - tier1_exports: list all names in root __all__
+   - required_subpackage_inits: training, data, tiling (must define __all__)
+   - forbid_eager_imports_at_root: true
+
+3. `scripts/audit_public_api.py`
+   - load contract
+   - AST-check src/xtrax/__init__.py: no `import xtrax.*` or `from xtrax.*` at module level (only __version__, __all__, _LAZY, __getattr__, __dir__)
+   - assert set(__all__) == set(_LAZY.keys())
+   - assert required subpackages have non-empty __all__
+   - smoke: for each tier1 export (or sample + DedupGather), verify getattr via importlib without `import xtrax` side-effect check optional
+   - `--smoke-imports` flag runs actual lazy resolves (slower); default on for CLI
+
+4. `tests/distribution/test_public_api.py`
+
+5. `Justfile`: `audit-public-api`
+
+6. Wire into `audit-deterministic` after audit-version-wheel
+
+7. Update tests/audit/test_ci_deterministic_recipe.py
+
+## Verification
+- `from xtrax import DedupGather` works
+- pytest tests/distribution/test_public_api.py -v
+- just audit-public-api exits 0
+- just audit-deterministic passes
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = "VERIFY #1453: DedupGather fixed, contract gate, tests, deterministic wired. PASS/FAIL."
+return_key = "1453"
+
+[orchestration]
+sequential = ["public_api"]
+concurrent = []

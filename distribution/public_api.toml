@@ -1,0 +1,62 @@
+[api]
+version = "0.1.0"
+lazy_root = true
+root_module = "xtrax"
+forbid_eager_imports_at_root = true
+required_subpackage_inits = ["training", "data", "tiling"]
+
+tier1_exports = [
+    "Trainer",
+    "SafetyTrainStep",
+    "create_train_step",
+    "LossFunction",
+    "Callback",
+    "ResumableState",
+    "WeightedLoss",
+    "MultiTaskLoss",
+    "make_optimizer",
+    "adamw_with_schedule",
+    "Engine",
+    "BoundedCallbackHandler",
+    "save_checkpoint",
+    "load_checkpoint",
+    "DataModule",
+    "create_distributed_pipeline",
+    "AxisSpec",
+    "AxisDecision",
+    "BatchPlan",
+    "BatchPlanner",
+    "Vmap",
+    "SafeMap",
+    "DedupGather",
+    "Bucket",
+    "select_bucket",
+    "bucketize",
+    "SparseConfig",
+    "SparsePolicy",
+    "SparseMaskManager",
+    "sparsify_model",
+    "make_sparse_forward_fn",
+    "sparse_filter_jit",
+    "init_dist",
+    "is_distributed",
+    "safe_map",
+    "safe_scan",
+    "safe_norm",
+    "safe_reciprocal",
+    "TransformFn",
+    "RollingFn",
+]
+
+smoke_exports = [
+    "Trainer",
+    "Engine",
+    "save_checkpoint",
+    "DataModule",
+    "DedupGather",
+    "SparseConfig",
+    "init_dist",
+    "safe_map",
+    "safe_norm",
+    "TransformFn",
+]
