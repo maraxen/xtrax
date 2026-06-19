@@ -49,6 +49,16 @@
       "comparator": "maximize",
       "key": "test_rigor.line_coverage_pct",
       "value": 0.0
+    },
+    "structure.cognitive_complexity_max": {
+      "comparator": "minimize",
+      "key": "structure.cognitive_complexity_max",
+      "value": 83.0
+    },
+    "structure.ruff_complexity_violation_count": {
+      "comparator": "minimize",
+      "key": "structure.ruff_complexity_violation_count",
+      "value": 11.0
     }
   },
   "schema_version": 1,

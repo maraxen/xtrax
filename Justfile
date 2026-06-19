@@ -68,6 +68,11 @@ audit-test-rigor-gate-quick:
     uv run pytest tests/audit/test_test_rigor_gate.py -v
     uv run python scripts/audit_test_rigor_gate.py --quick --no-write-baseline
 
+audit-structure-complexity-gate:
+    uv run ruff check src/xtrax/devtools/gates/structure_complexity.py scripts/audit_structure_complexity_gate.py tests/audit/test_structure_complexity_gate.py
+    uv run pytest tests/audit/test_structure_complexity_gate.py -v
+    uv run python scripts/audit_structure_complexity_gate.py --no-write-baseline
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 
