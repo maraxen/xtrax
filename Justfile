@@ -82,6 +82,11 @@ audit-bootstrap-dry:
     uv run ruff check src/xtrax/devtools/bootstrap.py scripts/audit_bootstrap.py tests/audit/test_bootstrap.py
     uv run pytest tests/audit/test_bootstrap.py -v
 
+audit-judgment:
+    uv run ruff check src/xtrax/devtools/judgment.py scripts/audit_judgment.py tests/audit/test_judgment_dispatch.py
+    uv run pytest tests/audit/test_judgment_dispatch.py -v
+    uv run python scripts/audit_judgment.py --no-emit
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 

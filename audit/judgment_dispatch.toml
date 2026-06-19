@@ -1,0 +1,62 @@
+# Judgment-track dimension → agent roster (audit-fw spec 260611 / N4.1 #1590).
+# Each row arms one dimension for scheduled observation emit via run_judgment_dispatch.
+
+[dispatch]
+schema_version = 1
+version = "0.1.0"
+
+[[dimensions]]
+dimension = "correctness"
+agent_role = "oracle"
+rubric_path = "audit/rubrics/correctness.toml"
+default_severity = "info"
+label = "observation"
+
+[[dimensions]]
+dimension = "jax_purity"
+agent_role = "jax-purity-reviewer"
+rubric_path = "audit/rubrics/jax_purity.toml"
+default_severity = "info"
+label = "observation"
+
+[[dimensions]]
+dimension = "type_hardening"
+agent_role = "auditor"
+rubric_path = "audit/rubrics/type_hardening.toml"
+default_severity = "info"
+label = "observation"
+
+[[dimensions]]
+dimension = "performance"
+agent_role = "staff"
+rubric_path = "audit/rubrics/performance.toml"
+default_severity = "info"
+label = "observation"
+
+[[dimensions]]
+dimension = "documentation"
+agent_role = "reviewer"
+rubric_path = "audit/rubrics/documentation.toml"
+default_severity = "info"
+label = "observation"
+
+[[dimensions]]
+dimension = "api_ergonomics"
+agent_role = "code-architecture-advisor"
+rubric_path = "audit/rubrics/api_ergonomics.toml"
+default_severity = "info"
+label = "observation"
+
+[[dimensions]]
+dimension = "test_rigor"
+agent_role = "test-designer"
+rubric_path = "audit/rubrics/test_rigor.toml"
+default_severity = "info"
+label = "observation"
+
+[[dimensions]]
+dimension = "structure_complexity"
+agent_role = "code-architecture-advisor"
+rubric_path = "audit/rubrics/structure_complexity.toml"
+default_severity = "info"
+label = "observation"
