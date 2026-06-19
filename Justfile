@@ -87,6 +87,11 @@ audit-judgment:
     uv run pytest tests/audit/test_judgment_dispatch.py -v
     uv run python scripts/audit_judgment.py --no-emit
 
+audit-refute-promote:
+    uv run ruff check src/xtrax/devtools/refute_promote.py scripts/audit_refute_promote.py tests/audit/test_refute_promote.py
+    uv run pytest tests/audit/test_refute_promote.py -v
+    uv run python scripts/audit_refute_promote.py --self-test
+
 validate-capability-registry:
     uv run python scripts/load_capability_registry.py
 

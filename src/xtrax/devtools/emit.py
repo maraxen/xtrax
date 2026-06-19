@@ -138,8 +138,10 @@ def emit_judgment_finding(
     score: int = 0,
     anchor_quote: str = "",
     symbol_qualname: str = "",
+    payload: dict[str, Any] | None = None,
     run_id: str | None = None,
 ) -> AuditFinding:
+    extra = dict(payload or {})
     finding_id = compute_finding_id(
         dim,
         rubric_id,
@@ -160,6 +162,7 @@ def emit_judgment_finding(
             "score": score,
             "anchor_quote": anchor_quote,
             "symbol_qualname": symbol_qualname,
+            **extra,
         },
     )
 

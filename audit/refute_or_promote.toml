@@ -1,0 +1,54 @@
+# Refute-or-Promote persona protocol (audit-fw spec 260611 / N4.3 #1593).
+# Assert pass states the candidate; refute pass tries to kill it.
+# Promote only when assert survives refutation; emit label is always observation.
+
+[protocol]
+schema_version = 1
+version = "0.1.0"
+ceiling_note = """
+Same-family assert/refute critics (all-Claude roster) share correlated blind spots.
+Surviving refutation is necessary-not-sufficient evidence for promotion.
+The only ground-truth promotion to bug requires a failing pytest (pull-based).
+"""
+
+# Default pair: auditor asserts, oracle refutes. Override per dimension when
+# judgment_dispatch.toml arms a different domain agent for assert.
+[[persona_pairs]]
+dimension = "*"
+assert_role = "auditor"
+refute_role = "oracle"
+
+[[persona_pairs]]
+dimension = "correctness"
+assert_role = "oracle"
+refute_role = "auditor"
+
+[[persona_pairs]]
+dimension = "jax_purity"
+assert_role = "jax-purity-reviewer"
+refute_role = "oracle"
+
+[[persona_pairs]]
+dimension = "performance"
+assert_role = "staff"
+refute_role = "oracle"
+
+[[persona_pairs]]
+dimension = "documentation"
+assert_role = "reviewer"
+refute_role = "oracle"
+
+[[persona_pairs]]
+dimension = "api_ergonomics"
+assert_role = "code-architecture-advisor"
+refute_role = "oracle"
+
+[[persona_pairs]]
+dimension = "test_rigor"
+assert_role = "test-designer"
+refute_role = "oracle"
+
+[[persona_pairs]]
+dimension = "structure_complexity"
+assert_role = "code-architecture-advisor"
+refute_role = "oracle"
