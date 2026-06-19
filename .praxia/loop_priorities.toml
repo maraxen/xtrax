@@ -79,12 +79,12 @@ slug = "distribution-readiness"
 title = "EPIC: xtrax distribution readiness (N0–N10 release convergence)"
 backlog_id = 1451
 status = "active"
-phase = "N6_dag_complete"
+phase = "N6_tier1_enforced"
 depends_on_epic = 1573
-child_backlog_ids = [1451, 1452, 1453, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462, 2333]
+child_backlog_ids = [1451, 1452, 1453, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462]
 spec_path = ".praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md"
 skills = ["using-xtrax", "verification-before-completion"]
-notes = "Tier1 tests green (#2345): 792 pass, 0 fail. tier1 78.6%/67.1%. Next: #2333 CI coverage enforcement."
+notes = "Tier1 scoped gate live (#2333): 95.2%/89.4% at 90/80 floors; 792 pass. Next: tier2_eda enforcement or #1460."
 
 [[queue]]
 rank = 3
