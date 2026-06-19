@@ -1,0 +1,73 @@
+[sprint]
+sprint_id = "260620_graph-auditor-validation-harness"
+sprint_num = 19
+name = "xtrax Loop Sprint 19: #2178 graph-auditor validation harness"
+description = "Pytest fixtures + graph_auditor walker validating composition node metadata per node."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #2178 [#2175.3] Graph-auditor validation harness (pytest fixtures).
+Builds on #2177 node_metadata_schema + load_capability_registry.validate_node_metadata.
+Completes #2175 research epic children.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "graph_auditor"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "2178"
+phase_name = "[#2175.3] Graph-auditor validation harness"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #2178 [#2175.3] Graph-auditor validation harness (pytest fixtures)
+
+## Goal
+Empirical pytest harness for graph-auditor walking lowered composition graphs and validating per-node metadata.
+
+## Code
+- `scripts/graph_auditor.py`
+  - GraphNode(id, metadata), CompositionGraph(nodes)
+  - GraphAuditFinding(node_id, rule_id, message, severity)
+  - load_graph_json(path) -> CompositionGraph
+  - audit_graph(graph) -> GraphAuditResult(passed, findings)
+  - Rules per node:
+    1. validate_node_metadata (reuse load_capability_registry.validate_node_metadata)
+    2. if audit_verdict in (PASS, FAIL) and bathos_sidecar_ref absent → minor finding (pre-mortem: missing bathos ref)
+    3. duplicate node ids → critical finding
+  - CLI main prints PASS/FAIL summary
+
+- `tests/composition/conftest.py` — shared fixtures:
+  - valid_graph (2 nodes, one minimal one full VALID_SAMPLE-style)
+  - invalid_graph_missing_nl
+  - graph_duplicate_node_ids
+
+- `tests/composition/test_graph_auditor.py`
+  - valid graph passes
+  - missing nl_description fails with node id in message
+  - duplicate ids fail
+  - PASS verdict without bathos_sidecar_ref emits minor finding (graph still passes or fails per your severity policy — use: minor findings do NOT fail gate; only metadata validation errors fail)
+  - load_graph_json round-trip from tmp fixture file
+
+- `Justfile` recipe: `audit-graph-auditor` (pytest + CLI on sample)
+
+## Verification
+- pytest tests/composition/test_graph_auditor.py -v
+- just audit-graph-auditor exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #2178: graph auditor harness, conftest fixtures, tests pass, just recipe exits 0.
+PASS/FAIL with evidence.
+"""
+return_key = "2178"
+
+[orchestration]
+sequential = ["graph_auditor"]
+concurrent = []
