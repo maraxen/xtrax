@@ -79,12 +79,12 @@ slug = "distribution-readiness"
 title = "EPIC: xtrax distribution readiness (N0–N10 release convergence)"
 backlog_id = 1451
 status = "active"
-phase = "N8_complete"
+phase = "N4b_complete"
 depends_on_epic = 1573
-child_backlog_ids = [1451, 1452, 1453, 1455, 1458, 1459, 1461, 1462]
+child_backlog_ids = [1451, 1452, 1453, 1455, 1459, 1461, 1462]
 spec_path = ".praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md"
 skills = ["using-xtrax", "verification-before-completion"]
-notes = "N8 project hygiene complete (#1460). Next: #1458 narrative docs, #1459 output-sink docs."
+notes = "N4b narrative docs complete (#1458). Next: #1459 output-sink docs, #1461 publish.yml OIDC."
 
 [[queue]]
 rank = 3
