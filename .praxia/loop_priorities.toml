@@ -79,12 +79,12 @@ slug = "distribution-readiness"
 title = "EPIC: xtrax distribution readiness (N0–N10 release convergence)"
 backlog_id = 1451
 status = "active"
-phase = "N6_complete"
+phase = "N4a_complete"
 depends_on_epic = 1573
-child_backlog_ids = [1451, 1452, 1453, 1455, 1457, 1458, 1459, 1460, 1461, 1462]
+child_backlog_ids = [1451, 1452, 1453, 1455, 1458, 1459, 1460, 1461, 1462]
 spec_path = ".praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md"
 skills = ["using-xtrax", "verification-before-completion"]
-notes = "Audit-fw complete (#1589 diff-gate). Distribution sequence: #1457 docs plumbing → #1460 hygiene."
+notes = "N4a docs plumbing complete (#1457). Next: #1460 hygiene polish, then #1458 narrative."
 
 [[queue]]
 rank = 3

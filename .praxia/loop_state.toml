@@ -2,10 +2,10 @@
 version = "1.0"
 task_id = "260617_xtrax-composition-mission"
 current_phase = "CLOSE"
-last_subphase = "iter36_committed"
-last_artifact_path = "src/xtrax/devtools/gates/added_types_diff.py"
-iteration_count = 36
-last_activation = "2026-06-19T15:00:00Z"
+last_subphase = "iter37_committed"
+last_artifact_path = "distribution/docs_plumbing.toml"
+iteration_count = 37
+last_activation = "2026-06-19T16:00:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
@@ -26,12 +26,13 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-last_completed = "260619_audit-n2-added-types-diff"
-closed_items = [1589]
+last_completed = "260619_dist-n4a-docs-plumbing"
+closed_items = [1457]
 epic_id = 1451
 n2_gates_closed = 11
-next_candidates = [1457, 1460]
-next_sequence = "1457_docs_plumbing -> 1460_hygiene_polish"
+next_candidates = [1460]
+next_sequence = "1460_hygiene_polish"
+docs_plumbing_complete = true
 coverage_dag_manifest_complete = true
 coverage_tier1_line_pct = 95.2
 coverage_tier1_branch_pct = 89.4
