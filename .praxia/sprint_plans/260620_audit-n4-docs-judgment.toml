@@ -1,0 +1,71 @@
+[sprint]
+sprint_id = "260620_audit-n4-docs-judgment"
+sprint_num = 25
+name = "xtrax Loop Sprint 25: N4.5 docs judgment pipeline"
+description = "Rubric-grounded structural scorer + injectable semantic judge for documentation dimension."
+context = """
+task_id: 260617_xtrax-composition-mission
+Backlog #1596 [audit-fw N4.5] Docs judgment: jaxlint RubricScorer (structural) + LLM-judge (semantic).
+Spec Q6: feed RubricScorer evidence into LLM-judge (not replace). CI uses stub semantic judge; production injects reviewer agent.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "docs_judgment"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "1596"
+phase_name = "[audit-fw N4.5] Docs judgment pipeline"
+workflow_template = "refactor_with_audit"
+fixer_prompt = """
+task_id: 260617_xtrax-composition-mission
+Backlog: #1596 [audit-fw N4.5] Docs judgment: jaxlint RubricScorer (structural) + LLM-judge (semantic)
+
+## Goal
+Two-stage documentation judgment: structural rubric score from jaxlint JD/JM + interrogate signals, then semantic judge (injectable stub).
+
+## Deliverables
+1. `audit/docs_judgment.toml`
+   - [judgment] dimension=documentation, agent_role=reviewer, pass_threshold=4, rubric_path
+   - structural_signals = jd_jm_errors, interrogate_coverage_pct
+
+2. `src/xtrax/devtools/docs_judgment.py`
+   - StructuralScore(score: int, anchor_quote: str, evidence: str)
+   - score_structural_docs(jd_count: int, coverage_pct: float, rubric) -> StructuralScore
+     - Heuristic mapping to rubric anchors 1-5 (jd>0 caps low; high coverage + jd=0 → 4+)
+   - SemanticJudgeFn = Callable[[StructuralScore, file_line: str], int]
+   - DocsJudgmentResult(structural, semantic_score, passed, finding_emitted)
+   - run_docs_judgment(target, audits_path, *, semantic_judge_fn, run_id) -> DocsJudgmentResult
+     - Pull jd_count via documentation gate helpers or _jaxlint filter on target
+     - Pull coverage via run_interrogate_coverage
+     - semantic_score = semantic_judge_fn(structural, file_line)
+     - passed = semantic_score >= threshold
+     - emit judgment finding via emit_judgment_finding with payload structural_score, semantic_score, rubric_scorer_evidence, protocol=docs_judgment
+     - wire through refute_promote optional: emit as observation label
+
+3. `scripts/audit_docs_judgment.py` CLI --self-test (stub semantic judge returns structural score), --no-emit
+
+4. `tests/audit/test_docs_judgment.py` — structural mapping, stub semantic, emit payload, threshold pass/fail
+
+5. `Justfile`: `audit-docs-judgment`
+
+## Verification
+- pytest tests/audit/test_docs_judgment.py -v
+- just audit-docs-judgment exits 0
+- ruff clean
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY #1596: docs judgment two-stage pipeline, tests, just recipe exits 0.
+PASS/FAIL with evidence.
+"""
+return_key = "1596"
+
+[orchestration]
+sequential = ["docs_judgment"]
+concurrent = []
