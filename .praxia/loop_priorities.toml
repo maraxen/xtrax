@@ -79,12 +79,12 @@ slug = "distribution-readiness"
 title = "EPIC: xtrax distribution readiness (N0–N10 release convergence)"
 backlog_id = 1451
 status = "active"
-phase = "N2_complete"
+phase = "N6_dag_complete"
 depends_on_epic = 1573
-child_backlog_ids = [1451, 1452, 1453, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462]
+child_backlog_ids = [1451, 1452, 1453, 1455, 1456, 1457, 1458, 1459, 1460, 1461, 1462, 2333]
 spec_path = ".praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md"
 skills = ["using-xtrax", "verification-before-completion"]
-notes = "N2 LICENSE/py.typed (#1455) closed. Next: #1456 coverage CI gate or #1460 README/CHANGELOG."
+notes = "N6 phase1 coverage DAG (#1456) closed — tier1 78.4%/66.9% measured; NOT 10%. CI --cov-fail-under deferred to #2333 after fixing failing tests."
 
 [[queue]]
 rank = 3
