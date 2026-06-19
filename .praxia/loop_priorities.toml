@@ -71,7 +71,7 @@ backlog_id = 1573
 status = "winding_down"
 phase = "N5_complete"
 child_backlog_ids = [1573, 1574, 1575, 1576]
-notes = "N5 complete (#1597 CI deterministic, #1598 scheduled judgment). Remaining: #1589 N2.4 D3' diff-gate. Next epic: distribution-readiness #1451."
+notes = "Audit framework complete (#1589 D3' diff-gate). Distribution-readiness active at #1451."
 
 [[queue]]
 rank = 2
@@ -84,7 +84,7 @@ depends_on_epic = 1573
 child_backlog_ids = [1451, 1452, 1453, 1455, 1457, 1458, 1459, 1460, 1461, 1462]
 spec_path = ".praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md"
 skills = ["using-xtrax", "verification-before-completion"]
-notes = "Tiered coverage gates complete: tier1 90/80, tier2_eda 90/75. Next: #1460 or #1589."
+notes = "Audit-fw complete (#1589 diff-gate). Distribution sequence: #1457 docs plumbing → #1460 hygiene."
 
 [[queue]]
 rank = 3
