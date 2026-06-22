@@ -9,6 +9,9 @@
 
 ## Plans
 - [260615_using-xtrax-skill-backlog-dag](plans/260615_using-xtrax-skill-backlog-dag.md) — Backlog DAG for the using-xtrax exportable skill: 5 tier-1 tasks, 5 tier-2 tasks, 5 tech-debt HiTL items, sprint sequencing
+## Roadmaps
+- [composition/260622_e1-signature-inference-epic](roadmaps/composition/260622_e1-signature-inference-epic.md) — E1 keystone epic: derive Bundle pytree + AxisSpec roles from typed pure JAX functions (eval_shape inference + jaxtyping dim-names → roles; Tyro-backed CLI). Grounded, pre-brainstorm.
+
 ## Handoffs
 ## Audits
 ## Research
