@@ -24,6 +24,7 @@ api/engine
 api/training
 api/data
 api/tiling
+api/inference
 api/sparse
 api/distributed
 api/transforms
