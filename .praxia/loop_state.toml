@@ -1,11 +1,11 @@
 [loop]
 version = "1.0"
 task_id = "260623_e1-mvp-loop"
-current_phase = "EXECUTE"
-last_subphase = "hardening_2561_dispatch"
-last_artifact_path = "src/xtrax/inference/axes.py"
-iteration_count = 12
-last_activation = "2026-06-23T22:10:00Z"
+current_phase = "CLOSE"
+last_subphase = "e1_arc_complete_paused_for_direction"
+last_artifact_path = "src/xtrax/tiling/roles.py"
+iteration_count = 13
+last_activation = "2026-06-23T22:30:00Z"
 autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
@@ -22,7 +22,7 @@ sprint_approved = true
 backlog_items_closed_per_iteration = 1
 consecutive_zero_progress_iterations = 0
 max_zero_progress = 3
-last_items_closed = 0
+last_items_closed = 1
 remediate_attempt = 0
 
 [loop.fingerprint]
@@ -30,7 +30,6 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-sprint_id = "260623_e1_hardening"
 epic_id = 2174
-current_item = 2561
-notes = "E1-MVP complete + merged to main (commit 63b6329, 328 tests). E2 is roadmap-gated (do not auto-start). Next: harden E1 per lesson #145 + debt #2561 — reverse tiling->inference dep (move AxisRole + AmbiguousAxisError out of inference so tiling stops importing it), retire the deferred-import workaround in axes.py/api.py, add an import-linter contract forbidding tiling->inference, and an isolated-import CI smoke test. Working on the E1 branch (unpushed; fresh worktree would miss the merge)."
+current_item = 0
+notes = "E1-MVP ARC COMPLETE: build (12 tasks) -> epic-audit APPROVE -> merged to main (63b6329, 328 tests) -> hardened (#2561 reversed tiling->inference dep, retired workaround, import-linter guard; 330 tests). LOOP PAUSED for direction: E2 is roadmap-gated (no auto-start); remaining backlog is unprioritized maintenance; #2561 + docstring fix are UNMERGED on the branch (main has E1 but not the hardening). Awaiting user: merge hardening, override E2 gate, pick maintenance, or stop."
