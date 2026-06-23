@@ -7,6 +7,7 @@ from jax import ShapeDtypeStruct
 
 from xtrax.inference.abstract import build_abstract_inputs
 from xtrax.inference.axes import resolve_axis_role, synthesize_axes
+from xtrax.inference.config import AxisOverride
 from xtrax.inference.errors import AxisRole
 
 
@@ -18,11 +19,9 @@ class TestResolveAxisRole:
         assert resolve_axis_role(None) == AxisRole.UNKNOWN
 
     def test_non_none_override_returns_known(self):
-        """When override is not None (any value), role is KNOWN."""
-        assert resolve_axis_role(42) == AxisRole.KNOWN
-        assert resolve_axis_role("batch") == AxisRole.KNOWN
-        assert resolve_axis_role(object()) == AxisRole.KNOWN
-        assert resolve_axis_role(0) == AxisRole.KNOWN  # falsy but not None
+        """When override is an AxisOverride (not None), role is KNOWN."""
+        ov = AxisOverride(name="batch", default_batch_size=32)
+        assert resolve_axis_role(ov) == AxisRole.KNOWN
 
 
 class TestSynthesizeAxes:
@@ -74,10 +73,10 @@ class TestSynthesizeAxes:
             assert spec.role == AxisRole.UNKNOWN
 
     def test_override_present_makes_role_known(self):
-        """When overrides has a key for an axis, that axis gets KNOWN role."""
+        """When an AxisOverride is provided at position 0, that axis gets KNOWN role."""
         abstract = build_abstract_inputs({"x": ((8, 4), np.float32)})
-        # synthesize_axes names axes axis_0, axis_1, ...
-        specs = synthesize_axes(abstract, overrides={"axis_0": "batch"})
+        ov = AxisOverride(name="batch", default_batch_size=8)
+        specs = synthesize_axes(abstract, overrides=[ov])
         assert len(specs) == 1
         assert specs[0].role == AxisRole.KNOWN
 
