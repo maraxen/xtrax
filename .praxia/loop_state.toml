@@ -1,11 +1,11 @@
 [loop]
 version = "1.0"
 task_id = "260623_e1-mvp-loop"
-current_phase = "REMEDIATE"
-last_subphase = "circular_import_fix_dispatch"
+current_phase = "EXECUTE"
+last_subphase = "wave6_E1.8_dispatch"
 last_artifact_path = "tests/inference/test_seam_conformance.py"
-iteration_count = 9
-last_activation = "2026-06-23T20:50:00Z"
+iteration_count = 10
+last_activation = "2026-06-23T21:10:00Z"
 autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
@@ -24,8 +24,8 @@ sprint_path = ".praxia/sprint_plans/260623_e1_mvp.toml"
 backlog_items_closed_per_iteration = 1
 consecutive_zero_progress_iterations = 0
 max_zero_progress = 3
-last_items_closed = 2
-remediate_attempt = 1
+last_items_closed = 1
+remediate_attempt = 0
 
 [loop.fingerprint]
 recent_tool_hashes = []
@@ -36,8 +36,8 @@ sprint_id = "260623_e1_mvp"
 sprint_db_id = 76
 epic_id = 2174
 assigned_items = [2504, 2505, 2506, 2507, 2508, 2509, 2510, 2511, 2512, 2513, 2514, 2515]
-executable = [2512, 2514]
-in_progress = [2512]
-closed_items = [2504, 2505, 2506, 2507, 2510, 2511, 2508, 2513, 2509, 2515]
-current_item = 2512
-notes = "10/12 done. E1.6 seam test SURFACED a circular import: tiling.plan -> inference.errors (AxisRole) while inference.__init__ -> api/axes -> tiling.plan (AxisSpec). Masked by pytest import order. REMEDIATE attempt 1: defer inference->tiling import (TYPE_CHECKING + runtime import in synthesize_axes) in axes.py/api.py. Then commit fix + E1.6 seam test, close #2512, dispatch E1.8(2514 parity, last task). DEBT: tiling->inference dep direction is backwards (AxisRole arguably belongs in tiling) — note for follow-up."
+executable = [2514]
+in_progress = [2514]
+closed_items = [2504, 2505, 2506, 2507, 2510, 2511, 2508, 2513, 2509, 2515, 2512]
+current_item = 2514
+notes = "11/12 done. Circular import REMEDIATED (deferred import) + E1.6 closed (320 tests green). Final task: E1.8(2514 parity oracle) — reproduce named prolix hand-written AxisSpec sites via @axis_config/synthesize_axes, assert all 7 fields. Then 12/12 -> VERIFY full suite -> CLOSE sprint + add debt item (tiling->inference dep direction)."
