@@ -462,6 +462,14 @@ epy = [
 ]
 
 [[package]]
+name = "flatbuffers"
+version = "25.12.19"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl", hash = "sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4", size = 26661, upload-time = "2025-12-19T23:16:13.622Z" },
+]
+
+[[package]]
 name = "fonttools"
 version = "4.63.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2098,6 +2106,7 @@ dependencies = [
 
 [package.optional-dependencies]
 cli = [
+    { name = "flatbuffers" },
     { name = "tyro" },
 ]
 dev = [
@@ -2148,6 +2157,7 @@ requires-dist = [
     { name = "chex", marker = "extra == 'dev'", specifier = ">=0.1.86" },
     { name = "complexipy", marker = "extra == 'dev'", specifier = ">=5.6.1" },
     { name = "equinox", specifier = ">=0.11.0" },
+    { name = "flatbuffers", marker = "extra == 'cli'", specifier = ">=2" },
     { name = "grain", specifier = ">=0.2.0" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.1" },
     { name = "interrogate", marker = "extra == 'dev'", specifier = ">=1.7.0" },

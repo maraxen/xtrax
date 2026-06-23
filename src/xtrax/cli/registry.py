@@ -14,11 +14,13 @@ from collections.abc import Callable
 from typing import Any
 
 from xtrax.cli.explain import ExplainArgs, run_explain
+from xtrax.cli.export import ExportArgs, run_export
 from xtrax.cli.plan import PlanArgs, run_plan
 
 REGISTRY: dict[str, tuple[type[Any], Callable[..., None]]] = {
     "plan": (PlanArgs, run_plan),
     "explain": (ExplainArgs, run_explain),
+    "export": (ExportArgs, run_export),
 }
 
 __all__ = ["REGISTRY"]

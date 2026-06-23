@@ -4,7 +4,7 @@ This package provides a Tyro-delegated CLI for xtrax, supporting commands like
 `xtrax plan` and `xtrax explain` for analyzing and understanding batched
 computation structures.
 
-**Deferred (E2.2+):** The following verbs are planned for future releases:
+**Deferred (E2.x+):** The following verbs are planned for future releases:
 
 - `run`: Execute a BatchPlan against a DataModule. Gating: DataModule factory
   interface and integration with the Trainer/Engine layer.
@@ -12,9 +12,6 @@ computation structures.
   sweep vs. bathos-campaign integration design.
 - `resume`: Resume a previously interrupted run from a checkpoint. Gating:
   RunManifest schema and checkpoint/restore protocol.
-- `export`: Export a plan or traced computation to external formats. Gating:
-  decision on MLIR vs. serialized JAX export format and flatbuffers schema
-  extension.
 """
 
 from __future__ import annotations
