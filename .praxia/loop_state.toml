@@ -1,11 +1,11 @@
 [loop]
 version = "1.0"
 task_id = "260623_e2-autocli"
-current_phase = "RESEARCH"
-last_subphase = "e2_grounding_dispatch"
-last_artifact_path = ""
-iteration_count = 15
-last_activation = "2026-06-23T23:10:00Z"
+current_phase = "SPRINT_COMPOSE"
+last_subphase = "e2_spec_finalized"
+last_artifact_path = ".praxia/docs/specs/260623_e2-auto-cli-for-xtrax-how-to-scope-and-d.md"
+iteration_count = 16
+last_activation = "2026-06-23T23:40:00Z"
 autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
@@ -15,7 +15,8 @@ expiry_ts = ""
 timeout_minutes = 45
 
 [loop.gates]
-spec_confirmed = false
+spec_confirmed = true
+spec_path = ".praxia/docs/specs/260623_e2-auto-cli-for-xtrax-how-to-scope-and-d.md"
 sprint_approved = false
 
 [loop.metrics]
@@ -33,4 +34,4 @@ stall_threshold = 3
 epic_id = 2605
 parent_epic_id = 2174
 current_item = 2605
-notes = "E1-MVP done + merged + hardened + skill re-exported. Maintenance items #1373/#1374/#1376 found ALREADY DONE (stale). USER STARTED E2 (auto-CLI) 2026-06-23, overriding the roadmap gate. E2 epic anchor #2605. Process mirrors E1: ground (recon dispatched a54b0b25) -> contemplex brainstorm (6 design forks: RunSpec-on-CLI, sweep expression, resume manifest, export wiring, Tyro adapter for eqx.Module, verb set) -> spec -> adversarial -> DAG -> build."
+notes = "E2-MVP spec FINALIZED (contemplex c519ff24, winner C-AMENDED): tyro.extras.subcommand_cli_from_dict scaffold + plan/explain verbs + lazy import-path loader (CLIImportError, lesson #145); export/run/sweep/resume DEFERRED roadmap-only (no stub code). 8 ACs. Empirically grounded (tyro 1.0.15 subcommand_cli_from_dict gives clean names; dynamic Union mangles; jax.export needs flatbuffers+format-decision). NEXT: staff DAG decomposition -> adversarial plan-audit -> backlog -> build (mirror E1). spec_confirmed gate satisfied (user directed + adversarial brainstorm done)."

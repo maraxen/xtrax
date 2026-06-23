@@ -1,6 +1,7 @@
 # xtrax Internal Docs
 
 ## Specs
+- [260623_e2-auto-cli](specs/260623_e2-auto-cli-for-xtrax-how-to-scope-and-d.md) — E2-MVP auto-CLI spec (contemplex architectural brainstorm c519ff24): C-AMENDED progressive scaffold — tyro.extras.subcommand_cli_from_dict + plan/explain verbs + lazy import-path loader (lesson #145); export/run/sweep/resume deferred (roadmap); 8 ACs
 - [260623_e1-signature-inference-core](specs/260623_e1-signature-inference-core-how-should-x.md) — E1-MVP spec (contemplex architectural brainstorm, session 4dfc27aa): derive BundleSchema + list[AxisSpec] from a typed pure fn via eval_shape; fail-loud UNKNOWN roles (not batch); @axis_config Tier-1; 8 ACs; Tier-2 jaxtyping/codegen/CarrySpec deferred (TBDs)
 - [260615_xtrax-eda-api-revised](specs/260615_xtrax-eda-api-revised.md) — EDA visualization API spec (post-critic + adversarial review): render(), PlanStatsDict, PlanLogger, PanelName, 12 acceptance criteria + 7 amendments
 - [260615_using-xtrax-skill](specs/260615_design-the-using-xtrax-skill-an-exportab.md) — using-xtrax exportable skill spec (post-adversarial-review): Faction D Hybrid, 7 ACs, 5 amendments, 4 HiTL stops, enforcement taxonomy split
