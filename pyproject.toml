@@ -19,6 +19,7 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
  "complexipy>=5.6.1",
+ "import-linter>=2.1",
  "pytest-benchmark>=5.2.3",
  "pytest-cov>=7.1.0",
 ]
@@ -108,8 +109,15 @@ source_modules = [
   "xtrax.checkpoint",
   "xtrax.io",
   "xtrax.sparse",
+  "xtrax.inference",
 ]
 forbidden_modules = ["xtrax.eda"]
+
+[[tool.importlinter.contracts]]
+name = "tiling must not import inference"
+type = "forbidden"
+source_modules = ["xtrax.tiling"]
+forbidden_modules = ["xtrax.inference"]
 
 [tool.port]
 target = "port/port_target.toml"

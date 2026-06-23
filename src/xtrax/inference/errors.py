@@ -1,28 +1,26 @@
-"""Error types and sentinel values for signature inference."""
+"""Error types and sentinel values for signature inference.
+
+AmbiguousAxisError and AxisRole are defined in xtrax.tiling.roles (a
+pure-stdlib leaf) and re-exported here for backward compatibility so that
+``from xtrax.inference.errors import AmbiguousAxisError, AxisRole`` and
+``from xtrax.inference import AmbiguousAxisError, AxisRole`` continue to work.
+"""
 
 from __future__ import annotations
 
-import enum
+# Re-exports from the leaf module — tiling.roles has zero xtrax imports.
+from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
+
+__all__ = [
+    "AmbiguousAxisError",
+    "AxisRole",
+    "StructureMismatchError",
+    "XtraxInferenceError",
+]
 
 
 class XtraxInferenceError(Exception):
     """Base exception for xtrax.inference module."""
-
-    pass
-
-
-class AmbiguousAxisError(XtraxInferenceError):
-    """Raised when an axis role is UNKNOWN at planning time.
-
-    This error indicates that the BatchPlanner encountered an axis whose role
-    could not be determined during the planning phase. The error message will
-    include the axis name and guidance on how to resolve the ambiguity (e.g.,
-    by providing explicit role annotations or constraints).
-
-    Example:
-        If an axis's role cannot be inferred from context and no explicit
-        annotation is provided, this error is raised during plan construction.
-    """
 
     pass
 
@@ -41,18 +39,3 @@ class StructureMismatchError(XtraxInferenceError):
     """
 
     pass
-
-
-class AxisRole(enum.Enum):
-    """Enumeration of axis role sentinels for MVP.
-
-    In the MVP (v1), only two roles are defined:
-    - KNOWN: The axis role is determined and planner proceeds normally.
-    - UNKNOWN: The axis role could not be determined; signals fail-loud guard.
-
-    Tier-2 will extend this with concrete role members (e.g., BATCH, SEQUENCE).
-    All future concrete roles are treated as non-fail-loud.
-    """
-
-    KNOWN = "known"
-    UNKNOWN = "unknown"
