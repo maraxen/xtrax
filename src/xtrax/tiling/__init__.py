@@ -32,6 +32,7 @@ from xtrax.tiling.strategy import (
     ScanTransition,
     Vmap,
 )
+from xtrax.tiling._plan_wrapper import _BatchPlanWrapper
 
 __all__ = [
     "AxisSpec",
@@ -56,4 +57,5 @@ __all__ = [
     "BucketIterator",
     "MapIterator",
     "ScanIterator",
+    "_BatchPlanWrapper",
 ]
