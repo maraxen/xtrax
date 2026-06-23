@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import jax
 
-from xtrax.inference.errors import AxisRole
+from xtrax.inference.errors import AmbiguousAxisError, AxisRole
 from xtrax.tiling.strategy import (
     AxisStrategy,
     Bucket,
@@ -222,6 +222,15 @@ class BatchPlanner:
                     ),
                 )
                 continue
+
+            # E1.3b KEYSTONE guard (AC3): fail loud on unresolved UNKNOWN-role axes.
+            # Phase-0/0b axes have already `continue`d above, so they never reach here.
+            # Every existing hand-written AxisSpec defaults to KNOWN and passes through.
+            if spec.role == AxisRole.UNKNOWN:
+                raise AmbiguousAxisError(
+                    f"axis '{spec.name}' has an unresolved role; declare it with "
+                    f"@axis_config or provide an override before planning."
+                )
 
             # Standard rules for remaining axes
             decision = self._decide_strategy(spec)
