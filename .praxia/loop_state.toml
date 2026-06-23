@@ -2,10 +2,10 @@
 version = "1.0"
 task_id = "260623_e1-mvp-loop"
 current_phase = "EXECUTE"
-last_subphase = "wave0_E1.0_dispatch"
-last_artifact_path = ".praxia/sprint_plans/260623_e1_mvp.toml"
-iteration_count = 1
-last_activation = "2026-06-23T18:10:00Z"
+last_subphase = "wave0_E1.1_dispatch"
+last_artifact_path = "src/xtrax/inference/errors.py"
+iteration_count = 2
+last_activation = "2026-06-23T18:30:00Z"
 autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
@@ -24,7 +24,7 @@ sprint_path = ".praxia/sprint_plans/260623_e1_mvp.toml"
 backlog_items_closed_per_iteration = 1
 consecutive_zero_progress_iterations = 0
 max_zero_progress = 3
-last_items_closed = 0
+last_items_closed = 1
 remediate_attempt = 0
 
 [loop.fingerprint]
@@ -36,8 +36,8 @@ sprint_id = "260623_e1_mvp"
 sprint_db_id = 76
 epic_id = 2174
 assigned_items = [2504, 2505, 2506, 2507, 2508, 2509, 2510, 2511, 2512, 2513, 2514, 2515]
-executable = [2504, 2505]
-in_progress = [2504]
-closed_items = []
-current_item = 2504
-notes = "E1-MVP signature-inference core. Planning (brainstorm/spec/adversarial-DAG) pre-done outside the FSM; gates satisfied. Driving EXECUTE on the worktree branch, 1 item/iteration. Wave-0 roots: E1.0(2504), E1.1(2505)."
+executable = [2505]
+in_progress = [2505]
+closed_items = [2504]
+current_item = 2505
+notes = "E1-MVP signature-inference core. EXECUTE on worktree branch, 1 item/iter. E1.0(2504) DONE (commit dc5fcc4): inference pkg + errors + AxisRole, 6 tests green. Next: E1.1(2505) abstract-input builder. E1.2(2506) unblocks once 2505 closes."
