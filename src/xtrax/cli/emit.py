@@ -8,6 +8,7 @@ html, or png (via xtrax.eda render — requires xtrax[eda] extra).
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Mapping
 from typing import Any
 
@@ -16,7 +17,7 @@ from xtrax.cli.errors import CLIError
 _VALID_FMTS = frozenset({"json", "text", "html", "png"})
 
 
-def emit(stats: Mapping[str, Any], plan: object, fmt: str) -> None:
+def emit(stats: Mapping[str, Any], plan: object, fmt: str, out: str | None = None) -> None:
     """Route explain output to the requested format.
 
     Args:
@@ -27,10 +28,13 @@ def emit(stats: Mapping[str, Any], plan: object, fmt: str) -> None:
         fmt: Output format. One of "json", "text", "html", "png".
             "json" is the machine contract: prints a single JSON object with
             a ``_meta`` envelope to stdout.
+        out: Optional file path for html/png output. See _emit_render for the
+            per-format contract. Ignored for json/text.
 
     Raises:
         CLIError: If fmt is unknown, or if html/png render fails because the
-            eda extra is not installed.
+            eda extra is not installed, or if fmt="png" and out is None (binary
+            output to a terminal is a footgun).
     """
     if fmt not in _VALID_FMTS:
         raise CLIError(
@@ -43,7 +47,7 @@ def emit(stats: Mapping[str, Any], plan: object, fmt: str) -> None:
     elif fmt == "text":
         _emit_text(stats)
     elif fmt in {"html", "png"}:
-        _emit_render(plan, fmt)
+        _emit_render(plan, fmt, out=out)
 
 
 def _emit_json(stats: Mapping[str, Any]) -> None:
@@ -109,28 +113,50 @@ def _emit_text(stats: Mapping[str, Any]) -> None:
     print("=" * 60)
 
 
-def _emit_render(plan: object, fmt: str) -> None:
+def _emit_render(plan: object, fmt: str, out: str | None = None) -> None:
     """Emit html/png by delegating to xtrax.eda.render.
 
     The render function lazily imports matplotlib at call time. If the eda
     extra is not installed, the import will fail with ModuleNotFoundError;
     we catch that and re-raise as a clean CLIError.
 
+    Per-format output contracts:
+        html: If out is None, render returns the HTML string — printed to stdout.
+              If out is given, render writes the file — prints "wrote <out>" to stderr.
+        png:  PNG is binary. out is REQUIRED; if out is None, raises CLIError
+              directing the user to supply --out <path>. If out is given, render
+              writes the file — prints "wrote <out>" to stderr.
+
     Args:
         plan: The BatchPlan to render.
         fmt: "html" or "png".
+        out: Optional file path. Required for png. For html, defaults to stdout.
 
     Raises:
-        CLIError: If matplotlib or other eda dependencies are missing.
+        CLIError: If matplotlib or other eda dependencies are missing, or if
+            fmt="png" and out is None.
     """
+    if fmt == "png" and out is None:
+        raise CLIError(
+            "--fmt png requires --out <path> (binary output cannot be written to a terminal)"
+        )
+
     try:
         from xtrax.eda import render
 
-        render(plan, fmt=fmt)
+        result = render(plan, fmt=fmt, path=out)
     except (ModuleNotFoundError, ImportError) as exc:
         raise CLIError(
             f"--fmt {fmt!r} requires the eda extra: pip install xtrax[eda]"
         ) from exc
+
+    if out is not None:
+        # render() wrote the file; confirm to stderr
+        print(f"wrote {out}", file=sys.stderr)
+    else:
+        # out is None — only reachable for html (png already guarded above)
+        # result is the HTML string
+        print(result)
 
 
 __all__ = ["emit"]

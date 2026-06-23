@@ -116,10 +116,7 @@ def parse_shapes(s: str) -> dict[str, jax.ShapeDtypeStruct]:
         if not entry:
             continue
 
-        try:
-            _parse_single_entry(entry, result)
-        except ShapeParseError:
-            raise
+        _parse_single_entry(entry, result)
 
     if not result:
         raise ShapeParseError(

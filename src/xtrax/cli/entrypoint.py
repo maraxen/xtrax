@@ -47,10 +47,10 @@ def main() -> None:
                 run_fn(selected)
                 return
 
-        # Should never happen if REGISTRY is consistent.
-        raise CLIError(
-            f"No verb registered for args type {selected_type.__name__!r}. "
-            f"This is a bug in xtrax — please report it."
+        # Unreachable if REGISTRY is consistent — tyro only selects registered types.
+        assert False, (  # noqa: B011
+            f"No verb registered for args type {selected_type.__name__!r}"
+            " — this is a bug in xtrax"
         )
     except CLIError as e:
         print(str(e), file=sys.stderr)

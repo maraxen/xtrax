@@ -33,11 +33,20 @@ class ExplainArgs:
         fmt: Output format. One of "json" (default), "text", "html", "png".
             "json" is the machine contract: a single JSON object with a ``_meta``
             envelope and the PlanStatsDict fields.
+        out: Optional file path for html/png output. Contracts:
+            - fmt="html": if out is None, HTML is printed to stdout; if out is given,
+              file is written and a confirmation line is printed to stderr.
+            - fmt="png": out is REQUIRED (binary output to a terminal is a footgun).
+              If out is None, a CLIError is raised directing the user to supply --out.
+              If out is given, the PNG file is written and a confirmation line is
+              printed to stderr.
+            Ignored for fmt="json" and fmt="text".
     """
 
     fn: str
     shapes: str = ""
     fmt: Literal["json", "text", "html", "png"] = field(default="json")
+    out: str | None = field(default=None)
 
 
 def run_explain(args: ExplainArgs) -> None:
@@ -52,10 +61,13 @@ def run_explain(args: ExplainArgs) -> None:
        Catches AmbiguousAxisError and re-raises as CLIError with an
        @axis_config hint (same pattern as the plan verb).
     6. Call explain_plan(plan) to produce a PlanStatsDict.
-    7. Call emit(stats, plan, args.fmt) to route output to the chosen format.
+    7. Call emit(stats, plan, args.fmt, out=args.out) to route output to the
+       chosen format. For html/png, args.out controls whether output goes to
+       a file (out given) or stdout/error (out is None). See ExplainArgs.out
+       for the per-format contract.
 
     Args:
-        args: ExplainArgs with fn, shapes, and fmt.
+        args: ExplainArgs with fn, shapes, fmt, and out.
 
     Raises:
         CLIError: On any user-facing error (bad import path, bad shapes,
@@ -95,7 +107,7 @@ def run_explain(args: ExplainArgs) -> None:
     stats = explain_plan(plan)
 
     # Step 7: Emit in the requested format.
-    emit(stats, plan, args.fmt)
+    emit(stats, plan, args.fmt, out=args.out)
 
 
 __all__ = ["ExplainArgs", "run_explain"]
