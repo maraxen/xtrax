@@ -1,11 +1,11 @@
 [loop]
 version = "1.0"
-task_id = "260623_e1-mvp-loop"
-current_phase = "CLOSE"
-last_subphase = "e1_fully_complete_all_dimensions"
-last_artifact_path = "agent_assets/skills/using-xtrax/SKILL.md"
-iteration_count = 14
-last_activation = "2026-06-23T22:50:00Z"
+task_id = "260623_e2-autocli"
+current_phase = "EXECUTE"
+last_subphase = "e2.2_export_verb_dispatch"
+last_artifact_path = "src/xtrax/cli/"
+iteration_count = 20
+last_activation = "2026-06-24T01:00:00Z"
 autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
@@ -30,6 +30,7 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-epic_id = 2174
-current_item = 0
-notes = "E1-MVP 100% COMPLETE (all dimensions): code+tests+keystone+#2561 hardening+api-docs all MERGED to main (335 tests, import-linter enforced); canonical using-xtrax skill updated (commit 6173fd7, 1 commit unmerged on branch). LOOP CONCLUDED for E1 — no ungated high-value work remains. E2 roadmap-gated; rest is unprioritized maintenance. Awaiting user direction: merge skill commit + then (override E2 gate / pick maintenance / push to remote / stop)."
+epic_id = 2605
+parent_epic_id = 2174
+current_item = "export"
+notes = "E2-MVP done+audited+remediated, SAFE TO MERGE (unmerged, awaiting user merge call). Loop continuing with E2.2: the `export` verb (most contained deferred verb; brainstorm grounded jax.export accepts ShapeDtypeStruct). Resolved the deferred format gate directly: MLIR text -> stdout/--out by default; --serialized opt-in for flatbuffer bytes (requires --out; flatbuffers in cli extra). Proves the verb-registration scaffold (new verb = module + 1 REGISTRY line). Remaining deferred: run/sweep/resume (need bigger design)."
