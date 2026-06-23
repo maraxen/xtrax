@@ -175,7 +175,7 @@ class TestExplainMissingEda:
         a raw ModuleNotFoundError. This test FAILS if the wrapping in _emit_render
         is removed.
         """
-        import xtrax.eda  # stdlib-only __init__; monkeypatch xtrax.eda.render (no viz import — needs matplotlib)
+        import xtrax.eda  # monkeypatch target; no viz import (needs matplotlib)
 
         # Patch xtrax.eda.render (as resolved in emit via 'from xtrax.eda import render')
         # to raise ModuleNotFoundError — simulates eda extra absent.
