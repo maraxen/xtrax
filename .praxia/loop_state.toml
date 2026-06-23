@@ -1,11 +1,11 @@
 [loop]
 version = "1.0"
 task_id = "260623_e1-mvp-loop"
-current_phase = "CLOSE"
-last_subphase = "sprint_complete_12of12"
-last_artifact_path = "tests/inference/test_parity_oracle.py"
-iteration_count = 11
-last_activation = "2026-06-23T21:30:00Z"
+current_phase = "EXECUTE"
+last_subphase = "hardening_2561_dispatch"
+last_artifact_path = "src/xtrax/inference/axes.py"
+iteration_count = 12
+last_activation = "2026-06-23T22:10:00Z"
 autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
@@ -16,15 +16,13 @@ timeout_minutes = 45
 
 [loop.gates]
 spec_confirmed = true
-spec_path = ".praxia/docs/specs/260623_e1-signature-inference-core-how-should-x.md"
 sprint_approved = true
-sprint_path = ".praxia/sprint_plans/260623_e1_mvp.toml"
 
 [loop.metrics]
 backlog_items_closed_per_iteration = 1
 consecutive_zero_progress_iterations = 0
 max_zero_progress = 3
-last_items_closed = 1
+last_items_closed = 0
 remediate_attempt = 0
 
 [loop.fingerprint]
@@ -32,13 +30,7 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-sprint_id = "260623_e1_mvp"
-sprint_db_id = 76
+sprint_id = "260623_e1_hardening"
 epic_id = 2174
-status = "completed"
-assigned_items = [2504, 2505, 2506, 2507, 2508, 2509, 2510, 2511, 2512, 2513, 2514, 2515]
-executable = []
-in_progress = []
-closed_items = [2504, 2505, 2506, 2507, 2508, 2509, 2510, 2511, 2512, 2513, 2514, 2515]
-current_item = 0
-notes = "E1-MVP COMPLETE: 12/12 tasks closed across 10 loop iterations. xtrax.inference: infer_bundle + @axis_config + BundleSchema + AxisRole fail-loud + verify guard. 323 tests green (inference+tiling+run+stages); ruff+ty clean; all import orders work. 1 remediation (circular import, surfaced by E1.6 seam test). Debt #2561 logged (reverse tiling->inference dep). Branch worktree-e1-signature-inference-epic ready to merge. 5 full-repo collection errors are pre-existing missing optional dev/eda extras (chex/libcst/matplotlib/seaborn/pandas), NOT E1 regressions."
+current_item = 2561
+notes = "E1-MVP complete + merged to main (commit 63b6329, 328 tests). E2 is roadmap-gated (do not auto-start). Next: harden E1 per lesson #145 + debt #2561 — reverse tiling->inference dep (move AxisRole + AmbiguousAxisError out of inference so tiling stops importing it), retire the deferred-import workaround in axes.py/api.py, add an import-linter contract forbidding tiling->inference, and an isolated-import CI smoke test. Working on the E1 branch (unpushed; fresh worktree would miss the merge)."
