@@ -5,7 +5,9 @@
 - **date:** 2026-06-23
 - **spec:** `.praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md` (AC1–AC11, winner A+H+I+J+M, pre-mortem invariants 1–4)
 - **style:** matches `.praxia/docs/plans/260623_e2-mvp-backlog-dag.md` (waves, critical path, AC coverage map, judgment flags for Cursor hand-off)
-- **provenance:** staff DAG → (next: adversarial plan-audit → sprint TOML). Grounding anchors re-verified against source before decomposition; two under-specified seams surfaced below (loss_fn gap, DataModule arity gap) and pinned to tasks.
+- **provenance:** staff DAG → adversarial review (spec-challenger ∥ spec-defender + plan-auditor) → sprint TOML. Grounding anchors re-verified against source before decomposition; two under-specified seams surfaced below (loss_fn gap, DataModule arity gap) and pinned to tasks.
+
+> **⚠️ SUPERSEDED post adversarial review (260623).** This DAG's task *structure* (T0–T9 + Z, waves, critical path) is intact, but several task *details* were revised by the adversarial pass — chiefly **AC8 inverted** (checkpoints now namespaced under `.xtrax/runs/<run_id>/checkpoints/`, NOT a verbatim config scalar — C1), **AC2** (`make_optimizer` struck as a config target — C2), the **no-duck-type test** switched to double-wrap (M4), **callbacks=()** made an explicit MVP limitation (M5), plus the `[loss]` AC and a dozen MAJOR/minor fixes. **The authoritative, fully-resolved artifacts are the revised spec (`260623_e3-run-verb-trainconfig-driven-cli.md`, see its Adversarial Revision Log) and the executable sprint TOML (`.praxia/sprint_plans/260623_e3-run-verb.toml`).** Read those, not this DAG's per-task prose, for implementation.
 
 ## Grounding re-verification (read before building — corrects the anchor)
 
