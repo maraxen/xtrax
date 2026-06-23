@@ -1,11 +1,11 @@
 [loop]
 version = "1.0"
-task_id = "260623_e2-autocli"
-current_phase = "EXECUTE"
-last_subphase = "e2.2_export_verb_dispatch"
-last_artifact_path = "src/xtrax/cli/"
-iteration_count = 20
-last_activation = "2026-06-24T01:00:00Z"
+task_id = "260623_e2-run"
+current_phase = "BRAINSTORM"
+last_subphase = "run_grounded_ready_to_brainstorm"
+last_artifact_path = ""
+iteration_count = 22
+last_activation = "2026-06-24T01:45:00Z"
 autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
@@ -15,14 +15,14 @@ expiry_ts = ""
 timeout_minutes = 45
 
 [loop.gates]
-spec_confirmed = true
-sprint_approved = true
+spec_confirmed = false
+sprint_approved = false
 
 [loop.metrics]
 backlog_items_closed_per_iteration = 1
 consecutive_zero_progress_iterations = 0
 max_zero_progress = 3
-last_items_closed = 1
+last_items_closed = 0
 remediate_attempt = 0
 
 [loop.fingerprint]
@@ -30,7 +30,7 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-epic_id = 2605
-parent_epic_id = 2174
-current_item = "export"
-notes = "E2-MVP done+audited+remediated, SAFE TO MERGE (unmerged, awaiting user merge call). Loop continuing with E2.2: the `export` verb (most contained deferred verb; brainstorm grounded jax.export accepts ShapeDtypeStruct). Resolved the deferred format gate directly: MLIR text -> stdout/--out by default; --serialized opt-in for flatbuffer bytes (requires --out; flatbuffers in cli extra). Proves the verb-registration scaffold (new verb = module + 1 REGISTRY line). Remaining deferred: run/sweep/resume (need bigger design)."
+epic_id = 2629
+parent_epic_id = 2605
+current_item = 2629
+notes = "E2.2 `run` verb. METHODOLOGY FIX (user-flagged): microflows-first — use `praxia dw run recon.yaml/research_fast.yaml/reviewer_fast.yaml/auditor_fast.yaml` for recon/research/review stages (zero Claude tokens); Claude only for judgment (brainstorm/spec/adversarial) or when a microflow is insufficient. Demonstrated: dw run recon.yaml RAN (Ollama works) but returned 0 findings/conf 0.0 -> justified fallback; gathered run-wiring facts via cheap direct grep instead of a Claude recon. GROUNDING confirmed: Engine.fit/fit_sync (engine.py:63/222), Trainer(loss_fn,optimizer), ResumableState(step,key,model,opt_state) built manually, NO init_state helper, DataModule(dataset:Any) - no path factory, make_optimizer/adamw_with_schedule exist, NO runtime RunManifest/run-id. Next: contemplex brainstorm on run's forks; use reviewer_fast/auditor_fast microflows for the later review/audit gates. Nothing pushed."
