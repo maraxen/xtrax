@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from xtrax.inference.axes import synthesize_axes
 from xtrax.inference.config import get_axis_config
 from xtrax.inference.schema import BundleSchema, extract_schema
 from xtrax.inference.verify import verify_structure
-from xtrax.tiling.plan import AxisSpec
+
+if TYPE_CHECKING:
+    from xtrax.tiling.plan import AxisSpec
 
 
 def infer_bundle(

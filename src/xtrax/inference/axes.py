@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax
 from jax import ShapeDtypeStruct
 
 from xtrax.inference.config import AxisOverride
 from xtrax.inference.errors import AxisRole
-from xtrax.tiling.plan import AxisSpec
+
+if TYPE_CHECKING:
+    from xtrax.tiling.plan import AxisSpec
 
 
 def resolve_axis_role(override: AxisOverride | None) -> AxisRole:
@@ -57,6 +59,8 @@ def synthesize_axes(
         List of AxisSpec objects, one per qualifying leaf (ndim >= 1), in
         tree-leaf order.
     """
+
+    from xtrax.tiling.plan import AxisSpec  # deferred to break inference<->tiling cycle
 
     def _is_shape_dtype_struct(x: Any) -> bool:
         return isinstance(x, ShapeDtypeStruct)
