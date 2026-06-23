@@ -2,10 +2,10 @@
 version = "1.0"
 task_id = "260623_e1-mvp-loop"
 current_phase = "EXECUTE"
-last_subphase = "wave2_E1.3b_dispatch"
+last_subphase = "wave3_fanout_E1.4_E1.5_dispatch"
 last_artifact_path = "src/xtrax/tiling/plan.py"
-iteration_count = 5
-last_activation = "2026-06-23T19:30:00Z"
+iteration_count = 6
+last_activation = "2026-06-23T19:50:00Z"
 autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
@@ -36,8 +36,8 @@ sprint_id = "260623_e1_mvp"
 sprint_db_id = 76
 epic_id = 2174
 assigned_items = [2504, 2505, 2506, 2507, 2508, 2509, 2510, 2511, 2512, 2513, 2514, 2515]
-executable = [2508, 2509, 2510, 2511]
-in_progress = [2510]
-closed_items = [2504, 2505, 2506, 2507]
-current_item = 2510
-notes = "4/12 done (E1.0/E1.1/E1.2/E1.3a). Keystone half-2: E1.3b(2510) BatchPlanner fail-loud guard (critical path, plan.py). After it: fan out leaves E1.4(2511)/E1.5(2508)/E1.7(2509), then E1.6(2512)->E1.9(2513)->E1.8(2514)->E1.10(2515)."
+executable = [2508, 2509, 2511, 2512]
+in_progress = [2511, 2508]
+closed_items = [2504, 2505, 2506, 2507, 2510]
+current_item = 2511
+notes = "5/12 done — KEYSTONE COMPLETE (E1.3a+E1.3b: AxisSpec.role + BatchPlanner fail-loud, 206 tests green). Fan-out wave: E1.4(2511 @axis_config, Sonnet) + E1.5(2508 purity guard, Haiku) parallel, disjoint files. Remaining: E1.6(2512), E1.7(2509), E1.9(2513), E1.8(2514), E1.10(2515)."
