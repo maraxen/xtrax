@@ -6,7 +6,7 @@ import warnings
 
 import pytest
 
-from xtrax.inference.errors import AxisRole
+from xtrax.tiling.roles import AxisRole
 from xtrax.tiling.plan import AxisSpec
 
 

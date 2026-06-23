@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import jax
 
-from xtrax.inference.errors import AmbiguousAxisError, AxisRole
+from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
 from xtrax.tiling.strategy import (
     AxisStrategy,
     Bucket,

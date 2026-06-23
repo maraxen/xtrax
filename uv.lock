@@ -2087,6 +2087,7 @@ eda = [
 [package.dev-dependencies]
 dev = [
     { name = "complexipy" },
+    { name = "import-linter" },
     { name = "pytest-benchmark" },
     { name = "pytest-cov" },
 ]
@@ -2135,6 +2136,7 @@ provides-extras = ["dev", "eda"]
 [package.metadata.requires-dev]
 dev = [
     { name = "complexipy", specifier = ">=5.6.1" },
+    { name = "import-linter", specifier = ">=2.1" },
     { name = "pytest-benchmark", specifier = ">=5.2.3" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
 ]

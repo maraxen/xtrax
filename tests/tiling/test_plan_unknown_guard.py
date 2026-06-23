@@ -12,7 +12,7 @@ import dataclasses
 
 import pytest
 
-from xtrax.inference.errors import AmbiguousAxisError, AxisRole
+from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
 from xtrax.tiling.plan import AxisSpec, BatchPlan, BatchPlanner
 
 # ---------------------------------------------------------------------------
