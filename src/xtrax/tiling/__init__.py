@@ -12,6 +12,7 @@ OPTIONAL (dedup/gather machinery — import from submodules):
     xtrax.tiling.dedup:    DedupSpec, get_k_bucket
 """
 
+from xtrax.tiling._plan_wrapper import _BatchPlanWrapper
 from xtrax.tiling.bucket import bucketize, select_bucket
 from xtrax.tiling.carry import CarrySpec
 from xtrax.tiling.carry_shape import CarryShape
@@ -32,7 +33,6 @@ from xtrax.tiling.strategy import (
     ScanTransition,
     Vmap,
 )
-from xtrax.tiling._plan_wrapper import _BatchPlanWrapper
 
 __all__ = [
     "AxisSpec",
