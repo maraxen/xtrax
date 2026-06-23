@@ -16,7 +16,7 @@ class BundleSchema:
     Attributes:
         fields: Ordered mapping of leaf field-name (str) to ShapeDtypeStruct.
             Field names are recovered from the eval_shape output pytree's key_path:
-            - GetAttrKey.attribute: dataclass/eqx.Module field names
+            - GetAttrKey.name: dataclass/eqx.Module field names
             - DictKey.key: dict keys
             - Positional fallback: `out_{i}` for SequenceKey or bare leaves
         carry_specs: Optional list of CarrySpec objects, deferred for future use.
