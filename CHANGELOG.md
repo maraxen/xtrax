@@ -36,6 +36,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   (`src/xtrax/eda/`, `tests/eda/`, `docs/advanced/eda-guide.md`, `docs/api/eda.md`)
 
+- **`xtrax.inference` — Signature inference subpackage** (Tier-1 MVP, E1):
+  Zero-config axis detection and fail-loud semantics for batched JAX computations. Enables
+  automatic extraction of output schemas and input axis specifications, with explicit role
+  assignment (KNOWN via `@axis_config` or UNKNOWN with fail-loud guards).
+
+  _Public API_:
+  - `infer_bundle(fn, abstract_inputs, *, verify_against=None) -> (BundleSchema, list[AxisSpec])`
+    — main entrypoint; infers output schema and axis specs from abstract inputs.
+  - `@axis_config(*AxisOverride(...))` — decorator for Tier-1 axis resolution; attaches
+    overrides positionally to leading axes; each override specifies `name` and required
+    `default_batch_size` (Assumption A3: not inferable from shape alone).
+  - `AxisOverride` — dataclass for single-axis configuration; fields include `name`,
+    `default_batch_size`, `cardinality`, `tile_granularity`, `heterogeneous`, `dedup_eligible`,
+    `bucket_boundaries`.
+  - `BundleSchema` — output structure mapping field names to `ShapeDtypeStruct`; carries
+    optional `carry_specs` list (deferred for T2+, always None in MVP).
+  - `AxisRole` — Enum with KNOWN (axis resolved) and UNKNOWN (axis ambiguous, fail-loud);
+    future tiers extend with concrete roles (BATCH, SEQUENCE, etc.).
+  - `AmbiguousAxisError` — raised by `BatchPlanner.plan()` when axis role is UNKNOWN.
+  - `StructureMismatchError` — raised when `verify_against` outputs diverge from abstract-traced.
+  - `synthesize_axes(abstract_inputs, overrides=None) -> list[AxisSpec]` — lower-level factory
+    that synthesizes AxisSpec with explicit role assignment.
+
+  _Deferred (T2+)_:
+  - Concrete axis roles (BATCH, SEQUENCE, FEATURE) with domain-specific planner behavior.
+  - jaxtyping dimension-name adapter for role inference without decorators.
+  - CarrySpec auto-derivation for RNN-like stateful axes.
+  - LibCST Bundle codegen for boilerplate `@axis_config` and dataclass generation.
+
+  (`src/xtrax/inference/`, `tests/inference/`, `docs/api/inference.md`)
+
 ### Changed
 
 - Distribution readiness: tiered coverage gates (`tier1_core` 90/80, `tier2_eda` 90/75),
