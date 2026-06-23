@@ -1,6 +1,7 @@
 # xtrax Internal Docs
 
 ## Specs
+- [260623_e3-run-verb](specs/260623_e3-run-verb-trainconfig-driven-cli.md) — E3-MVP `xtrax run` spec (contemplex architectural brainstorm f300363c): winner A+H+I+J+M — `[data]` factory returns a dataset run always wraps (no duck-type branch); always-write `.xtrax/runs/<id>/manifest.json` (non-optional model-path, run-id=config-hash+uuid-fallback, checkpoint_dir independent of run-id); `TrainConfig` orthogonal to E1 `RunSpec`; raw-TOML + mandatory schema_version; `init_state` promoted to `xtrax.training`; 11 ACs
 - [260623_e2-auto-cli](specs/260623_e2-auto-cli-for-xtrax-how-to-scope-and-d.md) — E2-MVP auto-CLI spec (contemplex architectural brainstorm c519ff24): C-AMENDED progressive scaffold — tyro.extras.subcommand_cli_from_dict + plan/explain verbs + lazy import-path loader (lesson #145); export/run/sweep/resume deferred (roadmap); 8 ACs
 - [260623_e1-signature-inference-core](specs/260623_e1-signature-inference-core-how-should-x.md) — E1-MVP spec (contemplex architectural brainstorm, session 4dfc27aa): derive BundleSchema + list[AxisSpec] from a typed pure fn via eval_shape; fail-loud UNKNOWN roles (not batch); @axis_config Tier-1; 8 ACs; Tier-2 jaxtyping/codegen/CarrySpec deferred (TBDs)
 - [260615_xtrax-eda-api-revised](specs/260615_xtrax-eda-api-revised.md) — EDA visualization API spec (post-critic + adversarial review): render(), PlanStatsDict, PlanLogger, PanelName, 12 acceptance criteria + 7 amendments
