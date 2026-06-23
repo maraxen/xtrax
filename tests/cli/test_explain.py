@@ -175,8 +175,7 @@ class TestExplainMissingEda:
         a raw ModuleNotFoundError. This test FAILS if the wrapping in _emit_render
         is removed.
         """
-        import xtrax.eda
-        import xtrax.eda.viz  # noqa: F401 — ensure viz is loaded so monkeypatch has a target
+        import xtrax.eda  # stdlib-only __init__; monkeypatch xtrax.eda.render (no viz import — needs matplotlib)
 
         # Patch xtrax.eda.render (as resolved in emit via 'from xtrax.eda import render')
         # to raise ModuleNotFoundError — simulates eda extra absent.
@@ -252,6 +251,7 @@ class TestExplainHtmlPngOutput:
 
     def test_html_no_out_prints_to_stdout(self, capsys):
         """F1 html: fmt='html' with out=None prints non-empty HTML to stdout."""
+        pytest.importorskip("matplotlib")  # html render needs the eda extra
         args = ExplainArgs(
             fn="tests.cli.test_explain:decorated_fn",
             shapes="x=(4,)f32",
@@ -269,6 +269,7 @@ class TestExplainHtmlPngOutput:
 
     def test_html_with_out_writes_file(self, tmp_path):
         """F1 html: fmt='html' with out=<path> writes a non-empty file."""
+        pytest.importorskip("matplotlib")  # html render needs the eda extra
         out_path = str(tmp_path / "plan.html")
         args = ExplainArgs(
             fn="tests.cli.test_explain:decorated_fn",
@@ -285,6 +286,7 @@ class TestExplainHtmlPngOutput:
 
     def test_png_with_out_writes_file(self, tmp_path):
         """F1 png: fmt='png' with out=<path> writes a non-empty binary file."""
+        pytest.importorskip("matplotlib")  # png render needs the eda extra
         out_path = str(tmp_path / "plan.png")
         args = ExplainArgs(
             fn="tests.cli.test_explain:decorated_fn",

@@ -73,6 +73,7 @@ class TestExportSerialized:
         Requires flatbuffers (xtrax[cli] extra). With flatbuffers installed,
         exp.serialize() should produce valid flatbuffer bytes.
         """
+        pytest.importorskip("flatbuffers")  # serialize() needs the flatbuffers (cli) extra
         out_path = tmp_path / "traced.bin"
         args = ExportArgs(
             fn="tests.cli.test_export:fn",
