@@ -1,11 +1,11 @@
 [loop]
 version = "1.0"
 task_id = "260623_e2-autocli"
-current_phase = "VERIFY"
-last_subphase = "e2_mvp_build_complete_epic_audit_dispatch"
+current_phase = "CLOSE"
+last_subphase = "e2_mvp_audited_remediated_ready_to_merge"
 last_artifact_path = "src/xtrax/cli/"
-iteration_count = 18
-last_activation = "2026-06-24T00:20:00Z"
+iteration_count = 19
+last_activation = "2026-06-24T00:45:00Z"
 autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
@@ -23,7 +23,7 @@ backlog_items_closed_per_iteration = 1
 consecutive_zero_progress_iterations = 0
 max_zero_progress = 3
 last_items_closed = 9
-remediate_attempt = 0
+remediate_attempt = 1
 
 [loop.fingerprint]
 recent_tool_hashes = []
@@ -32,8 +32,5 @@ stall_threshold = 3
 [loop.sprint]
 epic_id = 2605
 parent_epic_id = 2174
-dag_doc = ".praxia/docs/plans/260623_e2-mvp-backlog-dag.md"
-tasks = ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "Z"]
-done = ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "Z"]
 current_item = 0
-notes = "E2-MVP COMPLETE 9/9: xtrax.cli — tyro subcommand_cli_from_dict scaffold + plan/explain verbs + lazy import-path loader + shapes parser + emit --fmt router (json machine-contract); cli extra + `xtrax` console script. 58 cli tests + 332 total green; import-linter 2 kept/0 broken; installed `xtrax` works. Running independent epic-audit before surfacing the merge decision (mirrors E1). Deferred: run/sweep/resume/export (roadmap). NOT merged; nothing pushed."
+notes = "E2-MVP (xtrax.cli auto-CLI) COMPLETE + AUDITED + REMEDIATED -> SAFE TO MERGE. 9 tasks built test-first; independent epic-audit (Opus) REQUEST_CHANGES caught a real bug (--fmt html/png silent no-op + vacuous test); remediated (F1+F2+F4+F5, png writes 41424 bytes verified). 336 tests green; import-linter 2 kept/0 broken; installed `xtrax` script works. PAUSED for user merge decision (no-autonomous-merge; E1 was explicitly user-merged). Merge note: branch is 4 commits behind main (parallel-loop tiling commits #1864/#1909 + import-sort) - disjoint files, clean merge expected. Deferred verbs run/sweep/resume/export = roadmap. Nothing pushed."
