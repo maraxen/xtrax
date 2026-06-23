@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import jax
 
+from xtrax.inference.errors import AxisRole
 from xtrax.tiling.strategy import (
     AxisStrategy,
     Bucket,
@@ -46,6 +47,7 @@ class AxisSpec:
     heterogeneous: bool = False
     dedup_eligible: bool = False
     bucket_boundaries: tuple[int, ...] | list[int] | None = None
+    role: AxisRole = AxisRole.KNOWN
 
     def __post_init__(self) -> None:
         """Normalize and validate bucket_boundaries when provided."""
