@@ -1,11 +1,11 @@
 [loop]
 version = "1.0"
 task_id = "260623_e2-autocli"
-current_phase = "EXECUTE"
-last_subphase = "e2_T0_dispatch"
-last_artifact_path = ".praxia/docs/plans/260623_e2-mvp-backlog-dag.md"
-iteration_count = 17
-last_activation = "2026-06-23T23:55:00Z"
+current_phase = "VERIFY"
+last_subphase = "e2_mvp_build_complete_epic_audit_dispatch"
+last_artifact_path = "src/xtrax/cli/"
+iteration_count = 18
+last_activation = "2026-06-24T00:20:00Z"
 autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
@@ -16,14 +16,13 @@ timeout_minutes = 45
 
 [loop.gates]
 spec_confirmed = true
-spec_path = ".praxia/docs/specs/260623_e2-auto-cli-for-xtrax-how-to-scope-and-d.md"
 sprint_approved = true
 
 [loop.metrics]
 backlog_items_closed_per_iteration = 1
 consecutive_zero_progress_iterations = 0
 max_zero_progress = 3
-last_items_closed = 0
+last_items_closed = 9
 remediate_attempt = 0
 
 [loop.fingerprint]
@@ -35,6 +34,6 @@ epic_id = 2605
 parent_epic_id = 2174
 dag_doc = ".praxia/docs/plans/260623_e2-mvp-backlog-dag.md"
 tasks = ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "Z"]
-done = []
-current_item = "T0"
-notes = "E2-MVP: spec (c519ff24) + DAG (audited NEEDS_WORK -> 7 fixes folded) DONE. Building directly from the DAG doc (self-contained per-task; #2605 anchors the epic; commits track progress). Critical path T0->T2->T5(L)->T3->T6->T7->T8. KEY audit findings baked into the DAG: (1) cli must NOT be in importlinter eda-forbidden list (lazy import != contract protection); (2) AC4 happy path needs an @axis_config-decorated fixture (bare fn always fail-loud); (3) tyro imported inside main(), cli/__init__ tyro-free. Wave 0: T0 (pkg skeleton + errors)."
+done = ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "Z"]
+current_item = 0
+notes = "E2-MVP COMPLETE 9/9: xtrax.cli — tyro subcommand_cli_from_dict scaffold + plan/explain verbs + lazy import-path loader + shapes parser + emit --fmt router (json machine-contract); cli extra + `xtrax` console script. 58 cli tests + 332 total green; import-linter 2 kept/0 broken; installed `xtrax` works. Running independent epic-audit before surfacing the merge decision (mirrors E1). Deferred: run/sweep/resume/export (roadmap). NOT merged; nothing pushed."
