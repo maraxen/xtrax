@@ -1,12 +1,12 @@
 [loop]
 version = "1.0"
-task_id = "260617_xtrax-composition-mission"
-current_phase = "CLOSE"
-last_subphase = "iter42_committed"
-last_artifact_path = "distribution/release_readiness.toml"
-iteration_count = 42
-last_activation = "2026-06-19T21:30:00Z"
-autonomy_level = "L1"
+task_id = "260623_e1-mvp-loop"
+current_phase = "EXECUTE"
+last_subphase = "wave0_E1.0_dispatch"
+last_artifact_path = ".praxia/sprint_plans/260623_e1_mvp.toml"
+iteration_count = 1
+last_activation = "2026-06-23T18:10:00Z"
+autonomy_level = "L2"
 autonomy_mode = "autonomous"
 
 [loop.lock]
@@ -14,11 +14,17 @@ token = ""
 expiry_ts = ""
 timeout_minutes = 45
 
+[loop.gates]
+spec_confirmed = true
+spec_path = ".praxia/docs/specs/260623_e1-signature-inference-core-how-should-x.md"
+sprint_approved = true
+sprint_path = ".praxia/sprint_plans/260623_e1_mvp.toml"
+
 [loop.metrics]
 backlog_items_closed_per_iteration = 1
 consecutive_zero_progress_iterations = 0
 max_zero_progress = 3
-last_items_closed = 1
+last_items_closed = 0
 remediate_attempt = 0
 
 [loop.fingerprint]
@@ -26,39 +32,12 @@ recent_tool_hashes = []
 stall_threshold = 3
 
 [loop.sprint]
-last_completed = "260619_dist-n10-release-readiness"
-closed_items = [1462]
-epic_id = 1451
-n2_gates_closed = 15
-docs_plumbing_complete = true
-narrative_docs_complete = true
-output_sink_docs_complete = true
-publish_oidc_complete = true
-release_readiness_complete = true
-project_hygiene_complete = true
-next_candidates = [1454]
-next_sequence = "1454_human_oidc_config"
-coverage_dag_manifest_complete = true
-coverage_tier1_line_pct = 95.2
-coverage_tier1_branch_pct = 89.4
-coverage_tier1_tests_green = true
-coverage_tier1_enforced = true
-coverage_tier2_line_pct = 95.8
-coverage_tier2_branch_pct = 91.7
-coverage_tier2_enforced = true
-
-[loop.release]
-status = "blocked_automated_and_manual"
-verdict = "BLOCKED_AUTOMATED"
-report_json = ".praxia/release_readiness_report.json"
-report_markdown = ".praxia/release_readiness_report.md"
-do_not_push_tags = true
-do_not_trigger_publish_workflow = true
-human_prerequisite_backlog = 1454
-blockers = [
-  "ruff_lint: 117 violations",
-  "ruff_format: 62 files need reformat",
-  "ty_check: 19 diagnostics",
-  "human_gate_1454: PyPI/TestPyPI OIDC publisher not configured",
-]
-notes = "Full convergence audit complete. Distribution gates N0-N7 pass; CI lint/type hygiene and #1454 remain before tag push."
+sprint_id = "260623_e1_mvp"
+sprint_db_id = 76
+epic_id = 2174
+assigned_items = [2504, 2505, 2506, 2507, 2508, 2509, 2510, 2511, 2512, 2513, 2514, 2515]
+executable = [2504, 2505]
+in_progress = [2504]
+closed_items = []
+current_item = 2504
+notes = "E1-MVP signature-inference core. Planning (brainstorm/spec/adversarial-DAG) pre-done outside the FSM; gates satisfied. Driving EXECUTE on the worktree branch, 1 item/iteration. Wave-0 roots: E1.0(2504), E1.1(2505)."
