@@ -10,6 +10,7 @@
 - [260608_inference-time-sparsification](specs/260608_inference-time-sparsification-in-xtrax-h.md) — Sprint 7: sparsify_model functional API, BucketIterator minimal impl, jit-trace guard (inference-time sparsification)
 
 ## Plans
+- [260623_e2-mvp-backlog-dag](plans/260623_e2-mvp-backlog-dag.md) — E2-MVP xtrax.cli DAG (staff → adversarial plan-audit NEEDS_WORK, 7 fixes folded): 9 tasks T0–T8 + roadmap node; caught the import-linter-lazy-import trap + AC4-unreachable-without-decorated-fixture; critical path through the explain+emit long pole
 - [260623_e1-mvp-backlog-dag](plans/260623_e1-mvp-backlog-dag.md) — E1-MVP implementation DAG (staff → adversarial plan-audit NEEDS_WORK, all 8 fixes folded in): 12 tasks incl. split E1.3a/E1.3b keystone, w1.5 decision gate (explicit AxisRole field; in-test InputResolver adapter), AC2/AC8 ownership fixes
 - [260615_using-xtrax-skill-backlog-dag](plans/260615_using-xtrax-skill-backlog-dag.md) — Backlog DAG for the using-xtrax exportable skill: 5 tier-1 tasks, 5 tier-2 tasks, 5 tech-debt HiTL items, sprint sequencing
 ## Roadmaps
