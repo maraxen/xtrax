@@ -1,0 +1,90 @@
+[sprint]
+sprint_id = "260624_sweep-verb"
+sprint_num = 1
+name = "260624_sweep-verb"
+description = "Implement the local grid-search sweep CLI verb"
+context = "Epic #2605"
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "a"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "2605_sweep_impl"
+phase_name = "Track A — Refactoring and Sweep CLI Verb Implementation"
+fixer_prompt = """
+This track contains both the necessary refactoring and the implementation of the sweep verb.
+
+Part 1: Refactoring prerequisites
+1. Extract the `run_id` derivation logic from `run_from_config` into a public helper function `generate_run_id(cfg: TrainConfig) -> str` in `src/xtrax/cli/run.py`. Ensure this helper includes the `os.makedirs(..., exist_ok=False)` logic inside a robust `while True:` loop to continually generate a new random suffix until the directory is successfully reserved, handling collisions flawlessly.
+2. Update `run_from_config` to accept an optional `run_id` parameter: `run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableState`. If `run_id` is `None`, it calls `generate_run_id(cfg)`. Update `run_from_config` so it does not duplicate the base directory creation logic, but ensure it still creates the nested `checkpoints/` directory with `exist_ok=True` and independently computes `hash_val = compute_config_hash(...)` to write the manifest.
+3. Update any existing tests in `tests/cli/test_run_from_config.py`, `tests/cli/test_run_verb.py`, and `tests/cli/test_resume_verb.py` to handle the new signature if necessary.
+
+
+
+Part 2: Sweep CLI Verb Implementation
+1. Step 1: Sweep verb and registry wiring
+   - Create `src/xtrax/cli/sweep_verb.py` with:
+     * `SweepArgs` dataclass:
+       ```python
+       @dataclass
+       class SweepArgs:
+           config_path: tyro.conf.Positional[str]
+       ```
+       Note: Initialize `tyro: Any = None` at module level and do `from __future__ import annotations` to preserve import isolation.
+     * `run_sweep(args: SweepArgs)` function:
+       - Validate the config via `base_cfg = load_config(args.config_path)` (from `xtrax.cli.config`) to ensure it parses correctly and has valid base fields (like `seed`).
+       - Read the TOML file at `args.config_path` using `tomllib` purely to extract the `[sweep.axes]` dictionary. 
+       - Validate that `sweep.axes` is a `dict`. If `sweep.axes` is missing or empty, handle it gracefully by executing the base config exactly once (treating it as a 1-item grid) and returning. If it is present but not a dict, raise a `ConfigError` or `CLIError`.
+       - Validate that every leaf value in `sweep.axes` is a list. If any leaf value (e.g., `learning_rate = 0.01` instead of `[0.01]`) is not a list, raise a `ConfigError` indicating that all sweep axes must be iterables.
+       - Flatten the nested dictionary in `[sweep.axes]` into a list of tuple-paths and their corresponding value lists (e.g., `("optimizer", "kwargs", "learning_rate"): [0.01, 0.001]`).
+       - Compute the cartesian product of all the list values using `itertools.product`.
+       - Configure JAX compilation cache: `jax.config.update("jax_compilation_cache_dir", ".xtrax/jax_cache")` before executing any runs.
+       - Initialize a `sweep_manifest = {}` dictionary to track `run_id` to override mappings.
+       - Determine a unique `sweep_timestamp` or ID and ensure `.xtrax/sweeps/<sweep_id>` directory exists.
+       - Iterate over the cartesian product combinations:
+         - Create the base dictionary: `cfg_dict = dataclasses.asdict(base_cfg)`.
+         - Traverse `cfg_dict` using the tuple-path components to set the leaf value. During traversal, safely create missing intermediate dictionaries (`current = current.setdefault(key, {})`). If the override value is a list, set it directly (overwriting any old list). Do NOT convert lists to tuples — config dicts are plain Python passed to user factories, never JAX static args.
+         - Re-instantiate the validated config: `cfg_obj = TrainConfig(**cfg_dict)`.
+         - Call `run_id = generate_run_id(cfg_obj)`.
+         - Record the overrides in `sweep_manifest[run_id]` and save/update `sweep_manifest.json` incrementally in `.xtrax/sweeps/<sweep_id>/` (overwrite the file atomically).
+         - Wrap the execution in a `try...except Exception as e:` block.
+         - Call `state = run_from_config(cfg_obj, run_id=run_id)`.
+         - Log the successful `run_id` and the overrides used.
+         - Flush the device queue: `jax.tree_util.tree_map(lambda x: getattr(x, 'block_until_ready', lambda: x)(), state)`.
+         - `del state`, call `gc.collect()`, and call `jax.clear_caches()` to prevent memory leaks across runs.
+         - If an exception occurs, log the stringified error, call `traceback.clear_frames(e.__traceback__)` to prevent OOM leaks. Then run a dummy computation on all devices to flush the execution queues (e.g., `jax.tree_util.tree_map(lambda d: jax.device_put(jnp.zeros(1), d).block_until_ready(), jax.devices())`), followed unconditionally by `gc.collect()` and `jax.clear_caches()`. Continue to the next combination.
+   - Update `src/xtrax/cli/registry.py` to register the `sweep` verb: `"sweep": (SweepArgs, run_sweep)`.
+   - In `src/xtrax/cli/entrypoint.py:main()`, the existing dynamic `tyro` binding will pick up the new verb automatically if you set `tyro = None` globally in `sweep_verb.py`.
+   - In `src/xtrax/cli/__init__.py`, remove `sweep` from the deferred list in the module docstring.
+
+2. Step 2: Tests
+   - Create `tests/cli/test_sweep_verb.py` to cover:
+     - Basic sweep end-to-end success.
+     - Cartesian product generation correctly overriding base config without list concatenation.
+     - Fault tolerance: if one run raises an exception, ensure the loop continues and tracebacks are cleared.
+     - Verify `sweep_manifest.json` is incrementally written to the isolated `.xtrax/sweeps/` directory.
+     - Tyro import isolation check.
+
+Make sure all tests pass by running `uv run pytest`.
+"""
+reviewer_prompt = """
+Verify the refactoring and sweep CLI verb implementation:
+1. Verify `run_from_config` accepts an optional `run_id` and `generate_run_id` uses a `while True:` loop.
+2. Verify `load_config` is used for validation and `TrainConfig` is properly re-instantiated (lists are NOT converted to tuples).
+3. Verify cartesian product generation is correct, dict traversal uses `setdefault`, and it overwrites lists without concatenating.
+4. Verify `sweep_manifest.json` is written incrementally to an isolated `.xtrax/sweeps/` directory.
+5. Verify fault tolerance (try/except block) is in place, traceback frames are cleared, and device queues are flushed via `block_until_ready` on states or dummy arrays, followed by `gc.collect()` and `jax.clear_caches()`.
+6. Run all tests including the new `test_sweep_verb.py` to verify that everything is green and there are no regression or import isolation issues.
+"""
+return_key = "2605_sweep_impl"
+
+[orchestration]
+sequential = ["2605_sweep_impl"]
+concurrent = []
+
+[deprecation]
