@@ -351,6 +351,24 @@ class TestEngineFit:
         assert call_names[4] == "on_epoch_end"
         assert call_names[-1] == "on_train_end"
 
+    async def test_fit_callback_hook_order_with_resume(self):
+        """Callback hooks should fire in correct order including on_resume when resume is True."""
+        cb = TrackingCallback()
+        engine = create_test_engine(callbacks=(cb,))
+        state = create_test_state()
+        data = DummyDataModule(batch_count=1, batch_size=1)
+
+        await engine.fit(state, data, num_epochs=1, resume=True)
+
+        call_names = [call[0] for call in cb.call_log]
+        assert call_names[0] == "on_train_start"
+        assert call_names[1] == "on_resume"
+        assert call_names[2] == "on_epoch_start"
+        assert call_names[3] == "on_step_start"
+        assert call_names[4] == "on_step_end"
+        assert call_names[5] == "on_epoch_end"
+        assert call_names[-1] == "on_train_end"
+
     async def test_fit_with_multiple_callbacks(self):
         """Multiple callbacks should all receive all hooks."""
         cb1 = TrackingCallback("cb1")
@@ -565,6 +583,19 @@ class TestEngineFitSync:
         final_state = engine.fit_sync(state, data, num_epochs=1)
 
         assert final_state.step.shape == ()  # Scalar Array
+
+    def test_fit_sync_callback_hook_order_with_resume(self):
+        """fit_sync should support and propagate resume parameter."""
+        cb = TrackingCallback()
+        engine = create_test_engine(callbacks=(cb,))
+        state = create_test_state()
+        data = DummyDataModule(batch_count=1, batch_size=1)
+
+        engine.fit_sync(state, data, num_epochs=1, resume=True)
+
+        call_names = [call[0] for call in cb.call_log]
+        assert call_names[0] == "on_train_start"
+        assert call_names[1] == "on_resume"
 
 
 class TestEnginePolymorphism:
