@@ -113,6 +113,25 @@ def test_run_id_collision_produces_uuid_suffix(tmp_path, monkeypatch) -> None:
 
     run_dirs = list(Path(".xtrax/runs").iterdir())
     suffixed = [d for d in run_dirs if d.name.startswith(hash_val + "-")]
-    assert len(suffixed) == 1, (
-        f"Expected 1 uuid-suffixed dir, got: {[d.name for d in run_dirs]}"
-    )
+    assert len(suffixed) == 1, f"Expected 1 uuid-suffixed dir, got: {[d.name for d in run_dirs]}"
+
+
+def test_generate_run_id(tmp_path, monkeypatch) -> None:
+    """Test generate_run_id helper directly."""
+    from xtrax.cli.run import generate_run_id
+
+    monkeypatch.chdir(tmp_path)
+    cfg = _make_cfg()
+    cfg_dict = dataclasses.asdict(cfg)
+    hash_val = config_hash(cfg_dict)
+
+    # First call: creates base dir and returns hash_val
+    run_id1 = generate_run_id(cfg)
+    assert run_id1 == hash_val
+    assert Path(f".xtrax/runs/{run_id1}").exists()
+
+    # Second call: creates a suffixed dir because first one exists
+    run_id2 = generate_run_id(cfg)
+    assert run_id2.startswith(hash_val + "-")
+    assert Path(f".xtrax/runs/{run_id2}").exists()
+    assert run_id1 != run_id2

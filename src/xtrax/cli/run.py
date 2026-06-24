@@ -9,11 +9,33 @@ from xtrax.cli.hash import config_hash as compute_config_hash
 from xtrax.cli.manifest import write_manifest
 from xtrax.cli.resolve import resolve_components
 from xtrax.engine.engine import Engine
-from xtrax.training import init_state
+from xtrax.training import ResumableState, init_state
 from xtrax.training.trainer import Trainer
 
 
-def run_from_config(cfg: TrainConfig):
+def generate_run_id(cfg: TrainConfig) -> str:
+    """
+    Generate a unique run ID and reserve its base directory.
+    Continually generates a new random suffix until the directory is successfully reserved.
+    """
+    cfg_dict = dataclasses.asdict(cfg)
+    hash_val = compute_config_hash(cfg_dict)
+    run_id = hash_val
+    try:
+        os.makedirs(f".xtrax/runs/{run_id}", exist_ok=False)
+        return run_id
+    except FileExistsError:
+        while True:
+            suffix = uuid.uuid4().hex[:6]
+            candidate_id = f"{hash_val}-{suffix}"
+            try:
+                os.makedirs(f".xtrax/runs/{candidate_id}", exist_ok=False)
+                return candidate_id
+            except FileExistsError:
+                continue
+
+
+def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableState:
     """
     Wire TrainConfig → Engine.fit_sync. cli-private glue (spec decision M).
 
@@ -35,14 +57,8 @@ def run_from_config(cfg: TrainConfig):
     cfg_dict = dataclasses.asdict(cfg)
     hash_val = compute_config_hash(cfg_dict)
 
-    base_run_dir = f".xtrax/runs/{hash_val}"
-    run_id = hash_val
-    try:
-        os.makedirs(base_run_dir, exist_ok=False)
-    except FileExistsError:
-        suffix = uuid.uuid4().hex[:6]
-        run_id = f"{hash_val}-{suffix}"
-        os.makedirs(f".xtrax/runs/{run_id}", exist_ok=False)
+    if run_id is None:
+        run_id = generate_run_id(cfg)
 
     checkpoint_dir = f".xtrax/runs/{run_id}/checkpoints/"
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -62,4 +78,3 @@ def run_from_config(cfg: TrainConfig):
     )
 
     return final_state
-
