@@ -1,12 +1,20 @@
 # xtrax Release Readiness Report
 
 - **Epic:** #1451 xtrax distribution readiness (N0-N10)
-- **Generated:** 2026-06-19T21:45:55.841702+00:00
-- **Verdict:** `BLOCKED_MANUAL`
+- **Generated:** 2026-06-24T20:25:04.603346+00:00
+- **Verdict:** `BLOCKED_AUTOMATED`
 - **Package version:** `0.3.0`
 
 ## Blockers
+- automated check failed: ruff_lint
+- automated check failed: ruff_format
+- automated check failed: ty_check
+- automated check failed: coverage_tier1
+- automated check failed: coverage_tier2
+- automated check failed: audit_contracts
+- automated check failed: added_types_diff
 - human gate open: #1454 n9_human_oidc
+- backlog gate failed: #1457 n4a_docs_plumbing
 
 ## Distribution backlog (N0-N10)
 
@@ -16,7 +24,7 @@
 | 1452 | n1_version_wheel | completed | PASS | yes |
 | 1453 | n3_public_api | completed | PASS | yes |
 | 1455 | n2_packaging_metadata | completed | PASS | yes |
-| 1457 | n4a_docs_plumbing | completed | PASS | yes |
+| 1457 | n4a_docs_plumbing | failed | FAIL | yes |
 | 1458 | n4b_narrative_docs | completed | PASS | yes |
 | 1459 | n5_output_sink_docs | completed | PASS | yes |
 | 1460 | n8_project_hygiene | completed | PASS | yes |
@@ -30,7 +38,6 @@
 - **audit-version-wheel** (backlog): PASS
 - **audit-public-api** (backlog): PASS
 - **audit-packaging-metadata** (backlog): PASS
-- **audit-docs-build** (backlog): PASS
 - **audit-narrative-docs** (backlog): PASS
 - **audit-output-sink-docs** (backlog): PASS
 - **audit-project-hygiene** (backlog): PASS
@@ -38,14 +45,75 @@
 - **import_cycles** (foundation): PASS
 - **no_future_annotations** (foundation): PASS
 - **jaxlint_performance** (foundation): PASS
-- **ruff_lint** (ci_lint): PASS
-- **ruff_format** (ci_lint): PASS
-- **ty_check** (ci_lint): PASS
-- **coverage_tier1** (coverage): PASS
-- **coverage_tier2** (coverage): PASS
+- **ruff_lint** (ci_lint): FAIL
+  ```
+  13 | | import pytest
+14 | |
+15 | | from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
+16 | | from xtrax.tiling.plan import AxisSpec, BatchPlan, BatchPlanner
+   | |_______________________________________________________________^
+17 |
+18 |   # ---------------------------------------------------------------------------
+   |
+help: Organize imports
+
+Found 17 errors.
+[*] 13 fixable with the `--fix` option.
+  ```
+- **ruff_format** (ci_lint): FAIL
+  ```
+  Would reformat: tests/cli/test_loader.py
+Would reformat: tests/cli/test_manifest.py
+Would reformat: tests/cli/test_resume_verb.py
+Would reformat: tests/cli/test_run_verb.py
+Would reformat: tests/inference/test_api.py
+Would reformat: tests/inference/test_axes.py
+Would reformat: tests/inference/test_axis_config.py
+Would reformat: tests/inference/test_jaxtyping_optional.py
+Would reformat: tests/inference/test_schema.py
+Would reformat: tests/inference/test_seam_conformance.py
+Would reformat: tests/tiling/test_plan_unknown_guard.py
+28 files would be reformatted, 275 files already formatted
+  ```
+- **ty_check** (ci_lint): FAIL
+  ```
+  error[unresolved-attribute]: Unresolved attribute `tyro` on type `ModuleType`
+  --> src/xtrax/cli/entrypoint.py:37:13
+   |
+37 |             mod.tyro = tyro
+   |             ^^^^^^^^
+   |
+
+Found 1 diagnostic
+  ```
+- **coverage_tier1** (coverage): FAIL
+  ```
+  skipped in --quick mode
+  ```
+- **coverage_tier2** (coverage): FAIL
+  ```
+  skipped in --quick mode
+  ```
 - **io_reexport_doctest** (docs): PASS
-- **audit_contracts** (deterministic_track): PASS
-- **added_types_diff** (type_hardening): PASS
+- **audit_contracts** (deterministic_track): FAIL
+  ```
+  skipped in --quick mode
+  ```
+- **added_types_diff** (type_hardening): FAIL
+  ```
+  ============================== 10 passed in 2.74s ==============================
+merge-base=55bf118e1489080e4838bb6e80073864f1ecec2e files_checked=27 callables_checked=30
+
+uv run ruff check src/xtrax/devtools/gates/added_types_diff.py scripts/audit_added_types_diff.py tests/audit/test_added_types_diff.py
+uv run pytest tests/audit/test_added_types_diff.py -v
+uv run python scripts/audit_added_types_diff.py --no-emit
+FAIL: added-types diff gate
+  - src/xtrax/inference/abstract.py: unable to locate callable `is_leaf`
+  - src/xtrax/inference/config.py: unable to locate callable `decorator`
+  - src/xtrax/training/state.py: init_state: parameter `model` missing annotation
+  - src/xtrax/training/state.py: init_state: parameter `optimizer` missing annotation
+error: Recipe `audit-added-types-diff` failed on line 49 with exit code 1
+  ```
 
 ## Coverage state
 
