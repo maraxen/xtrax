@@ -18,6 +18,7 @@ from xtrax.cli.export import ExportArgs, run_export
 from xtrax.cli.plan import PlanArgs, run_plan
 from xtrax.cli.resume_verb import ResumeArgs, run_resume
 from xtrax.cli.run_verb import RunArgs, run_run
+from xtrax.cli.sweep_verb import SweepArgs, run_sweep
 
 REGISTRY: dict[str, tuple[type[Any], Callable[..., None]]] = {
     "plan": (PlanArgs, run_plan),
@@ -25,6 +26,7 @@ REGISTRY: dict[str, tuple[type[Any], Callable[..., None]]] = {
     "export": (ExportArgs, run_export),
     "run": (RunArgs, run_run),
     "resume": (ResumeArgs, run_resume),
+    "sweep": (SweepArgs, run_sweep),
 }
 
 __all__ = ["REGISTRY"]

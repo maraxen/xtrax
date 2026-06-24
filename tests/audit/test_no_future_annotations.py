@@ -19,6 +19,7 @@ LEGACY_ALLOWLIST = {
     "src/xtrax/cli/plan.py",
     "src/xtrax/cli/registry.py",
     "src/xtrax/cli/shapes.py",
+    "src/xtrax/cli/sweep_verb.py",
     "src/xtrax/devtools/baseline.py",
     "src/xtrax/devtools/bootstrap.py",
     "src/xtrax/devtools/docs_judgment.py",

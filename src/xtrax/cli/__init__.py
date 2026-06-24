@@ -3,11 +3,6 @@
 This package provides a Tyro-delegated CLI for xtrax, supporting commands like
 `xtrax plan` and `xtrax explain` for analyzing and understanding batched
 computation structures.
-
-**Deferred (E2.x+):** The following verbs are planned for future releases:
-
-- `sweep`: Launch a parameter sweep campaign over a BatchPlan. Gating: grid-based
-  sweep vs. bathos-campaign integration design.
 """
 
 from __future__ import annotations
