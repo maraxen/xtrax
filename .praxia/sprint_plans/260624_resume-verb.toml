@@ -1,0 +1,132 @@
+[sprint]
+sprint_id = "260624_resume-verb"
+sprint_num = 1
+name = "260624_resume-verb"
+description = "Implement the checkpoint resume CLI verb"
+context = "Epic #2605"
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "a"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "2605_refactor"
+phase_name = "Track A — Refactoring prerequisites (R0-R4)"
+fixer_prompt = """
+Implement the refactoring steps R0-R4 in preparation for the resume verb:
+
+1. Step R0: In `src/xtrax/cli/config.py`, define `CURRENT_SCHEMA_VERSION = 1` as a module-level constant.
+2. Step R1: In `src/xtrax/cli/manifest.py`, extract a new function `write_manifest_dict(run_dir: str, cfg_dict: dict, run_id: str, config_hash_val: str, resumed_from: str | None = None) -> dict`. Have `write_manifest` wrap it by passing `dataclasses.asdict(cfg)`.
+   Update the manifest dict keys:
+     - `data` should include `batch_size`: `cfg_dict["data"]["batch_size"]`.
+     - `num_epochs`: `cfg_dict["num_epochs"]`.
+     - `seed`: `cfg_dict["seed"]`.
+     - `resumed_from`: if present, add to the manifest dict.
+   Update `src/xtrax/cli/run.py` to call `write_manifest` correctly.
+3. Step R2: In `src/xtrax/cli/manifest.py`, implement `read_manifest(path: str) -> dict`. It must read the JSON file and validate that the required fields are present: `run_id`, `model.path`, `optimizer.path`, `loss.path`, `data.factory`, `data.batch_size`, `checkpoint_dir`, `config_hash`, `schema_version`, `num_epochs`, `seed`. If any field is missing, raise a `ResumeError` (import from `cli.errors`, which we will define - wait, define it or handle it) with f"manifest missing required field: {field}. Was this run created with an older version of xtrax?".
+   Also validate that the manifest's `schema_version` matches `CURRENT_SCHEMA_VERSION`. If not, raise `ConfigError(f"manifest schema_version {schema_version} != expected {expected_version}")`.
+4. Step R3: In `src/xtrax/cli/resolve.py`, define `ResolvedComponents` as a dataclass:
+   ```python
+   @dataclass
+   class ResolvedComponents:
+       model: Any
+       optimizer: Any
+       loss_fn: Any
+       dataset: DataModule
+   ```
+   Extract `resolve_components(manifest_dict: dict, epochs: int) -> ResolvedComponents` which resolves `model`, `optimizer`, `loss_fn`, and `dataset` using `_resolve(section, path, kwargs)`.
+   Make sure `dataset` resolution is wrapped in a try/except or `_resolve` using the `"data"` section label so that if import fails, a `CLIImportError` is raised with prefix `[data]`.
+   Wrap the resolved dataset in `DataModule` with `batch_size=manifest_dict["data"]["batch_size"]`, `num_epochs=epochs`, `seed=manifest_dict["seed"]`, `distributed=False`.
+   Update `src/xtrax/cli/run.py` to call `resolve_components`.
+5. Step R4: In `src/xtrax/engine/engine.py`, add `resume: bool = False` to `Engine.fit` and `Engine.fit_sync`. When `resume=True`, fire `cb.on_resume(state)` on all callbacks immediately after `cb.on_train_start(state)` inside `fit`.
+
+Ensure all code compiles, runs, and existing tests pass.
+"""
+reviewer_prompt = """
+Verify the refactoring changes:
+1. Verify `CURRENT_SCHEMA_VERSION` is defined in `cli/config.py`.
+2. Verify `write_manifest_dict` is extracted and used by `write_manifest` in `cli/manifest.py`.
+3. Verify `read_manifest` is implemented and performs schema version validation and required field verification.
+4. Verify `resolve_components` is extracted into `cli/resolve.py` and returns `ResolvedComponents`.
+5. Verify `run.py` is updated to call `resolve_components`.
+6. Verify `engine.py` supports `resume=True` and fires `on_resume`.
+7. Verify all existing tests pass by running `uv run pytest`.
+"""
+return_key = "2605_refactor"
+
+[[tracks]]
+id = "b"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "2605_resume_impl"
+phase_name = "Track B — Resume CLI Verb Implementation (I1-I2)"
+fixer_prompt = """
+Implement the resume CLI verb logic:
+
+1. Step I1: Resume verb and registry wiring
+   - In `src/xtrax/cli/errors.py`, add `ResumeError` inheriting from `ConfigError`.
+   - Create `src/xtrax/cli/resume_verb.py` with:
+     * `ResumeArgs` dataclass:
+       ```python
+       @dataclass
+       class ResumeArgs:
+           run_id: tyro.conf.Positional[str]
+           epochs: int
+           manifest_path: str | None = None
+       ```
+       Note: Initialize `tyro: Any = None` at module level and do `from __future__ import annotations` to preserve import isolation.
+     * `run_resume(args: ResumeArgs)`:
+       - Validate epochs > 0. If not, raise `ConfigError("--epochs must be a positive integer")`.
+       - Resolve the manifest path. If `args.manifest_path` is not provided, use the default: `.xtrax/runs/{args.run_id}/manifest.json`.
+       - Read the manifest using `read_manifest(path)`.
+       - Resolve components using `resolve_components(manifest_dict, args.epochs)`.
+       - Call `init_state(model, optimizer, manifest["seed"])` to get a zeroed `ResumableState`.
+       - Instantiate a checkpoint manager using `get_checkpoint_manager(manifest["checkpoint_dir"])`.
+       - Load the latest checkpoint using `load_checkpoint(manager, state_template)`. If no checkpoints are found in the manager (e.g. check if any checkpoints exist, or if loading fails), raise `ResumeError(f"No checkpoints found in {checkpoint_dir}")`.
+       - Generate a new `run_id` for the resumed sibling run using the original manifest's `config_hash` and collision-suffix logic.
+       - Write a new manifest for the resumed run with all fields, plus `resumed_from: manifest["run_id"]`, and pointing to the new sibling checkpoints directory.
+       - Instantiate `Engine(trainer=Trainer(loss_fn, optimizer), callbacks=())` and call `fit_sync(loaded_state, data_module, num_epochs=args.epochs, checkpoint_dir=new_checkpoint_dir, resume=True)`.
+   - Update `src/xtrax/cli/registry.py` to register the `resume` verb:
+     `"resume": (ResumeArgs, run_resume)`
+   - In `src/xtrax/cli/entrypoint.py:main()`, after importing the real `tyro`, dynamically bind the real `tyro` module to any registered module globals that have `tyro is None`:
+     ```python
+     for args_cls, _ in REGISTRY.values():
+         mod = sys.modules[args_cls.__module__]
+         if hasattr(mod, "tyro") and mod.tyro is None:
+             mod.tyro = tyro
+     ```
+   - In `src/xtrax/cli/__init__.py`, remove `resume` from the deferred list in the module docstring.
+
+2. Step I2: Tests
+   - Update `tests/cli/test_manifest.py` if any signature changes broke tests.
+   - Create `tests/cli/test_resume_verb.py` to cover:
+     - Basic resume end-to-end success.
+     - Custom `--manifest-path` override.
+     - Validation: missing manifest file, schema version mismatch, missing required manifest fields, empty checkpoint directory, epochs <= 0.
+     - Tyro import isolation check (ensure `import xtrax.cli.entrypoint` does not import `tyro`).
+
+Make sure all tests pass by running `uv run pytest`.
+"""
+reviewer_prompt = """
+Verify the resume CLI verb implementation:
+1. Verify the `resume` verb is added to `REGISTRY` and works via CLI commands.
+2. Verify `--epochs` is validated.
+3. Verify manifest reading and writing functions work as expected.
+4. Verify checkpoint loading works.
+5. Verify the new sibling run writes its manifest containing the `resumed_from` field.
+6. Run all tests including the new `test_resume_verb.py` to verify that everything is green and there are no regression or import isolation issues.
+"""
+return_key = "2605_resume_impl"
+
+[orchestration]
+sequential = ["2605_refactor", "2605_resume_impl"]
+concurrent = []
+
+[deprecation]
