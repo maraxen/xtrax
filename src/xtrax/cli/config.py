@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from xtrax.cli.errors import CLIError
 
+CURRENT_SCHEMA_VERSION = 1
+
 
 @dataclass
 class TrainConfig:

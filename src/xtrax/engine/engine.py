@@ -66,6 +66,7 @@ class Engine(eqx.Module):
         data: DataModule | DataIterLike,
         num_epochs: int,
         checkpoint_dir: str | Path | None = None,
+        resume: bool = False,
     ) -> ResumableState:
         """Execute multi-epoch training with callback hooks.
 
@@ -109,6 +110,10 @@ class Engine(eqx.Module):
             # Fire on_train_start hook
             for cb in self.callbacks:
                 cb.on_train_start(state)
+
+            if resume:
+                for cb in self.callbacks:
+                    cb.on_resume(state)
 
             # Main training loop: num_epochs iterations
             for epoch in range(num_epochs):
@@ -225,6 +230,7 @@ class Engine(eqx.Module):
         data: DataModule | DataIterLike,
         num_epochs: int,
         checkpoint_dir: str | Path | None = None,
+        resume: bool = False,
     ) -> ResumableState:
         """Synchronous wrapper around fit() using asyncio.run().
 
@@ -236,8 +242,17 @@ class Engine(eqx.Module):
             data: DataModule
             num_epochs: Number of epochs
             checkpoint_dir: Optional checkpoint directory
+            resume: Whether to resume training from checkpoint
 
         Returns:
             Final ResumableState
         """
-        return asyncio.run(self.fit(state, data, num_epochs, checkpoint_dir))
+        return asyncio.run(
+            self.fit(
+                state,
+                data,
+                num_epochs,
+                checkpoint_dir,
+                resume=resume,
+            )
+        )

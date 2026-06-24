@@ -6,20 +6,11 @@ import uuid
 
 from xtrax.cli.config import TrainConfig
 from xtrax.cli.hash import config_hash as compute_config_hash
-from xtrax.cli.loader import CLIImportError, load_fn
 from xtrax.cli.manifest import write_manifest
-from xtrax.data.module import DataModule
+from xtrax.cli.resolve import resolve_components
 from xtrax.engine.engine import Engine
 from xtrax.training import init_state
 from xtrax.training.trainer import Trainer
-
-
-def _resolve(section: str, path: str, kwargs: dict):
-    """AC11: wrap load_fn so CLIImportError names the section."""
-    try:
-        return load_fn(path)(**kwargs)
-    except CLIImportError as e:
-        raise CLIImportError(f"[{section}] {e}") from e
 
 
 def run_from_config(cfg: TrainConfig):
@@ -33,23 +24,11 @@ def run_from_config(cfg: TrainConfig):
     AC13/M5: callbacks=() — no logging (explicit MVP limitation)
     M4/AC3: DataModule wrap is ALWAYS unconditional (no isinstance branch)
     """
-    loss_fn = _resolve("loss", cfg.loss["path"], cfg.loss.get("kwargs", {}))
-    model = _resolve("model", cfg.model["path"], cfg.model.get("kwargs", {}))
-    optimizer = _resolve(
-        "optimizer", cfg.optimizer["path"], cfg.optimizer.get("kwargs", {})
-    )
-
-    try:
-        dataset = load_fn(cfg.data["factory"])(**cfg.data.get("kwargs", {}))
-    except CLIImportError as e:
-        raise CLIImportError(f"[data] {e}") from e
-    data = DataModule(
-        dataset,
-        batch_size=cfg.data["batch_size"],
-        num_epochs=cfg.num_epochs,
-        seed=cfg.seed,
-        distributed=False,
-    )
+    resolved = resolve_components(dataclasses.asdict(cfg), cfg.num_epochs)
+    model = resolved.model
+    optimizer = resolved.optimizer
+    loss_fn = resolved.loss_fn
+    data = resolved.dataset
 
     state = init_state(model, optimizer, cfg.seed)
 
@@ -83,3 +62,4 @@ def run_from_config(cfg: TrainConfig):
     )
 
     return final_state
+
