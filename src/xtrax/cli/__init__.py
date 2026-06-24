@@ -6,8 +6,6 @@ computation structures.
 
 **Deferred (E2.x+):** The following verbs are planned for future releases:
 
-- `run`: Execute a BatchPlan against a DataModule. Gating: DataModule factory
-  interface and integration with the Trainer/Engine layer.
 - `sweep`: Launch a parameter sweep campaign over a BatchPlan. Gating: grid-based
   sweep vs. bathos-campaign integration design.
 - `resume`: Resume a previously interrupted run from a checkpoint. Gating:

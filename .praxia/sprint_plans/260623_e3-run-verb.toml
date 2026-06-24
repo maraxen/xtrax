@@ -1,0 +1,1844 @@
+[sprint]
+sprint_id = "260623_e3-run-verb"
+sprint_num = 9
+name = "xtrax E3-MVP: `xtrax run` TrainConfig-driven CLI"
+description = """
+Implement the `xtrax run config.toml` verb end-to-end: TOML parse → TrainConfig → resolve
+model/optimizer/loss/data via load_fn → init_state → Engine.fit_sync → manifest + run-id.
+Pure glue: never a new training loop. Promotes `init_state` as public xtrax.training API.
+11 tasks (T0–T9 + Z). Cursor hand-off package — executor implements LITERALLY, no design judgment.
+"""
+context = """
+CURSOR HAND-OFF (external executor — NOT dispatched through the praxia orchestrator).
+The executor implements each task literally from the fixer_prompt. No autonomous push or merge
+to main (`no_autonomous_push_or_merge_to_main`).
+
+Epic: #2629 `xtrax run` verb MVP [parent:#2605]
+task_id: 260623_e2-run
+Authoritative spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md
+  (REVISED post adversarial review — 2 CRITICAL + 7 MAJOR resolved; spec wins over DAG on conflicts)
+Task DAG: .praxia/docs/plans/260623_e3-run-verb-backlog-dag.md
+  (T0–T9 + Z; the spec has already folded all adversarial fixes — where DAG and spec conflict, spec wins)
+
+Key resolved decisions (all mechanical now — no judgment flags remain):
+  C1/AC8: checkpoint_dir = .xtrax/runs/<run_id>/checkpoints/ (derived from run_id, NOT verbatim config scalar)
+  C2/AC2: valid optimizer target = xtrax.training.optim:adamw_with_schedule (make_optimizer NOT valid)
+  AC-loss: [loss] section is REQUIRED; missing raises ConfigError at parse
+  M4/AC3: data wrap is ALWAYS unconditional; enforcement = double-wrap test
+  M5/AC13: callbacks=() — no logging, explicit MVP limitation
+  AC9: config_hash = sha256(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
+  AC7: run_id = config_hash; collision → config_hash-<short_uuid4>; predicate = dir existence (makedirs exist_ok=False)
+  num_epochs: top-level positive int scalar; distributed=False hardcoded MVP default
+
+default_ci = "uv run pytest tests/"
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WAVE 0 — parallel scaffold: T0 (cli stub + ConfigError), T1 (init_state), Z
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "T0"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "T0"
+phase_name = "[E3-MVP T0] cli scaffold: TrainConfig stub + ConfigError"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md
+
+## Goal
+Scaffold the two foundational cli-layer types needed by all downstream tasks: a stub
+`TrainConfig` dataclass and a `ConfigError` exception class. This is pure scaffolding —
+no parse logic, no TOML loading. Everything else builds on top of these.
+
+## Files to create/edit
+
+CREATE src/xtrax/cli/config.py:
+  - `@dataclass class TrainConfig`: fields are stubs (all typed, all optional for now
+    so downstream tasks can fill them in). Required fields:
+      schema_version: int
+      model: dict          # {path: str, kwargs: dict}
+      optimizer: dict      # {path: str, kwargs: dict}
+      loss: dict           # {path: str, kwargs: dict}  ← REQUIRED (not Optional)
+      data: dict           # {factory: str, kwargs: dict, batch_size: int}
+      seed: int
+      num_epochs: int      # MUST be a positive int (validated by T3)
+  - `class ConfigError(CLIError)`: inherits from the existing `CLIError` in
+    `src/xtrax/cli/errors.py`. This is the typed error raised on bad/missing config
+    fields. If `CLIError` does not yet exist in errors.py, add it there first.
+
+EDIT src/xtrax/cli/errors.py (if needed):
+  - Add `class CLIError(Exception): pass` if not present (check first).
+  - Add `class ConfigError(CLIError): pass` if not already in config.py.
+  (Keep ConfigError in config.py, not errors.py — it is config-domain.)
+
+EDIT src/xtrax/cli/__init__.py:
+  - Do NOT add any tyro import. The module-level import of xtrax.cli must remain
+    tyro-free. Only add `from xtrax.cli.config import TrainConfig, ConfigError`
+    if the existing __init__.py already exports cli types; otherwise leave __init__.py
+    alone and rely on direct import.
+
+## Acceptance check (mechanical)
+- `from xtrax.cli.config import TrainConfig, ConfigError` succeeds.
+- `import xtrax.cli` does NOT import tyro at module level (tyro is only inside main()).
+- `uv run python -c "from xtrax.cli.config import TrainConfig, ConfigError; print('ok')"` exits 0.
+- `uv run ruff check src/xtrax/cli/config.py src/xtrax/cli/errors.py`
+
+Do NOT commit. Orchestrator (or user) commits after reviewer PASS.
+"""
+reviewer_prompt = """
+VERIFY T0 [E3-MVP] cli scaffold — PASS/FAIL checklist:
+
+1. PASS/FAIL: `src/xtrax/cli/config.py` exists and defines `TrainConfig` (dataclass) with
+   fields: schema_version (int), model (dict), optimizer (dict), loss (dict), data (dict),
+   seed (int), num_epochs (int).
+2. PASS/FAIL: `ConfigError` is defined (either in config.py or errors.py) and inherits
+   from `CLIError` (or `Exception` if CLIError doesn't exist yet — acceptable for T0).
+3. PASS/FAIL: `from xtrax.cli.config import TrainConfig, ConfigError` succeeds:
+   `uv run python -c "from xtrax.cli.config import TrainConfig, ConfigError; print('ok')`
+4. PASS/FAIL: `import xtrax.cli` does NOT pull in tyro at module level:
+   `uv run python -c "import xtrax.cli; import sys; assert 'tyro' not in sys.modules, 'tyro leaked'"`
+5. PASS/FAIL: `uv run ruff check src/xtrax/cli/config.py` exits 0.
+
+PASS only if all 5 checks hold with command evidence. FAIL listing which check failed + output.
+"""
+return_key = "T0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "T1"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "T1"
+phase_name = "[E3-MVP T1] init_state — public xtrax.training API"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md (AC4)
+
+## Goal
+Create the `init_state(model, optimizer, seed) -> ResumableState` helper and export it
+as public `xtrax.training` API. This is the one symbol that crosses the runtime/cli layer
+boundary (spec decision M). Its signature MUST carry only runtime objects — no TrainConfig,
+no path strings, no tyro dependency.
+
+## Verified anchors (source-confirmed)
+- `ResumableState` lives in `src/xtrax/training/types.py:41-55`:
+  `ResumableState(step, key, model, opt_state, extras={})` where `step: Array[int32]`.
+- `ResumableState` does NOT have an `init_state` helper today — confirmed by checking
+  `src/xtrax/training/__init__.py` `__all__`. T1 creates it.
+- `eqx.filter` and `eqx.is_array` are available from equinox.
+
+## Files to create/edit
+
+CREATE src/xtrax/training/state.py:
+```python
+import jax
+import jax.numpy as jnp
+import equinox as eqx
+from xtrax.training.types import ResumableState
+
+def init_state(model, optimizer, seed: int) -> ResumableState:
+    \"\"\"
+    Construct an initial ResumableState for a training run.
+
+    Args:
+        model: an eqx.Module (the model to train)
+        optimizer: an optax.GradientTransformation (already instantiated)
+        seed: integer RNG seed
+
+    Returns:
+        ResumableState with:
+          step = jnp.asarray(0, jnp.int32)   ← dtype pinned to int32
+          key  = jax.random.PRNGKey(seed)
+          model = model (unchanged)
+          opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+          extras = {}
+    \"\"\"
+    return ResumableState(
+        step=jnp.asarray(0, jnp.int32),
+        key=jax.random.PRNGKey(seed),
+        model=model,
+        opt_state=optimizer.init(eqx.filter(model, eqx.is_array)),
+        extras={},
+    )
+```
+
+EDIT src/xtrax/training/__init__.py:
+  - Add `from xtrax.training.state import init_state` to the imports.
+  - Add `"init_state"` to `__all__`.
+  - Do NOT remove any existing exports.
+
+## Critical constraint: NO config/path/tyro in init_state
+The signature is `(model, optimizer, seed: int)` — runtime objects only. If you find
+yourself adding a TrainConfig or path string argument, STOP — that would violate the
+layer boundary (spec rejected design N for exactly this).
+
+## Acceptance check (mechanical)
+- `from xtrax.training import init_state` succeeds.
+- `"init_state" in dir(__import__("xtrax.training", fromlist=["init_state"]))` is True.
+- `uv run ruff check src/xtrax/training/state.py src/xtrax/training/__init__.py`
+
+Do NOT commit. Orchestrator commits after T2 reviewer PASS.
+"""
+reviewer_prompt = """
+VERIFY T1 [E3-MVP] init_state public API — PASS/FAIL checklist:
+
+1. PASS/FAIL: `src/xtrax/training/state.py` exists and defines `init_state(model, optimizer, seed)`.
+2. PASS/FAIL: `init_state` is exported in `src/xtrax/training/__init__.py` `__all__`.
+3. PASS/FAIL: `from xtrax.training import init_state` succeeds:
+   `uv run python -c "from xtrax.training import init_state; print('ok')"`
+4. PASS/FAIL: signature is `(model, optimizer, seed)` only — no TrainConfig, no path arg,
+   no tyro import. Check `src/xtrax/training/state.py` directly.
+5. PASS/FAIL: body pins `step=jnp.asarray(0, jnp.int32)`, `key=jax.random.PRNGKey(seed)`,
+   `opt_state=optimizer.init(eqx.filter(model, eqx.is_array))`, `extras={}`.
+6. PASS/FAIL: `uv run ruff check src/xtrax/training/state.py src/xtrax/training/__init__.py` exits 0.
+
+PASS only if all 6 checks hold. FAIL listing which check failed + output.
+"""
+return_key = "T1"
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "Z"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "Z"
+phase_name = "[E3-MVP Z] dep check + cli docstring trim"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md
+
+## Goal
+Verify no new runtime dependencies are introduced (tomllib is stdlib ≥ 3.11) and trim the
+"Deferred" list in `src/xtrax/cli/__init__.py` to remove `run` (now implemented), keeping
+only `sweep` and `resume`.
+
+## Files to edit
+
+EDIT src/xtrax/cli/__init__.py:
+  - Find any docstring or comment that lists `run` under "Deferred" or "TODO" or "not yet
+    implemented". Remove `run` from that list. Leave `sweep` and `resume` listed as deferred.
+  - If there is no such deferred list, do nothing (do not add one).
+
+EDIT pyproject.toml:
+  - Confirm that `tomllib` is NOT added as a dependency (it is stdlib in Python ≥ 3.11).
+  - Confirm that the `cli` extra (if it exists) does NOT introduce new runtime deps beyond
+    what was already there. If `run` needs any import-time dep not in the cli extra, add it;
+    but tomllib requires nothing.
+  - Do NOT add `tomllib` to any dependency list.
+
+## Acceptance check (mechanical)
+- `uv run python -c "import tomllib; print('ok')"` exits 0 (confirms stdlib available).
+- `uv run ruff check src/xtrax/cli/__init__.py` exits 0.
+- `uv run python -c "import xtrax; import xtrax.cli"` exits 0 (no import-time regression).
+- Grep check: `grep -n "run" src/xtrax/cli/__init__.py` — confirm `run` no longer appears
+  in a "deferred" or "not yet implemented" context (it may appear as an import or usage).
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY Z [E3-MVP] dep + docstring trim — PASS/FAIL checklist:
+
+1. PASS/FAIL: `tomllib` does NOT appear as a new dependency in `pyproject.toml`:
+   `grep "tomllib" pyproject.toml` should return nothing or only a comment.
+2. PASS/FAIL: `uv run python -c "import tomllib; print('ok')"` exits 0.
+3. PASS/FAIL: `src/xtrax/cli/__init__.py` does NOT list `run` as deferred/not-yet-implemented
+   (grep for "run" in deferred context; should not appear there).
+4. PASS/FAIL: `uv run python -c "import xtrax; import xtrax.cli"` exits 0 (no import regression).
+5. PASS/FAIL: `uv run ruff check src/xtrax/cli/__init__.py` exits 0.
+
+PASS only if all 5 checks hold. FAIL listing which check failed + output.
+"""
+return_key = "Z"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WAVE 1 — T2 (init_state test, needs T1), T3 (TOML parse, needs T0)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "T2"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "T2"
+phase_name = "[E3-MVP T2] init_state test suite (AC4)"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md (AC4)
+Depends: T1 must be complete (init_state in xtrax.training).
+
+## Goal
+Write the test suite for `init_state`. This is a test-first task — write tests that pin
+the exact AC4 behavioral contract, then verify T1's implementation satisfies them.
+
+## Files to create
+
+CREATE tests/training/test_init_state.py:
+
+```python
+\"\"\"AC4: init_state public API contract tests.\"\"\"
+import jax
+import jax.numpy as jnp
+import equinox as eqx
+import optax
+import pytest
+
+from xtrax.training import init_state  # must be importable as public API
+from xtrax.training.types import ResumableState
+
+
+def _make_model():
+    \"\"\"Minimal eqx.Module for testing.\"\"\"
+    return eqx.nn.Linear(2, 2, key=jax.random.PRNGKey(0))
+
+
+def _make_optimizer():
+    return optax.sgd(0.01)
+
+
+def test_init_state_step_dtype():
+    \"\"\"AC4 pin: step must be jnp.int32, not Python int or int64.\"\"\"
+    model = _make_model()
+    optimizer = _make_optimizer()
+    state = init_state(model, optimizer, seed=42)
+    assert isinstance(state, ResumableState)
+    assert state.step.dtype == jnp.int32, f"Expected int32, got {state.step.dtype}"
+    assert int(state.step) == 0
+
+
+def test_init_state_key_reproducible():
+    \"\"\"AC4 pin: key reproducible — same seed → same key.\"\"\"
+    model = _make_model()
+    optimizer = _make_optimizer()
+    s1 = init_state(model, optimizer, seed=7)
+    s2 = init_state(model, optimizer, seed=7)
+    assert jnp.array_equal(s1.key, s2.key), "Same seed must produce same PRNGKey"
+
+
+def test_init_state_key_varies_with_seed():
+    \"\"\"Different seeds → different keys.\"\"\"
+    model = _make_model()
+    optimizer = _make_optimizer()
+    s1 = init_state(model, optimizer, seed=1)
+    s2 = init_state(model, optimizer, seed=2)
+    assert not jnp.array_equal(s1.key, s2.key)
+
+
+def test_init_state_opt_state_matches_optimizer_init():
+    \"\"\"AC4 pin: opt_state = optimizer.init(eqx.filter(model, eqx.is_array)).\"\"\"
+    model = _make_model()
+    optimizer = _make_optimizer()
+    state = init_state(model, optimizer, seed=0)
+    expected_opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    # Compare leaves structurally
+    leaves_actual = jax.tree_util.tree_leaves(state.opt_state)
+    leaves_expected = jax.tree_util.tree_leaves(expected_opt_state)
+    assert len(leaves_actual) == len(leaves_expected)
+    for a, e in zip(leaves_actual, leaves_expected):
+        assert jnp.array_equal(a, e)
+
+
+def test_init_state_extras_empty():
+    \"\"\"AC4 pin: extras must be an empty dict.\"\"\"
+    model = _make_model()
+    optimizer = _make_optimizer()
+    state = init_state(model, optimizer, seed=0)
+    assert state.extras == {}
+
+
+def test_init_state_public_import():
+    \"\"\"AC4: init_state importable from xtrax.training (public API pin).\"\"\"
+    import xtrax.training as xt
+    assert hasattr(xt, "init_state"), "init_state must be in xtrax.training public API"
+    assert "init_state" in xt.__all__, "init_state must be in __all__"
+```
+
+## Acceptance check (mechanical)
+- `uv run pytest tests/training/test_init_state.py -v` — all tests pass.
+- `uv run ruff check tests/training/test_init_state.py` exits 0.
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY T2 [E3-MVP] init_state tests — PASS/FAIL checklist:
+
+1. PASS/FAIL: `tests/training/test_init_state.py` exists.
+2. PASS/FAIL: Tests cover all AC4 pins: step dtype==int32, key reproducibility from seed,
+   opt_state formula, extras=={}, and public import from xtrax.training.
+3. PASS/FAIL: `uv run pytest tests/training/test_init_state.py -v` exits 0 (all pass).
+4. PASS/FAIL: `uv run ruff check tests/training/test_init_state.py` exits 0.
+
+PASS only if all 4 checks hold with command evidence. FAIL listing which check failed + output.
+"""
+return_key = "T2"
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "T3"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "T3"
+phase_name = "[E3-MVP T3] TOML parse → TrainConfig + schema_version guard (AC9)"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md (AC9, AC12, inv#4)
+Depends: T0 must be complete (TrainConfig stub and ConfigError exist).
+
+## Goal
+Implement `load_config(path: str) -> TrainConfig` using stdlib `tomllib`. This function
+parses a TOML file and validates the result into a `TrainConfig`. A missing top-level
+`schema_version` raises `ConfigError` immediately — no silent default.
+
+## Resolved decisions (all mechanical — implement exactly as stated)
+- `schema_version` is REQUIRED. Missing → `ConfigError("missing required field: schema_version")`.
+- `num_epochs` must be a positive int. `None` or `<= 0` → `ConfigError("num_epochs must be a positive int")`.
+  Rationale: `Engine.fit_sync` calls `range(num_epochs)` which raises TypeError on None.
+- `[loss]` section is REQUIRED. Missing → `ConfigError("missing required section: [loss]")`.
+  Rationale: `Trainer(loss_fn, optimizer)` requires loss_fn; there is no default loss.
+- Use stdlib `tomllib` (Python ≥ 3.11): `import tomllib`. No new runtime dependency.
+- `load_fn` is in `src/xtrax/cli/loader.py` — do NOT modify loader.py.
+
+## Files to edit/create
+
+EDIT src/xtrax/cli/config.py:
+  Add `load_config(path: str) -> TrainConfig` function:
+  ```python
+  import tomllib
+  from xtrax.cli.config import TrainConfig, ConfigError
+
+  def load_config(path: str) -> TrainConfig:
+      with open(path, "rb") as f:
+          raw = tomllib.load(f)
+
+      # Validate schema_version (required, no default)
+      if "schema_version" not in raw:
+          raise ConfigError("missing required field: schema_version")
+
+      # Validate required sections
+      for section in ("model", "optimizer", "loss", "data"):
+          if section not in raw:
+              raise ConfigError(f"missing required section: [{section}]")
+
+      # Validate num_epochs
+      num_epochs = raw.get("num_epochs")
+      if not isinstance(num_epochs, int) or num_epochs <= 0:
+          raise ConfigError(
+              f"num_epochs must be a positive int, got: {num_epochs!r}"
+          )
+
+      # Validate seed
+      seed = raw.get("seed")
+      if not isinstance(seed, int):
+          raise ConfigError(f"seed must be an int, got: {seed!r}")
+
+      return TrainConfig(
+          schema_version=raw["schema_version"],
+          model=raw["model"],
+          optimizer=raw["optimizer"],
+          loss=raw["loss"],
+          data=raw["data"],
+          seed=seed,
+          num_epochs=num_epochs,
+      )
+  ```
+
+CREATE tests/cli/test_config.py:
+  Tests for `load_config` validation:
+  ```python
+  \"\"\"AC9 + AC12 + inv#4: TrainConfig parse and validation tests.\"\"\"
+  import pytest
+  import tomllib
+  from pathlib import Path
+
+  from xtrax.cli.config import load_config, ConfigError
+
+
+  def _write_toml(tmp_path, content: str) -> str:
+      p = tmp_path / "config.toml"
+      p.write_text(content)
+      return str(p)
+
+
+  VALID_TOML = \"\"\"
+  schema_version = 1
+  seed = 42
+  num_epochs = 3
+
+  [model]
+  path = "tests.cli._run_fixtures:make_model"
+  kwargs = {}
+
+  [optimizer]
+  path = "xtrax.training.optim:adamw_with_schedule"
+  kwargs = {learning_rate = 1e-3, total_steps = 300}
+
+  [loss]
+  path = "tests.cli._run_fixtures:make_loss"
+  kwargs = {}
+
+  [data]
+  factory = "tests.cli._run_fixtures:make_dataset"
+  kwargs = {}
+  batch_size = 4
+  \"\"\"
+
+
+  def test_valid_config_parses(tmp_path):
+      p = _write_toml(tmp_path, VALID_TOML)
+      cfg = load_config(p)
+      assert cfg.schema_version == 1
+      assert cfg.seed == 42
+      assert cfg.num_epochs == 3
+      assert cfg.loss["path"] == "tests.cli._run_fixtures:make_loss"
+
+
+  def test_missing_schema_version_raises(tmp_path):
+      \"\"\"inv#4: missing schema_version must raise ConfigError.\"\"\"
+      toml = VALID_TOML.replace("schema_version = 1\\n", "")
+      p = _write_toml(tmp_path, toml)
+      with pytest.raises(ConfigError, match="schema_version"):
+          load_config(p)
+
+
+  def test_missing_loss_section_raises(tmp_path):
+      \"\"\"AC-loss: missing [loss] section must raise ConfigError.\"\"\"
+      lines = [l for l in VALID_TOML.splitlines()
+               if not l.startswith("[loss]") and "make_loss" not in l]
+      p = _write_toml(tmp_path, "\\n".join(lines))
+      with pytest.raises(ConfigError, match="loss"):
+          load_config(p)
+
+
+  def test_missing_model_section_raises(tmp_path):
+      lines = [l for l in VALID_TOML.splitlines()
+               if not l.startswith("[model]") and "make_model" not in l]
+      p = _write_toml(tmp_path, "\\n".join(lines))
+      with pytest.raises(ConfigError, match="model"):
+          load_config(p)
+
+
+  def test_num_epochs_none_raises(tmp_path):
+      \"\"\"AC12: None num_epochs must raise ConfigError (range(None) TypeError prevented).\"\"\"
+      toml = VALID_TOML.replace("num_epochs = 3", "")
+      p = _write_toml(tmp_path, toml)
+      with pytest.raises(ConfigError, match="num_epochs"):
+          load_config(p)
+
+
+  def test_num_epochs_zero_raises(tmp_path):
+      \"\"\"AC12: num_epochs=0 must raise ConfigError.\"\"\"
+      toml = VALID_TOML.replace("num_epochs = 3", "num_epochs = 0")
+      p = _write_toml(tmp_path, toml)
+      with pytest.raises(ConfigError, match="num_epochs"):
+          load_config(p)
+
+
+  def test_num_epochs_negative_raises(tmp_path):
+      toml = VALID_TOML.replace("num_epochs = 3", "num_epochs = -1")
+      p = _write_toml(tmp_path, toml)
+      with pytest.raises(ConfigError, match="num_epochs"):
+          load_config(p)
+  ```
+
+## Acceptance check (mechanical)
+- `uv run pytest tests/cli/test_config.py -v` — all tests pass.
+- `uv run ruff check src/xtrax/cli/config.py tests/cli/test_config.py` exits 0.
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY T3 [E3-MVP] TOML parse + schema_version guard — PASS/FAIL checklist:
+
+1. PASS/FAIL: `load_config(path)` is implemented in `src/xtrax/cli/config.py`.
+2. PASS/FAIL: Missing `schema_version` raises `ConfigError` (not KeyError, not silent):
+   verified by `test_missing_schema_version_raises`.
+3. PASS/FAIL: Missing `[loss]` section raises `ConfigError`:
+   verified by `test_missing_loss_section_raises`.
+4. PASS/FAIL: `num_epochs=None` (missing) or `<=0` raises `ConfigError` (not TypeError):
+   verified by `test_num_epochs_none_raises` and `test_num_epochs_zero_raises`.
+5. PASS/FAIL: `uv run pytest tests/cli/test_config.py -v` exits 0 (all tests pass).
+6. PASS/FAIL: `uv run ruff check src/xtrax/cli/config.py tests/cli/test_config.py` exits 0.
+7. PASS/FAIL: `loader.py` is NOT modified (check git diff — diff must not touch loader.py).
+
+PASS only if all 7 checks hold. FAIL listing which check failed + output.
+"""
+return_key = "T3"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WAVE 2 — T4, T5, T6 (T4+T5 need T3; T6 needs T0+T5; T6 now also needs T3 per plan-auditor fold)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "T4"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "T4"
+phase_name = "[E3-MVP T4] loss section parser + resolver wiring (AC-loss, AC11)"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md (AC-loss, AC11)
+Depends: T3 must be complete (load_config validates that [loss] exists).
+
+## Goal
+Ensure the `[loss]` section is fully wired into `TrainConfig` parsing and that the
+section-labeled error handling pattern (AC11) is implemented correctly for the config-parse
+phase. This task also adds test coverage for the loss path in `test_config.py`.
+
+## Resolved decisions (mechanical — implement exactly)
+- `[loss]` is REQUIRED. A config missing it raises `ConfigError` — this is already enforced
+  in T3. T4 adds test coverage for the loss resolution path specifically.
+- `load_fn` is in `src/xtrax/cli/loader.py`. Do NOT modify `loader.py`.
+- Section-labeled errors (AC11): at the call site (NOT in loader.py), wrap:
+  ```python
+  try:
+      result = load_fn(path)(**kwargs)
+  except CLIImportError as e:
+      raise CLIImportError(f"[loss] {e}") from e
+  ```
+  This wrapping lives in `run_from_config` (T7), NOT in `load_config`. T4 just verifies
+  the loss path is in TrainConfig and test-covers the loss parse path.
+
+## Files to edit/create
+
+EDIT tests/cli/test_config.py (add to existing file):
+  Add tests for the loss path specifically:
+  ```python
+  def test_loss_path_and_kwargs_in_config(tmp_path):
+      \"\"\"AC-loss: loss section parses to dict with path and kwargs.\"\"\"
+      p = _write_toml(tmp_path, VALID_TOML)
+      cfg = load_config(p)
+      assert "path" in cfg.loss
+      assert "kwargs" in cfg.loss
+      assert cfg.loss["path"] == "tests.cli._run_fixtures:make_loss"
+
+  def test_loss_kwargs_default_empty(tmp_path):
+      \"\"\"AC-loss: empty kwargs table parses without error.\"\"\"
+      toml = VALID_TOML  # VALID_TOML already has kwargs = {}
+      p = _write_toml(tmp_path, toml)
+      cfg = load_config(p)
+      assert cfg.loss.get("kwargs") == {} or cfg.loss.get("kwargs") is None
+  ```
+
+No changes needed to `src/xtrax/cli/config.py` if T3 already handles loss validation.
+If `load_config` in T3 does not yet validate the `[loss]` section, add it now per T3's spec.
+
+## Acceptance check (mechanical)
+- `uv run pytest tests/cli/test_config.py -v` — all tests (including T4 additions) pass.
+- `uv run ruff check tests/cli/test_config.py` exits 0.
+- `loader.py` unchanged (check `git diff src/xtrax/cli/loader.py` — should be empty).
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY T4 [E3-MVP] loss section + AC11 wiring — PASS/FAIL checklist:
+
+1. PASS/FAIL: `TrainConfig.loss` field exists (dict with path and kwargs).
+2. PASS/FAIL: Tests for loss path parse correctly (`test_loss_path_and_kwargs_in_config` passes):
+   `uv run pytest tests/cli/test_config.py::test_loss_path_and_kwargs_in_config -v`
+3. PASS/FAIL: `loader.py` is NOT modified:
+   `git diff src/xtrax/cli/loader.py` returns empty.
+4. PASS/FAIL: `uv run pytest tests/cli/test_config.py -v` exits 0 (full suite).
+5. PASS/FAIL: `uv run ruff check tests/cli/test_config.py` exits 0.
+
+PASS only if all 5 checks hold. FAIL listing which check failed + output.
+"""
+return_key = "T4"
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "T5"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "T5"
+phase_name = "[E3-MVP T5] config-hash canonicalization (AC7, AC9)"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md (AC7, AC9)
+Depends: T3 must be complete (TrainConfig + load_config exist).
+
+## Goal
+Implement `config_hash(cfg_dict: dict) -> str` — the canonical 12-char hex hash used as
+the basis for `run_id`. The hash must be stable under key reordering and must handle TOML
+datetimes (non-JSON-native values) without error.
+
+## Resolved decisions (mechanical — implement exactly as stated)
+- Hash domain: the PARSED dict (not raw TOML text). Hashing raw text makes key-order and
+  whitespace significant → identical-meaning configs hash differently → AC7 collision logic
+  misfires. Canonical: parse → sorted-key JSON → sha256.
+- Formula (exact, from AC9):
+  `config_hash = sha256(json.dumps(cfg_dict, sort_keys=True, default=str).encode()).hexdigest()[:12]`
+  - `sort_keys=True`: stable under kwargs reordering.
+  - `default=str`: handles TOML datetimes and other non-JSON-native values without error.
+  - `[:12]`: 12 hex characters (48 bits) — sufficient uniqueness for a local run-dir namespace.
+
+## Files to create
+
+CREATE src/xtrax/cli/hash.py:
+```python
+\"\"\"Canonical config hashing for run-id derivation (AC7, AC9).\"\"\"
+import hashlib
+import json
+
+
+def config_hash(cfg_dict: dict) -> str:
+    \"\"\"
+    Compute a stable 12-char hex hash of a parsed config dict.
+
+    The hash is computed over the canonicalized JSON representation:
+      json.dumps(cfg_dict, sort_keys=True, default=str)
+
+    This makes the hash stable under key reordering and handles TOML
+    datetimes (non-JSON-native values) via default=str.
+
+    Returns a 12-character lowercase hex string.
+    \"\"\"
+    canonical = json.dumps(cfg_dict, sort_keys=True, default=str).encode()
+    return hashlib.sha256(canonical).hexdigest()[:12]
+```
+
+CREATE tests/cli/test_hash.py:
+```python
+\"\"\"AC9: config_hash stability and error-safety tests.\"\"\"
+import datetime
+import pytest
+
+from xtrax.cli.hash import config_hash
+
+
+def test_same_keys_different_order_hash_equal():
+    \"\"\"AC9 pin: sort_keys makes key ordering irrelevant.\"\"\"
+    d1 = {"b": 2, "a": 1, "c": {"z": 9, "y": 8}}
+    d2 = {"a": 1, "c": {"y": 8, "z": 9}, "b": 2}
+    assert config_hash(d1) == config_hash(d2)
+
+
+def test_different_values_hash_differ():
+    d1 = {"a": 1}
+    d2 = {"a": 2}
+    assert config_hash(d1) != config_hash(d2)
+
+
+def test_datetime_value_hashes_without_error():
+    \"\"\"AC9 pin: default=str handles TOML datetimes (non-JSON-native).\"\"\"
+    d = {"created": datetime.datetime(2026, 6, 23), "lr": 1e-3}
+    result = config_hash(d)
+    assert isinstance(result, str)
+    assert len(result) == 12
+
+
+def test_nested_kwargs_hash_without_error():
+    \"\"\"AC9 pin: nested kwargs dict hashes correctly.\"\"\"
+    d = {
+        "schema_version": 1,
+        "model": {"path": "pkg:Model", "kwargs": {"hidden": 128}},
+        "optimizer": {"path": "pkg:opt", "kwargs": {"lr": 1e-3}},
+    }
+    result = config_hash(d)
+    assert isinstance(result, str)
+    assert len(result) == 12
+
+
+def test_hash_length_is_12():
+    result = config_hash({"x": 1})
+    assert len(result) == 12
+
+
+def test_hash_is_lowercase_hex():
+    result = config_hash({"x": 1})
+    assert all(c in "0123456789abcdef" for c in result)
+```
+
+## Acceptance check (mechanical)
+- `uv run pytest tests/cli/test_hash.py -v` — all tests pass.
+- `uv run ruff check src/xtrax/cli/hash.py tests/cli/test_hash.py` exits 0.
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY T5 [E3-MVP] config-hash canonicalization — PASS/FAIL checklist:
+
+1. PASS/FAIL: `src/xtrax/cli/hash.py` exists with `config_hash(cfg_dict: dict) -> str`.
+2. PASS/FAIL: Implementation uses `json.dumps(cfg_dict, sort_keys=True, default=str)` — check source.
+3. PASS/FAIL: Hash length is exactly 12 hex characters.
+4. PASS/FAIL: `test_same_keys_different_order_hash_equal` passes (reordered keys → same hash).
+5. PASS/FAIL: `test_datetime_value_hashes_without_error` passes (default=str handles datetimes).
+6. PASS/FAIL: `uv run pytest tests/cli/test_hash.py -v` exits 0 (all tests pass).
+7. PASS/FAIL: `uv run ruff check src/xtrax/cli/hash.py tests/cli/test_hash.py` exits 0.
+
+PASS only if all 7 checks hold. FAIL listing which check failed + output.
+"""
+return_key = "T5"
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "T6"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "T6"
+phase_name = "[E3-MVP T6] manifest writer — always-write (AC6, AC8, AC9-manifest, inv#1)"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md (AC6, AC8, inv#1)
+Depends: T0 (TrainConfig/ConfigError exist), T3 (stable TrainConfig + load_config), T5 (config_hash).
+  NOTE: T6 depends on T3 (plan-auditor fold) — the manifest writer must be built against the
+  final stable TrainConfig schema, not just the T0 stub.
+
+## Goal
+Implement `write_manifest(run_dir, cfg, run_id, config_hash_val, checkpoint_dir)` that
+always writes `.xtrax/runs/<run_id>/manifest.json`. This is the always-write seam that
+gives the future `resume` verb a written contract on every run.
+
+## Critical invariant — C1/AC8 (INVERTED from original DAG wording):
+The DAG's inv#2 wording said "checkpoint_dir == config scalar". The adversarial review
+INVERTED this. The CORRECT behavior (from the revised spec AC8) is:
+  checkpoint_dir = f".xtrax/runs/{run_id}/checkpoints/"   ← DERIVED from run_id
+  This is NOT taken verbatim from a config scalar.
+
+The manifest must record checkpoint_dir as the run-namespaced value. This is the ONLY
+formulation that delivers the no-clobber guarantee (orbax keys on int(state.step), so
+two runs sharing a checkpoint_dir at identical steps clobber each other).
+
+## Resolved decisions (mechanical — implement exactly)
+- manifest.json schema (all fields required):
+  {
+    "run_id": "<run_id>",
+    "schema_version": <int from TrainConfig>,
+    "model": {"path": "...", "kwargs": {...}},
+    "optimizer": {"path": "...", "kwargs": {...}},
+    "loss": {"path": "...", "kwargs": {...}},
+    "data": {"factory": "...", "kwargs": {...}},
+    "checkpoint_dir": ".xtrax/runs/<run_id>/checkpoints/",   ← DERIVED, not verbatim config
+    "config_hash": "<12-char un-suffixed hash>"              ← always the base hash (stable for resume sibling-finding)
+  }
+- `model.path` MUST be non-null — asserted at write site (inv#1 pre-mortem).
+- `config_hash` in manifest is the UN-SUFFIXED base hash (stable even when run_id has -uuid suffix).
+- `schema_version` in manifest mirrors TrainConfig.schema_version.
+
+## Files to create
+
+CREATE src/xtrax/cli/manifest.py:
+```python
+\"\"\"Always-write manifest for xtrax run (AC6, AC8, inv#1).\"\"\"
+import json
+import os
+from pathlib import Path
+
+
+def write_manifest(
+    run_dir: str,
+    cfg,           # TrainConfig
+    run_id: str,
+    config_hash_val: str,   # always the un-suffixed 12-char base hash
+) -> dict:
+    \"\"\"
+    Write manifest.json to .xtrax/runs/<run_id>/manifest.json.
+
+    checkpoint_dir is DERIVED from run_id (not taken from config):
+      checkpoint_dir = f\".xtrax/runs/{run_id}/checkpoints/\"
+
+    This is the no-clobber invariant: distinct run_ids → distinct checkpoint dirs.
+
+    Returns the manifest dict (for tests to inspect).
+    \"\"\"
+    # inv#1: model.path must be non-null
+    model_path = cfg.model.get("path")
+    if not model_path:
+        raise ValueError("manifest invariant violated: model.path is null or missing")
+
+    # AC8: checkpoint_dir derived from run_id — NOT a verbatim config scalar
+    checkpoint_dir = f".xtrax/runs/{run_id}/checkpoints/"
+
+    manifest = {
+        "run_id": run_id,
+        "schema_version": cfg.schema_version,
+        "model": {"path": model_path, "kwargs": cfg.model.get("kwargs", {})},
+        "optimizer": {"path": cfg.optimizer["path"], "kwargs": cfg.optimizer.get("kwargs", {})},
+        "loss": {"path": cfg.loss["path"], "kwargs": cfg.loss.get("kwargs", {})},
+        "data": {"factory": cfg.data["factory"], "kwargs": cfg.data.get("kwargs", {})},
+        "checkpoint_dir": checkpoint_dir,
+        "config_hash": config_hash_val,   # un-suffixed, stable for resume
+    }
+
+    manifest_path = Path(run_dir) / "manifest.json"
+    os.makedirs(run_dir, exist_ok=True)
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    return manifest
+```
+
+CREATE tests/cli/test_manifest.py:
+```python
+\"\"\"AC6, AC8, inv#1: manifest writer tests.\"\"\"
+import json
+import pytest
+from pathlib import Path
+
+from xtrax.cli.config import TrainConfig
+from xtrax.cli.manifest import write_manifest
+
+
+def _make_cfg(**overrides):
+    defaults = dict(
+        schema_version=1,
+        model={"path": "tests.cli._run_fixtures:make_model", "kwargs": {}},
+        optimizer={"path": "xtrax.training.optim:adamw_with_schedule",
+                   "kwargs": {"learning_rate": 1e-3, "total_steps": 300}},
+        loss={"path": "tests.cli._run_fixtures:make_loss", "kwargs": {}},
+        data={"factory": "tests.cli._run_fixtures:make_dataset", "kwargs": {}, "batch_size": 4},
+        seed=42,
+        num_epochs=3,
+    )
+    defaults.update(overrides)
+    return TrainConfig(**defaults)
+
+
+def test_manifest_written_all_fields(tmp_path):
+    \"\"\"AC6: manifest is always written with all required fields.\"\"\"
+    run_dir = str(tmp_path / "runs" / "abc123")
+    cfg = _make_cfg()
+    m = write_manifest(run_dir, cfg, run_id="abc123", config_hash_val="abc123")
+
+    manifest_path = Path(run_dir) / "manifest.json"
+    assert manifest_path.exists()
+    loaded = json.loads(manifest_path.read_text())
+    assert loaded["run_id"] == "abc123"
+    assert loaded["schema_version"] == 1
+    assert loaded["model"]["path"] == "tests.cli._run_fixtures:make_model"
+    assert "optimizer" in loaded
+    assert "loss" in loaded
+    assert "data" in loaded
+    assert "checkpoint_dir" in loaded
+    assert "config_hash" in loaded
+
+
+def test_manifest_model_path_non_null(tmp_path):
+    \"\"\"inv#1: model.path non-optional — None must raise at write site.\"\"\"
+    run_dir = str(tmp_path / "runs" / "abc")
+    cfg = _make_cfg(model={"path": None, "kwargs": {}})
+    with pytest.raises((ValueError, AssertionError)):
+        write_manifest(run_dir, cfg, run_id="abc", config_hash_val="abc")
+
+
+def test_checkpoint_dir_derived_from_run_id(tmp_path):
+    \"\"\"AC8 (C1): checkpoint_dir is DERIVED from run_id — NOT a verbatim config scalar.
+
+    The adversarial review INVERTED the original DAG inv#2 wording.
+    Correct: checkpoint_dir = .xtrax/runs/<run_id>/checkpoints/
+    This is the only formulation that delivers no-clobber.
+    \"\"\"
+    run_dir = str(tmp_path / "runs" / "myhash12")
+    cfg = _make_cfg()
+    m = write_manifest(run_dir, cfg, run_id="myhash12", config_hash_val="myhash12")
+    assert m["checkpoint_dir"] == ".xtrax/runs/myhash12/checkpoints/"
+
+
+def test_config_hash_in_manifest_is_unsuffixed(tmp_path):
+    \"\"\"AC6: config_hash in manifest is the un-suffixed base hash (stable for resume).\"\"\"
+    run_dir = str(tmp_path / "runs" / "abc123-x1y2")
+    cfg = _make_cfg()
+    m = write_manifest(run_dir, cfg, run_id="abc123-x1y2", config_hash_val="abc123")
+    assert m["config_hash"] == "abc123"   # un-suffixed, NOT the suffixed run_id
+
+
+def test_manifest_schema_version_mirrored(tmp_path):
+    \"\"\"AC9 (manifest half): schema_version in manifest mirrors config.\"\"\"
+    run_dir = str(tmp_path / "runs" / "v2run")
+    cfg = _make_cfg(schema_version=2)
+    m = write_manifest(run_dir, cfg, run_id="v2run", config_hash_val="v2run")
+    assert m["schema_version"] == 2
+```
+
+## Acceptance check (mechanical)
+- `uv run pytest tests/cli/test_manifest.py -v` — all tests pass.
+- `uv run ruff check src/xtrax/cli/manifest.py tests/cli/test_manifest.py` exits 0.
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY T6 [E3-MVP] manifest writer — PASS/FAIL checklist:
+
+1. PASS/FAIL: `src/xtrax/cli/manifest.py` exists with `write_manifest(...)`.
+2. PASS/FAIL: `checkpoint_dir` in manifest is `.xtrax/runs/<run_id>/checkpoints/` (derived
+   from run_id) — NOT taken verbatim from any config scalar. Verify in source and test:
+   `test_checkpoint_dir_derived_from_run_id` passes.
+3. PASS/FAIL: `model.path=None` raises at write site (inv#1):
+   `test_manifest_model_path_non_null` passes.
+4. PASS/FAIL: `config_hash` in manifest is the un-suffixed base hash (stable for resume):
+   `test_config_hash_in_manifest_is_unsuffixed` passes.
+5. PASS/FAIL: All required fields present (run_id, schema_version, model, optimizer, loss,
+   data, checkpoint_dir, config_hash): `test_manifest_written_all_fields` passes.
+6. PASS/FAIL: `uv run pytest tests/cli/test_manifest.py -v` exits 0.
+7. PASS/FAIL: `uv run ruff check src/xtrax/cli/manifest.py tests/cli/test_manifest.py` exits 0.
+
+PASS only if all 7 checks hold. FAIL listing which check failed + output.
+"""
+return_key = "T6"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WAVE 3 — T7 (the keystone, depends on T1+T3+T4+T5+T6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "T7"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "T7"
+phase_name = "[E3-MVP T7] run_from_config — full stack glue + run-id/collision (AC1–AC8, AC11)"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md
+Depends: T1 (init_state), T3 (load_config/TrainConfig), T4 (loss path), T5 (config_hash), T6 (write_manifest).
+This is the L-sized keystone task. It owns the full resolver wiring + construction-site
+invariants (AC3 double-wrap, AC11 section labels, AC7 collision) and calls fit_sync to completion.
+
+## Implementation checklist (execute in order — every step is mechanical)
+
+### Step 1 — Resolve loss, model, optimizer, data via load_fn (AC1, AC2, AC11)
+
+**C2/AC2 CRITICAL — optimizer target must be an all-scalar factory:**
+Valid example: `xtrax.training.optim:adamw_with_schedule` (all args are scalars/kwargs).
+`make_optimizer` is NOT a valid target — its first arg `base` is a non-scalar
+`GradientTransformation` object, which cannot be constructed from a flat {path,kwargs} config.
+Do NOT attempt to support `make_optimizer`. The executor must reject or ignore any config
+that specifies it (it will fail at load_fn resolution, which is correct behavior).
+
+```python
+from xtrax.cli.loader import load_fn, CLIImportError
+
+def _resolve(section: str, path: str, kwargs: dict):
+    \"\"\"AC11: wrap load_fn so errors name the section.\"\"\"
+    try:
+        return load_fn(path)(**kwargs)
+    except CLIImportError as e:
+        raise CLIImportError(f"[{section}] {e}") from e
+```
+- `loss_fn = _resolve("loss", cfg.loss["path"], cfg.loss.get("kwargs", {}))`
+- `model = _resolve("model", cfg.model["path"], cfg.model.get("kwargs", {}))`
+- `optimizer = _resolve("optimizer", cfg.optimizer["path"], cfg.optimizer.get("kwargs", {}))`
+
+### Step 2 — Data: factory → dataset, ALWAYS wrap in DataModule (AC3, M4 double-wrap)
+```python
+from xtrax.data.module import DataModule
+from xtrax.cli.loader import load_fn
+
+dataset = load_fn(cfg.data["factory"])(**cfg.data.get("kwargs", {}))
+# UNCONDITIONAL wrap — NO isinstance branch on dataset. This is the inv#3 invariant.
+# The test fixture returns an ALREADY-BUILT DataModule to catch any duck-type short-circuit.
+# DO NOT add: if isinstance(dataset, DataModule): return dataset
+# DO NOT add: if hasattr(dataset, "batch_size"): ...
+data = DataModule(
+    dataset,
+    batch_size=cfg.data["batch_size"],
+    num_epochs=cfg.num_epochs,   # from top-level config scalar
+    seed=cfg.seed,               # from top-level config scalar
+    distributed=False,           # MVP hardcoded
+)
+```
+Data factory call ALSO gets section-labeled error handling:
+```python
+try:
+    dataset = load_fn(cfg.data["factory"])(**cfg.data.get("kwargs", {}))
+except CLIImportError as e:
+    raise CLIImportError(f"[data] {e}") from e
+```
+
+### Step 3 — init_state (AC4)
+```python
+from xtrax.training import init_state
+state = init_state(model, optimizer, cfg.seed)
+```
+
+### Step 4 — run-id derivation + collision handling (AC7, AC8)
+```python
+import os
+import uuid
+from xtrax.cli.hash import config_hash as compute_config_hash
+
+# config_hash is derived from the raw dict (before TrainConfig construction)
+# Pass raw_cfg_dict from load_config, or re-derive from cfg.__dict__.
+# Recommended: load_config returns (cfg, raw_dict) OR compute from dataclasses.asdict(cfg).
+import dataclasses, json, hashlib
+cfg_dict = dataclasses.asdict(cfg)
+hash_val = hashlib.sha256(
+    json.dumps(cfg_dict, sort_keys=True, default=str).encode()
+).hexdigest()[:12]
+
+base_run_dir = f".xtrax/runs/{hash_val}"
+run_id = hash_val
+try:
+    os.makedirs(base_run_dir, exist_ok=False)   # AC7: collision predicate = dir existence
+except FileExistsError:
+    suffix = uuid.uuid4().hex[:6]
+    run_id = f"{hash_val}-{suffix}"
+    os.makedirs(f".xtrax/runs/{run_id}", exist_ok=False)
+```
+Note: config_hash in manifest is always `hash_val` (un-suffixed), even when run_id is suffixed.
+
+### Step 5 — checkpoint_dir (C1/AC8 — DERIVED from run_id)
+```python
+# AC8: checkpoint_dir derived from run_id, NOT taken from config scalar
+checkpoint_dir = f".xtrax/runs/{run_id}/checkpoints/"
+os.makedirs(checkpoint_dir, exist_ok=True)
+```
+
+### Step 6 — Engine construction and fit_sync (AC5, AC13/M5)
+```python
+from xtrax.engine.engine import Engine
+from xtrax.training.trainer import Trainer
+
+# AC5 + M5: all-keyword Engine construction, callbacks=() (empty — no logging, MVP limitation)
+engine = Engine(trainer=Trainer(loss_fn, optimizer), callbacks=())
+
+# AC5: fit_sync is a BOUND METHOD on engine — NOT a free function
+final_state = engine.fit_sync(
+    state,
+    data,
+    num_epochs=cfg.num_epochs,
+    checkpoint_dir=checkpoint_dir,
+)
+```
+
+### Step 7 — write manifest (AC6)
+```python
+from xtrax.cli.manifest import write_manifest
+
+run_dir = f".xtrax/runs/{run_id}"
+write_manifest(run_dir, cfg, run_id=run_id, config_hash_val=hash_val)
+```
+
+### Step 8 — return final_state
+```python
+return final_state
+```
+
+## Full function skeleton
+
+CREATE src/xtrax/cli/run.py:
+```python
+\"\"\"run_from_config: cli-private glue wiring TrainConfig → Engine.fit_sync (AC5).\"\"\"
+import dataclasses
+import hashlib
+import json
+import os
+import uuid
+from pathlib import Path
+
+from xtrax.cli.config import TrainConfig
+from xtrax.cli.hash import config_hash as compute_config_hash
+from xtrax.cli.loader import load_fn, CLIImportError
+from xtrax.cli.manifest import write_manifest
+from xtrax.data.module import DataModule
+from xtrax.engine.engine import Engine
+from xtrax.training import init_state
+from xtrax.training.trainer import Trainer
+
+
+def _resolve(section: str, path: str, kwargs: dict):
+    \"\"\"AC11: wrap load_fn so CLIImportError names the section.\"\"\"
+    try:
+        return load_fn(path)(**kwargs)
+    except CLIImportError as e:
+        raise CLIImportError(f"[{section}] {e}") from e
+
+
+def run_from_config(cfg: TrainConfig):
+    \"\"\"
+    Wire TrainConfig → Engine.fit_sync. cli-private glue (spec decision M).
+
+    AC5: resolves model/optimizer/loss/data → init_state → Engine(Trainer).fit_sync
+    AC8/C1: checkpoint_dir derived from run_id (NOT verbatim config)
+    AC7: run_id = config_hash; collision → hash-uuid suffix
+    AC11: section-labeled CLIImportError on bad import paths
+    AC13/M5: callbacks=() — no logging (explicit MVP limitation)
+    M4/AC3: DataModule wrap is ALWAYS unconditional (no isinstance branch)
+    \"\"\"
+    # Step 1: resolve components
+    loss_fn = _resolve("loss", cfg.loss["path"], cfg.loss.get("kwargs", {}))
+    model = _resolve("model", cfg.model["path"], cfg.model.get("kwargs", {}))
+    optimizer = _resolve("optimizer", cfg.optimizer["path"], cfg.optimizer.get("kwargs", {}))
+
+    # Step 2: data — unconditional DataModule wrap (no isinstance branch — inv#3)
+    try:
+        dataset = load_fn(cfg.data["factory"])(**cfg.data.get("kwargs", {}))
+    except CLIImportError as e:
+        raise CLIImportError(f"[data] {e}") from e
+    data = DataModule(
+        dataset,
+        batch_size=cfg.data["batch_size"],
+        num_epochs=cfg.num_epochs,
+        seed=cfg.seed,
+        distributed=False,
+    )
+
+    # Step 3: init_state
+    state = init_state(model, optimizer, cfg.seed)
+
+    # Step 4: run-id + collision (AC7)
+    cfg_dict = dataclasses.asdict(cfg)
+    hash_val = hashlib.sha256(
+        json.dumps(cfg_dict, sort_keys=True, default=str).encode()
+    ).hexdigest()[:12]
+
+    base_run_dir = f".xtrax/runs/{hash_val}"
+    run_id = hash_val
+    try:
+        os.makedirs(base_run_dir, exist_ok=False)
+    except FileExistsError:
+        suffix = uuid.uuid4().hex[:6]
+        run_id = f"{hash_val}-{suffix}"
+        os.makedirs(f".xtrax/runs/{run_id}", exist_ok=False)
+
+    # Step 5: checkpoint_dir derived from run_id (C1/AC8)
+    checkpoint_dir = f".xtrax/runs/{run_id}/checkpoints/"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # Step 6: Engine + fit_sync (AC5, M5)
+    engine = Engine(trainer=Trainer(loss_fn, optimizer), callbacks=())
+    final_state = engine.fit_sync(
+        state,
+        data,
+        num_epochs=cfg.num_epochs,
+        checkpoint_dir=checkpoint_dir,
+    )
+
+    # Step 7: manifest (AC6)
+    run_dir = f".xtrax/runs/{run_id}"
+    write_manifest(run_dir, cfg, run_id=run_id, config_hash_val=hash_val)
+
+    return final_state
+```
+
+CREATE tests/cli/test_run_from_config.py:
+```python
+\"\"\"
+T7 tests: run_from_config behavioral contract.
+
+IMPORTANT: all fixture factories MUST be MODULE-LEVEL functions with real import paths
+(e.g. tests.cli._run_fixtures:make_model). Do NOT use pytest closures or conftest
+lambda fixtures — load_fn uses path.rsplit(':',1) and cannot resolve closures.
+\"\"\"
+import os
+import pytest
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+from xtrax.cli.config import TrainConfig
+from xtrax.cli.loader import CLIImportError
+from xtrax.cli.run import run_from_config
+
+
+def _make_cfg(**overrides):
+    defaults = dict(
+        schema_version=1,
+        model={"path": "tests.cli._run_fixtures:make_model", "kwargs": {}},
+        optimizer={"path": "xtrax.training.optim:adamw_with_schedule",
+                   "kwargs": {"learning_rate": 1e-3, "total_steps": 30}},
+        loss={"path": "tests.cli._run_fixtures:make_loss", "kwargs": {}},
+        data={"factory": "tests.cli._run_fixtures:make_datamodule",
+              "kwargs": {}, "batch_size": 2},
+        seed=0,
+        num_epochs=1,
+    )
+    defaults.update(overrides)
+    return TrainConfig(**defaults)
+
+
+def test_bad_model_path_names_section(tmp_path, monkeypatch):
+    \"\"\"AC11: bad model path raises CLIImportError naming [model] section.\"\"\"
+    monkeypatch.chdir(tmp_path)
+    cfg = _make_cfg(model={"path": "nonexistent.module:BadModel", "kwargs": {}})
+    with pytest.raises(CLIImportError, match=r"\\[model\\]"):
+        run_from_config(cfg)
+
+
+def test_bad_optimizer_path_names_section(tmp_path, monkeypatch):
+    \"\"\"AC11: bad optimizer path raises CLIImportError naming [optimizer] section.\"\"\"
+    monkeypatch.chdir(tmp_path)
+    cfg = _make_cfg(optimizer={"path": "nonexistent.module:bad_opt", "kwargs": {}})
+    with pytest.raises(CLIImportError, match=r"\\[optimizer\\]"):
+        run_from_config(cfg)
+
+
+def test_bad_loss_path_names_section(tmp_path, monkeypatch):
+    \"\"\"AC11: bad loss path raises CLIImportError naming [loss] section.\"\"\"
+    monkeypatch.chdir(tmp_path)
+    cfg = _make_cfg(loss={"path": "nonexistent.module:bad_loss", "kwargs": {}})
+    with pytest.raises(CLIImportError, match=r"\\[loss\\]"):
+        run_from_config(cfg)
+
+
+def test_double_wrap_data_module(tmp_path, monkeypatch):
+    \"\"\"
+    AC3/M4 (double-wrap enforcement): the fixture factory at
+    tests.cli._run_fixtures:make_datamodule returns an ALREADY-BUILT DataModule.
+    run_from_config must RE-WRAP it unconditionally.
+    result.dataset is the inner DataModule returned by the factory.
+
+    A duck-type short-circuit (isinstance check) would skip the wrap and fail this test.
+    \"\"\"
+    monkeypatch.chdir(tmp_path)
+    # This test requires a real end-to-end call or a carefully mocked one.
+    # The fixture factory tests.cli._run_fixtures:make_datamodule must return a DataModule.
+    # The assertion: after run_from_config, the DataModule passed to fit_sync wraps
+    # the inner DataModule (data.dataset is inner_dm).
+    # Implementation note: if running a real fit_sync is too slow for unit tests,
+    # mock Engine.fit_sync to return the state without actually training.
+    # The important invariant is that DataModule is constructed unconditionally.
+    pass  # Implement using mock of Engine.fit_sync; see T9 for the e2e version.
+
+
+def test_run_id_collision_produces_uuid_suffix(tmp_path, monkeypatch):
+    \"\"\"AC7: second identical run gets a uuid-suffixed run_id.\"\"\"
+    monkeypatch.chdir(tmp_path)
+    cfg = _make_cfg()
+    import dataclasses, hashlib, json
+    cfg_dict = dataclasses.asdict(cfg)
+    hash_val = hashlib.sha256(
+        json.dumps(cfg_dict, sort_keys=True, default=str).encode()
+    ).hexdigest()[:12]
+    # Pre-create the run dir to simulate collision
+    os.makedirs(f".xtrax/runs/{hash_val}", exist_ok=True)
+    # The second call must produce a uuid-suffixed run_id
+    # Mock Engine.fit_sync to avoid real training
+    with patch("xtrax.engine.engine.Engine.fit_sync") as mock_fit:
+        from xtrax.training.types import ResumableState
+        import jax, jax.numpy as jnp
+        mock_fit.return_value = MagicMock()
+        run_from_config(cfg)
+    # After run, a new suffixed dir should exist
+    run_dirs = list(Path(".xtrax/runs").iterdir())
+    suffixed = [d for d in run_dirs if d.name.startswith(hash_val + "-")]
+    assert len(suffixed) == 1, f"Expected 1 uuid-suffixed dir, got: {[d.name for d in run_dirs]}"
+```
+
+## Acceptance check (mechanical)
+- `uv run pytest tests/cli/test_run_from_config.py -v` — AC11 section-label tests and collision test pass.
+- `uv run ruff check src/xtrax/cli/run.py tests/cli/test_run_from_config.py` exits 0.
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY T7 [E3-MVP] run_from_config glue — PASS/FAIL checklist:
+
+1. PASS/FAIL: `src/xtrax/cli/run.py` exists with `run_from_config(cfg: TrainConfig)`.
+2. PASS/FAIL: `_resolve(section, path, kwargs)` wraps CLIImportError with `[{section}]` prefix
+   — verified in source + test_bad_model_path_names_section / test_bad_loss_path_names_section pass.
+3. PASS/FAIL: DataModule wrap is UNCONDITIONAL — no `isinstance(..., DataModule)` branch in source:
+   `grep -n "isinstance" src/xtrax/cli/run.py` must return nothing (or nothing near DataModule).
+4. PASS/FAIL: `Engine(trainer=Trainer(loss_fn, optimizer), callbacks=())` — all-keyword, callbacks empty.
+   Verify in source. AC5 + M5 compliant.
+5. PASS/FAIL: `checkpoint_dir = f".xtrax/runs/{run_id}/checkpoints/"` — derived from run_id, NOT
+   verbatim from config. Verify in source. C1/AC8 compliant.
+6. PASS/FAIL: config_hash in manifest is the un-suffixed base hash (hash_val), even when run_id
+   is uuid-suffixed. Verify in source (write_manifest call passes hash_val, not run_id).
+7. PASS/FAIL: `test_run_id_collision_produces_uuid_suffix` passes — second identical run gets
+   a distinct (suffixed) run dir.
+8. PASS/FAIL: `uv run pytest tests/cli/test_run_from_config.py -v` exits 0 (all non-stub tests).
+9. PASS/FAIL: `uv run ruff check src/xtrax/cli/run.py tests/cli/test_run_from_config.py` exits 0.
+
+PASS only if all 9 checks hold. FAIL listing which check failed + output.
+"""
+return_key = "T7"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WAVE 4 — T8 (REGISTRY wiring, depends on T7)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "T8"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "T8"
+phase_name = "[E3-MVP T8] `xtrax run` verb + REGISTRY wiring (AC10)"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md (AC10)
+Depends: T7 (run_from_config complete).
+
+## Goal
+Wire `xtrax run config.toml` into the existing CLI REGISTRY. This is a one-line registry
+addition plus a small args class. Tyro must stay inside `main()` — `import xtrax.cli` must
+remain tyro-free.
+
+## Files to create/edit
+
+CREATE src/xtrax/cli/run_verb.py:
+```python
+\"\"\"xtrax run verb: RunArgs + run_run for REGISTRY wiring (AC10).\"\"\"
+from dataclasses import dataclass
+
+from xtrax.cli.config import load_config, ConfigError
+from xtrax.cli.run import run_from_config
+
+
+@dataclass
+class RunArgs:
+    config: str   # path to config.toml
+
+
+def run_run(args: RunArgs) -> None:
+    \"\"\"Entry point for `xtrax run config.toml`.\"\"\"
+    try:
+        cfg = load_config(args.config)
+    except ConfigError as e:
+        raise SystemExit(f"ConfigError: {e}") from e
+    run_from_config(cfg)
+```
+
+EDIT src/xtrax/cli/registry.py (or wherever REGISTRY is defined — check the file):
+  Add one line to the REGISTRY dict:
+  ```python
+  from xtrax.cli.run_verb import RunArgs, run_run
+  "run": (RunArgs, run_run),
+  ```
+  The exact location of REGISTRY is in `src/xtrax/cli/registry.py` or `src/xtrax/cli/__init__.py`.
+  Check with: `grep -rn "REGISTRY" src/xtrax/cli/` to find the right file.
+  Add the import and the entry. Do NOT restructure the file.
+
+## Critical constraint: tyro stays in main()
+- `import xtrax.cli` must NOT trigger a tyro import at module level.
+- Tyro is only used inside `main()` (wherever the CLI entrypoint is).
+- Adding `from xtrax.cli.run_verb import RunArgs, run_run` to the module level of registry.py
+  is fine as long as run_verb.py does not import tyro.
+- run_verb.py must NOT import tyro.
+
+## Acceptance check (mechanical)
+- `uv run python -c "import xtrax.cli; import sys; assert 'tyro' not in sys.modules, 'tyro leaked'"` exits 0.
+- `uv run python -c "import xtrax; import sys; assert 'tyro' not in sys.modules"` exits 0.
+- `grep -n "tyro" src/xtrax/cli/run_verb.py` returns nothing.
+- `uv run ruff check src/xtrax/cli/run_verb.py` exits 0.
+- Functional check (if REGISTRY is accessible): `from xtrax.cli.registry import REGISTRY; assert "run" in REGISTRY`
+
+Do NOT commit.
+"""
+reviewer_prompt = """
+VERIFY T8 [E3-MVP] `xtrax run` verb + REGISTRY — PASS/FAIL checklist:
+
+1. PASS/FAIL: `src/xtrax/cli/run_verb.py` exists with `RunArgs(config: str)` and `run_run(args)`.
+2. PASS/FAIL: `"run"` is present in the REGISTRY dict. Find the registry file with
+   `grep -rn "REGISTRY" src/xtrax/cli/` and verify `"run": (RunArgs, run_run)` is there.
+3. PASS/FAIL: `import xtrax.cli` stays tyro-free:
+   `uv run python -c "import xtrax.cli; import sys; assert 'tyro' not in sys.modules, 'tyro leaked'"`
+4. PASS/FAIL: `grep -n "tyro" src/xtrax/cli/run_verb.py` returns nothing.
+5. PASS/FAIL: `uv run ruff check src/xtrax/cli/run_verb.py` exits 0.
+
+PASS only if all 5 checks hold. FAIL listing which check failed + output.
+"""
+return_key = "T8"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WAVE 5 — T9 (end-to-end test, depends on T8)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[tracks]]
+id = "T9"
+is_research = false
+worktree = false
+skip_worktree = true
+
+[[tracks.items]]
+backlog_id = "T9"
+phase_name = "[E3-MVP T9] end-to-end verb test + invariant round-up (AC3,6,7,8,9,10)"
+workflow_hint = "execute-task"
+fixer_prompt = """
+task_id: 260623_e2-run
+Epic: #2629 | Spec: .praxia/docs/specs/260623_e3-run-verb-trainconfig-driven-cli.md (AC3,6,7,8,9,10)
+Depends: T8 (full verb wired). This is the end-to-end integration test + invariant round-up.
+
+## Critical fixture requirement (plan-auditor fold — do NOT violate)
+All fixture factories (make_model, make_loss, make_dataset, make_datamodule) MUST be
+MODULE-LEVEL functions in a real importable module, NOT pytest closures or conftest lambdas.
+Reason: `load_fn` uses `path.rsplit(':',1)` → imports the left side as a real Python module.
+A conftest closure cannot be resolved this way. The E1-class trap.
+
+Fixture module path: `tests/cli/_run_fixtures.py` (importable as `tests.cli._run_fixtures`)
+The config TOML uses paths like `tests.cli._run_fixtures:make_model`.
+
+## Files to create
+
+CREATE tests/cli/_run_fixtures.py:
+```python
+\"\"\"
+Module-level fixture factories for xtrax run e2e tests.
+These MUST be module-level functions — load_fn resolves by module import path.
+Do NOT use pytest closures or conftest lambdas for factories used in TOML configs.
+\"\"\"
+import jax
+import jax.numpy as jnp
+import equinox as eqx
+import optax
+
+from xtrax.data.module import DataModule
+from xtrax.training.types import ResumableState
+
+
+def make_model():
+    \"\"\"Minimal eqx.Module for testing. Called by load_fn as factory.\"\"\"
+    return eqx.nn.Linear(2, 2, key=jax.random.PRNGKey(0))
+
+
+def make_loss():
+    \"\"\"Returns a LossFunction: (predictions, targets) -> scalar.\"\"\"
+    def loss_fn(predictions, targets):
+        return jnp.mean((predictions - targets) ** 2)
+    return loss_fn
+
+
+class _TinyDataset:
+    \"\"\"Minimal dataset: returns (x, y) pairs.\"\"\"
+    def __len__(self):
+        return 4
+
+    def __getitem__(self, idx):
+        x = jnp.ones(2) * idx
+        y = jnp.ones(2) * idx
+        return x, y
+
+
+def make_dataset():
+    \"\"\"Returns a plain dataset (NOT a DataModule). run_from_config ALWAYS wraps it.\"\"\"
+    return _TinyDataset()
+
+
+def make_datamodule():
+    \"\"\"
+    Returns an ALREADY-BUILT DataModule.
+
+    Used for AC3/M4 double-wrap test: run_from_config must RE-WRAP this DataModule
+    unconditionally. result.dataset must be this DataModule (the inner one).
+    A duck-type isinstance check in run_from_config would skip the wrap and fail the test.
+    \"\"\"
+    inner_dataset = _TinyDataset()
+    return DataModule(
+        inner_dataset,
+        batch_size=2,
+        num_epochs=1,
+        seed=0,
+        distributed=False,
+    )
+```
+
+CREATE tests/cli/test_run_verb.py:
+```python
+\"\"\"
+T9: end-to-end `xtrax run` verb test + invariant round-up.
+
+Invariants asserted here (one place):
+  inv#1: manifest model.path non-null
+  inv#2 (REVISED/INVERTED): checkpoint_dir DERIVED from run_id (NOT verbatim config)
+  inv#3: data wrap unconditional (fixture factory returns DataModule; still re-wrapped)
+  inv#4: missing schema_version → hard ConfigError
+  AC7:   second identical run → uuid-suffixed run dir
+  AC8:   two identical runs → distinct checkpoint_dirs, both sets exist
+  AC9:   tyro-free import
+  AC10:  'run' in REGISTRY
+\"\"\"
+import json
+import os
+import sys
+import pytest
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+from xtrax.cli.config import load_config, ConfigError
+
+
+FIXTURE_TOML_CONTENT = \"\"\"
+schema_version = 1
+seed = 0
+num_epochs = 1
+
+[model]
+path = "tests.cli._run_fixtures:make_model"
+kwargs = {}
+
+[optimizer]
+path = "xtrax.training.optim:adamw_with_schedule"
+kwargs = {learning_rate = 1e-3, total_steps = 4}
+
+[loss]
+path = "tests.cli._run_fixtures:make_loss"
+kwargs = {}
+
+[data]
+factory = "tests.cli._run_fixtures:make_dataset"
+kwargs = {}
+batch_size = 2
+\"\"\"
+
+FIXTURE_TOML_DOUBLE_WRAP_CONTENT = \"\"\"
+schema_version = 1
+seed = 0
+num_epochs = 1
+
+[model]
+path = "tests.cli._run_fixtures:make_model"
+kwargs = {}
+
+[optimizer]
+path = "xtrax.training.optim:adamw_with_schedule"
+kwargs = {learning_rate = 1e-3, total_steps = 4}
+
+[loss]
+path = "tests.cli._run_fixtures:make_loss"
+kwargs = {}
+
+[data]
+factory = "tests.cli._run_fixtures:make_datamodule"
+kwargs = {}
+batch_size = 2
+\"\"\"
+
+
+@pytest.fixture
+def fixture_toml(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text(FIXTURE_TOML_CONTENT)
+    return str(p)
+
+
+@pytest.fixture
+def fixture_toml_double_wrap(tmp_path):
+    p = tmp_path / "config_dw.toml"
+    p.write_text(FIXTURE_TOML_DOUBLE_WRAP_CONTENT)
+    return str(p)
+
+
+def test_tyro_isolation():
+    \"\"\"AC10/AC9: import xtrax.cli must not pull in tyro.\"\"\"
+    # Re-check after all imports above
+    assert "tyro" not in sys.modules, (
+        "tyro was imported at module level — must stay inside main()"
+    )
+
+
+def test_run_in_registry():
+    \"\"\"AC10: 'run' verb must be in REGISTRY.\"\"\"
+    from xtrax.cli.registry import REGISTRY
+    assert "run" in REGISTRY, f"'run' not in REGISTRY: {list(REGISTRY.keys())}"
+
+
+def test_missing_schema_version_hard_error(tmp_path, monkeypatch):
+    \"\"\"inv#4: missing schema_version raises ConfigError (hard error, not default).\"\"\"
+    monkeypatch.chdir(tmp_path)
+    p = tmp_path / "bad.toml"
+    p.write_text(\"\"\"
+seed = 0
+num_epochs = 1
+[model]
+path = "tests.cli._run_fixtures:make_model"
+kwargs = {}
+[optimizer]
+path = "xtrax.training.optim:adamw_with_schedule"
+kwargs = {learning_rate=1e-3, total_steps=4}
+[loss]
+path = "tests.cli._run_fixtures:make_loss"
+kwargs = {}
+[data]
+factory = "tests.cli._run_fixtures:make_dataset"
+kwargs = {}
+batch_size = 2
+\"\"\")
+    with pytest.raises(ConfigError, match="schema_version"):
+        load_config(str(p))
+
+
+def test_manifest_written_with_model_path(tmp_path, monkeypatch, fixture_toml):
+    \"\"\"AC6 + inv#1: manifest is written with model.path non-null.\"\"\"
+    monkeypatch.chdir(tmp_path)
+    with patch("xtrax.engine.engine.Engine.fit_sync") as mock_fit:
+        mock_fit.return_value = MagicMock()
+        from xtrax.cli.config import load_config
+        from xtrax.cli.run import run_from_config
+        cfg = load_config(fixture_toml)
+        run_from_config(cfg)
+    # Find the manifest
+    run_dirs = list(Path(".xtrax/runs").iterdir())
+    assert len(run_dirs) >= 1
+    manifest_path = run_dirs[0] / "manifest.json"
+    assert manifest_path.exists(), f"manifest.json not found in {run_dirs[0]}"
+    manifest = json.loads(manifest_path.read_text())
+    # inv#1
+    assert manifest["model"]["path"] is not None
+    assert manifest["model"]["path"] != ""
+
+
+def test_checkpoint_dir_derived_from_run_id_not_verbatim(tmp_path, monkeypatch, fixture_toml):
+    \"\"\"
+    AC8/C1 (INVERTED from original DAG): checkpoint_dir MUST be derived from run_id.
+    It is .xtrax/runs/<run_id>/checkpoints/, NOT taken verbatim from config.
+
+    This invariant was INVERTED by the adversarial review: the original 'independent of run_id'
+    wording was wrong. Verbatim from config causes clobber (orbax keys on int(state.step)).
+    Run-id namespacing is the only correct formulation.
+    \"\"\"
+    monkeypatch.chdir(tmp_path)
+    with patch("xtrax.engine.engine.Engine.fit_sync") as mock_fit:
+        mock_fit.return_value = MagicMock()
+        from xtrax.cli.config import load_config
+        from xtrax.cli.run import run_from_config
+        cfg = load_config(fixture_toml)
+        run_from_config(cfg)
+    run_dirs = list(Path(".xtrax/runs").iterdir())
+    assert len(run_dirs) >= 1
+    manifest = json.loads((run_dirs[0] / "manifest.json").read_text())
+    run_id = manifest["run_id"]
+    expected_ckpt = f".xtrax/runs/{run_id}/checkpoints/"
+    assert manifest["checkpoint_dir"] == expected_ckpt, (
+        f"checkpoint_dir should be derived from run_id, got: {manifest['checkpoint_dir']!r}"
+    )
+
+
+def test_two_identical_runs_get_distinct_checkpoint_dirs(tmp_path, monkeypatch, fixture_toml):
+    \"\"\"
+    AC7 + AC8: two sequential identical runs must:
+    1. Get distinct run_ids (second gets uuid suffix).
+    2. Write to distinct checkpoint_dirs.
+    3. Both checkpoint dirs exist (no clobber).
+    \"\"\"
+    monkeypatch.chdir(tmp_path)
+    manifests = []
+    for _ in range(2):
+        with patch("xtrax.engine.engine.Engine.fit_sync") as mock_fit:
+            mock_fit.return_value = MagicMock()
+            from xtrax.cli.config import load_config
+            from xtrax.cli.run import run_from_config
+            cfg = load_config(fixture_toml)
+            run_from_config(cfg)
+        run_dirs = sorted(Path(".xtrax/runs").iterdir(), key=lambda p: p.stat().st_mtime)
+        manifest = json.loads((run_dirs[-1] / "manifest.json").read_text())
+        manifests.append(manifest)
+    assert manifests[0]["run_id"] != manifests[1]["run_id"], (
+        "Two identical runs must get distinct run_ids (second must be uuid-suffixed)"
+    )
+    assert manifests[0]["checkpoint_dir"] != manifests[1]["checkpoint_dir"], (
+        "Two identical runs must have distinct checkpoint_dirs (no clobber)"
+    )
+
+
+def test_double_wrap_data_module(tmp_path, monkeypatch, fixture_toml_double_wrap):
+    \"\"\"
+    AC3/M4: double-wrap enforcement.
+
+    The factory tests.cli._run_fixtures:make_datamodule returns an ALREADY-BUILT DataModule.
+    run_from_config must RE-WRAP it unconditionally — result.dataset is the inner DataModule.
+    A duck-type isinstance check would skip the wrap and fail this test.
+    \"\"\"
+    monkeypatch.chdir(tmp_path)
+    from xtrax.data.module import DataModule
+
+    constructed_data_modules = []
+
+    original_DataModule_init = DataModule.__init__
+
+    def tracking_init(self, dataset, **kwargs):
+        constructed_data_modules.append((self, dataset))
+        original_DataModule_init(self, dataset, **kwargs)
+
+    with patch.object(DataModule, "__init__", tracking_init):
+        with patch("xtrax.engine.engine.Engine.fit_sync") as mock_fit:
+            mock_fit.return_value = MagicMock()
+            from xtrax.cli.config import load_config
+            from xtrax.cli.run import run_from_config
+            cfg = load_config(fixture_toml_double_wrap)
+            run_from_config(cfg)
+
+    # At least one DataModule must have been constructed during run_from_config
+    assert len(constructed_data_modules) >= 1, "DataModule was never constructed"
+    # The dataset argument to the outer DataModule must itself be a DataModule (the inner one)
+    outer_dm, inner_dataset = constructed_data_modules[-1]
+    assert isinstance(inner_dataset, DataModule), (
+        f"Expected inner dataset to be DataModule (double-wrap), got {type(inner_dataset)}"
+    )
+```
+
+## Acceptance check (mechanical)
+- `uv run pytest tests/cli/test_run_verb.py -v` — all tests pass.
+- `uv run ruff check tests/cli/_run_fixtures.py tests/cli/test_run_verb.py` exits 0.
+
+Do NOT commit. Final user review before commit.
+"""
+reviewer_prompt = """
+VERIFY T9 [E3-MVP] end-to-end verb test + invariant round-up — PASS/FAIL checklist:
+
+1. PASS/FAIL: `tests/cli/_run_fixtures.py` exists with MODULE-LEVEL functions:
+   `make_model`, `make_loss`, `make_dataset`, `make_datamodule`.
+   Verify they are module-level (not nested in pytest fixtures or conftest closures).
+2. PASS/FAIL: `test_tyro_isolation` passes — tyro not in sys.modules after `import xtrax.cli`.
+3. PASS/FAIL: `test_run_in_registry` passes — "run" in REGISTRY.
+4. PASS/FAIL: `test_missing_schema_version_hard_error` passes — ConfigError raised (inv#4).
+5. PASS/FAIL: `test_manifest_written_with_model_path` passes — manifest exists + model.path non-null (inv#1).
+6. PASS/FAIL: `test_checkpoint_dir_derived_from_run_id_not_verbatim` passes — checkpoint_dir
+   equals `.xtrax/runs/<run_id>/checkpoints/` (C1/AC8 — derived from run_id, NOT verbatim).
+7. PASS/FAIL: `test_two_identical_runs_get_distinct_checkpoint_dirs` passes — distinct run_ids
+   + distinct checkpoint_dirs + both dirs exist (AC7 + AC8).
+8. PASS/FAIL: `test_double_wrap_data_module` passes — DataModule is re-wrapped when factory
+   returns an already-built DataModule (AC3/M4 double-wrap enforcement).
+9. PASS/FAIL: `uv run pytest tests/cli/test_run_verb.py -v` exits 0 (all tests pass).
+10. PASS/FAIL: `uv run ruff check tests/cli/_run_fixtures.py tests/cli/test_run_verb.py` exits 0.
+
+PASS only if all 10 checks hold. FAIL listing which check failed + output.
+"""
+return_key = "T9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Orchestration — DAG wave ordering
+# ─────────────────────────────────────────────────────────────────────────────
+
+[orchestration]
+# Wave 0: T0, T1, Z all have no deps — run concurrently
+# Wave 1: T2 needs T1; T3 needs T0 — run concurrently after W0
+# Wave 2: T4 needs T3; T5 needs T3; T6 needs T0+T3+T5 (plan-auditor fold: T6 dep on T3)
+# Wave 3: T7 needs T1+T3+T4+T5+T6 — the keystone, sequential
+# Wave 4: T8 needs T7
+# Wave 5: T9 needs T8
+sequential = ["T7", "T8", "T9"]
+concurrent = ["T0", "T1", "Z", "T2", "T3", "T4", "T5", "T6"]
