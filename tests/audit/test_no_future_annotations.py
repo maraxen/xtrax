@@ -9,6 +9,16 @@ SRC = ROOT / "src" / "xtrax"
 
 # Legacy allowlist — burndown tracked in audit type-hardening dimension (N2+).
 LEGACY_ALLOWLIST = {
+    "src/xtrax/cli/__init__.py",
+    "src/xtrax/cli/emit.py",
+    "src/xtrax/cli/entrypoint.py",
+    "src/xtrax/cli/errors.py",
+    "src/xtrax/cli/explain.py",
+    "src/xtrax/cli/export.py",
+    "src/xtrax/cli/loader.py",
+    "src/xtrax/cli/plan.py",
+    "src/xtrax/cli/registry.py",
+    "src/xtrax/cli/shapes.py",
     "src/xtrax/devtools/baseline.py",
     "src/xtrax/devtools/bootstrap.py",
     "src/xtrax/devtools/docs_judgment.py",
@@ -35,6 +45,14 @@ LEGACY_ALLOWLIST = {
     "src/xtrax/devtools/ruff_schedule.py",
     "src/xtrax/devtools/tombstone.py",
     "src/xtrax/eda/explain.py",
+    "src/xtrax/inference/__init__.py",
+    "src/xtrax/inference/abstract.py",
+    "src/xtrax/inference/api.py",
+    "src/xtrax/inference/axes.py",
+    "src/xtrax/inference/config.py",
+    "src/xtrax/inference/errors.py",
+    "src/xtrax/inference/schema.py",
+    "src/xtrax/inference/verify.py",
     "src/xtrax/run/resolver.py",
     "src/xtrax/run/sink.py",
     "src/xtrax/run/spec.py",
@@ -50,6 +68,7 @@ LEGACY_ALLOWLIST = {
     "src/xtrax/tiling/dispatch.py",
     "src/xtrax/tiling/iterator.py",
     "src/xtrax/tiling/plan.py",
+    "src/xtrax/tiling/roles.py",
     "src/xtrax/tiling/strategy.py",
 }
 

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from xtrax.tiling.dedup import DedupSpec, get_k_bucket
+from xtrax.tiling.dedup import DedupSpec, get_k_bucket, validate_dedup_carry_names
 
 
 class TestGetKBucket:
@@ -107,3 +107,74 @@ class TestDedupSpec:
         )
         with pytest.raises(Exception):  # frozen dataclass raises FrozenInstanceError
             spec.k = 4  # type: ignore
+
+    def test_dedup_spec_index_map_out_of_range_raises(self) -> None:
+        """DedupSpec with index_map values outside [0, k) should raise ValueError."""
+        unique_indices = np.array([0, 1, 2])
+        # index_map has values [5, 10, 15], all out of range [0, 3)
+        index_map = np.array([5, 10, 15])
+        with pytest.raises(ValueError, match="must be in"):
+            DedupSpec(
+                axis_name="batch",
+                unique_indices=unique_indices,
+                index_map=index_map,
+                k=3,
+            )
+
+    def test_dedup_spec_index_map_negative_raises(self) -> None:
+        """DedupSpec with negative index_map values should raise ValueError."""
+        unique_indices = np.array([0, 1, 2])
+        index_map = np.array([-1, 0, 1])
+        with pytest.raises(ValueError, match="must be in"):
+            DedupSpec(
+                axis_name="batch",
+                unique_indices=unique_indices,
+                index_map=index_map,
+                k=3,
+            )
+
+
+class TestValidateDedupCarryNames:
+    """Test validate_dedup_carry_names function."""
+
+    def test_validate_matching_names(self) -> None:
+        """validate_dedup_carry_names should not raise for matching axis names."""
+        spec = DedupSpec(
+            axis_name="batch",
+            unique_indices=np.array([0, 1]),
+            index_map=np.array([0, 1]),
+            k=2,
+        )
+
+        class MockCarrySpec:
+            axis_name = "batch"
+
+        # Should not raise
+        validate_dedup_carry_names(spec, MockCarrySpec())
+
+    def test_validate_mismatched_names_raises(self) -> None:
+        """validate_dedup_carry_names should raise for mismatched axis names."""
+        spec = DedupSpec(
+            axis_name="batch",
+            unique_indices=np.array([0, 1]),
+            index_map=np.array([0, 1]),
+            k=2,
+        )
+
+        class MockCarrySpec:
+            axis_name = "sequence"
+
+        with pytest.raises(ValueError, match="axis_name"):
+            validate_dedup_carry_names(spec, MockCarrySpec())
+
+    def test_validate_missing_axis_name_raises(self) -> None:
+        """validate_dedup_carry_names should raise if carry_spec has no axis_name."""
+        spec = DedupSpec(
+            axis_name="batch",
+            unique_indices=np.array([0, 1]),
+            index_map=np.array([0, 1]),
+            k=2,
+        )
+
+        with pytest.raises(ValueError, match="axis_name"):
+            validate_dedup_carry_names(spec, {})

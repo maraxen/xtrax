@@ -81,6 +81,13 @@ class DedupSpec:
                 f"DedupSpec index_map references {n_unique_in_map} distinct slots "
                 f"but k={self.k}. They must match.",
             )
+        # Validate index_map values are in [0, k)
+        idx_arr = np.asarray(self.index_map)
+        if idx_arr.size > 0 and (idx_arr.min() < 0 or idx_arr.max() >= self.k):
+            raise ValueError(
+                f"DedupSpec.index_map values must be in [0, k={self.k}), "
+                f"got range [{idx_arr.min()}, {idx_arr.max()}]"
+            )
 
     def to_dedup_gather(self) -> DedupGather:
         """Pad unique_indices to k_bucket and return a DedupGather strategy.
@@ -111,4 +118,27 @@ class DedupSpec:
         )
 
 
-__all__ = ["DedupSpec", "get_k_bucket"]
+def validate_dedup_carry_names(dedup_spec: DedupSpec, carry_spec: object) -> None:
+    """Validate that DedupSpec and CarrySpec have matching axis_name.
+
+    Args:
+        dedup_spec: DedupSpec instance.
+        carry_spec: CarrySpec instance (typed as object to avoid circular import).
+
+    Raises:
+        ValueError: If axis names do not match.
+    """
+    if not hasattr(carry_spec, "axis_name"):
+        raise ValueError(
+            f"carry_spec must have axis_name attribute, got {type(carry_spec).__name__}"
+        )
+    dedup_axis = dedup_spec.axis_name
+    carry_axis = getattr(carry_spec, "axis_name")
+    if dedup_axis != carry_axis:
+        raise ValueError(
+            f"DedupSpec.axis_name={dedup_axis!r} does not match "
+            f"CarrySpec.axis_name={carry_axis!r}"
+        )
+
+
+__all__ = ["DedupSpec", "get_k_bucket", "validate_dedup_carry_names"]

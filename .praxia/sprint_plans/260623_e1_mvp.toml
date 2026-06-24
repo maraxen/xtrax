@@ -1,0 +1,74 @@
+[sprint]
+sprint_id = "260623_e1_mvp"
+sprint_num = 1
+name = "260623_e1_mvp"
+description = ""
+context = "[MANUAL: paste recon findings here before running emit-sprint]"
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "a"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "2504"
+phase_name = "Track A — E1.0 — xtrax.inference package skeleton + error/sentinel types (#2504)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+E1-MVP task E1.0 (epic #2174). Spec: .praxia/docs/specs/260623_e1-signature-inference-core-how-should-x.md ; DAG: .praxia/docs/plans/260623_e1-mvp-backlog-dag.md. GREENFIELD (confirmed: no xtrax.inference today). Create src/xtrax/inference/__init__.py + errors.py: AmbiguousAxisError, StructureMismatchError, and AxisRole enum with members KNOWN (default = proceed) and UNKNOWN (fail-loud sentinel) — Tier-2 later extends with concrete roles. NO jaxtyping import anywhere. ACCEPTANCE: `import xtrax.inference` succeeds; both errors importable + subclass an appropriate base; AxisRole.KNOWN/UNKNOWN are distinct, comparable, hashable members; ruff + ty clean. Smoke import test sufficient (not test-first). Enables AC3, AC5. size S. deps: none.
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+E1-MVP task E1.0 (epic #2174). Spec: .praxia/docs/specs/260623_e1-signature-inference-core-how-should-x.md ; DAG: .praxia/docs/plans/260623_e1-mvp-backlog-dag.md. GREENFIELD (confirmed: no xtrax.inference today). Create src/xtrax/inference/__init__.py + errors.py: AmbiguousAxisError, StructureMismatchError, and AxisRole enum with members KNOWN (default = proceed) and UNKNOWN (fail-loud sentinel) — Tier-2 later extends with concrete roles. NO jaxtyping import anywhere. ACCEPTANCE: `import xtrax.inference` succeeds; both errors importable + subclass an appropriate base; AxisRole.KNOWN/UNKNOWN are distinct, comparable, hashable members; ruff + ty clean. Smoke import test sufficient (not test-first). Enables AC3, AC5. size S. deps: none.
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "2504"
+
+[[tracks]]
+id = "b"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "2505"
+phase_name = "Track B — E1.1 — abstract-input builder (shape/dtype -> ShapeDtypeStruct pytree) (#2505)"
+fixer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+E1-MVP task E1.1 (epic #2174). Spec: .praxia/docs/specs/260623_e1-signature-inference-core-how-should-x.md. Build src/xtrax/inference/abstract.py: build_abstract_inputs(spec) -> pytree of jax.ShapeDtypeStruct from declared per-param shapes/dtypes; identity passthrough when already-abstract. Pure structural; NO jaxtyping import. Raises ONLY stdlib errors (ValueError/TypeError) for malformed declarations (decision D3 -> genuinely independent of E1.0). TEST-FIRST: red test asserting ShapeDtypeStruct pytree shape/dtype round-trip + identity-on-abstract before impl. Enables AC1. size S. deps: none.
+
+[AUTO: no recon anchors — paste file:line references here, then write the full fixer prompt]"""
+reviewer_prompt = """
+# DRAFT — requires human review before dw emit-sprint
+
+BACKLOG DESCRIPTION:
+E1-MVP task E1.1 (epic #2174). Spec: .praxia/docs/specs/260623_e1-signature-inference-core-how-should-x.md. Build src/xtrax/inference/abstract.py: build_abstract_inputs(spec) -> pytree of jax.ShapeDtypeStruct from declared per-param shapes/dtypes; identity passthrough when already-abstract. Pure structural; NO jaxtyping import. Raises ONLY stdlib errors (ValueError/TypeError) for malformed declarations (decision D3 -> genuinely independent of E1.0). TEST-FIRST: red test asserting ShapeDtypeStruct pytree shape/dtype round-trip + identity-on-abstract before impl. Enables AC1. size S. deps: none.
+
+REVIEWER CHECKLIST (fill in before running dw emit-sprint):
+VERIFY: cargo command or test that must pass — e.g. `cargo nextest run -p <crate>`
+VERIFY: observable assertion — e.g. \"new test exists and calls the handler directly\"
+VERIFY: no regression — e.g. \"existing tests still pass\"
+PASS if all VERIFY items are satisfied.
+FAIL if any VERIFY item is not met or untestable as written."""
+return_key = "2505"
+
+[orchestration]
+sequential = []
+concurrent = []
+
+[deprecation]
