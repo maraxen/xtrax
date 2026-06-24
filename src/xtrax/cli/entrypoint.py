@@ -30,6 +30,12 @@ def main() -> None:
     # Lazy tyro import — AC2: keeps this module tyro-free at import time.
     import tyro
 
+    import sys
+    for args_cls, _ in REGISTRY.values():
+        mod = sys.modules[args_cls.__module__]
+        if hasattr(mod, "tyro") and mod.tyro is None:
+            mod.tyro = tyro
+
     # Build subcommand dict: {verb_name: ArgsClass}.
     # Typed as Callable[..., Any] to satisfy tyro's overload signature;
     # dataclass constructors are callables and tyro uses them as type annotations.

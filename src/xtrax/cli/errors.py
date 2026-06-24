@@ -41,3 +41,10 @@ class ShapeParseError(CLIError):
     """
 
     pass
+
+
+class ResumeError(CLIError):
+    """Raised when checkpoint resumption fails due to missing or invalid state/manifest."""
+
+    pass
+

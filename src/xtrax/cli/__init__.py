@@ -8,8 +8,6 @@ computation structures.
 
 - `sweep`: Launch a parameter sweep campaign over a BatchPlan. Gating: grid-based
   sweep vs. bathos-campaign integration design.
-- `resume`: Resume a previously interrupted run from a checkpoint. Gating:
-  RunManifest schema and checkpoint/restore protocol.
 """
 
 from __future__ import annotations

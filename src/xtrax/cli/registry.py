@@ -16,6 +16,7 @@ from typing import Any
 from xtrax.cli.explain import ExplainArgs, run_explain
 from xtrax.cli.export import ExportArgs, run_export
 from xtrax.cli.plan import PlanArgs, run_plan
+from xtrax.cli.resume_verb import ResumeArgs, run_resume
 from xtrax.cli.run_verb import RunArgs, run_run
 
 REGISTRY: dict[str, tuple[type[Any], Callable[..., None]]] = {
@@ -23,6 +24,7 @@ REGISTRY: dict[str, tuple[type[Any], Callable[..., None]]] = {
     "explain": (ExplainArgs, run_explain),
     "export": (ExportArgs, run_export),
     "run": (RunArgs, run_run),
+    "resume": (ResumeArgs, run_resume),
 }
 
 __all__ = ["REGISTRY"]
