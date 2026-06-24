@@ -5,8 +5,8 @@ import pytest
 from xtrax.engine.io import BoundedCallbackHandler, async_indexed_stream
 
 
-class TestAsyncIndexedStream:
-    """Tests for async_indexed_stream prefetching iterator."""
+class TestEngineIoAsyncIndexedStream:
+    """Tests for xtrax.engine.io.async_indexed_stream prefetching iterator."""
 
     @pytest.mark.asyncio
     async def test_yields_indexed_items_in_order(self):
@@ -83,8 +83,8 @@ class TestAsyncIndexedStream:
         assert result == [(0, 42)]
 
 
-class TestBoundedCallbackHandler:
-    """Tests for BoundedCallbackHandler concurrency limit."""
+class TestEngineIoBoundedCallbackHandler:
+    """Tests for xtrax.engine.io.BoundedCallbackHandler concurrency limit."""
 
     @pytest.mark.asyncio
     async def test_submit_takes_coroutine_object(self):

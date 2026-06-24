@@ -1,6 +1,6 @@
 ---
 name: using-xtrax
-description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, or analyzing batching plans via EDA. Covers: AxisSpec/BatchPlanner/BatchPlan, composition (Fuse/Tap/Sink/AxisBoundary), the run layer (RunSpec/InputResolver/StageBundle), training (Trainer/Engine/ResumableState), EDA, sparsification, and the [Unreleased] signature-inference layer (xtrax.inference). xtrax v0.3.0 + main.
+description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan, composition (Fuse/Tap/Sink/AxisBoundary), the run layer (RunSpec/InputResolver/StageBundle), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run), EDA, sparsification, and the [Unreleased] signature-inference layer (xtrax.inference). xtrax v0.3.0 + main.
 xtrax_version: 0.3.0
 triggers:
   - writing JAX pipeline with xtrax
@@ -11,6 +11,8 @@ triggers:
   - sparsify_model / SparsePolicy
   - infer_bundle / BundleSchema / AxisOverride / axis_config
   - signature inference / xtrax.inference / AxisRole / AmbiguousAxisError
+  - xtrax run / xtrax plan / xtrax explain / xtrax export
+  - TrainConfig / load_config / ConfigError / init_state
 ---
 
 # using-xtrax
@@ -225,6 +227,9 @@ Choose your task:
 
 5. **Apply sparsification (structured pruning at inference)**  
    → Read TIER-2: Sparse/Distributed/Checkpoint (5%)
+
+6. **Run training from TOML or inspect tiling via CLI**  
+   → Read TIER-2: CLI Layer (E2/E3)
 
 ---
 
@@ -944,6 +949,99 @@ Verify: `src/xtrax/training/optim.py` (definitions); re-exported at `src/xtrax/t
 
 ---
 
+### CLI Layer (E2/E3) — Tyro-delegated verbs, `xtrax run`, plan/explain/export
+
+> **Availability**: E2 (`plan`, `explain`, `export`) + E3 (`run`) on `main`, not in the 0.3.0 tag.
+
+#### Verb Registry (Tyro-delegated)
+
+All CLI verbs are registered in `REGISTRY` — a single dict mapping verb name → `(ArgsClass, run_fn)`:
+
+```python
+from xtrax.cli.registry import REGISTRY  # verify: src/xtrax/cli/registry.py:21-26
+
+# REGISTRY keys (E2/E3):
+#   "plan"    → (PlanArgs, run_plan)       — infer_bundle + BatchPlanner, print summary
+#   "explain" → (ExplainArgs, run_explain) — infer_bundle + plan + explain_plan + emit
+#   "export"  → (ExportArgs, run_export)   — export plan artifacts
+#   "run"     → (RunArgs, run_run)         — load_config → run_from_config → Engine.fit_sync
+```
+
+`entrypoint.main()` builds a tyro subcommand dict from `REGISTRY` and dispatches the parsed `ArgsClass` instance to its `run_fn`. Verify: `src/xtrax/cli/entrypoint.py:19-48`
+
+#### `xtrax run config.toml` Flow
+
+End-to-end training from a TOML file:
+
+```
+config.toml
+  → load_config(path)          # tomllib parse + validation  — verify: src/xtrax/cli/config.py:32-62
+  → TrainConfig                # cli-private dataclass       — verify: src/xtrax/cli/config.py:9-23
+  → run_from_config(cfg)       # cli-private glue            — verify: src/xtrax/cli/run.py:25-85
+      → resolve model/optimizer/loss/data via load_fn (import-path strings)
+      → init_state(model, optimizer, seed)   # public API    — verify: src/xtrax/training/state.py:8-15
+      → config_hash(cfg_dict)  # run_id derivation           — verify: src/xtrax/cli/hash.py:7-20
+      → write_manifest(...)    # always before fit_sync      — verify: src/xtrax/cli/manifest.py:10-54
+      → Engine(Trainer(...)).fit_sync(state, data, ...)
+```
+
+CLI entry: `run_run(RunArgs(config="config.toml"))` catches `ConfigError` and exits with a clean message. Verify: `src/xtrax/cli/run_verb.py:14-20`
+
+#### Key Types
+
+| Symbol | Module | Role |
+|--------|--------|------|
+| `TrainConfig` | `xtrax.cli.config` | Parsed training config (`schema_version`, `model`, `optimizer`, `loss`, `data`, `seed`, `num_epochs`) |
+| `ConfigError` | `xtrax.cli.config` | Invalid/incomplete TOML; subclasses `CLIError` |
+| `load_config` | `xtrax.cli.config` | Parse + validate TOML path → `TrainConfig` |
+| `init_state` | `xtrax.training` | **Public API** — build `ResumableState` from model + optimizer + seed |
+| `config_hash` | `xtrax.cli.hash` | cli-private — stable 12-char hex hash for run-id derivation |
+| `write_manifest` | `xtrax.cli.manifest` | cli-private — always-write `manifest.json` under `.xtrax/runs/<run_id>/` |
+
+`init_state` is re-exported from `xtrax.training` (`__all__` at `src/xtrax/training/__init__.py:14`). `TrainConfig`/`load_config`/`ConfigError` stay in `xtrax.cli.config` — not top-level `xtrax` exports.
+
+#### Minimal `config.toml` Skeleton
+
+Each section uses import-path `path`/`factory` keys plus optional `kwargs`. Verify against `tests/cli/test_config.py:16-37`:
+
+```toml
+schema_version = 1
+seed = 42
+num_epochs = 3
+
+[model]
+path = "mylib.models:make_model"
+kwargs = {}
+
+[optimizer]
+path = "xtrax.training.optim:adamw_with_schedule"
+kwargs = { learning_rate = 1e-3, total_steps = 300 }
+
+[loss]
+path = "mylib.losses:mse_loss"
+kwargs = {}
+
+[data]
+factory = "mylib.data:make_dataset"
+kwargs = {}
+batch_size = 4
+```
+
+🚫 HALTS: Missing `schema_version` or any of `[model]`, `[optimizer]`, `[loss]`, `[data]` raises `ConfigError`.  
+🚫 HALTS: `num_epochs` must be a positive int; `seed` must be an int.  
+Enforcement: `src/xtrax/cli/config.py:37-52`
+
+#### Tyro-Free Import Rule
+
+`import xtrax.cli` must **not** pull `tyro` at module level (AC2 import isolation):
+
+- `xtrax.cli.__init__` exports only `CLIError`, `CLIImportError`, `ShapeParseError`, and a lazy `main()` that imports `entrypoint` on demand. Verify: `src/xtrax/cli/__init__.py:17-37`
+- `entrypoint.main()` imports `tyro` **inside** the function body. Verify: `src/xtrax/cli/entrypoint.py:30-31`
+
+Test pattern (mirrors E2 isolation tests): `assert "tyro" not in sys.modules` immediately after `import xtrax.cli`.
+
+---
+
 ### EDA: Plan Analysis and Visualization (10% of depth)
 
 #### extract_plan_stats: Structured Analysis
@@ -1151,6 +1249,8 @@ def infer_bundle(
 
 Internally: calls `jax.eval_shape` (zero FLOPs) to extract the output schema, reads any `@axis_config` sidecar on `fn`, synthesizes one `AxisSpec` per qualifying input leaf (ndim >= 1), and optionally calls `verify_structure`.  
 Verify: `src/xtrax/inference/api.py:58-78`
+
+> **CLI cross-link**: `xtrax plan` and `xtrax explain` both call `infer_bundle` internally (load `--fn` import path + parse `--shapes`, then plan). See TIER-2: CLI Layer (E2/E3). `explain` adds `explain_plan` + format emission (`json`/`text`/`html`/`png`). Verify: `src/xtrax/cli/plan.py:31-39`, `src/xtrax/cli/explain.py:52-60`
 
 #### Fail-Loud Model: `AxisRole.KNOWN` vs `AxisRole.UNKNOWN`
 
