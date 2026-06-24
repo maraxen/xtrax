@@ -68,6 +68,12 @@ def run_from_config(cfg: TrainConfig):
     checkpoint_dir = f".xtrax/runs/{run_id}/checkpoints/"
     os.makedirs(checkpoint_dir, exist_ok=True)
 
+    # AC6: always-write the manifest BEFORE training, not after. The manifest is
+    # the contract `resume` consumes; writing it only on success would leave a
+    # crashed-but-checkpointed run (the exact resume use-case) unresumable.
+    run_dir = f".xtrax/runs/{run_id}"
+    write_manifest(run_dir, cfg, run_id=run_id, config_hash_val=hash_val)
+
     engine = Engine(trainer=Trainer(loss_fn, optimizer), callbacks=())
     final_state = engine.fit_sync(
         state,
@@ -75,8 +81,5 @@ def run_from_config(cfg: TrainConfig):
         num_epochs=cfg.num_epochs,
         checkpoint_dir=checkpoint_dir,
     )
-
-    run_dir = f".xtrax/runs/{run_id}"
-    write_manifest(run_dir, cfg, run_id=run_id, config_hash_val=hash_val)
 
     return final_state
