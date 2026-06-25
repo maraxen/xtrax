@@ -185,6 +185,7 @@ def test_double_identical_run_distinct_checkpoint_dirs(
     """
     monkeypatch.chdir(tmp_path)
     manifests = []
+    seen_ids: set[str] = set()
     for _ in range(2):
         with patch("xtrax.engine.engine.Engine.fit_sync") as mock_fit:
             mock_fit.return_value = MagicMock()
@@ -192,8 +193,15 @@ def test_double_identical_run_distinct_checkpoint_dirs(
 
             cfg = load_config(fixture_toml)
             run_from_config(cfg)
-        run_dirs = sorted(Path(".xtrax/runs").iterdir(), key=lambda p: p.stat().st_mtime)
-        manifest = json.loads((run_dirs[-1] / "manifest.json").read_text())
+        # Use set-diff rather than mtime to find the new dir — mtime resolution
+        # is 1 second on many filesystems (WSL2 ext4) and both dirs can share
+        # the same mtime on fast hardware, making the sort non-deterministic.
+        all_ids = {p.name for p in Path(".xtrax/runs").iterdir()}
+        new_ids = all_ids - seen_ids
+        assert len(new_ids) == 1, f"expected exactly one new run dir, got {new_ids}"
+        new_id = new_ids.pop()
+        seen_ids.add(new_id)
+        manifest = json.loads((Path(".xtrax/runs") / new_id / "manifest.json").read_text())
         manifests.append(manifest)
 
     assert manifests[0]["run_id"] != manifests[1]["run_id"], (
