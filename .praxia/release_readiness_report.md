@@ -1,14 +1,11 @@
 # xtrax Release Readiness Report
 
 - **Epic:** #1451 xtrax distribution readiness (N0-N10)
-- **Generated:** 2026-06-25T16:11:15.563759+00:00
+- **Generated:** 2026-06-25T16:37:57.072101+00:00
 - **Verdict:** `BLOCKED_AUTOMATED`
 - **Package version:** `0.3.0`
 
 ## Blockers
-- automated check failed: ruff_lint
-- automated check failed: ruff_format
-- automated check failed: ty_check
 - automated check failed: coverage_tier1
 - automated check failed: coverage_tier2
 - automated check failed: audit_contracts
@@ -45,47 +42,9 @@
 - **import_cycles** (foundation): PASS
 - **no_future_annotations** (foundation): PASS
 - **jaxlint_performance** (foundation): PASS
-- **ruff_lint** (ci_lint): FAIL
-  ```
-  [1m[94m13 |[0m [1m[91m|[0m import pytest
-[1m[94m14 |[0m [1m[91m|[0m
-[1m[94m15 |[0m [1m[91m|[0m from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
-[1m[94m16 |[0m [1m[91m|[0m from xtrax.tiling.plan import AxisSpec, BatchPlan, BatchPlanner
-   [1m[94m|[0m [1m[91m|_______________________________________________________________^[0m
-[1m[94m17 |[0m
-[1m[94m18 |[0m   # ---------------------------------------------------------------------------
-   [1m[94m|[0m
-[1m[96mhelp[0m: [1mOrganize imports[0m
-
-Found 17 errors.
-[[36m*[0m] 13 fixable with the `--fix` option.
-  ```
-- **ruff_format** (ci_lint): FAIL
-  ```
-  Would reformat: [1mtests/cli/test_loader.py[0m
-Would reformat: [1mtests/cli/test_manifest.py[0m
-Would reformat: [1mtests/cli/test_resume_verb.py[0m
-Would reformat: [1mtests/cli/test_run_verb.py[0m
-Would reformat: [1mtests/inference/test_api.py[0m
-Would reformat: [1mtests/inference/test_axes.py[0m
-Would reformat: [1mtests/inference/test_axis_config.py[0m
-Would reformat: [1mtests/inference/test_jaxtyping_optional.py[0m
-Would reformat: [1mtests/inference/test_schema.py[0m
-Would reformat: [1mtests/inference/test_seam_conformance.py[0m
-Would reformat: [1mtests/tiling/test_plan_unknown_guard.py[0m
-28 files would be reformatted, 275 files already formatted
-  ```
-- **ty_check** (ci_lint): FAIL
-  ```
-  error[unresolved-attribute]: Unresolved attribute `tyro` on type `ModuleType`
-  --> src/xtrax/cli/entrypoint.py:37:13
-   |
-37 |             mod.tyro = tyro
-   |             ^^^^^^^^
-   |
-
-Found 1 diagnostic
-  ```
+- **ruff_lint** (ci_lint): PASS
+- **ruff_format** (ci_lint): PASS
+- **ty_check** (ci_lint): PASS
 - **coverage_tier1** (coverage): FAIL
   ```
   skipped in --quick mode
@@ -101,8 +60,8 @@ Found 1 diagnostic
   ```
 - **added_types_diff** (type_hardening): FAIL
   ```
-  [32m============================== [32m[1m10 passed[0m[32m in 1.66s[0m[32m ==============================[0m
-merge-base=55bf118e1489080e4838bb6e80073864f1ecec2e files_checked=28 callables_checked=31
+  [32m============================== [32m[1m10 passed[0m[32m in 1.77s[0m[32m ==============================[0m
+merge-base=55bf118e1489080e4838bb6e80073864f1ecec2e files_checked=30 callables_checked=31
 
 uv run ruff check src/xtrax/devtools/gates/added_types_diff.py scripts/audit_added_types_diff.py tests/audit/test_added_types_diff.py
 uv run pytest tests/audit/test_added_types_diff.py -v
