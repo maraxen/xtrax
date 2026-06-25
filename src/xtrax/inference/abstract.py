@@ -99,8 +99,7 @@ def build_abstract_inputs(spec: Any) -> Any:
 
     # Use tree_map with is_leaf to treat ShapeDtypeStruct and (shape, dtype)
     # tuples as leaves (not containers to recurse into)
-    def is_leaf(x: Any) -> bool:
-        """Identify leaves: ShapeDtypeStruct or (shape, dtype) pairs."""
+    def _is_leaf(x: Any) -> bool:
         return isinstance(x, ShapeDtypeStruct) or _is_shape_dtype_pair(x)
 
-    return jax.tree_util.tree_map(_convert_leaf, spec, is_leaf=is_leaf)
+    return jax.tree_util.tree_map(_convert_leaf, spec, is_leaf=_is_leaf)

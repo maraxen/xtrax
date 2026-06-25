@@ -67,11 +67,11 @@ def axis_config(*overrides: AxisOverride) -> Callable:
     """
     override_tuple: tuple[AxisOverride, ...] = tuple(overrides)
 
-    def decorator(fn: Callable) -> Callable:
+    def _decorator(fn: Callable) -> Callable:
         setattr(fn, _AXIS_CONFIG_ATTR, override_tuple)
         return fn
 
-    return decorator
+    return _decorator
 
 
 def get_axis_config(fn: Callable) -> tuple[AxisOverride, ...] | None:
