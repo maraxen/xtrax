@@ -1,5 +1,4 @@
-import pytest
-from xtrax.cli.resolve import resolve_components, ResolvedComponents
+from xtrax.cli.resolve import ResolvedComponents, resolve_components
 from xtrax.data.module import DataModule
 
 

@@ -123,9 +123,7 @@ class TestInputResolverProtocol:
         class SimpleResolver:
             """In-test resolver adapter that conforms to InputResolver protocol."""
 
-            def __call__(
-                self, spec: RunSpec, bundle: Any
-            ) -> FeatureBatch:
+            def __call__(self, spec: RunSpec, bundle: Any) -> FeatureBatch:
                 """Return a FeatureBatch dict."""
                 # Minimal implementation: return empty batch
                 return FeatureBatch({"dummy": 1})

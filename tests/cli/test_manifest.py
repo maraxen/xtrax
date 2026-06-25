@@ -88,7 +88,7 @@ def test_manifest_schema_version_mirrored(tmp_path) -> None:
     """AC9 (manifest half): schema_version in manifest mirrors config."""
     run_dir = str(tmp_path / "runs" / "v2run")
     cfg = _make_cfg(schema_version=2)
-    # Note: write_manifest handles the serialization and write; read_manifest validates schema version.
+    # write_manifest serializes/writes; read_manifest validates schema_version.
     m = write_manifest(run_dir, cfg, run_id="v2run", config_hash_val="v2run")
     assert m["schema_version"] == 2
 
@@ -117,7 +117,7 @@ def test_read_manifest_schema_version_mismatch(tmp_path) -> None:
     run_dir = tmp_path / "runs" / "v2run"
     run_dir.mkdir(parents=True)
     manifest_path = run_dir / "manifest.json"
-    
+
     manifest_data = {
         "run_id": "v2run",
         "schema_version": 99,  # Mismatch
@@ -133,7 +133,7 @@ def test_read_manifest_missing_required_fields(tmp_path) -> None:
     run_dir = tmp_path / "runs" / "badrun"
     run_dir.mkdir(parents=True)
     manifest_path = run_dir / "manifest.json"
-    
+
     # Missing 'seed'
     manifest_data = {
         "run_id": "badrun",

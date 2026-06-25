@@ -16,9 +16,7 @@ from jax import ShapeDtypeStruct
 from xtrax.inference.errors import StructureMismatchError
 
 
-def verify_structure(
-    fn: Any, abstract_inputs: list[Any], concrete_inputs: list[Any]
-) -> None:
+def verify_structure(fn: Any, abstract_inputs: list[Any], concrete_inputs: list[Any]) -> None:
     """Guard against divergence between abstract (eval_shape) and concrete execution.
 
     Compares the pytree structure and leaf shapes/dtypes of the abstract output

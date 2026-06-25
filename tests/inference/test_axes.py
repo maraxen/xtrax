@@ -38,9 +38,7 @@ class TestSynthesizeAxes:
 
     def test_all_returned_specs_unknown_when_no_overrides(self):
         """Invariant D1: with overrides=None, EVERY AxisSpec has role == UNKNOWN."""
-        abstract = build_abstract_inputs(
-            {"x": ((16, 3), np.float32), "y": ((32,), np.int32)}
-        )
+        abstract = build_abstract_inputs({"x": ((16, 3), np.float32), "y": ((32,), np.int32)})
         specs = synthesize_axes(abstract)
         assert len(specs) == 2
         for spec in specs:
@@ -50,9 +48,7 @@ class TestSynthesizeAxes:
 
     def test_cardinalities_match_leading_dims(self):
         """Each AxisSpec.cardinality == leaf.shape[0]."""
-        abstract = build_abstract_inputs(
-            {"x": ((16, 3), np.float32), "y": ((32,), np.int32)}
-        )
+        abstract = build_abstract_inputs({"x": ((16, 3), np.float32), "y": ((32,), np.int32)})
         specs = synthesize_axes(abstract)
         cardinalities = {spec.cardinality for spec in specs}
         assert 16 in cardinalities

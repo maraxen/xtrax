@@ -24,6 +24,7 @@ class TestLoadFnValid:
 
         # Verify it's the real function
         import json
+
         assert fn is json.dumps
 
         # Verify it actually works
@@ -36,6 +37,7 @@ class TestLoadFnValid:
 
         # Verify it's the real Path class
         from pathlib import Path
+
         assert fn is Path
 
 
@@ -49,14 +51,14 @@ class TestLoadFnLazyImport:
         user modules at module-load time, only when load_fn() is called.
         """
         # Remove 'wave' if it's already loaded
-        if 'wave' in sys.modules:
-            del sys.modules['wave']
+        if "wave" in sys.modules:
+            del sys.modules["wave"]
 
         # Import loader (should not import 'wave')
         import xtrax.cli.loader  # noqa: F401
 
         # Verify 'wave' is still not imported
-        assert 'wave' not in sys.modules, (
+        assert "wave" not in sys.modules, (
             "Importing xtrax.cli.loader should not eagerly import 'wave'"
         )
 
@@ -64,10 +66,11 @@ class TestLoadFnLazyImport:
         fn = load_fn("wave:open")
 
         # After calling load_fn, 'wave' should be loaded
-        assert 'wave' in sys.modules
+        assert "wave" in sys.modules
 
         # And fn should be the real wave.open
         import wave
+
         assert fn is wave.open
 
 

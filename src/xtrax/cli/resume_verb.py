@@ -1,5 +1,4 @@
 import os
-import sys
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +14,7 @@ from xtrax.training.trainer import Trainer
 # tyro is bound dynamically in entrypoint.py:main() to keep imports tyro-free
 tyro: Any = None
 
+
 @dataclass
 class ResumeArgs:
     """Arguments for the resume verb.
@@ -24,6 +24,7 @@ class ResumeArgs:
         epochs: Number of epochs to train for.
         manifest_path: Optional path to manifest file (if moving/custom).
     """
+
     run_id: "tyro.conf.Positional[str]"
     epochs: int
     manifest_path: str | None = None
@@ -31,7 +32,7 @@ class ResumeArgs:
 
 def run_resume(args: ResumeArgs) -> None:
     """Resume training of an existing run from its latest checkpoint.
-    
+
     AC1/RAC1: Read manifest from run-id.
     AC2/RAC2: Optional manifest-path override.
     AC9/RAC9: Validate epochs > 0.

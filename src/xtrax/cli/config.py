@@ -45,9 +45,7 @@ def load_config(path: str) -> TrainConfig:
 
     num_epochs = raw.get("num_epochs")
     if not isinstance(num_epochs, int) or num_epochs <= 0:
-        raise ConfigError(
-            f"num_epochs must be a positive int, got: {num_epochs!r}"
-        )
+        raise ConfigError(f"num_epochs must be a positive int, got: {num_epochs!r}")
 
     seed = raw.get("seed")
     if not isinstance(seed, int):

@@ -19,6 +19,7 @@ from xtrax.inference import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _simple_fn(x):
     """Return a dict with one field so BundleSchema.fields is inspectable."""
     return {"out": x * 2}
@@ -32,6 +33,7 @@ def _two_input_fn(x, y):
 # ---------------------------------------------------------------------------
 # 1. Happy path: basic function + abstract inputs
 # ---------------------------------------------------------------------------
+
 
 class TestInferBundleHappyPath:
     def test_returns_bundle_schema_and_axis_specs(self):
@@ -56,6 +58,7 @@ class TestInferBundleHappyPath:
 # 2. AC2: zero-config end-to-end — no decorator, 2 inputs
 #    EVERY axis must be AxisRole.UNKNOWN; count covers all input axes.
 # ---------------------------------------------------------------------------
+
 
 class TestAC2ZeroConfigEndToEnd:
     """AC2: zero-config, no @axis_config — every axis role is UNKNOWN."""
@@ -104,6 +107,7 @@ class TestAC2ZeroConfigEndToEnd:
 # 3. @axis_config path: decorated fn -> KNOWN axis with correct name
 # ---------------------------------------------------------------------------
 
+
 class TestAxisConfigDecorator:
     def test_decorated_fn_has_known_axis(self):
         @axis_config(AxisOverride(name="batch", default_batch_size=32))
@@ -133,6 +137,7 @@ class TestAxisConfigDecorator:
 # 4. verify_against: consistent concrete passes; divergent raises
 # ---------------------------------------------------------------------------
 
+
 class TestVerifyAgainst:
     def test_consistent_concrete_passes(self):
         import jax.numpy as jnp
@@ -141,9 +146,7 @@ class TestVerifyAgainst:
         concrete_inputs = [jnp.ones((4, 8), dtype=np.float32)]
 
         # Should not raise
-        schema, axes = infer_bundle(
-            _simple_fn, abstract_inputs, verify_against=concrete_inputs
-        )
+        schema, axes = infer_bundle(_simple_fn, abstract_inputs, verify_against=concrete_inputs)
         assert isinstance(schema, BundleSchema)
 
     def test_divergent_concrete_raises_structure_mismatch(self):
@@ -160,14 +163,13 @@ class TestVerifyAgainst:
         concrete_inputs = [jnp.ones((4, 4), dtype=np.float32)]
 
         with pytest.raises(StructureMismatchError):
-            infer_bundle(
-                _data_dependent, abstract_inputs, verify_against=concrete_inputs
-            )
+            infer_bundle(_data_dependent, abstract_inputs, verify_against=concrete_inputs)
 
 
 # ---------------------------------------------------------------------------
 # 5. Public import surface (AC import smoke test)
 # ---------------------------------------------------------------------------
+
 
 class TestPublicImportSurface:
     def test_infer_bundle_importable(self):

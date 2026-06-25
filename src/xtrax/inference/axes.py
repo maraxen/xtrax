@@ -78,9 +78,7 @@ def synthesize_axes(
 
         # Positional override lookup
         ov: AxisOverride | None = (
-            overrides[axis_idx]
-            if overrides is not None and axis_idx < len(overrides)
-            else None
+            overrides[axis_idx] if overrides is not None and axis_idx < len(overrides) else None
         )
 
         if ov is not None:

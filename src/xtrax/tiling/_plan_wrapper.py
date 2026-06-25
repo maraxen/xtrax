@@ -4,6 +4,7 @@
 # Sentinel wrapper to make BatchPlan hashable by identity
 class _BatchPlanWrapper:
     """Wrapper to make BatchPlan hashable by identity (id-based) for use with eqx.filter_jit."""
+
     __slots__ = ("_id", "_plan")
 
     def __init__(self, plan):

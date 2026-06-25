@@ -37,10 +37,7 @@ def emit(stats: Mapping[str, Any], plan: object, fmt: str, out: str | None = Non
             output to a terminal is a footgun).
     """
     if fmt not in _VALID_FMTS:
-        raise CLIError(
-            f"Unknown output format {fmt!r}. "
-            f"Valid formats: {sorted(_VALID_FMTS)}"
-        )
+        raise CLIError(f"Unknown output format {fmt!r}. Valid formats: {sorted(_VALID_FMTS)}")
 
     if fmt == "json":
         _emit_json(stats)
@@ -146,9 +143,7 @@ def _emit_render(plan: object, fmt: str, out: str | None = None) -> None:
 
         result = render(plan, fmt=fmt, path=out)
     except (ModuleNotFoundError, ImportError) as exc:
-        raise CLIError(
-            f"--fmt {fmt!r} requires the eda extra: pip install xtrax[eda]"
-        ) from exc
+        raise CLIError(f"--fmt {fmt!r} requires the eda extra: pip install xtrax[eda]") from exc
 
     if out is not None:
         # render() wrote the file; confirm to stderr

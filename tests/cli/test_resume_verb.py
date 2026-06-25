@@ -1,25 +1,26 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
 from unittest.mock import patch
-import pytest
+
 import jax.numpy as jnp
+import pytest
 
 from xtrax.cli.config import ConfigError, load_config
 from xtrax.cli.errors import ResumeError
 from xtrax.cli.resume_verb import ResumeArgs, run_resume
 from xtrax.cli.run import run_from_config
 
+
 class DictDataset:
     """Dataset yielding dict batches for real training steps."""
+
     def __init__(self):
         self.data = [
-            {"inputs": jnp.ones(2) * float(i), "targets": jnp.ones(2) * float(i)}
-            for i in range(4)
+            {"inputs": jnp.ones(2) * float(i), "targets": jnp.ones(2) * float(i)} for i in range(4)
         ]
 
     def __len__(self):
@@ -57,6 +58,7 @@ kwargs = {}
 batch_size = 2
 """
 
+
 @pytest.fixture
 def fixture_toml(tmp_path):
     p = tmp_path / "config.toml"
@@ -70,6 +72,7 @@ def make_checkpoint_paths_absolute():
     Since CLI runs use relative paths, we wrap get_checkpoint_manager to return absolute paths.
     """
     import xtrax.checkpoint.orbax
+
     original_gcm = xtrax.checkpoint.orbax.get_checkpoint_manager
 
     def wrapper_gcm(directory, *args, **kwargs):
@@ -85,7 +88,7 @@ def test_resume_end_to_end_success(tmp_path, monkeypatch, fixture_toml):
     # 1. Start run for 1 epoch
     cfg = load_config(fixture_toml)
     first_state = run_from_config(cfg)
-    # DictDataset has 4 items. Iterating it once takes 4 steps (since train_iter yields each item from dataset).
+    # DictDataset has 4 items; one epoch = 4 steps.
     assert int(first_state.step) == 4
 
     # Check the first run directory
@@ -108,7 +111,7 @@ def test_resume_end_to_end_success(tmp_path, monkeypatch, fixture_toml):
     args = ResumeArgs(run_id=original_run_id, epochs=2)
     run_resume(args)
 
-    # 3. Verify a new sibling run directory exists with manifest containing "resumed_from": original_run_id
+    # 3. Verify a new sibling run dir exists with manifest "resumed_from": original_run_id.
     run_dirs = sorted(list(Path(".xtrax/runs").iterdir()))
     assert len(run_dirs) == 2
     new_run_dir = [d for d in run_dirs if d != original_run_dir][0]
@@ -124,10 +127,10 @@ def test_resume_end_to_end_success(tmp_path, monkeypatch, fixture_toml):
     new_checkpoint_dir = Path(new_manifest["checkpoint_dir"])
     assert new_checkpoint_dir.exists()
 
-    # 5. Verify the final step count is correct (sum of steps = 4 from original + 8 from resuming 2 epochs = 12 steps)
+    # 5. Verify step count: 4 (original epoch) + 8 (resume 2 epochs) = 12 steps total.
+    from xtrax.checkpoint.orbax import get_checkpoint_manager, load_checkpoint
     from xtrax.cli.resolve import resolve_components
     from xtrax.training import init_state
-    from xtrax.checkpoint.orbax import get_checkpoint_manager, load_checkpoint
 
     resolved = resolve_components(new_manifest, epochs=2)
     state_template = init_state(resolved.model, resolved.optimizer, new_manifest["seed"])
@@ -242,5 +245,4 @@ def test_resume_empty_checkpoint_dir_failure(tmp_path, monkeypatch, fixture_toml
 
 def test_tyro_isolation():
     sys.modules.pop("tyro", None)
-    import xtrax.cli.entrypoint
     assert "tyro" not in sys.modules

@@ -104,6 +104,4 @@ class TestExportSerialized:
             run_export(args)
 
         error_msg = str(exc_info.value)
-        assert "--out" in error_msg, (
-            f"Expected '--out' in error message, got: {error_msg}"
-        )
+        assert "--out" in error_msg, f"Expected '--out' in error message, got: {error_msg}"

@@ -39,30 +39,24 @@ def load_fn(path: str) -> Callable[..., Any]:
     """
 
     # Parse on the LAST ':'
-    if ':' not in path:
+    if ":" not in path:
         raise CLIImportError(
             f"malformed import path '{path}': no ':' separator found. "
             f"Expected format: 'module.path:symbol'"
         )
 
-    parts = path.rsplit(':', 1)
+    parts = path.rsplit(":", 1)
     if len(parts) != 2:
-        raise CLIImportError(
-            f"malformed import path '{path}': split on ':' failed"
-        )
+        raise CLIImportError(f"malformed import path '{path}': split on ':' failed")
 
     module_name, attr_name = parts
 
     # Check for empty parts
     if not module_name:
-        raise CLIImportError(
-            f"malformed import path '{path}': empty module name"
-        )
+        raise CLIImportError(f"malformed import path '{path}': empty module name")
 
     if not attr_name:
-        raise CLIImportError(
-            f"malformed import path '{path}': empty attribute name"
-        )
+        raise CLIImportError(f"malformed import path '{path}': empty attribute name")
 
     # Perform the import at function-call time (not at module load)
     try:
@@ -77,8 +71,7 @@ def load_fn(path: str) -> Callable[..., Any]:
         func = getattr(mod, attr_name)
     except AttributeError as e:
         raise CLIImportError(
-            f"module '{module_name}' has no attribute '{attr_name}' "
-            f"(from path '{path}')"
+            f"module '{module_name}' has no attribute '{attr_name}' (from path '{path}')"
         ) from e
 
     return func

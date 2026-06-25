@@ -30,11 +30,10 @@ def main() -> None:
     # Lazy tyro import — AC2: keeps this module tyro-free at import time.
     import tyro
 
-    import sys
     for args_cls, _ in REGISTRY.values():
         mod = sys.modules[args_cls.__module__]
-        if hasattr(mod, "tyro") and mod.tyro is None:
-            mod.tyro = tyro
+        if hasattr(mod, "tyro") and getattr(mod, "tyro") is None:
+            setattr(mod, "tyro", tyro)
 
     # Build subcommand dict: {verb_name: ArgsClass}.
     # Typed as Callable[..., Any] to satisfy tyro's overload signature;
@@ -55,8 +54,7 @@ def main() -> None:
 
         # Unreachable if REGISTRY is consistent — tyro only selects registered types.
         assert False, (  # noqa: B011
-            f"No verb registered for args type {selected_type.__name__!r}"
-            " — this is a bug in xtrax"
+            f"No verb registered for args type {selected_type.__name__!r} — this is a bug in xtrax"
         )
     except CLIError as e:
         print(str(e), file=sys.stderr)

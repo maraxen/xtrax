@@ -128,9 +128,7 @@ def run_export(args: ExportArgs) -> None:
         try:
             data = exp.serialize()
         except (ImportError, ModuleNotFoundError) as exc:
-            raise CLIError(
-                "--serialized requires flatbuffers: pip install xtrax[cli]"
-            ) from exc
+            raise CLIError("--serialized requires flatbuffers: pip install xtrax[cli]") from exc
 
         # Write bytes to the output file.
         with open(args.out, "wb") as f:

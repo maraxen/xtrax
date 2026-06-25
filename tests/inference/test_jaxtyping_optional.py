@@ -16,6 +16,7 @@ from xtrax.inference import BundleSchema, infer_bundle
 # AC7.1: Static assertion — no unconditional jaxtyping imports in inference
 # ---------------------------------------------------------------------------
 
+
 class TestNoDirectJaxtypingImports:
     """Verify that xtrax.inference source files do NOT directly import jaxtyping."""
 
@@ -61,6 +62,7 @@ class TestNoDirectJaxtypingImports:
 # AC7.2: Runtime assertion — infer_bundle works with jaxtyping unavailable
 # ---------------------------------------------------------------------------
 
+
 class TestInferBundleWithoutJaxtyping:
     """Verify that infer_bundle succeeds when jaxtyping is blocked (import raises ImportError)."""
 
@@ -83,6 +85,7 @@ class TestInferBundleWithoutJaxtyping:
 
     def test_infer_bundle_works_without_jaxtyping(self):
         """Verify infer_bundle returns correct types when jaxtyping is blocked."""
+
         # Define a simple function
         def simple_fn(x: Any) -> dict[str, Any]:
             return {"result": x * 2}
@@ -110,6 +113,7 @@ class TestInferBundleWithoutJaxtyping:
 
     def test_infer_bundle_multiple_inputs(self):
         """Verify infer_bundle with multiple inputs works without jaxtyping."""
+
         def multi_input_fn(x: Any, y: Any) -> dict[str, Any]:
             return {"sum": x + y, "product": x * y}
 

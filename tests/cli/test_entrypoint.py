@@ -55,9 +55,7 @@ class TestImportIsolation:
 
         import xtrax  # noqa: F401
 
-        assert "tyro" not in sys.modules, (
-            "tyro was imported when 'import xtrax' was evaluated."
-        )
+        assert "tyro" not in sys.modules, "tyro was imported when 'import xtrax' was evaluated."
 
     def test_xtrax_import_does_not_import_xtrax_cli(self):
         """AC2: importing xtrax must not pull in xtrax.cli subpackage."""
@@ -191,8 +189,12 @@ class TestDispatch:
         parsed = json.loads(captured.out.strip())
 
         expected_keys = {
-            "axes", "strategy_counts", "total_axes",
-            "memory_warnings", "dedup_stats", "bucket_stats",
+            "axes",
+            "strategy_counts",
+            "total_axes",
+            "memory_warnings",
+            "dedup_stats",
+            "bucket_stats",
         }
         missing = expected_keys - set(parsed.keys())
         assert not missing, (

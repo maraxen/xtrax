@@ -92,13 +92,16 @@ class TestExplainJsonFormat:
         #   axes, strategy_counts, total_axes, memory_warnings,
         #   dedup_stats, bucket_stats
         expected_keys = {
-            "axes", "strategy_counts", "total_axes",
-            "memory_warnings", "dedup_stats", "bucket_stats",
+            "axes",
+            "strategy_counts",
+            "total_axes",
+            "memory_warnings",
+            "dedup_stats",
+            "bucket_stats",
         }
         missing = expected_keys - set(parsed.keys())
         assert not missing, (
-            f"Missing PlanStatsDict keys in json output: {missing}. "
-            f"Got keys: {list(parsed.keys())}"
+            f"Missing PlanStatsDict keys in json output: {missing}. Got keys: {list(parsed.keys())}"
         )
 
     def test_json_is_default_format(self, capsys):
@@ -115,8 +118,12 @@ class TestExplainJsonFormat:
         parsed = json.loads(output)
         assert "_meta" in parsed, "Default format should produce JSON with _meta key"
         expected_keys = {
-            "axes", "strategy_counts", "total_axes",
-            "memory_warnings", "dedup_stats", "bucket_stats",
+            "axes",
+            "strategy_counts",
+            "total_axes",
+            "memory_warnings",
+            "dedup_stats",
+            "bucket_stats",
         }
         missing = expected_keys - set(parsed.keys())
         assert not missing, f"Missing PlanStatsDict keys: {missing}"
@@ -280,6 +287,7 @@ class TestExplainHtmlPngOutput:
         run_explain(args)
 
         import os
+
         assert os.path.exists(out_path), f"Expected file at {out_path!r} but it does not exist"
         size = os.path.getsize(out_path)
         assert size > 0, f"Expected non-empty file at {out_path!r}, got {size} bytes"
@@ -297,6 +305,7 @@ class TestExplainHtmlPngOutput:
         run_explain(args)
 
         import os
+
         assert os.path.exists(out_path), f"Expected file at {out_path!r} but it does not exist"
         size = os.path.getsize(out_path)
         assert size > 0, f"Expected non-empty PNG file at {out_path!r}, got {size} bytes"

@@ -237,6 +237,7 @@ class TestExtractSchemaIntegration:
             "y": ((3,), np.float32),
         }
         abstract_inputs = build_abstract_inputs(spec)
+
         # Create a fn that uses both inputs
         def fn(x, y):
             # x is (2, 3), y is (3,); broadcast y

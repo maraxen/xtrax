@@ -105,9 +105,7 @@ def parse_shapes(s: str) -> dict[str, jax.ShapeDtypeStruct]:
     s = s.strip()
 
     if not s:
-        raise ShapeParseError(
-            "Empty shape specification. Expected: name=(d0,d1,...)<dtype>"
-        )
+        raise ShapeParseError("Empty shape specification. Expected: name=(d0,d1,...)<dtype>")
 
     entries = s.split()
     result: dict[str, jax.ShapeDtypeStruct] = {}
@@ -144,8 +142,7 @@ def _parse_single_entry(entry: str, result: dict[str, jax.ShapeDtypeStruct]) -> 
     # Check for '=' separator
     if "=" not in entry:
         raise ShapeParseError(
-            f"Malformed entry '{entry}': missing '=' separator. "
-            f"Expected: name=(d0,d1,...)<dtype>"
+            f"Malformed entry '{entry}': missing '=' separator. Expected: name=(d0,d1,...)<dtype>"
         )
 
     name, rest = entry.split("=", 1)
@@ -153,8 +150,7 @@ def _parse_single_entry(entry: str, result: dict[str, jax.ShapeDtypeStruct]) -> 
 
     if not name:
         raise ShapeParseError(
-            f"Malformed entry '{entry}': name is empty. "
-            f"Expected: name=(d0,d1,...)<dtype>"
+            f"Malformed entry '{entry}': name is empty. Expected: name=(d0,d1,...)<dtype>"
         )
 
     # Validate name is a valid identifier

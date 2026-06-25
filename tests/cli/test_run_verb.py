@@ -89,9 +89,7 @@ def test_tyro_isolation() -> None:
     sys.modules.pop("tyro", None)
     import xtrax.cli  # noqa: F401
 
-    assert "tyro" not in sys.modules, (
-        "tyro was imported at module level — must stay inside main()"
-    )
+    assert "tyro" not in sys.modules, "tyro was imported at module level — must stay inside main()"
 
 
 def test_run_in_registry() -> None:
@@ -128,9 +126,7 @@ batch_size = 2
         load_config(str(p))
 
 
-def test_manifest_written_with_model_path(
-    tmp_path, monkeypatch, fixture_toml
-) -> None:
+def test_manifest_written_with_model_path(tmp_path, monkeypatch, fixture_toml) -> None:
     """AC6 + inv#1: manifest is written with model.path non-null."""
     monkeypatch.chdir(tmp_path)
     with patch("xtrax.engine.engine.Engine.fit_sync") as mock_fit:
@@ -149,9 +145,7 @@ def test_manifest_written_with_model_path(
     assert manifest["model"]["path"] != ""
 
 
-def test_checkpoint_dir_derived_not_config_scalar(
-    tmp_path, monkeypatch, fixture_toml
-) -> None:
+def test_checkpoint_dir_derived_not_config_scalar(tmp_path, monkeypatch, fixture_toml) -> None:
     """
     AC8/C1: checkpoint_dir MUST be derived from run_id.
     It is .xtrax/runs/<run_id>/checkpoints/, NOT taken verbatim from config.
@@ -174,9 +168,7 @@ def test_checkpoint_dir_derived_not_config_scalar(
     )
 
 
-def test_double_identical_run_distinct_checkpoint_dirs(
-    tmp_path, monkeypatch, fixture_toml
-) -> None:
+def test_double_identical_run_distinct_checkpoint_dirs(tmp_path, monkeypatch, fixture_toml) -> None:
     """
     AC7 + AC8: two sequential identical runs must:
     1. Get distinct run_ids (second gets uuid suffix).
@@ -212,14 +204,10 @@ def test_double_identical_run_distinct_checkpoint_dirs(
     )
     for manifest in manifests:
         ckpt_path = Path(manifest["checkpoint_dir"])
-        assert ckpt_path.exists(), (
-            f"checkpoint dir should exist: {manifest['checkpoint_dir']}"
-        )
+        assert ckpt_path.exists(), f"checkpoint dir should exist: {manifest['checkpoint_dir']}"
 
 
-def test_double_wrap_datamodule_factory(
-    tmp_path, monkeypatch, fixture_toml_double_wrap
-) -> None:
+def test_double_wrap_datamodule_factory(tmp_path, monkeypatch, fixture_toml_double_wrap) -> None:
     """
     AC3/M4: double-wrap enforcement.
 

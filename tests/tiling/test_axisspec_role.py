@@ -6,8 +6,8 @@ import warnings
 
 import pytest
 
-from xtrax.tiling.roles import AxisRole
 from xtrax.tiling.plan import AxisSpec
+from xtrax.tiling.roles import AxisRole
 
 
 class TestAxisSpecRoleField:

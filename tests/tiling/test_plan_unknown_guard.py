@@ -12,12 +12,13 @@ import dataclasses
 
 import pytest
 
-from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
 from xtrax.tiling.plan import AxisSpec, BatchPlan, BatchPlanner
+from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
 
 # ---------------------------------------------------------------------------
 # Shared fixture
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def known_spec() -> AxisSpec:
@@ -34,6 +35,7 @@ def unknown_spec(known_spec: AxisSpec) -> AxisSpec:
 # ---------------------------------------------------------------------------
 # AC3: fail-loud on UNKNOWN-role axis
 # ---------------------------------------------------------------------------
+
 
 def test_unknown_role_raises_ambiguous_axis_error(unknown_spec: AxisSpec) -> None:
     """AC3: BatchPlanner.plan([unknown_spec]) must raise AmbiguousAxisError."""
@@ -53,6 +55,7 @@ def test_unknown_role_error_contains_axis_name(unknown_spec: AxisSpec) -> None:
 # residues-first guard: pre-mortem scenario
 # ---------------------------------------------------------------------------
 
+
 def test_residues_unknown_raises_not_silently_planned() -> None:
     """A 'residues' axis with UNKNOWN role must NEVER be silently auto-batched."""
     residues_spec = AxisSpec(
@@ -69,6 +72,7 @@ def test_residues_unknown_raises_not_silently_planned() -> None:
 # ---------------------------------------------------------------------------
 # Non-regression: KNOWN-role specs plan normally
 # ---------------------------------------------------------------------------
+
 
 def test_known_role_spec_plans_successfully(known_spec: AxisSpec) -> None:
     """KNOWN-role spec (default) must return a BatchPlan without raising."""

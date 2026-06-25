@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-06-24T20:25:04.603346+00:00",
+  "timestamp": "2026-06-25T16:11:15.563759+00:00",
   "config_version": "0.1.0",
   "epic_id": 1451,
   "epic_title": "xtrax distribution readiness (N0-N10)",
@@ -211,7 +211,7 @@
       "command": "just audit-output-sink-docs",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "TOTAL                                               4213   4035   1176      3   3.4%\nCoverage HTML written to dir .coverage_html\n============================== 6 passed in 7.78s ===============================\nPASS: output-sink docs gate\n\nuv run ruff check scripts/audit_output_sink_docs.py tests/distribution/test_output_sink_docs.py\nuv run pytest tests/distribution/test_output_sink_docs.py -v\n/home/marielle/projects/xtrax/.venv/lib/python3.13/site-packages/coverage/inorout.py:561: CoverageWarning: Module xtrax was never imported. (module-not-imported); see https://coverage.readthedocs.io/en/7.14.1/messages.html#warning-module-not-imported\n  self.warn(f\"Module {pkg} was never imported.\", slug=\"module-not-imported\")\n/home/marielle/projects/xtrax/.venv/lib/python3.13/site-packages/coverage/control.py:958: CoverageWarning: No data was collected. (no-data-collected); see https://coverage.readthedocs.io/en/7.14.1/messages.html#warning-no-data-collected\n  self._warn(\"No data was collected.\", slug=\"no-data-collected\")\nuv run python scripts/audit_output_sink_docs.py"
+      "output_tail": "TOTAL                                               4213   4035   1176      3   3.4%\nCoverage HTML written to dir .coverage_html\n\u001b[32m============================== \u001b[32m\u001b[1m6 passed\u001b[0m\u001b[32m in 5.33s\u001b[0m\u001b[32m ===============================\u001b[0m\nPASS: output-sink docs gate\n\nuv run ruff check scripts/audit_output_sink_docs.py tests/distribution/test_output_sink_docs.py\nuv run pytest tests/distribution/test_output_sink_docs.py -v\n/home/marielle/projects/xtrax/.venv/lib/python3.13/site-packages/coverage/inorout.py:561: CoverageWarning: Module xtrax was never imported. (module-not-imported); see https://coverage.readthedocs.io/en/7.14.1/messages.html#warning-module-not-imported\n  self.warn(f\"Module {pkg} was never imported.\", slug=\"module-not-imported\")\n/home/marielle/projects/xtrax/.venv/lib/python3.13/site-packages/coverage/control.py:958: CoverageWarning: No data was collected. (no-data-collected); see https://coverage.readthedocs.io/en/7.14.1/messages.html#warning-no-data-collected\n  self._warn(\"No data was collected.\", slug=\"no-data-collected\")\nuv run python scripts/audit_output_sink_docs.py"
     },
     {
       "name": "audit-project-hygiene",
@@ -241,7 +241,7 @@
       "command": "just audit-imports",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "---------\n\nAnalyzed 113 files, 208 dependencies.\n-------------------------------------\n\nCore packages must not import EDA (optional extra) KEPT\ntiling must not import inference KEPT\n\nContracts: 2 kept, 0 broken.\n\nuv run --extra dev lint-imports\nInstalled 16 packages in 40ms"
+      "output_tail": "\u001b[1m---------\u001b[0m\n\n\u001b[1mAnalyzed 113 files, 208 dependencies.\u001b[0m\n\u001b[1m-------------------------------------\u001b[0m\n\nCore packages must not import EDA (optional extra) \u001b[32mKEPT\u001b[0m\ntiling must not import inference \u001b[32mKEPT\u001b[0m\n\nContracts: 2 kept, 0 broken.\n\nuv run --extra dev lint-imports\n\u001b[2mInstalled \u001b[1m16 packages\u001b[0m \u001b[2min 31ms\u001b[0m\u001b[0m"
     },
     {
       "name": "no_future_annotations",
@@ -251,7 +251,7 @@
       "command": "just audit-no-future-annotations",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "\n\n============================== 2 passed in 0.06s ===============================\n\nuv run pytest tests/audit/test_no_future_annotations.py -v\n/home/marielle/projects/xtrax/.venv/lib/python3.13/site-packages/coverage/inorout.py:561: CoverageWarning: Module xtrax was never imported. (module-not-imported); see https://coverage.readthedocs.io/en/7.14.1/messages.html#warning-module-not-imported\n  self.warn(f\"Module {pkg} was never imported.\", slug=\"module-not-imported\")\n/home/marielle/projects/xtrax/.venv/lib/python3.13/site-packages/coverage/control.py:958: CoverageWarning: No data was collected. (no-data-collected); see https://coverage.readthedocs.io/en/7.14.1/messages.html#warning-no-data-collected\n  self._warn(\"No data was collected.\", slug=\"no-data-collected\")\n/home/marielle/projects/xtrax/.venv/lib/python3.13/site-packages/pytest_cov/plugin.py:366: CovReportWarning: Failed to generate report: No data to report.\n\n  warnings.warn(CovReportWarning(message), stacklevel=1)"
+      "output_tail": "\u001b[0m\n\n\u001b[32m============================== \u001b[32m\u001b[1m2 passed\u001b[0m\u001b[32m in 0.03s\u001b[0m\u001b[32m ===============================\u001b[0m\n\nuv run pytest tests/audit/test_no_future_annotations.py -v\n/home/marielle/projects/xtrax/.venv/lib/python3.13/site-packages/coverage/inorout.py:561: CoverageWarning: Module xtrax was never imported. (module-not-imported); see https://coverage.readthedocs.io/en/7.14.1/messages.html#warning-module-not-imported\n  self.warn(f\"Module {pkg} was never imported.\", slug=\"module-not-imported\")\n/home/marielle/projects/xtrax/.venv/lib/python3.13/site-packages/coverage/control.py:958: CoverageWarning: No data was collected. (no-data-collected); see https://coverage.readthedocs.io/en/7.14.1/messages.html#warning-no-data-collected\n  self._warn(\"No data was collected.\", slug=\"no-data-collected\")\n/home/marielle/projects/xtrax/.venv/lib/python3.13/site-packages/pytest_cov/plugin.py:366: CovReportWarning: Failed to generate report: No data to report.\n\n  warnings.warn(CovReportWarning(message), stacklevel=1)"
     },
     {
       "name": "jaxlint_performance",
@@ -261,7 +261,7 @@
       "command": "just audit-jaxlint",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "  \"tool\": \"jaxlint\",\n  \"tool_version\": \"0.1.0a1\",\n  \"emitted_at\": \"2026-06-24T20:24:54.953359+00:00\",\n  \"target\": \"src/xtrax\",\n  \"mode\": \"performance_only\",\n  \"exit_code\": 1,\n  \"finding_count\": 0,\n  \"error_count\": 0,\n  \"findings\": []\n}\n\nuv run python scripts/audit_jaxlint_json.py --performance-only"
+      "output_tail": "  \"tool\": \"jaxlint\",\n  \"tool_version\": \"0.1.0a1\",\n  \"emitted_at\": \"2026-06-25T16:11:09.828932+00:00\",\n  \"target\": \"src/xtrax\",\n  \"mode\": \"performance_only\",\n  \"exit_code\": 1,\n  \"finding_count\": 0,\n  \"error_count\": 0,\n  \"findings\": []\n}\n\nuv run python scripts/audit_jaxlint_json.py --performance-only"
     },
     {
       "name": "ruff_lint",
@@ -271,7 +271,7 @@
       "command": "uv run ruff check .",
       "passed": false,
       "exit_code": 1,
-      "output_tail": "13 | | import pytest\n14 | |\n15 | | from xtrax.tiling.roles import AmbiguousAxisError, AxisRole\n16 | | from xtrax.tiling.plan import AxisSpec, BatchPlan, BatchPlanner\n   | |_______________________________________________________________^\n17 |\n18 |   # ---------------------------------------------------------------------------\n   |\nhelp: Organize imports\n\nFound 17 errors.\n[*] 13 fixable with the `--fix` option."
+      "output_tail": "\u001b[1m\u001b[94m13 |\u001b[0m \u001b[1m\u001b[91m|\u001b[0m import pytest\n\u001b[1m\u001b[94m14 |\u001b[0m \u001b[1m\u001b[91m|\u001b[0m\n\u001b[1m\u001b[94m15 |\u001b[0m \u001b[1m\u001b[91m|\u001b[0m from xtrax.tiling.roles import AmbiguousAxisError, AxisRole\n\u001b[1m\u001b[94m16 |\u001b[0m \u001b[1m\u001b[91m|\u001b[0m from xtrax.tiling.plan import AxisSpec, BatchPlan, BatchPlanner\n   \u001b[1m\u001b[94m|\u001b[0m \u001b[1m\u001b[91m|_______________________________________________________________^\u001b[0m\n\u001b[1m\u001b[94m17 |\u001b[0m\n\u001b[1m\u001b[94m18 |\u001b[0m   # ---------------------------------------------------------------------------\n   \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[96mhelp\u001b[0m: \u001b[1mOrganize imports\u001b[0m\n\nFound 17 errors.\n[\u001b[36m*\u001b[0m] 13 fixable with the `--fix` option."
     },
     {
       "name": "ruff_format",
@@ -281,7 +281,7 @@
       "command": "uv run ruff format --check .",
       "passed": false,
       "exit_code": 1,
-      "output_tail": "Would reformat: tests/cli/test_loader.py\nWould reformat: tests/cli/test_manifest.py\nWould reformat: tests/cli/test_resume_verb.py\nWould reformat: tests/cli/test_run_verb.py\nWould reformat: tests/inference/test_api.py\nWould reformat: tests/inference/test_axes.py\nWould reformat: tests/inference/test_axis_config.py\nWould reformat: tests/inference/test_jaxtyping_optional.py\nWould reformat: tests/inference/test_schema.py\nWould reformat: tests/inference/test_seam_conformance.py\nWould reformat: tests/tiling/test_plan_unknown_guard.py\n28 files would be reformatted, 275 files already formatted"
+      "output_tail": "Would reformat: \u001b[1mtests/cli/test_loader.py\u001b[0m\nWould reformat: \u001b[1mtests/cli/test_manifest.py\u001b[0m\nWould reformat: \u001b[1mtests/cli/test_resume_verb.py\u001b[0m\nWould reformat: \u001b[1mtests/cli/test_run_verb.py\u001b[0m\nWould reformat: \u001b[1mtests/inference/test_api.py\u001b[0m\nWould reformat: \u001b[1mtests/inference/test_axes.py\u001b[0m\nWould reformat: \u001b[1mtests/inference/test_axis_config.py\u001b[0m\nWould reformat: \u001b[1mtests/inference/test_jaxtyping_optional.py\u001b[0m\nWould reformat: \u001b[1mtests/inference/test_schema.py\u001b[0m\nWould reformat: \u001b[1mtests/inference/test_seam_conformance.py\u001b[0m\nWould reformat: \u001b[1mtests/tiling/test_plan_unknown_guard.py\u001b[0m\n28 files would be reformatted, 275 files already formatted"
     },
     {
       "name": "ty_check",
@@ -323,7 +323,7 @@
       "command": "uv run pytest --doctest-modules src/xtrax/io/ -q",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "src/xtrax/training/loss.py                            22      6      2      0  66.7%   42, 85-107\nsrc/xtrax/training/optim.py                           17      8      2      0  47.4%   22, 41-43, 76-95, 124\nsrc/xtrax/training/state.py                            6      1      0      0  83.3%   9\nsrc/xtrax/training/step.py                            28     13      6      0  44.1%   55-56, 80-89, 112-121\nsrc/xtrax/training/trainer.py                         19      9      0      0  52.6%   49-72\nsrc/xtrax/training/types.py                           15      0      0      0 100.0%\nsrc/xtrax/transforms/map.py                           10     10      4      0   0.0%   1-40\nsrc/xtrax/transforms/scan.py                          10     10      4      0   0.0%   1-47\n----------------------------------------------------------------------------------------------\nTOTAL                                               4213   4035   1176      3   3.4%\nCoverage HTML written to dir .coverage_html\n1 passed in 1.54s"
+      "output_tail": "src/xtrax/training/loss.py                            22      6      2      0  66.7%   42, 85-107\nsrc/xtrax/training/optim.py                           17      8      2      0  47.4%   22, 41-43, 76-95, 124\nsrc/xtrax/training/state.py                            6      1      0      0  83.3%   9\nsrc/xtrax/training/step.py                            28     13      6      0  44.1%   55-56, 80-89, 112-121\nsrc/xtrax/training/trainer.py                         19      9      0      0  52.6%   49-72\nsrc/xtrax/training/types.py                           15      0      0      0 100.0%\nsrc/xtrax/transforms/map.py                           10     10      4      0   0.0%   1-40\nsrc/xtrax/transforms/scan.py                          10     10      4      0   0.0%   1-47\n----------------------------------------------------------------------------------------------\nTOTAL                                               4213   4035   1176      3   3.4%\nCoverage HTML written to dir .coverage_html\n\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.11s\u001b[0m\u001b[0m"
     },
     {
       "name": "audit_contracts",
@@ -344,7 +344,7 @@
       "command": "just audit-added-types-diff",
       "passed": false,
       "exit_code": 1,
-      "output_tail": "============================== 10 passed in 2.74s ==============================\nmerge-base=55bf118e1489080e4838bb6e80073864f1ecec2e files_checked=27 callables_checked=30\n\nuv run ruff check src/xtrax/devtools/gates/added_types_diff.py scripts/audit_added_types_diff.py tests/audit/test_added_types_diff.py\nuv run pytest tests/audit/test_added_types_diff.py -v\nuv run python scripts/audit_added_types_diff.py --no-emit\nFAIL: added-types diff gate\n  - src/xtrax/inference/abstract.py: unable to locate callable `is_leaf`\n  - src/xtrax/inference/config.py: unable to locate callable `decorator`\n  - src/xtrax/training/state.py: init_state: parameter `model` missing annotation\n  - src/xtrax/training/state.py: init_state: parameter `optimizer` missing annotation\nerror: Recipe `audit-added-types-diff` failed on line 49 with exit code 1"
+      "output_tail": "\u001b[32m============================== \u001b[32m\u001b[1m10 passed\u001b[0m\u001b[32m in 1.66s\u001b[0m\u001b[32m ==============================\u001b[0m\nmerge-base=55bf118e1489080e4838bb6e80073864f1ecec2e files_checked=28 callables_checked=31\n\nuv run ruff check src/xtrax/devtools/gates/added_types_diff.py scripts/audit_added_types_diff.py tests/audit/test_added_types_diff.py\nuv run pytest tests/audit/test_added_types_diff.py -v\nuv run python scripts/audit_added_types_diff.py --no-emit\nFAIL: added-types diff gate\n  - src/xtrax/inference/abstract.py: unable to locate callable `is_leaf`\n  - src/xtrax/inference/config.py: unable to locate callable `decorator`\n  - src/xtrax/training/state.py: init_state: parameter `model` missing annotation\n  - src/xtrax/training/state.py: init_state: parameter `optimizer` missing annotation\nerror: Recipe `audit-added-types-diff` failed on line 49 with exit code 1"
     }
   ],
   "coverage": {

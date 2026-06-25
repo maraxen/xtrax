@@ -106,6 +106,7 @@ class TestAxisConfigDecorator:
 
     def test_decorator_does_not_change_call_args(self):
         """fn still receives its arguments correctly after decoration."""
+
         @axis_config(AxisOverride(name="batch", default_batch_size=4))
         def add(a, b):
             return a + b
@@ -114,6 +115,7 @@ class TestAxisConfigDecorator:
 
     def test_get_axis_config_none_when_no_decorator(self):
         """get_axis_config returns None for a plain function."""
+
         def plain():
             pass
 
@@ -121,6 +123,7 @@ class TestAxisConfigDecorator:
 
     def test_zero_overrides_attaches_empty_tuple(self):
         """@axis_config() with zero args attaches an empty tuple."""
+
         @axis_config()
         def my_fn():
             pass
@@ -189,9 +192,7 @@ class TestSynthesizeAxesWithAxisOverride:
     def test_partial_positional_override_second_axis_unknown(self):
         """Partial override: axis 0 -> KNOWN, axis 1 has no override -> UNKNOWN."""
         ov = AxisOverride(name="batch", default_batch_size=32)
-        abstract = build_abstract_inputs(
-            {"x": ((16, 3), np.float32), "y": ((32,), np.int32)}
-        )
+        abstract = build_abstract_inputs({"x": ((16, 3), np.float32), "y": ((32,), np.int32)})
         specs = synthesize_axes(abstract, overrides=[ov])
         assert len(specs) == 2
         # axis 0 gets override
@@ -203,15 +204,14 @@ class TestSynthesizeAxesWithAxisOverride:
 
     def test_overrides_none_all_unknown_preserved(self):
         """Invariant D1: with overrides=None, every axis is still UNKNOWN."""
-        abstract = build_abstract_inputs(
-            {"x": ((16, 3), np.float32), "y": ((32,), np.int32)}
-        )
+        abstract = build_abstract_inputs({"x": ((16, 3), np.float32), "y": ((32,), np.int32)})
         specs = synthesize_axes(abstract, overrides=None)
         for spec in specs:
             assert spec.role == AxisRole.UNKNOWN
 
     def test_get_axis_config_wires_into_synthesize_axes(self):
         """AC4 end-to-end: @axis_config on fn -> get_axis_config -> synthesize_axes."""
+
         @axis_config(AxisOverride(name="batch", default_batch_size=32))
         def my_model(x):
             return x

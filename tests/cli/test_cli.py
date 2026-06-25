@@ -22,9 +22,7 @@ from xtrax.inference.config import AxisOverride, axis_config
 # Module-level fixture function (used as --fn import target)
 # ---------------------------------------------------------------------------
 
-WORKTREE_ROOT = str(
-    __import__("pathlib").Path(__file__).parent.parent.parent.resolve()
-)
+WORKTREE_ROOT = str(__import__("pathlib").Path(__file__).parent.parent.parent.resolve())
 
 
 @axis_config(AxisOverride(name="batch", default_batch_size=2))
@@ -68,9 +66,7 @@ class TestInstalledHelp:
             cwd=WORKTREE_ROOT,
         )
         output = result.stdout + result.stderr
-        assert "plan" in output, (
-            f"Expected 'plan' in --help output.\nFull output:\n{output}"
-        )
+        assert "plan" in output, f"Expected 'plan' in --help output.\nFull output:\n{output}"
 
     def test_help_lists_explain(self):
         """AC1: --help output must include the 'explain' verb."""
@@ -81,9 +77,7 @@ class TestInstalledHelp:
             cwd=WORKTREE_ROOT,
         )
         output = result.stdout + result.stderr
-        assert "explain" in output, (
-            f"Expected 'explain' in --help output.\nFull output:\n{output}"
-        )
+        assert "explain" in output, f"Expected 'explain' in --help output.\nFull output:\n{output}"
 
     def test_help_no_mangled_names(self):
         """AC1: --help output must NOT list 'plan-args' or 'explain-args'."""
@@ -143,15 +137,12 @@ class TestInstalledExplain:
         """AC5/AC8: explain stdout is parseable JSON."""
         result = self._run_explain("tests.cli.test_cli:decorated_fn")
         assert result.returncode == 0, (
-            f"Subprocess failed with code {result.returncode}.\n"
-            f"stderr: {result.stderr}"
+            f"Subprocess failed with code {result.returncode}.\nstderr: {result.stderr}"
         )
         try:
             parsed = json.loads(result.stdout)
         except json.JSONDecodeError as e:
-            pytest.fail(
-                f"stdout is not valid JSON: {e}\nstdout was:\n{result.stdout}"
-            )
+            pytest.fail(f"stdout is not valid JSON: {e}\nstdout was:\n{result.stdout}")
         assert isinstance(parsed, dict), "Expected JSON object at top level"
 
     def test_explain_has_meta_key(self):
@@ -263,6 +254,5 @@ class TestInstalledFailLoud:
             env=env,
         )
         assert "Traceback" not in result.stderr, (
-            f"Python traceback appeared in stderr — error is not clean.\n"
-            f"stderr: {result.stderr}"
+            f"Python traceback appeared in stderr — error is not clean.\nstderr: {result.stderr}"
         )

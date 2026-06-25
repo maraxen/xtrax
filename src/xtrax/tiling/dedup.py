@@ -136,8 +136,7 @@ def validate_dedup_carry_names(dedup_spec: DedupSpec, carry_spec: object) -> Non
     carry_axis = getattr(carry_spec, "axis_name")
     if dedup_axis != carry_axis:
         raise ValueError(
-            f"DedupSpec.axis_name={dedup_axis!r} does not match "
-            f"CarrySpec.axis_name={carry_axis!r}"
+            f"DedupSpec.axis_name={dedup_axis!r} does not match CarrySpec.axis_name={carry_axis!r}"
         )
 
 

@@ -85,16 +85,14 @@ def read_manifest(path: str) -> dict:
         ConfigError: If the schema version does not match.
     """
     try:
-        with open(path, "r") as f:
+        with open(path) as f:
             manifest = json.load(f)
     except FileNotFoundError:
         raise ResumeError(f"manifest file does not exist: {path}")
 
     version = manifest.get("schema_version")
     if version != CURRENT_SCHEMA_VERSION:
-        raise ConfigError(
-            f"manifest schema_version {version} != expected {CURRENT_SCHEMA_VERSION}"
-        )
+        raise ConfigError(f"manifest schema_version {version} != expected {CURRENT_SCHEMA_VERSION}")
 
     required_fields = [
         ("run_id", lambda m: m.get("run_id")),
@@ -118,4 +116,3 @@ def read_manifest(path: str) -> dict:
             )
 
     return manifest
-
