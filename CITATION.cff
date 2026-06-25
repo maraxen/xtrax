@@ -1,18 +1,9 @@
 cff-version: 1.2.0
 title: xtrax
-message: If you use this software, please cite it using these metadata.
-type: software
 authors:
   - family-names: Russo
     given-names: Marielle
 version: 0.3.0
 date-released: 2026-06-19
 repository-code: https://github.com/maraxen/xtrax
-repository-docs: https://xtrax.readthedocs.io
 license: Apache-2.0
-keywords:
-  - jax
-  - training
-  - distributed
-  - sparse
-  - composable
