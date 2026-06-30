@@ -4,6 +4,7 @@ All type definitions use only stdlib and numpy — no pandas, matplotlib, or sea
 This module is importable from xtrax core without eda extras.
 """
 
+from collections.abc import Sequence
 from typing import Literal, NotRequired, Protocol, TypedDict, runtime_checkable
 
 
@@ -97,6 +98,88 @@ _VALID_PANELS: frozenset[str] = frozenset(
 
 
 @runtime_checkable
+class AxisSpecLike(Protocol):
+    """Structural protocol for the minimal axis-spec shape extract_plan_stats reads.
+
+    xtrax.tiling.plan.AxisSpec satisfies this natively. Any other library's
+    axis-spec type (e.g. a parallel BatchPlanner reimplementation) also
+    satisfies it for free as long as it exposes `name`/`cardinality` — no
+    inheritance or conversion required.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def cardinality(self) -> int: ...
+
+
+@runtime_checkable
+class AxisDecisionLike(Protocol):
+    """Structural protocol for the minimal axis-decision shape extract_plan_stats reads.
+
+    xtrax.tiling.plan.AxisDecision satisfies this natively. `strategy` is
+    typed as `object`, not `Any`: extract_plan_stats only ever reads
+    `type(strategy).__name__` directly on it, then narrows to
+    DedupGatherLike/BucketLike below (via isinstance against a
+    @runtime_checkable Protocol, not a concrete class) before reading any
+    strategy-specific fields -- so `object` is the sound, precise type here,
+    not a type-checking escape hatch.
+    """
+
+    @property
+    def spec(self) -> AxisSpecLike: ...
+
+    @property
+    def batch_size(self) -> int: ...
+
+    @property
+    def reasoning(self) -> str: ...
+
+    @property
+    def strategy(self) -> object: ...
+
+
+@runtime_checkable
+class BatchPlanLike(Protocol):
+    """Structural protocol for the minimal batch-plan shape extract_plan_stats reads."""
+
+    @property
+    def decisions(self) -> Sequence[AxisDecisionLike]: ...
+
+
+@runtime_checkable
+class DedupGatherLike(Protocol):
+    """Structural protocol narrowing `strategy: object` for dedup analysis.
+
+    isinstance() against a @runtime_checkable Protocol (not the concrete
+    xtrax.tiling.strategy.DedupGather class) lets any library's
+    structurally-identical DedupGather-shaped strategy (e.g. a parallel
+    BatchPlanner reimplementation with matching field names) be recognized
+    and statically narrowed without inheriting from or importing xtrax's
+    own class.
+    """
+
+    @property
+    def k(self) -> int: ...
+
+    @property
+    def k_bucket(self) -> int: ...
+
+
+@runtime_checkable
+class BucketLike(Protocol):
+    """Structural protocol narrowing `strategy: object` for bucket analysis.
+
+    See DedupGatherLike docstring for why isinstance-against-Protocol (not
+    a concrete class) is used here.
+    """
+
+    @property
+    def boundaries(self) -> Sequence[int]: ...
+
+
+@runtime_checkable
 class PlanLogger(Protocol):
     """Structural protocol for plan visualization loggers (tensorboard, wandb, etc.).
 
@@ -140,4 +223,9 @@ __all__ = [
     "PlanStatsDict",
     "PanelName",
     "PlanLogger",
+    "AxisSpecLike",
+    "AxisDecisionLike",
+    "BatchPlanLike",
+    "DedupGatherLike",
+    "BucketLike",
 ]

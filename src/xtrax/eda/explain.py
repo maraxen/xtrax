@@ -7,11 +7,10 @@ guarantees all reasoning fields are non-empty strings.
 from __future__ import annotations
 
 from xtrax.eda.stats import extract_plan_stats
-from xtrax.eda.types import PlanStatsDict
-from xtrax.tiling.plan import BatchPlan
+from xtrax.eda.types import BatchPlanLike, PlanStatsDict
 
 
-def explain_plan(plan: BatchPlan) -> PlanStatsDict:
+def explain_plan(plan: BatchPlanLike) -> PlanStatsDict:
     """Extract plan statistics with guaranteed non-empty reasoning.
 
     Calls extract_plan_stats to get the full statistics dict, then ensures
@@ -19,7 +18,8 @@ def explain_plan(plan: BatchPlan) -> PlanStatsDict:
     substitutes a default message.
 
     Args:
-        plan: A BatchPlan containing axis decisions.
+        plan: A BatchPlan (or any BatchPlanLike-compatible plan) containing
+            axis decisions.
 
     Returns:
         PlanStatsDict with all reasoning fields guaranteed non-empty.

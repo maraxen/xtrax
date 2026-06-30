@@ -226,7 +226,7 @@ class TestAnalyzeDedup:
         )
 
         with pytest.raises(
-            TypeError, match="analyze_dedup requires DedupGather strategy; got Vmap"
+            TypeError, match="analyze_dedup requires a DedupGather-shaped strategy.*got Vmap"
         ):
             analyze_dedup(decision)
 
@@ -241,7 +241,7 @@ class TestAnalyzeDedup:
         )
 
         with pytest.raises(
-            TypeError, match="analyze_dedup requires DedupGather strategy; got SafeMap"
+            TypeError, match="analyze_dedup requires a DedupGather-shaped strategy.*got SafeMap"
         ):
             analyze_dedup(decision)
 
@@ -256,7 +256,7 @@ class TestAnalyzeDedup:
         )
 
         with pytest.raises(
-            TypeError, match="analyze_dedup requires DedupGather strategy; got Bucket"
+            TypeError, match="analyze_dedup requires a DedupGather-shaped strategy.*got Bucket"
         ):
             analyze_dedup(decision)
 
@@ -328,7 +328,9 @@ class TestAnalyzeBucket:
             strategy=Vmap(),
         )
 
-        with pytest.raises(TypeError, match="analyze_bucket requires Bucket strategy; got Vmap"):
+        with pytest.raises(
+            TypeError, match="analyze_bucket requires a Bucket-shaped strategy.*got Vmap"
+        ):
             analyze_bucket(decision)
 
     def test_analyze_bucket_rejects_safemap(self):
@@ -341,7 +343,9 @@ class TestAnalyzeBucket:
             strategy=SafeMap(batch_size=32),
         )
 
-        with pytest.raises(TypeError, match="analyze_bucket requires Bucket strategy; got SafeMap"):
+        with pytest.raises(
+            TypeError, match="analyze_bucket requires a Bucket-shaped strategy.*got SafeMap"
+        ):
             analyze_bucket(decision)
 
     def test_analyze_bucket_rejects_dedup_gather(self):
@@ -364,9 +368,111 @@ class TestAnalyzeBucket:
 
         with pytest.raises(
             TypeError,
-            match="analyze_bucket requires Bucket strategy; got DedupGather",
+            match="analyze_bucket requires a Bucket-shaped strategy.*got DedupGather",
         ):
             analyze_bucket(decision)
+
+
+class TestStructuralDuckTyping:
+    """Tests proving extract_plan_stats/analyze_dedup/analyze_bucket work on
+    foreign plan/decision/spec/strategy classes that do NOT inherit from any
+    xtrax type -- only structurally match AxisSpecLike/AxisDecisionLike/
+    BatchPlanLike/DedupGatherLike/BucketLike. Mirrors the real case of a
+    parallel BatchPlanner reimplementation (e.g. aminx.tiling) consuming
+    xtrax.eda without conversion.
+    """
+
+    def test_foreign_classes_no_inheritance(self):
+        """A completely independent set of classes, structurally matching the
+        Protocols but sharing zero base classes with xtrax, works end to end."""
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class ForeignSpec:
+            name: str
+            cardinality: int
+
+        @dataclass(frozen=True)
+        class ForeignVmap:
+            pass
+
+        @dataclass(frozen=True)
+        class ForeignDecision:
+            spec: ForeignSpec
+            batch_size: int
+            reasoning: str
+            strategy: object
+
+        @dataclass(frozen=True)
+        class ForeignPlan:
+            decisions: tuple
+
+        plan = ForeignPlan(
+            decisions=(
+                ForeignDecision(
+                    spec=ForeignSpec(name="batch", cardinality=16),
+                    batch_size=0,
+                    reasoning="foreign vmap",
+                    strategy=ForeignVmap(),
+                ),
+            )
+        )
+
+        stats = extract_plan_stats(plan)
+        assert stats["axes"][0]["name"] == "batch"
+        assert stats["axes"][0]["strategy"] == "ForeignVmap"
+        assert stats["strategy_counts"] == {"ForeignVmap": 1}
+        assert stats["dedup_stats"] == []
+        assert stats["bucket_stats"] == []
+
+    def test_foreign_dedup_gather_shaped_strategy_is_recognized(self):
+        """A foreign DedupGather-shaped strategy (matching fields, no
+        inheritance) is recognized by DedupGatherLike and analyzed correctly."""
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class ForeignSpec:
+            name: str
+            cardinality: int
+
+        @dataclass(frozen=True)
+        class ForeignDedupGather:
+            k: int
+            k_bucket: int
+
+        @dataclass(frozen=True)
+        class ForeignDecision:
+            spec: ForeignSpec
+            batch_size: int
+            reasoning: str
+            strategy: object
+
+        @dataclass(frozen=True)
+        class ForeignPlan:
+            decisions: tuple
+
+        plan = ForeignPlan(
+            decisions=(
+                ForeignDecision(
+                    spec=ForeignSpec(name="n_structures", cardinality=32),
+                    batch_size=16,
+                    reasoning="foreign dedup",
+                    strategy=ForeignDedupGather(k=16, k_bucket=16),
+                ),
+            )
+        )
+
+        stats = extract_plan_stats(plan)
+        assert stats["dedup_stats"] == [
+            {
+                "axis_name": "n_structures",
+                "dedup_ratio": 0.5,
+                "unique_count": 16,
+                "padded_count": 16,
+                "total_count": 32,
+                "padding_waste": 0,
+            }
+        ]
 
 
 class TestStatsTypeConsistency:

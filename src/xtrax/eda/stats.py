@@ -3,31 +3,41 @@
 This module extracts structured statistics from tiling plans without any
 visualization dependencies. It can be imported from xtrax core without the
 optional eda extras.
+
+Accepts any structurally-compatible plan (xtrax.tiling.plan.BatchPlan, or any
+other library's plan/decision/spec objects matching BatchPlanLike/
+AxisDecisionLike/AxisSpecLike in .types) -- not just xtrax's own concrete
+classes. Strategy detection is name-based (type(strategy).__name__) and
+Protocol-narrowed (DedupGatherLike/BucketLike), not isinstance-against-
+xtrax's-own-classes, so a parallel tiling-library reimplementation with
+matching field names works here without conversion or inheritance.
 """
 
-from xtrax.tiling.plan import AxisDecision, BatchPlan
-from xtrax.tiling.strategy import Bucket, DedupGather
-
 from .types import (
+    AxisDecisionLike,
     AxisStatsEntry,
+    BatchPlanLike,
+    BucketLike,
     BucketStatsEntry,
+    DedupGatherLike,
     DedupStatsEntry,
     PlanStatsDict,
 )
 
 
-def extract_plan_stats(plan: BatchPlan) -> PlanStatsDict:
+def extract_plan_stats(plan: BatchPlanLike) -> PlanStatsDict:
     """Extract structured statistics from a BatchPlan.
 
     Walks through all axis decisions in the plan and accumulates:
     - Per-axis statistics (name, strategy type, cardinality, batch_size, reasoning).
     - Strategy type frequency counts.
-    - Deduplication statistics (if DedupGather strategy detected).
-    - Bucketing statistics (if Bucket strategy detected).
+    - Deduplication statistics (if DedupGather-shaped strategy detected).
+    - Bucketing statistics (if Bucket-shaped strategy detected).
     - Memory warnings (if any estimates exceed thresholds).
 
     Args:
-        plan: A BatchPlan containing axis decisions.
+        plan: A BatchPlan (or any BatchPlanLike-compatible plan) containing
+            axis decisions.
 
     Returns:
         PlanStatsDict with all fields populated. Empty plan returns empty lists
@@ -63,13 +73,13 @@ def extract_plan_stats(plan: BatchPlan) -> PlanStatsDict:
         # Count strategy type
         strategy_counts[strategy_name] = strategy_counts.get(strategy_name, 0) + 1
 
-        # Analyze dedup if present
-        if isinstance(decision.strategy, DedupGather):
+        # Analyze dedup if present (structural match, not xtrax-class-specific)
+        if isinstance(decision.strategy, DedupGatherLike):
             dedup_entry = analyze_dedup(decision)
             dedup_stats.append(dedup_entry)
 
-        # Analyze bucket if present
-        if isinstance(decision.strategy, Bucket):
+        # Analyze bucket if present (structural match, not xtrax-class-specific)
+        if isinstance(decision.strategy, BucketLike):
             bucket_entry = analyze_bucket(decision)
             bucket_stats.append(bucket_entry)
 
@@ -83,20 +93,23 @@ def extract_plan_stats(plan: BatchPlan) -> PlanStatsDict:
     }
 
 
-def analyze_dedup(decision: AxisDecision) -> DedupStatsEntry:
-    """Analyze a DedupGather strategy decision.
+def analyze_dedup(decision: AxisDecisionLike) -> DedupStatsEntry:
+    """Analyze a DedupGather-shaped strategy decision.
 
     Computes deduplication ratio, padding waste, and other statistics specific
     to deduplication strategies.
 
     Args:
-        decision: An AxisDecision with a DedupGather strategy.
+        decision: An AxisDecisionLike with a DedupGatherLike-shaped strategy
+            (xtrax's own DedupGather, or any structurally-matching type from
+            another library).
 
     Returns:
         DedupStatsEntry with deduplication statistics.
 
     Raises:
-        TypeError: If decision.strategy is not a DedupGather instance.
+        TypeError: If decision.strategy does not structurally match
+            DedupGatherLike (i.e. lacks `k`/`k_bucket`).
 
     Example:
         >>> decision = AxisDecision(
@@ -109,12 +122,13 @@ def analyze_dedup(decision: AxisDecision) -> DedupStatsEntry:
         >>> stats["unique_count"]
         50
     """
-    if not isinstance(decision.strategy, DedupGather):
+    strategy = decision.strategy
+    if not isinstance(strategy, DedupGatherLike):
         raise TypeError(
-            f"analyze_dedup requires DedupGather strategy; got {type(decision.strategy).__name__}"
+            f"analyze_dedup requires a DedupGather-shaped strategy (k, k_bucket); "
+            f"got {type(strategy).__name__}"
         )
 
-    strategy = decision.strategy
     total_count = decision.spec.cardinality
     unique_count = strategy.k
     padded_count = strategy.k_bucket
@@ -131,19 +145,22 @@ def analyze_dedup(decision: AxisDecision) -> DedupStatsEntry:
     }
 
 
-def analyze_bucket(decision: AxisDecision) -> BucketStatsEntry:
-    """Analyze a Bucket strategy decision.
+def analyze_bucket(decision: AxisDecisionLike) -> BucketStatsEntry:
+    """Analyze a Bucket-shaped strategy decision.
 
     Extracts bucket boundary information.
 
     Args:
-        decision: An AxisDecision with a Bucket strategy.
+        decision: An AxisDecisionLike with a BucketLike-shaped strategy
+            (xtrax's own Bucket, or any structurally-matching type from
+            another library).
 
     Returns:
         BucketStatsEntry with bucketing statistics.
 
     Raises:
-        TypeError: If decision.strategy is not a Bucket instance.
+        TypeError: If decision.strategy does not structurally match
+            BucketLike (i.e. lacks `boundaries`).
 
     Example:
         >>> decision = AxisDecision(
@@ -156,12 +173,13 @@ def analyze_bucket(decision: AxisDecision) -> BucketStatsEntry:
         >>> stats["bucket_boundaries"]
         [32, 64, 128]
     """
-    if not isinstance(decision.strategy, Bucket):
+    strategy = decision.strategy
+    if not isinstance(strategy, BucketLike):
         raise TypeError(
-            f"analyze_bucket requires Bucket strategy; got {type(decision.strategy).__name__}"
+            f"analyze_bucket requires a Bucket-shaped strategy (boundaries); "
+            f"got {type(strategy).__name__}"
         )
 
-    strategy = decision.strategy
     return {
         "axis_name": decision.spec.name,
         "bucket_count": len(strategy.boundaries),
