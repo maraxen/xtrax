@@ -6,7 +6,7 @@ thread: T2 — agentic algorithm evolution & autoresearch loop
 spec: .praxia/docs/specs/260702_design-the-2181-agentic-algorithm-evolut.md
 mandate: .praxia/docs/roadmaps/research-epics/260702_00-mandate.md
 research: .praxia/docs/research/260702_roadmap-research-synthesis.md (§1)
-status: revised-r1-pending-verdict
+status: APPROVED (adversarial r1 verdict 260702) — pending user final review
 ---
 
 # DAG — T2 · #2181 autoresearch loop (evaluator-first ratchet MVP)

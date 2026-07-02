@@ -7,7 +7,7 @@ relates_to: [2180, 2181]   # 2180 port_validation (its packaging + dispatch subs
 spec: .praxia/docs/specs/260702_xtrax-workflows-as-a-praxia-plugin-packa.md   # contemplex 8ded6692, INVEST PASS (S overridden — roadmap-partition)
 research: .praxia/docs/research/260702_roadmap-research-synthesis.md   # §4 packaging contract + rig-run bug root causes + G1–G4 gaps
 roadmap: .praxia/docs/roadmaps/research-epics/260702_00-mandate.md
-status: revised-r1-pending-verdict
+status: APPROVED (adversarial r1 verdict 260702) — pending user final review
 ---
 
 # T3 DAG — xtrax workflows as a praxia plugin (phased dual-track)
@@ -36,7 +36,7 @@ autoresearch MVP is authored as a Claude PCW routing effectful actions through t
 (15c-on-Claude-PCW), so it is pure-xtrax and praxia-decoupled — AC-28 dispatch-independence holds
 and nothing on #2181's critical path waits on any AC-P* edge. **The one cross-thread edge is
 xtrax-workspace T3-05 (the freshness primitive): the #2181 human-gate records
-(constitution/campaign/kill) consume it, but T3-05 is not on the walking-skeleton critical path.**
+(constitution/campaign/kill) consume it, but T3-05 is not on the walking-skeleton critical path.** (a low-cost parallel predecessor of the constitution gate; the binding constraint runs through the T1 substrate chain).
 Three cheap gating probes (AC-V1/
 V2/V3) run early and decide dispositions rather than block value: AC-V1 flips D3 from
 belt-and-suspenders to mandatory, AC-V2 gates the phase-2 strict fork, and AC-V3 (after AC-P1)
