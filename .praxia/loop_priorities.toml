@@ -4,7 +4,7 @@
 
 [priorities]
 version = "1.0"
-updated_at = "2026-06-18T14:00:00Z"
+updated_at = "2026-07-02T18:00:00Z"
 autonomy_level = "L1"
 autonomy_mode = "autonomous"
 
@@ -24,9 +24,9 @@ rank = 0
 slug = "pure-jax-composition-layer"
 title = "EPIC: Pure-JAX composition layer — host prep, auto CLI, chain-map UI"
 backlog_id = 2174
-status = "queued"
-phase = "awaiting_loop_instructions"
-depends_on_epics = ["audit-framework-foundation", "distribution-readiness"]
+status = "active"
+phase = "T1_substrate_dag_filed"
+depends_on_epics = []  # audit-fw + distribution both completed 2026-07-02
 skills = ["using-xtrax", "using-jax", "exporting-jax", "brainstorming", "using-bathos"]
 pillars = [
   "clear compiler vs composition separation of concerns",
@@ -36,7 +36,7 @@ pillars = [
   "agentic validation audit and script usage metadata on nodes",
   "plugin state (e.g. bathos) lives on composition nodes",
 ]
-notes = "User sentiment captured 2026-06-17. Do not start until audit + distribution foundation epics clear or user overrides."
+notes = "T1 substrate DAG filed 2026-07-02 (14 items, 2 slices; roadmap .praxia/docs/roadmaps/research-epics/). E1/E2 shipped in 0.3.0. Slice-1 opener = land stages/topology.py (in-flight). Chain-map UI deferred; consumes the typed IR read-only."
 related_epic_ids = [2175]
 
 [[queue]]
@@ -44,7 +44,7 @@ rank = 0
 slug = "agent-composition-tooling"
 title = "EPIC [research]: Agent identities, skills, KBs, and evolvable tooling for JAX/xtrax composition"
 backlog_id = 2175
-status = "decomposed"
+status = "completed"
 phase = "children_complete"
 spec_path = ".praxia/docs/specs/260618_hmw-design-agent-identities-skills-knowl.md"
 child_backlog_ids = [2176, 2177, 2178, 2179]
@@ -68,7 +68,7 @@ rank = 1
 slug = "audit-framework-foundation"
 title = "EPIC: xtrax systematic audit framework (N0–N5 foundation + judgment track)"
 backlog_id = 1573
-status = "winding_down"
+status = "completed"
 phase = "N5_complete"
 child_backlog_ids = [1573, 1574, 1575, 1576]
 notes = "Audit framework complete (#1589 D3' diff-gate). Distribution-readiness active at #1451."
@@ -78,13 +78,13 @@ rank = 2
 slug = "distribution-readiness"
 title = "EPIC: xtrax distribution readiness (N0–N10 release convergence)"
 backlog_id = 1451
-status = "active"
-phase = "N10_audit_complete"
+status = "completed"
+phase = "released_0_3_0"
 depends_on_epic = 1573
 child_backlog_ids = [1451, 1452, 1453, 1455, 1454]
 spec_path = ".praxia/docs/specs/260610_make-the-xtrax-jax-library-distribution.md"
 skills = ["using-xtrax", "verification-before-completion"]
-notes = "N10 release-readiness audit complete (#1462). Verdict BLOCKED: ruff/ty + human #1454. See .praxia/release_readiness_report.md"
+notes = "xtrax 0.3.0 LIVE on PyPI 2026-07-02 (OIDC, PyPI-only by decision; TestPyPI dropped). n9 gate record reconciled."
 
 [[queue]]
 rank = 3
@@ -106,8 +106,8 @@ rank = 4
 slug = "implementation-validation-pipeline"
 title = "EPIC [research]: Implementation validation pipeline (robust jax-port + audit integration)"
 backlog_id = 2180
-status = "queued"
-phase = "wave2_complete"
+status = "completed"
+phase = "mvp_scaffold_complete"
 depends_on_epics = ["audit-framework-foundation"]
 spec_path = ".praxia/docs/specs/260618_hmw-design-unified-implementation-valida.md"
 design_path = ".praxia/docs/designs/260618_2180_port_validation_design.md"
@@ -126,10 +126,12 @@ rank = 4
 slug = "agentic-autoresearch"
 title = "EPIC [research]: Agentic algorithm evolution & autoresearch (xtrax + bathos)"
 backlog_id = 2181
-status = "queued"
-phase = "awaiting_deep_research"
-depends_on_epics = ["pure-jax-composition-layer", "agent-composition-tooling", "implementation-validation-pipeline"]
-spec_path = ""
+status = "spec_complete"
+phase = "dag_filed_awaiting_T1_entry_edge"
+# USER DECISION 2026-07-02: dependency NARROWED to the #2174 minimal-substrate child
+# (T1 entry-edge items) + typed-IR validation-gate artifact — NOT all of #2174.
+depends_on_epics = ["pure-jax-composition-layer:T1-entry-edge-only"]
+spec_path = ".praxia/docs/specs/260702_design-the-2181-agentic-algorithm-evolut.md"
 nlm_seed = ".praxia/research/nlm_seed_2180_2181.md"
 skills = ["using-bathos", "using-jax", "orchestration", "brainstorming", "using-contemplex"]
 research_outputs = [
@@ -138,7 +140,7 @@ research_outputs = [
   "bathos + composition node campaign DAG model",
   "contemplex brainstorm → staff design → spec → backlog DAG",
 ]
-notes = "Composable JAX engine enables experiment composition; bathos for lineage. Research-only until NLM + brainstorm complete."
+notes = "Spec + 42-node DAG filed 2026-07-02 (33 xtrax + 9 bathos; contemplex 129ecc73 INVEST PASS; adversarial APPROVED). Evaluator-first ratchet MVP, pure-xtrax + bathos MCP, 5 HITL gates as DAG nodes. Island search = Phase-2 gated on GEAR/AutoSOTA full read."
 
 # ---------------------------------------------------------------------------
 # Cross-cutting themes (folded into epics above)
@@ -199,3 +201,14 @@ target_sprint = "maintenance"
 backlog_id = 1374
 title = "TestAsyncIndexedStream rename alignment"
 target_sprint = "maintenance"
+
+[[queue]]
+rank = 2
+slug = "workflows-as-praxia-plugin"
+title = "THREAD: xtrax workflows as a praxia plugin (phased dual-track)"
+backlog_id = 0  # umbrella-less; see DAG doc for the 15 filed items
+status = "active"
+phase = "phase1_executable"
+spec_path = ".praxia/docs/specs/260702_xtrax-workflows-as-a-praxia-plugin-packa.md"
+skills = ["orchestration", "using-xtrax"]
+notes = "DAG 260702_03: 5 phase-1 xtrax items ship now (zero praxia dep); 3 probes; T3-P2G HITL gate; 6 praxia-repo edges (filed in praxia workspace). port_validation stays Claude-PCW. #2181 MVP does not depend on this thread."
