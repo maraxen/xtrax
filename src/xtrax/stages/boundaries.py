@@ -79,8 +79,9 @@ class AxisBoundary(eqx.Module):
     All fields are static (eqx.field(static=True)) since they are callables,
     not JAX arrays. Default: all None (no-op — axis passes through to next axis).
 
-    Topology rules enforced by make_inference_plan validator:
+    Topology rules enforced by xtrax.stages.topology.validate_plan_topology:
     - tap.ordered=True or sink.ordered=True + Vmap strategy → PlanTopologyError
+    - Scan strategy on a heterogeneous axis → PlanTopologyError
     - fuse on a Scan axis: fuse receives the stacked ys after the full scan
     """
 
