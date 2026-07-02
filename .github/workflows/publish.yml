@@ -49,6 +49,9 @@ jobs:
     name: Publish to TestPyPI
     needs: build
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Advisory until the TestPyPI Trusted Publisher is configured (n9 gap):
+    # PyPI publish no longer depends on this job.
+    continue-on-error: true
     runs-on: ubuntu-latest
     environment:
       name: testpypi
@@ -70,7 +73,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: [build, publish-testpypi]
+    needs: [build]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment:
