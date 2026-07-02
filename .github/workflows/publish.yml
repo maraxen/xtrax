@@ -1,6 +1,6 @@
 name: Publish Release
 
-# Tag pushes publish to TestPyPI then PyPI via OIDC Trusted Publishing.
+# Tag pushes publish to PyPI via OIDC Trusted Publishing (no staging index by decision 2026-07-02).
 # workflow_dispatch runs build + verify only (no upload).
 
 on:
@@ -44,32 +44,6 @@ jobs:
         with:
           name: dist
           path: dist/
-
-  publish-testpypi:
-    name: Publish to TestPyPI
-    needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    # Advisory until the TestPyPI Trusted Publisher is configured (n9 gap):
-    # PyPI publish no longer depends on this job.
-    continue-on-error: true
-    runs-on: ubuntu-latest
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/xtrax
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
 
   publish-pypi:
     name: Publish to PyPI
