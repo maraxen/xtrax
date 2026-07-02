@@ -20,6 +20,9 @@
 - [260615_using-xtrax-skill-backlog-dag](plans/260615_using-xtrax-skill-backlog-dag.md) — Backlog DAG for the using-xtrax exportable skill: 5 tier-1 tasks, 5 tier-2 tasks, 5 tech-debt HiTL items, sprint sequencing
 ## Roadmaps
 - [research-epics/260702_00-mandate](roadmaps/research-epics/260702_00-mandate.md) — roadmap mandate: 0.3.0 baseline, locked decisions, T1/T2/T3 dependency spine, 7 HITL gates, cross-repo edges (bathos ×9, praxia ×6)
+- [research-epics/260702_01-dag-2174-substrate](roadmaps/research-epics/260702_01-dag-2174-substrate.md) — T1 backlog DAG: 14 items, 2 slices, 7 marked #2181 entry-edge items, all 11 spec ACs mapped
+- [research-epics/260702_02-dag-2181-autoresearch](roadmaps/research-epics/260702_02-dag-2181-autoresearch.md) — T2 backlog DAG: 33 xtrax items (P0-P4 + 5 human gates + CC invariants) + 9 bathos cross-repo items; walking skeleton unblocked from bathos lane
+- [research-epics/260702_03-dag-plugin-workflows](roadmaps/research-epics/260702_03-dag-plugin-workflows.md) — T3 backlog DAG: 5 phase-1 xtrax + 3 gating probes + 6 praxia cross-repo edges; strict-mode registry double-gated
 - [composition/260622_e1-signature-inference-epic](roadmaps/composition/260622_e1-signature-inference-epic.md) — E1 keystone epic: derive Bundle pytree + AxisSpec roles from typed pure JAX functions (eval_shape inference + jaxtyping dim-names → roles; Tyro-backed CLI). Grounded, pre-brainstorm.
 
 ## Handoffs
