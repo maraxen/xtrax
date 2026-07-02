@@ -36,8 +36,7 @@ jobs:
       - name: Wheel smoke test
         run: |
           uv venv /tmp/wheel-smoke
-          /tmp/wheel-smoke/bin/pip install --upgrade pip
-          /tmp/wheel-smoke/bin/pip install dist/*.whl
+          uv pip install --python /tmp/wheel-smoke/bin/python dist/*.whl
           /tmp/wheel-smoke/bin/python -c "import xtrax; print(xtrax.__version__)"
 
       - name: Upload artifact
