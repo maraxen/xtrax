@@ -87,11 +87,11 @@ blocking = true
 [[backlog_items]]
 id = 1454
 slug = "n9_human_oidc"
-title = "[N9] Configure PyPI + TestPyPI OIDC Trusted Publisher (human gate)"
+title = "[N9] Configure PyPI OIDC Trusted Publisher (human gate)"
 gate_type = "human"
-expected_status = "open"
+expected_status = "completed"
 blocking = true
-notes = "One-time Trusted Publisher config on TestPyPI and PyPI before first tag push."
+notes = "PyPI Trusted Publisher configured and proven (0.2.1, 0.3.0 published via OIDC). TestPyPI intentionally not used — decision 2026-07-02; publish.yml is PyPI-only."
 
 [[backlog_items]]
 id = 1462
