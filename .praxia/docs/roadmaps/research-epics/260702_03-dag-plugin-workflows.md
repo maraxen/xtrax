@@ -7,10 +7,14 @@ relates_to: [2180, 2181]   # 2180 port_validation (its packaging + dispatch subs
 spec: .praxia/docs/specs/260702_xtrax-workflows-as-a-praxia-plugin-packa.md   # contemplex 8ded6692, INVEST PASS (S overridden — roadmap-partition)
 research: .praxia/docs/research/260702_roadmap-research-synthesis.md   # §4 packaging contract + rig-run bug root causes + G1–G4 gaps
 roadmap: .praxia/docs/roadmaps/research-epics/260702_00-mandate.md
-status: draft-pending-adversarial-review
+status: revised-r1-pending-verdict
 ---
 
 # T3 DAG — xtrax workflows as a praxia plugin (phased dual-track)
+
+> **Enum normalization (praxia backlog).** priority ∈ {P1,P2,P3}, difficulty ∈ {quick,moderate,involved}.
+> Mapping applied across all three DAG docs: priority critical/P0→P1, high→P2, medium→P2, low→P3;
+> difficulty XS/S→quick, M→moderate, L/XL→involved.
 
 ## Thread summary
 
@@ -27,10 +31,13 @@ by the AC-V2 MCP-reachability probe** (HITL gate 7). The strict-mode fork (AC-P5
 loud guard (AC-P3) has already landed — the two hard praxia edges must never drift apart (PM-1).
 `port_validation` stays a **Claude PCW** throughout phase 1; dispatching it via the NO-CLAUDE
 `rig-run` backend would silently swap its execution substrate (G3), so that is a deliberate
-phase-2 decision, not packaging. Critically, **#2181 has NO dependency on this thread**: its
+phase-2 decision, not packaging. Critically, **#2181 has no dependency on any praxia-side item**: its
 autoresearch MVP is authored as a Claude PCW routing effectful actions through the bathos MCP
 (15c-on-Claude-PCW), so it is pure-xtrax and praxia-decoupled — AC-28 dispatch-independence holds
-and nothing on #2181's critical path waits on any AC-P* edge. Three cheap gating probes (AC-V1/
+and nothing on #2181's critical path waits on any AC-P* edge. **The one cross-thread edge is
+xtrax-workspace T3-05 (the freshness primitive): the #2181 human-gate records
+(constitution/campaign/kill) consume it, but T3-05 is not on the walking-skeleton critical path.**
+Three cheap gating probes (AC-V1/
 V2/V3) run early and decide dispositions rather than block value: AC-V1 flips D3 from
 belt-and-suspenders to mandatory, AC-V2 gates the phase-2 strict fork, and AC-V3 (after AC-P1)
 proves the two dispatch paths for a shared flow are equivalent.
@@ -40,13 +47,16 @@ proves the two dispatch paths for a shared flow are equivalent.
 | Group | Workspace | Items |
 |---|---|---|
 | Phase 1 (ship now) | xtrax | 5 — T3-01, T3-02, T3-03, T3-04, T3-05 |
-| Gating probes (cheap, early) | xtrax (verification) | 3 — T3-06, T3-07, T3-08 |
+| Gating probes (cheap, early) | xtrax (verification) | 2 — T3-06, T3-07 |
+| Late verification (needs AC-P1) | xtrax (verification) | 1 — T3-08 |
+| Phase-2 entry gate (HITL 7) | xtrax (human-gate) | 1 — T3-P2G |
 | Phase 2 (cross-repo edges) | **praxia** | 6 — T3-09, T3-10, T3-11, T3-12, T3-13, T3-14 |
-| **Total** | | **14** |
+| **Total** | | **15** |
 
 **praxia-workspace items:** T3-09 (AC-P1), T3-10 (AC-P2), T3-11 (AC-P3), T3-12 (AC-P4),
 T3-13 (AC-P5), T3-14 (AC-P6) — the six AC-P\* cross-repo edges, filed in the praxia backlog.
-All other 8 items are xtrax-workspace (5 phase-1 + 3 verification probes).
+All other 9 items are xtrax-workspace (5 phase-1 + 3 verification probes + 1 phase-2-entry HITL
+gate T3-P2G).
 
 ---
 
@@ -67,8 +77,9 @@ flowchart TB
   subgraph PROBES["Gating probes — cheap, early (xtrax verification)"]
     V1["T3-06 · AC-V1<br/>session-init drift coverage"]
     V2["T3-07 · AC-V2<br/>MCP-reachability probe"]
-    V3["T3-08 · AC-V3<br/>differential equivalence"]
   end
+
+  V3["T3-08 · AC-V3<br/>differential equivalence<br/>(late — needs AC-P1)"]
 
   subgraph P2["Phase 2 — workspace: praxia (cross-repo edges)"]
     P2dirs["T3-10 · AC-P2<br/>workspace-derived dirs + T1b"]
@@ -79,7 +90,7 @@ flowchart TB
     P6chk["T3-14 · AC-P6<br/>export --check (deferred)"]
   end
 
-  HG{{"HITL gate 7 —<br/>phase-2 entry decision"}}
+  HG{{"T3-P2G · HITL gate 7<br/>phase-2 entry decision"}}
 
   released --> X1
   X1 --> X4
@@ -89,8 +100,12 @@ flowchart TB
   P2dirs --> P1disp
   P1disp --> V3
   V2 --> HG
+  HG -.->|gates| P1disp
   HG -.->|gates| P2dirs
   HG -.->|gates| P3guard
+  HG -.->|gates| P4rw
+  HG -.->|gates| P5reg
+  HG -.->|gates| P6chk
   V2 -->|"fail ⇒ strict fork needed"| P5reg
   P3guard -->|"hard precondition (PM-1)"| P5reg
   P2dirs -.-> P6chk
@@ -104,9 +119,9 @@ xtrax 0.3.0 (released)
                            └─ T3-03 AC-X3/X3b D3 drift ◀── T3-06 AC-V1 (flips mandatory/optional)
  T3-02 AC-X2 grep-gate (standing)      T3-05 AC-X6 freshness (closes debt #411)
 
-── HITL gate 7 (phase-2 entry) fed by ─▶ T3-07 AC-V2 MCP probe ──┐
-                                                                 ▼
-[praxia] T3-10 AC-P2 ws-dirs ─▶ T3-09 AC-P1 generic dispatch ─▶ T3-08 AC-V3 differential
+── T3-P2G · HITL gate 7 (phase-2 entry) fed by ─▶ T3-07 AC-V2 MCP probe ──┐  (gates all of T3-09..14)
+                                                                          ▼
+[praxia] T3-10 AC-P2 ws-dirs ─▶ T3-09 AC-P1 generic dispatch ─▶ T3-08 AC-V3 differential (late)
 [praxia] T3-11 AC-P3 toolless guard ─┐
                                      ├─▶ T3-13 AC-P5 strict registry  (GATED: AC-V2 fail ∧ AC-P3 ∧ HITL)
 [praxia] T3-07 AC-V2 (fail) ─────────┘
@@ -125,8 +140,8 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 #### T3-01 · AC-X1 — packaging manifest
 - **workspace:** xtrax
 - **category:** infra / packaging
-- **priority:** P0
-- **difficulty:** S
+- **priority:** P1
+- **difficulty:** quick
 - **depends_on:** [] (root — xtrax 0.3.0 released)
 - **acs_covered:** AC-X1
 - **gate — success:** `praxia plugin install <xtrax repo>` on a fresh `~/.praxia` exits 0 and the
@@ -145,7 +160,7 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 - **workspace:** xtrax
 - **category:** test / gate
 - **priority:** P1
-- **difficulty:** S
+- **difficulty:** quick
 - **depends_on:** [] (standing CI gate over `agent_assets/workflows/`)
 - **acs_covered:** AC-X2
 - **gate — success:** `grep -R 'action_mode: strict' agent_assets/workflows/` yields 0 hits;
@@ -161,7 +176,7 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 - **workspace:** xtrax
 - **category:** test / gate
 - **priority:** P1
-- **difficulty:** M
+- **difficulty:** moderate
 - **depends_on:** [T3-01, T3-06] (needs export machinery from AC-X1; AC-V1 sets its
   mandatory-vs-belt-and-suspenders disposition)
 - **acs_covered:** AC-X3, AC-X3b
@@ -183,7 +198,7 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 - **workspace:** xtrax
 - **category:** test
 - **priority:** P1
-- **difficulty:** M
+- **difficulty:** moderate
 - **depends_on:** [T3-01] (installs the manifest into a temp `~/.praxia`)
 - **acs_covered:** AC-X4
 - **gate — success:** a two-template flow whose parent SubFlow-references a child is installed into
@@ -197,25 +212,31 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
   fixture** reused by AC-P4 (T3-12): a child-name substring embedded in an unrelated
   description/prompt field that must NOT be rewritten. Fork-independent.
 
-#### T3-05 · AC-X6 — TTL + probe human-gate freshness (17c)
+#### T3-05 · AC-X6 — TTL-attestation + invalidate-only-probe freshness primitive (17c)
 - **workspace:** xtrax
 - **category:** infra / gate (also debt)
 - **priority:** P1
-- **difficulty:** M
-- **depends_on:** [] (operates on `distribution/release_readiness.toml`; independent of packaging)
+- **difficulty:** moderate
+- **depends_on:** [] (a small reusable freshness library/script; consumers bind to it)
 - **acs_covered:** AC-X6
-- **gate — success:** every human-gate status in `distribution/release_readiness.toml` derives from
-  a **within-TTL attestation** (hermetic, offline) plus an **opportunistic invalidate-only probe**
-  (PyPI project exists / git tag pushed); no status is a hand-maintained `expected_status` copied
-  verbatim as live status.
+- **gate — success:** a single **reusable freshness primitive** — a within-TTL attestation
+  (hermetic, offline) plus an **opportunistic invalidate-only probe** — is consumed by **two named
+  consumers**: (1) **first consumer** `distribution/release_readiness.toml` human gates (probe = PyPI
+  project exists / git tag pushed); (2) **second consumer** the **#2181 loop's human-gate records** —
+  constitution (T2-28 / AC-21), campaign-approval + kill-switch (T2-32 / AC-25), and the
+  evaluator-change standing gate (T2-29 / AC-22). For every gate status of **either** consumer, no
+  status is a hand-maintained `expected_status` copied verbatim as live status.
 - **gate — fast/loud:** a past-TTL attestation flips the gate **BLOCKED loudly** (never silently
-  green); the probe and the TTL backstop have **independent enable switches** (PM-4); the probe can
-  only INVALIDATE, never satisfy, a gate.
-- **description (backlog add):** Replaces the `gate_type=='human'` path in
-  `audit_release_readiness.py` that copies `expected_status` verbatim as live status with no probe.
-  **Closes debt #411's structural defect** (the n9-OIDC staleness: committed record read "open" for
-  ~a week post-v0.3.0). Two independent switches so a blanket probe-skip env-var cannot also
-  suppress the TTL loud-fail backstop (the exact PM-4 regression).
+  green) for **both** consumers; the probe and the TTL backstop have **independent enable switches**
+  (PM-4); the probe can only INVALIDATE, never satisfy, a gate.
+- **description (backlog add):** A small **reusable** TTL-attestation + invalidate-only-probe
+  freshness library/script — deliberately **not** release-readiness-specific. **First consumer:**
+  replaces the `gate_type=='human'` path in `audit_release_readiness.py` that copies `expected_status`
+  verbatim (**closes debt #411's structural defect** — the n9-OIDC staleness: committed record read
+  "open" for ~a week post-v0.3.0). **Second consumer:** the #2181 human-gate records (T2-28
+  constitution / T2-32 campaign+kill / T2-29 evaluator-change) bind their freshness to this same
+  primitive — thread T2 references it as `T3-05`. Two independent switches so a blanket probe-skip
+  env-var cannot also suppress the TTL loud-fail backstop (the exact PM-4 regression).
 
 ### Gating probes — cheap, early (xtrax verification)
 
@@ -223,7 +244,7 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 - **workspace:** xtrax (verification; observes praxia `SessionContext::init`)
 - **category:** test / verification
 - **priority:** P1
-- **difficulty:** S
+- **difficulty:** quick
 - **depends_on:** [] (root — cheap, run early)
 - **acs_covered:** AC-V1
 - **gate — success:** from an xtrax cwd with no project-local `plugins.toml`, record a **binary
@@ -239,8 +260,8 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 #### T3-07 · AC-V2 — MCP-reachability probe (fork-15/16 gate)
 - **workspace:** xtrax (verification; probes bathos MCP from a NO-CLAUDE node)
 - **category:** test / verification
-- **priority:** P0
-- **difficulty:** S
+- **priority:** P1
+- **difficulty:** quick
 - **depends_on:** [] (root — cheap, run early; feeds HITL gate 7)
 - **acs_covered:** AC-V2
 - **gate — success:** from a NO-CLAUDE local-model dispatch node, probe and record bathos-MCP
@@ -253,11 +274,16 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
   the loop — it only decides whether the deferred strict fork (AC-P5) must be built. Kept independent
   of TTL/other switches.
 
+### Late verification — after praxia AC-P1 (xtrax verification)
+
+> **T3-08 is late by design** — it requires praxia AC-P1 (T3-09) to exist, so it is **not** a
+> cheap-early probe; it runs only once the rig-run generic dispatch path lands.
+
 #### T3-08 · AC-V3 — differential equivalence test (PM-2)
 - **workspace:** xtrax (verification; exercises the praxia AC-P1 artifact)
 - **category:** test / verification
 - **priority:** P2
-- **difficulty:** M
+- **difficulty:** moderate
 - **depends_on:** [T3-09] (the rig-run generic path only exists once AC-P1 lands)
 - **acs_covered:** AC-V3
 - **gate — success:** for one shared flow (`port_validation`), dispatched via `dw emit → Claude`
@@ -268,20 +294,40 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
   flow).
 - **description (backlog add):** Guards against the PM-2 failure where the reused tool-less spec
   fallback silently strips context and produces inconsistent verdicts. Sequenced after AC-P1; a
-  precondition for trusting rig-run dispatch of any plugin flow.
+  precondition for trusting rig-run dispatch of any plugin flow. **Late by design — requires praxia
+  AC-P1 (T3-09); not a cheap-early probe.**
+
+### Phase-2 entry gate — workspace: xtrax (HITL gate 7)
+
+#### T3-P2G · HITL gate 7 — phase-2 entry decision
+- **workspace:** xtrax
+- **category:** human-gate
+- **gate_type:** human
+- **priority:** P1
+- **difficulty:** quick
+- **depends_on:** [T3-07]  (AC-V2 probe result recorded)
+- **acs_covered:** — (governance node; HITL gate 7, no AC)
+- **gate — success:** a human decision to invest in praxia-side dispatch, fed by the AC-V2 (T3-07)
+  MCP-reachability probe result; recorded with sign-off + within-TTL attestation (freshness via
+  T3-05).
+- **gate — fast/loud:** no phase-2 edge (T3-09 … T3-14) may start until this gate records approval;
+  the node flips **blocked loudly at TTL expiry**, never silently green.
+- **description (backlog add):** The phase-2-entry HITL gate (gate 7). Fed by AC-V2's probe result;
+  gates every praxia-side dispatch/strict investment (T3-09 … T3-14). No cross-repo praxia edge
+  auto-starts. xtrax-side governance node — not itself a praxia backlog item.
 
 ### Phase 2 — workspace: praxia (cross-repo edges)
 
-> Filed in the **praxia** backlog. The whole phase is behind **HITL gate 7** (phase-2-entry
-> decision, fed by AC-V2). The strict-mode fork (T3-13) additionally requires AC-V2 to *fail* and
-> AC-P3 to have landed.
+> Filed in the **praxia** backlog. The whole phase is behind **HITL gate 7** (T3-P2G, phase-2-entry
+> decision, fed by AC-V2). Every phase-2 item carries `T3-P2G` in its `depends_on`. The strict-mode
+> fork (T3-13) additionally requires AC-V2 to *fail* and AC-P3 to have landed.
 
 #### T3-09 · AC-P1 — generic rig-run dispatch fallback (G1, fork 14a)
 - **workspace:** praxia
 - **category:** feature / dispatch
 - **priority:** P1
-- **difficulty:** M
-- **depends_on:** [T3-10] (needs workspace-derived resolution for the template to be found)
+- **difficulty:** moderate
+- **depends_on:** [T3-10, T3-P2G] (needs workspace-derived resolution for the template to be found; gated by HITL gate 7)
 - **acs_covered:** AC-P1
 - **gate — success:** `rig-run --flow xtrax_port_validation` from a temp cwd resolves + dispatches
   via the generic tool-less spec fallback, tried **only after** the nine hardcoded arms miss; an
@@ -297,8 +343,8 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 - **workspace:** praxia
 - **category:** bug / fix
 - **priority:** P1
-- **difficulty:** M
-- **depends_on:** [] (praxia root; the rig-run template-resolution bug fix)
+- **difficulty:** moderate
+- **depends_on:** [T3-P2G] (gated by HITL gate 7; the rig-run template-resolution bug fix — praxia root otherwise)
 - **acs_covered:** AC-P2
 - **gate — success:** with `--workspace <ws>` from an unrelated cwd, `handle_rig_run` builds
   `FsTemplateRegistry` dirs = `[ws/.praxia/workflows, ~/.praxia/workflows, ws/agent_assets/workflows]`
@@ -313,9 +359,9 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 #### T3-11 · AC-P3 — toolless-strict loud guard (O-2, G2)
 - **workspace:** praxia
 - **category:** bug / safety-guard
-- **priority:** P0
-- **difficulty:** S
-- **depends_on:** [] (praxia; independent safety edge — must land with/before ANY strict dispatch)
+- **priority:** P1
+- **difficulty:** quick
+- **depends_on:** [T3-P2G] (gated by HITL gate 7; independent safety edge — must land with/before ANY strict dispatch)
 - **acs_covered:** AC-P3
 - **gate — success:** an `action_mode:strict` node whose `tool_profile` resolves EMPTY →
   a pre-dispatch assertion fails **LOUD and aborts** (replacing warn-and-proceed); the strict node
@@ -332,8 +378,8 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 - **workspace:** praxia
 - **category:** feature / export
 - **priority:** P2
-- **difficulty:** M
-- **depends_on:** [T3-04] (reuses the O-1 decoy-description test as its guard)
+- **difficulty:** moderate
+- **depends_on:** [T3-04, T3-P2G] (reuses the O-1 decoy-description test as its guard; gated by HITL gate 7)
 - **acs_covered:** AC-P4
 - **gate — success:** for a plugin template with bare-name SubFlow child refs, export rewrites
   **ONLY SubFlow-ref field slots** to `xtrax_<child>`, field-scoped (AST-scoped); a description /
@@ -349,8 +395,10 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 - **workspace:** praxia
 - **category:** feature / gated
 - **priority:** P3
-- **difficulty:** L
-- **depends_on:** [T3-07, T3-11] (GATED: AC-V2 **fail** ∧ AC-P3 landed ∧ HITL gate 7 approval)
+- **difficulty:** involved
+- **depends_on:** [T3-07, T3-11, T3-P2G] (GATED: AC-V2 **fail** ∧ AC-P3 landed ∧ HITL gate 7 approval)
+- **condition:** `AC-V2 (T3-07) result == FAIL` — this item **MUST NOT be scheduled if AC-V2
+  PASSes** (bathos MCP reachable ⇒ no strict fork needed; 15c extends to strict nodes without AC-P5).
 - **acs_covered:** AC-P5
 - **gate — success:** GIVEN demand for a strict local-model variant AND a failed MCP-reachability
   probe (AC-V2), a praxia-side sandboxed (no-network, read-only-config) strict-mode registry serves
@@ -368,8 +416,8 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 - **workspace:** praxia
 - **category:** feature / deferred
 - **priority:** P3
-- **difficulty:** S
-- **depends_on:** [] (deferred; the interim is covered by xtrax-side D3 / T3-03)
+- **difficulty:** quick
+- **depends_on:** [T3-P2G] (gated by HITL gate 7; deferred — interim covered by xtrax-side D3 / T3-03)
 - **acs_covered:** AC-P6
 - **gate — success:** on `~/.praxia` drift, `praxia plugin export --check` exits non-zero on hash
   mismatch without healing.

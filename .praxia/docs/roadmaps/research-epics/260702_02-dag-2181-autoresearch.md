@@ -6,7 +6,7 @@ thread: T2 — agentic algorithm evolution & autoresearch loop
 spec: .praxia/docs/specs/260702_design-the-2181-agentic-algorithm-evolut.md
 mandate: .praxia/docs/roadmaps/research-epics/260702_00-mandate.md
 research: .praxia/docs/research/260702_roadmap-research-synthesis.md (§1)
-status: draft-pending-adversarial-review
+status: revised-r1-pending-verdict
 ---
 
 # DAG — T2 · #2181 autoresearch loop (evaluator-first ratchet MVP)
@@ -114,6 +114,8 @@ flowchart TD
   end
   T208 --> T211 --> T212 --> T213 --> T214 --> T215 --> T216 --> T217
   T210 --> T217
+  T209 --> T214
+  T209 --> T217
   T217 --> T218
   T217 --> T219
 
@@ -140,6 +142,10 @@ flowchart TD
   end
   T217 --> T227
   T227 --> T222
+  T222 --> T223
+  T222 --> T224
+  T222 --> T225
+  T222 --> T226
   B06 --> T227
   B01 --> T222
   B08 --> T222
@@ -156,7 +162,7 @@ flowchart TD
     T232{"T2-32 AC-25 kill-switch / campaign approval"}
   end
   T228 --> T204
-  T229 -. gates .-> T205
+  T229 -. standing runtime gate .-> T205
   T230 -. gates .-> X030
   T231 -. gates .-> T221
   T232 --> T227
@@ -167,6 +173,7 @@ flowchart TD
   T203 --> T233
   B03 --> T233
   T222 --> T233
+  T231 --> T233
 ```
 
 **ASCII critical-path spine (fast read):**
@@ -193,8 +200,8 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
 > Dependencies reference **T1 entry-edge items** and **#2174**. Cheap; unblocks P1 and P4 planning.
 
 ### T2-01 — typed-IR validation-gate entry edge (AC-E1)
-- workspace: xtrax · category: entry-gate · priority: critical · difficulty: S
-- depends_on: [`T1:typed-IR-validate-verb`, `T1:D4-graph-serialize-cli`, `#2174`]
+- workspace: xtrax · category: entry-gate · priority: P1 · difficulty: quick
+- depends_on: [T1-10, T1-08, T1-11, #2174]  # typed-IR validate verb = T1-10; graph serialize/CLI = T1-08 + T1-11 (D4↔S3)
 - acs_covered: [AC-E1]
 - gate: candidate composition graph → T1 deterministic validation-gate (`extract_schema`-consistency
   + `validate_plan_topology` + jaxlint) writes `audit_verdict ∈ {PASS,FAIL,NEEDS_WORK}` to node
@@ -207,20 +214,26 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   typed-composition-IR `graph validate` verb."
 
 ### T2-02 — minimal-substrate consumption (F-C dependency binding)
-- workspace: xtrax · category: entry-verify · priority: critical · difficulty: S
-- depends_on: [`T1:D2-sealed-seam(S4)`, `T1:D3-io-callback-boundaries(S2)`, `T1:D4-graph-serialize-cli(S3)`, `#2174`]
+- workspace: xtrax · category: entry-verify · priority: P1 · difficulty: quick
+- depends_on: [T1-04, T1-05, T1-07, T1-08, T1-11, #2174]  # S2 executed boundaries = T1-04 + T1-05 (nested-ordering cert); S3 graph serialize/CLI = T1-08 + T1-11; S4 sealed seam = T1-07 (D↔S: D3↔S2, D4↔S3, D2↔S4)
 - acs_covered: [] (F-C binding; feeds AC-E2)
 - gate: verify the S2/S3/S4 child deliverables landed as **real load-bearing code** and are
-  importable from `src/xtrax` (PM-3 anti-stub).
-  - success: executed io_callback boundaries + graph serialize/CLI + sealed seam all resolve to
-    `src/xtrax`; #2181's `depends_on` re-points from `pure-jax-composition-layer` to the child id.
-  - fast/loud: any deliverable resolves to a test double / stub → CI exit 1 (blocks P1 start).
+  importable from `src/xtrax` (PM-3 anti-stub). The executed-boundaries deliverable is certified
+  **only when T1-05 (nested-ordering stress harness) is green** — T1-04's flat-scan AC4 is
+  necessary-not-sufficient (PM1 provenance). Graph-serialization/CLI resolves to **both T1-08
+  (serialize + version gate) and T1-11 (graph→plan parity through the CLI)**.
+  - success: executed io_callback boundaries (T1-04 **and** T1-05 certified) + graph serialize/CLI
+    (T1-08 **and** T1-11) + sealed seam (T1-07) all resolve to `src/xtrax`; #2181's `depends_on`
+    re-points from `pure-jax-composition-layer` to the child id.
+  - fast/loud: any deliverable resolves to a test double / stub, **OR T1-05 is not green** (executed
+    boundaries uncertified) → CI exit 1 (blocks P1 start).
 - backlog-add: "F-C substrate consumption: confirm T1 S2/S3/S4 landed as real src/xtrax code (not
-  stubs) before P1; re-point #2181 depends_on to the minimal-composition child. Blocks walking
-  skeleton."
+  stubs) before P1 — executed boundaries certified only with T1-05 green (T1-04 alone is
+  necessary-not-sufficient, PM1); graph serialize/CLI = T1-08 + T1-11; sealed seam = T1-07. Re-point
+  #2181 depends_on to the minimal-composition child. Blocks walking skeleton."
 
 ### T2-03 — GEAR + AutoSOTA full read (Phase-2 unblocker)
-- workspace: xtrax · category: research · priority: high · difficulty: S
+- workspace: xtrax · category: research · priority: P2 · difficulty: quick
 - depends_on: [] (independent; schedule early)
 - acs_covered: [] (planning artifact for P4)
 - gate: full read of **GEAR (arXiv 2605.13874)** — currently title-verified only — plus **AutoSOTA**,
@@ -240,8 +253,8 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
 > rigor machinery. Uses only the existing bathos MCP surface — no bathos BUILD item blocks it.
 
 ### T2-04 — no-stub sealed-seam lock (AC-E2, PM-3)
-- workspace: xtrax · category: entry-gate · priority: critical · difficulty: M
-- depends_on: [T2-01, T2-02]
+- workspace: xtrax · category: entry-gate · priority: P1 · difficulty: moderate
+- depends_on: [T2-01, T2-02, T2-28]  # T2-28 constitution gate blocks loop start
 - acs_covered: [AC-E2]
 - gate: sealed `EvaluateFn` seam import resolves to `src/xtrax` (the real S4 seam) and is
   registration-locked.
@@ -252,8 +265,8 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   never-became-load-bearing)."
 
 ### T2-05 — eval-closure-invariant / full-closure SHA lock (AC-7, F2, PM-1)
-- workspace: xtrax · category: in-loop-gate · priority: critical · difficulty: L
-- depends_on: [T2-04, `T1:D2-sealed-seam(S4)`]
+- workspace: xtrax · category: in-loop-gate · priority: P1 · difficulty: involved
+- depends_on: [T2-04, T1-07]  # D2 sealed EvaluateFn seam = T1-07 (D2↔S4)
 - acs_covered: [AC-7]
 - gate: per iteration, SHA-256 of the evaluator's **COMPLETE CLOSURE** (code + splits + metric-defs +
   pinned deps + config) == the locked manifest **AND** the candidate touched no protected path
@@ -267,7 +280,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   drift/unlisted read → HALT + human escalation (PM-1 non-recoverable)."
 
 ### T2-06 — metrics-provenance (AC-8, F1)
-- workspace: xtrax · category: in-loop-gate · priority: critical · difficulty: M
+- workspace: xtrax · category: in-loop-gate · priority: P1 · difficulty: moderate
 - depends_on: [T2-05] · uses existing bathos: `claim_register` / `claim_attest_parity` / run sidecar
 - acs_covered: [AC-8]
 - gate: every fitness scalar traces 100% to the immutable-evaluator stdout envelope + bathos
@@ -280,7 +293,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   Rides existing bathos claim_register/attest_parity — no BUILD item needed."
 
 ### T2-07 — info-barrier-lint (AC-9, F3, PM-5, ORTH-2)
-- workspace: xtrax · category: in-loop-gate · priority: critical · difficulty: L
+- workspace: xtrax · category: in-loop-gate · priority: P1 · difficulty: involved
 - depends_on: [T2-06] · hardened by bathos B2-05 (defense-in-depth, not a P1 blocker)
 - acs_covered: [AC-9]
 - gate: agent-facing outputs are (a) schema-validated JSON with **no raw-log read path** reachable
@@ -295,7 +308,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   hardens autonomous mode."
 
 ### T2-08 — evaluator-completeness (AC-11, PM-2)
-- workspace: xtrax · category: in-loop-gate · priority: critical · difficulty: M
+- workspace: xtrax · category: in-loop-gate · priority: P1 · difficulty: moderate
 - depends_on: [T2-05]
 - acs_covered: [AC-11]
 - gate: at registration the evaluator asserts **every invariant in a reviewed invariant-manifest**
@@ -309,7 +322,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   registration, else refuse loop start. Blocks reward-hacking of untracked properties (PM-2)."
 
 ### T2-09 — external-stop watchdog (AC-13, F9, PM-7)
-- workspace: xtrax · category: in-loop-gate · priority: critical · difficulty: L
+- workspace: xtrax · category: in-loop-gate · priority: P1 · difficulty: involved
 - depends_on: [T2-08]
 - acs_covered: [AC-13]
 - gate: a **separate watchdog process** — kill authority unrevokable by the loop, termination
@@ -323,7 +336,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   preserved. Deferred praxia contract-DAG budget enforcement is NOT load-bearing for this (PM-7)."
 
 ### T2-10 — ratchet-crash-atomicity (AC-14, PM-7)
-- workspace: xtrax · category: in-loop-gate · priority: critical · difficulty: M
+- workspace: xtrax · category: in-loop-gate · priority: P1 · difficulty: moderate
 - depends_on: [T2-08]
 - acs_covered: [AC-14]
 - gate: git-as-memory writes are crash-atomic (tmp-commit + fsync + atomic ref update); a crash
@@ -339,8 +352,8 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
 ## CC — cross-cutting invariants (CI-wide, enforced from P1)
 
 ### T2-20 — compiler-boundary grep-gate (AC-26, F-A)
-- workspace: xtrax · category: invariant · priority: critical · difficulty: XS
-- depends_on: [T2-04]
+- workspace: xtrax · category: invariant · priority: P1 · difficulty: quick
+- depends_on: [T2-04, T1-14]  # reuses the #2174 grep-gate recipe (T1-14) — do not re-implement
 - acs_covered: [AC-26]
 - gate: `src/xtrax` contains zero UI/chain-map/plugin-state identifiers.
   - success: zero grep hits.
@@ -349,7 +362,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   src/xtrax → else CI exit 1. Reuses the #2174 grep-gate recipe; CI-wide from P1."
 
 ### T2-21 — dispatch-independence (AC-28, forks 15/16)
-- workspace: xtrax · category: invariant · priority: critical · difficulty: M
+- workspace: xtrax · category: invariant · priority: P1 · difficulty: moderate
 - depends_on: [T2-04]
 - acs_covered: [AC-28]
 - gate: the loop's effectful actions (git commit/reset, evaluator invocation, bathos run/campaign
@@ -370,7 +383,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
 > diversity quota, and the two-phase compile clock. Assembles the full ratchet loop.
 
 ### T2-11 — candidate-static (AC-1, F0)
-- workspace: xtrax · category: in-loop-gate · priority: high · difficulty: S
+- workspace: xtrax · category: in-loop-gate · priority: P2 · difficulty: quick
 - depends_on: [T2-08]
 - acs_covered: [AC-1]
 - gate: mutated candidate → clean import + zero jaxlint JL-series errors.
@@ -380,7 +393,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   pre-compute with JSON envelope, exit 1, zero GPU time."
 
 ### T2-12 — schema-gate (AC-2)
-- workspace: xtrax · category: in-loop-gate · priority: high · difficulty: S
+- workspace: xtrax · category: in-loop-gate · priority: P2 · difficulty: quick
 - depends_on: [T2-11]
 - acs_covered: [AC-2]
 - gate: candidate slotted into a StageBundle → `extract_schema` (`jax.eval_shape`, zero FLOPs)
@@ -391,7 +404,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   pre-execution on mismatch, loud."
 
 ### T2-13 — structure-tripwire (AC-3)
-- workspace: xtrax · category: in-loop-gate · priority: high · difficulty: S
+- workspace: xtrax · category: in-loop-gate · priority: P2 · difficulty: quick
 - depends_on: [T2-12]
 - acs_covered: [AC-3]
 - gate: schema-passing candidate → `verify_structure` on one tiny batch, abstract == concrete
@@ -403,8 +416,8 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   pytree/shape/dtype; StructureMismatchError → reject after exactly one cheap exec."
 
 ### T2-14 — candidate-smoke (AC-4, F4)
-- workspace: xtrax · category: in-loop-gate · priority: high · difficulty: M
-- depends_on: [T2-13]
+- workspace: xtrax · category: in-loop-gate · priority: P2 · difficulty: moderate
+- depends_on: [T2-13, T2-09]  # watchdog (T2-09) must exist before the first autonomous candidate execution
 - acs_covered: [AC-4]
 - gate: structurally-valid candidate → L1 dry-run + L2 CPU smoke under the pinned uv lockfile, both
   exit 0 in <60 s.
@@ -414,7 +427,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   pre-budget with sanitized summary, no GPU/cluster submission."
 
 ### T2-15 — checkified-execution (AC-5)
-- workspace: xtrax · category: in-loop-gate · priority: high · difficulty: M
+- workspace: xtrax · category: in-loop-gate · priority: P2 · difficulty: moderate
 - depends_on: [T2-14]
 - acs_covered: [AC-5]
 - gate: smoke-passing candidate executed under `SafetyManager(enabled=True)` checkify float_checks →
@@ -426,7 +439,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   identity)."
 
 ### T2-16 — prereg-match (AC-6, F8)
-- workspace: xtrax · category: in-loop-gate · priority: high · difficulty: M
+- workspace: xtrax · category: in-loop-gate · priority: P2 · difficulty: moderate
 - depends_on: [T2-15] · uses existing bathos `gate_check`
 - acs_covered: [AC-6]
 - gate: candidate run config == the pre-registered hypothesis+metric sidecar (bathos `gate_check`).
@@ -436,8 +449,8 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   gate_check; mismatch → GateErrorPayload denial, candidate rejected. Existing bathos gate."
 
 ### T2-17 — multi-metric-regression ratchet (AC-10, F7, PM-2)
-- workspace: xtrax · category: in-loop-gate · priority: critical · difficulty: L
-- depends_on: [T2-16, T2-10]
+- workspace: xtrax · category: in-loop-gate · priority: P1 · difficulty: involved
+- depends_on: [T2-16, T2-10, T2-09]  # watchdog (T2-09) in place before the ratchet commits autonomously
 - acs_covered: [AC-10]
 - gate: candidate fitness dict vs current best → label 'improvement' **only if** WR ≥ 0.6 **AND**
   BP ≥ 0.2 **AND** Cohen's d ≥ 0.2 across the fitness dict.
@@ -448,7 +461,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   over the fitness dict; else git reset to best. Blocks faster-but-more-memory silent regressions."
 
 ### T2-18 — diversity-quota-semantic (AC-12, F5, PM-6)
-- workspace: xtrax · category: in-loop-gate · priority: high · difficulty: L
+- workspace: xtrax · category: in-loop-gate · priority: P2 · difficulty: involved
 - depends_on: [T2-17] · reuses #2174 typed-IR for structural diff
 - acs_covered: [AC-12]
 - gate: over N consecutive iterations (default N=5), ≥1 **semantically-structural** mutation
@@ -461,7 +474,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   (PM-6). Reuses #2174 typed-IR structural diff."
 
 ### T2-19 — compile-time two-phase clock (AC-27, fork 3, ORTH-4)
-- workspace: xtrax · category: in-loop-gate · priority: medium · difficulty: M
+- workspace: xtrax · category: in-loop-gate · priority: P2 · difficulty: moderate
 - depends_on: [T2-17]
 - acs_covered: [AC-27]
 - gate: runtime fitness **excludes** compile time (persistent XLA cache warms first compile) **and**
@@ -482,7 +495,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
 > only confirmatory campaigns**, never the walking skeleton.
 
 ### T2-22 — conclude-time statistical-battery wiring (AC-15)
-- workspace: xtrax · category: campaign-integration · priority: medium · difficulty: M
+- workspace: xtrax · category: campaign-integration · priority: P2 · difficulty: moderate
 - depends_on: [T2-27, B2-01, B2-08]
 - acs_covered: [AC-15]
 - gate: at campaign conclude, the loop consumes the `bathos[stats]` battery verdict (Wilcoxon /
@@ -496,7 +509,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   advisory-downgrade. Depends bathos B2-01 + bridge B2-08."
 
 ### T2-23 — seed-gate integration (AC-16)
-- workspace: xtrax · category: campaign-integration · priority: medium · difficulty: S
+- workspace: xtrax · category: campaign-integration · priority: P2 · difficulty: quick
 - depends_on: [T2-22, B2-02]
 - acs_covered: [AC-16]
 - gate: loop emits `Run.seed` + campaign mode; conclude enforces ≥3 seeds per `script_sha256` AND
@@ -508,7 +521,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   exploration → advisory. Depends bathos B2-02."
 
 ### T2-24 — baseline-budget-equivalence (AC-17)
-- workspace: xtrax · category: campaign-integration · priority: medium · difficulty: S
+- workspace: xtrax · category: campaign-integration · priority: P2 · difficulty: quick
 - depends_on: [T2-22, B2-01]
 - acs_covered: [AC-17]
 - gate: loop emits candidate + baseline HPO-trial/compute counts; conclude checks the baseline
@@ -520,7 +533,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   B2-01 conclude gate."
 
 ### T2-25 — sidecar-drift reaction (AC-18)
-- workspace: xtrax · category: campaign-integration · priority: medium · difficulty: S
+- workspace: xtrax · category: campaign-integration · priority: P2 · difficulty: quick
 - depends_on: [T2-22, B2-04]
 - acs_covered: [AC-18]
 - gate: across all runs of a script, the sidecar SHA is identical to the first-run manifest; loop
@@ -532,7 +545,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   (autonomous) / warn (collaborative). Depends bathos B2-04 (promote reserved code)."
 
 ### T2-26 — attestation-as-evidence (AC-19)
-- workspace: xtrax · category: campaign-integration · priority: medium · difficulty: S
+- workspace: xtrax · category: campaign-integration · priority: P2 · difficulty: quick
 - depends_on: [T2-22, B2-07]
 - acs_covered: [AC-19]
 - gate: a run admitted as evidence must verify its signed `manifest_sha256` + stdout hash.
@@ -544,8 +557,8 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   bathos B2-07."
 
 ### T2-27 — capability-probe gate (AC-20, PM-4)
-- workspace: xtrax · category: campaign-integration · priority: medium · difficulty: M
-- depends_on: [T2-17, B2-06]
+- workspace: xtrax · category: campaign-integration · priority: P2 · difficulty: moderate
+- depends_on: [T2-17, B2-06, T2-32]  # T2-32 campaign-approval gate blocks confirmatory campaign start
 - acs_covered: [AC-20]
 - gate: on confirmatory-campaign start, the loop controller machine-probes bathos that `Run.seed` +
   stats battery are **live** (not a hand-maintained attestation).
@@ -561,13 +574,20 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
 ## HG — human-gate DAG nodes (gate_type: human)
 
 > The five F-E gates as explicit DAG nodes. Each binds to a **machine-checkable probe + timestamped
-> TTL attestation** that goes stale **loudly** — the anti-staleness / freshness mechanism is **owned
-> by thread T3** (`260702_03-dag-plugin-workflows.md`, TTL/probe human-gate freshness); cross-
+> TTL attestation** that goes stale **loudly** — the freshness primitive is the **T3-05**
+> TTL-attestation + invalidate-only-probe library (`260702_03-dag-plugin-workflows.md`); cross-
 > referenced here, **not duplicated**. Wording refined, never deleted (F-E).
+>
+> **Edge directionality (S-5 fix).** Each human-gate node (T2-28…32) `depends_on` **only** the
+> freshness primitive `[T3-05]` — it does **not** depend on the loop items it governs (removing the
+> earlier inversions T2-29→T2-05, T2-31→T2-21, T2-32→T2-09). The **gated** nodes depend on their
+> gate: T2-04 (loop start) `depends_on` T2-28; T2-27 (confirmatory start) `depends_on` T2-32.
+> **T2-29 (AC-22, evaluator-change) is a STANDING RUNTIME GATE** — it fires on evaluator-change
+> events, not as a DAG-ordering edge.
 
 ### T2-28 — constitution authorship (AC-21, gate a)
-- workspace: xtrax · category: human-gate · gate_type: human · priority: critical · difficulty: S
-- depends_on: [`T3:ttl-attestation-freshness`]
+- workspace: xtrax · category: human-gate · gate_type: human · priority: P1 · difficulty: quick
+- depends_on: [T3-05]  # freshness primitive only
 - acs_covered: [AC-21]
 - gate: a constitution create/amend records explicit human sign-off bound to a machine-checkable
   probe (file hash present + timestamped TTL attestation).
@@ -575,34 +595,37 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   - fast/loud: loop cannot start/continue; node flips to **blocked loudly at TTL expiry**, never
     silently green.
 - backlog-add: "AC-21 constitution-authorship human gate: human sign-off bound to file-hash probe +
-  TTL attestation before loop start; blocked-loud at TTL expiry. Freshness mechanism ← T3, not
+  TTL attestation before loop start; blocked-loud at TTL expiry. Freshness mechanism ← T3-05, not
   duplicated."
 
-### T2-29 — evaluator change (AC-22, gate b)
-- workspace: xtrax · category: human-gate · gate_type: human · priority: critical · difficulty: S
-- depends_on: [`T3:ttl-attestation-freshness`, T2-05]
+### T2-29 — evaluator change (AC-22, gate b) — STANDING RUNTIME GATE
+- workspace: xtrax · category: human-gate · gate_type: human · priority: P1 · difficulty: quick
+- depends_on: [T3-05]  # freshness primitive only — NOT a DAG-ordering edge on T2-05 (S-5 fix)
 - acs_covered: [AC-22]
-- gate: any change to evaluator code, splits, or metric definitions is gated by a human-approval node
-  — the agent never approves its own judge.
+- gate: **STANDING RUNTIME GATE** (fires on evaluator-change *events*, not a topological DAG edge):
+  any change to evaluator code, splits, or metric definitions is gated by a human-approval node —
+  the agent never approves its own judge. When it fires it forces a closure-hash re-lock (T2-05)
+  before the changed evaluator is trusted.
   - success: human sign-off + closure-hash re-lock (T2-05) before the changed evaluator is trusted.
   - fast/loud: change rejected; loop halts until human sign-off + closure hash re-lock.
-- backlog-add: "AC-22 evaluator-change human gate: any evaluator/splits/metric change requires human
-  sign-off + closure-hash re-lock (T2-05); agent never approves its own judge. Freshness ← T3."
+- backlog-add: "AC-22 evaluator-change STANDING RUNTIME gate: fires on any evaluator/splits/metric
+  change (event-triggered, not a DAG-ordering edge) → requires human sign-off + closure-hash re-lock
+  (T2-05); agent never approves its own judge. Freshness ← T3-05."
 
 ### T2-30 — promotion-to-main (AC-23, gate c)
-- workspace: xtrax · category: human-gate · gate_type: human · priority: critical · difficulty: S
-- depends_on: [`T3:ttl-attestation-freshness`]
+- workspace: xtrax · category: human-gate · gate_type: human · priority: P1 · difficulty: quick
+- depends_on: [T3-05]  # freshness primitive only
 - acs_covered: [AC-23]
 - gate: evolved code proposed for promotion out of the sandbox lineage into xtrax main is gated by a
   human-review node.
   - success: human engineering review passes → promotion allowed.
   - fast/loud: promotion refused; code stays in sandbox lineage (honors `no_autonomous_push_or_merge_to_main`).
 - backlog-add: "AC-23 promotion-to-main human gate: no evolved candidate merges to xtrax main without
-  human engineering review; else stays in sandbox lineage. Freshness ← T3."
+  human engineering review; else stays in sandbox lineage. Freshness ← T3-05."
 
 ### T2-31 — scope / allowlist expansion (AC-24, gate d)
-- workspace: xtrax · category: human-gate · gate_type: human · priority: critical · difficulty: S
-- depends_on: [`T3:ttl-attestation-freshness`, T2-21]
+- workspace: xtrax · category: human-gate · gate_type: human · priority: P1 · difficulty: quick
+- depends_on: [T3-05]  # freshness primitive only — NOT a DAG-ordering edge on T2-21 (S-5 fix)
 - acs_covered: [AC-24]
 - gate: any network/tool-allowlist or sandbox-capability expansion (incl. adding evolve-block surface
   or new effectful tools) is gated by a human-approval node.
@@ -610,11 +633,11 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   - fast/loud: request denied; capabilities unchanged.
 - backlog-add: "AC-24 scope/allowlist-expansion human gate: adding evolve-block surface or any
   network/tool/sandbox capability requires human approval; else denied, capabilities unchanged.
-  Freshness ← T3."
+  Freshness ← T3-05."
 
 ### T2-32 — kill-switch / campaign approval (AC-25, gate e)
-- workspace: xtrax · category: human-gate · gate_type: human · priority: critical · difficulty: S
-- depends_on: [`T3:ttl-attestation-freshness`, T2-09]
+- workspace: xtrax · category: human-gate · gate_type: human · priority: P1 · difficulty: quick
+- depends_on: [T3-05]  # freshness primitive only — NOT a DAG-ordering edge on T2-09 (S-5 fix)
 - acs_covered: [AC-25]
 - gate: a human authority approves every campaign start and can kill at any time via the
   out-of-agent-context watchdog (T2-09 / AC-13).
@@ -622,23 +645,25 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   - fast/loud: campaign cannot start unapproved; kill authority always available and **unrevokable by
     the loop**.
 - backlog-add: "AC-25 kill-switch/campaign-approval human gate: human approves each campaign start +
-  holds an always-available, loop-unrevokable kill via the watchdog (T2-09). Freshness ← T3."
+  holds an always-available, loop-unrevokable kill via the watchdog (T2-09). Freshness ← T3-05."
 
 ---
 
 ## P4-gated — island / GEAR upgrade
 
-> Explicitly gated on the **full GEAR + AutoSOTA read (T2-03)** plus a **human Phase-2-entry
-> decision**. Not a frozen-interface commitment: the scalar single-candidate seam is shaped for a
-> config-flip drop-in, and the "island upgrade delta" is documented rather than promised as
-> zero-cost.
+> Explicitly gated on the **full GEAR + AutoSOTA read (T2-03)** plus the **T2-31 (AC-24)
+> scope-expansion gate** — island-phase entry is a scope expansion, adjudicated by that human gate
+> (there is no separate undefined `HUMAN:` node). Not a frozen-interface commitment: the scalar
+> single-candidate seam is shaped for a config-flip drop-in, and the "island upgrade delta" is
+> documented rather than promised as zero-cost.
 
 ### T2-33 — island / population-search drop-in (Phase-2 delta)
-- workspace: xtrax · category: upgrade-delta · priority: low (deferred) · difficulty: XL
-- depends_on: [T2-03, B2-03, T2-22, `HUMAN:phase-2-entry-decision`]
+- workspace: xtrax · category: upgrade-delta · priority: P3 · difficulty: involved
+- depends_on: [T2-03, B2-03, T2-22, T2-31]  # island-phase entry is a scope expansion, adjudicated by the T2-31 (AC-24) scope-expansion gate
 - acs_covered: [] (documented delta; no MVP AC)
 - gate: island search drops in **only after** GEAR/AutoSOTA is read in full, `campaign_edges`
-  multi-parent lineage is live, and a human approves Phase-2 entry. Delta = batch/generation eval,
+  multi-parent lineage is live, and the **T2-31 (AC-24) scope-expansion gate** approves island-phase
+  entry (island search = a scope expansion). Delta = batch/generation eval,
   population state, migration hooks, per-candidate resource accounting.
   - success: island runs as a config flip over the unchanged scalar `evaluate()` seam; multi-parent
     campaign DAG assembled by bathos.
@@ -647,7 +672,8 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
     large parallel budgets absent at single-GPU scale.
 - backlog-add: "island/population drop-in (Phase-2): batch/generation eval + population state +
   migration hooks + per-candidate resource accounting as a config flip over the frozen scalar seam.
-  Gated on T2-03 GEAR read + bathos campaign_edges (B2-03) + human Phase-2-entry. Deferred."
+  Gated on T2-03 GEAR read + bathos campaign_edges (B2-03) + T2-31 (AC-24) scope-expansion gate
+  (island-phase entry is a scope expansion). Deferred."
 
 > **Named deferrals (not omissions):** tree-structured AutoSOTA rubric fitness (nested-dict extension
 > keeps the scalar-leaf contract; deferred behind the flat `dict[str,float]`); full K-Veritas RSA-PSS
@@ -666,7 +692,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
 > loop (not the P1 attended skeleton).
 
 ### B2-01 — bathos[stats] statistical battery (+ baseline-budget check)
-- workspace: bathos · category: cross-repo-gate · priority: high · difficulty: L
+- workspace: bathos · category: cross-repo-gate · priority: P2 · difficulty: involved
 - depends_on: [] · consumed_by: [T2-22, T2-24]
 - acs_covered: [AC-15, AC-17]
 - blocks: **P3** (confirmatory conclude)
@@ -682,7 +708,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   equivalence; scipy behind [stats] extra, graceful advisory-downgrade if absent. Blocks P3."
 
 ### B2-02 — Run.seed field (+ baseline_hpo_trials / compute)
-- workspace: bathos · category: cross-repo-schema · priority: high · difficulty: M
+- workspace: bathos · category: cross-repo-schema · priority: P2 · difficulty: moderate
 - depends_on: [] · consumed_by: [T2-23]
 - acs_covered: [AC-16]
 - blocks: **P3** (seed-gate)
@@ -694,7 +720,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   ICC + N≥29-per-script_sha256 power floors are enforceable at conclude. Blocks P3 seed-gate."
 
 ### B2-03 — campaign_edges (multi-parent campaign DAG + PROV)
-- workspace: bathos · category: cross-repo-schema · priority: medium · difficulty: L
+- workspace: bathos · category: cross-repo-schema · priority: P2 · difficulty: involved
 - depends_on: [] · consumed_by: [T2-33]
 - acs_covered: [] (campaign DAG ownership — fork 7)
 - blocks: **P4** (island multi-parent lineage); P3 uses single-parent chains
@@ -703,13 +729,14 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   refs, never owning the DAG — F-A / fork 7).
   - success: parallel-branch merges representable; single→multi-parent is natural bathos schema
     evolution over existing PROV lineage.
-  - fast/loud: N/A (schema build) — required before any island/population node.
+  - fast/loud: **campaign_edges round-trip + cycle-rejection contract test → exit 1** on any lossy
+    round-trip or accepted cycle. Required before any island/population node.
 - backlog-add: "[bathos] campaign_edges: multi-parent campaign/run DAG + multi-wasDerivedFrom PROV;
   bathos owns the DAG, xtrax emits run records with campaign_id + component sidecar refs. Blocks P4
   island delta."
 
 ### B2-04 — sidecar drift detection (promote SIDECAR_HASH_MISMATCH)
-- workspace: bathos · category: cross-repo-gate · priority: medium · difficulty: S
+- workspace: bathos · category: cross-repo-gate · priority: P2 · difficulty: quick
 - depends_on: [] · consumed_by: [T2-25]
 - acs_covered: [AC-18]
 - blocks: **P3**
@@ -722,7 +749,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   manifest across all runs of a script; deny (autonomous) / warn (collaborative). Blocks P3."
 
 ### B2-05 — stdout redaction / info-barrier support
-- workspace: bathos · category: cross-repo-gate · priority: medium · difficulty: M
+- workspace: bathos · category: cross-repo-gate · priority: P2 · difficulty: moderate
 - depends_on: [] · hardens: [T2-07]
 - acs_covered: [AC-9 (defense-in-depth half)]
 - blocks: **P2 autonomous hardening** (NOT the P1 attended skeleton)
@@ -735,7 +762,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   with xtrax T2-07 lint floor). Hardens P2 autonomous loop; does NOT block the P1 attended skeleton."
 
 ### B2-06 — capability probe endpoint
-- workspace: bathos · category: cross-repo-api · priority: medium · difficulty: S
+- workspace: bathos · category: cross-repo-api · priority: P2 · difficulty: quick
 - depends_on: [B2-01, B2-02] · consumed_by: [T2-27]
 - acs_covered: [AC-20]
 - blocks: **P3**
@@ -747,7 +774,7 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   battery for the loop controller (PM-4, not attested). Blocks P3 confirmatory start."
 
 ### B2-07 — signed-manifest attestation fields
-- workspace: bathos · category: cross-repo-schema · priority: medium · difficulty: M
+- workspace: bathos · category: cross-repo-schema · priority: P2 · difficulty: moderate
 - depends_on: [] · consumed_by: [T2-26]
 - acs_covered: [AC-19]
 - blocks: **P3**
@@ -760,22 +787,25 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   evidence admission; K-Veritas deferred. Blocks P3 attestation-as-evidence."
 
 ### B2-08 — xtrax ↔ bathos bridge (component-level sidecar binding)
-- workspace: bathos · category: cross-repo-bridge · priority: medium · difficulty: L
+- workspace: bathos · category: cross-repo-bridge · priority: P2 · difficulty: involved
 - depends_on: [] · consumed_by: [T2-06 (full component binding), T2-22]
 - acs_covered: [AC-8 (component-level provenance)]
 - blocks: **P3** (component-level binding); minimal P1 run emission uses the **existing** MCP surface
+- ownership (dual-repo): **bathos owns the schema/API surface; the xtrax-side run-layer hook is a
+  named sub-deliverable of this item, landing via an xtrax PR — neither half closes alone.**
 - gate: thin run-layer hook (RunSpec/StageBundle) emitting bathos runs with `campaign_id` + component
   sidecar refs so sidecars bind to xtrax pipeline components (StageBundle/composition nodes), not
   just script files. xtrax stays truth-emitting, not gate-owning.
   - success: sidecars bind to composition components; runs carry `campaign_id`.
-  - fast/loud: N/A (integration) — note P1 provenance (AC-8) does NOT wait on this; it rides existing
+  - fast/loud: **bridge contract test (component sidecar binding round-trip + drift SHA propagation)
+    → exit 1**; note P1 provenance (AC-8) does NOT wait on this — it rides existing
     `claim_register`/`attest_parity`/run-sidecar.
 - backlog-add: "[bathos+xtrax] component-level sidecar binding: run-layer hook emits bathos runs with
   campaign_id + component sidecar refs (StageBundle/composition nodes). Blocks P3; P1 provenance uses
   existing MCP surface, not this."
 
 ### B2-09 — claim-calibration plumbing
-- workspace: bathos · category: cross-repo-gate · priority: low · difficulty: S
+- workspace: bathos · category: cross-repo-gate · priority: P3 · difficulty: quick
 - depends_on: [B2-01] · consumed_by: [epic-gate reviewer]
 - acs_covered: [] (epic-boundary claim calibration)
 - blocks: **P3 / epic-gate** (nice-to-have)
