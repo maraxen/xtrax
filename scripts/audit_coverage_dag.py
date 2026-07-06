@@ -245,6 +245,9 @@ def run_tier_pytest(
         )
         combined = f"{result.stdout}\n{result.stderr}"
         tests_run, tests_failed = parse_pytest_summary(combined)
+        if result.returncode != 0 or tests_failed > 0:
+            tail = "\n".join(combined.strip().splitlines()[-40:])
+            print(f"pytest output tail (tier {tier.id}):\n{tail}", file=sys.stderr)
 
         line_pct: float | None = None
         branch_pct: float | None = None

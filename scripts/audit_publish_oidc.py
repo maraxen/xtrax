@@ -61,11 +61,13 @@ def load_publish_oidc_config(config_path: Path) -> PublishOidcConfig:
             "publish_requires_tag_push must be booleans"
         )
 
-    def _nested_markers(table_name: str) -> tuple[str, ...]:
+    def _nested_markers(table_name: str, *, required: bool = True) -> tuple[str, ...]:
         table = section.get(table_name, {})
         if not isinstance(table, dict):
             raise ValueError(f"publish.{table_name} must be a table")
         markers = table.get("markers")
+        if markers is None and not required:
+            return ()
         if not isinstance(markers, list) or not markers:
             raise ValueError(f"publish.{table_name}.markers must be a non-empty list")
         return tuple(str(item) for item in markers)
@@ -85,7 +87,9 @@ def load_publish_oidc_config(config_path: Path) -> PublishOidcConfig:
         require_workflow_dispatch=require_dispatch,
         publish_requires_tag_push=publish_requires_tag,
         build_markers=_nested_markers("build_markers"),
-        testpypi_markers=_nested_markers("testpypi_markers"),
+        # TestPyPI staging dropped by decision 2026-07-02 (publish.yml); optional
+        # so configs without a staging index remain valid.
+        testpypi_markers=_nested_markers("testpypi_markers", required=False),
         pypi_markers=_nested_markers("pypi_markers"),
         guard_markers=_nested_markers("guard_markers"),
         forbidden_phrases=tuple(str(item) for item in phrases),

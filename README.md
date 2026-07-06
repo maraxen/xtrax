@@ -14,11 +14,17 @@ A set of composable building blocks for JAX/Equinox training loops — engine + 
 
 ## Why xtrax?
 
-- **Composable training steps** — Use `Trainer` or `SafetyTrainStep` with your own loss functions and optimizers
-- **Safety-checked arithmetic** — Avoid NaN/Inf propagation with safe operations (`safe_norm`, `safe_reciprocal`)
-- **Flexible tiling strategies** — Partition computations with `AxisSpec`, `BatchPlan`, and `Vmap`/`SafeMap` for data and model parallelism
-- **Inference sparsification** — Apply structured sparsity masks with `SparseConfig` and `sparsify_model`
-- **Distributed helpers** — Initialize and coordinate multi-GPU/TPU training with `init_dist`, `LogicalMesh`, and sharding utilities
+`jax.jit` specializes and freezes: it traces your function into a program where every shape is a compile-time constant, and XLA plans all memory for that program up front. The compiler makes the program you gave it fast, but it never restructures it — it cannot narrow a `vmap` that doesn't fit in memory, cannot batch ragged inputs without a recompile per shape, and cannot notice that most of a batch is duplicates. Those decisions happen in Python, before tracing — and the code that makes them is exactly what gets copy-pasted between research projects.
+
+xtrax packages that pre-trace layer, plus the conveniences that surround it:
+
+- **Axis tiling** — declare axes with `AxisSpec`; `BatchPlanner` selects `Vmap`, `SafeMap` (chunked via `jax.lax.map`), `Scan`, bucketing, or dedup-gather per axis, and `xtrax explain` reports why
+- **Composable training steps** — `Trainer` or `SafetyTrainStep` with your own loss functions and optimizers
+- **Safety-checked arithmetic** — opt-in checkify NaN/Inf detection and safe ops (`safe_norm`, `safe_reciprocal`)
+- **Inference sparsification** — structured sparsity masks with `SparseConfig` and `sparsify_model`, fixed compile shapes
+- **Distributed helpers** — `init_dist`, `LogicalMesh`, and sharding utilities over JAX's native machinery
+
+For the full rationale — why this layer has to live above the JIT boundary — see [Why xtrax exists](https://xtrax.readthedocs.io/en/latest/why-xtrax.html).
 
 ## Installation
 
@@ -31,7 +37,7 @@ Requires Python 3.13 or later.
 ## Quick Start
 
 ```python
-import jax
+import jax.numpy as jnp
 import optax
 from xtrax import Trainer, ResumableState, Engine, save_checkpoint, load_checkpoint
 
@@ -137,7 +143,7 @@ If you use xtrax in research, please cite it:
 @software{xtrax,
   title = {xtrax: High-Performance Composable JAX Training},
   author = {Russo, Marielle},
-  version = {0.3.0},
+  version = {0.3.1},
   year = {2026},
   url = {https://github.com/maraxen/xtrax}
 }

@@ -1,5 +1,5 @@
 [publish]
-version = "0.1.0"
+version = "0.2.0"
 workflow = ".github/workflows/publish.yml"
 human_prerequisite_backlog = 1454
 
@@ -15,15 +15,6 @@ markers = [
   "Wheel smoke test",
   "import xtrax",
   "upload-artifact",
-]
-
-[publish.testpypi_markers]
-markers = [
-  "publish-testpypi",
-  "name: testpypi",
-  "id-token: write",
-  "gh-action-pypi-publish",
-  "test.pypi.org/legacy",
 ]
 
 [publish.pypi_markers]

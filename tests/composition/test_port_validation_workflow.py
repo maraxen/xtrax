@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -55,6 +56,7 @@ def test_dw_mapping_points_at_port_validation_js() -> None:
     assert 'port_validation = "port-validation"' in text
 
 
+@pytest.mark.skipif(shutil.which("praxia") is None, reason="praxia CLI not installed")
 def test_port_validation_yaml_emits_without_error() -> None:
     env = {**dict(**__import__("os").environ), "PRAXIA_WORKFLOWS_DIR": str(YAML_PATH.parent)}
     result = subprocess.run(
