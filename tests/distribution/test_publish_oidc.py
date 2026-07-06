@@ -46,17 +46,6 @@ def _write_publish_files(repo_root: Path) -> None:
                         "import xtrax; print(xtrax.__version__)"
                   - uses: actions/upload-artifact@v4
 
-              publish-testpypi:
-                if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-                environment:
-                  name: testpypi
-                permissions:
-                  id-token: write
-                steps:
-                  - uses: pypa/gh-action-pypi-publish@release/v1
-                    with:
-                      repository-url: https://test.pypi.org/legacy/
-
               publish-pypi:
                 if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
                 environment:
@@ -87,7 +76,7 @@ def _write_publish_files(repo_root: Path) -> None:
 
 def test_load_publish_oidc_config_reads_committed_toml() -> None:
     config = load_publish_oidc_config(CONFIG_PATH)
-    assert config.version == "0.1.0"
+    assert config.version == "0.2.0"
     assert config.human_prerequisite_backlog == 1454
     assert config.tag_pattern == "v*"
 
