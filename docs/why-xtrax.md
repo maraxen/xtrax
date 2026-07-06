@@ -1,5 +1,17 @@
 # Why xtrax exists
 
+Put simply (with no LLM-assistance): I kept having to re-implement practices used
+throughout this library per-project to take advantage of JAX to run massively parallel
+in silico experiments but avoid OOMs, manage the host-accelerator boundary, and keep
+track of telemetry/metadata. After I did this enough times, I decided it was worth it
+to just get a common base library that keeps my whole JAX-oriented stack maintained in
+one place. As stated in the README, I hope others operating under similar constraints
+can find this useful and I intend to give my best effort to maintain this. That said,
+this project resolves a specific set of problems and around maintaining consistent
+performance and tracking in my JAX stack.
+
+---
+
 xtrax packages the decisions a JAX program makes *before* tracing: how to batch, how
 to pad, what to deduplicate, and how to keep memory bounded. XLA optimizes the program
 it is given; xtrax is about deciding which program to give it.
