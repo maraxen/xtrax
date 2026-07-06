@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a1] - 2026-07-06
+
 ### Added
 
 - **Joint-budget planning mode for `BatchPlanner`** (`xtrax.tiling`):
@@ -33,6 +35,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.praxia/docs/specs/260706_joint-budget-batch-planner.md`.
   (`src/xtrax/tiling/budget.py`, `src/xtrax/tiling/estimators.py`,
   `tests/tiling/test_budget_plan.py`, `tests/tiling/test_estimators.py`)
+
+### Fixed
+
+- **CI recovery**: install `just` via `uv tool` (runner image stopped shipping
+  it); publish-OIDC gate aligned with the no-TestPyPI decision; coverage DAG
+  gate now prints the pytest output tail on failure (failures were previously
+  undiagnosable from CI logs); praxia-CLI emit smoke test skips when the
+  binary is absent; CITATION/README version metadata synced to `__version__`.
+
+### Changed
+
+- **Docs positioning**: new `docs/why-xtrax.md` (why the tiling layer lives
+  above the JIT boundary); README "Why xtrax?" and docs index rewritten to
+  match; `.claude/workflows/port-validation.js` now tracked in-repo.
+
+## [0.3.1] - 2026-07-02
+
+### Added
+
+- **Plan topology validator** (`xtrax.stages`): `PlanTopologyError` raised on
+  invalid stage-plan topologies.
+
+### Changed
+
+- **Publish workflow**: straight to PyPI via OIDC Trusted Publishing;
+  TestPyPI staging dropped by decision.
+
+## [0.3.0] - 2026-07-02
+
+### Added
 
 - **`xtrax.eda` — EDA visualization subpackage** (optional extras: `pip install xtrax[eda]`):
   A two-layer exploratory data analysis interface for inspecting `BatchPlan` outputs from
