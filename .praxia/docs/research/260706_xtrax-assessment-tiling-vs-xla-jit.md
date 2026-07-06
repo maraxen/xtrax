@@ -113,8 +113,11 @@ src LOC.
 
 ### Absorption risks (watch list)
 
-- `jax.lax.map(..., batch_size=)` already covers SafeMap's core (uniform chunking) in
-  JAX core — avoid maintaining a duplicate.
+- `jax.lax.map(..., batch_size=)` covers SafeMap's core (uniform chunking) in JAX core.
+  Verified 260706: `safe_map` (`src/xtrax/transforms/map.py`) already delegates to it —
+  no duplicate implementation exists. Residual work filed as **backlog #3120**: drop the
+  stricter-than-core `n % batch_size` ValueError (core lax.map handles remainders), pin
+  the delegation with a test, reassess the vmap-when-it-fits fast path.
 - If XLA/JAX ever ships first-class ragged/dynamic shapes, the bucketing half shrinks —
   though bounded-dynamism memory planning is still worst-case-static, and this has been
   "coming" for years.

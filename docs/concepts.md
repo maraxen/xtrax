@@ -1,6 +1,7 @@
 # Core Concepts
 
-This page introduces the key ideas that make xtrax powerful.
+This page introduces xtrax's main abstractions and how they fit together. For why the
+tiling layer exists at all, see [Why xtrax exists](why-xtrax.md).
 
 ## Composable Training Infrastructure
 
