@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import jax
 
+from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
 from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
 from xtrax.tiling.strategy import (
     AxisStrategy,
@@ -129,6 +130,14 @@ class BatchPlanner:
 
     When memory_estimator is provided, it overrides rule 3/4 decisions
     to prefer SafeMap if estimated Vmap memory exceeds device limit.
+
+    When budget is provided (joint-budget mode), rules 3-5 are replaced for
+    non-bucket axes: every eligible axis starts at Vmap, then axes with
+    cardinality > default_batch_size are greedily demoted to SafeMap — in the
+    order specs were given — until budget.estimate() over the whole plan fits
+    budget.bytes. Callers express demotion priority by spec order (axes they
+    are most willing to sequentialize first). Estimator exceptions propagate;
+    an unfittable plan raises BudgetInfeasibleError.
     """
 
     def __init__(
@@ -137,6 +146,7 @@ class BatchPlanner:
         carry_specs: list[CarrySpec] | None = None,
         dedup_specs: list[DedupSpec] | None = None,
         heterogeneous_axes: set[str] | None = None,
+        budget: MemoryBudget | None = None,
     ) -> None:
         """Initialize the planner.
 
@@ -144,7 +154,7 @@ class BatchPlanner:
             memory_estimator: Optional function that estimates Vmap memory (bytes)
                 for a given AxisSpec. If provided and estimate exceeds device limit,
                 SafeMap is preferred over Vmap. If the estimator raises an exception,
-                falls back to default rules silently.
+                falls back to default rules silently. Mutually exclusive with budget.
             carry_specs: Optional list of CarrySpec objects declaring which axes
                 should use Scan strategy (Phase 0 pre-demotion).
             dedup_specs: Optional list of DedupSpec objects declaring which axes
@@ -152,18 +162,33 @@ class BatchPlanner:
             heterogeneous_axes: Optional set of axis names (strings) that contain
                 heterogeneous elements (variable shapes). These axes cannot use Scan
                 strategy. Default None (no heterogeneous constraints).
+            budget: Optional MemoryBudget enabling joint-budget planning (greedy
+                demotion until the whole-plan estimate fits). Mutually exclusive
+                with memory_estimator: budget mode is strict (no silent fallback,
+                no implicit device-limit read) by design.
+
+        Raises:
+            ValueError: If both budget and memory_estimator are provided.
         """
+        if budget is not None and memory_estimator is not None:
+            raise ValueError(
+                "BatchPlanner: budget and memory_estimator are mutually exclusive; "
+                "budget mode replaces the per-axis memory override."
+            )
         self.memory_estimator = memory_estimator
         self.carry_specs = carry_specs or []
         self.dedup_specs = dedup_specs or []
         self.heterogeneous_axes = heterogeneous_axes or set()
+        self.budget = budget
 
     def plan(self, specs: Sequence[AxisSpec]) -> BatchPlan:
         """Generate a tiling plan for the given specs.
 
         Phase 0: Pre-demote axes with declared CarrySpec to Scan.
         Phase 0b: Pre-demote axes with declared DedupSpec to DedupGather.
-        Phases 1+: Apply standard strategy selection rules to remaining axes.
+        Phases 1+: Apply standard strategy selection rules to remaining axes —
+        or, when a MemoryBudget is set, greedy joint-budget demotion (see
+        _plan_joint_budget) for all non-bucket remaining axes.
 
         Spec order is preserved in decisions (Phase 0/0b then remaining rules,
         all in the order specs were provided).
@@ -173,10 +198,18 @@ class BatchPlanner:
 
         Returns:
             BatchPlan with decisions for each spec.
+
+        Raises:
+            ValueError: If a CarrySpec targets a heterogeneous axis.
+            AmbiguousAxisError: If an axis has an unresolved UNKNOWN role.
+            BudgetInfeasibleError: In budget mode, if demoting every candidate
+                still leaves the joint estimate over budget. Budget-mode
+                estimator exceptions also propagate unchanged.
         """
         carry_by_name = {cs.axis_name: cs for cs in self.carry_specs}
         dedup_by_name = {ds.axis_name: ds for ds in self.dedup_specs}
-        decisions = []
+        decisions: list[AxisDecision | None] = []
+        pending: list[int] = []
 
         # Process specs in order, applying Phase 0/0b rules first, then standard rules
         for spec in specs:
@@ -232,11 +265,131 @@ class BatchPlanner:
                     f"@axis_config or provide an override before planning."
                 )
 
+            # Joint-budget mode: bucket axes are fixed via Rule 1 as usual;
+            # everything else is deferred to the greedy Phase 2 below.
+            if self.budget is not None and spec.bucket_boundaries is None:
+                pending.append(len(decisions))
+                decisions.append(None)
+                continue
+
             # Standard rules for remaining axes
             decision = self._decide_strategy(spec)
             decisions.append(decision)
 
-        return BatchPlan(decisions=tuple(decisions))
+        if self.budget is not None:
+            self._plan_joint_budget(specs, decisions, pending)
+
+        return BatchPlan(decisions=tuple(d for d in decisions if d is not None))
+
+    def _plan_joint_budget(
+        self,
+        specs: Sequence[AxisSpec],
+        decisions: list[AxisDecision | None],
+        pending: list[int],
+    ) -> None:
+        """Resolve pending axes under the joint MemoryBudget (greedy demotion).
+
+        Fills decisions[idx] in place for every idx in pending. Every pending
+        axis starts at Vmap; axes with cardinality > default_batch_size are
+        demoted to SafeMap one at a time — in the order given — until
+        budget.estimate() over the full plan (fixed decisions included) fits
+        budget.bytes.
+
+        Args:
+            specs: Full spec sequence (indices align with decisions).
+            decisions: Decision list with None placeholders at pending indices.
+            pending: Indices of axes awaiting joint-budget resolution.
+
+        Raises:
+            BudgetInfeasibleError: If all candidates are demoted and the
+                estimate still exceeds the budget.
+        """
+        budget = self.budget
+        if budget is None:  # pragma: no cover - plan() only calls with budget set
+            raise RuntimeError("_plan_joint_budget requires a MemoryBudget")
+
+        for idx in pending:
+            spec = specs[idx]
+            decisions[idx] = AxisDecision(
+                spec=spec,
+                batch_size=spec.default_batch_size,
+                reasoning="joint-budget: Vmap (pending final estimate)",
+                strategy=Vmap(),
+            )
+
+        def _snapshot() -> tuple[AxisDecision, ...]:
+            return tuple(d for d in decisions if d is not None)
+
+        candidates = [
+            idx for idx in pending if specs[idx].cardinality > specs[idx].default_batch_size
+        ]
+        estimate = budget.estimate(_snapshot())
+        step = 0
+        for idx in candidates:
+            if estimate <= budget.bytes:
+                break
+            spec = specs[idx]
+            if spec.cardinality % spec.default_batch_size != 0:
+                warnings.warn(
+                    f"AxisSpec(name={spec.name!r}): cardinality={spec.cardinality} "
+                    f"is not divisible by batch_size={spec.default_batch_size}. "
+                    f"This plan will raise ValueError at make_axis_dispatch time.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+            step += 1
+            before = estimate
+            decisions[idx] = AxisDecision(
+                spec=spec,
+                batch_size=spec.default_batch_size,
+                reasoning="joint-budget: demoted (pending final estimate)",
+                strategy=SafeMap(batch_size=spec.default_batch_size),
+            )
+            estimate = budget.estimate(_snapshot())
+            decisions[idx] = AxisDecision(
+                spec=spec,
+                batch_size=spec.default_batch_size,
+                reasoning=(
+                    f"joint-budget: demoted to SafeMap(batch_size="
+                    f"{spec.default_batch_size}) at step {step} "
+                    f"(estimate {before} -> {estimate} B, budget {budget.bytes} B)"
+                ),
+                strategy=SafeMap(batch_size=spec.default_batch_size),
+            )
+
+        if estimate > budget.bytes:
+            state_desc = ", ".join(
+                f"{d.spec.name}={type(d.strategy).__name__}" for d in _snapshot()
+            )
+            raise BudgetInfeasibleError(
+                f"plan cannot fit MemoryBudget: estimate {estimate} B > budget "
+                f"{budget.bytes} B after demoting all {len(candidates)} candidate "
+                f"axes; final strategies: {state_desc}"
+            )
+
+        # Finalize reasoning for pending axes that kept Vmap.
+        for idx in pending:
+            decision = decisions[idx]
+            if decision is None or not isinstance(decision.strategy, Vmap):
+                continue
+            spec = specs[idx]
+            if spec.cardinality <= spec.default_batch_size:
+                reasoning = (
+                    f"joint-budget: Vmap (cardinality {spec.cardinality} <= "
+                    f"batch_size {spec.default_batch_size}; demotion would be a "
+                    f"no-op; final estimate {estimate} B <= budget {budget.bytes} B)"
+                )
+            else:
+                reasoning = (
+                    f"joint-budget: Vmap retained "
+                    f"(final estimate {estimate} B <= budget {budget.bytes} B)"
+                )
+            decisions[idx] = AxisDecision(
+                spec=spec,
+                batch_size=spec.default_batch_size,
+                reasoning=reasoning,
+                strategy=decision.strategy,
+            )
 
     def _decide_strategy(self, spec: AxisSpec) -> AxisDecision:
         """Decide strategy for a single AxisSpec following selection rules."""

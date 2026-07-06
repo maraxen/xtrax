@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a1] - 2026-07-06
+
+### Added
+
+- **Joint-budget planning mode for `BatchPlanner`** (`xtrax.tiling`):
+  `BatchPlanner(budget=MemoryBudget(bytes=..., estimate=...))` replaces the
+  independent per-axis rules with whole-plan greedy demotion — every eligible
+  axis starts at `Vmap`, then axes with `cardinality > default_batch_size` are
+  demoted to `SafeMap` in the order specs were given until the joint estimate
+  fits the budget. Callers express demotion priority by spec order. Strict by
+  design: mutually exclusive with the per-axis `memory_estimator`, estimator
+  exceptions propagate, and an unfittable plan raises `BudgetInfeasibleError`.
+  Carry/dedup/bucket decisions stay fixed but participate in the estimate;
+  budget-mode reasoning strings carry the byte numbers for `xtrax explain`.
+
+  Native-tooling estimator building blocks (`xtrax.tiling.estimators`):
+  - `device_memory_budget(fraction=0.9, device=None)` — budget bytes from the
+    XLA allocator's `Device.memory_stats()["bytes_limit"]`; fails loud when
+    the backend reports no stats.
+  - `lowered_memory_estimate(fn, *abstract_args)` — AOT-compiles from
+    `ShapeDtypeStruct`s and returns XLA's own buffer-assignment bytes
+    (argument + output + temp) via `Compiled.memory_analysis()`.
+
+  Exports are tiling-level (`xtrax.tiling`), same tier as `CarrySpec` — no
+  root public-API change. Spec:
+  `.praxia/docs/specs/260706_joint-budget-batch-planner.md`.
+  (`src/xtrax/tiling/budget.py`, `src/xtrax/tiling/estimators.py`,
+  `tests/tiling/test_budget_plan.py`, `tests/tiling/test_estimators.py`)
+
+### Fixed
+
+- **CI recovery**: install `just` via `uv tool` (runner image stopped shipping
+  it); publish-OIDC gate aligned with the no-TestPyPI decision; coverage DAG
+  gate now prints the pytest output tail on failure (failures were previously
+  undiagnosable from CI logs); praxia-CLI emit smoke test skips when the
+  binary is absent; CITATION/README version metadata synced to `__version__`.
+
+### Changed
+
+- **Docs positioning**: new `docs/why-xtrax.md` (why the tiling layer lives
+  above the JIT boundary); README "Why xtrax?" and docs index rewritten to
+  match; `.claude/workflows/port-validation.js` now tracked in-repo.
+
+## [0.3.1] - 2026-07-02
+
+### Added
+
+- **Plan topology validator** (`xtrax.stages`): `PlanTopologyError` raised on
+  invalid stage-plan topologies.
+
+### Changed
+
+- **Publish workflow**: straight to PyPI via OIDC Trusted Publishing;
+  TestPyPI staging dropped by decision.
+
+## [0.3.0] - 2026-07-02
+
 ### Added
 
 - **`xtrax.eda` — EDA visualization subpackage** (optional extras: `pip install xtrax[eda]`):

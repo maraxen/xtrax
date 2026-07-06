@@ -3,7 +3,7 @@ title: xtrax
 authors:
   - family-names: Russo
     given-names: Marielle
-version: 0.3.1
-date-released: 2026-06-19
+version: 0.4.0a1
+date-released: 2026-07-06
 repository-code: https://github.com/maraxen/xtrax
 license: Apache-2.0
