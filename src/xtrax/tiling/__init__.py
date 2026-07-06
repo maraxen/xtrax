@@ -5,6 +5,7 @@ CORE exports (stable, always available):
     Vmap, SafeMap, Scan, ScanTransition, Bucket, select_bucket, bucketize
     make_axis_dispatch, axis_dispatch, DispatchRejected
     CarrySpec, CarryShape
+    MemoryBudget, BudgetInfeasibleError, device_memory_budget, lowered_memory_estimate
     VmapIterator, SafeMapIterator, JaxScanIterator, BucketIterator, MapIterator, ScanIterator
 
 OPTIONAL (dedup/gather machinery — import from submodules):
@@ -14,9 +15,11 @@ OPTIONAL (dedup/gather machinery — import from submodules):
 
 from xtrax.tiling._plan_wrapper import _BatchPlanWrapper
 from xtrax.tiling.bucket import bucketize, select_bucket
+from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
 from xtrax.tiling.carry import CarrySpec
 from xtrax.tiling.carry_shape import CarryShape
 from xtrax.tiling.dispatch import DispatchRejected, axis_dispatch, make_axis_dispatch
+from xtrax.tiling.estimators import device_memory_budget, lowered_memory_estimate
 from xtrax.tiling.iterator import (
     BucketIterator,
     JaxScanIterator,
@@ -51,6 +54,10 @@ __all__ = [
     "DispatchRejected",
     "CarrySpec",
     "CarryShape",
+    "MemoryBudget",
+    "BudgetInfeasibleError",
+    "device_memory_budget",
+    "lowered_memory_estimate",
     "VmapIterator",
     "SafeMapIterator",
     "JaxScanIterator",

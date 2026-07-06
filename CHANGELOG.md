@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Joint-budget planning mode for `BatchPlanner`** (`xtrax.tiling`):
+  `BatchPlanner(budget=MemoryBudget(bytes=..., estimate=...))` replaces the
+  independent per-axis rules with whole-plan greedy demotion — every eligible
+  axis starts at `Vmap`, then axes with `cardinality > default_batch_size` are
+  demoted to `SafeMap` in the order specs were given until the joint estimate
+  fits the budget. Callers express demotion priority by spec order. Strict by
+  design: mutually exclusive with the per-axis `memory_estimator`, estimator
+  exceptions propagate, and an unfittable plan raises `BudgetInfeasibleError`.
+  Carry/dedup/bucket decisions stay fixed but participate in the estimate;
+  budget-mode reasoning strings carry the byte numbers for `xtrax explain`.
+
+  Native-tooling estimator building blocks (`xtrax.tiling.estimators`):
+  - `device_memory_budget(fraction=0.9, device=None)` — budget bytes from the
+    XLA allocator's `Device.memory_stats()["bytes_limit"]`; fails loud when
+    the backend reports no stats.
+  - `lowered_memory_estimate(fn, *abstract_args)` — AOT-compiles from
+    `ShapeDtypeStruct`s and returns XLA's own buffer-assignment bytes
+    (argument + output + temp) via `Compiled.memory_analysis()`.
+
+  Exports are tiling-level (`xtrax.tiling`), same tier as `CarrySpec` — no
+  root public-API change. Spec:
+  `.praxia/docs/specs/260706_joint-budget-batch-planner.md`.
+  (`src/xtrax/tiling/budget.py`, `src/xtrax/tiling/estimators.py`,
+  `tests/tiling/test_budget_plan.py`, `tests/tiling/test_estimators.py`)
+
 - **`xtrax.eda` — EDA visualization subpackage** (optional extras: `pip install xtrax[eda]`):
   A two-layer exploratory data analysis interface for inspecting `BatchPlan` outputs from
   the tiling subsystem.
