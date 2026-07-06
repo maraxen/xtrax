@@ -7,7 +7,7 @@ track of telemetry/metadata. After I did this enough times, I decided it was wor
 to just get a common base library that keeps my whole JAX-oriented stack maintained in
 one place. As stated in the README, I hope others operating under similar constraints
 can find this useful and I intend to give my best effort to maintain this. That said,
-this project resolves a specific set of problems and around maintaining consistent
+this project resolves a specific set of problems around maintaining consistent
 performance and tracking in my JAX stack.
 
 ---
