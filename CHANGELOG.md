@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a3] - 2026-07-07
+
+### Added
+
+- **`xtrax.run.ZarrStagingSink`** (`xtrax.run`): a keyed staging buffer for
+  JAX `io_callback`-driven streaming output, draining into nested Zarr
+  groups. `SinkSpec.format` gains `"zarr"`; a new `make_sink(spec)` factory
+  dispatches to the real implementation (`zarr`/`none` today; `jsonl`/`h5`
+  remain routing-only stubs pending their own writers). Generalizes the
+  keyed-staging-then-drain pattern used by consumers with per-chunk tensor
+  payloads (sequences, logits, encoder intermediates, accumulated tensors) —
+  domain-specific `io_callback` dispatch stays with the caller; this module
+  owns staging and Zarr storage only.
+
+  Zarr is a new optional extra (`pip install xtrax[io]`), imported lazily
+  inside `ZarrStagingSink.__init__` — `xtrax.run` remains fully importable
+  without it; only constructing a Zarr sink requires the dependency, with a
+  clear `ImportError` pointing at the install command otherwise.
+  (`src/xtrax/run/sink.py`, `src/xtrax/run/zarr_sink.py`,
+  `tests/run/test_sink.py`, `tests/run/test_zarr_sink.py`)
+
 ## [0.4.0a2] - 2026-07-07
 
 ### Fixed
