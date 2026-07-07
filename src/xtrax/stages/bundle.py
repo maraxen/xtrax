@@ -1,6 +1,5 @@
 """StageBundle: Typed bag of optional callable stage slots."""
 
-import sys
 import types
 import typing
 from collections.abc import Callable
@@ -73,34 +72,27 @@ class StageBundle(eqx.Module):
         """
         super().__init_subclass__(**kwargs)
 
-        # Use get_type_hints to resolve stringified annotations (PEP 563)
-        # This handles both "from __future__ import annotations" and string forward refs
+        # Resolve annotations via get_type_hints rather than reading
+        # cls.__annotations__ directly: PEP 563's postponed-evaluation
+        # future import (see e.g. src/xtrax/cli/emit.py:8, commit 3630277)
+        # makes a consuming module's raw annotations plain strings;
+        # get_type_hints() resolves them against the class's own __module__
+        # globals. Fields must be declared with names resolvable at module
+        # scope (the normal case for every real usage) -- a field typed
+        # against a class defined only inside a function body will raise a
+        # NameError here, same as any other library that resolves postponed
+        # annotations this way (dataclasses, etc.). That NameError is a
+        # deliberate, loud failure, not a gap: silently falling back to raw
+        # (unresolved, always-rejected) annotations would defeat the entire
+        # point of this fix.
         try:
-            # Get the module where this class is defined for namespace resolution
-            module = sys.modules.get(cls.__module__) if hasattr(cls, "__module__") else None
-            globalns = getattr(module, "__dict__", {}) if module else {}
-
-            # Try to capture the caller's local namespace for resolving types defined
-            # in the scope where the class was defined (e.g., types in test methods).
-            # Walk up the stack and merge locals from frames until we reach the top.
-            localns = {}
-            try:
-                frame = sys._getframe(1)
-                depth = 0
-                while frame and depth < 20:  # Limit depth to avoid excessive walking
-                    localns.update(frame.f_locals)
-                    frame = frame.f_back
-                    depth += 1
-            except (AttributeError, ValueError):
-                # Frame introspection not available or failed; that's ok
-                pass
-
-            annotations = typing.get_type_hints(
-                cls, globalns=globalns, localns=localns, include_extras=True
-            )
-        except Exception:
-            # If get_type_hints fails (e.g. unresolvable forward ref), fall back
-            annotations = getattr(cls, "__annotations__", {})
+            annotations = typing.get_type_hints(cls, include_extras=True)
+        except NameError as exc:
+            raise TypeError(
+                f"{cls.__name__}: could not resolve one or more field "
+                f"annotations ({exc}). StageBundle subclass fields must "
+                f"reference names importable at module scope."
+            ) from exc
 
         # Validate all annotated fields are Optional[Callable]
         for field_name, field_type in annotations.items():

@@ -18,6 +18,63 @@ class ConcreteStageBundle(StageBundle):
     stage_c: Callable | None = None
 
 
+# Module-level Protocol definitions for the Fix 2 / Fix 3 tests below.
+# StageBundle.__init_subclass__ resolves field annotations via
+# typing.get_type_hints(cls), which looks names up in cls.__module__'s
+# globals -- so any Protocol used as a field type must be defined at module
+# scope (the normal case for every real StageBundle consumer), not nested
+# inside the test function that uses it.
+@runtime_checkable
+class CallableProtocol(Protocol):
+    """A protocol for any callable."""
+
+    def __call__(self, x: int) -> int: ...
+
+
+@runtime_checkable
+class MultiMethodProtocol(Protocol):
+    """A protocol with multiple methods - not callable-shaped."""
+
+    def __call__(self, x: int) -> int: ...
+
+    def process(self, data: str) -> str: ...
+
+
+@runtime_checkable
+class CallableWithProp(Protocol):
+    """A protocol with __call__ and a property."""
+
+    def __call__(self, x: int) -> int: ...
+
+    @property
+    def name(self) -> str: ...
+
+
+@runtime_checkable
+class ThreeWayProto1(Protocol):
+    def __call__(self, x: int) -> str: ...
+
+
+@runtime_checkable
+class ThreeWayProto2(Protocol):
+    def __call__(self, y: float) -> bool: ...
+
+
+@runtime_checkable
+class UnionBadMemberProto(Protocol):
+    def __call__(self, x: int) -> str: ...
+
+
+@runtime_checkable
+class FourWayProto1(Protocol):
+    def __call__(self) -> None: ...
+
+
+@runtime_checkable
+class FourWayProto2(Protocol):
+    def __call__(self, x: int) -> int: ...
+
+
 class TestActiveStages:
     """Tests for active_stages() method."""
 
@@ -284,12 +341,6 @@ class TestProtocolCallableFields:
     def test_protocol_with_only_call_accepted(self):
         """Protocol declaring only __call__ should be accepted as callable-shaped."""
 
-        @runtime_checkable
-        class CallableProtocol(Protocol):
-            """A protocol for any callable."""
-
-            def __call__(self, x: int) -> int: ...
-
         # Should not raise - this Protocol is callable-shaped
         class ValidBundle(StageBundle):
             stage1: CallableProtocol | None = None
@@ -299,14 +350,6 @@ class TestProtocolCallableFields:
     def test_protocol_with_multiple_members_rejected(self):
         """Protocol with extra methods (not just __call__) should be rejected."""
 
-        @runtime_checkable
-        class MultiMethodProtocol(Protocol):
-            """A protocol with multiple methods - not callable-shaped."""
-
-            def __call__(self, x: int) -> int: ...
-
-            def process(self, data: str) -> str: ...
-
         # Should raise - this Protocol has more than just __call__
         with pytest.raises(TypeError):
 
@@ -315,15 +358,6 @@ class TestProtocolCallableFields:
 
     def test_protocol_with_property_rejected(self):
         """Protocol with property (plus __call__) should be rejected."""
-
-        @runtime_checkable
-        class CallableWithProp(Protocol):
-            """A protocol with __call__ and a property."""
-
-            def __call__(self, x: int) -> int: ...
-
-            @property
-            def name(self) -> str: ...
 
         # Should raise - __call__ + property means not pure callable-shaped
         with pytest.raises(TypeError):
@@ -338,32 +372,20 @@ class TestNWayUnions:
     def test_three_way_union_all_callable_types(self):
         """3-way union with 2 Callable types and None should be accepted."""
 
-        @runtime_checkable
-        class CallableProto1(Protocol):
-            def __call__(self, x: int) -> str: ...
-
-        @runtime_checkable
-        class CallableProto2(Protocol):
-            def __call__(self, y: float) -> bool: ...
-
         # Should not raise - all non-None types are callable-shaped
         class ValidBundle(StageBundle):
-            stage1: Callable | CallableProto1 | CallableProto2 | None = None
+            stage1: Callable | ThreeWayProto1 | ThreeWayProto2 | None = None
 
         assert isinstance(ValidBundle(), StageBundle)
 
     def test_union_with_one_bad_member_rejected(self):
         """Union where one non-None member is not callable should be rejected."""
 
-        @runtime_checkable
-        class CallableProto(Protocol):
-            def __call__(self, x: int) -> str: ...
-
         # Should raise - str is not callable-shaped
         with pytest.raises(TypeError):
 
             class InvalidBundle(StageBundle):
-                stage1: Callable | CallableProto | str | None = None
+                stage1: Callable | UnionBadMemberProto | str | None = None
 
     def test_two_way_union_still_works(self):
         """Traditional 2-way union (Callable | None) should still work."""
@@ -377,17 +399,9 @@ class TestNWayUnions:
     def test_four_way_union_all_valid(self):
         """4-way union with 3 callable types + None should work."""
 
-        @runtime_checkable
-        class CallableProto1(Protocol):
-            def __call__(self) -> None: ...
-
-        @runtime_checkable
-        class CallableProto2(Protocol):
-            def __call__(self, x: int) -> int: ...
-
         # Should not raise
         class ValidBundle(StageBundle):
-            stage1: Callable | CallableProto1 | CallableProto2 | Callable[[int, int], int] | None = None
+            stage1: Callable | FourWayProto1 | FourWayProto2 | Callable[[int, int], int] | None = None
 
         assert isinstance(ValidBundle(), StageBundle)
 
