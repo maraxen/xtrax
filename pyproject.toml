@@ -4,7 +4,7 @@ dynamic = [ "version",]
 description = "High-performance composable JAX library"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = [ "jax>=0.4.36", "jaxlib>=0.4.36", "equinox>=0.11.0", "optax>=0.2.3", "orbax-checkpoint>=0.6.0", "grain>=0.2.0", "numpy>=1.26", "pytest-asyncio>=0.23",]
+dependencies = [ "jax>=0.10.2", "jaxlib>=0.10.2", "equinox>=0.11.0", "optax>=0.2.3", "orbax-checkpoint>=0.6.0", "grain>=0.2.0", "numpy>=1.26", "pytest-asyncio>=0.23",]
 license = "Apache-2.0"
 keywords = [ "jax", "equinox", "training", "sparse", "distributed",]
 classifiers = [ "Development Status :: 3 - Alpha", "Programming Language :: Python :: 3.13", "Intended Audience :: Science/Research", "License :: OSI Approved :: Apache Software License", "Typing :: Typed",]
