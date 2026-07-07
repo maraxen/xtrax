@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from collections.abc import Callable
+from typing import Protocol, runtime_checkable
 
 import equinox as eqx
 import jax.tree_util as jtu
@@ -273,3 +276,158 @@ class TestStageBundleValidation:
             field1: Callable | None = None
 
         assert isinstance(ValidBundle(), StageBundle)
+
+
+class TestProtocolCallableFields:
+    """Tests for Fix 2: accept Protocol classes with only __call__."""
+
+    def test_protocol_with_only_call_accepted(self):
+        """Protocol declaring only __call__ should be accepted as callable-shaped."""
+
+        @runtime_checkable
+        class CallableProtocol(Protocol):
+            """A protocol for any callable."""
+
+            def __call__(self, x: int) -> int: ...
+
+        # Should not raise - this Protocol is callable-shaped
+        class ValidBundle(StageBundle):
+            stage1: CallableProtocol | None = None
+
+        assert isinstance(ValidBundle(), StageBundle)
+
+    def test_protocol_with_multiple_members_rejected(self):
+        """Protocol with extra methods (not just __call__) should be rejected."""
+
+        @runtime_checkable
+        class MultiMethodProtocol(Protocol):
+            """A protocol with multiple methods - not callable-shaped."""
+
+            def __call__(self, x: int) -> int: ...
+
+            def process(self, data: str) -> str: ...
+
+        # Should raise - this Protocol has more than just __call__
+        with pytest.raises(TypeError):
+
+            class InvalidBundle(StageBundle):
+                stage1: MultiMethodProtocol | None = None
+
+    def test_protocol_with_property_rejected(self):
+        """Protocol with property (plus __call__) should be rejected."""
+
+        @runtime_checkable
+        class CallableWithProp(Protocol):
+            """A protocol with __call__ and a property."""
+
+            def __call__(self, x: int) -> int: ...
+
+            @property
+            def name(self) -> str: ...
+
+        # Should raise - __call__ + property means not pure callable-shaped
+        with pytest.raises(TypeError):
+
+            class InvalidBundle(StageBundle):
+                stage1: CallableWithProp | None = None
+
+
+class TestNWayUnions:
+    """Tests for Fix 3: allow unions with multiple callables and exactly one None."""
+
+    def test_three_way_union_all_callable_types(self):
+        """3-way union with 2 Callable types and None should be accepted."""
+
+        @runtime_checkable
+        class CallableProto1(Protocol):
+            def __call__(self, x: int) -> str: ...
+
+        @runtime_checkable
+        class CallableProto2(Protocol):
+            def __call__(self, y: float) -> bool: ...
+
+        # Should not raise - all non-None types are callable-shaped
+        class ValidBundle(StageBundle):
+            stage1: Callable | CallableProto1 | CallableProto2 | None = None
+
+        assert isinstance(ValidBundle(), StageBundle)
+
+    def test_union_with_one_bad_member_rejected(self):
+        """Union where one non-None member is not callable should be rejected."""
+
+        @runtime_checkable
+        class CallableProto(Protocol):
+            def __call__(self, x: int) -> str: ...
+
+        # Should raise - str is not callable-shaped
+        with pytest.raises(TypeError):
+
+            class InvalidBundle(StageBundle):
+                stage1: Callable | CallableProto | str | None = None
+
+    def test_two_way_union_still_works(self):
+        """Traditional 2-way union (Callable | None) should still work."""
+
+        # Should not raise
+        class ValidBundle(StageBundle):
+            stage1: Callable | None = None
+
+        assert isinstance(ValidBundle(), StageBundle)
+
+    def test_four_way_union_all_valid(self):
+        """4-way union with 3 callable types + None should work."""
+
+        @runtime_checkable
+        class CallableProto1(Protocol):
+            def __call__(self) -> None: ...
+
+        @runtime_checkable
+        class CallableProto2(Protocol):
+            def __call__(self, x: int) -> int: ...
+
+        # Should not raise
+        class ValidBundle(StageBundle):
+            stage1: Callable | CallableProto1 | CallableProto2 | Callable[[int, int], int] | None = None
+
+        assert isinstance(ValidBundle(), StageBundle)
+
+
+class TestPEP563FutureAnnotations:
+    """Regression tests for Fix 1: PEP 563 stringified annotations.
+
+    The 'from __future__ import annotations' at the top of this file ensures
+    that all annotations in this module are stringified, which tests that
+    get_type_hints() properly resolves them.
+    """
+
+    def test_concrete_stage_bundle_still_valid(self):
+        """ConcreteStageBundle from top of file should still be valid."""
+        bundle = ConcreteStageBundle()
+        assert isinstance(bundle, StageBundle)
+        assert bundle.active_stages() == []
+
+    def test_subclass_with_multiple_fields_pep563(self):
+        """Multiple annotated fields under PEP 563 should work."""
+
+        class MultiFieldBundle(StageBundle):
+            field1: Callable | None = None
+            field2: Callable | None = None
+            field3: Callable | None = None
+
+        bundle = MultiFieldBundle()
+        assert isinstance(bundle, StageBundle)
+
+    def test_inherited_annotations_pep563(self):
+        """Multi-level subclass hierarchy should work with PEP 563."""
+
+        class BaseBundle(StageBundle):
+            base_stage: Callable | None = None
+
+        class DerivedBundle(BaseBundle):
+            derived_stage: Callable | None = None
+
+        bundle = DerivedBundle()
+        assert isinstance(bundle, StageBundle)
+        # Both annotations should be visible
+        assert hasattr(bundle, "base_stage")
+        assert hasattr(bundle, "derived_stage")
