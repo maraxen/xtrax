@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a2] - 2026-07-07
+
+### Fixed
+
+- **`StageBundle.__init_subclass__` validator** (`xtrax.stages`): three limitations
+  that blocked domain code from adopting `StageBundle` were fixed.
+  - **PEP 563 blindness**: modules using `from __future__ import annotations`
+    left field annotations as unevaluated strings; the validator now resolves
+    them via `typing.get_type_hints(cls, include_extras=True)` and raises a
+    clear `TypeError` (naming the unresolved annotation) instead of silently
+    misclassifying fields.
+  - **Structural-callable `Protocol`s rejected**: fields typed as a
+    `typing.Protocol` whose only member is `__call__` are now accepted as
+    callable-shaped, alongside plain `Callable`.
+  - **Union check hardcoded to exactly two args**: `X | None` unions now
+    validate for any arity — N-args-with-exactly-one-`None`, not just the
+    2-arg case — so e.g. `Callable | SomeProtocol | None` fields validate
+    correctly instead of raising.
+  (`src/xtrax/stages/bundle.py`, `tests/stages/test_bundle.py`)
+
 ## [0.4.0a1] - 2026-07-06
 
 ### Added

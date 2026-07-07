@@ -143,7 +143,7 @@ If you use xtrax in research, please cite it:
 @software{xtrax,
   title = {xtrax: High-Performance Composable JAX Training},
   author = {Russo, Marielle},
-  version = {0.4.0a1},
+  version = {0.4.0a2},
   year = {2026},
   url = {https://github.com/maraxen/xtrax}
 }
