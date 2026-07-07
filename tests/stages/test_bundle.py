@@ -401,7 +401,9 @@ class TestNWayUnions:
 
         # Should not raise
         class ValidBundle(StageBundle):
-            stage1: Callable | FourWayProto1 | FourWayProto2 | Callable[[int, int], int] | None = None
+            stage1: (
+                Callable | FourWayProto1 | FourWayProto2 | Callable[[int, int], int] | None
+            ) = None
 
         assert isinstance(ValidBundle(), StageBundle)
 
