@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a4] - 2026-07-07
+
+### Added
+
+- **`ZarrStagingSink.stage()` gains `attrs`** (`xtrax.run`): optional
+  `dict[str, Any]` of JSON-safe scalar metadata written to the Zarr group's
+  `.attrs` on drain, merging the same way staged arrays merge across
+  repeated `stage()` calls for the same key. `take()` discards pending
+  attrs (it returns the in-memory payload without persisting). Fills the
+  gap for consumers whose payloads mix array data with small provenance
+  metadata that has no array-shaped equivalent.
+  (`src/xtrax/run/zarr_sink.py`, `tests/run/test_zarr_sink.py`)
+
 ## [0.4.0a3] - 2026-07-07
 
 ### Added
