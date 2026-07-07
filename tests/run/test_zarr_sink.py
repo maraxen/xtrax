@@ -101,6 +101,54 @@ def test_redraining_same_key_overwrites(tmp_path: Path) -> None:
     assert np.array_equal(root["0"]["value"][:], [4, 5])
 
 
+def test_attrs_written_to_group_on_drain(tmp_path: Path) -> None:
+    sink = _sink(tmp_path, flush_every=100)
+    sink.stage(
+        (0,),
+        value=np.array([1]),
+        attrs={"pool_type": "BackboneOnly", "structure_ids": ["a", "b"], "parent_structure_idx": 3},
+    )
+    sink.drain()
+
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    group = root["0"]
+    assert group.attrs["pool_type"] == "BackboneOnly"
+    assert list(group.attrs["structure_ids"]) == ["a", "b"]
+    assert group.attrs["parent_structure_idx"] == 3
+
+
+def test_attrs_merge_across_repeated_stage_calls(tmp_path: Path) -> None:
+    sink = _sink(tmp_path, flush_every=100)
+    sink.stage((0,), attrs={"a": 1})
+    sink.stage((0,), value=np.array([1]), attrs={"b": 2})
+    sink.drain()
+
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    assert root["0"].attrs["a"] == 1
+    assert root["0"].attrs["b"] == 2
+
+
+def test_attrs_only_stage_with_no_arrays_still_creates_group(tmp_path: Path) -> None:
+    sink = _sink(tmp_path, flush_every=100)
+    sink.stage((0,), attrs={"note": "no arrays here"})
+    sink.drain()
+
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    assert root["0"].attrs["note"] == "no arrays here"
+
+
+def test_take_discards_pending_attrs(tmp_path: Path) -> None:
+    sink = _sink(tmp_path, flush_every=100)
+    sink.stage((0,), value=np.array([1]), attrs={"a": 1})
+    sink.take((0,))
+    # Re-stage the same key with no attrs -- should NOT resurrect the old attrs.
+    sink.stage((0,), value=np.array([2]))
+    sink.drain()
+
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    assert "a" not in root["0"].attrs
+
+
 def test_multiple_sinks_reopen_same_store(tmp_path: Path) -> None:
     """A new sink instance against the same output_dir sees prior writes (mode='a' semantics)."""
     sink1 = _sink(tmp_path, flush_every=100)

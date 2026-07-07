@@ -51,14 +51,25 @@ class ZarrStagingSink:
         self._spec = spec
         self._root: zarr.Group = zarr.open_group(str(spec.output_dir), mode="a")
         self._pending: dict[tuple[Any, ...], dict[str, np.ndarray]] = {}
+        self._pending_attrs: dict[tuple[Any, ...], dict[str, Any]] = {}
         self._staged_since_drain = 0
 
-    def stage(self, key: tuple[Any, ...], **arrays: Any) -> None:  # noqa: ANN401
-        """Buffer one or more named arrays under ``key`` for later drain.
+    def stage(
+        self,
+        key: tuple[Any, ...],
+        attrs: dict[str, Any] | None = None,
+        **arrays: Any,  # noqa: ANN401
+    ) -> None:
+        """Buffer one or more named arrays (and optional metadata) under ``key``.
 
         Args:
             key: Opaque hashable tuple identifying this payload, e.g.
                 ``(batch_idx, chunk_start, chunk_count)``.
+            attrs: Optional JSON-safe metadata (scalars, strings, lists of
+                either) written to the Zarr group's ``.attrs`` on drain --
+                e.g. provenance fields that aren't themselves arrays.
+                Repeated ``stage`` calls for the same key merge attrs the
+                same way arrays merge (later keys overwrite earlier ones).
             **arrays: Named numpy-convertible arrays to stage under ``key``.
                 Repeated ``stage`` calls for the same key merge: later names
                 overwrite earlier ones with the same name, new names
@@ -66,6 +77,8 @@ class ZarrStagingSink:
         """
         entry = self._pending.setdefault(key, {})
         entry.update({name: np.asarray(value) for name, value in arrays.items()})
+        if attrs:
+            self._pending_attrs.setdefault(key, {}).update(attrs)
         self._staged_since_drain += 1
         if self._staged_since_drain >= self._spec.flush_every:
             self.drain()
@@ -73,9 +86,13 @@ class ZarrStagingSink:
     def take(self, key: tuple[Any, ...]) -> dict[str, np.ndarray]:
         """Pop and return a still-buffered (not yet drained) payload for ``key``.
 
+        Discards any pending ``attrs`` staged for ``key`` -- ``take`` is for
+        in-memory access without persisting; use ``drain`` to persist.
+
         Raises:
             KeyError: If ``key`` has no pending (undrained) entry.
         """
+        self._pending_attrs.pop(key, None)
         try:
             return self._pending.pop(key)
         except KeyError as e:
@@ -83,7 +100,7 @@ class ZarrStagingSink:
             raise KeyError(msg) from e
 
     def drain(self) -> None:
-        """Write all pending payloads into the Zarr store and clear the buffer."""
+        """Write all pending payloads (and attrs) into the Zarr store, then clear the buffer."""
         for key, arrays in self._pending.items():
             group_path = "/".join(str(part) for part in key)
             group = self._root.require_group(group_path) if group_path else self._root
@@ -96,7 +113,11 @@ class ZarrStagingSink:
                     overwrite=True,
                 )
                 arr[...] = array
+            key_attrs = self._pending_attrs.get(key)
+            if key_attrs:
+                group.attrs.update(key_attrs)
         self._pending.clear()
+        self._pending_attrs.clear()
         self._staged_since_drain = 0
 
     def __len__(self) -> int:
