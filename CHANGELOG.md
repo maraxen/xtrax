@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a5] - 2026-07-08
+
+### Added
+
+- **`xtrax.run.zarr_integrity`** (`xtrax.run`): content-digest and durability
+  primitives for Zarr directory stores, hoisted out of aminx's
+  `host/campaign.py` -- they were fully generic (no domain logic) and
+  belong in the shared layer. `zarr_content_digest(path)` computes a
+  deterministic sha256 over a store's full logical content (paths, attrs,
+  array data), unaffected by filesystem metadata or which process wrote
+  it; `fsync_tree(path)` durabilizes a directory-of-many-files store
+  bottom-up before that digest is trusted. Also exports the lower-level
+  building blocks (`canonical_json_bytes`, `normalize_json_value`,
+  `update_array_digest`, `update_zarr_node_digest`, `fsync_file`,
+  `fsync_directory`) for callers assembling their own verification/durability
+  logic on top. `zarr_content_digest`/`update_zarr_node_digest` require the
+  optional `zarr` dependency at call time only (`pip install xtrax[io]`);
+  importing `xtrax.run` never requires zarr installed.
+  (`src/xtrax/run/zarr_integrity.py`, `tests/run/test_zarr_integrity.py`)
+
 ## [0.4.0a4] - 2026-07-07
 
 ### Added
