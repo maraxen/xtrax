@@ -91,6 +91,13 @@ title = "[N9] Configure PyPI OIDC Trusted Publisher (human gate)"
 gate_type = "human"
 expected_status = "completed"
 blocking = true
+# T3-05/AC-X6 freshness primitive (closes debt #411's n9-OIDC staleness defect):
+# this attestation is a hermetic, offline TTL claim, not authoritative on its own —
+# the "pypi_and_git_tag" probe opportunistically invalidates it (never satisfies it)
+# by checking for a matching git tag + PyPI release of the current version.
+attested_at = "2026-07-02T00:00:00Z"
+ttl_days = 90
+probe = "pypi_and_git_tag"
 notes = "PyPI Trusted Publisher configured and proven (0.2.1, 0.3.0 published via OIDC). TestPyPI intentionally not used — decision 2026-07-02; publish.yml is PyPI-only."
 
 [[backlog_items]]
@@ -117,6 +124,12 @@ blocking = true
 [[automated_checks]]
 name = "jaxlint_performance"
 recipe = "audit-jaxlint"
+category = "foundation"
+blocking = true
+
+[[automated_checks]]
+name = "substrate_lock"
+recipe = "audit-substrate-lock"
 category = "foundation"
 blocking = true
 

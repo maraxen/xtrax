@@ -4,14 +4,24 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import subprocess
 import sys
 import tomllib
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from xtrax.devtools.freshness import (
+    Attestation,
+    FreshnessVerdict,
+    ProbeResult,
+    evaluate_freshness,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "distribution" / "release_readiness.toml"
@@ -28,6 +38,9 @@ class BacklogItem:
     blocking: bool
     slow: bool
     notes: str
+    attested_at: str | None = None
+    ttl_days: float | None = None
+    probe: str | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +142,20 @@ def load_release_readiness_config(config_path: Path) -> ReleaseReadinessConfig:
             raise ValueError("backlog_items[].blocking/slow must be booleans")
         if not isinstance(notes, str):
             raise ValueError("backlog_items[].notes must be a string")
+        attested_at = raw.get("attested_at")
+        if attested_at is not None and not isinstance(attested_at, str):
+            raise ValueError("backlog_items[].attested_at must be a string when set")
+        ttl_days = raw.get("ttl_days")
+        if ttl_days is not None and not isinstance(ttl_days, (int, float)):
+            raise ValueError("backlog_items[].ttl_days must be a number when set")
+        probe_name = raw.get("probe")
+        if probe_name is not None and not isinstance(probe_name, str):
+            raise ValueError("backlog_items[].probe must be a string when set")
+        if gate_type == "human" and (attested_at is None or ttl_days is None):
+            raise ValueError(
+                f"backlog_items[{slug!r}]: gate_type='human' requires both "
+                "attested_at and ttl_days (freshness primitive, T3-05/AC-X6)"
+            )
         backlog_items.append(
             BacklogItem(
                 item_id=item_id,
@@ -140,6 +167,9 @@ def load_release_readiness_config(config_path: Path) -> ReleaseReadinessConfig:
                 blocking=blocking,
                 slow=slow,
                 notes=notes,
+                attested_at=attested_at,
+                ttl_days=float(ttl_days) if ttl_days is not None else None,
+                probe=probe_name,
             )
         )
 
@@ -278,9 +308,54 @@ def load_coverage_state(root: Path) -> dict[str, Any]:
     return json.loads(state_path.read_text(encoding="utf-8"))
 
 
+#: Named probes for the freshness primitive (T3-05/AC-X6), keyed by the
+#: `[[backlog_items]].probe` TOML field. Each probe can only INVALIDATE an
+#: attestation, never satisfy one — see xtrax.devtools.freshness.
+def probe_pypi_and_git_tag(version: str, root: Path) -> ProbeResult:
+    """Invalidate n9 (PyPI OIDC) if there's no matching git tag or PyPI release.
+
+    The git-tag check is hermetic (no network). The PyPI check is opportunistic:
+    a genuine 404 (no such release) invalidates, but any network failure is
+    reported as `skipped`, never as an invalidation.
+    """
+    tag = f"v{version}"
+    tag_result = subprocess.run(
+        ["git", "tag", "-l", tag],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if tag_result.returncode != 0 or tag_result.stdout.strip() != tag:
+        return ProbeResult(invalidated=True, reason=f"git tag {tag!r} not found locally")
+
+    url = f"https://pypi.org/pypi/xtrax/{version}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            if response.status == 200:
+                return ProbeResult(invalidated=False)
+            return ProbeResult(
+                invalidated=True,
+                reason=f"PyPI returned HTTP {response.status} for xtrax=={version}",
+            )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return ProbeResult(invalidated=True, reason=f"PyPI has no release xtrax=={version}")
+        return ProbeResult(invalidated=False, skipped=True, reason=f"PyPI probe HTTP error: {exc}")
+    except (urllib.error.URLError, OSError) as exc:
+        return ProbeResult(invalidated=False, skipped=True, reason=f"PyPI probe unreachable: {exc}")
+
+
+PROBES: dict[str, Any] = {"pypi_and_git_tag": probe_pypi_and_git_tag}
+
+
 def build_backlog_report(
     config: ReleaseReadinessConfig,
     check_results: dict[str, dict[str, Any]],
+    *,
+    root: Path,
+    package_version: str,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for item in config.backlog_items:
@@ -294,8 +369,31 @@ def build_backlog_report(
             "notes": item.notes,
         }
         if item.gate_type == "human":
-            row["status"] = item.expected_status
-            row["gate_passed"] = item.expected_status == "completed"
+            if item.attested_at is None or item.ttl_days is None:
+                raise ValueError(
+                    f"backlog item {item.item_id} ({item.slug!r}): human gate missing "
+                    "attested_at/ttl_days (should have been rejected at config load)"
+                )
+            probe_fn = None
+            if item.probe is not None:
+                if item.probe not in PROBES:
+                    raise ValueError(
+                        f"backlog item {item.item_id} ({item.slug!r}): unknown probe {item.probe!r}"
+                    )
+                named_probe = PROBES[item.probe]
+                probe_fn = functools.partial(named_probe, package_version, root)
+            verdict: FreshnessVerdict = evaluate_freshness(
+                Attestation(
+                    attested_at=item.attested_at,
+                    ttl_days=item.ttl_days,
+                    attested_by=item.slug,
+                ),
+                now=now,
+                probe=probe_fn,
+            )
+            row["status"] = "completed" if verdict.fresh else "blocked"
+            row["gate_passed"] = verdict.fresh
+            row["freshness_reasons"] = list(verdict.reasons)
         elif item.gate_type == "meta":
             row["status"] = item.expected_status
             row["gate_passed"] = True
@@ -340,7 +438,9 @@ def compute_verdict(
     ]
     if config.block_on_open_human_gates and open_human:
         for row in open_human:
-            reasons.append(f"human gate open: #{row['id']} {row['slug']}")
+            freshness_reasons = row.get("freshness_reasons") or []
+            detail = f" ({'; '.join(freshness_reasons)})" if freshness_reasons else ""
+            reasons.append(f"human gate open: #{row['id']} {row['slug']}{detail}")
 
     failed_backlog = [
         row
@@ -513,7 +613,10 @@ def audit_release_readiness(
         if check.recipe:
             gate_results[check.recipe] = result
 
-    backlog_rows = build_backlog_report(config, gate_results)
+    package_version = read_package_version(root)
+    backlog_rows = build_backlog_report(
+        config, gate_results, root=root, package_version=package_version
+    )
     for row in backlog_rows:
         row["gate"] = next(
             (item.gate for item in config.backlog_items if item.item_id == row["id"]),
@@ -535,7 +638,7 @@ def audit_release_readiness(
         "config_version": config.version,
         "epic_id": config.epic_id,
         "epic_title": config.epic_title,
-        "package_version": read_package_version(root),
+        "package_version": package_version,
         "mode": "quick" if quick else "full",
         "verdict": verdict,
         "verdict_reasons": verdict_reasons,
