@@ -147,7 +147,7 @@ blocking = true
 
 [[automated_checks]]
 name = "ty_check"
-command = "uv run --extra eda ty check src/"
+command = "uv run --extra eda --extra io ty check src/"
 category = "ci_lint"
 blocking = true
 
