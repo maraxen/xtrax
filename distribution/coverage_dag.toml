@@ -13,7 +13,7 @@ pytest_args = ["tests/audit/", "-q"]
 id = "tier1_core"
 description = "Shipped product code (excludes optional eda + dev-only devtools)"
 measure_coverage = true
-uv_sync_extras = ["dev"]
+uv_sync_extras = ["dev", "io"]
 pytest_args = [
   "tests/",
   "-q",
