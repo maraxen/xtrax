@@ -94,7 +94,7 @@ def _wrap_step(fn: Callable[[Any], Any], boundary: AxisBoundary | None) -> Calla
     if boundary is None or (boundary.tap is None and boundary.sink is None):
         return fn
 
-    def wrapped(x: Any) -> Any:
+    def _wrapped(x: Any) -> Any:
         y = fn(x)
         if boundary.tap is not None:
             y = boundary.tap(y)
@@ -102,7 +102,7 @@ def _wrap_step(fn: Callable[[Any], Any], boundary: AxisBoundary | None) -> Calla
             boundary.sink(y)
         return y
 
-    return wrapped
+    return _wrapped
 
 
 def _apply_fuse(ys: Any, boundary: AxisBoundary | None) -> Any:
@@ -191,7 +191,7 @@ def execute_scan_axis(
         `(final_carry, ys)` -- `ys` is optionally fused; `fuse` never receives `final_carry`.
     """
 
-    def wrapped_transition(carry: Any, x: Any) -> tuple[Any, Any]:
+    def _wrapped_transition(carry: Any, x: Any) -> tuple[Any, Any]:
         carry, y = fn(carry, x)
         if boundary is not None:
             if boundary.tap is not None:
@@ -200,7 +200,7 @@ def execute_scan_axis(
                 boundary.sink(y)
         return carry, y
 
-    final_carry, ys = safe_scan(wrapped_transition, init, xs)
+    final_carry, ys = safe_scan(_wrapped_transition, init, xs)
     return final_carry, _apply_fuse(ys, boundary)
 
 
