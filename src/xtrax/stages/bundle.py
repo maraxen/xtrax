@@ -24,7 +24,6 @@ def _is_callable_type(typ) -> bool:
     if origin is Callable:
         return True
 
-
     # Check if it's a Protocol with only __call__
     if isinstance(typ, type) and getattr(typ, "_is_protocol", False):
         # Get the set of members defined directly on this Protocol class,
