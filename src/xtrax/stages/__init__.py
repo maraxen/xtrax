@@ -2,7 +2,11 @@
 
 from xtrax.stages.boundaries import AxisBoundary, Fuse, Sink, Tap
 from xtrax.stages.protocols import RollingFn, TransformFn
-from xtrax.stages.topology import PlanTopologyError, validate_plan_topology
+from xtrax.stages.topology import (
+    PlanTopologyError,
+    axis_boundaries_by_name,
+    validate_plan_topology,
+)
 
 __all__ = [
     "TransformFn",
@@ -12,6 +16,7 @@ __all__ = [
     "Sink",
     "AxisBoundary",
     "PlanTopologyError",
+    "axis_boundaries_by_name",
     "validate_plan_topology",
 ]
 

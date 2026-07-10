@@ -7,7 +7,11 @@ from dataclasses import dataclass
 import pytest
 
 from xtrax.stages.boundaries import AxisBoundary
-from xtrax.stages.topology import PlanTopologyError, validate_plan_topology
+from xtrax.stages.topology import (
+    PlanTopologyError,
+    axis_boundaries_by_name,
+    validate_plan_topology,
+)
 from xtrax.tiling.plan import AxisDecision, AxisSpec
 from xtrax.tiling.strategy import SafeMap, Scan, Vmap
 
@@ -166,3 +170,52 @@ class TestStructuralDuckTyping:
         boundaries = {"n_noises": AxisBoundary(tap=_OrderedTap())}
         with pytest.raises(PlanTopologyError, match="ordered.*Vmap"):
             validate_plan_topology(decisions, boundaries)
+
+
+def _axis(name: str) -> AxisSpec:
+    return AxisSpec(name=name, cardinality=8, default_batch_size=1)
+
+
+class TestAxisBoundariesByName:
+    """Tests for the T1-02 fork-9 name-keying adapter (#3040)."""
+
+    def test_none_boundaries_returns_empty_mapping(self):
+        axes = [_axis("n_structures"), _axis("n_noises")]
+        assert axis_boundaries_by_name(axes, None) == {}
+
+    def test_total_and_injective_happy_path(self):
+        axes = [_axis("n_structures"), _axis("n_noises")]
+        b0 = AxisBoundary(tap=_OrderedTap())
+        b1 = AxisBoundary(sink=_UnorderedSink())
+        boundaries = [b0, b1]
+
+        result = axis_boundaries_by_name(axes, boundaries)
+
+        assert result == {"n_structures": b0, "n_noises": b1}
+
+    def test_empty_axes_and_boundaries_returns_empty_mapping(self):
+        assert axis_boundaries_by_name([], []) == {}
+
+    def test_length_mismatch_raises(self):
+        axes = [_axis("n_structures"), _axis("n_noises")]
+        boundaries = [AxisBoundary()]
+        with pytest.raises(PlanTopologyError, match="1 entries but axes has 2"):
+            axis_boundaries_by_name(axes, boundaries)
+
+    def test_duplicate_axis_name_raises_rather_than_silently_dropping(self):
+        axes = [_axis("n_noises"), _axis("n_noises")]
+        b0 = AxisBoundary(tap=_OrderedTap())
+        b1 = AxisBoundary(sink=_OrderedSink())
+
+        with pytest.raises(PlanTopologyError, match="duplicate axis name 'n_noises'"):
+            axis_boundaries_by_name(axes, [b0, b1])
+
+    def test_composes_with_validate_plan_topology(self):
+        """The adapter's output feeds validate_plan_topology directly."""
+        axes = [_axis("n_noises")]
+        boundaries = [AxisBoundary(tap=_OrderedTap())]
+        axis_boundaries = axis_boundaries_by_name(axes, boundaries)
+        decisions = [_vmap_decision("n_noises")]
+
+        with pytest.raises(PlanTopologyError, match="ordered.*Vmap"):
+            validate_plan_topology(decisions, axis_boundaries)

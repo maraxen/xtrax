@@ -134,6 +134,12 @@ category = "foundation"
 blocking = true
 
 [[automated_checks]]
+name = "jax_pin"
+recipe = "audit-jax-pin"
+category = "foundation"
+blocking = true
+
+[[automated_checks]]
 name = "ruff_lint"
 command = "uv run ruff check ."
 category = "ci_lint"

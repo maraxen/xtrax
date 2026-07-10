@@ -60,6 +60,58 @@ class AxisDecisionLike(Protocol):
     def strategy(self) -> object: ...
 
 
+def axis_boundaries_by_name(
+    axes: Sequence[AxisSpecLike],
+    boundaries: Sequence[AxisBoundary] | None,
+) -> Mapping[str, AxisBoundary]:
+    """Adapt RunSpec's positional axes/boundaries lists into a name-keyed Mapping.
+
+    Fork-9 resolution (T1-02): `RunSpec.boundaries` stays a plain
+    `list[AxisBoundary] | None` -- aminx subclasses construct it positionally,
+    one entry per axis in `RunSpec.axes` order -- rather than breaking the
+    field to `Mapping[str, AxisBoundary]` directly. This adapter is the seam
+    where axis identity gets attached, at the executor entry, matching what
+    `validate_plan_topology` already consumes.
+
+    Args:
+        axes: Axis specs in the same order as `boundaries` (e.g. `RunSpec.axes`).
+        boundaries: One entry per axis, or None if no axis has any boundary op.
+
+    Returns:
+        Mapping of axis name -> AxisBoundary. Empty if `boundaries` is None.
+
+    Raises:
+        PlanTopologyError: if `boundaries` is not None and its length differs
+            from `axes` (a mismatched positional pairing), or if two axes
+            share the same name -- a plain dict comprehension would silently
+            keep only the last boundary for a duplicate name, masking a real
+            keying bug rather than rejecting it (PM4).
+
+    Example:
+        >>> axis_boundaries_by_name(run_spec.axes, run_spec.boundaries)
+    """
+    if boundaries is None:
+        return {}
+    if len(boundaries) != len(axes):
+        msg = (
+            f"PlanTopologyError: boundaries has {len(boundaries)} entries but "
+            f"axes has {len(axes)}; RunSpec.boundaries must have exactly one "
+            f"entry per axis (or be None)."
+        )
+        raise PlanTopologyError(msg)
+
+    result: dict[str, AxisBoundary] = {}
+    for axis, boundary in zip(axes, boundaries, strict=True):
+        if axis.name in result:
+            msg = (
+                f"PlanTopologyError: duplicate axis name {axis.name!r} in axes; "
+                f"cannot key boundaries unambiguously by name."
+            )
+            raise PlanTopologyError(msg)
+        result[axis.name] = boundary
+    return result
+
+
 def validate_plan_topology(
     decisions: Sequence[AxisDecisionLike],
     axis_boundaries: Mapping[str, AxisBoundary],
@@ -117,5 +169,6 @@ __all__ = [
     "PlanTopologyError",
     "AxisSpecLike",
     "AxisDecisionLike",
+    "axis_boundaries_by_name",
     "validate_plan_topology",
 ]
