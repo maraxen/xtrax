@@ -1,6 +1,7 @@
 """Composable stage protocols and bundles."""
 
 from xtrax.stages.boundaries import AxisBoundary, Fuse, Sink, Tap
+from xtrax.stages.executor import ExecutorError, execute_map_axis, execute_scan_axis
 from xtrax.stages.protocols import RollingFn, TransformFn
 from xtrax.stages.topology import (
     PlanTopologyError,
@@ -18,6 +19,9 @@ __all__ = [
     "PlanTopologyError",
     "axis_boundaries_by_name",
     "validate_plan_topology",
+    "ExecutorError",
+    "execute_map_axis",
+    "execute_scan_axis",
 ]
 
 
