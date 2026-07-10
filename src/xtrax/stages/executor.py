@@ -53,6 +53,34 @@ Only set `ordered=True` on a `Tap`/`Sink` when correctness genuinely depends on 
 order (e.g. writing a sequential log). If only one axis in a pipeline truly needs ordering, keep
 `ordered=False` on every other axis's boundary ops so XLA retains scheduling freedom there. There
 is no batch-size lever to pull once ordering is on for a `SafeMap` axis -- see above.
+
+## Nesting: vmap-of-scan (T1-05, #3056 -- verified empirically, certified in
+`tests/stages/test_nested_ordering.py`)
+
+A literal `jax.vmap()` call wrapping ANY code path that contains a lane-dependent ordered
+`io_callback` -- no matter how deeply nested (e.g. inside an `execute_scan_axis` call used as
+this axis's `fn`) -- always raises `ValueError: Cannot vmap ordered IO callback`. This is a
+property of *how the batching was performed* (an active JAX `vmap` `BatchTrace` when the
+`io_callback` primitive binds), not of the data shape the callback ultimately receives -- so no
+amount of nesting depth or careful wrapping avoids it if a literal `jax.vmap()` is in the call
+stack (confirmed by reading `jax/_src/callback.py::io_callback_batching_rule`:
+`if ordered: raise ValueError(...)` fires unconditionally under an active batch trace).
+
+**This does NOT mean "vmap-of-scan with ordering" is impossible -- it means don't implement the
+outer axis via a literal `jax.vmap()` call.** Bake the outer axis's cardinality directly into
+`execute_scan_axis`'s `init`/`xs` shape instead (a leading `(B, ...)` dimension from the start)
+and write the per-step transition using ordinary broadcasting array ops rather than relying on
+`jax.vmap`'s automatic batching transform. There is no active `BatchTrace` in that code path, so
+`ordered=True` works exactly as it would for a flat scan: one ordered call per step, each
+receiving all `B` lanes' values together as a plain array (index order == lane order, always
+deterministic). This delivers the same *semantics* `Vmap` strategy promises (no ordering
+guarantee needed across the outer axis, full parallelism) via a different, ordering-compatible
+mechanism -- `execute_scan_axis` needs no changes to support it; it is purely a caller-side
+data-shaping choice. See
+`tests/stages/test_nested_ordering.py::test_batched_shape_vmap_of_scan_preserves_order` for a
+certified worked example, and
+`test_literal_vmap_of_scan_lane_dependent_ordering_fails_loud` for the "don't do it this way"
+counter-example this section warns against.
 """
 
 from collections.abc import Callable
@@ -150,7 +178,23 @@ def execute_map_axis(
                 "executor; this is a defense-in-depth check.)"
             )
             raise ExecutorError(msg)
-        ys = jax.vmap(wrapped)(xs)
+        try:
+            ys = jax.vmap(wrapped)(xs)
+        except ValueError as exc:
+            if "Cannot `vmap` ordered IO callback" not in str(exc):
+                raise
+            msg = (
+                "An ordered Tap/Sink nested inside this Vmap axis's `fn` (not on the "
+                "`boundary` passed directly to this call) hit the same JAX restriction "
+                "as a direct Vmap+ordered boundary: 'Cannot vmap ordered IO callback'. "
+                "Vmap cannot host ordering at ANY nesting depth when the sunk value "
+                "depends on the vmapped axis (see this module's docstring, 'Nesting: "
+                "vmap-of-scan'). The recommended fix is NOT to nest a jax.vmap call at "
+                "all -- bake the outer axis's cardinality directly into "
+                "execute_scan_axis's carry/xs shape and write the per-step logic as "
+                "ordinary broadcasting array ops instead."
+            )
+            raise ExecutorError(msg) from exc
         return _apply_fuse(ys, boundary)
 
     if isinstance(strategy, SafeMap):
