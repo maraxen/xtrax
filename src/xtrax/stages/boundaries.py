@@ -52,6 +52,10 @@ class Tap(Protocol, Generic[T]):  # noqa: UP046
     `ordered`: if True, requires SafeMap or Scan strategy on this axis —
     vmap does not preserve step order. Validator enforces this.
     Implementations must use io_callback internally.
+
+    `ordered=True` has a real performance cost, not just a correctness constraint —
+    see xtrax.stages.executor's module docstring for the full explanation (XLA token
+    dependency, no vmap compatibility, prefer fewer/larger ordered calls).
     """
 
     ordered: bool
@@ -66,6 +70,10 @@ class Sink(Protocol, Generic[T]):  # noqa: UP046
     `ordered`: if True, requires SafeMap or Scan strategy on this axis.
     Implementations must use io_callback(ordered=self.ordered) internally.
     Example: IoCallbackEncoderSink (writes encoded tensors to H5).
+
+    `ordered=True` has a real performance cost, not just a correctness constraint —
+    see xtrax.stages.executor's module docstring for the full explanation (XLA token
+    dependency, no vmap compatibility, prefer fewer/larger ordered calls).
     """
 
     ordered: bool
