@@ -193,6 +193,9 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
   auto-heal is retained for local-dev ergonomics only, never as the gate. If AC-V1 (T3-06) shows
   the free `SessionContext::init` drift-check does NOT fire from xtrax cwd, this gate is MANDATORY
   (flip the spec); if it fires, this is belt-and-suspenders.
+- **Resolved 2026-07-10 (T3-06/AC-V1 verification):** the free drift-check does **not** fire from
+  an xtrax cwd — see `.praxia/docs/research/260710_t3-06-session-init-drift-verification.md`.
+  **Disposition flips: this gate is MANDATORY**, not belt-and-suspenders.
 
 #### T3-04 · AC-X4 — first-consumer SubFlow integration test (O-1)
 - **workspace:** xtrax
@@ -256,6 +259,14 @@ backlog ids at file time). Every gate states a **success metric** and its **fast
 - **description (backlog add):** One-shot verification errand; its recorded binary answer is a
   precondition for setting T3-03's disposition. Run before finalizing the D3 gate's
   mandatory/optional status.
+- **Resolved 2026-07-10:** **binary answer = does NOT fire.** `SessionContext::init`'s
+  dirty-check/auto-heal loop (`crates/praxia-workflows/src/session.rs`) has exactly one call site
+  in praxia — `plugin_cli::export()` — wired only to the explicit `praxia plugin export` CLI
+  subcommand (also `install`/`uninstall`). It is not invoked by the MCP server's
+  `ensure_initialized()` (unrelated workspace/backlog initializer) nor by the `session-start.sh`
+  hook (telemetry + handoff-restore only). Full evidence:
+  `.praxia/docs/research/260710_t3-06-session-init-drift-verification.md`. **Consequence: T3-03
+  (D3) is flipped to MANDATORY** (see that section, updated above).
 
 #### T3-07 · AC-V2 — MCP-reachability probe (fork-15/16 gate)
 - **workspace:** xtrax (verification; probes bathos MCP from a NO-CLAUDE node)
