@@ -136,3 +136,4 @@ exclude = [ "src/xtrax/devtools",]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/xtrax/py.typed" = "xtrax/py.typed"
+"src/xtrax/composition/node_metadata_schema.toml" = "xtrax/composition/node_metadata_schema.toml"
