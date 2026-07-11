@@ -44,6 +44,14 @@ class NodeMetadataSchema:
     slots: tuple[SlotDefinition, ...]
 
 
+def _str_keyed(item: dict) -> dict[str, Any]:
+    """Rebuild a freshly-narrowed `dict` (its key type erased by `isinstance`) into a
+    genuinely `dict[str, Any]`-typed object -- TOML tables always have string keys, but
+    a static type checker can't infer that from `isinstance(x, dict)` alone.
+    """
+    return {str(k): v for k, v in item.items()}
+
+
 def _require_str(data: dict[str, Any], key: str, *, context: str) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -143,7 +151,12 @@ def load_node_metadata_schema(path: Path | None = None) -> NodeMetadataSchema:
     if not isinstance(raw_slots, list) or not raw_slots:
         raise ValueError("slots must be a non-empty list")
 
-    slots = tuple(_parse_slot(item, idx) for idx, item in enumerate(raw_slots))
+    parsed_slots: list[SlotDefinition] = []
+    for idx, item in enumerate(raw_slots):
+        if not isinstance(item, dict):
+            raise ValueError(f"slots[{idx}]: must be a table")
+        parsed_slots.append(_parse_slot(_str_keyed(item), idx))
+    slots = tuple(parsed_slots)
     slot_ids = [slot.id for slot in slots]
     if len(slot_ids) != len(set(slot_ids)):
         raise ValueError("duplicate slot ids in node_metadata_schema")
