@@ -1,0 +1,9 @@
+[plugin]
+name            = "xtrax"
+version         = "0.4.0a5"
+description     = "High-performance composable JAX library"
+requires_praxia = ">=0.1.0"
+
+[[plugin.workflows]]
+name          = "port_validation"
+template_path = "agent_assets/workflows/port_validation.yaml"
