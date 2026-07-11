@@ -20,6 +20,16 @@ audit-jax-pin:
     uv run pytest tests/stages/test_callback.py -v
     uv run python scripts/audit_jax_pin.py
 
+# Local-only verification (praxia/bathos CLIs not installed in CI; not wired into release_readiness.toml)
+audit-plugin-manifest:
+    uv run ruff check tests/composition/test_plugin_manifest.py
+    uv run pytest tests/composition/test_plugin_manifest.py -v
+
+probe-mcp-reachability:
+    uv run ruff check scripts/probe_mcp_reachability.py tests/audit/test_mcp_reachability_probe.py
+    uv run pytest tests/audit/test_mcp_reachability_probe.py -v
+    uv run python scripts/probe_mcp_reachability.py
+
 audit-emit-contract:
     uv run pytest tests/audit/test_emit_contract.py -v
 
