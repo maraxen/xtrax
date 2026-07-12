@@ -1,6 +1,13 @@
 """Composable stage protocols and bundles."""
 
 from xtrax.stages.boundaries import AxisBoundary, Fuse, Sink, Tap
+from xtrax.stages.evaluate import (
+    EvaluateFn,
+    EvaluatorAlreadySealedError,
+    SealedEvaluatorRegistry,
+    get_sealed_evaluator,
+    seal_evaluator,
+)
 from xtrax.stages.executor import ExecutorError, execute_map_axis, execute_scan_axis
 from xtrax.stages.protocols import RollingFn, TransformFn
 from xtrax.stages.topology import (
@@ -22,6 +29,11 @@ __all__ = [
     "ExecutorError",
     "execute_map_axis",
     "execute_scan_axis",
+    "EvaluateFn",
+    "EvaluatorAlreadySealedError",
+    "SealedEvaluatorRegistry",
+    "seal_evaluator",
+    "get_sealed_evaluator",
 ]
 
 
