@@ -43,6 +43,21 @@ class TestSealedEvaluatorRegistry:
         }
         assert public_methods == {"seal", "get"}
 
+    def test_direct_attribute_assignment_is_blocked(self) -> None:
+        """The named-method check above isn't enough on its own -- prove the underlying
+        attribute itself can't be reassigned by a caller that reaches around seal().
+        """
+        registry = SealedEvaluatorRegistry()
+        registry.seal(_trivial_evaluator)
+        with pytest.raises(AttributeError, match="no attribute mutation"):
+            registry._evaluator = lambda frozen_context, candidate: {"score": 999.0}  # noqa: ARG005
+        assert registry.get() is _trivial_evaluator
+
+    def test_new_attribute_assignment_is_also_blocked(self) -> None:
+        registry = SealedEvaluatorRegistry()
+        with pytest.raises(AttributeError):
+            registry.some_new_field = "anything"
+
 
 class TestOneHotSanityCheck:
     """AC3's own worked example (matches BATHOS.md's measurement-verification rule): feed a
@@ -68,8 +83,16 @@ class TestOneHotSanityCheck:
         assert max(scores, key=lambda c: scores[c]) == known_best
 
 
-def test_module_level_seam_seals_once() -> None:
-    """The one test touching the real process-wide default registry directly."""
+def test_module_level_functions_delegate_to_a_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proves seal_evaluator()/get_sealed_evaluator() actually delegate to a working
+    registry, without permanently sealing the real process-wide `_default_registry` for
+    the rest of the pytest session -- monkeypatch substitutes a fresh registry for the
+    duration of this test and restores the original afterward.
+    """
+    import xtrax.stages.evaluate as evaluate_module
+
+    monkeypatch.setattr(evaluate_module, "_default_registry", SealedEvaluatorRegistry())
+
     seal_evaluator(_trivial_evaluator)
     assert get_sealed_evaluator() is _trivial_evaluator
     with pytest.raises(EvaluatorAlreadySealedError):

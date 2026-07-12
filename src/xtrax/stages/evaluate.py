@@ -5,8 +5,12 @@ The third, previously-greenfield leg of the mutation triad (roadmap research syn
 contracts) and async JIT-safe tracking (Tap/Sink ordered flags + the topology validator),
 but no primitive making fitness scalars come from exactly one immutable source. This module
 is that primitive: a `(frozen_context, candidate) -> dict[str, float]` contract, registered
-into a `SealedEvaluatorRegistry` exactly once -- a second registration raises, and the
-registry exposes no unseal/replace method at all (not merely an unused one).
+into a `SealedEvaluatorRegistry` exactly once -- a second registration raises, and no
+attribute assignment on a registry instance is possible at all past construction (not
+merely an absence of a named unseal/replace method -- `registry._evaluator = other_fn`
+raises too, via a `__setattr__` override, the same idiom `xtrax.composition.graph`'s
+`HostPrepGraphNode` uses for its per-node frozen flag (T1-06), applied here
+unconditionally since a registry has no mutable/frozen distinction at all).
 
 `frozen_context` and `candidate` are intentionally opaque, caller-supplied types -- the
 concrete fitness registry and any #2181 population representation are a documented
@@ -40,19 +44,29 @@ class EvaluateFn(Protocol[FrozenContext, Candidate]):
 class SealedEvaluatorRegistry:
     """A write-once registration slot for one EvaluateFn.
 
-    No unseal/replace method exists on this class -- that IS the "no mutation API"
-    guarantee AC3 calls for, not just an omission at current call sites.
+    No unseal/replace method exists on this class, and no external attribute
+    assignment is possible at all: `__setattr__` unconditionally raises `AttributeError`,
+    including for `_evaluator` itself -- `registry._evaluator = other_fn` is blocked, not
+    merely undocumented. `__init__` and `seal()` bypass the guard via `object.__setattr__`
+    for their own single legitimate write each; nothing else can.
     """
 
+    __slots__ = ("_evaluator",)
+    _evaluator: EvaluateFn[Any, Any] | None
+
     def __init__(self) -> None:
-        self._evaluator: EvaluateFn[Any, Any] | None = None
+        object.__setattr__(self, "_evaluator", None)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        msg = f"SealedEvaluatorRegistry exposes no attribute mutation; cannot set {name!r}"
+        raise AttributeError(msg)
 
     def seal(self, fn: EvaluateFn[Any, Any]) -> None:
         """Register `fn` as this registry's evaluator. Callable exactly once."""
         if self._evaluator is not None:
             msg = "an evaluator is already sealed on this registry"
             raise EvaluatorAlreadySealedError(msg)
-        self._evaluator = fn
+        object.__setattr__(self, "_evaluator", fn)
 
     def get(self) -> EvaluateFn[Any, Any]:
         """Return the sealed evaluator."""
