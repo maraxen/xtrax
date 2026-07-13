@@ -11,6 +11,7 @@ the design spec rejected a standalone shared schema package over -- this gate fa
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -20,9 +21,19 @@ DEFAULT_ALLOWED_PATH = DEFAULT_SRC_DIR / "inference" / "ir_schema.py"
 SCHEMA_MARKERS = ('"$schema"', "'$schema'")
 SCANNED_GLOBS = ("*.py", "*.json", "*.toml", "*.yaml", "*.yml")
 
+# YAML mapping keys are conventionally unquoted (`$schema: <url>`), so neither quoted
+# SCHEMA_MARKERS spelling matches -- this is a separate, anchored check for that one shape.
+_YAML_BARE_KEY_RE = re.compile(r"^\$schema\s*:")
+
+
+def _line_has_schema_marker(line: str) -> bool:
+    if any(marker in line for marker in SCHEMA_MARKERS):
+        return True
+    return bool(_YAML_BARE_KEY_RE.match(line.strip()))
+
 
 def find_schema_definitions(src_dir: Path) -> list[str]:
-    """Return "path:line" hits for any SCHEMA_MARKERS spelling under src_dir.
+    """Return "path:line" hits for a `$schema` marker (any spelling) under src_dir.
 
     Scans Python source and data files (JSON/TOML/YAML) -- `xtrax.composition` already ships
     a hand-authored non-.py schema-like file (`node_metadata_schema.toml`), so a Python-only
@@ -36,7 +47,7 @@ def find_schema_definitions(src_dir: Path) -> list[str]:
         paths.update(src_dir.rglob(pattern))
     for path in sorted(paths):
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if any(marker in line for marker in SCHEMA_MARKERS):
+            if _line_has_schema_marker(line):
                 hits.append(f"{path}:{lineno}")
     return hits
 

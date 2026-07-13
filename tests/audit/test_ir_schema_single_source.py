@@ -92,6 +92,23 @@ def test_find_schema_definitions_catches_single_quote_spelling(tmp_path: Path) -
     assert any(str(rogue) in hit for hit in hits)
 
 
+def test_find_schema_definitions_catches_unquoted_yaml_key(tmp_path: Path) -> None:
+    """YAML mapping keys are conventionally unquoted -- neither quoted marker spelling
+    matches `$schema: <url>` as idiomatic YAML would write it.
+    """
+    src_dir = tmp_path / "xtrax"
+    src_dir.mkdir()
+    rogue = src_dir / "rogue.yaml"
+    rogue.write_text(
+        '$schema: "https://json-schema.org/draft/2020-12/schema"\ntype: object\n',
+        encoding="utf-8",
+    )
+
+    hits = find_schema_definitions(src_dir)
+
+    assert any(str(rogue) in hit and hit.endswith(":1") for hit in hits)
+
+
 def test_real_src_tree_is_clean() -> None:
     """Guards the actual repo src/xtrax tree the gate protects, not just fixtures."""
     real_src_dir = Path(__file__).resolve().parents[2] / "src" / "xtrax"
