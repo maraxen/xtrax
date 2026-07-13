@@ -17,17 +17,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SRC_DIR = ROOT / "src" / "xtrax"
 DEFAULT_ALLOWED_PATH = DEFAULT_SRC_DIR / "inference" / "ir_schema.py"
-SCHEMA_MARKER = '"$schema"'
+SCHEMA_MARKERS = ('"$schema"', "'$schema'")
+SCANNED_GLOBS = ("*.py", "*.json", "*.toml", "*.yaml", "*.yml")
 
 
 def find_schema_definitions(src_dir: Path) -> list[str]:
-    """Return "path:line" hits for SCHEMA_MARKER under src_dir."""
+    """Return "path:line" hits for any SCHEMA_MARKERS spelling under src_dir.
+
+    Scans Python source and data files (JSON/TOML/YAML) -- `xtrax.composition` already ships
+    a hand-authored non-.py schema-like file (`node_metadata_schema.toml`), so a Python-only
+    scan would miss the exact kind of parallel schema this gate exists to catch.
+    """
     hits: list[str] = []
     if not src_dir.is_dir():
         return hits
-    for path in sorted(src_dir.rglob("*.py")):
+    paths: set[Path] = set()
+    for pattern in SCANNED_GLOBS:
+        paths.update(src_dir.rglob(pattern))
+    for path in sorted(paths):
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if SCHEMA_MARKER in line:
+            if any(marker in line for marker in SCHEMA_MARKERS):
                 hits.append(f"{path}:{lineno}")
     return hits
 

@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import dataclasses
 
+import pytest
+
 from xtrax.composition.node_metadata import load_node_metadata_schema
 from xtrax.composition.serialize import GRAPH_SCHEMA_VERSION
 from xtrax.inference.config import AxisOverride
-from xtrax.inference.ir_schema import emit_ir_schema
+from xtrax.inference.ir_schema import IRSchemaTypeError, _dataclass_to_json_schema, emit_ir_schema
 from xtrax.inference.schema import BundleSchema
 from xtrax.tiling.plan import AxisSpec
 from xtrax.tiling.roles import AxisRole
@@ -22,6 +24,20 @@ from xtrax.tiling.roles import AxisRole
 
 def _real_field_names(cls: type) -> set[str]:
     return {f.name for f in dataclasses.fields(cls) if not f.name.startswith("_")}
+
+
+class _NotJsonMappable:
+    pass
+
+
+@dataclasses.dataclass
+class _FutureFieldExample:
+    """A synthetic dataclass with a field type this emitter has no mapping for -- module-level
+    (not nested in a test) so `typing.get_type_hints` can resolve its forward-ref annotations.
+    """
+
+    known: str
+    unknown: _NotJsonMappable
 
 
 class TestSchemaVersion:
@@ -66,6 +82,22 @@ class TestE1FieldDrift:
         schema = emit_ir_schema()
         role_schema = schema["$defs"]["AxisSpec"]["properties"]["role"]
         assert set(role_schema["enum"]) == {member.value for member in AxisRole}
+
+    def test_no_axis_spec_axis_override_bundle_schema_property_is_unconstrained(self) -> None:
+        """A property mapped to bare `{}` means its type was ignored, not just renamed --
+        `typing.Any` fields are the sole legitimate `{}` case and none of these three
+        dataclasses declares one, so `{}` here would mean a type silently fell through.
+        """
+        schema = emit_ir_schema()
+        for def_name in ("AxisSpec", "AxisOverride", "BundleSchema"):
+            for field_name, field_schema in schema["$defs"][def_name]["properties"].items():
+                assert field_schema != {}, f"{def_name}.{field_name} mapped to an empty schema"
+
+
+class TestUnmappableTypeFailsLoud:
+    def test_unknown_field_type_raises_instead_of_degrading_to_unconstrained(self) -> None:
+        with pytest.raises(IRSchemaTypeError, match="_NotJsonMappable"):
+            _dataclass_to_json_schema(_FutureFieldExample)
 
 
 class TestNodeMetadataDrift:

@@ -49,14 +49,47 @@ def test_missing_src_dir_passes_vacuously(tmp_path: Path) -> None:
     assert hits == []
 
 
-def test_find_schema_definitions_scans_only_python_files(tmp_path: Path) -> None:
+def test_find_schema_definitions_ignores_prose_files(tmp_path: Path) -> None:
     src_dir = tmp_path / "xtrax"
     src_dir.mkdir()
-    (src_dir / "notes.md").write_text('mentions "$schema" but is not python\n', encoding="utf-8")
+    (src_dir / "notes.md").write_text(
+        'mentions "$schema" but is prose, not code/data\n', encoding="utf-8"
+    )
 
     hits = find_schema_definitions(src_dir)
 
     assert hits == []
+
+
+def test_find_schema_definitions_scans_toml_and_json_data_files(tmp_path: Path) -> None:
+    """xtrax.composition already ships a hand-authored non-.py schema-like file
+    (node_metadata_schema.toml) -- a Python-only scan would miss the exact kind of parallel
+    schema this gate exists to catch.
+    """
+    src_dir = tmp_path / "xtrax"
+    (src_dir / "composition").mkdir(parents=True)
+    rogue_toml = src_dir / "composition" / "hand_authored.toml"
+    rogue_toml.write_text('schema = { "$schema" = "a second definition" }\n', encoding="utf-8")
+    rogue_json = src_dir / "composition" / "hand_authored.json"
+    rogue_json.write_text('{"$schema": "a second definition"}\n', encoding="utf-8")
+
+    hits = find_schema_definitions(src_dir)
+
+    assert any(str(rogue_toml) in hit for hit in hits)
+    assert any(str(rogue_json) in hit for hit in hits)
+
+
+def test_find_schema_definitions_catches_single_quote_spelling(tmp_path: Path) -> None:
+    src_dir = tmp_path / "xtrax"
+    src_dir.mkdir()
+    rogue = src_dir / "rogue.py"
+    rogue.write_text(
+        "SCHEMA = {'$schema': 'a second, single-quoted definition'}\n", encoding="utf-8"
+    )
+
+    hits = find_schema_definitions(src_dir)
+
+    assert any(str(rogue) in hit for hit in hits)
 
 
 def test_real_src_tree_is_clean() -> None:

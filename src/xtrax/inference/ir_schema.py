@@ -14,7 +14,24 @@ field on `BundleSchema`/`AxisSpec`/`AxisOverride` changes the emitted schema aut
 no separate edit required here. `Fuse`/`Tap`/`Sink` (the closed axis-boundary vocabulary,
 `xtrax.stages.boundaries`) are Protocols, not dataclasses, so their `$defs` entries are built by
 walking their class-level type hints (`ordered: bool` for Tap/Sink; empty for Fuse, which is a
-plain callable) instead.
+plain callable) instead. A field whose type has no known mapping raises `IRSchemaTypeError`
+rather than silently degrading to an accept-anything `{}` schema -- see that class's docstring.
+
+Two scoping decisions worth recording explicitly (surfaced in T1-09 audit review):
+
+1. `$defs.BundleSchema`/`AxisSpec`/`AxisOverride`/`AxisBoundary` are NOT yet referenced via
+   `$ref` from the document root (`Node`/`Edge`) -- `HostPrepGraphNode` (T1-06) has no field to
+   carry them today, and adding one is out of T1-09's scope (it would be an unrequested schema
+   change to T1-06/T1-08's node shape). They exist in `$defs` purely as documented vocabulary
+   for downstream consumers (T1-10, T1-12) to build on. Wiring a real `$ref` path is deferred to
+   whichever future task grows `HostPrepGraphNode` an axis/boundary-config field.
+2. `schema_version` (== `GRAPH_SCHEMA_VERSION`) only covers the D4 document envelope
+   (`{schema_version, nodes, edges}` + per-node shape) -- it does NOT bump when the `$defs`
+   vocabulary itself changes (e.g. a new `AxisOverride` field), since that vocabulary isn't part
+   of the D4 envelope T1-08's version-gate governs. `$defs` drift is caught by this module's own
+   drift tests (`tests/inference/test_ir_schema.py`), not by `schema_version`. A future task
+   needing `$defs`-vocabulary versioning (e.g. once T1-10/T1-12 depend on a specific vocabulary
+   shape) will need a dedicated mechanism -- this module does not yet provide one.
 """
 
 import dataclasses
@@ -35,6 +52,18 @@ from xtrax.tiling.plan import AxisSpec
 _IMPORT_PATH_DESCRIPTION = (
     "import-path 'module.path:symbol' string (xtrax.composition.serialize convention)"
 )
+
+
+class IRSchemaTypeError(Exception):
+    """Raised when a real E1 field's type has no known JSON-Schema mapping.
+
+    Fires loud instead of silently degrading to an accept-anything `{}` schema: an
+    unmappable field's NAME would still land in `properties` (only its VALUE would be
+    unconstrained), which would make the name-presence drift tests pass vacuously while the
+    field's type information silently disappeared from the emitted schema. `typing.Any` is
+    the one legitimate case that maps to `{}` -- it is special-cased before this fallback,
+    not swallowed by it.
+    """
 
 
 def _import_path_schema() -> dict[str, Any]:
@@ -84,7 +113,11 @@ def _type_to_json_schema(tp: Any) -> dict[str, Any]:
         if len(non_none) == 1:
             schema = _type_to_json_schema(non_none[0])
         else:
-            schema = {"anyOf": [_type_to_json_schema(a) for a in non_none]}
+            branches: list[dict[str, Any]] = []
+            for member_schema in (_type_to_json_schema(a) for a in non_none):
+                if member_schema not in branches:
+                    branches.append(member_schema)
+            schema = branches[0] if len(branches) == 1 else {"anyOf": branches}
         return _make_nullable(schema) if nullable else schema
 
     if origin in (tuple, list, frozenset, set):
@@ -98,7 +131,7 @@ def _type_to_json_schema(tp: Any) -> dict[str, Any]:
     if origin is not None and getattr(origin, "__name__", "") == "Callable":
         return _import_path_schema()
 
-    return {}
+    raise IRSchemaTypeError(f"no JSON-Schema mapping for type {tp!r}")
 
 
 def _dataclass_to_json_schema(cls: type) -> dict[str, Any]:
