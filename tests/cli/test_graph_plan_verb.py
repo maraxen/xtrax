@@ -28,6 +28,7 @@ def _traced_fn(x):
     return x * 2
 
 
+@axis_config(AxisOverride(name="other_batch", default_batch_size=5))
 def _other_node_fn(y):
     return y + 1
 
@@ -135,6 +136,34 @@ class TestAC1GraphPlanParity:
         assert plan_via_cli == plan_direct
         assert plan_via_cli is not plan_direct
         assert len(capsys.readouterr().out) > 0
+
+    def test_node_id_selects_the_correct_node_not_just_the_first(self, tmp_path: Path) -> None:
+        """The 2-node graph exists specifically to prove node-id selection is real, not a
+        coincidence: request the SECOND node explicitly and confirm the CLI plans it (not the
+        first node it happens to share a graph with). `_other_node_fn`'s default_batch_size=5
+        (vs `_traced_fn`'s 2) makes their plans structurally distinct -- cardinality 4 <=
+        batch_size 5 selects Vmap for "other", while cardinality 4 > batch_size 2 selects
+        SafeMap for "traced" -- so a bug that always plans the first node would produce a
+        strategy-type mismatch here, not just a coincidentally-equal plan.
+        """
+        ir_path = self._build_two_node_graph(tmp_path)
+        shapes = "y=(4,)f32"
+
+        abstract_inputs = list(parse_shapes(shapes).values())
+        _schema, other_axes = infer_bundle(_other_node_fn, abstract_inputs)
+        plan_direct_other = BatchPlanner().plan(other_axes)
+        _schema, traced_axes = infer_bundle(_traced_fn, abstract_inputs)
+        plan_direct_traced = BatchPlanner().plan(traced_axes)
+
+        with _capture_batch_plan() as captured:
+            run_graph_plan(GraphPlanArgs(ir_path=str(ir_path), node_id="other", shapes=shapes))
+        plan_via_cli = captured[-1]
+
+        assert plan_via_cli == plan_direct_other
+        assert plan_via_cli != plan_direct_traced
+        assert type(plan_via_cli.decisions[0].strategy) is not type(
+            plan_direct_traced.decisions[0].strategy
+        )
 
     def test_multi_input_plan_is_byte_identical(self, tmp_path: Path) -> None:
         """Non-degenerate case: two distinct input arrays, proving parity isn't an artifact
