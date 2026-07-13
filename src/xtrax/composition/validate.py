@@ -68,15 +68,27 @@ def _check_callable_resolvable(fn: Callable[..., Any]) -> str | None:
     return None
 
 
+def _finding_line(finding: dict[str, Any]) -> int | None:
+    line = finding.get("line")
+    return line if isinstance(line, int) and not isinstance(line, bool) else None
+
+
 def _jaxlint_errors_for(
     fn: Callable[..., Any],
     root: Path,
     cache: dict[Path, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
-    """Return JL-series error-severity jaxlint findings for `fn`'s source file.
+    """Return JL-series error-severity jaxlint findings attributable to `fn` specifically.
 
     Returns [] (not a failure) when source is unavailable -- e.g. builtins have no source
     file to lint, which is a real absence of data, not a lint violation.
+
+    File-wide findings are cached per resolved path (`cache`) to avoid redundant subprocess
+    calls when multiple nodes share a module, then filtered to `fn`'s own source-line range --
+    without this filter, a single JL-error finding anywhere in a shared file would wrongly
+    downgrade EVERY node whose callable lives in that file, not just the one the finding
+    actually concerns. A finding with no usable `line` (can't be attributed precisely) is kept
+    conservatively rather than silently dropped.
     """
     try:
         source_file = inspect.getsourcefile(fn)
@@ -94,7 +106,19 @@ def _jaxlint_errors_for(
             if str(f.get("rule_id", "")).startswith("JL")
             and str(f.get("severity", "")).lower() == "error"
         ]
-    return cache[resolved]
+    file_findings = cache[resolved]
+
+    try:
+        source_lines, start_line = inspect.getsourcelines(fn)
+    except (OSError, TypeError):
+        return file_findings
+    end_line = start_line + len(source_lines) - 1
+
+    return [
+        f
+        for f in file_findings
+        if (line := _finding_line(f)) is None or start_line <= line <= end_line
+    ]
 
 
 def _rebuild_node(node: HostPrepGraphNode, verdict: str) -> HostPrepGraphNode:
@@ -142,7 +166,11 @@ def validate_graph(graph: HostPrepGraph, *, root: Path | None = None) -> GraphVa
             failures.append(
                 NodeCheckFailure(
                     node_id=node.id,
-                    check="eval_shape_consistency",
+                    # Named "_proxy", not "eval_shape_consistency" -- this checks callable
+                    # introspectability, not a real extract_schema/jax.eval_shape trace (see
+                    # module docstring). A downstream consumer of the JSON envelope must be
+                    # able to tell the two apart from the check name alone.
+                    check="eval_shape_consistency_proxy",
                     message=resolvable_error,
                 )
             )

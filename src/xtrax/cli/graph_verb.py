@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from xtrax.composition.errors import GraphSerializationError, SchemaVersionError
+from xtrax.composition.errors import (
+    GraphConstructionError,
+    GraphSerializationError,
+    SchemaVersionError,
+)
 from xtrax.composition.serialize import dump_graph, load_graph
 from xtrax.composition.validate import validate_graph
 
@@ -46,8 +50,9 @@ def run_graph_validate(args: GraphValidateArgs) -> None:
     except (
         SchemaVersionError,
         GraphSerializationError,
+        GraphConstructionError,
         ValueError,
-        FileNotFoundError,
+        OSError,
         json.JSONDecodeError,
     ) as exc:
         raise SystemExit(f"graph-validate: failed to load {path}: {exc}") from None

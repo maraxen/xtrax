@@ -90,3 +90,30 @@ class TestRunGraphValidateEndToEnd:
 
         with pytest.raises(SystemExit):
             run_graph_validate(GraphValidateArgs(ir_path=str(missing_path)))
+
+    def test_dangling_edge_raises_clean_system_exit_not_raw_traceback(self, tmp_path: Path) -> None:
+        """A document whose edge references an unknown node id raises GraphConstructionError
+        inside HostPrepGraph.__post_init__ -- must surface as a clean SystemExit, not a raw
+        traceback, matching this verb's own "malformed document" contract.
+        """
+        doc = {
+            "schema_version": 1,
+            "nodes": [],
+            "edges": [{"src": "missing", "dst": "also-missing"}],
+        }
+        ir_path = tmp_path / "ir.json"
+        ir_path.write_text(json.dumps(doc), encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_graph_validate(GraphValidateArgs(ir_path=str(ir_path)))
+
+        assert "unknown node id" in str(exc_info.value)
+
+    def test_directory_path_raises_clean_system_exit_not_raw_traceback(
+        self, tmp_path: Path
+    ) -> None:
+        """Pointing --ir-path at a directory raises IsADirectoryError from read_text(), an
+        OSError subtype not covered by a narrower except tuple -- must be a clean SystemExit.
+        """
+        with pytest.raises(SystemExit):
+            run_graph_validate(GraphValidateArgs(ir_path=str(tmp_path)))
