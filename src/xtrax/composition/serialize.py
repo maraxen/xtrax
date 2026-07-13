@@ -10,8 +10,12 @@ not a break.
 
 PM3 (design spec pre-mortem): a prior autopsy shipped a loader that tolerated a missing
 `schema_version` with a default instead of failing, silently changing the meaning of old
-graphs. `deserialize_graph` checks `schema_version` FIRST, before touching anything else, and
-never default-fills it -- matching the same discipline `xtrax.cli.config.load_config` and
+graphs. `deserialize_graph` validates `data` is even a document (a dict) before touching
+anything else, then checks `schema_version` next and never default-fills it: missing,
+non-int, older than `MIN_SUPPORTED_GRAPH_SCHEMA_VERSION`, *or newer than
+`GRAPH_SCHEMA_VERSION`* (a format this code has no basis for interpreting -- the AC's own
+"unknown or older-than-minimum" wording covers both directions, not just the past) all raise
+`SchemaVersionError` -- matching the same discipline `xtrax.cli.config.load_config` and
 `xtrax.cli.manifest.read_manifest` already use for their own schema-version checks.
 
 `callable_ref` is a live Python callable in HostPrepGraphNode's in-memory form (T1-06); this
@@ -19,6 +23,11 @@ module serializes it to the same `module.path:symbol` import-path format
 `xtrax.cli.loader.load_fn` uses elsewhere in this codebase, but implements its own resolver
 rather than importing `xtrax.cli` -- `cli/` is the auto-CLI surface built on core primitives,
 and having the core composition substrate depend on it would invert that layering.
+`_resolve_import_path` validates the resolved object is actually callable before returning it
+-- `xtrax.composition` is not in `tests/conftest.py`'s beartype-hooked package list, so
+`HostPrepGraphNode`'s own `callable_ref: Callable[..., Any]` annotation is never enforced at
+runtime; a `callable_ref` string pointing at a non-callable module attribute would otherwise
+silently construct a broken node.
 """
 
 import importlib
@@ -65,7 +74,10 @@ def _callable_to_import_path(fn: Callable[..., Any]) -> str:
     return f"{module_name}:{qualname}"
 
 
-def _resolve_import_path(path: str) -> Callable[..., Any]:
+def _resolve_import_path(path: Any) -> Callable[..., Any]:
+    if not isinstance(path, str):
+        msg = f"callable_ref must be a string import path, got {path!r}"
+        raise GraphSerializationError(msg)
     if ":" not in path:
         msg = f"malformed import path {path!r}: expected 'module.path:symbol'"
         raise GraphSerializationError(msg)
@@ -81,10 +93,16 @@ def _resolve_import_path(path: str) -> Callable[..., Any]:
         raise GraphSerializationError(msg) from exc
 
     try:
-        return getattr(module, attr_name)
+        resolved = getattr(module, attr_name)
     except AttributeError as exc:
         msg = f"module {module_name!r} has no attribute {attr_name!r} (from path {path!r})"
         raise GraphSerializationError(msg) from exc
+
+    if not callable(resolved):
+        msg = f"resolved object at {path!r} is not callable: {resolved!r}"
+        raise GraphSerializationError(msg)
+
+    return resolved
 
 
 def serialize_node(node: HostPrepGraphNode) -> dict[str, Any]:
@@ -97,10 +115,14 @@ def serialize_node(node: HostPrepGraphNode) -> dict[str, Any]:
     }
 
 
-def deserialize_node(data: dict[str, Any]) -> HostPrepGraphNode:
+def deserialize_node(data: Any) -> HostPrepGraphNode:
     """Deserialize one node dict. Missing nl_description fails inside HostPrepGraphNode's own
     construction (T1-06's validate_node_metadata), not re-validated here.
     """
+    if not isinstance(data, dict):
+        msg = f"node must be a JSON object (dict), got {data!r}"
+        raise ValueError(msg)
+
     for key in ("id", "callable_ref", "metadata"):
         if key not in data:
             msg = f"node missing required field {key!r}: {data!r}"
@@ -123,11 +145,17 @@ def serialize_graph(graph: HostPrepGraph) -> dict[str, Any]:
     }
 
 
-def deserialize_graph(data: dict[str, Any]) -> HostPrepGraph:
-    """Deserialize a graph document. schema_version is checked FIRST and never default-filled
-    (PM3): missing, non-int, or older than MIN_SUPPORTED_GRAPH_SCHEMA_VERSION all raise
-    SchemaVersionError before anything else in `data` is touched.
+def deserialize_graph(data: Any) -> HostPrepGraph:
+    """Deserialize a graph document. schema_version is checked FIRST (once `data` is confirmed
+    to even be a document at all) and never default-filled (PM3): missing, non-int, older than
+    MIN_SUPPORTED_GRAPH_SCHEMA_VERSION, or newer than GRAPH_SCHEMA_VERSION (a format this code
+    has no basis for interpreting) all raise SchemaVersionError before anything else in `data`
+    is touched.
     """
+    if not isinstance(data, dict):
+        msg = f"graph document must be a JSON object (dict), got {data!r}"
+        raise ValueError(msg)
+
     if "schema_version" not in data:
         msg = "missing required field: schema_version"
         raise SchemaVersionError(msg)
@@ -144,13 +172,35 @@ def deserialize_graph(data: dict[str, Any]) -> HostPrepGraph:
         )
         raise SchemaVersionError(msg)
 
+    if version > GRAPH_SCHEMA_VERSION:
+        msg = (
+            f"schema_version {version} is unknown -- newer than the current version "
+            f"{GRAPH_SCHEMA_VERSION} this code knows how to interpret"
+        )
+        raise SchemaVersionError(msg)
+
     if "nodes" not in data:
         msg = "missing required field: nodes"
         raise ValueError(msg)
+    if not isinstance(data["nodes"], list):
+        msg = f"'nodes' must be a list, got {data['nodes']!r}"
+        raise ValueError(msg)
 
     nodes = tuple(deserialize_node(node) for node in data["nodes"])
-    edges = tuple(GraphEdge(src=edge["src"], dst=edge["dst"]) for edge in data.get("edges", []))
-    return HostPrepGraph(nodes=nodes, edges=edges)
+
+    raw_edges = data.get("edges", [])
+    if not isinstance(raw_edges, list):
+        msg = f"'edges' must be a list, got {raw_edges!r}"
+        raise ValueError(msg)
+
+    edges = []
+    for edge in raw_edges:
+        if not isinstance(edge, dict) or "src" not in edge or "dst" not in edge:
+            msg = f"edge must be a JSON object with 'src' and 'dst', got {edge!r}"
+            raise ValueError(msg)
+        edges.append(GraphEdge(src=edge["src"], dst=edge["dst"]))
+
+    return HostPrepGraph(nodes=nodes, edges=tuple(edges))
 
 
 def dump_graph(graph: HostPrepGraph, path: Path) -> None:

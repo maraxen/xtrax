@@ -122,6 +122,25 @@ class TestSchemaVersionGate:
         with pytest.raises(SchemaVersionError, match="older than the minimum supported"):
             deserialize_graph(data)
 
+    def test_schema_version_newer_than_supported_raises(self) -> None:
+        """The AC's own wording is disjunctive -- 'unknown OR older-than-minimum' -- a
+        schema_version this code doesn't know how to interpret (a future format) must be
+        rejected too, not just a version older than the minimum.
+        """
+        data = self._valid_data()
+        data["schema_version"] = GRAPH_SCHEMA_VERSION + 1
+        with pytest.raises(SchemaVersionError, match="unknown"):
+            deserialize_graph(data)
+
+    @pytest.mark.parametrize("bad_document", [None, 42, ["schema_version"], "schema_version"])
+    def test_non_dict_document_raises_cleanly(self, bad_document: object) -> None:
+        """schema_version is only 'checked first' if `data` is even a document at all --
+        a non-dict top-level value must not slip past the schema_version check via Python's
+        substring/membership semantics or raise a raw, unrelated stdlib error.
+        """
+        with pytest.raises(ValueError, match="must be a JSON object"):
+            deserialize_graph(bad_document)
+
 
 class TestNodeFieldValidation:
     def test_missing_nl_description_fails_via_existing_validation(self) -> None:
@@ -145,3 +164,55 @@ class TestNodeFieldValidation:
         data = {"schema_version": GRAPH_SCHEMA_VERSION}
         with pytest.raises(ValueError, match="missing required field: nodes"):
             deserialize_graph(data)
+
+    def test_nodes_field_must_be_a_list(self) -> None:
+        data = {"schema_version": GRAPH_SCHEMA_VERSION, "nodes": "not-a-list"}
+        with pytest.raises(ValueError, match="'nodes' must be a list"):
+            deserialize_graph(data)
+
+    def test_node_document_must_be_a_dict(self) -> None:
+        data = {"schema_version": GRAPH_SCHEMA_VERSION, "nodes": ["not-a-dict"]}
+        with pytest.raises(ValueError, match="node must be a JSON object"):
+            deserialize_graph(data)
+
+    def test_edges_field_must_be_a_list(self) -> None:
+        n1 = HostPrepGraphNode(id="n1", callable_ref=_reference_prep_fn, metadata=VALID_METADATA)
+        data = serialize_graph(HostPrepGraph(nodes=(n1,)))
+        data["edges"] = "not-a-list"
+        with pytest.raises(ValueError, match="'edges' must be a list"):
+            deserialize_graph(data)
+
+    @pytest.mark.parametrize("missing_key", ["src", "dst"])
+    def test_edge_missing_src_or_dst_raises(self, missing_key: str) -> None:
+        n1 = HostPrepGraphNode(id="a", callable_ref=_reference_prep_fn, metadata=VALID_METADATA)
+        n2 = HostPrepGraphNode(id="b", callable_ref=_reference_export_fn, metadata=VALID_METADATA)
+        data = serialize_graph(HostPrepGraph(nodes=(n1, n2), edges=(GraphEdge(src="a", dst="b"),)))
+        del data["edges"][0][missing_key]
+
+        with pytest.raises(ValueError, match="edge must be a JSON object with 'src' and 'dst'"):
+            deserialize_graph(data)
+
+
+class TestCallableRefValidation:
+    """AC5: a corrupted/wrong-type callable_ref must not silently produce a broken node."""
+
+    def test_non_string_callable_ref_raises(self) -> None:
+        n1 = HostPrepGraphNode(id="n1", callable_ref=_reference_prep_fn, metadata=VALID_METADATA)
+        data = serialize_node(n1)
+        data["callable_ref"] = 123
+        with pytest.raises(GraphSerializationError, match="must be a string import path"):
+            deserialize_node(data)
+
+    def test_callable_ref_pointing_at_a_non_callable_raises(self) -> None:
+        n1 = HostPrepGraphNode(id="n1", callable_ref=_reference_prep_fn, metadata=VALID_METADATA)
+        data = serialize_node(n1)
+        data["callable_ref"] = "os:sep"  # os.sep is a string, not callable
+        with pytest.raises(GraphSerializationError, match="is not callable"):
+            deserialize_node(data)
+
+    def test_builtin_callable_round_trips(self) -> None:
+        import os
+
+        node = HostPrepGraphNode(id="n1", callable_ref=os.getcwd, metadata=VALID_METADATA)
+        restored = deserialize_node(serialize_node(node))
+        assert restored.callable_ref is os.getcwd
