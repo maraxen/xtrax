@@ -10,6 +10,7 @@ from xtrax.inference.api import infer_bundle
 from xtrax.inference.axes import synthesize_axes
 from xtrax.inference.config import AxisOverride, axis_config
 from xtrax.inference.errors import AmbiguousAxisError, AxisRole, StructureMismatchError
+from xtrax.inference.ir_schema import emit_ir_schema
 from xtrax.inference.schema import BundleSchema
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "BundleSchema",
     "StructureMismatchError",
     "axis_config",
+    "emit_ir_schema",
     "infer_bundle",
     "synthesize_axes",
 ]

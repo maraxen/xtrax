@@ -1,0 +1,69 @@
+"""Tests for T1-09 IR-schema single-source grep-gate (#3064)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from scripts.audit_ir_schema_single_source import (
+    audit_ir_schema_single_source,
+    find_schema_definitions,
+)
+
+
+def test_clean_src_dir_passes(tmp_path: Path) -> None:
+    src_dir = tmp_path / "xtrax"
+    src_dir.mkdir()
+    (src_dir / "harmless.py").write_text("x = 1\n", encoding="utf-8")
+
+    allowed = src_dir / "inference" / "ir_schema.py"
+    passed, hits = audit_ir_schema_single_source(src_dir, allowed)
+
+    assert passed
+    assert hits == []
+
+
+def test_second_schema_definition_fails_naming_the_file(tmp_path: Path) -> None:
+    src_dir = tmp_path / "xtrax"
+    (src_dir / "inference").mkdir(parents=True)
+    allowed = src_dir / "inference" / "ir_schema.py"
+    allowed.write_text('SCHEMA = {"$schema": "..."}\n', encoding="utf-8")
+
+    rogue = src_dir / "cli" / "hand_authored_schema.py"
+    rogue.parent.mkdir(parents=True)
+    rogue.write_text('SCHEMA = {"$schema": "a second, competing definition"}\n', encoding="utf-8")
+
+    passed, hits = audit_ir_schema_single_source(src_dir, allowed)
+
+    assert not passed
+    assert len(hits) == 1
+    assert str(rogue) in hits[0]
+    assert hits[0].endswith(":1")
+
+
+def test_missing_src_dir_passes_vacuously(tmp_path: Path) -> None:
+    passed, hits = audit_ir_schema_single_source(
+        tmp_path / "does-not-exist", tmp_path / "does-not-exist" / "ir_schema.py"
+    )
+
+    assert passed
+    assert hits == []
+
+
+def test_find_schema_definitions_scans_only_python_files(tmp_path: Path) -> None:
+    src_dir = tmp_path / "xtrax"
+    src_dir.mkdir()
+    (src_dir / "notes.md").write_text('mentions "$schema" but is not python\n', encoding="utf-8")
+
+    hits = find_schema_definitions(src_dir)
+
+    assert hits == []
+
+
+def test_real_src_tree_is_clean() -> None:
+    """Guards the actual repo src/xtrax tree the gate protects, not just fixtures."""
+    real_src_dir = Path(__file__).resolve().parents[2] / "src" / "xtrax"
+    allowed = real_src_dir / "inference" / "ir_schema.py"
+
+    passed, hits = audit_ir_schema_single_source(real_src_dir, allowed)
+
+    assert passed, f"unexpected '\"$schema\"' hits outside {allowed}: {hits}"
