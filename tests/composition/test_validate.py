@@ -158,6 +158,21 @@ class TestValidateGraphJaxlintFailure:
         assert result.graph.nodes[0].metadata["audit_verdict"] == NEEDS_WORK
         assert result.graph.nodes[1].metadata["audit_verdict"] == NEEDS_WORK
 
+    def test_getsourcelines_failure_falls_back_to_unfiltered_file_wide_findings(self) -> None:
+        """When a callable's own source-line range can't be determined (getsourcelines
+        raises), fall back to file-wide attribution rather than dropping the finding.
+        """
+        mock_findings = [{"rule_id": "JL001", "severity": "error", "message": "file-wide"}]
+        with (
+            patch("xtrax.composition.validate._run_jaxlint_json", return_value=mock_findings),
+            patch("inspect.getsourcelines", side_effect=OSError("no source available")),
+        ):
+            node = HostPrepGraphNode(id="n1", callable_ref=_clean_fn, metadata=VALID_METADATA)
+            graph = HostPrepGraph(nodes=(node,))
+            result = validate_graph(graph, root=Path.cwd())
+
+        assert result.graph.nodes[0].metadata["audit_verdict"] == NEEDS_WORK
+
 
 class TestValidateGraphTopologyFailureFansOutToEveryNode:
     def test_topology_failure_marks_every_node_fail_with_one_graph_level_record(self) -> None:
