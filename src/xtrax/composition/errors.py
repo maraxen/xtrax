@@ -1,4 +1,4 @@
-"""Exception types for the composition-layer HostPrepGraph data model (T1-06, #3059)."""
+"""Exception types for the xtrax.composition subpackage (T1-06 #3059, T1-08 #3063)."""
 
 
 class FrozenNodeError(Exception):
@@ -15,4 +15,22 @@ class GraphConstructionError(Exception):
     """
 
 
-__all__ = ["FrozenNodeError", "GraphConstructionError"]
+class SchemaVersionError(Exception):
+    """Raised when a serialized graph document's schema_version is missing, not an int, or
+    older than MIN_SUPPORTED_GRAPH_SCHEMA_VERSION (T1-08, PM3) -- never silently default-filled.
+    """
+
+
+class GraphSerializationError(Exception):
+    """Raised when a HostPrepGraphNode's callable_ref cannot be serialized to a resolvable
+    'module.path:symbol' import-path string (a lambda, closure, bound method, or anything
+    else that doesn't round-trip back to the same object via plain module attribute lookup).
+    """
+
+
+__all__ = [
+    "FrozenNodeError",
+    "GraphConstructionError",
+    "GraphSerializationError",
+    "SchemaVersionError",
+]
