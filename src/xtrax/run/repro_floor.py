@@ -148,10 +148,61 @@ def run_repro_floor(
     )
 
 
+_TOML_NAMED_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+
+
+def _toml_escape_basic_string(value: str) -> str:
+    """Escape ``value`` for embedding in a TOML basic string (``"..."``).
+
+    Implements the escaping subset of the TOML basic-string grammar
+    (https://toml.io -- "Strings" -> basic strings) that matters for
+    arbitrary caller-supplied text: backslash, double-quote, and control
+    characters. Without this, a Windows-style path (backslashes) or a run_id
+    containing a literal ``"`` corrupts the surrounding TOML syntax --
+    exactly debt #628's failure mode (``build_repro_floor_attestation_toml``
+    used to f-string-interpolate these fields with zero escaping).
+
+    Single-pass over the *original* characters (not a chain of ``.replace``
+    calls) so an escape sequence introduced for one character can never be
+    misinterpreted as raw input needing further escaping.
+    """
+    out: list[str] = []
+    for char in value:
+        if char in _TOML_NAMED_ESCAPES:
+            out.append(_TOML_NAMED_ESCAPES[char])
+            continue
+        codepoint = ord(char)
+        if codepoint < 0x20 or codepoint == 0x7F:
+            out.append(f"\\u{codepoint:04x}")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _toml_quote(value: str) -> str:
+    """Wrap ``value`` in a properly-escaped TOML basic string literal."""
+    return f'"{_toml_escape_basic_string(value)}"'
+
+
 def build_repro_floor_attestation_toml(result: ReproFloorResult) -> str:
     """Serialize a PASSing :class:`ReproFloorResult` into bathos's
     ``[attestation]`` (kind="repro_floor") TOML body -- see module docstring
     for the cross-tool integration seam this feeds.
+
+    Every interpolated string field (``run_id``, ``output_path``,
+    ``content_hash``, ``created_by``, ``created_at``, and each entry of
+    ``rerun_digests``) is passed through :func:`_toml_quote` so that
+    arbitrary caller-supplied text (e.g. a Windows-style path or a run_id
+    containing a literal quote -- debt #628) produces valid, round-trippable
+    TOML rather than corrupting the surrounding syntax.
 
     Raises:
         ValueError: If ``result.passed`` is False. Divergence must never
@@ -165,7 +216,7 @@ def build_repro_floor_attestation_toml(result: ReproFloorResult) -> str:
         )
         raise ValueError(msg)
 
-    digests_toml = ", ".join(f'"{d}"' for d in result.rerun_digests)
+    digests_toml = ", ".join(_toml_quote(d) for d in result.rerun_digests)
     return (
         "# Attestation (repro_floor)\n"
         "# Generated via xtrax.run.repro_floor -- register with bathos's\n"
@@ -174,14 +225,14 @@ def build_repro_floor_attestation_toml(result: ReproFloorResult) -> str:
         "[attestation]\n"
         'kind = "repro_floor"\n'
         'verdict = "PASS"\n'
-        f'attested = {{ run_id = "{result.run_id}", '
-        f'output_path = "{result.output_path}", '
-        f'content_hash = "{result.content_hash}" }}\n'
+        f"attested = {{ run_id = {_toml_quote(result.run_id)}, "
+        f"output_path = {_toml_quote(result.output_path)}, "
+        f"content_hash = {_toml_quote(result.content_hash)} }}\n"
         f"seed_pin = {result.seed_pin}\n"
         f"rerun_count = {result.rerun_count}\n"
         f"rerun_digests = [{digests_toml}]\n"
-        f'created_by = "{result.created_by}"\n'
-        f'created_at = "{result.created_at}"\n'
+        f"created_by = {_toml_quote(result.created_by)}\n"
+        f"created_at = {_toml_quote(result.created_at)}\n"
     )
 
 
