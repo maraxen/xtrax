@@ -22,6 +22,8 @@ _PACKAGES = [
     "xtrax.inference.errors",
     "xtrax.run.spec",
     "xtrax.stages.bundle",
+    "xtrax.loop",
+    "xtrax.loop.admission",
 ]
 
 

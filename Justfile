@@ -15,6 +15,11 @@ audit-substrate-lock:
     uv run pytest tests/audit/test_substrate_lock.py -v
     uv run python scripts/audit_substrate_lock.py
 
+audit-wave1-load-bearing:
+    uv run ruff check scripts/audit_wave1_load_bearing.py tests/audit/test_wave1_load_bearing.py
+    uv run pytest tests/audit/test_wave1_load_bearing.py -v
+    uv run python scripts/audit_wave1_load_bearing.py
+
 audit-jax-pin:
     uv run ruff check scripts/audit_jax_pin.py src/xtrax/stages/_callback.py tests/stages/test_callback.py
     uv run pytest tests/stages/test_callback.py -v
@@ -214,7 +219,7 @@ audit-coverage-tier2:
     uv run python scripts/audit_coverage_dag.py --tier tier2_eda --enforce tier2_eda
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-substrate-lock audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-added-types-diff
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-added-types-diff
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry

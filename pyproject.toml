@@ -118,6 +118,7 @@ source_modules = [
   "xtrax.io",
   "xtrax.sparse",
   "xtrax.inference",
+  "xtrax.loop",
 ]
 forbidden_modules = ["xtrax.eda"]
 
