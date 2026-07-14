@@ -1,0 +1,25 @@
+# Machine-checkable attestation records for #2181's human-approval gates (AC-21..AC-25).
+#
+# Format mirrors distribution/release_readiness.toml's [[backlog_items]] human-gate entries and
+# is intended to bind to xtrax.devtools.freshness.Attestation (T3-05/AC-X6) once the runtime
+# wiring for T2-28..32 lands. Until that wiring exists, this file IS the machine-checkable record
+# AC-21 requires: a file-hash-present artifact (this file + the constitution document it
+# references) plus a timestamped TTL attestation.
+#
+# Only gate (a) has a live attestation below. Gates (b)-(e) are standing runtime gates that fire
+# on future events (an evaluator change, a promotion, a scope expansion, a campaign start) -- no
+# such event has happened yet, so there is nothing to attest to for them yet. Each gets its own
+# attestation entry here the first time its event actually fires, once T2-29/30/31/32's runtime
+# mechanisms exist to record it.
+
+[[gates]]
+id = "T2-28"
+backlog_id = 3046
+ac = "AC-21"
+slug = "constitution_authorship"
+title = "Constitution authorship (gate a)"
+constitution_path = ".praxia/docs/decisions/260714_2181-autoresearch-loop-constitution.md"
+attested_at = "2026-07-14T00:00:00Z"
+ttl_days = 365
+attested_by = "Marielle Russo"
+note = "Initial constitution sign-off, approved as-drafted via direct conversation. Governs gates (a)-(e); see the constitution document for full policy text. Renew before TTL expiry via a dated constitution revision + a fresh entry here."

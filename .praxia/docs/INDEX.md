@@ -36,6 +36,9 @@
 - [260706_xtrax-assessment-tiling-vs-xla-jit](research/260706_xtrax-assessment-tiling-vs-xla-jit.md) — niche assessment: why tiling lives above the trace boundary (jit = shape-specialized AOT, not adaptive JIT; static buffer assignment; recompile-penalized adaptation), differentiated (tiling/inference/eda) vs commodity (trainer/checkpoint/distributed) split, graveyard/MaxText economics, absorption watch list (`lax.map(batch_size=)`, ragged shapes)
 - [260702_roadmap-research-synthesis](research/260702_roadmap-research-synthesis.md) — roadmap-cycle research synthesis (task 260702_research-roadmap-dags): 6 adversarially-verified themes → #2181 autoresearch ratchet-loop architecture + gate catalog + bathos capability map, #2174 minimal composition substrate child item (D1–D4, AC1–AC6), neuro-symbolic placement (grounding node in #2174, entry criterion for #2181), praxia plugin contract + rig-run dispatch gaps, cross-cutting gate-design template; brainstorm fork list + dropped-claims appendix
 
+## Decisions
+- [260714_2181-autoresearch-loop-constitution](decisions/260714_2181-autoresearch-loop-constitution.md) — AC-21/T2-28 constitution: governs #2181's five human-approval gates (constitution amendment, evaluator-change, promotion-to-main, scope/allowlist expansion, kill-switch/campaign approval); restates the non-negotiable safety invariants (no autonomous merge to main, sealed evaluator monopoly, external unrevokable kill-switch, metrics provenance, info barrier); attestation bound to T3-05's freshness primitive, 365-day TTL
+
 ## Misc
 
 ## Superpowers
