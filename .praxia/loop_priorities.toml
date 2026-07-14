@@ -135,7 +135,7 @@ phase = "P0_entry_edge_verified"
 # .praxia/docs/research/260702_roadmap-research-synthesis.md:143 anticipated but that was never
 # filed as its own backlog item; T2-02 fulfills that role. Matches the existing depends_on_epic
 # (singular, bare id) convention already used by the distribution-readiness/using-xtrax-skill
-# queue entries below.
+# queue entries above.
 depends_on_epic = 3070
 spec_path = ".praxia/docs/specs/260702_design-the-2181-agentic-algorithm-evolut.md"
 nlm_seed = ".praxia/research/nlm_seed_2180_2181.md"
