@@ -1,5 +1,12 @@
 """xtrax.run — execution-time configuration layer."""
 
+from xtrax.run.repro_floor import (
+    ReproFloorResult,
+    build_repro_floor_attestation_toml,
+    repro_floor_freshness_attestation,
+    run_repro_floor,
+    write_repro_floor_attestation,
+)
 from xtrax.run.resolver import FeatureBatch, InputResolver, RuntimeBundle
 from xtrax.run.sink import SinkSpec, make_sink
 from xtrax.run.spec import RunSpec
@@ -31,4 +38,9 @@ __all__ = [
     "fsync_file",
     "fsync_directory",
     "fsync_tree",
+    "ReproFloorResult",
+    "run_repro_floor",
+    "build_repro_floor_attestation_toml",
+    "write_repro_floor_attestation",
+    "repro_floor_freshness_attestation",
 ]
