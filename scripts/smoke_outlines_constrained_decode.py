@@ -70,8 +70,13 @@ DEFAULT_PROMPT = (
 )
 
 
-def run_smoke(model_name: str = DEFAULT_MODEL) -> dict:
+def run_smoke(model_name: str = DEFAULT_MODEL, prompt: str | None = None) -> dict:
     """Constrained-decode one document conforming to `emit_ir_schema()`'s schema.
+
+    Args:
+        model_name: HF model id to constrained-decode with.
+        prompt: Overrides `DEFAULT_PROMPT` when given (T1-13's bench harness feeds a
+            task-specific prompt here instead of the generic default).
 
     Returns the decoded document (already validated against the schema by construction --
     Outlines' constrained decoding cannot produce non-conforming output).
@@ -88,7 +93,7 @@ def run_smoke(model_name: str = DEFAULT_MODEL) -> dict:
         AutoTokenizer.from_pretrained(model_name),
     )
     result = model(
-        DEFAULT_PROMPT,
+        prompt if prompt is not None else DEFAULT_PROMPT,
         JsonSchema(json.dumps(schema)),
         max_new_tokens=900,
     )
