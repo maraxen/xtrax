@@ -127,10 +127,16 @@ slug = "agentic-autoresearch"
 title = "EPIC [research]: Agentic algorithm evolution & autoresearch (xtrax + bathos)"
 backlog_id = 2181
 status = "spec_complete"
-phase = "dag_filed_awaiting_T1_entry_edge"
+phase = "P0_entry_edge_verified"
 # USER DECISION 2026-07-02: dependency NARROWED to the #2174 minimal-substrate child
 # (T1 entry-edge items) + typed-IR validation-gate artifact — NOT all of #2174.
-depends_on_epics = ["pure-jax-composition-layer:T1-entry-edge-only"]
+# 2026-07-14: re-pointed to T2-02 (#3070, "F-C dependency binding"), which verifies S2/S3/S4
+# (T1-04/05/07/08/11) landed as real code -- the "new child id"
+# .praxia/docs/research/260702_roadmap-research-synthesis.md:143 anticipated but that was never
+# filed as its own backlog item; T2-02 fulfills that role. Matches the existing depends_on_epic
+# (singular, bare id) convention already used by the distribution-readiness/using-xtrax-skill
+# queue entries above.
+depends_on_epic = 3070
 spec_path = ".praxia/docs/specs/260702_design-the-2181-agentic-algorithm-evolut.md"
 nlm_seed = ".praxia/research/nlm_seed_2180_2181.md"
 skills = ["using-bathos", "using-jax", "orchestration", "brainstorming", "using-contemplex"]
