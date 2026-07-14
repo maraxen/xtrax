@@ -3,6 +3,7 @@ authoring front-end.
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -84,3 +85,25 @@ class TestRunGraphAuthor:
             run_graph_author(GraphAuthorArgs(out_path=str(out_path), seed=0, num_nodes=3))
 
         assert str(out_path) in str(exc_info.value)
+
+    @pytest.mark.skipif(
+        os.geteuid() == 0, reason="root bypasses directory permission checks entirely"
+    )
+    def test_readonly_out_dir_raises_clean_system_exit_not_raw_traceback(
+        self, tmp_path: Path
+    ) -> None:
+        """A missing parent dir and a permission-denied dir are two distinct OSError subtypes
+        (FileNotFoundError vs PermissionError) -- both must go through the same clean SystemExit
+        path, not just whichever one a caller happens to hit first.
+        """
+        readonly_dir = tmp_path / "readonly"
+        readonly_dir.mkdir()
+        readonly_dir.chmod(0o000)
+        out_path = readonly_dir / "candidate.json"
+
+        try:
+            with pytest.raises(SystemExit) as exc_info:
+                run_graph_author(GraphAuthorArgs(out_path=str(out_path), seed=0, num_nodes=3))
+            assert str(out_path) in str(exc_info.value)
+        finally:
+            readonly_dir.chmod(0o755)
