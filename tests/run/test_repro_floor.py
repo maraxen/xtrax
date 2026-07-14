@@ -132,6 +132,42 @@ class TestBuildReproFloorAttestationToml:
         with pytest.raises(ValueError, match="divergent"):
             build_repro_floor_attestation_toml(result)
 
+    def test_special_characters_in_string_fields_round_trip(self) -> None:
+        """Debt #628: run_id/output_path/content_hash/created_by are
+        f-string-interpolated into TOML literal syntax with zero escaping.
+
+        A Windows-style output_path (backslashes) or a run_id containing a
+        literal double-quote each break `tomllib.loads` on the *unescaped*
+        builder -- these are realistic input classes (xtrax ships win32/
+        win_amd64 wheels), not hypothetical edge cases. The fixed builder must
+        produce valid TOML that recovers the *exact original* string content.
+        """
+        windows_path = r"C:\Users\test\output.zarr"
+        quoted_run_id = 'run-"weird"-id'
+
+        result = ReproFloorResult(
+            passed=True,
+            seed_pin=42,
+            rerun_count=1,
+            rerun_digests=("deadbeef",),
+            content_hash="deadbeef",
+            run_id=quoted_run_id,
+            output_path=windows_path,
+            created_by='some "agent"\\tool',
+            created_at="2026-07-14T00:00:00+00:00",
+        )
+
+        toml_text = build_repro_floor_attestation_toml(result)
+        # Must not raise -- this is the red/green line for debt #628.
+        parsed = tomllib.loads(toml_text)
+        section = parsed["attestation"]
+
+        # Values must survive the round trip *exactly*, not merely parse.
+        assert section["attested"]["run_id"] == quoted_run_id
+        assert section["attested"]["output_path"] == windows_path
+        assert section["attested"]["content_hash"] == "deadbeef"
+        assert section["created_by"] == 'some "agent"\\tool'
+
 
 class TestWriteReproFloorAttestation:
     def test_writes_file_for_passing_result(self, tmp_path: Path) -> None:
