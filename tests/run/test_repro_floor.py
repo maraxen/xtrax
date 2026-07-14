@@ -192,6 +192,47 @@ class TestWriteReproFloorAttestation:
 
         assert not out.exists(), "no attestation must be written on digest divergence"
 
+    def test_stale_pass_attestation_is_tombstoned_on_later_divergent_reuse(
+        self, tmp_path: Path
+    ) -> None:
+        """Debt #644: a PASS attestation written to path P by an earlier good
+        run must not silently survive a *later* divergent (denied) write
+        attempt at that same path P.
+
+        `write_repro_floor_attestation`'s divergent-result guard fires
+        before any filesystem write of the *new* result -- but nothing
+        previously cleaned up a pre-existing valid-looking PASS file already
+        sitting at P. This reproduces exactly that path-reuse scenario and
+        asserts the stale file is gone afterward (tombstoning), not merely
+        that the second write itself was refused.
+        """
+        out = tmp_path / "sidecars" / "repro_floor.attestation.bth.toml"
+
+        # First: a genuinely passing run writes a real PASS attestation to P.
+        good_compute = _deterministic_compute(tmp_path / "good")
+        good_result = run_repro_floor(good_compute, seed=1, rerun_count=2, run_id="run-z")
+        write_repro_floor_attestation(good_result, out)
+
+        assert out.exists()
+        parsed = tomllib.loads(out.read_text())
+        assert parsed["attestation"]["verdict"] == "PASS"
+
+        # Later: a divergent rerun reuses the *same* path P.
+        flaky_compute = _flaky_compute(tmp_path / "flaky", diverge_on_call=2)
+        divergent_result = run_repro_floor(
+            flaky_compute, seed=1, rerun_count=3, run_id="run-z"
+        )
+        assert not divergent_result.passed
+
+        with pytest.raises(ValueError):
+            write_repro_floor_attestation(divergent_result, out)
+
+        assert not out.exists(), (
+            "a stale PASS attestation from an earlier good run must be "
+            "tombstoned when a later attempt at the same path diverges -- "
+            "it must never silently survive"
+        )
+
 
 class TestReproFloorFreshness:
     def test_freshness_attestation_is_fresh_within_ttl(self, tmp_path: Path) -> None:

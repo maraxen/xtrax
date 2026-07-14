@@ -192,6 +192,21 @@ def _toml_quote(value: str) -> str:
     return f'"{_toml_escape_basic_string(value)}"'
 
 
+def _divergent_result_error(result: ReproFloorResult) -> ValueError:
+    """Build the canonical "refusing to attest a divergent result" error.
+
+    Shared by :func:`build_repro_floor_attestation_toml` and
+    :func:`write_repro_floor_attestation` so both raise with identical
+    wording -- single source of truth for the deny-signal message.
+    """
+    msg = (
+        "refusing to build a repro_floor attestation for a divergent result "
+        f"(mismatched_digests={result.mismatched_digests!r}); "
+        "no attestation means no promotion"
+    )
+    return ValueError(msg)
+
+
 def build_repro_floor_attestation_toml(result: ReproFloorResult) -> str:
     """Serialize a PASSing :class:`ReproFloorResult` into bathos's
     ``[attestation]`` (kind="repro_floor") TOML body -- see module docstring
@@ -209,12 +224,7 @@ def build_repro_floor_attestation_toml(result: ReproFloorResult) -> str:
             produce an attestation -- no attestation means no promotion.
     """
     if not result.passed:
-        msg = (
-            "refusing to build a repro_floor attestation for a divergent result "
-            f"(mismatched_digests={result.mismatched_digests!r}); "
-            "no attestation means no promotion"
-        )
-        raise ValueError(msg)
+        raise _divergent_result_error(result)
 
     digests_toml = ", ".join(_toml_quote(d) for d in result.rerun_digests)
     return (
@@ -243,18 +253,40 @@ def write_repro_floor_attestation(result: ReproFloorResult, path: Path) -> Path:
     bathos's own naming, though nothing here enforces that. Creates parent
     directories as needed.
 
+    Path-reuse / tombstoning (debt #644): nothing in this module enforces
+    that ``path`` is unique per attempt -- a caller may legitimately reuse
+    the same sidecar path across repeated repro-floor checks against the
+    same artifact (e.g. a CI job re-running this gate over time). If an
+    earlier call wrote a PASS attestation to ``path`` and a *later* call at
+    that same ``path`` produces a divergent (denied) result, this function
+    removes whatever file currently sits at ``path`` before raising --
+    otherwise the stale, fully-valid-looking PASS attestation from the
+    earlier good run would silently survive next to (or in place of) a
+    denied rerun, which is worse than either tombstoning or refusing reuse
+    outright: a caller (or bathos's ``attestation_register``) could later
+    read that stale file and believe the *current* state still passes.
+    "No attestation" must mean exactly that -- not "no *new* attestation,
+    but the old one is still lying around."
+
     Args:
-        result: A passing ReproFloorResult.
+        result: A ReproFloorResult. Divergent results tombstone ``path``
+            (see above) before raising.
         path: Destination file path.
 
     Returns:
-        ``path``, for chaining.
+        ``path``, for chaining, when ``result.passed`` is True.
 
     Raises:
-        ValueError: If ``result.passed`` is False (via
-            :func:`build_repro_floor_attestation_toml`) -- no file is written
-            in that case.
+        ValueError: If ``result.passed`` is False. Any pre-existing file at
+            ``path`` is removed first (best-effort tombstone), then the
+            same canonical error as :func:`build_repro_floor_attestation_toml`
+            is raised -- no file is written or left behind in that case.
     """
+    if not result.passed:
+        if path.exists():
+            path.unlink()
+        raise _divergent_result_error(result)
+
     toml_text = build_repro_floor_attestation_toml(result)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(toml_text)
