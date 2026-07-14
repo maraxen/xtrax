@@ -25,6 +25,7 @@ def test_justfile_defines_audit_deterministic_recipe() -> None:
         "validate-capability-registry",
         "validate-episodic-memory-contract",
         "audit-graph-auditor",
+        "audit-compiler-boundary",
         "audit-port-emit-contract",
     ):
         assert step in text, f"missing expected step fragment: {step}"
@@ -64,6 +65,12 @@ def test_justfile_defines_audit_added_types_diff() -> None:
     text = (ROOT / "Justfile").read_text(encoding="utf-8")
     assert "audit-added-types-diff:" in text
     assert "audit_added_types_diff.py" in text
+
+
+def test_justfile_defines_audit_compiler_boundary() -> None:
+    text = (ROOT / "Justfile").read_text(encoding="utf-8")
+    assert "audit-compiler-boundary:" in text
+    assert "audit_compiler_boundary.py" in text
 
 
 def test_ci_yml_runs_tier2_eda_coverage_gate() -> None:

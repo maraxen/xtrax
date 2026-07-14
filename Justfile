@@ -151,6 +151,11 @@ audit-graph-auditor:
     uv run pytest tests/composition/test_graph_auditor.py -v
     uv run python scripts/graph_auditor.py .praxia/composition/samples/valid_graph.json
 
+audit-compiler-boundary:
+    uv run ruff check scripts/audit_compiler_boundary.py tests/audit/test_compiler_boundary_gate.py
+    uv run pytest tests/audit/test_compiler_boundary_gate.py -v
+    uv run python scripts/audit_compiler_boundary.py
+
 audit-foundation: audit-imports audit-no-future-annotations audit-jaxlint
     uv run pytest tests/audit/ -v
 
@@ -217,6 +222,7 @@ audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint aud
     just validate-capability-registry
     just validate-episodic-memory-contract
     just audit-graph-auditor
+    just audit-compiler-boundary
     just audit-port-emit-contract
 
 # Port validation gates (Epic #2180 Wave 1)
