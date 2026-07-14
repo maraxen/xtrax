@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "generate_then_validate": {
+    "mode": "generate-then-validate",
+    "structural_validity_yield": 1.0,
+    "faithfulness_rate": 0.1,
+    "task_outcomes": [
+      {
+        "task_id": "t01",
+        "structurally_valid": true,
+        "faithful": false,
+        "error": null
+      },
+      {
+        "task_id": "t02",
+        "structurally_valid": true,
+        "faithful": true,
+        "error": null
+      },
+      {
+        "task_id": "t03",
+        "structurally_valid": true,
+        "faithful": false,
+        "error": null
+      },
+      {
+        "task_id": "t04",
+        "structurally_valid": true,
+        "faithful": false,
+        "error": null
+      },
+      {
+        "task_id": "t05",
+        "structurally_valid": true,
+        "faithful": false,
+        "error": null
+      },
+      {
+        "task_id": "t06",
+        "structurally_valid": true,
+        "faithful": false,
+        "error": null
+      },
+      {
+        "task_id": "t07",
+        "structurally_valid": true,
+        "faithful": false,
+        "error": null
+      },
+      {
+        "task_id": "t08",
+        "structurally_valid": true,
+        "faithful": false,
+        "error": null
+      },
+      {
+        "task_id": "t09",
+        "structurally_valid": true,
+        "faithful": false,
+        "error": null
+      },
+      {
+        "task_id": "t10",
+        "structurally_valid": true,
+        "faithful": false,
+        "error": null
+      }
+    ]
+  },
+  "constrained_decoding": {
+    "mode": "constrained-decoding",
+    "structural_validity_yield": 0.0,
+    "faithfulness_rate": 0.0,
+    "task_outcomes": [
+      {
+        "task_id": "t01",
+        "structurally_valid": false,
+        "faithful": false,
+        "error": "schema_version 0 is older than the minimum supported version 1"
+      },
+      {
+        "task_id": "t02",
+        "structurally_valid": false,
+        "faithful": false,
+        "error": "schema_version 0 is older than the minimum supported version 1"
+      },
+      {
+        "task_id": "t03",
+        "structurally_valid": false,
+        "faithful": false,
+        "error": "schema_version 0 is older than the minimum supported version 1"
+      },
+      {
+        "task_id": "t04",
+        "structurally_valid": false,
+        "faithful": false,
+        "error": "schema_version 0 is older than the minimum supported version 1"
+      },
+      {
+        "task_id": "t05",
+        "structurally_valid": false,
+        "faithful": false,
+        "error": "schema_version 0 is older than the minimum supported version 1"
+      },
+      {
+        "task_id": "t06",
+        "structurally_valid": false,
+        "faithful": false,
+        "error": "schema_version 0 is older than the minimum supported version 1"
+      },
+      {
+        "task_id": "t07",
+        "structurally_valid": false,
+        "faithful": false,
+        "error": "schema_version 0 is older than the minimum supported version 1"
+      },
+      {
+        "task_id": "t08",
+        "structurally_valid": false,
+        "faithful": false,
+        "error": "schema_version 0 is older than the minimum supported version 1"
+      },
+      {
+        "task_id": "t09",
+        "structurally_valid": false,
+        "faithful": false,
+        "error": "schema_version 0 is older than the minimum supported version 1"
+      },
+      {
+        "task_id": "t10",
+        "structurally_valid": false,
+        "faithful": false,
+        "error": "schema_version 0 is older than the minimum supported version 1"
+      }
+    ]
+  },
+  "human_labeled_spot_check": {
+    "n": 30,
+    "n_passed": 30,
+    "pass_rate": 1.0,
+    "pass_bar": 0.8,
+    "gate_passed": true
+  },
+  "fork12_decision": "KEEP_GENERATE_THEN_VALIDATE"
+}
