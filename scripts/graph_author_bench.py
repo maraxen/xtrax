@@ -223,8 +223,10 @@ def _mode_result_to_dict(result: ModeResult) -> dict:
 
 
 def build_report(gtv: ModeResult, cd: ModeResult | None, spot_check: SpotCheckResult) -> dict:
-    # Structurally guard against a delta-only report: both absolute rate fields must exist for
-    # the default mode before we ever write a report (PM2's exact failure mode).
+    # Documents (not "structurally guards" -- ModeResult's rate properties are plain
+    # sum/len divisions and can never actually be None) that PM2's delta-only failure mode
+    # is prevented by construction: no code path in this module builds a report without both
+    # absolute rate fields for the default mode.
     assert gtv.structural_validity_yield is not None
     assert gtv.faithfulness_rate is not None
 

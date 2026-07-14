@@ -7,8 +7,9 @@ smoke script used: this module has no business being reachable from production a
 (`xtrax.composition.author`) takes no task/prompt input at all, so an authored graph has nothing
 to be "faithful" or "unfaithful" *to* on its own. Each task pairs an NL prompt with an
 `expected_sequence` of import-path refs into T1-12's own `_EXAMPLE_CALLABLES` pool
-(`example_increment`/`example_double`/`example_square`/`example_negate`) -- covering all 6
-pairwise orderings and 4 representative 3-node chains. This does not change
+(`example_increment`/`example_double`/`example_square`/`example_negate`) -- 6 representative
+2-node compositions (4 distinct unordered pairs, 2 of which appear in both orderings) and 4
+representative 3-node chains. This does not change
 `TemplateGenerator`'s shipped API; the bench harness runs it exactly as-is (blind to the task,
 seeded random sampling) and scores whether its output happens to match.
 
