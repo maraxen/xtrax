@@ -68,8 +68,8 @@ class TemplateGenerator:
     """
 
     def generate(self, *, seed: int, num_nodes: int) -> HostPrepGraph:
-        if num_nodes < 1:
-            msg = f"num_nodes must be >= 1, got {num_nodes}"
+        if not isinstance(num_nodes, int) or isinstance(num_nodes, bool) or num_nodes < 1:
+            msg = f"num_nodes must be an int >= 1, got {num_nodes!r}"
             raise ValueError(msg)
 
         rng = Random(seed)

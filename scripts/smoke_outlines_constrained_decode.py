@@ -30,13 +30,31 @@ better than the authoring front-end in general does. Using it would require writ
 Outlines logits-processor bridge (no built-in Outlines/LiteRT integration exists today); not
 attempted in this item.
 
-Model choice: a tiny, randomly-initialized public test model
-(`hf-internal-testing/tiny-random-gpt2`), not a real instruction-tuned model. Constrained
-decoding guarantees the OUTPUT is structurally schema-valid regardless of model quality --
-that is the entire mechanism (FSM token masking, not semantic understanding) -- so a tiny
-model is sufficient to prove "the Outlines smoke produces schema-valid JSON" without a
-multi-GB download. The generated content will be nonsensical; that's expected and fine for a
-smoke demo.
+Model choice, arrived at empirically (two prior choices tried and rejected by actually running
+them, not guessed):
+
+1. `hf-internal-testing/tiny-random-gpt2` (tiny vocab, tiny architecture): fails immediately --
+   Outlines raises "vocabulary incompatible with the regex." Its 1000-token vocab can't spell
+   the schema's required literals (`"schema_version"`, `"nodes"`, etc.) at all.
+2. `sshleifer/tiny-gpt2` (real GPT-2 vocab, degenerate n_layer=2/n_embd=2 architecture): passes
+   the vocabulary check, but generation never terminates open-ended fields -- constrained
+   decoding's FSM permits the model to keep emitting digits for `schema_version` (an unbounded
+   JSON integer) forever, because the model's near-random weights never learn to prefer a stop
+   token in that position. The FSM guarantees structural validity of whatever tokens are chosen,
+   not that the model ever chooses to stop -- an architecturally-degenerate model can defeat that
+   guarantee by simply never terminating within any reasonable token budget.
+3. `distilgpt2` (real GPT-2 vocab, real trained weights, ~82M params): works reliably --
+   confirmed by 3/3 successful runs producing valid `{"schema_version": ..., "nodes": [...]}`
+   documents. A genuinely trained model (even a small, distilled one) reliably prefers to
+   terminate JSON literals/arrays because it learned that from real text, which a random or
+   near-random-weight tiny architecture cannot. Still small enough (~350MB) to avoid a
+   multi-GB download.
+
+The prompt nudges toward a minimal document ("...with exactly one node and no edges, no
+citations") -- without that steer, `distilgpt2` sometimes wanders into long optional-field
+tangents (nested `citations` arrays, etc.) before finding a valid stopping point, wasting the
+token budget without necessarily failing, but the steer makes convergence faster and more
+consistent.
 """
 
 from __future__ import annotations
@@ -45,7 +63,11 @@ import argparse
 import json
 import sys
 
-DEFAULT_MODEL = "hf-internal-testing/tiny-random-gpt2"
+DEFAULT_MODEL = "distilgpt2"
+DEFAULT_PROMPT = (
+    "Author a minimal xtrax composition IR document with exactly one node and no edges, "
+    "no citations."
+)
 
 
 def run_smoke(model_name: str = DEFAULT_MODEL) -> dict:
@@ -66,9 +88,9 @@ def run_smoke(model_name: str = DEFAULT_MODEL) -> dict:
         AutoTokenizer.from_pretrained(model_name),
     )
     result = model(
-        "Author a minimal xtrax composition IR document.",
+        DEFAULT_PROMPT,
         JsonSchema(json.dumps(schema)),
-        max_new_tokens=256,
+        max_new_tokens=900,
     )
     return json.loads(result)
 

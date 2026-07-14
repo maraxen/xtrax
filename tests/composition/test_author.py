@@ -52,6 +52,18 @@ class TestTemplateGeneratorShape:
         with pytest.raises(ValueError, match="num_nodes"):
             TemplateGenerator().generate(seed=0, num_nodes=0)
 
+    def test_rejects_non_int_num_nodes(self) -> None:
+        """A non-int num_nodes (e.g. a str from a misused direct caller) must raise the same
+        clean ValueError as num_nodes<1, not a raw TypeError from the internal comparison.
+        """
+        with pytest.raises(ValueError, match="num_nodes"):
+            TemplateGenerator().generate(seed=0, num_nodes="3")  # type: ignore[arg-type]
+
+    def test_rejects_bool_num_nodes(self) -> None:
+        """bool is a subclass of int in Python -- num_nodes=True must not silently pass as 1."""
+        with pytest.raises(ValueError, match="num_nodes"):
+            TemplateGenerator().generate(seed=0, num_nodes=True)  # type: ignore[arg-type]
+
 
 class TestGeneratedGraphPassesValidation:
     """The actual AC success metric: 'generate-then-validate authors >=1 graph passing

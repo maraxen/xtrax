@@ -43,10 +43,10 @@ class GraphAuthorArgs:
 def run_graph_author(args: GraphAuthorArgs) -> None:
     """Free-generate a candidate graph, validate it, and write it to `out_path`.
 
-    Fast/loud: an invalid `num_nodes` raises SystemExit with a clean message, not a raw
-    traceback -- reusing the same discipline `graph-validate`/`graph-plan` established. Any
-    node not verdict=PASS prints a structured JSON envelope (same shape as
-    `graph-validate`'s) and exits 1.
+    Fast/loud: an invalid `num_nodes` or an unwritable `out_path` (missing parent directory,
+    read-only directory) raises SystemExit with a clean message, not a raw traceback -- reusing
+    the same discipline `graph-validate`/`graph-plan` established. Any node not verdict=PASS
+    prints a structured JSON envelope (same shape as `graph-validate`'s) and exits 1.
     """
     try:
         graph = TemplateGenerator().generate(seed=args.seed, num_nodes=args.num_nodes)
@@ -54,7 +54,11 @@ def run_graph_author(args: GraphAuthorArgs) -> None:
         raise SystemExit(f"graph-author: {exc}") from None
 
     result = validate_graph(graph, root=Path.cwd())
-    dump_graph(result.graph, Path(args.out_path))
+
+    try:
+        dump_graph(result.graph, Path(args.out_path))
+    except OSError as exc:
+        raise SystemExit(f"graph-author: failed to write {args.out_path}: {exc}") from None
 
     envelope = {
         "schema_version": AUTHOR_ENVELOPE_SCHEMA_VERSION,

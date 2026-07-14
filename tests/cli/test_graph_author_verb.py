@@ -58,3 +58,29 @@ class TestRunGraphAuthor:
 
         assert "num_nodes" in str(exc_info.value)
         assert not out_path.exists()
+
+    def test_rejects_non_int_num_nodes_with_clean_message_not_raw_traceback(
+        self, tmp_path: Path
+    ) -> None:
+        out_path = tmp_path / "candidate.json"
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_graph_author(GraphAuthorArgs(out_path=str(out_path), seed=0, num_nodes="3"))  # type: ignore[arg-type]
+
+        assert "num_nodes" in str(exc_info.value)
+        assert not out_path.exists()
+
+    def test_unwritable_out_path_raises_clean_system_exit_not_raw_traceback(
+        self, tmp_path: Path
+    ) -> None:
+        """A missing parent directory is a realistic first-run mistake for graph-author
+        specifically -- unlike graph-validate/graph-plan, which only ever write back to a path
+        that was just successfully read, graph-author is the first verb writing to a brand-new
+        user-supplied out_path.
+        """
+        out_path = tmp_path / "does-not-exist" / "candidate.json"
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_graph_author(GraphAuthorArgs(out_path=str(out_path), seed=0, num_nodes=3))
+
+        assert str(out_path) in str(exc_info.value)
