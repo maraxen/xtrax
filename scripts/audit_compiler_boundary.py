@@ -15,9 +15,17 @@ today. If one is ever needed, use a local import alias, or extend this script's 
 
 Boundary semantics: word boundaries are checked manually (not via regex `\b`) so that `_`, `-`,
 digits, and case transitions all count as valid identifier-component separators (matching real
-Python/compound-identifier conventions -- `chain_map_view` and `ChainMapWidget` both count as
-hits), while an immediately-adjacent LOWERCASE letter does not (rejecting same-word extensions
-like `chain_mapper` or `plugin_statement`, which are different words, not the forbidden term).
+Python/compound-identifier conventions -- `chain_map_view`, `ChainMapWidget`, and mid-identifier
+camelCase compounds like `someChainMapValue`/`getPluginStateNow` all count as hits), while an
+immediately-adjacent LOWERCASE letter continuing the SAME case run does not (rejecting same-word
+extensions like `chain_mapper` or `plugin_statement`, which are different words, not the
+forbidden term).
+
+Scope: scans both `.py` and `.toml` files under the target directory. `src/xtrax/` currently has
+exactly one non-`.py`, non-marker tracked file type worth scanning
+(`node_metadata_schema.toml`), confirmed by `git ls-files src/xtrax`. This is a deliberate,
+bounded scope choice, not an oversight -- other file types are not currently expected to define
+identifiers relevant to this invariant.
 """
 
 from __future__ import annotations
@@ -33,7 +41,7 @@ DEFAULT_TARGET = ROOT / "src" / "xtrax"
 
 FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("chain_map/chain-map", re.compile(r"chain[_-]?map", re.IGNORECASE)),
-    ("mathjax", re.compile(r"mathjax", re.IGNORECASE)),
+    ("mathjax/math_jax", re.compile(r"math[_-]?jax", re.IGNORECASE)),
     ("plugin_state/plugin-state", re.compile(r"plugin[_-]?state", re.IGNORECASE)),
 )
 
@@ -52,6 +60,9 @@ ALLOWLIST: frozenset[tuple[str, int]] = frozenset(
         # NAME itself should be UI-technology-agnostic (e.g. `formatted_label`) is a separate,
         # out-of-scope design question flagged for follow-up, not fixed here.
         ("src/xtrax/composition/node_metadata.py", 4),
+        # The canonical definition of the same `mathjax_label` slot, in the schema TOML itself.
+        # Same reasoning as above: a data-schema slot name, not UI code.
+        ("src/xtrax/composition/node_metadata_schema.toml", 16),
     }
 )
 
@@ -65,7 +76,10 @@ class BoundaryViolation:
 
 
 def _has_word_boundary(line: str, start: int, end: int) -> bool:
-    before_ok = start == 0 or not line[start - 1].islower()
+    # A lowercase char immediately before/after continues the SAME word (reject) unless it's a
+    # camelCase transition -- lowercase followed by the match's own leading/trailing uppercase
+    # letter counts as a valid component separator (e.g. `someChainMapValue`, `ChainMapValue`).
+    before_ok = start == 0 or not line[start - 1].islower() or line[start].isupper()
     after_ok = end == len(line) or not line[end].islower()
     return before_ok and after_ok
 
@@ -74,7 +88,8 @@ def scan(
     target: Path, *, root: Path = ROOT, allowlist: frozenset[tuple[str, int]] = ALLOWLIST
 ) -> list[BoundaryViolation]:
     violations: list[BoundaryViolation] = []
-    for path in sorted(target.rglob("*.py")):
+    paths = sorted({*target.rglob("*.py"), *target.rglob("*.toml")})
+    for path in paths:
         rel = str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if (rel, line_number) in allowlist:

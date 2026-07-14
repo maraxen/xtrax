@@ -51,7 +51,7 @@ def test_detects_mathjax_identifier(tmp_path: Path) -> None:
     (tmp_path / "offender.py").write_text("render_mathjax = True\n", encoding="utf-8")
     violations = scan(tmp_path, root=tmp_path)
     assert len(violations) == 1
-    assert violations[0].pattern_label == "mathjax"
+    assert violations[0].pattern_label == "mathjax/math_jax"
 
 
 def test_detects_plugin_state_identifier(tmp_path: Path) -> None:
@@ -67,7 +67,7 @@ def test_case_insensitive_matching(tmp_path: Path) -> None:
     )
     violations = scan(tmp_path, root=tmp_path)
     labels = {v.pattern_label for v in violations}
-    assert labels == {"chain_map/chain-map", "mathjax"}
+    assert labels == {"chain_map/chain-map", "mathjax/math_jax"}
 
 
 def test_word_boundary_rejects_same_word_extension(tmp_path: Path) -> None:
@@ -90,7 +90,41 @@ def test_word_boundary_accepts_underscore_joined_compound_identifiers(tmp_path: 
     )
     violations = scan(tmp_path, root=tmp_path)
     labels = {v.pattern_label for v in violations}
-    assert labels == {"chain_map/chain-map", "plugin_state/plugin-state", "mathjax"}
+    assert labels == {"chain_map/chain-map", "plugin_state/plugin-state", "mathjax/math_jax"}
+
+
+def test_word_boundary_accepts_mid_identifier_camelcase_compounds(tmp_path: Path) -> None:
+    """A lowercase->Uppercase transition mid-identifier is a valid boundary too, not just at
+    string-start -- `someChainMapValue`/`getPluginStateNow` must be flagged, not silently missed.
+    """
+    (tmp_path / "offender.py").write_text(
+        "someChainMapValue = 1\n"
+        "def getPluginStateNow():\n"
+        "    pass\n"
+        "class NodeChainMapWidget:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    violations = scan(tmp_path, root=tmp_path)
+    labels = {v.pattern_label for v in violations}
+    assert labels == {"chain_map/chain-map", "plugin_state/plugin-state"}
+
+
+def test_detects_math_jax_snake_case_variant(tmp_path: Path) -> None:
+    """`mathjax`, like `chain_map`/`plugin_state`, must tolerate a `_`/`-` separator -- the
+    idiomatic snake_case spelling `math_jax` must be caught, not just the fused `mathjax`.
+    """
+    (tmp_path / "offender.py").write_text("math_jax_enabled = True\n", encoding="utf-8")
+    violations = scan(tmp_path, root=tmp_path)
+    assert len(violations) == 1
+    assert violations[0].pattern_label == "mathjax/math_jax"
+
+
+def test_scans_toml_files_too(tmp_path: Path) -> None:
+    (tmp_path / "schema.toml").write_text('id = "mathjax_label"\n', encoding="utf-8")
+    violations = scan(tmp_path, root=tmp_path)
+    assert len(violations) == 1
+    assert violations[0].path == "schema.toml"
 
 
 def test_clean_file_produces_no_violations(tmp_path: Path) -> None:
