@@ -1,17 +1,20 @@
 ---
 name: using-xtrax
-description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan, composition (Fuse/Tap/Sink/AxisBoundary), the run layer (RunSpec/InputResolver/StageBundle), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run), EDA, sparsification, and the [Unreleased] signature-inference layer (xtrax.inference). xtrax v0.3.0 + main.
-xtrax_version: 0.3.0
+description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep), EDA, sparsification, and the signature-inference layer (xtrax.inference). xtrax v0.4.0a5 + main.
+xtrax_version: 0.4.0a5
 triggers:
   - writing JAX pipeline with xtrax
   - building domain library on xtrax
   - AxisSpec / BatchPlanner / BatchPlan / AxisBoundary
   - Fuse / Tap / Sink / RunSpec / CarrySpec
+  - MemoryBudget / BudgetInfeasibleError / device_memory_budget / lowered_memory_estimate
+  - validate_plan_topology / PlanTopologyError / execute_map_axis / execute_scan_axis
+  - SinkSpec / make_sink / ZarrStagingSink / zarr_content_digest / fsync_tree
   - explain_plan / render / EDA
   - sparsify_model / SparsePolicy
   - infer_bundle / BundleSchema / AxisOverride / axis_config
   - signature inference / xtrax.inference / AxisRole / AmbiguousAxisError
-  - xtrax run / xtrax plan / xtrax explain / xtrax export
+  - xtrax run / xtrax plan / xtrax explain / xtrax export / xtrax resume / xtrax sweep
   - TrainConfig / load_config / ConfigError / init_state
 ---
 
@@ -26,8 +29,9 @@ Before writing any xtrax code, verify your installation:
 ```python
 import xtrax
 
-# Exact version check — this skill is written for v0.3.0
-assert xtrax.__version__ == "0.3.0", f"Expected xtrax 0.3.0, got {xtrax.__version__}"
+# Version check — this skill is written for v0.4.0a5 (0.4.0 alpha line moves fast;
+# any 0.4.0aN is close enough, but re-verify sections touched by later alphas)
+assert xtrax.__version__.startswith("0.4.0"), f"Expected xtrax 0.4.0aN, got {xtrax.__version__}"
 
 # Verify in live source: read src/xtrax/__init__.py:1 to confirm __version__ definition
 # This assertion is blind to forks maintaining the same version string without a code bump
@@ -35,12 +39,17 @@ assert xtrax.__version__ == "0.3.0", f"Expected xtrax 0.3.0, got {xtrax.__versio
 
 If you see a version mismatch, verify current behavior directly in the source tree before proceeding with any code example in this skill.
 
-Also verify extras are installed if you plan to use EDA rendering:
+Also verify extras are installed for the optional layers you plan to use:
 
 ```bash
 # For plan visualization (explain_plan output + render)
 pip install xtrax[eda]
+
+# For Zarr-backed output sinks + content digests (ZarrStagingSink, zarr_content_digest)
+pip install xtrax[io]
 ```
+
+Dependency floor: `jax>=0.10.2,<0.11` / `jaxlib>=0.10.2,<0.11` (verify: `pyproject.toml:7`). The io_callback shim (`xtrax.stages._callback` — unreleased `main` only, T1-03; not in the 0.4.0a5 wheel) pins this same range and fails loud at import time if the resolved jax drifts outside it.
 
 ---
 
@@ -54,18 +63,18 @@ When building domain libraries on xtrax (custom `RunSpec`, `InputResolver`, `Sta
 - **Static fields** (`eqx.field(static=True)`): callables, Python values, never traced
 - **Dynamic fields**: JAX arrays, traced at jit time
 
-Example (verify: `src/xtrax/stages/boundaries.py:73-86` — this skill is a map, not the territory):
+Example (verify: `src/xtrax/stages/boundaries.py:84-98` — this skill is a map, not the territory):
 ```python
 class AxisBoundary(eqx.Module):
-    fuse: Fuse | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:84
-    tap: Tap | None = eqx.field(static=True, default=None)    # verify: src/xtrax/stages/boundaries.py:85
-    sink: Sink | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:86
+    fuse: Fuse | BoundaryCallable | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:96
+    tap: Tap | BoundaryCallable | None = eqx.field(static=True, default=None)    # verify: src/xtrax/stages/boundaries.py:97
+    sink: Sink | BoundaryCallable | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:98
     # No dynamic leaves; tree_flatten returns empty leaves
 ```
 
 Check your custom modules with:
 ```python
-import jax.tree_util  # verify: src/xtrax/stages/boundaries.py:73-87 (AxisBoundary implementation)
+import jax.tree_util  # verify: src/xtrax/stages/boundaries.py:84-98 (AxisBoundary implementation)
 leaves = jax.tree_util.tree_leaves(my_boundary)
 assert len(leaves) == 0, "AxisBoundary must have no dynamic leaves"
 ```
@@ -98,10 +107,16 @@ Three distinct regions exist:
   # Example: fuse stacked embeddings into a single representation
   ```
 
-- **Boundary crossings**: `Tap` and `Sink` use `jax.experimental.io_callback` (host-side Python):
+- **Boundary crossings**: `Tap` and `Sink` use `io_callback` (host-side Python):
   ```python
-  # Tap and Sink must implement ordered I/O via io_callback
-  # They run between JAX iterations but outside jit
+  # Tap and Sink implementations own their io_callback call.
+  # Import it from the vendored shim, never from jax.experimental directly
+  # (shim is unreleased main only, T1-03 — on the 0.4.0a5 wheel fall back to
+  # jax.experimental.io_callback):
+  from xtrax.stages._callback import io_callback  # verify: src/xtrax/stages/_callback.py
+  # The shim pins jax's still-experimental io_callback: version-range and
+  # signature checks run at MODULE IMPORT time and raise IoCallbackSignatureError
+  # on drift, so an upstream jax move is a loud one-file fix, not a runtime traceback.
   ```
 
 Choose JIT decorator based on your model:
@@ -144,12 +159,14 @@ Is the axis variable-length (e.g., sequences of different sizes)?
                                                         (last chunk is smaller; OK if handled)
 ```
 
-**Key decision rule** (verify: `src/xtrax/tiling/plan.py:126-131`):
+**Key decision rule** (verify: `src/xtrax/tiling/plan.py:121-141`):
 
 1. **Bucket** — if `bucket_boundaries` is set (variable-length handling)
 2. **DedupGather** — if `dedup_eligible=True` (repeated elements)
 3. **Vmap** — if `cardinality <= batch_size` (small, fully-parallel)
 4. **SafeMap** — if `cardinality > batch_size` (large, chunked; memory-safe)
+
+**Joint-budget mode** (0.4.0a1+): when `BatchPlanner(budget=MemoryBudget(...))` is set, rules 3-4 are replaced for non-bucket axes — every eligible axis starts at `Vmap`, then axes are greedily demoted to `SafeMap` in spec order until the whole-plan estimate fits the budget. See TIER-2: Tiling Layer → Joint-Budget Planning.
 
 ---
 
@@ -259,18 +276,18 @@ Verify all fields: `src/xtrax/tiling/plan.py:26-49`
 
 **Deprecation notice — verify scoping**:
 
-⚠ WARN: `AxisSpec.batch_size` is **deprecated** (v0.3.0).  
+⚠ WARN: `AxisSpec.batch_size` is **deprecated** (since v0.3.0).  
 Use `AxisSpec.default_batch_size` instead.  
 Enforcement: `DeprecationWarning` from `src/xtrax/tiling/plan.py:76-91`
 
 **IMPORTANT SCOPE**: The `.batch_size` deprecation applies **only to `AxisSpec`**.  
-The following remain live, correct fields in v0.3.0 and require NO changes:
+The following remain live, correct fields and require NO changes:
 - `AxisDecision.batch_size` — the chosen batch size for this axis
 - `SafeMap.batch_size` — the tile size in the SafeMap strategy
 - `AxisStatsEntry["batch_size"]` — EDA output field
 - `safe_map(batch_size=...)` — parameter to safe_map function
 
-⚠ WARN: `AxisSpec.granularity` is **deprecated** (v0.3.0).  
+⚠ WARN: `AxisSpec.granularity` is **deprecated** (since v0.3.0).  
 Use `AxisSpec.tile_granularity` instead.  
 Enforcement: `DeprecationWarning` from `src/xtrax/tiling/plan.py:85-91`
 
@@ -298,19 +315,20 @@ Enforcement: `src/xtrax/tiling/plan.py:63-67`
 `BatchPlanner.plan()` analyzes each `AxisSpec` and assigns a strategy:
 
 ```python
-from xtrax.tiling.plan import BatchPlanner  # verify: src/xtrax/tiling/plan.py:123-150
+from xtrax.tiling.plan import BatchPlanner  # verify: src/xtrax/tiling/plan.py:121-150
 
 planner = BatchPlanner(
-    memory_estimator=None,      # verify: src/xtrax/tiling/plan.py:139 (Optional memory estimator)
+    memory_estimator=None,      # Optional per-axis estimator; mutually exclusive with budget
     carry_specs=None,           # Optional: list[CarrySpec] for Scan axes
     dedup_specs=None,           # Optional: list[DedupSpec] for dedup configuration
     heterogeneous_axes=None,    # Optional: set[str] of axes with variable shapes
+    budget=None,                # Optional: MemoryBudget for joint-budget mode (0.4.0a1+)
 )
 
 plan = planner.plan([spec1, spec2, ...])
 ```
 
-Verify: `src/xtrax/tiling/plan.py:123-150`
+Verify: `src/xtrax/tiling/plan.py:143-150`
 
 **Output**: `BatchPlan` with `decisions: tuple[AxisDecision, ...]`  
 Each `AxisDecision` contains:
@@ -318,6 +336,38 @@ Each `AxisDecision` contains:
 - `batch_size: int` — final chosen batch size
 - `reasoning: str` — human-readable explanation
 - `strategy: AxisStrategy` — Vmap | SafeMap | Scan | DedupGather | Bucket
+
+#### Joint-Budget Planning (0.4.0a1+): MemoryBudget + Estimators
+
+`BatchPlanner(budget=MemoryBudget(bytes=..., estimate=...))` replaces the independent per-axis rules 3-5 with whole-plan greedy demotion: every eligible axis starts at `Vmap`, then axes with `cardinality > default_batch_size` are demoted to `SafeMap` **in the order specs were given** until the joint estimate fits the budget. Callers express demotion priority by spec order (axes they are most willing to sequentialize first). Carry/dedup/bucket decisions stay fixed but participate in the estimate; budget-mode reasoning strings carry the byte numbers for `xtrax explain`.
+
+```python
+from xtrax.tiling import (  # all exported at xtrax.tiling level, same tier as CarrySpec
+    BatchPlanner, MemoryBudget, BudgetInfeasibleError,
+    device_memory_budget, lowered_memory_estimate,
+)
+
+budget = MemoryBudget(
+    bytes=device_memory_budget(fraction=0.9),   # bytes from XLA allocator's bytes_limit
+    estimate=my_estimate_fn,                    # Sequence[AxisDecision] -> estimated peak bytes
+)
+planner = BatchPlanner(budget=budget)
+plan = planner.plan(specs)  # may raise BudgetInfeasibleError
+```
+
+Verify: `src/xtrax/tiling/budget.py:23-56`, `src/xtrax/tiling/estimators.py:27-97`
+
+**Strict by design** (unlike per-axis `memory_estimator`, which swallows estimator errors):
+- 🚫 HALTS: `budget` and `memory_estimator` are mutually exclusive — passing both raises.
+- 🚫 HALTS: estimator exceptions propagate unchanged; there is no silent fallback in budget mode.
+- 🚫 HALTS: `BudgetInfeasibleError` when every demotion candidate is already `SafeMap` and the joint estimate still exceeds `budget.bytes` — the message names budget, final estimate, and per-axis strategy state.
+- 🚫 HALTS: `MemoryBudget.__post_init__` rejects non-int/non-positive `bytes` and non-callable `estimate`. Verify: `src/xtrax/tiling/budget.py:50-56`
+
+**Native estimator building blocks** (`xtrax.tiling.estimators`):
+- `device_memory_budget(fraction=0.9, device=None) -> int` — budget bytes from the XLA allocator's `Device.memory_stats()["bytes_limit"]`; fails loud when the backend reports no stats (e.g. some CPU builds).
+- `lowered_memory_estimate(fn, *abstract_args) -> int` — AOT-compiles from `ShapeDtypeStruct`s and returns XLA's own buffer-assignment bytes (argument + output + temp) via `Compiled.memory_analysis()`.
+
+Spec: `.praxia/docs/specs/260706_joint-budget-batch-planner.md`
 
 #### Strategies: The Five Axis Patterns
 
@@ -541,7 +591,7 @@ Block until confirmed.
 Current implementation uses powers-of-2 bucketing (`get_k_bucket(k)` rounds up to next power).  
 For k > 256, this wastes up to 2× compute per element (worst case: k=257 → bucket=512).  
 **TODO** at `src/xtrax/tiling/dedup.py:29`: Implement geometric or mixed bucketing.  
-**Status**: Not fixed in v0.3.0 — use with caution for large k.
+**Status**: Not fixed as of v0.4.0a5 — use with caution for large k.
 
 #### Bucket: Variable-Length Axis Handling
 
@@ -574,7 +624,7 @@ Block until confirmed.
 
 ---
 
-### Run Layer (20% of depth — RunSpec, InputResolver, RuntimeBundle, FeatureBatch, SinkSpec, AxisBoundary, Fuse/Tap/Sink)
+### Run Layer (20% of depth — RunSpec, InputResolver, RuntimeBundle, FeatureBatch, SinkSpec/make_sink, ZarrStagingSink, zarr_integrity, AxisBoundary, Fuse/Tap/Sink, topology validation, boundary executor)
 
 #### RunSpec: Experiment Configuration
 
@@ -607,12 +657,12 @@ Verify: `src/xtrax/run/spec.py`
 Verify: `src/xtrax/run/spec.py` (search `from_spec`)
 
 ⚠ GAP: `RunSpec`, `CarrySpec`, `DedupSpec`, and stage boundaries are **not exported from top-level `xtrax`**.  
-Import via submodules (prefer shallow where available):
+Import via subpackages (all but `DedupSpec` are re-exported at package level):
 ```python
-from xtrax.run.spec import RunSpec
-from xtrax.tiling import CarrySpec        # re-exported from xtrax.tiling.__init__
-from xtrax.tiling.dedup import DedupSpec  # not re-exported at xtrax.tiling level
-from xtrax.stages.boundaries import AxisBoundary, Fuse, Tap, Sink
+from xtrax.run import RunSpec              # verify: src/xtrax/run/__init__.py
+from xtrax.tiling import CarrySpec         # re-exported from xtrax.tiling.__init__
+from xtrax.tiling.dedup import DedupSpec   # not re-exported at xtrax.tiling level
+from xtrax.stages import AxisBoundary, Fuse, Tap, Sink  # verify: src/xtrax/stages/__init__.py
 ```
 
 #### InputResolver: Data Iteration Protocol
@@ -675,21 +725,72 @@ batch: FeatureBatch = {
 
 Verify: `src/xtrax/run/resolver.py`
 
-#### SinkSpec: Output Format
+#### SinkSpec + make_sink: Output Routing
 
 Declare how to save results:
 
 ```python
-from xtrax.run.sink import SinkSpec
+from xtrax.run import SinkSpec, make_sink
 
-sink = SinkSpec(
+spec = SinkSpec(
     output_dir=Path("/path/to/outputs"),  # Directory for output files (None = no output)
-    format="h5",                           # "jsonl" | "h5" | "none"
-    flush_every=10,                        # Flush buffer every N steps (default: 1)
+    format="zarr",                         # "jsonl" | "h5" | "zarr" | "none" (default: "jsonl")
+    flush_every=10,                        # Flush buffer every N stage calls (default: 1)
 )
+
+sink = make_sink(spec)  # ZarrStagingSink for "zarr", None for "none"
 ```
 
-Verify: `src/xtrax/run/sink.py`
+Verify: `src/xtrax/run/sink.py:14-39`
+
+🚫 HALTS: `make_sink` raises `NotImplementedError` for `"jsonl"` and `"h5"` — only `"zarr"` and `"none"` are backed by a real implementation today; `jsonl`/`h5` remain routing-only stub values pending their own writers.  
+Enforcement: `src/xtrax/run/sink.py:32-39`
+
+#### ZarrStagingSink: Keyed Staging for io_callback Streaming (0.4.0a3+)
+
+A keyed staging buffer for JAX `io_callback`-driven streaming output, draining into nested Zarr groups. Generalizes the keyed-staging-then-drain pattern for per-chunk tensor payloads (sequences, logits, encoder intermediates). Domain-specific `io_callback` dispatch stays with the caller — this class owns staging and Zarr storage only.
+
+```python
+from xtrax.run import SinkSpec, ZarrStagingSink
+
+sink = ZarrStagingSink(SinkSpec(output_dir=out_dir, format="zarr", flush_every=8))
+
+# Buffer named arrays (and optional JSON-safe metadata) under an opaque key tuple.
+# Key components, stringified and joined by "/", become the Zarr group path.
+sink.stage((batch_idx, chunk_start), attrs={"model": "v3"}, logits=logits, seqs=seqs)
+
+# Repeated stage() for the same key merges: same-name arrays overwrite, new names accumulate.
+# Auto-drains to disk every spec.flush_every stage calls, or explicitly:
+sink.drain()   # write all pending payloads + attrs into the Zarr store, clear buffer
+
+payload = sink.take(key)  # pop a still-buffered payload WITHOUT persisting
+len(sink)                  # number of keys currently buffered (not yet drained)
+```
+
+Verify: `src/xtrax/run/zarr_sink.py:24-125`
+
+⚠ WARN: `zarr` is an optional extra (`pip install xtrax[io]`), imported lazily inside `ZarrStagingSink.__init__` — `xtrax.run` stays importable without it; constructing a sink without zarr raises `ImportError` naming the install command.  
+🚫 HALTS: `ZarrStagingSink` requires `spec.format == "zarr"` and a non-None `output_dir` (`ValueError` otherwise). Verify: `src/xtrax/run/zarr_sink.py:36-41`  
+⚠ WARN: `take()` discards any pending `attrs` for the key — it returns the in-memory payload without persisting; use `drain()` to persist. `take()` on an unknown key raises `KeyError`.
+
+#### zarr_integrity: Content Digests + Durability (0.4.0a5+)
+
+Content-digest and durability primitives for Zarr directory stores (hoisted from aminx — fully generic). Use for done-markers recording "this output is exactly what I wrote":
+
+```python
+from xtrax.run import zarr_content_digest, fsync_tree
+
+fsync_tree(store_path)                    # durabilize directory-of-many-files bottom-up FIRST
+digest = zarr_content_digest(store_path)  # deterministic sha256 over full logical content
+```
+
+- `zarr_content_digest(path)` — sha256 over the store's paths, attrs, and array data; unaffected by filesystem metadata or which process wrote it.
+- `fsync_tree(path)` — fsync every file and directory bottom-up; call before trusting the digest.
+- Lower-level building blocks also exported from `xtrax.run`: `canonical_json_bytes`, `normalize_json_value`, `update_array_digest`, `update_zarr_node_digest`, `fsync_file`, `fsync_directory`.
+
+Verify: `src/xtrax/run/zarr_integrity.py`
+
+⚠ WARN: only `zarr_content_digest`/`update_zarr_node_digest` need the `zarr` extra, imported lazily at call time; the JSON/fsync helpers have no zarr dependency. Domain orchestration (locking, atomic promotion, done-marker schemas) is the caller's responsibility.
 
 #### AxisBoundary: Per-Axis Operations
 
@@ -714,10 +815,11 @@ class MySink:
     """Write to file."""
     ordered = True
     def __call__(self, x):
-        # Use jax.experimental.io_callback
-        jax.experimental.io_callback(self._write, None, x)
+        # Import from the vendored shim, never jax.experimental directly
+        from xtrax.stages._callback import io_callback
+        io_callback(self._write, None, x, ordered=self.ordered)
     def _write(self, x):
-        # Host-side: write x to disk
+        # Host-side: write x to disk (e.g. ZarrStagingSink.stage)
         pass
 
 boundary = AxisBoundary(
@@ -727,18 +829,63 @@ boundary = AxisBoundary(
 )
 ```
 
-Verify: `src/xtrax/stages/boundaries.py:73-87`
+Verify: `src/xtrax/stages/boundaries.py:84-98`
 
 **Invariant**: `AxisBoundary` fields are **all static** (`eqx.field(static=True)`). It has no dynamic leaves.
 
-⚠ GAP: `make_inference_plan` validator referenced in `src/xtrax/stages/boundaries.py:79` does not exist in src.  
-Topology validation (e.g., ordered tap/sink + Vmap conflict) is **runtime-only** in v0.3.0 — no plan-time checks.
+Topology rules (ordered tap/sink + Vmap conflict; Scan on heterogeneous axis) are enforced at **plan-construction time** by `validate_plan_topology` (0.3.1+, see next section) — the pre-0.3.1 `make_inference_plan` gap is closed. The executor re-checks the Vmap+ordered case at execution time as defense-in-depth (`ExecutorError`).
 
-🔬 HiTL: **Ordered Tap/Sink + Vmap Conflict**  
-**Trigger**: Using `AxisBoundary(tap=..., ordered=True)` or `AxisBoundary(sink=..., ordered=True)` paired with `Vmap` strategy on the same axis.  
-**Question**: "`make_inference_plan` validator (referenced at `src/xtrax/stages/boundaries.py:79`) does not exist in src. Ordered tap/sink + Vmap conflict will only be caught at runtime. Manually verify topology before running?"  
-**Consequence**: Proceeding without confirmation may cause runtime errors: vmap does not preserve step order, so ordered I/O fails.  
-Block until confirmed.
+#### Plan Topology Validation: validate_plan_topology + PlanTopologyError (0.3.1+)
+
+> `validate_plan_topology`/`PlanTopologyError`: 0.3.1+. `axis_boundaries_by_name`: unreleased `main` only (T1-02) — not in the 0.4.0a5 wheel.
+
+Catches structurally-impossible plan/boundary pairings before any JAX trace:
+
+```python
+from xtrax.stages import PlanTopologyError, axis_boundaries_by_name, validate_plan_topology
+
+# Adapt RunSpec's positional axes/boundaries lists into a name-keyed Mapping (T1-02).
+# RunSpec.boundaries stays a plain list[AxisBoundary] | None, one entry per axis in
+# RunSpec.axes order; axis identity gets attached here, at the executor entry.
+boundaries_by_name = axis_boundaries_by_name(run_spec.axes, run_spec.boundaries)
+
+validate_plan_topology(plan.decisions, boundaries_by_name)  # None, or raises PlanTopologyError
+```
+
+Verify: `src/xtrax/stages/topology.py`
+
+Rules enforced (first violation raises `PlanTopologyError`):
+1. 🚫 HALTS: `Scan` strategy on a heterogeneous axis — `jax.lax.scan` requires static carry shape.
+2. 🚫 HALTS: `ordered=True` Tap or Sink on a `Vmap` axis — vmap does not preserve step order.
+
+`axis_boundaries_by_name` itself raises `PlanTopologyError` on a length mismatch between `axes` and `boundaries`, and on duplicate axis names (a plain dict would silently keep the last entry, masking a keying bug).
+
+⚠ NOTE: the validator is **structural/duck-typed** — it matches by `type(strategy).__name__`, not `isinstance` against xtrax's own classes, so it works on any library's plan objects with matching field names (e.g. a parallel `aminx.tiling` BatchPlanner whose strategy instances are distinct classes).
+
+#### Boundary Executor: execute_map_axis / execute_scan_axis (Unreleased, T1-04)
+
+The first code that actually runs `AxisBoundary` ops. Two-tier contract: ordered `Tap`/`Sink` fire **inside** the per-axis iterator body (per step), because a run-layer wrapper only ever sees the fully stacked output and physically cannot deliver per-step order; `Fuse` fires once, **after** the axis's iteration completes, over the assembled stacked output — never per-step, and never over a `Scan`'s carry.
+
+```python
+from xtrax.stages import ExecutorError, execute_map_axis, execute_scan_axis
+from xtrax.tiling import SafeMap, Vmap
+
+# Vmap/SafeMap axis: tap/sink per step, fuse once over stacked ys
+ys = execute_map_axis(fn, xs, strategy=SafeMap(batch_size=32), boundary=boundary)
+
+# Scan axis: fn is (carry, x) -> (carry, y); fuse never receives final_carry
+final_carry, ys = execute_scan_axis(transition, init, xs, boundary=boundary)
+```
+
+Verify: `src/xtrax/stages/executor.py`
+
+🚫 HALTS: `execute_map_axis` with `Vmap` + an ordered tap/sink raises `ExecutorError` — JAX cannot lower this at all (`ValueError: Cannot vmap ordered IO callback`). Defense-in-depth behind `validate_plan_topology`.
+
+⚠ WARN: **`SafeMap` + `ordered=True` silently ignores `batch_size` and runs one element at a time — unconditionally.** `jax.lax.map(..., batch_size=B)` batches via `jax.vmap` internally for ANY B >= 1 (verified empirically — even `batch_size=1` raises the vmap-ordered error); only the no-`batch_size` pure-scan path tolerates `ordered=True`. There is no partially-batched middle ground: an ordered `SafeMap` axis is architecturally identical in cost to a sequential `Scan`. If you need both ordering AND real batching throughput, there isn't one today — consider `Scan`, which makes the sequential cost explicit.
+
+⚠ WARN: `ordered=True` is a real, structural cost, not a default knob: it threads an XLA token as a genuine data dependency between consecutive ordered calls (JEP-10657), so XLA cannot reorder, overlap, or pipeline them with other work. Only set it when correctness genuinely depends on host-observed order; keep `ordered=False` on every other axis's boundary ops.
+
+⚠ NOTE: nested composition (e.g. vmap-of-scan) composes naturally by passing one executor call as the `fn` of an enclosing axis, but ordering preservation under nesting is **not certified** — that is T1-05's stress-harness job, not this module's.
 
 #### Fuse, Tap, Sink Protocols
 
@@ -756,27 +903,36 @@ Signature: `T -> None` (consumes value, leaves pipeline)
 Fields: `ordered: bool` (require step order?)  
 Example: Write final results to H5.
 
-Verify: `src/xtrax/stages/boundaries.py:29-70`
+Verify: `src/xtrax/stages/boundaries.py:32-82`
 
-#### StageBundle: Composable Stages
+⚠ NOTE: `Tap.ordered` / `Sink.ordered` have a real performance cost, not just a correctness constraint — see the Boundary Executor section above (XLA token dependency, no vmap compatibility, `SafeMap` batch_size silently ignored when ordered).
 
-Bundle stages together:
+#### StageBundle: Typed Bag of Optional Callable Stage Slots
+
+`StageBundle` is a pure container (`eqx.Module`, no `__call__`) — **subclass it** and declare fields; every field must be `Optional[Callable]`-shaped:
 
 ```python
+from collections.abc import Callable
 from xtrax.stages.bundle import StageBundle
 
-# Define domain-specific stages
-stages = StageBundle(
-    stages=[stage1, stage2, stage3],
-    active_stages=lambda spec: {0, 1, 2},  # Which stages run for this spec?
-)
+class MyStages(StageBundle):
+    preprocess: Callable | None = None
+    encode: Callable | None = None
+    postprocess: Callable | None = None
 
-# At runtime: iterate active stages
-for stage in stages.active_stages(spec):
-    x = stage(x)
+stages = MyStages(preprocess=my_pre, encode=my_encode)
+
+stages.active_stages()      # ["preprocess", "encode"] — field names with non-None callables
+stages.has_stage("encode")  # True
 ```
 
 Verify: `src/xtrax/stages/bundle.py`
+
+🚫 HALTS: `__init_subclass__` validates at class-definition time — every annotated field must be `Optional[Callable]` (bare `Callable`, `Callable[...]`, or a `typing.Protocol` whose only member is `__call__`); unions may have any arity but exactly one `None` member (e.g. `Callable | SomeProtocol | None` is fine). Untyped class attributes are rejected. Violations raise `TypeError`.
+
+⚠ NOTE (0.4.0a2+): the validator resolves PEP 563 postponed annotations via `typing.get_type_hints` — modules with `from __future__ import annotations` work correctly. A field typed against a name not resolvable at module scope raises a deliberate, loud `TypeError` (naming the unresolved annotation), never a silent misclassification.
+
+⚠ WARN: `active_stages()`/`has_stage()` are **Python-side only** — do NOT call them inside JAX traces. Topology is determined by non-None fields at Python dispatch level.
 
 ---
 
@@ -949,22 +1105,24 @@ Verify: `src/xtrax/training/optim.py` (definitions); re-exported at `src/xtrax/t
 
 ---
 
-### CLI Layer (E2/E3) — Tyro-delegated verbs, `xtrax run`, plan/explain/export
+### CLI Layer (E2/E3) — Tyro-delegated verbs: plan/explain/export/run/resume/sweep
 
-> **Availability**: E2 (`plan`, `explain`, `export`) + E3 (`run`) on `main`, not in the 0.3.0 tag.
+> **Availability**: all six verbs shipped in the 0.3.0 release (E2: `plan`/`explain`/`export`; E3: `run`/`resume`/`sweep`).
 
 #### Verb Registry (Tyro-delegated)
 
 All CLI verbs are registered in `REGISTRY` — a single dict mapping verb name → `(ArgsClass, run_fn)`:
 
 ```python
-from xtrax.cli.registry import REGISTRY  # verify: src/xtrax/cli/registry.py:21-26
+from xtrax.cli.registry import REGISTRY  # verify: src/xtrax/cli/registry.py:23-30
 
 # REGISTRY keys (E2/E3):
 #   "plan"    → (PlanArgs, run_plan)       — infer_bundle + BatchPlanner, print summary
 #   "explain" → (ExplainArgs, run_explain) — infer_bundle + plan + explain_plan + emit
 #   "export"  → (ExportArgs, run_export)   — export plan artifacts
 #   "run"     → (RunArgs, run_run)         — load_config → run_from_config → Engine.fit_sync
+#   "resume"  → (ResumeArgs, run_resume)   — read manifest → reconstruct state from latest ckpt → train N more epochs
+#   "sweep"   → (SweepArgs, run_sweep)     — sequential in-process grid search over a sweep TOML
 ```
 
 `entrypoint.main()` builds a tyro subcommand dict from `REGISTRY` and dispatches the parsed `ArgsClass` instance to its `run_fn`. Verify: `src/xtrax/cli/entrypoint.py:19-48`
@@ -986,6 +1144,40 @@ config.toml
 ```
 
 CLI entry: `run_run(RunArgs(config="config.toml"))` catches `ConfigError` and exits with a clean message. Verify: `src/xtrax/cli/run_verb.py:14-20`
+
+#### `xtrax resume <run-id> --epochs N` Flow
+
+Resume a prior run from its latest orbax checkpoint, training N **additional** epochs into a new sibling run dir:
+
+```
+xtrax resume <run-id> --epochs N [--manifest-path PATH]
+  → read_manifest(run_id)                 # locate the run's manifest.json
+  → resolve_components(...)               # re-resolve model/optimizer/loss/data from import paths
+  → load_checkpoint(...)                  # reconstruct ResumableState from latest orbax ckpt
+  → write_manifest_dict(...)              # new sibling run dir under .xtrax/runs/
+  → Engine(Trainer(...)).fit_sync(...)
+```
+
+`ResumeArgs`: positional `run_id`, required `epochs: int`, optional `manifest_path` (if the run dir was moved). Raises `ResumeError` (subclasses `CLIError`) on a missing/invalid manifest or checkpoint. Verify: `src/xtrax/cli/resume_verb.py:18-30`
+
+#### `xtrax sweep sweep_config.toml` Flow
+
+Sequential in-process grid search. The sweep config is a normal training TOML plus a `[sweep.axes]` section whose leaves are **lists** — the grid is the cartesian product, and each combination overrides the base config for one run:
+
+```toml
+# ... normal [model]/[optimizer]/[loss]/[data] sections ...
+
+[sweep.axes]
+seed = [42, 43]
+optimizer.kwargs.peak_lr = [1e-3, 3e-4]   # nested keys via dotted tables or nesting
+```
+
+Properties (verify: `src/xtrax/cli/sweep_verb.py`):
+- Sweep manifest written incrementally and atomically per combination (`tempfile.mkstemp` + `os.replace` before each run executes); per-run fault tolerance (one failed combination doesn't kill the sweep).
+- JAX compilation cache reused across combinations (single process, sequential — isolates compilation and execution memory via `gc` between runs).
+- 🚫 HALTS: `ConfigError` if `[sweep]` is not a table or any `sweep.axes` leaf is not a list.
+
+`SweepArgs`: positional `config_path` only. Verify: `src/xtrax/cli/sweep_verb.py:34-37`
 
 #### Key Types
 
@@ -1219,7 +1411,7 @@ Verify: `src/xtrax/checkpoint/` (see orbax docs for full checkpoint manager API)
 
 ### Signature Inference (xtrax.inference) — derive AxisSpecs + BundleSchema from a typed function
 
-> **Availability**: `[Unreleased]` composition layer — available on `main`, not in the 0.3.0 tag.  
+> **Availability**: shipped in the 0.3.0 release (Tier-1 MVP, E1).  
 > Import paths: `from xtrax.inference import ...` (all 8 public symbols re-exported from `__init__`).  
 > `AxisRole` lives canonically in `xtrax.tiling.roles` (zero xtrax deps) and is re-exported by `xtrax.inference` for convenience. Verify: `src/xtrax/inference/errors.py:12`, `src/xtrax/tiling/roles.py:14`.
 
@@ -1268,7 +1460,7 @@ class AxisRole(enum.Enum):
 ```
 
 🚫 HALTS: `BatchPlanner.plan()` raises `AmbiguousAxisError` for any `AxisSpec` with `role == AxisRole.UNKNOWN`.  
-Enforcement: `src/xtrax/tiling/plan.py:229-233`  
+Enforcement: `src/xtrax/tiling/plan.py:259-266`  
 Message: `"axis '<name>' has an unresolved role; declare it with @axis_config or provide an override before planning."`
 
 This is intentional: `infer_bundle` on a zero-config function produces UNKNOWN axes, and the planner never silently proceeds with ambiguous axes. You must resolve every axis before planning.
@@ -1393,7 +1585,7 @@ print(plan.decisions[0].reasoning)  # "cardinality <= batch_size → Vmap"
 
 ## Summary
 
-This skill provides a complete, self-contained reference for xtrax v0.3.0.
+This skill provides a complete, self-contained reference for xtrax v0.4.0a5 (+ Unreleased `main`).
 
 **Use TIER-1 to**:
 - Verify compatibility (pre-flight)
@@ -1412,13 +1604,17 @@ This skill provides a complete, self-contained reference for xtrax v0.3.0.
 
 ---
 
-## Technical Gaps (Known Limitations in v0.3.0)
+## Technical Gaps (Known Limitations in v0.4.0a5)
 
 | Gap | Location | Status |
 |-----|----------|--------|
-| `make_inference_plan` topology validator missing | `src/xtrax/stages/boundaries.py:79` | Validation is runtime-only; no plan-time checks for ordered tap/sink + Vmap conflicts |
 | DedupGather large-k regime (k > 256) uses suboptimal power-of-2 bucketing | `src/xtrax/tiling/dedup.py:29` | TODO: implement geometric or mixed bucketing for k > 256 |
-| Top-level exports missing (RunSpec, CarrySpec, DedupSpec, AxisBoundary) | `src/xtrax/__init__.py:3-55` | By design; use submodule imports: `from xtrax.run.spec import RunSpec`, etc. |
+| Top-level exports missing (RunSpec, CarrySpec, DedupSpec, AxisBoundary) | `src/xtrax/__init__.py` | By design; use subpackage imports: `from xtrax.run import RunSpec`, `from xtrax.stages import AxisBoundary`, etc. |
+| `make_sink` has no writer for `"jsonl"`/`"h5"` | `src/xtrax/run/sink.py:32-39` | Routing-only stub values; `NotImplementedError` until their writers land. Use `"zarr"` (or `"none"`). |
+| Ordered `SafeMap` axis ignores `batch_size` (runs element-at-a-time) | `src/xtrax/stages/executor.py` | Structural JAX constraint, not fixable locally — see Boundary Executor section; use `Scan` if ordering + explicit sequential cost is acceptable |
+| Nested executor composition (vmap-of-scan) ordering not certified | `src/xtrax/stages/executor.py` | T1-05 stress harness pending |
+
+The `make_inference_plan` gap noted as of v0.3.0 is closed: plan-time checks now exist via `validate_plan_topology` (`xtrax.stages`, 0.3.1+).
 
 ---
 
