@@ -15,6 +15,7 @@ from typing import Any
 
 from xtrax.cli.explain import ExplainArgs, run_explain
 from xtrax.cli.export import ExportArgs, run_export
+from xtrax.cli.graph_plan_verb import GraphPlanArgs, run_graph_plan
 from xtrax.cli.graph_verb import GraphValidateArgs, run_graph_validate
 from xtrax.cli.plan import PlanArgs, run_plan
 from xtrax.cli.resume_verb import ResumeArgs, run_resume
@@ -29,6 +30,7 @@ REGISTRY: dict[str, tuple[type[Any], Callable[..., None]]] = {
     "resume": (ResumeArgs, run_resume),
     "sweep": (SweepArgs, run_sweep),
     "graph-validate": (GraphValidateArgs, run_graph_validate),
+    "graph-plan": (GraphPlanArgs, run_graph_plan),
 }
 
 __all__ = ["REGISTRY"]
