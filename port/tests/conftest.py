@@ -31,6 +31,14 @@ TIER_TO_EMIT = {
 DEFAULT_TASK_ID = "260617_xtrax-composition-mission"
 TIER_TIMEOUT_SECONDS = 120
 
+# backlog #3493 sub-task: numpy's assert_allclose/assert_array_almost_equal
+# failure message reports the real discrepancy as free text; this regex covers
+# both the legacy phrasing ("Max absolute difference: X") and the numpy>=2.x
+# phrasing ("Max absolute difference among violations: X").
+_MAX_ABS_DIFF_RE = re.compile(
+    r"Max absolute difference(?: among violations)?:\s*([0-9.eE+\-]+)"
+)
+
 
 @dataclass(frozen=True)
 class PortWaveConfig:
@@ -280,6 +288,38 @@ def _emit_tier_result(
     )
 
 
+def _extract_max_discrepancy(exc: BaseException | None) -> float | None:
+    """Best-effort extraction of the real numeric discrepancy from a failed
+    parity assertion's exception message (backlog #3493 sub-task).
+
+    The graded parity tiers fail exclusively via
+    ``numpy.testing.assert_allclose``/``assert_array_almost_equal``, whose
+    message embeds the actual max absolute difference as free text (there is
+    no structured field numpy exposes for this). Returns ``None`` when there
+    is no exception, or its message doesn't match the expected phrasing —
+    callers must treat ``None`` as "unknown", not "zero".
+    """
+    if exc is None:
+        return None
+    match = _MAX_ABS_DIFF_RE.search(str(exc))
+    if match is None:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _max_discrepancy_for_call(call: pytest.CallInfo[None]) -> float | None:
+    """Adapter over pytest.CallInfo for the FAIL branch of
+    pytest_runtest_makereport — factored out so it (and, transitively,
+    _extract_max_discrepancy) is unit-testable without hand-driving the
+    hookwrapper generator."""
+    if call.excinfo is None:
+        return None
+    return _extract_max_discrepancy(call.excinfo.value)
+
+
 _TIER_GATE_STASH_KEY = pytest.StashKey[dict[str, Any]]()
 
 
@@ -325,6 +365,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]):
             tier=tier,
             status="FAIL",
             error_taxonomy_class="numeric_drift",
+            max_discrepancy=_max_discrepancy_for_call(call),
             traceback_excerpt=tb_excerpt,
         )
 
