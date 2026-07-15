@@ -1,6 +1,6 @@
 ---
 name: using-xtrax
-description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep), EDA, sparsification, and the signature-inference layer (xtrax.inference). xtrax v0.4.0a5 + main.
+description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep + unreleased graph-validate/graph-plan/graph-author), EDA, sparsification, and the signature-inference layer (xtrax.inference). xtrax v0.4.0a5 + main.
 xtrax_version: 0.4.0a5
 triggers:
   - writing JAX pipeline with xtrax
@@ -16,6 +16,9 @@ triggers:
   - signature inference / xtrax.inference / AxisRole / AmbiguousAxisError
   - xtrax run / xtrax plan / xtrax explain / xtrax export / xtrax resume / xtrax sweep
   - TrainConfig / load_config / ConfigError / init_state
+  - load_fn / CLIError / CLIImportError (stable public xtrax.cli primitives)
+  - xtrax graph-validate / xtrax graph-plan / xtrax graph-author (unreleased, main-only)
+  - GraphValidateArgs / GraphPlanArgs / GraphAuthorArgs / validate_graph / TemplateGenerator
 ---
 
 # using-xtrax
@@ -1105,24 +1108,29 @@ Verify: `src/xtrax/training/optim.py` (definitions); re-exported at `src/xtrax/t
 
 ---
 
-### CLI Layer (E2/E3) — Tyro-delegated verbs: plan/explain/export/run/resume/sweep
+### CLI Layer (E2/E3) — Tyro-delegated verbs: plan/explain/export/run/resume/sweep + graph-validate/graph-plan/graph-author
 
-> **Availability**: all six verbs shipped in the 0.3.0 release (E2: `plan`/`explain`/`export`; E3: `run`/`resume`/`sweep`).
+> **Availability**: six verbs shipped in the 0.3.0 release (E2: `plan`/`explain`/`export`; E3: `run`/`resume`/`sweep`). Three more — `graph-validate`/`graph-plan`/`graph-author` (T1-10/T1-11/T1-12) — are **unreleased, main-only** (no CHANGELOG entry yet, not in the 0.4.0a5 wheel), same convention as this doc's other main-only flags (e.g. the `io_callback` shim, `axis_boundaries_by_name`). Verify against `REGISTRY` directly (`src/xtrax/cli/registry.py`) before relying on a verb count — this doc is a map, not the territory.
 
 #### Verb Registry (Tyro-delegated)
 
 All CLI verbs are registered in `REGISTRY` — a single dict mapping verb name → `(ArgsClass, run_fn)`:
 
 ```python
-from xtrax.cli.registry import REGISTRY  # verify: src/xtrax/cli/registry.py:23-30
+from xtrax.cli.registry import REGISTRY  # verify: src/xtrax/cli/registry.py:26-36
 
-# REGISTRY keys (E2/E3):
+# REGISTRY keys (E2/E3 — 0.3.0 release):
 #   "plan"    → (PlanArgs, run_plan)       — infer_bundle + BatchPlanner, print summary
 #   "explain" → (ExplainArgs, run_explain) — infer_bundle + plan + explain_plan + emit
 #   "export"  → (ExportArgs, run_export)   — export plan artifacts
 #   "run"     → (RunArgs, run_run)         — load_config → run_from_config → Engine.fit_sync
 #   "resume"  → (ResumeArgs, run_resume)   — read manifest → reconstruct state from latest ckpt → train N more epochs
 #   "sweep"   → (SweepArgs, run_sweep)     — sequential in-process grid search over a sweep TOML
+
+# REGISTRY keys (T1-10/11/12 — unreleased, main-only):
+#   "graph-validate" → (GraphValidateArgs, run_graph_validate) — load <ir.json>, run validate_graph, write audit_verdict back
+#   "graph-plan"     → (GraphPlanArgs, run_graph_plan)         — load <ir.json>, resolve a node's callable_ref, plan it via plan_from_fn
+#   "graph-author"   → (GraphAuthorArgs, run_graph_author)     — free-generate a candidate IR via TemplateGenerator, validate in-process, write it
 ```
 
 `entrypoint.main()` builds a tyro subcommand dict from `REGISTRY` and dispatches the parsed `ArgsClass` instance to its `run_fn`. Verify: `src/xtrax/cli/entrypoint.py:19-48`
@@ -1179,6 +1187,48 @@ Properties (verify: `src/xtrax/cli/sweep_verb.py`):
 
 `SweepArgs`: positional `config_path` only. Verify: `src/xtrax/cli/sweep_verb.py:34-37`
 
+#### `xtrax graph-validate <ir.json>` Flow (unreleased, main-only, T1-10)
+
+Validates a D4 IR document in place and writes the audit verdict back into it:
+
+```
+xtrax graph-validate <ir.json>
+  → load_graph(path)               # parse D4 IR document          — verify: src/xtrax/composition/serialize.py
+  → validate_graph(graph, root=cwd)  # deterministic validation gate — verify: src/xtrax/composition/validate.py
+  → dump_graph(result.graph, path)   # write audit_verdict back, same path
+  → print JSON envelope {schema_version, failure_count, failures[]}
+```
+
+`GraphValidateArgs`: positional `ir_path` only. Malformed input (missing/unknown `schema_version`, unresolvable `callable_ref`) raises `SystemExit` with a clean message. Any node not `verdict=PASS` exits 1 after printing the envelope. Registered as the flat verb `graph-validate` — `entrypoint.py`'s tyro dispatch is a flat `dict[str, (ArgsClass, run_fn)]` with no nested-subcommand support, so this is not the DAG doc's informal two-word `graph validate`. Verify: `src/xtrax/cli/graph_verb.py`
+
+#### `xtrax graph-plan <ir.json> <node-id> [--shapes ...]` Flow (unreleased, main-only, T1-11)
+
+Resolves a named node's `callable_ref` from a D4 IR document and plans it — the CLI-consumed half of AC1's graph→plan parity proof:
+
+```
+xtrax graph-plan <ir.json> <node_id> [--shapes "x=(4,)f32"]
+  → load_graph(path)                       # same loader graph-validate uses
+  → nodes_by_id[node_id].callable_ref       # CLIError if node_id not found (lists available ids)
+  → plan_from_fn(callable_ref, shapes)      # same plan_from_fn helper run_plan's bare --fn/--shapes path uses
+  → print_plan_summary(plan)
+```
+
+`GraphPlanArgs`: positional `ir_path`, required `node_id`, optional `shapes` (default `""`; see `xtrax.cli.shapes.parse_shapes` grammar). A node's `callable_ref` post-`load_graph` resolves to the identical live function object `load_fn` would resolve from a bare `module.path:symbol` string — both use the same convention, so this path is provably convergent with `run`'s `--fn` resolution, not just coincidentally similar. Verify: `src/xtrax/cli/graph_plan_verb.py`
+
+#### `xtrax graph-author <out.json> [--seed N] [--num-nodes N]` Flow (unreleased, main-only, T1-12)
+
+The default generate-then-validate authoring front-end — free-generates a candidate graph and validates it in-process before writing:
+
+```
+xtrax graph-author <out_path> [--seed 0] [--num-nodes 3]
+  → TemplateGenerator().generate(seed, num_nodes)   # deterministic free-generation
+  → validate_graph(graph, root=cwd)                 # same gate graph-validate uses, run in-process
+  → dump_graph(result.graph, out_path)
+  → print JSON envelope {schema_version, failure_count, failures[]}
+```
+
+`GraphAuthorArgs`: positional `out_path`, `seed: int = 0`, `num_nodes: int = 3`. "Authors ≥1 graph passing graph-validate" is enforced directly here as an in-process assertion (`SystemExit(1)` on any non-`PASS` verdict), not left for a caller to separately verify by running `graph-validate` afterward. An invalid `num_nodes` or unwritable `out_path` raises `SystemExit` with a clean message. Verify: `src/xtrax/cli/graph_author_verb.py`
+
 #### Key Types
 
 | Symbol | Module | Role |
@@ -1189,8 +1239,10 @@ Properties (verify: `src/xtrax/cli/sweep_verb.py`):
 | `init_state` | `xtrax.training` | **Public API** — build `ResumableState` from model + optimizer + seed |
 | `config_hash` | `xtrax.cli.hash` | cli-private — stable 12-char hex hash for run-id derivation |
 | `write_manifest` | `xtrax.cli.manifest` | cli-private — always-write `manifest.json` under `.xtrax/runs/<run_id>/` |
+| `load_fn` | `xtrax.cli` (also `xtrax.cli.loader`) | **Stable public API** — domain-agnostic `module.path:symbol` → callable resolver; safe for downstream packages to import directly |
+| `CLIError` / `CLIImportError` | `xtrax.cli` (also `xtrax.cli.errors`) | **Stable public API** — downstream CLIs may subclass `CLIError` for their own fail-loud error types (mirrors `ConfigError`/`ResumeError` in-repo) |
 
-`init_state` is re-exported from `xtrax.training` (`__all__` at `src/xtrax/training/__init__.py:14`). `TrainConfig`/`load_config`/`ConfigError` stay in `xtrax.cli.config` — not top-level `xtrax` exports.
+`init_state` is re-exported from `xtrax.training` (`__all__` at `src/xtrax/training/__init__.py:14`). `TrainConfig`/`load_config`/`ConfigError` stay in `xtrax.cli.config` — cli-private, not top-level `xtrax` exports, and training-shaped (not suitable for a non-training consumer to import directly). By contrast, `load_fn`/`CLIError`/`CLIImportError` ARE declared public at `xtrax.cli.__all__` — a downstream consumer that needs import-path resolution or a fail-loud error convention should reuse these rather than reimplementing them; a downstream consumer that needs training-config-shaped TOML loading should mirror `TrainConfig`'s pattern (schema-version check, required-section check, `ConfigError`-on-violation), not import `TrainConfig` itself.
 
 #### Minimal `config.toml` Skeleton
 
@@ -1227,7 +1279,7 @@ Enforcement: `src/xtrax/cli/config.py:37-52`
 
 `import xtrax.cli` must **not** pull `tyro` at module level (AC2 import isolation):
 
-- `xtrax.cli.__init__` exports only `CLIError`, `CLIImportError`, `ShapeParseError`, and a lazy `main()` that imports `entrypoint` on demand. Verify: `src/xtrax/cli/__init__.py:17-37`
+- `xtrax.cli.__init__` exports `CLIError`, `CLIImportError`, `ShapeParseError`, `load_fn`, and a lazy `main()` that imports `entrypoint` on demand. Verify: `src/xtrax/cli/__init__.py`
 - `entrypoint.main()` imports `tyro` **inside** the function body. Verify: `src/xtrax/cli/entrypoint.py:30-31`
 
 Test pattern (mirrors E2 isolation tests): `assert "tyro" not in sys.modules` immediately after `import xtrax.cli`.

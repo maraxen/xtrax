@@ -14,6 +14,11 @@ class CLIError(Exception):
     This is the root of the exception hierarchy for errors that occur during
     command-line interface operations. Specific CLI errors inherit from this
     class to enable unified exception handling and error reporting.
+
+    Stable public contract: exported at `xtrax.cli.__all__`. Downstream
+    packages building their own CLI on top of xtrax primitives may subclass
+    `CLIError` directly (mirroring `ConfigError`/`ResumeError` in-repo) to
+    get the same fail-loud, traceback-free top-level handling convention.
     """
 
     pass
@@ -26,6 +31,9 @@ class CLIImportError(CLIError):
     unable to load a function from the specified import path. This typically
     occurs when a module cannot be found, a symbol does not exist in the
     module, or there are import-time errors in the target module.
+
+    Stable public contract, same as `CLIError` — paired with `load_fn`
+    (`xtrax.cli.loader`), also exported at `xtrax.cli.__all__`.
     """
 
     pass
