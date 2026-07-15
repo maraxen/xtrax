@@ -85,7 +85,13 @@ def _has_word_boundary(line: str, start: int, end: int) -> bool:
 
 
 def scan(
-    target: Path, *, root: Path = ROOT, allowlist: frozenset[tuple[str, int]] = ALLOWLIST
+    target: Path,
+    *,
+    root: Path = ROOT,
+    allowlist: frozenset[tuple[str, int]] = ALLOWLIST,
+    # `patterns` defaults to this module's own set but is overridable so other grep-gates
+    # (T2-04's audit_sealed_seam.py) reuse this engine instead of reimplementing it (T1-14).
+    patterns: tuple[tuple[str, re.Pattern[str]], ...] = FORBIDDEN_PATTERNS,
 ) -> list[BoundaryViolation]:
     violations: list[BoundaryViolation] = []
     paths = sorted({*target.rglob("*.py"), *target.rglob("*.toml")})
@@ -94,7 +100,7 @@ def scan(
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if (rel, line_number) in allowlist:
                 continue
-            for label, pattern in FORBIDDEN_PATTERNS:
+            for label, pattern in patterns:
                 for match in pattern.finditer(line):
                     if not _has_word_boundary(line, match.start(), match.end()):
                         continue
