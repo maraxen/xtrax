@@ -628,6 +628,73 @@ Verify: `src/xtrax/tiling/bucket.py`
 **Consequence**: Too many buckets → compile overhead. Too few → large padding waste.  
 Block until confirmed.
 
+#### Multi-Axis Composition
+
+`BatchPlanner` composes axes by **simple independence**: build one `AxisSpec` per axis (plus a matching `DedupSpec`/`CarrySpec` where applicable), pass the whole list to a single `planner.plan([...])` call, and each axis resolves to its own strategy — no rule anywhere reads two axes' specs together. The only cross-axis interactions in the entire pipeline are joint-budget demotion order (Joint-Budget Planning, above) and `validate_plan_topology` (Run Layer, below), which checks each axis's strategy only against that same axis's own boundary/heterogeneity.
+
+Worked example — one dedup-eligible axis (`tokens`) + one variable-length axis (`seqlen`) in the same plan:
+
+```python
+import numpy as np
+from xtrax.tiling.plan import AxisSpec, BatchPlanner
+from xtrax.tiling.dedup import DedupSpec   # not re-exported at xtrax.tiling level
+
+# Axis A: 8 elements, only 3 distinct → dedup
+tokens_spec = AxisSpec(name="tokens", cardinality=8, default_batch_size=4,
+                       dedup_eligible=True)
+# Axis B: variable-length sequences → bucket (Rule 1: bucket_boundaries set → Bucket)
+seqlen_spec = AxisSpec(name="seqlen", cardinality=1000, default_batch_size=32,
+                       bucket_boundaries=(32, 64, 128))
+
+# DedupSpec is DATA-DEPENDENT: caller must have already inspected the batch
+# (e.g. np.unique on the host) to compute these — unlike Bucket/Vmap/SafeMap,
+# which are static config.
+dedup = DedupSpec(
+    axis_name="tokens",                                       # matches AxisSpec.name
+    unique_indices=np.array([0, 1, 3], dtype=np.int32),       # (k,) first-occurrence slots
+    index_map=np.array([0, 1, 0, 2, 1, 1, 0, 2], dtype=np.int32),  # (n,) position i → slot
+    k=3,
+)
+
+planner = BatchPlanner(dedup_specs=[dedup])
+plan = planner.plan([tokens_spec, seqlen_spec])
+
+# plan.decisions, in spec order (verified live):
+#   [0] tokens -> DedupGather | "dedup-gather (DedupSpec for 'tokens', k=3, k_bucket=4)"   # Phase 0b
+#   [1] seqlen -> Bucket      | "bucket_boundaries=(32, 64, 128) → Bucket (host-side padding)"  # Rule 1
+```
+
+Verify: `src/xtrax/tiling/plan.py:184-283` (plan(), independent per-axis loop), `src/xtrax/tiling/plan.py:242-257` (Phase 0b DedupSpec pre-demotion), `src/xtrax/tiling/plan.py:397-408` (Bucket Rule 1), `src/xtrax/tiling/dedup.py:46-90` (DedupSpec fields + `__post_init__` validation: `len(unique_indices) == k`, `index_map` covers exactly `[0, k)`)
+
+**Executing the mixed plan.** There is no single call that dispatches a whole multi-strategy `BatchPlan` — the caller iterates `plan.decisions` and routes each axis by strategy type. Bucket axes are handled on the host **before** the jit boundary; DedupGather axes go through the eager `axis_dispatch()` shim; Vmap/SafeMap/Scan axes use `make_axis_dispatch()` iterators (Dispatch subsection, above). xtrax provides the per-axis primitives, not a mixed-strategy executor.
+
+```python
+from xtrax.tiling.bucket import select_bucket, bucketize
+from xtrax.tiling.dispatch import axis_dispatch
+
+dedup_decision, bucket_decision = plan.decisions
+
+# 1. Bucket axis: pad on the host, in plain Python, BEFORE jit — no dispatch call.
+boundaries = bucket_decision.strategy.boundaries
+bucket_idx = select_bucket(seq_length, boundaries=boundaries)
+padded_seq = bucketize(sequence, boundaries=boundaries)
+
+# 2. DedupGather axis: eager three-phase shim (dedup → safe_map → gather).
+ys = axis_dispatch(dedup_decision.strategy, fn, xs)
+# internally: dedup_fn(xs, unique_indices) → safe_map(fn, ...) → gather_fn(ys, index_map)
+```
+
+Verify: `src/xtrax/tiling/dispatch.py:105-174` (axis_dispatch eager shim — handles Vmap, SafeMap, Scan, DedupGather), `src/xtrax/tiling/dispatch.py:152-161` (DedupGather three-phase execution). Confirmed live this session: `axis_dispatch(dedup_decision.strategy, lambda x: x * 2, jnp.array([10,20,10,30,20,20,10,30]))` → `[20 40 20 60 40 40 20 60]` — round-trips correctly through dedup→map→gather.
+
+🚫 HALTS: Neither mixed-plan strategy goes through `make_axis_dispatch()`.  
+`make_axis_dispatch(DedupGather(...))` raises `DispatchRejected` ("handled elsewhere ... Use DedupGather via BatchPlanner + _dispatch_axis"); `make_axis_dispatch(Bucket(...))` falls through to the exhaustiveness `TypeError: Unknown strategy type` (no dedicated branch).  
+Enforcement: `src/xtrax/tiling/dispatch.py:78-82` (DedupGather), `src/xtrax/tiling/dispatch.py:101-102` (Bucket)
+
+🚫 HALTS: `axis_dispatch(Bucket(...), fn, xs)` also raises `TypeError`, by design: "Bucket is a host-side strategy and is not executed by axis_dispatch. Pad to a bucket shape on the host with select_bucket()/bucketize() before your jitted step, then dispatch the per-bucket compute with a device-tier strategy (e.g. Vmap/SafeMap)."  
+Enforcement: `src/xtrax/tiling/dispatch.py:163-171`
+
+⚠ WARN: `DedupSpec` inputs are data-dependent. `unique_indices`/`index_map`/`k` must be computed from the **actual batch** on the host before `planner.plan()` is called; if the batch changes, rebuild the `DedupSpec` and re-plan. The other axes in a composed plan (Bucket boundaries, Vmap/SafeMap cardinality) are static config and survive batch changes unchanged.
+
 ---
 
 ### Run Layer (20% of depth — RunSpec, InputResolver, RuntimeBundle, FeatureBatch, SinkSpec/make_sink, ZarrStagingSink, zarr_integrity, AxisBoundary, Fuse/Tap/Sink, topology validation, boundary executor)
