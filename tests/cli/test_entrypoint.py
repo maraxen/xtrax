@@ -102,10 +102,21 @@ class TestPublicSurface:
         assert set(xtrax.cli.__all__) == {
             "CLIError",
             "CLIImportError",
+            "REGISTRY",
             "ShapeParseError",
             "load_fn",
             "main",
         }
+
+    def test_registry_importable_from_xtrax_cli(self):
+        """idea-004 AC1: REGISTRY is importable as `from xtrax.cli import REGISTRY`
+        (previously only `from xtrax.cli.registry import REGISTRY` worked) and
+        resolves to the same dict object via the lazy __getattr__ export.
+        """
+        from xtrax.cli import REGISTRY as top_level_registry
+        from xtrax.cli.registry import REGISTRY as module_registry
+
+        assert top_level_registry is module_registry
 
 
 # ---------------------------------------------------------------------------

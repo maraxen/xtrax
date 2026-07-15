@@ -119,3 +119,32 @@ def test_loss_kwargs_default_empty(tmp_path) -> None:
     p = _write_toml(tmp_path, toml)
     cfg = load_config(p)
     assert cfg.loss.get("kwargs") == {} or cfg.loss.get("kwargs") is None
+
+
+def test_multiple_missing_sections_all_named(tmp_path) -> None:
+    """xtrax.config AC3: load_config (now composed from require_sections) names
+    every missing section, not just the first.
+    """
+    toml = VALID_TOML.replace(
+        """
+[model]
+path = "tests.cli._run_fixtures:make_model"
+kwargs = {}
+
+""",
+        "",
+    ).replace(
+        """
+[loss]
+path = "tests.cli._run_fixtures:make_loss"
+kwargs = {}
+
+""",
+        "",
+    )
+    p = _write_toml(tmp_path, toml)
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(p)
+    message = str(exc_info.value)
+    assert "[model]" in message
+    assert "[loss]" in message

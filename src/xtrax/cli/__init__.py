@@ -7,16 +7,35 @@ computation structures.
 
 from __future__ import annotations
 
+from typing import Any
+
 from xtrax.cli.errors import CLIError, CLIImportError, ShapeParseError
 from xtrax.cli.loader import load_fn
 
 __all__ = [
     "CLIError",
     "CLIImportError",
+    "REGISTRY",
     "ShapeParseError",
     "load_fn",
     "main",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 lazy attribute: `xtrax.cli.REGISTRY` resolves to
+    `xtrax.cli.registry.REGISTRY` without eagerly importing every built-in
+    verb module (Engine, TemplateGenerator, ...) at `xtrax.cli` import time.
+
+    A downstream package composing `{**REGISTRY, **their_verbs}` into its own
+    dispatcher (idea-004 AC2) accesses this on demand; `import xtrax.cli`
+    itself stays as lightweight as before this export was added.
+    """
+    if name == "REGISTRY":
+        from xtrax.cli.registry import REGISTRY
+
+        return REGISTRY
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def main() -> None:

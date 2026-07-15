@@ -6,6 +6,21 @@ new modules are implemented.
 
 Note: run_fn imports are eager — these are xtrax's own CLI verb functions,
 not user code. Only user-provided --fn arguments are loaded lazily.
+
+Downstream packages building their own tyro-dispatched CLI may compose
+`{**REGISTRY, **their_own_verbs}` into their own `subcommand_cli_from_dict`
+call (idea-004, `.praxia/docs/specs/260715_entry-points-based-xtrax-cli-verb-regist.md`).
+REGISTRY's keys and dict shape (verb_name -> (ArgsClass, run_fn)) are a stable,
+documented contract; the ArgsClass/run_fn internal typing stays provisional.
+
+A plugin-hosting entry_points hook (letting a downstream package's verb
+dispatch through xtrax's OWN binary, `xtrax <their-verb>`) was considered and
+explicitly DEFERRED in that same spec — demand was ~zero. If revisited, any
+`importlib.metadata.entry_points` scan MUST happen inside `entrypoint.py`'s
+`main()`, never at this module's top level, to preserve `entrypoint.py`'s
+existing lazy-tyro-import discipline (its own AC2) — an eager scan here would
+need its own lazy-loading tier plus per-entry-point exception isolation that
+doesn't exist today.
 """
 
 from __future__ import annotations
