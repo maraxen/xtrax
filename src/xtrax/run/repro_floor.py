@@ -159,8 +159,12 @@ _TOML_NAMED_ESCAPES = {
 }
 
 
-def _toml_escape_basic_string(value: str) -> str:
+def toml_escape_basic_string(value: str) -> str:
     """Escape ``value`` for embedding in a TOML basic string (``"..."``).
+
+    Public (not module-private) so other attestation-TOML producers --
+    ``xtrax.loop.metrics_provenance`` (T2-06) -- reuse this instead of reimplementing
+    escaping a second time.
 
     Implements the escaping subset of the TOML basic-string grammar
     (https://toml.io -- "Strings" -> basic strings) that matters for
@@ -187,9 +191,9 @@ def _toml_escape_basic_string(value: str) -> str:
     return "".join(out)
 
 
-def _toml_quote(value: str) -> str:
+def toml_quote(value: str) -> str:
     """Wrap ``value`` in a properly-escaped TOML basic string literal."""
-    return f'"{_toml_escape_basic_string(value)}"'
+    return f'"{toml_escape_basic_string(value)}"'
 
 
 def _divergent_result_error(result: ReproFloorResult) -> ValueError:
@@ -214,7 +218,7 @@ def build_repro_floor_attestation_toml(result: ReproFloorResult) -> str:
 
     Every interpolated string field (``run_id``, ``output_path``,
     ``content_hash``, ``created_by``, ``created_at``, and each entry of
-    ``rerun_digests``) is passed through :func:`_toml_quote` so that
+    ``rerun_digests``) is passed through :func:`toml_quote` so that
     arbitrary caller-supplied text (e.g. a Windows-style path or a run_id
     containing a literal quote -- debt #628) produces valid, round-trippable
     TOML rather than corrupting the surrounding syntax.
@@ -226,7 +230,7 @@ def build_repro_floor_attestation_toml(result: ReproFloorResult) -> str:
     if not result.passed:
         raise _divergent_result_error(result)
 
-    digests_toml = ", ".join(_toml_quote(d) for d in result.rerun_digests)
+    digests_toml = ", ".join(toml_quote(d) for d in result.rerun_digests)
     return (
         "# Attestation (repro_floor)\n"
         "# Generated via xtrax.run.repro_floor -- register with bathos's\n"
@@ -235,14 +239,14 @@ def build_repro_floor_attestation_toml(result: ReproFloorResult) -> str:
         "[attestation]\n"
         'kind = "repro_floor"\n'
         'verdict = "PASS"\n'
-        f"attested = {{ run_id = {_toml_quote(result.run_id)}, "
-        f"output_path = {_toml_quote(result.output_path)}, "
-        f"content_hash = {_toml_quote(result.content_hash)} }}\n"
+        f"attested = {{ run_id = {toml_quote(result.run_id)}, "
+        f"output_path = {toml_quote(result.output_path)}, "
+        f"content_hash = {toml_quote(result.content_hash)} }}\n"
         f"seed_pin = {result.seed_pin}\n"
         f"rerun_count = {result.rerun_count}\n"
         f"rerun_digests = [{digests_toml}]\n"
-        f"created_by = {_toml_quote(result.created_by)}\n"
-        f"created_at = {_toml_quote(result.created_at)}\n"
+        f"created_by = {toml_quote(result.created_by)}\n"
+        f"created_at = {toml_quote(result.created_at)}\n"
     )
 
 
@@ -328,5 +332,7 @@ __all__ = [
     "build_repro_floor_attestation_toml",
     "repro_floor_freshness_attestation",
     "run_repro_floor",
+    "toml_escape_basic_string",
+    "toml_quote",
     "write_repro_floor_attestation",
 ]
