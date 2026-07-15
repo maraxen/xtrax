@@ -1120,7 +1120,7 @@ Verify: `src/xtrax/training/optim.py` (definitions); re-exported at `src/xtrax/t
 All CLI verbs are registered in `REGISTRY` — a single dict mapping verb name → `(ArgsClass, run_fn)`:
 
 ```python
-from xtrax.cli.registry import REGISTRY  # verify: src/xtrax/cli/registry.py:26-36
+from xtrax.cli.registry import REGISTRY  # verify: src/xtrax/cli/registry.py:41-51
 
 # REGISTRY keys (E2/E3 — 0.3.0 release):
 #   "plan"    → (PlanArgs, run_plan)       — infer_bundle + BatchPlanner, print summary
@@ -1144,13 +1144,13 @@ End-to-end training from a TOML file:
 
 ```
 config.toml
-  → load_config(path)          # tomllib parse + validation  — verify: src/xtrax/cli/config.py:32-62
-  → TrainConfig                # cli-private dataclass       — verify: src/xtrax/cli/config.py:9-23
-  → run_from_config(cfg)       # cli-private glue            — verify: src/xtrax/cli/run.py:25-85
+  → load_config(path)          # tomllib parse + validation  — verify: src/xtrax/cli/config.py:38-56
+  → TrainConfig                # cli-private dataclass       — verify: src/xtrax/cli/config.py:15-29
+  → run_from_config(cfg)       # cli-private glue            — verify: src/xtrax/cli/run.py:38-80
       → resolve model/optimizer/loss/data via load_fn (import-path strings)
-      → init_state(model, optimizer, seed)   # public API    — verify: src/xtrax/training/state.py:8-15
+      → init_state(model, optimizer, seed)   # public API    — verify: src/xtrax/training/state.py:9-20
       → config_hash(cfg_dict)  # run_id derivation           — verify: src/xtrax/cli/hash.py:7-20
-      → write_manifest(...)    # always before fit_sync      — verify: src/xtrax/cli/manifest.py:10-54
+      → write_manifest(...)    # always before fit_sync      — verify: src/xtrax/cli/manifest.py:56-77
       → Engine(Trainer(...)).fit_sync(state, data, ...)
 ```
 
@@ -1435,13 +1435,15 @@ Import is lazy — no error at module load time, but `render()` call will fail i
 Export plan stats to a pandas DataFrame:
 
 ```python
-from xtrax.eda.stats import plan_to_dataframe
+from xtrax.eda import plan_to_dataframe  # lazy re-export from eda/export.py, same pattern as render()
 
 df = plan_to_dataframe(plan)
 # DataFrame with columns: name, cardinality, strategy, batch_size, reasoning, ...
 ```
 
-Verify: `src/xtrax/eda/stats.py`
+⚠ WARN: `plan_to_dataframe()` requires `pip install xtrax[eda]` (extras, same as `render()`).
+
+Verify: `src/xtrax/eda/export.py:23` (implementation); `src/xtrax/eda/__init__.py:37-44` (lazy re-export wrapper). `from xtrax.eda.stats import plan_to_dataframe` does NOT work — `stats.py` does not define or import this symbol.
 
 ---
 
