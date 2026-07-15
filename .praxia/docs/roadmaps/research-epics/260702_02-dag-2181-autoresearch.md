@@ -360,6 +360,13 @@ cross-cutting (CI-wide from P1): T2-20 grep-gate · T2-21 dispatch-independence
   - fast/loud: CI exit 1.
 - backlog-add: "AC-26 compiler-boundary grep-gate: zero UI/chain-map/plugin-state identifiers in
   src/xtrax → else CI exit 1. Reuses the #2174 grep-gate recipe; CI-wide from P1."
+- **status: CLOSED, duplicate-satisfied by T1-14 (`032afb8`)** — this gate text is verbatim what
+  `scripts/audit_compiler_boundary.py` already enforces (same target directory, same identifier
+  classes, same CI-exit-1 contract), already wired as an unconditional step in the always-run
+  `audit-deterministic` CI job (`Justfile`'s `audit-compiler-boundary` recipe). See
+  `.praxia/audits.jsonl`'s S-16 finding (already flagged this overlap as a known, accepted
+  non-blocker). No new code written; see the module docstring of `audit_compiler_boundary.py`
+  for the reverse cross-reference.
 
 ### T2-21 — dispatch-independence (AC-28, forks 15/16)
 - workspace: xtrax · category: invariant · priority: P1 · difficulty: moderate

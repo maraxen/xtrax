@@ -26,6 +26,13 @@ exactly one non-`.py`, non-marker tracked file type worth scanning
 (`node_metadata_schema.toml`), confirmed by `git ls-files src/xtrax`. This is a deliberate,
 bounded scope choice, not an oversight -- other file types are not currently expected to define
 identifiers relevant to this invariant.
+
+Also satisfies AC-26 / #2181's T2-20 backlog item
+(`.praxia/docs/roadmaps/research-epics/260702_02-dag-2181-autoresearch.md`): T2-20's gate text is
+this exact invariant, verbatim (same target directory, same identifier classes, same "CI exit 1"
+contract). T2-20 is closed as duplicate-satisfied by this script rather than getting a second,
+drifting copy -- see `.praxia/audits.jsonl`'s S-16 finding, which flagged the overlap as a known,
+accepted non-blocker.
 """
 
 from __future__ import annotations
