@@ -23,21 +23,31 @@ This module adapts the campaign-level thresholds to a SINGLE candidate-fitness-d
 fitness-dict comparison, aggregated across the dict's metric keys, not across seeds/tasks:
 
 - Win Rate: fraction of metrics where the candidate wins (direction-corrected).
-- Breakdown Point: the smallest fraction of *winning* metrics that would need to be adversarially
-  removed to drop the win rate below its own threshold -- i.e. how robust the "candidate wins"
-  verdict is to a small number of metrics being excluded or noisy.
+- Breakdown Point: the fraction OF ALL METRICS (drawn specifically from the currently-winning
+  subset) that would need to be adversarially removed to drop the win rate below its own
+  threshold -- i.e. how robust the "candidate wins" verdict is to a small number of metrics being
+  excluded or noisy. (Precision note, praxia-auditor finding 260715: this is `k / n`, the removed
+  count over the TOTAL metric count -- not `k / win_count`, the removed count over the winning
+  subset alone. Both are legitimate ways to define "fraction removed"; this module uses the
+  former, matching the source doc's own "≥20% of datasets must be removed" framing, which is
+  phrased as a fraction of the whole comparison set.)
 - Cohen's d: mean/stdev of the per-metric signed RELATIVE deltas (direction-corrected, normalized
   by `abs(best_value)` so differently-scaled metrics -- e.g. accuracy in [0,1] vs. memory in MB --
   contribute comparably), treating the metrics themselves as the sample. This normalization step is
   this module's own extrapolation (not spelled out in the source doc for a single-comparison
-  context) -- confirmed as a design decision, not silently assumed. Non-obvious consequence of
-  mean/stdev being SCALE-INVARIANT: this is a measure of how CONSISTENT the per-metric deltas are,
-  not their absolute magnitude -- many uniform trivial wins give a large (even infinite) d, while
-  a large-magnitude but inconsistent set of deltas (e.g. nine metrics win by 1% each, a tenth
-  regresses by 50%) can give a small or negative d even with a high win rate. This is deliberate:
-  it's precisely what lets Cohen's d catch a catastrophic single-metric regression that
-  win_rate/breakdown_point (which only count whether each metric wins, never by how much) would
-  treat identically to a trivial one -- see the test suite's
+  context) -- confirmed as a design decision, not silently assumed. Naming precision (praxia-auditor
+  finding 260715): "mean/stdev of one already-differenced vector" is not the textbook independent-
+  samples Cohen's d (`(mean1-mean2)/pooled_sd`) -- it is structurally identical to **Cohen's dz**,
+  the established paired/one-sample effect-size variant computed directly on a difference vector.
+  Kept as `cohens_d`/`cohens_d_threshold` in the public API for direct traceability to AC-10's own
+  literal "Cohen's d ≥ 0.2" wording; this docstring is the precise definition to go by. Non-obvious
+  consequence of mean/stdev being SCALE-INVARIANT: this is a measure of how CONSISTENT the
+  per-metric deltas are, not their absolute magnitude -- many uniform trivial wins give a large
+  (even infinite) d, while a large-magnitude but inconsistent set of deltas (e.g. nine metrics win
+  by 1% each, a tenth regresses by 50%) can give a small or negative d even with a high win rate.
+  This is deliberate: it's precisely what lets Cohen's dz catch a catastrophic single-metric
+  regression that win_rate/breakdown_point (which only count whether each metric wins, never by
+  how much) would treat identically to a trivial one -- see the test suite's
   `TestCohensDCatchesInconsistentMagnitude` for a worked example, not a "detects trivial-magnitude
   wins" check as the name might suggest.
 
@@ -74,6 +84,12 @@ class RatchetDecision:
     `per_metric_delta` carries the signed, direction-corrected, relative delta for each metric
     (positive = candidate wins that metric) -- useful for a caller to log/diagnose why a candidate
     passed or failed, without re-deriving the per-metric math.
+
+    `cohens_d` can be `math.inf` (all per-metric deltas identical and positive -- maximal,
+    degenerate-variance consistency). A caller that logs or aggregates this value across
+    iterations should account for that: `json.dumps` emits non-spec `Infinity` tokens by default,
+    and mixing an `inf` from one iteration with a `-inf`-producing case elsewhere in downstream
+    arithmetic would silently produce `NaN`.
     """
 
     __slots__ = ("breakdown_point", "cohens_d", "improved", "per_metric_delta", "win_rate")
@@ -109,9 +125,10 @@ def _relative_delta(candidate_value: float, best_value: float, higher_is_better:
 
 
 def _breakdown_point(win_count: int, n: int, win_rate_threshold: float) -> float:
-    """The smallest fraction of *winning* metrics that must be removed to drop the win rate
-    below `win_rate_threshold`. 0.0 if the win rate is already below threshold (nothing to flip).
-    Capped so the search never divides by zero (can't remove every remaining metric).
+    """The smallest `k / n` (removed count over the TOTAL metric count, removing winning metrics
+    specifically) that drops the win rate below `win_rate_threshold`. 0.0 if the win rate is
+    already below threshold (nothing to flip). Capped so the search never divides by zero (can't
+    remove every remaining metric).
     """
     if n == 0:
         return 0.0
@@ -156,8 +173,10 @@ def compute_ratchet_decision(
 
     Raises:
         RatchetInputError: `candidate_fitness`, `best_fitness`, and `higher_is_better` don't share
-            exactly the same key set, or there are fewer than 2 metrics (Cohen's d is degenerate
-            for a single-point sample).
+            exactly the same key set; there are fewer than 2 metrics (Cohen's d is degenerate for
+            a single-point sample); or any fitness value is non-finite (NaN/Inf) -- a realistic
+            failure mode for this domain (e.g. a diverged run reporting `loss=inf`) that would
+            otherwise silently propagate into `cohens_d` as `NaN` rather than failing loud.
     """
     candidate_keys = set(candidate_fitness)
     best_keys = set(best_fitness)
@@ -174,6 +193,17 @@ def compute_ratchet_decision(
     n = len(metrics)
     if n < 2:
         msg = f"need at least 2 metrics for a well-defined Cohen's d, got {n}: {metrics}"
+        raise RatchetInputError(msg)
+
+    non_finite = {
+        m
+        for m in metrics
+        if not (math.isfinite(candidate_fitness[m]) and math.isfinite(best_fitness[m]))
+    }
+    if non_finite:
+        msg = (
+            f"fitness values must be finite (no NaN/Inf); non-finite metrics: {sorted(non_finite)}"
+        )
         raise RatchetInputError(msg)
 
     deltas = {

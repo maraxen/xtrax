@@ -199,3 +199,19 @@ class TestInputValidation:
                 best_fitness={},
                 higher_is_better={},
             )
+
+    def test_nan_candidate_fitness_value_raises_not_propagates_as_nan(self) -> None:
+        with pytest.raises(RatchetInputError, match="finite"):
+            compute_ratchet_decision(
+                candidate_fitness={"a": math.nan, "b": 1.0},
+                best_fitness={"a": 0.5, "b": 1.0},
+                higher_is_better={"a": True, "b": True},
+            )
+
+    def test_inf_best_fitness_value_raises(self) -> None:
+        with pytest.raises(RatchetInputError, match="finite"):
+            compute_ratchet_decision(
+                candidate_fitness={"a": 1.0, "b": 1.0},
+                best_fitness={"a": math.inf, "b": 1.0},
+                higher_is_better={"a": True, "b": True},
+            )
