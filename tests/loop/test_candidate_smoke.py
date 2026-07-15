@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from xtrax.loop.candidate_smoke import (
+    _OUTPUT_TRUNCATE_CHARS,
     CandidateSmokeFailedError,
     CandidateSmokeTimeoutError,
     assert_candidate_smoke,
@@ -51,6 +52,12 @@ def transform(x):
 _RAISES_ONLY_IF_CALLED_SRC = """
 def transform(x):
     raise RuntimeError("should never run during L1")
+"""
+
+_FLOODS_STDOUT_THEN_RAISES_SRC = """
+def transform(x):
+    print("x" * 100_000)
+    raise ValueError("failure after a flood of stdout")
 """
 
 _DEFAULT_INPUTS = [np.array([1.0, 2.0, 3.0], dtype=np.float32)]
@@ -145,6 +152,24 @@ class TestAssertCandidateSmoke:
         assert "L2 CPU smoke" in message
         assert "ValueError" in message
         assert "deliberate failure for test" in message
+
+    def test_oversized_output_is_actually_truncated_not_just_documented(
+        self, tmp_path: Path
+    ) -> None:
+        path = _write_candidate(tmp_path, _FLOODS_STDOUT_THEN_RAISES_SRC)
+        with pytest.raises(CandidateSmokeFailedError) as exc_info:
+            assert_candidate_smoke(
+                path,
+                "transform",
+                concrete_inputs=_DEFAULT_INPUTS,
+                wall_clock_budget_seconds=15.0,
+            )
+        message = str(exc_info.value)
+        # The candidate printed 100_000 chars; a length regression (e.g. someone widening
+        # _OUTPUT_TRUNCATE_CHARS or dropping the slice) would silently balloon this message --
+        # bound it explicitly, not just check substring presence.
+        assert len(message) < _OUTPUT_TRUNCATE_CHARS + 100
+        assert "ValueError" in message
 
     def test_cpu_only_environment_reaches_the_subprocess(self, tmp_path: Path) -> None:
         path = _write_candidate(tmp_path, _CHECKS_CPU_ONLY_ENV_SRC)

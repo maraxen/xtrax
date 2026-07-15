@@ -56,7 +56,11 @@ from typing import Any
 
 import numpy as np
 
-from xtrax.loop.external_stop_watchdog import WatchdogCriteria, start_watchdog
+from xtrax.loop.external_stop_watchdog import (
+    WatchdogAlreadyStoppedError,
+    WatchdogCriteria,
+    start_watchdog,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -167,8 +171,15 @@ def _run_phase_under_deadline(
         ),
     )
     stdout, stderr = proc.communicate()
+    # TOCTOU-safe: handle.stop() itself re-polls and raises WatchdogAlreadyStoppedError if the
+    # watchdog exits in the gap between is_alive() and stop() (praxia-auditor finding, 260715) --
+    # that's a WatchdogError, not a CandidateSmokeError, and would otherwise leak an undocumented
+    # exception type out of this gate. Cleanup best-effort either way; swallow it.
     if handle.is_alive():
-        handle.stop()
+        try:
+            handle.stop()
+        except WatchdogAlreadyStoppedError:
+            pass
 
     if proc.returncode == 0:
         return
