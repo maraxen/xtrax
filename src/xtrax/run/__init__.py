@@ -1,5 +1,11 @@
 """xtrax.run — execution-time configuration layer."""
 
+from xtrax.run.component_binding import (
+    ComponentSidecarBinding,
+    ComponentSidecarFileMissingError,
+    ComponentSidecarRefMissingError,
+    component_sidecar_binding,
+)
 from xtrax.run.repro_floor import (
     ReproFloorResult,
     build_repro_floor_attestation_toml,
@@ -43,4 +49,8 @@ __all__ = [
     "build_repro_floor_attestation_toml",
     "write_repro_floor_attestation",
     "repro_floor_freshness_attestation",
+    "ComponentSidecarBinding",
+    "ComponentSidecarFileMissingError",
+    "ComponentSidecarRefMissingError",
+    "component_sidecar_binding",
 ]
