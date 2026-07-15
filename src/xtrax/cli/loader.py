@@ -3,6 +3,16 @@
 This module provides load_fn(), which resolves import-path strings like
 'module.path:symbol' into callables, deferring the actual import until
 the function is called.
+
+Stable public contract: `load_fn`/`CLIImportError` are domain-agnostic
+(no coupling to TrainConfig, RunSpec, or any xtrax-specific shape) and are
+exported at `xtrax.cli.__all__` for downstream packages to import directly —
+unlike `TrainConfig`/`run_from_config` in `xtrax.cli.run`/`config`, which
+stay cli-private (training-loop-specific). `graph-plan` (`xtrax.cli.graph_plan_verb`)
+already relies on this same `module.path:symbol` convention to resolve a
+graph node's `callable_ref` to the identical live function object `load_fn`
+would resolve from a bare import-path string — this is a real shared
+primitive within xtrax itself, not just incidentally reusable.
 """
 
 from __future__ import annotations

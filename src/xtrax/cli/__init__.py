@@ -8,11 +8,13 @@ computation structures.
 from __future__ import annotations
 
 from xtrax.cli.errors import CLIError, CLIImportError, ShapeParseError
+from xtrax.cli.loader import load_fn
 
 __all__ = [
     "CLIError",
     "CLIImportError",
     "ShapeParseError",
+    "load_fn",
     "main",
 ]
 

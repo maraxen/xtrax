@@ -79,6 +79,36 @@ class TestImportIsolation:
 
 
 # ---------------------------------------------------------------------------
+# Public surface — load_fn/CLIError/CLIImportError are stable, downstream-importable
+# ---------------------------------------------------------------------------
+
+
+class TestPublicSurface:
+    """load_fn/CLIError/CLIImportError are declared public at xtrax.cli.__all__ —
+    stable, domain-agnostic primitives downstream packages may import directly.
+    """
+
+    def test_load_fn_importable_from_xtrax_cli(self):
+        """load_fn is importable as `from xtrax.cli import load_fn` (not cli-private)."""
+        from xtrax.cli import load_fn as top_level_load_fn
+        from xtrax.cli.loader import load_fn as module_load_fn
+
+        assert top_level_load_fn is module_load_fn
+
+    def test_public_surface_matches_all(self):
+        """xtrax.cli.__all__ declares the exact stable public contract."""
+        import xtrax.cli
+
+        assert set(xtrax.cli.__all__) == {
+            "CLIError",
+            "CLIImportError",
+            "ShapeParseError",
+            "load_fn",
+            "main",
+        }
+
+
+# ---------------------------------------------------------------------------
 # AC1 help — clean verb names in --help output
 # ---------------------------------------------------------------------------
 
