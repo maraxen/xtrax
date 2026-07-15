@@ -1,8 +1,11 @@
 """Tests for the sealed EvaluateFn seam (T1-07, #3060, AC3)."""
 
+from pathlib import Path
+
 import pytest
 
 from xtrax.stages.evaluate import (
+    EvaluateFn,
     EvaluatorAlreadySealedError,
     SealedEvaluatorRegistry,
     get_sealed_evaluator,
@@ -81,6 +84,21 @@ class TestOneHotSanityCheck:
         assert scores[known_best] > scores["a"]
         assert scores[known_best] > scores["c"]
         assert max(scores, key=lambda c: scores[c]) == known_best
+
+
+def test_ac_e2_seam_resolves_under_src_xtrax() -> None:
+    """T2-04/AC-E2 success gate: the seam import resolves to src/xtrax, not a stub/mock module.
+
+    The registration-lock half of AC-E2 ("a second registration raises") is already covered by
+    TestSealedEvaluatorRegistry.test_second_seal_raises (T1-07) -- this only adds the
+    module-resolution check the DAG's success clause also names.
+    """
+    import xtrax.stages.evaluate as evaluate_module
+
+    assert EvaluateFn.__module__ == "xtrax.stages.evaluate"
+    assert SealedEvaluatorRegistry.__module__ == "xtrax.stages.evaluate"
+    src_xtrax = Path(__file__).resolve().parents[2] / "src" / "xtrax"
+    assert Path(evaluate_module.__file__).resolve().is_relative_to(src_xtrax)
 
 
 def test_module_level_functions_delegate_to_a_registry(monkeypatch: pytest.MonkeyPatch) -> None:
