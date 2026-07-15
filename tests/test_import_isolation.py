@@ -24,6 +24,7 @@ _PACKAGES = [
     "xtrax.stages.bundle",
     "xtrax.loop",
     "xtrax.loop.admission",
+    "xtrax.config",
 ]
 
 
@@ -56,5 +57,26 @@ def test_tiling_does_not_import_inference() -> None:
     )
     assert result.returncode == 0, (
         f"tiling.plan pulled in xtrax.inference modules.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+def test_config_does_not_import_cli_or_tyro() -> None:
+    """AC6 (idea-003 spec): xtrax.config is domain-agnostic -- importing it must
+    not pull in xtrax.cli or tyro, so a non-CLI consumer can use it standalone.
+    """
+    code = (
+        "import sys; "
+        "import xtrax.config; "
+        "bad = [m for m in sys.modules if m.startswith('xtrax.cli') or m == 'tyro']; "
+        "assert not bad, f'xtrax.config pulled in CLI/tyro modules: {bad}'"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"xtrax.config pulled in xtrax.cli or tyro.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )

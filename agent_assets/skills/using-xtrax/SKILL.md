@@ -1,6 +1,6 @@
 ---
 name: using-xtrax
-description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep + unreleased graph-validate/graph-plan/graph-author), EDA, sparsification, and the signature-inference layer (xtrax.inference). xtrax v0.4.0a5 + main.
+description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), loading your own TOML config via the domain-agnostic `xtrax.config` primitives, composing xtrax's own CLI verbs (`REGISTRY`) into your own CLI, or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep + unreleased graph-validate/graph-plan/graph-author), the xtrax.config TOML primitives, EDA, sparsification, and the signature-inference layer (xtrax.inference). xtrax v0.4.0a5 + main.
 xtrax_version: 0.4.0a5
 triggers:
   - writing JAX pipeline with xtrax
@@ -16,9 +16,12 @@ triggers:
   - signature inference / xtrax.inference / AxisRole / AmbiguousAxisError
   - xtrax run / xtrax plan / xtrax explain / xtrax export / xtrax resume / xtrax sweep
   - TrainConfig / load_config / ConfigError / init_state
-  - load_fn / CLIError / CLIImportError (stable public xtrax.cli primitives)
+  - load_fn / CLIError / CLIImportError / REGISTRY (stable public xtrax.cli primitives)
   - xtrax graph-validate / xtrax graph-plan / xtrax graph-author (unreleased, main-only)
   - GraphValidateArgs / GraphPlanArgs / GraphAuthorArgs / validate_graph / TemplateGenerator
+  - xtrax.config / load_toml_document / require_sections / require_field
+  - check_schema_version / classify_schema_version / SchemaVersionStatus
+  - REGISTRY composition / building your own CLI on xtrax's verbs
 ---
 
 # using-xtrax
@@ -1235,14 +1238,43 @@ xtrax graph-author <out_path> [--seed 0] [--num-nodes 3]
 |--------|--------|------|
 | `TrainConfig` | `xtrax.cli.config` | Parsed training config (`schema_version`, `model`, `optimizer`, `loss`, `data`, `seed`, `num_epochs`) |
 | `ConfigError` | `xtrax.cli.config` | Invalid/incomplete TOML; subclasses `CLIError` |
-| `load_config` | `xtrax.cli.config` | Parse + validate TOML path → `TrainConfig` |
+| `load_config` | `xtrax.cli.config` | Parse + validate TOML path → `TrainConfig`; composed from `xtrax.config`'s primitives (below) |
 | `init_state` | `xtrax.training` | **Public API** — build `ResumableState` from model + optimizer + seed |
 | `config_hash` | `xtrax.cli.hash` | cli-private — stable 12-char hex hash for run-id derivation |
 | `write_manifest` | `xtrax.cli.manifest` | cli-private — always-write `manifest.json` under `.xtrax/runs/<run_id>/` |
 | `load_fn` | `xtrax.cli` (also `xtrax.cli.loader`) | **Stable public API** — domain-agnostic `module.path:symbol` → callable resolver; safe for downstream packages to import directly |
 | `CLIError` / `CLIImportError` | `xtrax.cli` (also `xtrax.cli.errors`) | **Stable public API** — downstream CLIs may subclass `CLIError` for their own fail-loud error types (mirrors `ConfigError`/`ResumeError` in-repo) |
+| `REGISTRY` | `xtrax.cli` (also `xtrax.cli.registry`) | **Stable public API** (keys/shape only) — `verb_name -> (ArgsClass, run_fn)`; see the REGISTRY-composition pattern below |
+| `load_toml_document` | `xtrax.config` | **Stable public API** — domain-agnostic TOML parse, wraps IO/decode errors into a caller-supplied `error_cls` |
+| `require_sections` | `xtrax.config` | **Stable public API** — presence check naming *every* missing section, not just the first |
+| `require_field` | `xtrax.config` | **Stable public API** — extract + validate a field against an arbitrary predicate |
+| `check_schema_version` / `classify_schema_version` | `xtrax.config` | **Stable public API** — schema-version validation; `classify_schema_version` is the public extension seam for future status kinds |
 
-`init_state` is re-exported from `xtrax.training` (`__all__` at `src/xtrax/training/__init__.py:14`). `TrainConfig`/`load_config`/`ConfigError` stay in `xtrax.cli.config` — cli-private, not top-level `xtrax` exports, and training-shaped (not suitable for a non-training consumer to import directly). By contrast, `load_fn`/`CLIError`/`CLIImportError` ARE declared public at `xtrax.cli.__all__` — a downstream consumer that needs import-path resolution or a fail-loud error convention should reuse these rather than reimplementing them; a downstream consumer that needs training-config-shaped TOML loading should mirror `TrainConfig`'s pattern (schema-version check, required-section check, `ConfigError`-on-violation), not import `TrainConfig` itself.
+`init_state` is re-exported from `xtrax.training` (`__all__` at `src/xtrax/training/__init__.py:14`). `TrainConfig`/`load_config`/`ConfigError` stay in `xtrax.cli.config` — cli-private, not top-level `xtrax` exports, and training-shaped (not suitable for a non-training consumer to import directly). By contrast, `load_fn`/`CLIError`/`CLIImportError`/`REGISTRY` ARE declared public at `xtrax.cli.__all__`, and `xtrax.config`'s four primitives are a fully domain-agnostic top-level module — a downstream consumer that needs training-config-shaped TOML loading should compose `xtrax.config`'s primitives directly for its own dataclass shape (see the Minimal `xtrax.config` Usage example below), not mirror `TrainConfig`'s pattern by hand and not import `TrainConfig` itself.
+
+#### Minimal `xtrax.config` Usage (domain-agnostic, not training-shaped)
+
+```python
+from dataclasses import dataclass
+from xtrax.config import load_toml_document, check_schema_version, require_sections, require_field
+
+class InferConfigError(Exception):
+    """A downstream package's own error type -- xtrax.config never hardcodes one."""
+
+@dataclass
+class InferConfig:
+    schema_version: int
+    model: dict
+    checkpoint: dict
+
+def load_infer_config(path: str) -> InferConfig:
+    raw = load_toml_document(path, InferConfigError)
+    check_schema_version(raw, current=1, error_cls=InferConfigError)
+    require_sections(raw, ("model", "checkpoint"), InferConfigError)
+    return InferConfig(schema_version=raw["schema_version"], model=raw["model"], checkpoint=raw["checkpoint"])
+```
+
+Verify: `src/xtrax/config.py`; `xtrax.cli.config.load_config` is the dog-fooded reference usage (`src/xtrax/cli/config.py`). Spec: `.praxia/docs/specs/260715_generic-fail-loud-toml-to-dataclass-conf.md`.
 
 #### Minimal `config.toml` Skeleton
 
@@ -1271,18 +1303,40 @@ kwargs = {}
 batch_size = 4
 ```
 
-🚫 HALTS: Missing `schema_version` or any of `[model]`, `[optimizer]`, `[loss]`, `[data]` raises `ConfigError`.  
+🚫 HALTS: Missing `schema_version` or any of `[model]`, `[optimizer]`, `[loss]`, `[data]` raises `ConfigError`, naming **every** missing section (not just the first).  
 🚫 HALTS: `num_epochs` must be a positive int; `seed` must be an int.  
-Enforcement: `src/xtrax/cli/config.py:37-52`
+Enforcement: `src/xtrax/cli/config.py` (composed from `xtrax.config`'s `check_schema_version`/`require_sections`/`require_field`).
 
 #### Tyro-Free Import Rule
 
 `import xtrax.cli` must **not** pull `tyro` at module level (AC2 import isolation):
 
-- `xtrax.cli.__init__` exports `CLIError`, `CLIImportError`, `ShapeParseError`, `load_fn`, and a lazy `main()` that imports `entrypoint` on demand. Verify: `src/xtrax/cli/__init__.py`
+- `xtrax.cli.__init__` exports `CLIError`, `CLIImportError`, `ShapeParseError`, `load_fn`, `REGISTRY`, and a lazy `main()` that imports `entrypoint` on demand. `REGISTRY` is exposed via a PEP 562 module-level `__getattr__` — accessing it lazily imports `xtrax.cli.registry` (and thus all 9 built-in verb modules) on demand, so a bare `import xtrax.cli` stays as lightweight as before this export was added. Verify: `src/xtrax/cli/__init__.py`
 - `entrypoint.main()` imports `tyro` **inside** the function body. Verify: `src/xtrax/cli/entrypoint.py:30-31`
 
 Test pattern (mirrors E2 isolation tests): `assert "tyro" not in sys.modules` immediately after `import xtrax.cli`.
+
+#### REGISTRY Composition: Reusing xtrax's Verbs in Your Own CLI
+
+A downstream package building its own tyro-dispatched CLI (rather than getting a verb hosted through `xtrax`'s own binary — that entry-points-plugin approach was considered and explicitly **deferred**, see `.praxia/docs/specs/260715_entry-points-based-xtrax-cli-verb-regist.md`) can reuse xtrax's own verbs today, with zero xtrax code changes:
+
+```python
+import tyro
+from xtrax.cli import REGISTRY
+
+my_verbs = {"infer": (InferArgs, run_infer)}  # your own package's verbs
+merged = {**REGISTRY, **my_verbs}
+
+subcommands = {name: args_cls for name, (args_cls, _fn) in merged.items()}
+selected = tyro.extras.subcommand_cli_from_dict(subcommands)
+for name, (args_cls, run_fn) in merged.items():
+    if args_cls is type(selected):
+        run_fn(selected)
+```
+
+**Stability boundary:** `REGISTRY`'s **keys and dict shape** (`verb_name -> (ArgsClass, run_fn)`) are a stable, documented contract. The `ArgsClass`/`run_fn` internal typing is **provisional**, not independently versioned — don't rely on a specific verb's `ArgsClass` field set staying fixed across xtrax releases beyond what its own docs promise.
+
+🚫 HALTS: a verb-name or `ArgsClass` field-name collision between `REGISTRY` and your own verbs is your responsibility to avoid — `tyro.extras.subcommand_cli_from_dict` does not detect or warn on one. Verify: `tests/cli/test_registry_composition.py`.
 
 ---
 

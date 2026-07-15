@@ -1,9 +1,13 @@
-"""TrainConfig schema and config-domain errors for the `xtrax run` verb."""
+"""TrainConfig schema and config-domain errors for the `xtrax run` verb.
 
-import tomllib
+`load_config` composes `xtrax.config`'s domain-agnostic primitives
+(the canonical, dog-fooded usage referenced by that module's spec).
+"""
+
 from dataclasses import dataclass
 
 from xtrax.cli.errors import CLIError
+from xtrax.config import check_schema_version, load_toml_document, require_field, require_sections
 
 CURRENT_SCHEMA_VERSION = 1
 
@@ -33,23 +37,13 @@ class ConfigError(CLIError):
 
 def load_config(path: str) -> TrainConfig:
     """Parse and validate a training config TOML file."""
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
-
-    if "schema_version" not in raw:
-        raise ConfigError("missing required field: schema_version")
-
-    for section in ("model", "optimizer", "loss", "data"):
-        if section not in raw:
-            raise ConfigError(f"missing required section: [{section}]")
-
-    num_epochs = raw.get("num_epochs")
-    if not isinstance(num_epochs, int) or num_epochs <= 0:
-        raise ConfigError(f"num_epochs must be a positive int, got: {num_epochs!r}")
-
-    seed = raw.get("seed")
-    if not isinstance(seed, int):
-        raise ConfigError(f"seed must be an int, got: {seed!r}")
+    raw = load_toml_document(path, ConfigError)
+    check_schema_version(raw, CURRENT_SCHEMA_VERSION, ConfigError)
+    require_sections(raw, ("model", "optimizer", "loss", "data"), ConfigError)
+    num_epochs = require_field(
+        raw, "num_epochs", lambda v: isinstance(v, int) and v > 0, ConfigError
+    )
+    seed = require_field(raw, "seed", lambda v: isinstance(v, int), ConfigError)
 
     return TrainConfig(
         schema_version=raw["schema_version"],
