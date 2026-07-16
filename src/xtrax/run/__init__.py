@@ -1,5 +1,10 @@
 """xtrax.run — execution-time configuration layer."""
 
+from xtrax.run.baseline_budget_emission import (
+    BaselineBudgetCounts,
+    BaselineBudgetCountsInputError,
+    baseline_budget_counts,
+)
 from xtrax.run.component_binding import (
     ComponentSidecarBinding,
     ComponentSidecarFileMissingError,
@@ -53,4 +58,7 @@ __all__ = [
     "ComponentSidecarFileMissingError",
     "ComponentSidecarRefMissingError",
     "component_sidecar_binding",
+    "BaselineBudgetCounts",
+    "BaselineBudgetCountsInputError",
+    "baseline_budget_counts",
 ]
