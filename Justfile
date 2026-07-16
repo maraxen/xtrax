@@ -161,6 +161,16 @@ audit-compiler-boundary:
     uv run pytest tests/audit/test_compiler_boundary_gate.py -v
     uv run python scripts/audit_compiler_boundary.py
 
+audit-bathos-independence:
+    uv run ruff check scripts/audit_bathos_independence.py tests/audit/test_bathos_independence_gate.py
+    uv run pytest tests/audit/test_bathos_independence_gate.py -v
+    uv run python scripts/audit_bathos_independence.py
+
+audit-dispatch-independence:
+    uv run ruff check scripts/audit_dispatch_independence.py tests/audit/test_dispatch_independence_gate.py
+    uv run pytest tests/audit/test_dispatch_independence_gate.py -v
+    uv run python scripts/audit_dispatch_independence.py
+
 audit-foundation: audit-imports audit-no-future-annotations audit-jaxlint
     uv run pytest tests/audit/ -v
 
@@ -228,6 +238,8 @@ audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint aud
     just validate-episodic-memory-contract
     just audit-graph-auditor
     just audit-compiler-boundary
+    just audit-dispatch-independence
+    just audit-bathos-independence
     just audit-port-emit-contract
 
 # Port validation gates (Epic #2180 Wave 1)
