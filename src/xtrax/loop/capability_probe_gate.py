@@ -30,6 +30,15 @@ refuse/proceed decision.
 Extension seam (mirrors every other T2-1x gate's stance): this module raises on refusal and stops
 there. It does not retry the probe, does not decide what a future loop controller does after a
 refusal beyond raising loud, and does not implement the probe call itself.
+
+Patch note (T2-22 design pass, #2181): `assert_capability_live` previously checked `campaign_mode`
+only against `_GATED_MODES` -- any unrecognized string (a typo like `"confirmatory"`) fell through
+to the same no-op as `"exploration"`, silently letting a malformed campaign proceed unguarded. This
+directly contradicted PM-4's own "refuse until machine-verified, never assumed" principle. Now
+validated against all three known `CampaignMode` values up front, raising
+`CapabilityProbeInputError` (matches the `*InputError` naming convention used by
+`multi_metric_ratchet.RatchetInputError` and `diversity_quota.DiversityQuotaInputError`) for
+anything else.
 """
 
 from dataclasses import dataclass
@@ -37,8 +46,18 @@ from typing import Literal
 
 CampaignMode = Literal["exploration", "confirmation", "sequential"]
 
+_VALID_MODES: frozenset[str] = frozenset({"exploration", "confirmation", "sequential"})
+
 #: Campaign modes T2-27 actually gates. "exploration" always proceeds -- PM-4's own carve-out.
 _GATED_MODES: frozenset[str] = frozenset({"confirmation", "sequential"})
+
+
+class CapabilityProbeInputError(Exception):
+    """`campaign_mode` is not one of the three recognized `CampaignMode` values.
+
+    Distinct from a refused capability-live check (`CapabilityNotLiveError`) -- this is raised
+    only when the input itself is malformed.
+    """
 
 
 class CapabilityNotLiveError(Exception):
@@ -75,10 +94,18 @@ def assert_capability_live(
             `"exploration"` always proceeds (no-op), matching AC-20's own explicit carve-out.
 
     Raises:
+        CapabilityProbeInputError: `campaign_mode` is not one of `"exploration"`,
+            `"confirmation"`, `"sequential"`.
         CapabilityNotLiveError: `campaign_mode` is gated and `probe_result.seed_live` and/or
             `probe_result.stats_battery_live` is False -- the message names exactly which
             check(s) failed.
     """
+    if campaign_mode not in _VALID_MODES:
+        msg = (
+            f"unrecognized campaign_mode {campaign_mode!r}; expected one of {sorted(_VALID_MODES)}"
+        )
+        raise CapabilityProbeInputError(msg)
+
     if campaign_mode not in _GATED_MODES:
         return
 
@@ -101,6 +128,7 @@ def assert_capability_live(
 __all__ = [
     "CampaignMode",
     "CapabilityNotLiveError",
+    "CapabilityProbeInputError",
     "CapabilityProbeResult",
     "assert_capability_live",
 ]

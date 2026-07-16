@@ -1,15 +1,15 @@
 {
-  "timestamp": "2026-07-02T14:06:40.578076+00:00",
+  "timestamp": "2026-07-16T14:44:12.554783+00:00",
   "dag_version": "0.2.2",
   "tiers": {
     "tier1_core": {
       "measure_coverage": true,
-      "line_pct": 93.81573411863694,
-      "branch_pct": 87.90983606557377,
-      "tests_run": 798,
+      "line_pct": 93.43780607247797,
+      "branch_pct": 87.94392523364486,
+      "tests_run": 1379,
       "tests_failed": 0,
       "pytest_exit_code": 0,
-      "enforce_passed": null,
+      "enforce_passed": true,
       "enforce_failures": []
     }
   }

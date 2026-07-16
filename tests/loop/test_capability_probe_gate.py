@@ -4,6 +4,7 @@ import pytest
 
 from xtrax.loop.capability_probe_gate import (
     CapabilityNotLiveError,
+    CapabilityProbeInputError,
     CapabilityProbeResult,
     assert_capability_live,
 )
@@ -80,3 +81,15 @@ class TestCapabilityProbeResult:
         result = CapabilityProbeResult(seed_live=True, stats_battery_live=True)
         with pytest.raises(AttributeError):
             result.seed_live = False
+
+
+class TestInvalidCampaignModeRaises:
+    def test_unrecognized_mode_raises_regardless_of_liveness(self):
+        result = CapabilityProbeResult(seed_live=True, stats_battery_live=True)
+        with pytest.raises(CapabilityProbeInputError, match="confirmatory"):
+            assert_capability_live(result, campaign_mode="confirmatory")
+
+    def test_unrecognized_mode_raises_even_when_both_not_live(self):
+        result = CapabilityProbeResult(seed_live=False, stats_battery_live=False)
+        with pytest.raises(CapabilityProbeInputError, match="confirmatory"):
+            assert_capability_live(result, campaign_mode="confirmatory")
