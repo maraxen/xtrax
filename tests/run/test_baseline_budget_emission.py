@@ -1,5 +1,7 @@
 """Tests for the T2-24 baseline-budget-equivalence emission (#2181, AC-17)."""
 
+import math
+
 import pytest
 
 from xtrax.run.baseline_budget_emission import (
@@ -82,6 +84,24 @@ class TestBaselineBudgetCounts:
         # gap in the validation.
         counts = baseline_budget_counts(candidate_hpo_compute_budget=-0.0)
         assert counts.candidate_hpo_compute_budget == 0.0
+
+    @pytest.mark.parametrize(
+        ("field_name", "non_finite_value"),
+        [
+            ("candidate_hpo_compute_budget", math.nan),
+            ("baseline_hpo_compute_budget", math.nan),
+            ("candidate_hpo_compute_budget", math.inf),
+            ("baseline_hpo_compute_budget", math.inf),
+            ("candidate_hpo_compute_budget", -math.inf),
+            ("baseline_hpo_compute_budget", -math.inf),
+        ],
+    )
+    def test_non_finite_value_raises(self, field_name: str, non_finite_value: float):
+        # NaN/Infinity would otherwise silently pass bathos's own comparison (a NaN
+        # comparison is always False), producing a false "equivalent" verdict instead of
+        # AC-17's own fast/loud downgrade -- must be rejected here instead.
+        with pytest.raises(BaselineBudgetCountsInputError, match=field_name):
+            baseline_budget_counts(**{field_name: non_finite_value})
 
 
 class TestAsStatsBatteryKwargs:

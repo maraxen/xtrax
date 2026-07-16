@@ -50,17 +50,22 @@ values a caller passes straight through to `bathos.stats_gates.run_stats_battery
 pass/fail -- that comparison already lives entirely on the bathos side (see above).
 """
 
+import math
 from dataclasses import dataclass
 
 
 class BaselineBudgetCountsInputError(Exception):
-    """A supplied trial count or compute-budget value is negative.
+    """A supplied trial count or compute-budget value is negative or non-finite.
 
     Structurally meaningless (you cannot run a negative number of HPO trials or spend negative
-    compute) -- distinct from bathos's own `check_baseline_budget_equivalence`, which never raises
-    and instead treats a missing (`None`) value on either side of a dimension as "nothing to
-    compare" (see `BaselineBudgetCounts`). This module raises only for a value that is present but
-    out of range.
+    compute; NaN/Infinity cannot be compared meaningfully either -- and would silently pass
+    bathos's own `check_baseline_budget_equivalence`, since a NaN comparison is always `False`,
+    producing a false "equivalent" verdict instead of AC-17's own "fast/loud" downgrade) --
+    distinct from bathos's own `check_baseline_budget_equivalence`, which never raises and instead
+    treats a missing (`None`) value on either side of a dimension as "nothing to compare" (see
+    `BaselineBudgetCounts`). This module raises only for a value that is present but out of range;
+    mirrors `xtrax.loop.multi_metric_ratchet`'s identical `math.isfinite` guard on caller-supplied
+    numeric values.
     """
 
 
@@ -121,7 +126,7 @@ def baseline_budget_counts(
         A `BaselineBudgetCounts` holding exactly the four supplied values, unmodified.
 
     Raises:
-        BaselineBudgetCountsInputError: any supplied value is negative.
+        BaselineBudgetCountsInputError: any supplied value is negative or non-finite (NaN/Inf).
     """
     for name, value in (
         ("candidate_hpo_trials", candidate_hpo_trials),
@@ -129,7 +134,12 @@ def baseline_budget_counts(
         ("candidate_hpo_compute_budget", candidate_hpo_compute_budget),
         ("baseline_hpo_compute_budget", baseline_hpo_compute_budget),
     ):
-        if value is not None and value < 0:
+        if value is None:
+            continue
+        if not math.isfinite(value):
+            msg = f"{name} must be finite (got {value}); NaN/Infinity is not meaningful"
+            raise BaselineBudgetCountsInputError(msg)
+        if value < 0:
             msg = (
                 f"{name} must be >= 0 (got {value}); a negative trial count or compute budget "
                 "is not meaningful"
