@@ -41,6 +41,7 @@
 
 ## Decisions
 - [260714_2181-autoresearch-loop-constitution](decisions/260714_2181-autoresearch-loop-constitution.md) — AC-21/T2-28 constitution: governs #2181's five human-approval gates (constitution amendment, evaluator-change, promotion-to-main, scope/allowlist expansion, kill-switch/campaign approval); restates the non-negotiable safety invariants (no autonomous merge to main, sealed evaluator monopoly, external unrevokable kill-switch, metrics provenance, info barrier); attestation bound to T3-05's freshness primitive, 365-day TTL
+- [260716_t2-33-island-upgrade-delta-scope](decisions/260716_t2-33-island-upgrade-delta-scope.md) — T2-33 (P4-gated island/population-search) scoped as a documented delta only, no code: formalizes T2-03's GEAR+AutoSOTA read into a spec (evaluate() seam unchanged; GEAR-style bounded elite frontier + UCB parent selection extends T2-17/T2-18 rather than literal island migration; bathos B2-03 already covers multi-parent lineage); implementation blocked on a T2-31 scope-expansion approval that does not yet exist
 
 ## Misc
 
