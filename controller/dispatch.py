@@ -54,6 +54,7 @@ class DispatchBackend(Protocol):
     Raises:
         CandidateHandoffFailure: if staging-write or other hand-off mechanics fail.
         TimeoutError: if dispatch takes too long (backend-specific timeout semantics).
+        ValueError: if the dispatch completion cannot be parsed.
     """
 
     def dispatch_candidate(self) -> "CandidateHandoff":
@@ -66,6 +67,7 @@ class DispatchBackend(Protocol):
         Raises:
             CandidateHandoffFailure: if staging or hand-off fails.
             TimeoutError: if dispatch exceeds backend timeout (if applicable).
+            ValueError: if the dispatch completion cannot be parsed.
         """
         ...
 
@@ -83,6 +85,21 @@ class CandidateHandoff:
 
     path: Path
     content_sha256: str
+
+    def __post_init__(self) -> None:
+        """Enforce the full-hash invariant (finding 10) at construction time."""
+        if len(self.content_sha256) != 64:
+            msg = (
+                f"content_sha256 must be the full 64-character SHA-256 hex digest, "
+                f"got {len(self.content_sha256)} characters (finding 10: truncated "
+                f"hashes reintroduce collision exposure in long-running loops)"
+            )
+            raise ValueError(msg)
+        try:
+            int(self.content_sha256, 16)
+        except ValueError as e:
+            msg = f"content_sha256 must be valid hex, got {self.content_sha256!r}"
+            raise ValueError(msg) from e
 
 
 @dataclass

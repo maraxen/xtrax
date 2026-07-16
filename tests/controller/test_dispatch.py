@@ -17,9 +17,12 @@ import pytest
 from controller.dispatch import (
     CandidateHandoff,
     CandidateHandoffFailure,
+    DispatchBackend,
     MockDispatchBackend,
     MockFailureMode,
 )
+
+_VALID_SHA256 = hashlib.sha256(b"placeholder").hexdigest()
 
 
 class TestCandidateHandoff:
@@ -30,7 +33,7 @@ class TestCandidateHandoff:
         path = tmp_path / "candidate.py"
         handoff = CandidateHandoff(
             path=path,
-            content_sha256="abc123",
+            content_sha256=_VALID_SHA256,
         )
 
         # Verify frozen: attempting to mutate raises FrozenInstanceError (dataclass machinery).
@@ -41,6 +44,21 @@ class TestCandidateHandoff:
 
         with pytest.raises(FrozenInstanceError, match="cannot assign to field"):
             handoff.content_sha256 = "def456"  # type: ignore
+
+    def test_candidate_handoff_rejects_truncated_hash(self, tmp_path: Path) -> None:
+        """content_sha256 shorter than 64 chars is rejected at construction (finding 10).
+
+        This is the exact failure shape finding 10 warns against: an 8-char-prefix
+        hash reintroducing collision exposure in a long-running loop. The invariant
+        must be enforced structurally, not just by convention.
+        """
+        with pytest.raises(ValueError, match="64-character"):
+            CandidateHandoff(path=tmp_path / "candidate.py", content_sha256="ab12cd34")
+
+    def test_candidate_handoff_rejects_non_hex_hash(self, tmp_path: Path) -> None:
+        """content_sha256 must be valid hex, even if 64 characters long."""
+        with pytest.raises(ValueError, match="valid hex"):
+            CandidateHandoff(path=tmp_path / "candidate.py", content_sha256="g" * 64)
 
     def test_candidate_handoff_full_hash_not_truncated(self, tmp_path: Path) -> None:
         """CandidateHandoff.content_sha256 must hold the FULL hex digest, not truncated.
@@ -81,6 +99,18 @@ class TestCandidateHandoffFailure:
         msg = "staging write failed: disk full"
         with pytest.raises(CandidateHandoffFailure, match="disk full"):
             raise CandidateHandoffFailure(msg)
+
+
+class TestDispatchBackendProtocolConformance:
+    """Verify MockDispatchBackend structurally satisfies the DispatchBackend Protocol."""
+
+    def test_mock_dispatch_backend_is_a_dispatch_backend(self, tmp_path: Path) -> None:
+        """MockDispatchBackend conforms to DispatchBackend (runtime_checkable Protocol)."""
+        backend = MockDispatchBackend(
+            candidate_path=tmp_path / "candidate.py",
+            candidate_content="x = 1",
+        )
+        assert isinstance(backend, DispatchBackend)
 
 
 class TestMockDispatchBackendDeterministic:
