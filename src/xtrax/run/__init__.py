@@ -19,6 +19,7 @@ from xtrax.run.repro_floor import (
     write_repro_floor_attestation,
 )
 from xtrax.run.resolver import FeatureBatch, InputResolver, RuntimeBundle
+from xtrax.run.seed_emission import SeedAssignment, SeedEmissionInputError, seed_assignment
 from xtrax.run.sink import SinkSpec, make_sink
 from xtrax.run.spec import RunSpec
 from xtrax.run.zarr_integrity import (
@@ -61,4 +62,7 @@ __all__ = [
     "BaselineBudgetCounts",
     "BaselineBudgetCountsInputError",
     "baseline_budget_counts",
+    "SeedAssignment",
+    "SeedEmissionInputError",
+    "seed_assignment",
 ]
