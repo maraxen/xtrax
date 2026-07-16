@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Grep src/xtrax/ for bathos dependencies (LC-02, AC-1b).
+r"""Grep src/xtrax/ for bathos dependencies (LC-02, AC-1b).
 
 Enforces the bathos-independence invariant: xtrax's pure run-layer + loop-layer modules must
 have zero coupling to bathos, with ALL bathos interactions routed through a future loop
@@ -10,16 +10,21 @@ Scope: scans `src/xtrax` only (NOT `controller/`, which legitimately imports bat
 orchestration layer). The `controller/` directory, when it exists, is explicitly out of scope
 for this gate by design -- it's where bathos coupling lives.
 
-Verified zero existing hits in `src/xtrax` before writing this, so `ALLOWLIST` starts empty --
-any future hit is a real, new violation.
+Verified zero existing hits in `src/xtrax` before writing this -- `ALLOWLIST` holds exactly one
+entry (a backtick-quoted MCP tool-name mention that genuinely contains the `mcp__bathos` substring
+in doc prose, not an import), not empty; see the pattern design note below for why.
 
-Pattern design note: patterns are scoped to actual dependency signals (an import statement, an
-MCP tool-call identifier), not a bare `bathos` substring. This repo's own docstrings routinely
-describe xtrax's independence from bathos (e.g. "xtrax has no dependency on bathos") -- a
-bare-word pattern would collide with that entirely legitimate prose and require an ongoing
-allowlist for it. Requiring `import`/`from` immediately before `bathos`, or the `mcp__bathos`
-tool-identifier prefix, avoids that collision by construction (see
-`tests/audit/test_bathos_independence_gate.py`'s word-boundary regression test).
+Pattern design note: patterns are scoped to actual dependency signals (a real Python import
+statement, an MCP tool-call identifier), not a bare `bathos` substring. The `bathos-import`
+pattern is anchored to logical line start (`^\s*(?:import|from)\s+bathos\b`, `re.MULTILINE`) --
+matching genuine Python import syntax, which is always the first token on its logical line --
+rather than "import/from immediately before bathos anywhere in the line". An unanchored version
+was tried first and found (via adversarial review) to false-positive on this repo's own
+docstrings describing xtrax's independence from bathos (e.g. "does not import bathos, by design"
+literally contains the substring "import bathos"), which would have required a 9-entry allowlist
+purely to route around English prose, not real dependencies. Anchoring to line start eliminates
+that entire false-positive class while still catching every real import form (bare, dotted,
+indented, aliased -- see `tests/audit/test_bathos_independence_gate.py`'s regression tests).
 """
 
 from __future__ import annotations
@@ -36,35 +41,20 @@ from audit_compiler_boundary import ROOT, scan  # noqa: E402
 DEFAULT_TARGET = ROOT / "src" / "xtrax"
 
 FORBIDDEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("bathos-import", re.compile(r"(?:import|from)\s+bathos\b", re.IGNORECASE)),
+    (
+        "bathos-import",
+        re.compile(r"^\s*(?:import|from)\s+bathos\b", re.IGNORECASE | re.MULTILINE),
+    ),
     ("mcp-bathos-tool", re.compile(r"mcp__bathos", re.IGNORECASE)),
 )
 
-# Known, deliberate references to bathos in docstrings describing the independence rule itself,
-# not actual bathos dependencies. These lines document that xtrax does NOT import bathos or call
-# bathos tools directly. Shrink-only: any NEW hit not in this set still fails the gate.
+# Known, deliberate references to bathos in docstrings that genuinely contain a substring the
+# mcp-bathos-tool pattern matches (a backtick-quoted tool-name mention), not an actual bathos
+# dependency. Shrink-only: any NEW hit not in this set still fails the gate.
 ALLOWLIST: frozenset[tuple[str, int]] = frozenset(
     {
-        # Module docstring explicitly stating xtrax doesn't import bathos
-        ("src/xtrax/run/seed_emission.py", 37),
-        # Module docstring: "does not import bathos, and does not decide..."
-        ("src/xtrax/run/component_binding.py", 24),
-        # Module docstring: bathos's own check_baseline_budget_equivalence
-        ("src/xtrax/run/baseline_budget_emission.py", 64),
-        # Module docstring: reference to how caller obtained data from bathos
-        ("src/xtrax/loop/sidecar_drift_gate.py", 90),
-        # Module docstring: reference to how caller obtained per-script_sha256 counts from bathos
-        ("src/xtrax/loop/seed_gate.py", 93),
-        # Module docstring: reference to pre-registered sidecar from bathos
-        ("src/xtrax/loop/prereg_match.py", 61),
         # Module docstring: backtick-quoted MCP tool reference `mcp__bathos__claim_validate`
         ("src/xtrax/loop/prereg_match.py", 10),
-        # Module docstring: xtrax doesn't decide which bathos tool anchors artifact
-        ("src/xtrax/loop/metrics_provenance.py", 25),
-        # Module docstring: reference to how caller obtained battery verdict from bathos
-        ("src/xtrax/loop/stats_battery_gate.py", 61),
-        # Module docstring: reference to how caller obtained liveness checks from bathos
-        ("src/xtrax/loop/capability_probe_gate.py", 70),
     }
 )
 

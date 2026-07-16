@@ -66,6 +66,41 @@ def test_word_boundary_rejects_legitimate_prose_mentions(tmp_path: Path) -> None
     assert scan(tmp_path, root=tmp_path, allowlist=frozenset(), patterns=FORBIDDEN_PATTERNS) == []
 
 
+def test_word_boundary_rejects_the_exact_false_positive_shape_that_needed_anchoring(
+    tmp_path: Path,
+) -> None:
+    """Regression test for the real false-positive an unanchored bathos-import pattern produced
+    (caught by adversarial review before merge): ordinary English like "does not import bathos"
+    or "obtained from bathos" contains the literal substring "import bathos"/"from bathos" without
+    being a real Python import statement. Anchoring the pattern to logical line start
+    (`^\\s*(?:import|from)\\s+bathos\\b`) is what makes this NOT a violation -- these sentences
+    never start a line with `import`/`from`.
+    """
+    (tmp_path / "clean.py").write_text(
+        '"""This module does not import bathos, by design -- every value it needs is obtained '
+        'from bathos by the caller, one layer up."""\n',
+        encoding="utf-8",
+    )
+    assert scan(tmp_path, root=tmp_path, allowlist=frozenset(), patterns=FORBIDDEN_PATTERNS) == []
+
+
+def test_allowlist_entries_are_still_real_matches() -> None:
+    """Ratchet: catches a stale ALLOWLIST entry pointing at text that no longer matches."""
+    for rel_path, line_number in ALLOWLIST:
+        lines = (ROOT / rel_path).read_text(encoding="utf-8").splitlines()
+        line = lines[line_number - 1]
+        assert any(pattern.search(line) for _, pattern in FORBIDDEN_PATTERNS), (
+            f"stale allowlist entry {rel_path}:{line_number} matches no forbidden pattern"
+        )
+
+
+def test_allowlist_actually_suppresses_a_real_hit() -> None:
+    """Proves ALLOWLIST isn't vacuous: without it, the same scan finds a real violation."""
+    unfiltered = scan(SRC, root=ROOT, allowlist=frozenset(), patterns=FORBIDDEN_PATTERNS)
+    assert len(unfiltered) == len(ALLOWLIST)
+    assert {(v.path, v.line_number) for v in unfiltered} == ALLOWLIST
+
+
 def test_main_returns_1_and_prints_violation_to_stderr(tmp_path: Path, capsys: object) -> None:
     (tmp_path / "offender.py").write_text("import bathos\n", encoding="utf-8")
     exit_code = main([str(tmp_path)])
