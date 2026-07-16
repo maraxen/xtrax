@@ -3106,7 +3106,7 @@ requires-dist = [
     { name = "tyro", marker = "extra == 'cli'", specifier = ">=0.9,<2" },
     { name = "zarr", marker = "extra == 'io'", specifier = ">=3.0" },
 ]
-provides-extras = ["authoring-smoke", "cli", "dev", "eda", "io"]
+provides-extras = ["authoring-smoke", "cli", "controller", "dev", "eda", "io"]
 
 [package.metadata.requires-dev]
 dev = [

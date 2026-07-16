@@ -25,6 +25,22 @@ jobs:
               - 'scripts/audit_port_oracle_seal.py'
               - 'Justfile'
 
+  controller-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      controller: ${{ steps.filter.outputs.controller }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            controller:
+              - 'src/xtrax/**'
+              - 'controller/**'
+              - 'pyproject.toml'
+              - 'Justfile'
+
   audit-deterministic:
     runs-on: ubuntu-latest
     steps:
@@ -99,8 +115,8 @@ jobs:
         run: just audit-port
 
   wheel-smoke:
-    needs: port-changes
-    if: needs.port-changes.outputs.port == 'true'
+    needs: [port-changes, controller-changes]
+    if: needs.port-changes.outputs.port == 'true' || needs.controller-changes.outputs.controller == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -114,7 +130,7 @@ jobs:
           uv sync
           uv build
 
-      - name: Assert port/ absent from wheel
+      - name: Assert port/ and controller/ absent from wheel
         run: |
           python - <<'PY'
           import sys
@@ -127,10 +143,16 @@ jobs:
           wheel = wheels[0]
           with zipfile.ZipFile(wheel) as zf:
               port_entries = [name for name in zf.namelist() if name.startswith("port/")]
+              controller_entries = [name for name in zf.namelist() if name.startswith("controller/")]
           if port_entries:
               print("port/ must not ship in wheel:", file=sys.stderr)
               for entry in port_entries[:20]:
                   print(f"  {entry}", file=sys.stderr)
               raise SystemExit(1)
-          print(f"wheel-smoke OK: {wheel.name} has no port/ entries")
+          if controller_entries:
+              print("controller/ must not ship in wheel:", file=sys.stderr)
+              for entry in controller_entries[:20]:
+                  print(f"  {entry}", file=sys.stderr)
+              raise SystemExit(1)
+          print(f"wheel-smoke OK: {wheel.name} has no port/ or controller/ entries")
           PY
