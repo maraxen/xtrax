@@ -377,6 +377,18 @@ for raw_line in sys.stdin:
                     },
                 }
             )
+        elif _mode == "other_error":
+            # A DIFFERENT JSON-RPC error -- e.g. a hypothetical future bug in a registered
+            # write_staged_file, once praxia's registration gap closes. Must NOT be treated the
+            # same as "tool not found" (audit finding, PR #72): this is a real failure, not a
+            # confirmed "route to fallback" signal.
+            _send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "error": {"code": -32602, "message": "invalid params: staging_subdir empty"},
+                }
+            )
         else:
             content = arguments.get("content", "")
             staging_subdir = arguments.get("staging_subdir", "")
@@ -443,6 +455,37 @@ class TestRealWireTransport:
 
         with pytest.raises(_PraxiaToolUnavailable, match="not found in internal match table"):
             _call_write_staged_file(str(fake_server), "content", "subdir", "py", timeout=10.0)
+
+    def test_call_write_staged_file_over_real_json_rpc_wire_other_error_raises_value_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A JSON-RPC error that is NOT the confirmed "not found" case (e.g. a bug in a
+        registered tool, once praxia's registration gap closes) must raise ValueError, not
+        silently route to _PraxiaToolUnavailable/the fallback (audit finding, PR #72)."""
+        fake_server = _write_fake_praxia_mcp(tmp_path)
+        monkeypatch.setenv("FAKE_PRAXIA_MCP_MODE", "other_error")
+
+        with pytest.raises(ValueError, match="invalid params") as exc_info:
+            _call_write_staged_file(str(fake_server), "content", "subdir", "py", timeout=10.0)
+        assert not isinstance(exc_info.value, _PraxiaToolUnavailable)
+
+    def test_dispatch_candidate_primary_path_over_real_wire_other_error_does_not_fall_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end: a non-"not found" JSON-RPC error surfaces as ValueError from
+        dispatch_candidate() itself -- the fallback must NOT mask a genuine tool bug."""
+        fake_server = _write_fake_praxia_mcp(tmp_path)
+        monkeypatch.setenv("FAKE_PRAXIA_MCP_MODE", "other_error")
+
+        backend = PraxiaDispatchBackend(
+            "candidate content",
+            attempt_primary_path=True,
+            command=str(fake_server),
+            workspace_root=tmp_path,
+        )
+
+        with pytest.raises(ValueError, match="invalid params"):
+            backend.dispatch_candidate()
 
     def test_dispatch_candidate_primary_path_over_real_wire_falls_back_on_not_found(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

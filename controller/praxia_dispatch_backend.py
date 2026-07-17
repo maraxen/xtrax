@@ -125,13 +125,27 @@ PraxiaMcpTransport = Callable[[str, str, str], dict[str, Any]]
 
 
 class _PraxiaToolUnavailable(Exception):
-    """`write_staged_file`'s `tools/call` round-tripped a JSON-RPC-level error.
+    """`write_staged_file`'s `tools/call` round-tripped the confirmed "not registered" error.
 
     Internal signal only -- never escapes `dispatch_candidate()`. See module docstring: this is
     the confirmed, deterministic outcome of calling `write_staged_file` against today's real
     `praxia-mcp`, since the tool is not wired into any top-level MCP dispatch table. Caught by
     `dispatch_candidate()` to route to the documented AC-4/1B fallback.
+
+    Deliberately narrow (audit finding, PR #72): only raised when the JSON-RPC error message
+    matches `_TOOL_NOT_FOUND_MARKER`. A DIFFERENT JSON-RPC error (e.g. a bug in a registered
+    write_staged_file, once praxia's registration gap closes) raises `ValueError` instead, so a
+    real failure is never silently masked as "route to fallback."
     """
+
+
+# Exact substring of praxia's internal-dispatch-table catch-all error message
+# (`crates/praxia-agent-server/src/server/types.rs::invoke_internal`, confirmed against
+# `origin/main`: `"Tool '{}' not found in internal match table"`). Matching on this specific
+# text -- not the JSON-RPC error code (praxia's `McpError::invalid_request` reuses the same
+# generic code for many unrelated validation failures) -- is what actually discriminates "tool
+# genuinely absent from dispatch" from "tool present but call failed for some other reason."
+_TOOL_NOT_FOUND_MARKER = "not found in internal match table"
 
 
 def _is_safe_segment(segment: str) -> bool:
@@ -299,10 +313,19 @@ def _call_write_staged_file(
             raise ValueError(f"malformed dispatch completion: tools/call failed: {exc}") from exc
 
         if "error" in call_response:
-            # Confirmed, current, deterministic outcome for write_staged_file (module docstring)
-            # -- not a genuine transport bug, so this is deliberately not raised as ValueError.
-            msg = f"tools/call 'write_staged_file' JSON-RPC error: {call_response['error']}"
-            raise _PraxiaToolUnavailable(msg)
+            error = call_response["error"]
+            error_message = error.get("message", "") if isinstance(error, dict) else str(error)
+            if _TOOL_NOT_FOUND_MARKER in error_message:
+                # Confirmed, current, deterministic outcome for write_staged_file (module
+                # docstring): the tool is genuinely absent from the internal dispatch table, not
+                # a bug in a registered tool. Route to the documented AC-4/1B fallback.
+                msg = f"tools/call 'write_staged_file' not found: {error_message}"
+                raise _PraxiaToolUnavailable(msg)
+            # Any OTHER JSON-RPC error (e.g. a future bug in a registered write_staged_file, once
+            # praxia's registration gap closes) is a genuine failure, not "tool unavailable" --
+            # must not be silently masked by the fallback. See audit finding on PR #72.
+            msg = f"tools/call 'write_staged_file' JSON-RPC error: {error}"
+            raise ValueError(msg)
 
         return _extract_tool_result(call_response.get("result") or {})
     finally:
