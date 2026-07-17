@@ -48,7 +48,7 @@ eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 cli = [ "tyro>=0.9,<2", "flatbuffers>=2",]
 io = [ "zarr>=3.0",]
 authoring-smoke = [ "outlines>=1.0", "transformers>=4.40", "torch>=2.0",]
-controller = [ "bathos",]
+controller = [ "bathos>=0.13.0a1",]
 
 [project.scripts]
 xtrax = "xtrax.cli:main"
