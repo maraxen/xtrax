@@ -1,0 +1,23 @@
+name: port_repair
+version: "0.1.0"
+description: "T3-04 (AC-X4, backlog id 3042) fixture child leaf. Exists only to prove SubFlow child resolution in tests/composition/test_plugin_subflow_integration.py; never dispatched by a real agent. depth_class leaf per the Meta-may-contain-SubFlow-pointing-to-Leaf hierarchy (dsl.rs)."
+depth_class: leaf
+budgets:
+  max_total_rewinds: 1
+  max_cost_usd: 1.0
+  max_walltime_s: 60
+
+nodes:
+  - kind: role_step
+    id: repair
+    role: recon
+    gate:
+      kind: standard
+      verdict_enum: [done]
+    instructions: |
+      T3-04 fixture leaf node. Not dispatched by real agents; exists only to
+      prove that the post-install-prefixed SubFlow child template resolves
+      and is loadable via praxia's FsTemplateRegistry tier-2 (~/.praxia/workflows/)
+      search path.
+
+edges: []
