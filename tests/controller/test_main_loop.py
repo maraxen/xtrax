@@ -27,7 +27,11 @@ from typing import Any
 
 import pytest
 
-from controller.bathos_campaign_adapter import BathosCampaignAdapter, CandidateRunResult
+from controller.bathos_campaign_adapter import (
+    BathosCampaignAdapter,
+    BathosMcpToolError,
+    CandidateRunResult,
+)
 from controller.dispatch import (
     CandidateHandoff,
     CandidateHandoffFailure,
@@ -469,6 +473,109 @@ class TestDispatchFailurePropagatesWithNoRetry:
             )
 
         assert transport.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Bathos-run failure propagates unmodified; gate checks never attempted
+# (audit finding on PR #73: only dispatch-side failure propagation was tested).
+# ---------------------------------------------------------------------------
+
+
+class TestBathosRunFailurePropagatesWithNoRetry:
+    def test_bathos_mcp_tool_error_propagates_and_skips_gate_checks(self) -> None:
+        failing_envelope = {
+            "ok": False,
+            "error_code": "script_not_found",
+            "error": "candidate.py does not exist",
+            "resolution_hint": None,
+        }
+        transport = _RecordingTransport(failing_envelope)
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+        gate_calls: list[str] = []
+
+        def stats_fn(**kwargs: Any) -> BathosStatsBatteryVerdict:
+            gate_calls.append("stats")
+            return _passing_stats_verdict()
+
+        def seed_fn(db: Any, script_sha256: str, hypothesis_clause_id: str = "") -> SeedTrialCounts:
+            gate_calls.append("seed")
+            return _passing_seed_counts()
+
+        with pytest.raises(BathosMcpToolError, match="candidate.py does not exist"):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                stats_battery_kwargs={},
+                stats_battery_fn=stats_fn,
+                seed_trial_counts_fn=seed_fn,
+            )
+
+        assert len(transport.calls) == 1, "the bathos run call itself should still be attempted"
+        assert gate_calls == [], "no gate check should run after the bathos run call fails"
+
+
+# ---------------------------------------------------------------------------
+# stats_battery_kwargs / seed_trial_db forwarding (audit finding on PR #73: every
+# existing test passed stats_battery_kwargs={} and never explicitly passed seed_trial_db).
+# ---------------------------------------------------------------------------
+
+
+class TestGateParameterForwarding:
+    def test_non_empty_stats_battery_kwargs_reach_stats_battery_fn(self) -> None:
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+        received_kwargs: dict[str, Any] = {}
+
+        def stats_fn(**kwargs: Any) -> BathosStatsBatteryVerdict:
+            received_kwargs.update(kwargs)
+            return _passing_stats_verdict()
+
+        run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            stats_battery_kwargs={
+                "candidate_values": [1, 2, 3],
+                "baseline_values": [0.5, 1.5, 2.5],
+                "baseline_hpo_trials": 10,
+            },
+            stats_battery_fn=stats_fn,
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+        )
+
+        assert received_kwargs == {
+            "candidate_values": [1, 2, 3],
+            "baseline_values": [0.5, 1.5, 2.5],
+            "baseline_hpo_trials": 10,
+        }
+
+    def test_seed_trial_db_forwarded_to_seed_trial_counts_fn(self) -> None:
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+        sentinel_db = object()
+        received_db: list[Any] = []
+
+        def seed_fn(db: Any, script_sha256: str, hypothesis_clause_id: str = "") -> SeedTrialCounts:
+            received_db.append(db)
+            return _passing_seed_counts()
+
+        run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_db=sentinel_db,
+            seed_trial_counts_fn=seed_fn,
+        )
+
+        assert received_db == [sentinel_db]
 
 
 # ---------------------------------------------------------------------------
