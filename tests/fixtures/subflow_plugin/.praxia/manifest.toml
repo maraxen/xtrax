@@ -1,0 +1,13 @@
+[plugin]
+name            = "xtrax"
+version         = "0.0.0-t3-04-fixture"
+description     = "T3-04 (AC-X4, backlog id 3042) first-consumer SubFlow integration fixture: an isolated two-template parent/child pair. Installed ONLY into an ephemeral test HOME by tests/composition/test_plugin_subflow_integration.py -- never the real ~/.praxia. Deliberately named 'xtrax' (matching the real repo-root .praxia/manifest.toml) so the export prefix matches the literal AC-X4 target name xtrax_port_repair; this manifest is otherwise unrelated to and not read by the real production install path."
+requires_praxia = ">=0.1.0"
+
+[[plugin.workflows]]
+name          = "flow_parent"
+template_path = "agent_assets/workflows/flow_parent.yaml"
+
+[[plugin.workflows]]
+name          = "port_repair"
+template_path = "agent_assets/workflows/port_repair.yaml"

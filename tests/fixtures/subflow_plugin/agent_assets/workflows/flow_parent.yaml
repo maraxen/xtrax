@@ -1,0 +1,38 @@
+name: flow_parent
+version: "0.1.0"
+description: >-
+  T3-04 (AC-X4, backlog id 3042) fixture parent meta-flow. DECOY FIXTURE (PM-3,
+  reused by AC-P4 / T3-12): this description is an UNRELATED prose field that
+  happens to mention a port_repair toolkit brand name purely as flavor text --
+  it is NOT a SubFlow reference and must survive export byte-for-byte unmodified.
+  Only the sub_flow node's `template:` field below (see nodes) is a real ref;
+  a correct AST/field-scoped rewrite (once AC-P4 lands) must touch that field
+  and leave every other occurrence of the substring "port_repair" -- including
+  this sentence -- completely untouched.
+depth_class: meta
+budgets:
+  max_total_rewinds: 3
+  max_cost_usd: 1.0
+  max_walltime_s: 120
+
+nodes:
+  - kind: role_step
+    id: seed
+    role: recon
+    gate:
+      kind: standard
+      verdict_enum: []
+    instructions: |
+      T3-04 fixture seed node. Not dispatched by real agents; exists only to
+      give the meta-flow a non-SubFlow predecessor before dispatching the
+      port_repair child, mirroring the real seed -> path_determine (SubFlow)
+      shape used by agent_assets/workflows/recon_contract.yaml.
+  - kind: sub_flow
+    id: dispatch_child
+    template: xtrax_port_repair
+
+edges:
+  - from: seed
+    to: dispatch_child
+    condition:
+      kind: always
