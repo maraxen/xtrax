@@ -1,21 +1,22 @@
 """Tests for controller.bathos_library_wrappers (LC-07, AC-6).
 
 These tests verify the wrapper module structure, absence of MCP calls, and data
-threading logic without requiring bathos to be installed (via mocking or stubs).
+threading logic without requiring bathos to be installed. No sys.modules mocking is
+needed here: bathos_library_wrappers.py imports bathos lazily (inside function bodies,
+not at module level), so importing this module never touches bathos at all -- a bare
+`sys.modules["bathos"] = MagicMock()` was tried first but is both unnecessary (this
+file's own tests never call the wrapper functions) and actively harmful (it leaks into
+any other test module in the same pytest session that needs the real bathos package --
+see test_bathos_library_wrappers_integration.py, which exercises both wrapper
+functions against real bathos and would silently get MagicMock results instead if this
+file's mock were still process-global at collection time).
 
 Per AC-6: NO MCP call appears anywhere in this module's code path.
 """
 
 import ast
-import sys
-from unittest.mock import MagicMock
 
 import pytest
-
-# ruff: noqa: E402 - Set up mocks before importing wrapper module
-sys.modules["bathos"] = MagicMock()
-sys.modules["bathos.stats_gates"] = MagicMock()
-sys.modules["bathos.campaigns"] = MagicMock()
 
 from controller.bathos_library_wrappers import (
     call_stats_battery_gate,

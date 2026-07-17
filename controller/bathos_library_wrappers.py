@@ -47,15 +47,20 @@ def call_stats_battery_gate(
 
     This wrapper accepts the same baseline/candidate HPO parameters as
     xtrax.run.baseline_budget_emission.BaselineBudgetCounts.as_stats_battery_kwargs(),
-    plus any stats-array kwargs run_stats_battery expects (e.g., win_rates, cohens_d,
-    etc. — see bathos's own function signature for the complete list).
+    plus the rest of run_stats_battery's own kwargs via **stats_arrays. Note that
+    run_stats_battery's own `candidate_values`/`baseline_values` parameters are
+    required (not optional) despite this wrapper's signature showing only optional
+    HPO fields explicitly — they must be passed by keyword through **stats_arrays
+    (e.g. seed_replicates, higher_is_better, alpha are the other real kwargs; see
+    bathos.stats_gates.run_stats_battery's own signature for the complete list).
 
     Args:
         baseline_hpo_trials: Optional baseline HPO trial count.
         candidate_hpo_trials: Optional candidate HPO trial count.
         baseline_hpo_compute_budget: Optional baseline compute budget.
         candidate_hpo_compute_budget: Optional candidate compute budget.
-        **stats_arrays: All other kwargs to pass directly to bathos.stats_gates.run_stats_battery.
+        **stats_arrays: candidate_values/baseline_values (required by bathos) plus any
+            other kwargs to pass directly to bathos.stats_gates.run_stats_battery.
 
     Returns:
         A BathosStatsBatteryVerdict (mirrors bathos.stats_gates.StatsBatteryVerdict verbatim)
