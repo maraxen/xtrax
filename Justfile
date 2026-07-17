@@ -35,6 +35,14 @@ probe-mcp-reachability:
     uv run pytest tests/audit/test_mcp_reachability_probe.py -v
     uv run python scripts/probe_mcp_reachability.py
 
+# T3-03 (#3041, AC-X3/AC-X3b): needs a real `praxia plugin install` export to diff against;
+# praxia CLI not installed in CI, so this stays local-only until T3-01's install step is wired
+# into a CI job. Unit/fixture tests (tests/audit/test_drift_check.py) run everywhere.
+audit-drift-check:
+    uv run --extra dev ruff check scripts/audit_drift_check.py tests/audit/test_drift_check.py
+    uv run --extra dev pytest tests/audit/test_drift_check.py -v
+    uv run --extra dev python scripts/audit_drift_check.py --check
+
 audit-emit-contract:
     uv run pytest tests/audit/test_emit_contract.py -v
 
