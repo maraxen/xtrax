@@ -9,13 +9,17 @@ closing the gap flagged in independent audit of PR #70: the mocked test suite ne
 actually invoked either wrapper function against real bathos behavior.
 """
 
-import duckdb
 import pytest
 
 from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
 
+# importorskip (not a bare `import duckdb`/`import bathos.stats_gates`) so this whole module
+# skips cleanly in CI tiers that don't install the `controller` extra (e.g. tier1_core, which
+# only installs `--extra dev` -- a bare import here would fail at collection time and take
+# down that tier's entire coverage run, not just this file).
+duckdb = pytest.importorskip("duckdb")
 pytest.importorskip("bathos.stats_gates")
 
 
