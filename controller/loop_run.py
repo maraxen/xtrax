@@ -73,12 +73,15 @@ three types originate anywhere in the call chain `run_campaign_loop` -> `run_mul
 - `PraxiaDispatchBackend` (the real backend, LC-04) raises exactly the same three types for the
   same reasons (`controller/praxia_dispatch_backend.py`, grepped directly).
 - Every other module in the chain -- `lineage_interim.py`, `bathos_campaign_adapter.py`,
-  `stats_battery_gate.py`, `seed_gate.py`, `diversity_quota.py` -- raises its *own* distinct
-  exception type (`MultiParentLineageUnsupportedError`, `BathosMcpToolError`/
-  `BathosMcpTransportError`/`BathosTokenMissingError`, `StatsBatteryGateInputError`,
-  `SeedGateInputError`, `DiversityQuotaInputError`), none of which is a `ValueError`/
+  `stats_battery_gate.py`, `seed_gate.py`, `diversity_quota.py`, and (added by [GW-04]'s first
+  slice) `xtrax.loop.candidate_static` -- raises its *own* distinct exception type
+  (`MultiParentLineageUnsupportedError`, `BathosMcpToolError`/`BathosMcpTransportError`/
+  `BathosTokenMissingError`, `StatsBatteryGateInputError`, `SeedGateInputError`,
+  `DiversityQuotaInputError`, `CandidateStaticGateError`), none of which is a `ValueError`/
   `TimeoutError`/`CandidateHandoffFailure` subclass (all grepped and confirmed direct
-  `Exception` subclasses).
+  `Exception` subclasses) -- so `CandidateStaticGateError` falls to the same **uncaught
+  exception** / `outcome_label="aborted"` bucket as the others in this list, with zero special-
+  casing needed here.
 
 So catching exactly `(CandidateHandoffFailure, TimeoutError, ValueError)` unambiguously identifies
 "the dispatch step itself failed in one of its own documented ways" -- a **caught per-candidate

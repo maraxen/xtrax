@@ -90,7 +90,8 @@ unmodified -- this module still performs zero retry logic (LC-11/AC-8c's own sco
 
 `run_one_candidate_pass` performs zero retry logic and does not catch any exception raised by
 the pieces it sequences: `dispatch_backend.dispatch_candidate()` (`CandidateHandoffFailure`,
-`TimeoutError`, `ValueError`), `record_candidate_run`/`resolve_derived_from`
+`TimeoutError`, `ValueError`), `candidate_static_fn` (`CandidateStaticGateError`, see the GW-04
+addendum above), `record_candidate_run`/`resolve_derived_from`
 (`MultiParentLineageUnsupportedError`), or `campaign_adapter.run` via `record_candidate_run`
 (`BathosMcpToolError`, `BathosMcpTransportError`, `BathosTokenMissingError`). Every one of these
 propagates to the caller unmodified. AC-8c (LC-11) owns error/retry policy and the "conclude
