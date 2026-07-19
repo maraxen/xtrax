@@ -89,6 +89,16 @@ regardless of approval status, unaffected by this change -- `campaign_approval_g
 docstring is explicit that it is purely the "may this campaign START" half of AC-25; the separate,
 always-available kill authority is AC-13's responsibility, never coupled to this gate.
 
+**Operational requirement, not enforced by this code (audit finding, 2026-07-19):**
+`assert_campaign_approved` matches on `(id="T2-32", event_ref==campaign_name)` plus TTL freshness
+only -- it has no single-use consumption. One TOML entry therefore authorizes EVERY campaign start
+using that same `campaign_name` for the entire `ttl_days` window, not just one. To preserve the
+constitution's "every campaign start requires explicit approval" intent, `campaign_name` must be
+minted uniquely per real, approved campaign start (e.g. a fresh random/timestamp suffix decided
+*before* seeking approval, then approved and used exactly once) -- reusing an already-approved name
+for a second, different campaign start silently rides the first approval. This module does not
+mint or validate uniqueness itself; that responsibility sits with the caller.
+
 ## What "a caught per-candidate failure" means here, vs. "an uncaught exception" -- grounded, not
 ## invented
 
