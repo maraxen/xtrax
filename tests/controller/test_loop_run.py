@@ -54,6 +54,11 @@ from controller.dispatch import (
 )
 from controller.lineage_interim import CandidateParentage, MultiParentLineageUnsupportedError
 from controller.loop_run import CampaignLoopResult, LoopEvent, run_campaign_loop
+from xtrax.devtools.freshness import Attestation
+from xtrax.loop.campaign_approval_gate import (
+    ApprovalExpiredError,
+    NoMatchingApprovalError,
+)
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
@@ -202,6 +207,17 @@ def _passing_seed_counts(
     return SeedTrialCounts(script_sha256=script_sha256, distinct_seed_count=5, trial_count=40)
 
 
+def _passing_campaign_approval_fn(
+    campaign_id: str, *, toml_path: Path | None = None
+) -> Attestation:
+    """Stub standing in for T2-32's real `assert_campaign_approved` -- every existing LC-11 test
+    exercises campaign-lifecycle behavior with no real `.praxia/loop_human_gates.toml` entry for
+    its own test campaign name, so the REAL gate (which reads a TOML file) would reject every one
+    of them. Tests that exercise the approval gate itself pass their own `campaign_approval_fn` or
+    omit it to reach the real default."""
+    return Attestation(attested_at="2026-07-19T00:00:00Z", ttl_days=30.0, attested_by="test")
+
+
 _CRITERIA = WatchdogCriteria(wall_clock_budget_seconds=3600.0)
 
 
@@ -215,6 +231,7 @@ def _base_kwargs(dispatch_backend: Any, transport: _MultiToolTransport) -> dict[
         "stats_battery_kwargs": {},
         "stats_battery_fn": _passing_stats_verdict,
         "seed_trial_counts_fn": _passing_seed_counts,
+        "campaign_approval_fn": _passing_campaign_approval_fn,
     }
 
 
@@ -491,3 +508,153 @@ class TestMaxCandidatesValidation:
 
         assert transport.calls == [], "no campaign should be created for invalid input"
         assert starter.calls == [], "the watchdog must not be started for invalid input either"
+
+
+# ---------------------------------------------------------------------------
+# 6. Campaign-approval gate (T2-32, AC-25; [GW-03]): a genuine pre-`campaign_create` reject, not
+# merely an injection seam that's never exercised by its real default.
+# ---------------------------------------------------------------------------
+
+
+class TestCampaignApprovalGate:
+    def test_failing_approval_raises_before_campaign_create(self, tmp_path: Path) -> None:
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        def denying_approval_fn(campaign_id: str, *, toml_path: Path | None = None) -> Attestation:
+            msg = f"no T2-32 approval found for campaign {campaign_id}"
+            raise NoMatchingApprovalError(msg)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["campaign_approval_fn"] = denying_approval_fn
+
+        with pytest.raises(NoMatchingApprovalError):
+            run_campaign_loop(
+                **kwargs,
+                max_candidates=1,
+                start_watchdog_fn=starter,
+            )
+
+        assert transport.calls == [], (
+            "no bathos call (not even campaign_create) should ever happen when the "
+            "campaign-approval gate rejects -- the exception must fire before campaign_create"
+        )
+        assert starter.calls == [], "the watchdog must not be started when approval is denied"
+
+    def test_default_campaign_approval_fn_is_the_real_gate_and_rejects_with_no_toml_entry(
+        self, tmp_path: Path
+    ) -> None:
+        """Omitting `campaign_approval_fn` entirely must exercise T2-32's REAL
+        `assert_campaign_approved` -- not just prove the injection seam works."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        missing_gates_toml = tmp_path / "nonexistent_gates.toml"
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        del kwargs["campaign_approval_fn"]
+
+        with pytest.raises(NoMatchingApprovalError, match="gates file not found"):
+            run_campaign_loop(
+                **kwargs,
+                max_candidates=1,
+                start_watchdog_fn=starter,
+                campaign_approval_toml_path=missing_gates_toml,
+            )
+
+        assert transport.calls == [], "a denied campaign must burn zero real bathos calls"
+
+    def test_default_campaign_approval_fn_lets_an_approved_campaign_proceed(
+        self, tmp_path: Path
+    ) -> None:
+        """The real gate must not block a genuinely fresh, matching approval -- the rest of the
+        run still completes end-to-end."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        gates_toml = tmp_path / "gates.toml"
+        gates_toml.write_text(
+            """
+[[gates]]
+id = "T2-32"
+event_ref = "loop-run-test-campaign"
+attested_at = "2026-07-19T00:00:00Z"
+ttl_days = 30.0
+attested_by = "Marielle Russo"
+note = "Approved for this test run"
+"""
+        )
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        del kwargs["campaign_approval_fn"]
+
+        result = run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+            campaign_approval_toml_path=gates_toml,
+        )
+
+        assert len(transport.calls_for("campaign_create")) == 1
+        assert result.conclusion.outcome_label == "success"
+
+    def test_default_campaign_approval_fn_rejects_an_expired_approval(self, tmp_path: Path) -> None:
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        gates_toml = tmp_path / "gates.toml"
+        gates_toml.write_text(
+            """
+[[gates]]
+id = "T2-32"
+event_ref = "loop-run-test-campaign"
+attested_at = "2000-01-01T00:00:00Z"
+ttl_days = 1.0
+attested_by = "Marielle Russo"
+note = "Old approval (expired)"
+"""
+        )
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        del kwargs["campaign_approval_fn"]
+
+        with pytest.raises(ApprovalExpiredError):
+            run_campaign_loop(
+                **kwargs,
+                max_candidates=1,
+                start_watchdog_fn=starter,
+                campaign_approval_toml_path=gates_toml,
+            )
+
+        assert transport.calls == [], "an expired approval must burn zero real bathos calls"
+
+    def test_approval_checked_against_campaign_name_not_bathos_campaign_id(
+        self, tmp_path: Path
+    ) -> None:
+        """Proves the approval-gate lookup uses `campaign_name` (known before `campaign_create`),
+        not `handle.campaign_id` (which bathos only mints DURING `campaign_create`, unavailable
+        at the point this gate must fire)."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        # The recording transport's own campaign_id is deliberately unrelated to campaign_name --
+        # if the gate were (incorrectly) checked against the bathos campaign_id, this would fail.
+        transport = _MultiToolTransport(campaign_id="totally-unrelated-bathos-id")
+        starter = _FakeWatchdogStarter()
+        received_ids: list[str] = []
+
+        def recording_approval_fn(
+            campaign_id: str, *, toml_path: Path | None = None
+        ) -> Attestation:
+            received_ids.append(campaign_id)
+            return Attestation(attested_at="2026-07-19T00:00:00Z", ttl_days=30.0, attested_by="t")
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["campaign_approval_fn"] = recording_approval_fn
+
+        run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        assert received_ids == ["loop-run-test-campaign"]
