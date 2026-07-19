@@ -65,6 +65,27 @@ this is the gates' final, only call site; a future multi-iteration/conclude-time
 LC-11) may call `assess_stats_battery_verdict`/`assess_seed_trial_floor` again at true campaign-
 conclude time with accumulated data, independent of this per-candidate usage.
 
+## GW-04 addendum: candidate-static gate wired in as a genuine pre-dispatch reject (T2-11, AC-1)
+
+The "Scoping decision" above (LC-09/AC-8a) explicitly deferred `xtrax.loop` gates without an
+LC-07-style bathos-data wrapper, precisely because wiring one in here would mean inventing that
+wrapper as a side effect. `candidate_static` (T2-11, AC-1, F0) needs no such wrapper: `xtrax.loop.
+candidate_static.assert_candidate_static` takes only the already-available `handoff.path` and an
+optional `root` for its own jaxlint subprocess -- there is no bathos data-sourcing gap to invent.
+Filed and wired here as [GW-04]'s first slice (backlog id 3651): a candidate that fails static
+checks (an import error, or a JL-series jaxlint error) is rejected **before** `resolve_derived_
+from`/the real bathos `run` call -- AC-1's own "zero GPU time spent" contract, matching `scripts/
+smoke_2181_walking_skeleton.py`'s reference sequencing (`assert_candidate_static` called
+immediately after a candidate's path is known, before schema/structure/smoke/checkified/prereg).
+The remaining five gates in [GW-04]'s pipeline (schema_gate, structure_tripwire, candidate_smoke,
+checkified_execution, prereg_match) are explicitly out of this item's scope -- each needs its own
+integration surface (a StageBundle slot's declared schema, a live tiny-batch execution, the pinned
+uv lockfile, a SafetyManager instance, a bathos prereg sidecar) that this narrowly-scoped change
+does not invent.
+
+Like the dispatch/lineage/bathos-run steps above, a `CandidateStaticGateError` propagates
+unmodified -- this module still performs zero retry logic (LC-11/AC-8c's own scope).
+
 ## Error/retry policy is explicitly NOT this module's job
 
 `run_one_candidate_pass` performs zero retry logic and does not catch any exception raised by
@@ -79,6 +100,7 @@ wired correctly end-to-end, not to also own what happens when a step fails.
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from controller.bathos_campaign_adapter import BathosCampaignAdapter, CandidateRunResult
@@ -89,6 +111,7 @@ from controller.lineage_interim import (
     record_candidate_run,
     resolve_derived_from,
 )
+from xtrax.loop.candidate_static import assert_candidate_static
 from xtrax.loop.seed_gate import (
     SeedTrialCounts,
     SeedTrialFloorDecision,
@@ -180,6 +203,8 @@ def run_one_candidate_pass(
     hypothesis_clause_id: str = "",
     stats_battery_fn: Callable[..., BathosStatsBatteryVerdict] = call_stats_battery_gate,
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
+    candidate_static_fn: Callable[..., None] = assert_candidate_static,
+    candidate_static_root: Path | None = None,
 ) -> OneCandidatePassResult:
     """Run one candidate through the full dispatch -> bathos-run -> gate-check sequence.
 
@@ -222,6 +247,12 @@ def run_one_candidate_pass(
             `call_stats_battery_gate` (which lazily imports bathos, no MCP call).
         seed_trial_counts_fn: injection seam for tests -- defaults to LC-07's real
             `get_seed_trial_counts` (which lazily imports bathos, no MCP call).
+        candidate_static_fn: injection seam for tests -- defaults to T2-11's real
+            `assert_candidate_static` (clean import + zero jaxlint JL-series errors). Called
+            immediately after dispatch, before lineage resolution or the real bathos run -- see
+            the module docstring's GW-04 addendum.
+        candidate_static_root: forwarded to `candidate_static_fn` as its `root` kwarg (jaxlint's
+            subprocess root; default `None` lets jaxlint fall back to `Path.cwd()`).
 
     Returns:
         A `OneCandidatePassResult` bundling the handoff, resolved lineage, run result, and both
@@ -231,6 +262,9 @@ def run_one_candidate_pass(
         CandidateHandoffFailure: dispatch's own staging-write failure.
         TimeoutError: dispatch timed out.
         ValueError: dispatch's completion could not be parsed.
+        CandidateStaticGateError: the candidate fails clean-import or has a JL-series jaxlint
+            error -- raised right after dispatch, before lineage resolution or any bathos call
+            (T2-11, AC-1).
         MultiParentLineageUnsupportedError: `parentage` names more than one distinct, real
             parent run ID -- raised before any bathos call.
         BathosMcpToolError: `campaign_adapter.run` itself failed (bathos-side validation or the
@@ -244,6 +278,11 @@ def run_one_candidate_pass(
     """
     # 1. Dispatch -> hand off source (LC-03).
     handoff = dispatch_backend.dispatch_candidate()
+
+    # 1.5. Candidate-static gate (T2-11, AC-1, F0; [GW-04] first slice) -- reject a candidate
+    # that fails clean-import or jaxlint JL-series checks before lineage resolution or any real
+    # bathos run is attempted. See the module docstring's GW-04 addendum.
+    candidate_static_fn(handoff.path, root=candidate_static_root)
 
     # Resolved directly here (not only inside record_candidate_run) so a genuine multi-parent
     # parentage fails loud before the bathos-run step is even attempted, and so the resolved

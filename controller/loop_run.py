@@ -151,6 +151,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from controller.bathos_campaign_adapter import (
@@ -168,6 +169,7 @@ from controller.multi_iteration_loop import (
     _default_leap_path_handler,
     run_multi_iteration_loop,
 )
+from xtrax.loop.candidate_static import assert_candidate_static
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria, WatchdogHandle, start_watchdog
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
@@ -328,6 +330,8 @@ def run_campaign_loop(
     hypothesis_clause_id: str = "",
     stats_battery_fn: Callable[..., BathosStatsBatteryVerdict] = call_stats_battery_gate,
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
+    candidate_static_fn: Callable[..., None] = assert_candidate_static,
+    candidate_static_root: Path | None = None,
     wall_clock_budget_seconds: float | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     diversity_window_size: int = 5,
@@ -374,6 +378,10 @@ def run_campaign_loop(
             real `call_stats_battery_gate`).
         seed_trial_counts_fn: injection seam, forwarded to `run_multi_iteration_loop` (default:
             LC-07's real `get_seed_trial_counts`).
+        candidate_static_fn: injection seam, forwarded to `run_multi_iteration_loop` (default:
+            T2-11's real `assert_candidate_static`).
+        candidate_static_root: forwarded to `run_multi_iteration_loop` unchanged (jaxlint's
+            subprocess root; default `None` lets jaxlint fall back to `Path.cwd()`).
         wall_clock_budget_seconds: forwarded to `run_multi_iteration_loop` unchanged.
         time_fn: injection seam, forwarded to `run_multi_iteration_loop` (default:
             `time.monotonic`).
@@ -443,6 +451,8 @@ def run_campaign_loop(
             hypothesis_clause_id=hypothesis_clause_id,
             stats_battery_fn=stats_battery_fn,
             seed_trial_counts_fn=seed_trial_counts_fn,
+            candidate_static_fn=candidate_static_fn,
+            candidate_static_root=candidate_static_root,
             wall_clock_budget_seconds=wall_clock_budget_seconds,
             time_fn=time_fn,
             diversity_window_size=diversity_window_size,
