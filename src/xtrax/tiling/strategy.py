@@ -29,6 +29,22 @@ class GatherFn(Protocol):
     def __call__(self, ys: Any, gather_indices: Any) -> Any: ...
 
 
+@runtime_checkable
+class WhileBodyFn(Protocol):
+    """While-loop body: carry -> new_carry. No x (no input sequence), no y
+    (no per-step output collection) -- narrower than ScanTransition.
+    """
+
+    def __call__(self, carry: Any) -> Any: ...
+
+
+@runtime_checkable
+class WhileCondFn(Protocol):
+    """While-loop continuation predicate: carry -> bool (traced scalar)."""
+
+    def __call__(self, carry: Any) -> Any: ...
+
+
 def _default_dedup_fn(xs: Any, unique_indices: Any) -> Any:
     """Default deduplication function: select unique elements by index."""
     return jax.tree.map(lambda x: x[unique_indices], xs)
@@ -106,4 +122,35 @@ class Bucket:
     boundaries: tuple[int, ...]
 
 
-AxisStrategy = Vmap | SafeMap | Scan | DedupGather | Bucket
+@dataclass(frozen=True)
+class WhileCarry:
+    """Carry-only strategy: compiles to lax.while_loop. No per-step output
+    collection -- only the final carry matters. For inference-only /
+    fixed-point-style loops where recording a trajectory is either
+    unwanted or handled by a separate Scan-based dispatch path.
+
+    Not reverse-mode AD safe (lax.while_loop has no VJP rule) -- same
+    caveat class as Scan's heterogeneous-axis restriction, just a
+    different mechanism (Scan forbids the axis; WhileCarry forbids grad).
+    """
+
+    body: WhileBodyFn | None = None
+    cond: WhileCondFn | None = None
+    init: Any | None = None
+
+
+def fixed_step_count_cond(n_steps: int) -> WhileCondFn:
+    """cond=fixed_step_count_cond(200) for `run exactly 200 steps`.
+
+    Assumes the carry is a 2-tuple (step_i, state) or exposes a `.step_i`
+    field -- see WhileLoopIterator's carry-shape contract.
+    """
+
+    def _cond(carry: Any) -> Any:
+        step_i = carry[0] if isinstance(carry, tuple) else carry.step_i
+        return step_i < n_steps
+
+    return _cond
+
+
+AxisStrategy = Vmap | SafeMap | Scan | DedupGather | Bucket | WhileCarry

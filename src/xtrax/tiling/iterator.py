@@ -1,9 +1,10 @@
 """Iterator protocols and concrete implementations for axis iteration.
 
-Three iterator strategies control how a mapped axis is iterated:
+Four iterator strategies control how a mapped axis is iterated:
 - VmapIterator: jax.vmap — fully parallel, stateless.
 - SafeMapIterator: safe_map with tiling — memory-bounded, stateless.
 - JaxScanIterator: jax.lax.scan — carry-bearing, sequential.
+- WhileLoopIterator: jax.lax.while_loop — carry-bearing, no output collection.
 
 MapIterator and ScanIterator are runtime_checkable Protocols defining the
 two fundamental iteration patterns: stateless (MapIterator) and carry-bearing
@@ -172,6 +173,28 @@ class JaxScanIterator(eqx.Module):
         return jax.lax.scan(fn, init, xs, unroll=1)
 
 
+class WhileLoopIterator(eqx.Module):
+    """Iterate via jax.lax.while_loop -- carry-bearing, no output collection.
+
+    Unlike JaxScanIterator, returns only the final carry (no `ys`) --
+    genuinely nothing to stack, since there's no per-step output.
+    """
+
+    def __call__(self, cond: Any, body: Any, init: Any) -> Any:
+        """Apply fn using jax.lax.while_loop.
+
+        Args:
+            cond: Callable(carry) -> bool (traced scalar continuation predicate).
+            body: Callable(carry) -> new_carry.
+            init: Initial carry value.
+
+        Returns:
+            final_carry: The carry after the loop's condition first fails.
+
+        """
+        return jax.lax.while_loop(cond, body, init)
+
+
 class BucketIterator:
     """Iterator that buckets data by boundaries with different batch sizes each.
 
@@ -264,4 +287,5 @@ __all__ = [
     "ScanIterator",
     "VmapIterator",
     "BucketIterator",
+    "WhileLoopIterator",
 ]

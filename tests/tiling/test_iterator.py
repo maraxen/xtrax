@@ -4,7 +4,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from xtrax.tiling.iterator import BucketIterator, SafeMapIterator, VmapIterator
+from xtrax.tiling.iterator import (
+    BucketIterator,
+    SafeMapIterator,
+    VmapIterator,
+    WhileLoopIterator,
+)
 
 
 class TestVmapIterator:
@@ -293,3 +298,83 @@ class TestBucketIterator:
 
         results = list(bucket_iter)
         assert len(results) == 0
+
+
+class TestWhileLoopIterator:
+    """Test WhileLoopIterator: carry-bearing, no output collection."""
+
+    def test_while_loop_iterator_counts_to_n(self):
+        """WhileLoopIterator runs body until cond is False, returning only final carry."""
+
+        def cond(carry):
+            return carry < 5
+
+        def body(carry):
+            return carry + 1
+
+        iterator = WhileLoopIterator()
+        result = iterator(cond, body, jnp.array(0))
+
+        assert result == 5
+
+    def test_while_loop_iterator_matches_jax_lax_while_loop(self):
+        """WhileLoopIterator(cond, body, init) is equivalent to jax.lax.while_loop directly."""
+
+        def cond(carry):
+            return carry < 10
+
+        def body(carry):
+            return carry * 2 + 1
+
+        iterator = WhileLoopIterator()
+        result = iterator(cond, body, jnp.array(0))
+        expected = jax.lax.while_loop(cond, body, jnp.array(0))
+
+        assert result == expected
+
+    def test_while_loop_iterator_returns_only_final_carry_no_ys(self):
+        """Unlike JaxScanIterator, the return value is a single carry, not (carry, ys)."""
+
+        def cond(carry):
+            return carry < 3
+
+        def body(carry):
+            return carry + 1
+
+        iterator = WhileLoopIterator()
+        result = iterator(cond, body, jnp.array(0))
+
+        # A bare scalar array, not a 2-tuple (final_carry, ys).
+        assert not isinstance(result, tuple)
+        assert result.shape == ()
+
+    def test_while_loop_iterator_pytree_carry(self):
+        """WhileLoopIterator handles a pytree carry, mirroring prolix's (step_i, state) shape."""
+
+        def cond(carry):
+            step_i, _ = carry
+            return step_i < 4
+
+        def body(carry):
+            step_i, total = carry
+            return (step_i + 1, total + step_i)
+
+        iterator = WhileLoopIterator()
+        final_step_i, final_total = iterator(cond, body, (jnp.array(0), jnp.array(0)))
+
+        assert final_step_i == 4
+        assert final_total == 0 + 1 + 2 + 3
+
+    def test_while_loop_iterator_zero_iterations(self):
+        """WhileLoopIterator with a cond that is immediately False returns init unchanged."""
+
+        def cond(carry):
+            return carry < 0
+
+        def body(carry):
+            return carry + 100  # would change the result if ever actually executed
+
+        iterator = WhileLoopIterator()
+        result = iterator(cond, body, jnp.array(0))
+
+        assert result == 0
