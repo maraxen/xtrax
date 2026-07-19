@@ -112,6 +112,7 @@ def _run_pass(
     *,
     campaign_mode: str = "confirmation",
     sidecar_drift_agent_mode: str = "collaborative",
+    stdout_verified: bool | None = None,
 ):
     dispatch_backend = MockDispatchBackend(
         candidate_path=tmp_path / "candidate.py", candidate_content=_CANDIDATE_CONTENT
@@ -127,6 +128,7 @@ def _run_pass(
         candidate_static_fn=lambda path, root=None: None,
         catalog_dir=str(catalog_dir),
         sidecar_drift_agent_mode=sidecar_drift_agent_mode,
+        stdout_verified=stdout_verified,
         stats_battery_kwargs={},
         stats_battery_fn=_passing_stats_verdict,
         seed_trial_counts_fn=_passing_seed_counts,
@@ -190,6 +192,28 @@ class TestRealEvidenceGateEndToEnd:
         _write_run(catalog_dir)
 
         result = _run_pass(tmp_path, catalog_dir, campaign_mode="confirmation")
+
+        assert result.gate_outcome.evidence_integrity.hard_blocked is True
+        assert result.accepted is False
+
+    def test_verified_stdout_mismatch_hard_blocks_confirmation_even_with_valid_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        """A caller-verified `stdout_verified=False` (a genuine tampering signal, distinct from
+        `None`'s "never checked") must hard-block on its own, even when the manifest itself is
+        genuinely valid -- audit finding (2026-07-19): this was silently ignored in an earlier
+        draft, which keyed hard_blocked off `manifest_verified` alone."""
+        catalog_dir = tmp_path / "catalog"
+        bathos_catalog.init_catalog(catalog_dir)
+
+        manifest_file = tmp_path / "manifest.json"
+        manifest_file.write_text('{"real": "manifest"}')
+        manifest_sha256 = hashlib.sha256(manifest_file.read_bytes()).hexdigest()
+        _write_run(catalog_dir, manifest_sha256=manifest_sha256, manifest_path=str(manifest_file))
+
+        result = _run_pass(
+            tmp_path, catalog_dir, campaign_mode="confirmation", stdout_verified=False
+        )
 
         assert result.gate_outcome.evidence_integrity.hard_blocked is True
         assert result.accepted is False

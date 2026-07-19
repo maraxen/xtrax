@@ -126,18 +126,23 @@ LC-07's wrappers already use for stats-battery/seed-floor:
 `admit_evidence` itself has no `campaign_mode` concept (by design -- it is a pure set-filtering
 concern, see its own docstring). This controller therefore composes the mode-awareness itself, in
 `EvidenceIntegrityOutcome`, mirroring `stats_battery_gate`/`seed_gate`'s own established convention:
-a run whose manifest fails verification is `advisory`-only for an `exploration` campaign,
-`hard_blocked` for `confirmation`/`sequential`. Deliberately keyed off `EvidenceCandidate.
-manifest_verified` directly, NOT off `admit_evidence`'s own `excluded` collection: with today's
-real bathos, nothing anywhere independently captures and re-hashes a run's stdout, so
-`stdout_verified` is always `None` for every real call -- and `admit_evidence` itself always
-treats that as an exclusion reason (`stdout_hash_not_recorded`), even when the manifest is
-genuinely valid. Keying `hard_blocked` off `excluded` (as this addendum's first draft did, caught
-during implementation -- see the `EvidenceIntegrityOutcome` docstring) would have permanently
-hard-blocked every non-exploration candidate forever, for a systemic capability gap that no caller
-can currently close, not a real per-candidate integrity failure. `manifest_verified` is the one
-sub-check bathos can genuinely answer today; the full `EvidenceAdmissionResult` is still surfaced
-on the outcome for observability, just not used to drive this decision.
+a genuinely untrustworthy run is `advisory`-only for an `exploration` campaign, `hard_blocked` for
+`confirmation`/`sequential`. Deliberately keyed off `EvidenceCandidate.manifest_verified` and
+`EvidenceCandidate.stdout_verified` directly, NOT off `admit_evidence`'s own `excluded` collection:
+with today's real bathos, nothing anywhere independently captures and re-hashes a run's stdout, so
+`stdout_verified` is always `None` ("never checked") for every real call -- and `admit_evidence`
+itself always treats `None` as an exclusion reason (`stdout_hash_not_recorded`), even when the
+manifest is genuinely valid. Keying `hard_blocked` off `excluded` (as this addendum's first draft
+did, caught during implementation -- see the `EvidenceIntegrityOutcome` docstring) would have
+permanently hard-blocked every non-exploration candidate forever, for a systemic capability gap
+that no caller can currently close, not a real per-candidate integrity failure. `manifest_verified`
+is one sub-check bathos can genuinely answer today; `stdout_verified is False` (a caller-verified
+mismatch, distinct from `None`'s "never checked") is the other -- both drive `hard_blocked`/
+`advisory` directly (a second gap, `stdout_verified is False` silently ignored, caught by
+independent audit and fixed in the same PR -- the parameter was already live and reachable through
+the whole call chain even though no real bathos caller can produce `False` yet). The full
+`EvidenceAdmissionResult` is still surfaced on the outcome for observability, just not used to
+drive this decision.
 
 Both new gates run immediately after the bathos run (`record_candidate_run`) and *before* the
 stats-battery/seed-floor checks -- checking whether this run's own evidence is trustworthy at all
@@ -224,17 +229,24 @@ class EvidenceIntegrityOutcome:
             decision. Only ever populated for a non-denying outcome -- a denying outcome
             (`sidecar_drift_agent_mode="autonomous"` and drift detected) raises
             `SidecarHashMismatchError` instead, before this outcome is ever constructed.
-        hard_blocked: True iff `manifest_verified` was False on the input `EvidenceCandidate`
-            AND `campaign_mode` is not `"exploration"` -- mirrors `stats_battery_gate`/
-            `seed_gate`'s own advisory-for-exploration, hard-blocking-otherwise convention.
-            Deliberately NOT keyed off `evidence.excluded` (see the module docstring's GW-01
-            addendum): with today's real bathos, `stdout_verified` is always `None` for every
-            real run (nothing anywhere independently captures+hashes stdout), which
-            `admit_evidence` itself always treats as an exclusion reason even when the
-            manifest is genuinely valid -- that would permanently hard-block every
-            non-exploration candidate forever, for a systemic capability gap, not a real
-            integrity failure.
-        advisory: True iff `manifest_verified` was False but `campaign_mode` IS
+        hard_blocked: True iff the input `EvidenceCandidate` is genuinely untrustworthy --
+            `manifest_verified` was False, OR `stdout_verified` was explicitly `False` (a
+            caller-verified stdout-hash MISMATCH, a real tampering signal) -- AND
+            `campaign_mode` is not `"exploration"`. Mirrors `stats_battery_gate`/`seed_gate`'s
+            own advisory-for-exploration, hard-blocking-otherwise convention. Deliberately NOT
+            keyed off `evidence.excluded` directly (see the module docstring's GW-01
+            addendum): with today's real bathos, `stdout_verified` is always `None` ("never
+            checked", not a failure) for every real run, which `admit_evidence` itself always
+            treats as an exclusion reason even when the manifest is genuinely valid -- keying
+            off `excluded` as-is would permanently hard-block every non-exploration candidate
+            forever, for a systemic capability gap, not a real integrity failure.
+            `stdout_verified is None` is NOT treated as a failure for this same reason, but
+            `stdout_verified is False` IS -- a genuine, caller-verified mismatch is a real
+            integrity failure distinct from "never checked," and must not be silently dropped
+            just because the `None` case is common today (audit finding, 2026-07-19: the
+            parameter is already live and reachable through the whole call chain, so this
+            matters even though no real bathos caller can produce `False` yet).
+        advisory: True iff the same untrustworthy condition holds but `campaign_mode` IS
             `"exploration"` (surfaced, not blocking).
     """
 
@@ -472,7 +484,18 @@ def run_one_candidate_pass(
     # genuinely valid -- keying hard_blocked off `excluded` would permanently hard-block every
     # non-exploration candidate forever, for a systemic capability gap, not a real integrity
     # failure. `manifest_verified` is the one sub-check bathos can genuinely answer today.
+    #
+    # `stdout_verified is None` ("never checked" -- the only value any real caller can supply
+    # today) is deliberately NOT treated as a failure here, for the same reason. But
+    # `stdout_verified is False` -- a caller-verified stdout-hash MISMATCH, a genuine tampering
+    # signal distinct from "never checked" -- is a real integrity failure and must not be
+    # silently dropped just because this diff otherwise ignores `stdout_verified` (audit finding,
+    # 2026-07-19: the `stdout_verified` parameter is already live and reachable through the
+    # entire LC-09/10/11 call chain, so this is a present gap in the public surface, not a
+    # hypothetical one, even though no real bathos caller can produce `False` today).
     manifest_unverified = not evidence_candidate.manifest_verified
+    stdout_mismatch = evidence_candidate.stdout_verified is False
+    evidence_untrustworthy = manifest_unverified or stdout_mismatch
 
     sidecar_signal = sidecar_drift_signal_fn(
         handoff.path, run_result.run_id, catalog_dir=catalog_dir
@@ -484,8 +507,8 @@ def run_one_candidate_pass(
     evidence_integrity = EvidenceIntegrityOutcome(
         evidence=evidence_result,
         sidecar_drift=sidecar_decision,
-        hard_blocked=manifest_unverified and campaign_mode != "exploration",
-        advisory=manifest_unverified and campaign_mode == "exploration",
+        hard_blocked=evidence_untrustworthy and campaign_mode != "exploration",
+        advisory=evidence_untrustworthy and campaign_mode == "exploration",
     )
 
     # 4. Gate checks (LC-07 wrappers feeding #2181's already-merged xtrax.loop gates).
