@@ -43,9 +43,16 @@ from controller.dispatch import (
     MockFailureMode,
 )
 from controller.lineage_interim import CandidateParentage, MultiParentLineageUnsupportedError
-from controller.main_loop import GateOutcome, OneCandidatePassResult, run_one_candidate_pass
+from controller.main_loop import (
+    EvidenceIntegrityOutcome,
+    GateOutcome,
+    OneCandidatePassResult,
+    run_one_candidate_pass,
+)
+from xtrax.loop.attestation_evidence_gate import EvidenceAdmissionResult, EvidenceCandidate
 from xtrax.loop.candidate_static import CandidateStaticGateError
 from xtrax.loop.seed_gate import SeedTrialCounts, SeedTrialFloorDecision
+from xtrax.loop.sidecar_drift_gate import SidecarDriftDecision, SidecarDriftSignal
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict, ConcludeStatsDecision
 
 _CANDIDATE_CONTENT = "candidate-source"
@@ -59,6 +66,24 @@ def _passing_candidate_static_fn(path: Path, root: Path | None = None) -> None:
     file) would reject every one of them. Tests that exercise the static gate itself pass their
     own `candidate_static_fn` instead of this stub."""
     return None
+
+
+def _passing_evidence_candidate_fn(
+    run_id: str, *, catalog_dir: str = "", stdout_verified: bool | None = None
+) -> EvidenceCandidate:
+    """Stub standing in for [GW-01]'s real `get_evidence_candidate_for_run` -- every existing
+    LC-09 test uses a `run_id` that names no real bathos catalog run, so the REAL wrapper (which
+    queries bathos) would exclude every one of them. Tests that exercise the evidence gate itself
+    pass their own `evidence_candidate_fn` instead of this stub."""
+    return EvidenceCandidate(run_id=run_id, manifest_verified=True, stdout_verified=None)
+
+
+def _passing_sidecar_drift_signal_fn(
+    script_path: Path, run_id: str, *, catalog_dir: str = ""
+) -> SidecarDriftSignal:
+    """Stub standing in for [GW-01]'s real `get_sidecar_drift_signal` -- same rationale as
+    `_passing_evidence_candidate_fn` above."""
+    return SidecarDriftSignal(drifted=False, script_id=str(script_path))
 
 
 def _ok_envelope(**extra: Any) -> dict[str, Any]:
@@ -169,12 +194,26 @@ class TestFullSequenceOrdering:
         def candidate_static_fn(path: Path, root: Path | None = None) -> None:
             order.append("candidate_static")
 
+        def evidence_candidate_fn(
+            run_id: str, *, catalog_dir: str = "", stdout_verified: bool | None = None
+        ) -> EvidenceCandidate:
+            order.append("evidence_candidate")
+            return EvidenceCandidate(run_id=run_id, manifest_verified=True, stdout_verified=None)
+
+        def sidecar_drift_signal_fn(
+            script_path: Path, run_id: str, *, catalog_dir: str = ""
+        ) -> SidecarDriftSignal:
+            order.append("sidecar_drift")
+            return SidecarDriftSignal(drifted=False, script_id=str(script_path))
+
         result = run_one_candidate_pass(
             _OrderTrackingDispatch(),
             adapter,
             campaign_id="camp-1",
             campaign_mode="exploration",
             candidate_static_fn=candidate_static_fn,
+            evidence_candidate_fn=evidence_candidate_fn,
+            sidecar_drift_signal_fn=sidecar_drift_signal_fn,
             stats_battery_kwargs={},
             stats_battery_fn=stats_fn,
             seed_trial_counts_fn=seed_fn,
@@ -184,6 +223,8 @@ class TestFullSequenceOrdering:
             "dispatch",
             "candidate_static",
             "bathos:run",
+            "evidence_candidate",
+            "sidecar_drift",
             "stats_battery",
             "seed_trial",
         ]
@@ -206,6 +247,8 @@ class TestFullSequenceOrdering:
             campaign_id="camp-1",
             campaign_mode="exploration",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -240,6 +283,8 @@ class TestDerivedFromThreadedEndToEnd:
             campaign_id="camp-1",
             campaign_mode="exploration",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             parentage=parentage,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
@@ -265,6 +310,8 @@ class TestDerivedFromThreadedEndToEnd:
             campaign_id="camp-1",
             campaign_mode="exploration",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -293,6 +340,8 @@ class TestSeedTrialCountsReceivesHandoffSha256:
             campaign_id="camp-1",
             campaign_mode="exploration",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             hypothesis_clause_id="clause-1",
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
@@ -318,6 +367,8 @@ class TestGateCheckIsLoadBearing:
             campaign_id="camp-1",
             campaign_mode="confirmation",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -337,6 +388,8 @@ class TestGateCheckIsLoadBearing:
             campaign_id="camp-1",
             campaign_mode="confirmation",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _downgraded_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -360,6 +413,8 @@ class TestGateCheckIsLoadBearing:
             campaign_id="camp-1",
             campaign_mode="sequential",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -382,6 +437,8 @@ class TestGateCheckIsLoadBearing:
             campaign_id="camp-1",
             campaign_mode="exploration",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _downgraded_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -413,6 +470,8 @@ class TestMultiParentFailsLoudBeforeBathosCall:
                 campaign_id="camp-1",
                 campaign_mode="exploration",
                 candidate_static_fn=_passing_candidate_static_fn,
+                evidence_candidate_fn=_passing_evidence_candidate_fn,
+                sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
                 parentage=parentage,
                 stats_battery_kwargs={},
             )
@@ -435,6 +494,8 @@ class TestMultiParentFailsLoudBeforeBathosCall:
             campaign_id="camp-1",
             campaign_mode="exploration",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             parentage=parentage,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
@@ -470,6 +531,8 @@ class TestDispatchFailurePropagatesWithNoRetry:
                 campaign_id="camp-1",
                 campaign_mode="exploration",
                 candidate_static_fn=_passing_candidate_static_fn,
+                evidence_candidate_fn=_passing_evidence_candidate_fn,
+                sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
                 stats_battery_kwargs={},
                 stats_battery_fn=stats_fn,
             )
@@ -489,6 +552,8 @@ class TestDispatchFailurePropagatesWithNoRetry:
                 campaign_id="camp-1",
                 campaign_mode="exploration",
                 candidate_static_fn=_passing_candidate_static_fn,
+                evidence_candidate_fn=_passing_evidence_candidate_fn,
+                sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
                 stats_battery_kwargs={},
             )
 
@@ -507,6 +572,8 @@ class TestDispatchFailurePropagatesWithNoRetry:
                 campaign_id="camp-1",
                 campaign_mode="exploration",
                 candidate_static_fn=_passing_candidate_static_fn,
+                evidence_candidate_fn=_passing_evidence_candidate_fn,
+                sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
                 stats_battery_kwargs={},
             )
 
@@ -546,6 +613,8 @@ class TestBathosRunFailurePropagatesWithNoRetry:
                 campaign_id="camp-1",
                 campaign_mode="exploration",
                 candidate_static_fn=_passing_candidate_static_fn,
+                evidence_candidate_fn=_passing_evidence_candidate_fn,
+                sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
                 stats_battery_kwargs={},
                 stats_battery_fn=stats_fn,
                 seed_trial_counts_fn=seed_fn,
@@ -577,6 +646,8 @@ class TestGateParameterForwarding:
             campaign_id="camp-1",
             campaign_mode="exploration",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             stats_battery_kwargs={
                 "candidate_values": [1, 2, 3],
                 "baseline_values": [0.5, 1.5, 2.5],
@@ -610,6 +681,8 @@ class TestGateParameterForwarding:
             campaign_id="camp-1",
             campaign_mode="exploration",
             candidate_static_fn=_passing_candidate_static_fn,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_db=sentinel_db,
@@ -642,11 +715,23 @@ def _seed_decision(*, hard_blocked: bool) -> SeedTrialFloorDecision:
     )
 
 
+def _evidence_integrity_outcome(
+    *, hard_blocked: bool = False, advisory: bool = False
+) -> EvidenceIntegrityOutcome:
+    return EvidenceIntegrityOutcome(
+        evidence=EvidenceAdmissionResult(admitted=(), excluded=()),
+        sidecar_drift=SidecarDriftDecision(drifted=False, should_warn=False, reason=""),
+        hard_blocked=hard_blocked,
+        advisory=advisory,
+    )
+
+
 class TestGateOutcomeHardBlocked:
     def test_neither_hard_blocked(self) -> None:
         outcome = GateOutcome(
             stats_battery=_stats_decision(hard_blocked=False),
             seed_trial=_seed_decision(hard_blocked=False),
+            evidence_integrity=_evidence_integrity_outcome(),
         )
         assert outcome.hard_blocked is False
 
@@ -654,6 +739,7 @@ class TestGateOutcomeHardBlocked:
         outcome = GateOutcome(
             stats_battery=_stats_decision(hard_blocked=True),
             seed_trial=_seed_decision(hard_blocked=False),
+            evidence_integrity=_evidence_integrity_outcome(),
         )
         assert outcome.hard_blocked is True
 
@@ -661,6 +747,7 @@ class TestGateOutcomeHardBlocked:
         outcome = GateOutcome(
             stats_battery=_stats_decision(hard_blocked=False),
             seed_trial=_seed_decision(hard_blocked=True),
+            evidence_integrity=_evidence_integrity_outcome(),
         )
         assert outcome.hard_blocked is True
 
@@ -668,6 +755,15 @@ class TestGateOutcomeHardBlocked:
         outcome = GateOutcome(
             stats_battery=_stats_decision(hard_blocked=True),
             seed_trial=_seed_decision(hard_blocked=True),
+            evidence_integrity=_evidence_integrity_outcome(),
+        )
+        assert outcome.hard_blocked is True
+
+    def test_evidence_integrity_hard_blocked_alone(self) -> None:
+        outcome = GateOutcome(
+            stats_battery=_stats_decision(hard_blocked=False),
+            seed_trial=_seed_decision(hard_blocked=False),
+            evidence_integrity=_evidence_integrity_outcome(hard_blocked=True),
         )
         assert outcome.hard_blocked is True
 
@@ -681,6 +777,7 @@ class TestOneCandidatePassResultAccepted:
             gate_outcome=GateOutcome(
                 stats_battery=_stats_decision(hard_blocked=hard_blocked),
                 seed_trial=_seed_decision(hard_blocked=False),
+                evidence_integrity=_evidence_integrity_outcome(),
             ),
         )
 
@@ -782,6 +879,8 @@ class TestCandidateStaticGate:
             campaign_id="camp-1",
             campaign_mode="exploration",
             candidate_static_root=tmp_path,
+            evidence_candidate_fn=_passing_evidence_candidate_fn,
+            sidecar_drift_signal_fn=_passing_sidecar_drift_signal_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (

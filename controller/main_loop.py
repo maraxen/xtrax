@@ -86,6 +86,64 @@ does not invent.
 Like the dispatch/lineage/bathos-run steps above, a `CandidateStaticGateError` propagates
 unmodified -- this module still performs zero retry logic (LC-11/AC-8c's own scope).
 
+## GW-01 addendum: post-run integrity/provenance gates (attestation_evidence_gate, sidecar_drift)
+
+Backlog id 3648 ([GW-01]) named 5 gates to wire in post-run: closure_lock, metrics_provenance,
+info_barrier_lint, attestation_evidence_gate, sidecar_drift_gate. Verified during implementation
+(2026-07-19) that the first 3 assume the loop controller invokes an evaluator IN-PROCESS
+(`xtrax.loop.closure_lock.guarded_evaluate(locked, evaluator: EvaluateFn, ...)` calls `evaluator`
+directly) -- an execution model this controller does not have: candidates are dispatched to bathos
+as OUT-OF-PROCESS script runs (`record_candidate_run`/`campaign_adapter.run` above), never through
+`xtrax.stages.evaluate.EvaluateFn`/`seal_evaluator` anywhere in `controller/`. Wiring those 3 as
+literally shown in `scripts/smoke_2181_walking_skeleton.py` (a synthetic, no-bathos, in-process-only
+demo per its own docstring) would not actually provenance this controller's real bathos-run data --
+a gate that doesn't check the real thing is worse than no gate (false confidence). Split out as a
+new backlog item (id 3657) pending an architecture decision; NOT wired here.
+
+The remaining 2 gates genuinely fit this controller's existing bathos-dispatch architecture --
+both are pure decision functions over caller-supplied, already-computed bathos data, the same shape
+LC-07's wrappers already use for stats-battery/seed-floor:
+
+- `attestation_evidence_gate.admit_evidence` (T2-26, AC-19): filters a collection of candidate
+  runs (here, always a 1-element collection: this candidate's own just-completed run) down to
+  those whose manifest verifies. Fed by the new `get_evidence_candidate_for_run` wrapper
+  (`controller.bathos_library_wrappers`), which calls `bathos.query.get_run` +
+  `bathos.prereg.verify_run_manifest` directly (no MCP), mirroring LC-07's exact convention.
+- `sidecar_drift_gate.assert_sidecar_drift_reaction` (T2-25, AC-18): reacts to a sidecar-hash
+  drift signal for this candidate's script, fed by the new `get_sidecar_drift_signal` wrapper
+  (same module, same direct-library-import convention). Denies (raises `SidecarHashMismatchError`,
+  propagating unmodified like every other raise in this function) only under
+  `sidecar_drift_agent_mode="autonomous"`; otherwise returns a decision, `should_warn` surfaced but
+  non-blocking. `sidecar_drift_agent_mode` is a **distinct parameter** from the existing
+  `agent_mode: str` (forwarded to bathos's `run` call) -- the gate module's own docstring is
+  explicit that `AgentMode` (collaborative/autonomous) and `CampaignMode` are orthogonal axes, and
+  by the same reasoning this is orthogonal to whatever free-form `agent_mode` string bathos's `run`
+  tool receives; conflating the two into one parameter would silently couple unrelated concerns.
+  Defaults to `"collaborative"` (warn-only) -- the safer rollout choice for a gate with no
+  existing production caller yet setting any particular mode; a caller wanting the harder
+  `"autonomous"` denial opts in explicitly.
+
+`admit_evidence` itself has no `campaign_mode` concept (by design -- it is a pure set-filtering
+concern, see its own docstring). This controller therefore composes the mode-awareness itself, in
+`EvidenceIntegrityOutcome`, mirroring `stats_battery_gate`/`seed_gate`'s own established convention:
+a run whose manifest fails verification is `advisory`-only for an `exploration` campaign,
+`hard_blocked` for `confirmation`/`sequential`. Deliberately keyed off `EvidenceCandidate.
+manifest_verified` directly, NOT off `admit_evidence`'s own `excluded` collection: with today's
+real bathos, nothing anywhere independently captures and re-hashes a run's stdout, so
+`stdout_verified` is always `None` for every real call -- and `admit_evidence` itself always
+treats that as an exclusion reason (`stdout_hash_not_recorded`), even when the manifest is
+genuinely valid. Keying `hard_blocked` off `excluded` (as this addendum's first draft did, caught
+during implementation -- see the `EvidenceIntegrityOutcome` docstring) would have permanently
+hard-blocked every non-exploration candidate forever, for a systemic capability gap that no caller
+can currently close, not a real per-candidate integrity failure. `manifest_verified` is the one
+sub-check bathos can genuinely answer today; the full `EvidenceAdmissionResult` is still surfaced
+on the outcome for observability, just not used to drive this decision.
+
+Both new gates run immediately after the bathos run (`record_candidate_run`) and *before* the
+stats-battery/seed-floor checks -- checking whether this run's own evidence is trustworthy at all
+is a logical precondition to checking whether its statistics look good, matching [GW-01]'s own
+"post-run integrity/provenance gates" framing as a prerequisite tier.
+
 ## Error/retry policy is explicitly NOT this module's job
 
 `run_one_candidate_pass` performs zero retry logic and does not catch any exception raised by
@@ -105,18 +163,36 @@ from pathlib import Path
 from typing import Any, Literal
 
 from controller.bathos_campaign_adapter import BathosCampaignAdapter, CandidateRunResult
-from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
+from controller.bathos_library_wrappers import (
+    call_stats_battery_gate,
+    get_evidence_candidate_for_run,
+    get_seed_trial_counts,
+    get_sidecar_drift_signal,
+)
 from controller.dispatch import CandidateHandoff, DispatchBackend
 from controller.lineage_interim import (
     CandidateParentage,
     record_candidate_run,
     resolve_derived_from,
 )
+from xtrax.loop.attestation_evidence_gate import (
+    EvidenceAdmissionResult,
+    EvidenceCandidate,
+    admit_evidence,
+)
 from xtrax.loop.candidate_static import assert_candidate_static
 from xtrax.loop.seed_gate import (
     SeedTrialCounts,
     SeedTrialFloorDecision,
     assess_seed_trial_floor,
+)
+from xtrax.loop.sidecar_drift_gate import (
+    AgentMode as SidecarAgentMode,
+)
+from xtrax.loop.sidecar_drift_gate import (
+    SidecarDriftDecision,
+    SidecarDriftSignal,
+    assert_sidecar_drift_reaction,
 )
 from xtrax.loop.stats_battery_gate import (
     BathosStatsBatteryVerdict,
@@ -132,27 +208,72 @@ CampaignMode = Literal["exploration", "confirmation", "sequential"]
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceIntegrityOutcome:
+    """This candidate's post-run integrity/provenance decision ([GW-01], T2-26/T2-25).
+
+    See the module docstring's GW-01 addendum for why `hard_blocked`/`advisory` are computed
+    here (a controller-level composition) rather than by `admit_evidence` itself (which has no
+    `campaign_mode` concept -- pure set-filtering, by design).
+
+    Attributes:
+        evidence: the real `xtrax.loop.attestation_evidence_gate.admit_evidence` result for
+            this candidate's single run (always a 1-element input collection) -- surfaced for
+            observability (e.g. a later cross-run evidence audit); does NOT itself drive
+            `hard_blocked`/`advisory` below, see their own docstrings for why.
+        sidecar_drift: the real `xtrax.loop.sidecar_drift_gate.assert_sidecar_drift_reaction`
+            decision. Only ever populated for a non-denying outcome -- a denying outcome
+            (`sidecar_drift_agent_mode="autonomous"` and drift detected) raises
+            `SidecarHashMismatchError` instead, before this outcome is ever constructed.
+        hard_blocked: True iff `manifest_verified` was False on the input `EvidenceCandidate`
+            AND `campaign_mode` is not `"exploration"` -- mirrors `stats_battery_gate`/
+            `seed_gate`'s own advisory-for-exploration, hard-blocking-otherwise convention.
+            Deliberately NOT keyed off `evidence.excluded` (see the module docstring's GW-01
+            addendum): with today's real bathos, `stdout_verified` is always `None` for every
+            real run (nothing anywhere independently captures+hashes stdout), which
+            `admit_evidence` itself always treats as an exclusion reason even when the
+            manifest is genuinely valid -- that would permanently hard-block every
+            non-exploration candidate forever, for a systemic capability gap, not a real
+            integrity failure.
+        advisory: True iff `manifest_verified` was False but `campaign_mode` IS
+            `"exploration"` (surfaced, not blocking).
+    """
+
+    evidence: EvidenceAdmissionResult
+    sidecar_drift: SidecarDriftDecision
+    hard_blocked: bool
+    advisory: bool
+
+
+@dataclass(frozen=True, slots=True)
 class GateOutcome:
-    """Both gate decisions computed for one candidate pass.
+    """All gate decisions computed for one candidate pass.
 
     Attributes:
         stats_battery: `xtrax.loop.stats_battery_gate.assess_stats_battery_verdict`'s decision.
         seed_trial: `xtrax.loop.seed_gate.assess_seed_trial_floor`'s decision.
+        evidence_integrity: the post-run integrity/provenance decision ([GW-01]) -- see
+            `EvidenceIntegrityOutcome`.
     """
 
     stats_battery: ConcludeStatsDecision
     seed_trial: SeedTrialFloorDecision
+    evidence_integrity: EvidenceIntegrityOutcome
 
     @property
     def hard_blocked(self) -> bool:
-        """True iff either gate hard-blocked this candidate.
+        """True iff any gate hard-blocked this candidate.
 
         This is the load-bearing signal a failing gate check must actually produce: a
-        `confirmation`/`sequential` campaign whose stats-battery verdict downgraded, or whose
-        seed/trial floor isn't cleared, hard-blocks here -- it is not silently plumbed through
-        and ignored by `OneCandidatePassResult.accepted` below.
+        `confirmation`/`sequential` campaign whose stats-battery verdict downgraded, whose
+        seed/trial floor isn't cleared, or whose run's manifest fails verification, hard-blocks
+        here -- it is not silently plumbed through and ignored by
+        `OneCandidatePassResult.accepted` below.
         """
-        return self.stats_battery.hard_blocked or self.seed_trial.hard_blocked
+        return (
+            self.stats_battery.hard_blocked
+            or self.seed_trial.hard_blocked
+            or self.evidence_integrity.hard_blocked
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +327,11 @@ def run_one_candidate_pass(
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
+    catalog_dir: str = "",
+    evidence_candidate_fn: Callable[..., EvidenceCandidate] = get_evidence_candidate_for_run,
+    stdout_verified: bool | None = None,
+    sidecar_drift_signal_fn: Callable[..., SidecarDriftSignal] = get_sidecar_drift_signal,
+    sidecar_drift_agent_mode: SidecarAgentMode = "collaborative",
 ) -> OneCandidatePassResult:
     """Run one candidate through the full dispatch -> bathos-run -> gate-check sequence.
 
@@ -254,9 +380,28 @@ def run_one_candidate_pass(
             the module docstring's GW-04 addendum.
         candidate_static_root: forwarded to `candidate_static_fn` as its `root` kwarg (jaxlint's
             subprocess root; default `None` lets jaxlint fall back to `Path.cwd()`).
+        catalog_dir: bathos catalog directory, forwarded to `evidence_candidate_fn`/
+            `sidecar_drift_signal_fn` (default `""` resolves the same way bathos's own MCP
+            layer does -- see `controller.bathos_library_wrappers._resolve_catalog_dir`).
+        evidence_candidate_fn: injection seam -- defaults to [GW-01]'s real
+            `get_evidence_candidate_for_run` (fetches this run's bathos `Run` + calls
+            `verify_run_manifest`, no MCP). Called with this run's `run_id` right after the
+            bathos run, before the stats-battery/seed-floor checks -- see the module
+            docstring's GW-01 addendum.
+        stdout_verified: forwarded to `evidence_candidate_fn` -- caller-supplied result of
+            independently re-hashing a stored stdout artifact against `Run.stdout_sha256`
+            (bathos does not persist raw stdout to re-hash against itself). Defaults to
+            `None` ("not recorded/not checked").
+        sidecar_drift_signal_fn: injection seam -- defaults to [GW-01]'s real
+            `get_sidecar_drift_signal` (fetches this run's sidecar hash + calls
+            `check_sidecar_drift`, no MCP).
+        sidecar_drift_agent_mode: `"autonomous"` denies (raises) on a detected sidecar-hash
+            drift; `"collaborative"` (default) only warns. A distinct axis from `agent_mode`
+            above and from `campaign_mode` -- see the module docstring's GW-01 addendum for
+            why this is not derived from either.
 
     Returns:
-        A `OneCandidatePassResult` bundling the handoff, resolved lineage, run result, and both
+        A `OneCandidatePassResult` bundling the handoff, resolved lineage, run result, and all
         gate decisions.
 
     Raises:
@@ -272,6 +417,10 @@ def run_one_candidate_pass(
             script run reported failure).
         BathosMcpTransportError: the MCP round-trip to bathos failed.
         BathosTokenMissingError: no local bathos MCP write-token is available.
+        SidecarHashMismatchError: a sidecar-hash drift was detected for this candidate's
+            script AND `sidecar_drift_agent_mode == "autonomous"` (T2-25, AC-18) -- a
+            structural anomaly, not a normal candidate rejection; propagates unmodified.
+        SidecarDriftGateInputError: `sidecar_drift_agent_mode` is not a recognized `AgentMode`.
         StatsBatteryGateInputError: `campaign_mode` is not a recognized `CampaignMode` (raised
             by `assess_stats_battery_verdict`).
         SeedGateInputError: `campaign_mode` is not recognized, or the seed/trial counts are
@@ -307,19 +456,55 @@ def run_one_candidate_pass(
         no_sidecar=no_sidecar,
     )
 
-    # 3. Gate checks (LC-07 wrappers feeding #2181's already-merged xtrax.loop gates).
+    # 3. Post-run integrity/provenance gates ([GW-01] first slice: attestation_evidence_gate +
+    # sidecar_drift_gate). Run before the stats-battery/seed-floor checks -- see the module
+    # docstring's GW-01 addendum for why (evidence trustworthiness is a precondition to
+    # judging the statistics). sidecar_drift's deny path raises SidecarHashMismatchError here,
+    # propagating unmodified like every other raise in this function.
+    evidence_candidate = evidence_candidate_fn(
+        run_result.run_id, catalog_dir=catalog_dir, stdout_verified=stdout_verified
+    )
+    evidence_result = admit_evidence([evidence_candidate])
+    # Deliberately NOT `len(evidence_result.excluded) > 0` -- see the module docstring's GW-01
+    # addendum: with today's real bathos, nothing anywhere independently captures+hashes stdout,
+    # so `stdout_verified` is always `None` for every real run, which `admit_evidence` itself
+    # always treats as an exclusion reason (`stdout_hash_not_recorded`) even when the manifest is
+    # genuinely valid -- keying hard_blocked off `excluded` would permanently hard-block every
+    # non-exploration candidate forever, for a systemic capability gap, not a real integrity
+    # failure. `manifest_verified` is the one sub-check bathos can genuinely answer today.
+    manifest_unverified = not evidence_candidate.manifest_verified
+
+    sidecar_signal = sidecar_drift_signal_fn(
+        handoff.path, run_result.run_id, catalog_dir=catalog_dir
+    )
+    sidecar_decision = assert_sidecar_drift_reaction(
+        sidecar_signal, agent_mode=sidecar_drift_agent_mode
+    )
+
+    evidence_integrity = EvidenceIntegrityOutcome(
+        evidence=evidence_result,
+        sidecar_drift=sidecar_decision,
+        hard_blocked=manifest_unverified and campaign_mode != "exploration",
+        advisory=manifest_unverified and campaign_mode == "exploration",
+    )
+
+    # 4. Gate checks (LC-07 wrappers feeding #2181's already-merged xtrax.loop gates).
     stats_verdict = stats_battery_fn(**dict(stats_battery_kwargs))
     stats_decision = assess_stats_battery_verdict(stats_verdict, campaign_mode=campaign_mode)
 
     seed_counts = seed_trial_counts_fn(seed_trial_db, handoff.content_sha256, hypothesis_clause_id)
     seed_decision = assess_seed_trial_floor(seed_counts, campaign_mode=campaign_mode)
 
-    # 4. Composed result.
+    # 5. Composed result.
     return OneCandidatePassResult(
         handoff=handoff,
         derived_from=derived_from,
         run_result=run_result,
-        gate_outcome=GateOutcome(stats_battery=stats_decision, seed_trial=seed_decision),
+        gate_outcome=GateOutcome(
+            stats_battery=stats_decision,
+            seed_trial=seed_decision,
+            evidence_integrity=evidence_integrity,
+        ),
     )
 
 

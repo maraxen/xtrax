@@ -179,16 +179,24 @@ class CampaignHandle:
 @dataclass(frozen=True, slots=True)
 class CandidateRunResult:
     """Result of one bathos `run` call for a single candidate, per `run_tool`'s return
-    contract (`bathos/src/bathos/mcp.py:1043-1047`).
+    contract (`bathos/src/bathos/mcp.py`, `run_tool`).
 
     Campaign attachment (when `campaign_id` was supplied to `run`) already happened inside
     bathos's own `run_script` via its internal `add_run_to_campaign` call
     (`bathos/src/bathos/runner.py:543`) -- nothing further to do here.
+
+    `run_id`: added for [GW-01] (backlog id 3648) -- `run_tool`'s real envelope already
+    carries this field (`run_id = run_uuid_var.get(None) or ""`, verified directly against
+    `bathos/src/bathos/mcp.py`'s `run_tool`), it was simply never extracted before. Defaults
+    to `""` (via `.get`, not `[...]`) so envelopes from existing tests/fixtures that predate
+    this field never `KeyError` -- a genuinely empty `run_id` only ever occurs against a test
+    double, never against real bathos.
     """
 
     script_path: str
     exit_code: int
     success: bool
+    run_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,6 +565,7 @@ class BathosCampaignAdapter:
             script_path=envelope["script_path"],
             exit_code=envelope["exit_code"],
             success=envelope["success"],
+            run_id=envelope.get("run_id", ""),
         )
 
     def campaign_conclude(

@@ -55,12 +55,14 @@ from controller.dispatch import (
 from controller.lineage_interim import CandidateParentage, MultiParentLineageUnsupportedError
 from controller.loop_run import CampaignLoopResult, LoopEvent, run_campaign_loop
 from xtrax.devtools.freshness import Attestation
+from xtrax.loop.attestation_evidence_gate import EvidenceCandidate
 from xtrax.loop.campaign_approval_gate import (
     ApprovalExpiredError,
     NoMatchingApprovalError,
 )
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria
 from xtrax.loop.seed_gate import SeedTrialCounts
+from xtrax.loop.sidecar_drift_gate import SidecarDriftSignal
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
 
 # ---------------------------------------------------------------------------
@@ -218,6 +220,24 @@ def _passing_campaign_approval_fn(
     return Attestation(attested_at="2026-07-19T00:00:00Z", ttl_days=30.0, attested_by="test")
 
 
+def _passing_evidence_candidate_fn(
+    run_id: str, *, catalog_dir: str = "", stdout_verified: bool | None = None
+) -> EvidenceCandidate:
+    """Stub standing in for [GW-01]'s real `get_evidence_candidate_for_run` -- without this,
+    every LC-11 test that lets a candidate genuinely proceed would reach the REAL bathos-backed
+    default, which requires the `controller` extra (bathos installed) that this dev-only test
+    file must not depend on."""
+    return EvidenceCandidate(run_id=run_id, manifest_verified=True, stdout_verified=None)
+
+
+def _passing_sidecar_drift_signal_fn(
+    script_path: Path, run_id: str, *, catalog_dir: str = ""
+) -> SidecarDriftSignal:
+    """Stub standing in for [GW-01]'s real `get_sidecar_drift_signal` -- same rationale as
+    `_passing_evidence_candidate_fn` above."""
+    return SidecarDriftSignal(drifted=False, script_id=str(script_path))
+
+
 _CRITERIA = WatchdogCriteria(wall_clock_budget_seconds=3600.0)
 
 
@@ -232,6 +252,8 @@ def _base_kwargs(dispatch_backend: Any, transport: _MultiToolTransport) -> dict[
         "stats_battery_fn": _passing_stats_verdict,
         "seed_trial_counts_fn": _passing_seed_counts,
         "campaign_approval_fn": _passing_campaign_approval_fn,
+        "evidence_candidate_fn": _passing_evidence_candidate_fn,
+        "sidecar_drift_signal_fn": _passing_sidecar_drift_signal_fn,
     }
 
 

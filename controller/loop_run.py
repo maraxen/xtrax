@@ -207,7 +207,12 @@ from controller.bathos_campaign_adapter import (
     CampaignConclusion,
     CampaignHandle,
 )
-from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
+from controller.bathos_library_wrappers import (
+    call_stats_battery_gate,
+    get_evidence_candidate_for_run,
+    get_seed_trial_counts,
+    get_sidecar_drift_signal,
+)
 from controller.dispatch import CandidateHandoffFailure, DispatchBackend
 from controller.lineage_interim import CandidateParentage
 from controller.main_loop import CampaignMode
@@ -218,10 +223,13 @@ from controller.multi_iteration_loop import (
     run_multi_iteration_loop,
 )
 from xtrax.devtools.freshness import Attestation
+from xtrax.loop.attestation_evidence_gate import EvidenceCandidate
 from xtrax.loop.campaign_approval_gate import DEFAULT_GATES_TOML, assert_campaign_approved
 from xtrax.loop.candidate_static import assert_candidate_static
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria, WatchdogHandle, start_watchdog
 from xtrax.loop.seed_gate import SeedTrialCounts
+from xtrax.loop.sidecar_drift_gate import AgentMode as SidecarAgentMode
+from xtrax.loop.sidecar_drift_gate import SidecarDriftSignal
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
 
 _logger = logging.getLogger(__name__)
@@ -382,6 +390,11 @@ def run_campaign_loop(
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
+    catalog_dir: str = "",
+    evidence_candidate_fn: Callable[..., EvidenceCandidate] = get_evidence_candidate_for_run,
+    stdout_verified: bool | None = None,
+    sidecar_drift_signal_fn: Callable[..., SidecarDriftSignal] = get_sidecar_drift_signal,
+    sidecar_drift_agent_mode: SidecarAgentMode = "collaborative",
     wall_clock_budget_seconds: float | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     diversity_window_size: int = 5,
@@ -434,6 +447,15 @@ def run_campaign_loop(
             T2-11's real `assert_candidate_static`).
         candidate_static_root: forwarded to `run_multi_iteration_loop` unchanged (jaxlint's
             subprocess root; default `None` lets jaxlint fall back to `Path.cwd()`).
+        catalog_dir: forwarded to `run_multi_iteration_loop` unchanged (bathos catalog
+            directory for `evidence_candidate_fn`/`sidecar_drift_signal_fn`).
+        evidence_candidate_fn: injection seam, forwarded to `run_multi_iteration_loop`
+            (default: [GW-01]'s real `get_evidence_candidate_for_run`).
+        stdout_verified: forwarded to `run_multi_iteration_loop` unchanged.
+        sidecar_drift_signal_fn: injection seam, forwarded to `run_multi_iteration_loop`
+            (default: [GW-01]'s real `get_sidecar_drift_signal`).
+        sidecar_drift_agent_mode: forwarded to `run_multi_iteration_loop` unchanged (default
+            `"collaborative"` -- see `run_one_candidate_pass`'s own docstring).
         wall_clock_budget_seconds: forwarded to `run_multi_iteration_loop` unchanged.
         time_fn: injection seam, forwarded to `run_multi_iteration_loop` (default:
             `time.monotonic`).
@@ -524,6 +546,11 @@ def run_campaign_loop(
             seed_trial_counts_fn=seed_trial_counts_fn,
             candidate_static_fn=candidate_static_fn,
             candidate_static_root=candidate_static_root,
+            catalog_dir=catalog_dir,
+            evidence_candidate_fn=evidence_candidate_fn,
+            stdout_verified=stdout_verified,
+            sidecar_drift_signal_fn=sidecar_drift_signal_fn,
+            sidecar_drift_agent_mode=sidecar_drift_agent_mode,
             wall_clock_budget_seconds=wall_clock_budget_seconds,
             time_fn=time_fn,
             diversity_window_size=diversity_window_size,

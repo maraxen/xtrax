@@ -48,9 +48,11 @@ from controller.multi_iteration_loop import (
     MultiIterationLoopResult,
     run_multi_iteration_loop,
 )
+from xtrax.loop.attestation_evidence_gate import EvidenceCandidate
 from xtrax.loop.diversity_quota import is_structural_mutation
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria, start_watchdog
 from xtrax.loop.seed_gate import SeedTrialCounts
+from xtrax.loop.sidecar_drift_gate import SidecarDriftSignal
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
 
 # ---------------------------------------------------------------------------
@@ -198,6 +200,24 @@ def _passing_seed_counts(
     return SeedTrialCounts(script_sha256=script_sha256, distinct_seed_count=5, trial_count=40)
 
 
+def _passing_evidence_candidate_fn(
+    run_id: str, *, catalog_dir: str = "", stdout_verified: bool | None = None
+) -> EvidenceCandidate:
+    """Stub standing in for [GW-01]'s real `get_evidence_candidate_for_run` -- without this,
+    every LC-10 test that lets a candidate genuinely proceed would reach the REAL bathos-backed
+    default, which requires the `controller` extra (bathos installed) that this dev-only test
+    file must not depend on."""
+    return EvidenceCandidate(run_id=run_id, manifest_verified=True, stdout_verified=None)
+
+
+def _passing_sidecar_drift_signal_fn(
+    script_path: Path, run_id: str, *, catalog_dir: str = ""
+) -> SidecarDriftSignal:
+    """Stub standing in for [GW-01]'s real `get_sidecar_drift_signal` -- same rationale as
+    `_passing_evidence_candidate_fn` above."""
+    return SidecarDriftSignal(drifted=False, script_id=str(script_path))
+
+
 def _base_kwargs(dispatch_backend: Any) -> dict[str, Any]:
     return {
         "dispatch_backend": dispatch_backend,
@@ -207,6 +227,8 @@ def _base_kwargs(dispatch_backend: Any) -> dict[str, Any]:
         "stats_battery_kwargs": {},
         "stats_battery_fn": _passing_stats_verdict,
         "seed_trial_counts_fn": _passing_seed_counts,
+        "evidence_candidate_fn": _passing_evidence_candidate_fn,
+        "sidecar_drift_signal_fn": _passing_sidecar_drift_signal_fn,
     }
 
 

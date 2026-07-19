@@ -165,10 +165,16 @@ from pathlib import Path
 from typing import Any, Literal
 
 from controller.bathos_campaign_adapter import BathosCampaignAdapter
-from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
+from controller.bathos_library_wrappers import (
+    call_stats_battery_gate,
+    get_evidence_candidate_for_run,
+    get_seed_trial_counts,
+    get_sidecar_drift_signal,
+)
 from controller.dispatch import DispatchBackend
 from controller.lineage_interim import CandidateParentage
 from controller.main_loop import CampaignMode, OneCandidatePassResult, run_one_candidate_pass
+from xtrax.loop.attestation_evidence_gate import EvidenceCandidate
 from xtrax.loop.candidate_static import assert_candidate_static
 from xtrax.loop.diversity_quota import (
     DiversityQuotaDecision,
@@ -182,6 +188,8 @@ from xtrax.loop.external_stop_watchdog import (
     start_watchdog,
 )
 from xtrax.loop.seed_gate import SeedTrialCounts
+from xtrax.loop.sidecar_drift_gate import AgentMode as SidecarAgentMode
+from xtrax.loop.sidecar_drift_gate import SidecarDriftSignal
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
 
 _logger = logging.getLogger(__name__)
@@ -277,6 +285,11 @@ def run_multi_iteration_loop(
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
+    catalog_dir: str = "",
+    evidence_candidate_fn: Callable[..., EvidenceCandidate] = get_evidence_candidate_for_run,
+    stdout_verified: bool | None = None,
+    sidecar_drift_signal_fn: Callable[..., SidecarDriftSignal] = get_sidecar_drift_signal,
+    sidecar_drift_agent_mode: SidecarAgentMode = "collaborative",
     wall_clock_budget_seconds: float | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     diversity_window_size: int = 5,
@@ -324,6 +337,15 @@ def run_multi_iteration_loop(
             (injection seam for tests, default: T2-11's real `assert_candidate_static`).
         candidate_static_root: forwarded to `run_one_candidate_pass` on every iteration
             (jaxlint's subprocess root; default `None` lets jaxlint fall back to `Path.cwd()`).
+        catalog_dir: forwarded to `run_one_candidate_pass` on every iteration (bathos catalog
+            directory for `evidence_candidate_fn`/`sidecar_drift_signal_fn`).
+        evidence_candidate_fn: forwarded to `run_one_candidate_pass` on every iteration
+            (injection seam for tests, default: [GW-01]'s real `get_evidence_candidate_for_run`).
+        stdout_verified: forwarded to `run_one_candidate_pass` on every iteration.
+        sidecar_drift_signal_fn: forwarded to `run_one_candidate_pass` on every iteration
+            (injection seam for tests, default: [GW-01]'s real `get_sidecar_drift_signal`).
+        sidecar_drift_agent_mode: forwarded to `run_one_candidate_pass` on every iteration
+            (default `"collaborative"` -- see that function's own docstring).
         wall_clock_budget_seconds: the SOFT, in-process budget-exhaustion check. `None`
             (default) disables it -- the run then only stops via `max_candidates` or the real
             watchdog's hard kill. When set, checked (via `time_fn`) before each candidate's
@@ -395,6 +417,11 @@ def run_multi_iteration_loop(
                 seed_trial_counts_fn=seed_trial_counts_fn,
                 candidate_static_fn=candidate_static_fn,
                 candidate_static_root=candidate_static_root,
+                catalog_dir=catalog_dir,
+                evidence_candidate_fn=evidence_candidate_fn,
+                stdout_verified=stdout_verified,
+                sidecar_drift_signal_fn=sidecar_drift_signal_fn,
+                sidecar_drift_agent_mode=sidecar_drift_agent_mode,
             )
             iterations.append(result)
 
