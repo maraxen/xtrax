@@ -5,7 +5,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import jax
 
@@ -16,7 +16,10 @@ from xtrax.tiling.strategy import (
     Bucket,
     SafeMap,
     Scan,
+    ScanTransition,
     Vmap,
+    WhileBodyFn,
+    WhileCarry,
 )
 
 if TYPE_CHECKING:
@@ -156,7 +159,8 @@ class BatchPlanner:
                 SafeMap is preferred over Vmap. If the estimator raises an exception,
                 falls back to default rules silently. Mutually exclusive with budget.
             carry_specs: Optional list of CarrySpec objects declaring which axes
-                should use Scan strategy (Phase 0 pre-demotion).
+                should use Scan strategy (Phase 0 pre-demotion), or WhileCarry
+                when CarrySpec.collect_outputs=False.
             dedup_specs: Optional list of DedupSpec objects declaring which axes
                 should use DedupGather strategy (Phase 0b pre-demotion).
             heterogeneous_axes: Optional set of axis names (strings) that contain
@@ -184,7 +188,8 @@ class BatchPlanner:
     def plan(self, specs: Sequence[AxisSpec]) -> BatchPlan:
         """Generate a tiling plan for the given specs.
 
-        Phase 0: Pre-demote axes with declared CarrySpec to Scan.
+        Phase 0: Pre-demote axes with declared CarrySpec to Scan (or, when
+        CarrySpec.collect_outputs=False, to WhileCarry instead).
         Phase 0b: Pre-demote axes with declared DedupSpec to DedupGather.
         Phases 1+: Apply standard strategy selection rules to remaining axes —
         or, when a MemoryBudget is set, greedy joint-budget demotion (see
@@ -216,25 +221,41 @@ class BatchPlanner:
             # Phase 0: CarrySpec pre-demotion
             if spec.name in carry_by_name:
                 cs = carry_by_name[spec.name]
-                # Validate: Scan is invalid on heterogeneous axes
+                # Validate: Scan/WhileCarry are invalid on heterogeneous axes
                 if spec.name in self.heterogeneous_axes:
                     raise ValueError(
-                        f"Cannot create Scan strategy for axis '{spec.name}': "
+                        f"Cannot create a carry strategy for axis '{spec.name}': "
                         f"axis is heterogeneous (shapes vary per element), "
-                        f"but Scan requires static carry shape. "
+                        f"but Scan/WhileCarry require static carry shape. "
                         f"Remove this axis from CarrySpec or remove it from heterogeneous_axes."
                     )
-                scan_strategy = Scan(
-                    init=cs.init,
-                    transition=cs.transition,
-                    ordered_sinks=cs.ordered_sinks,
-                )
+                # cs.transition's static type is `ScanTransition | WhileBodyFn` -- which
+                # concrete shape it actually is depends on cs.collect_outputs, a runtime
+                # bool a type checker can't narrow the union on. The two Protocols share
+                # a `__call__` name but incompatible arity, so cast rather than isinstance.
+                if cs.collect_outputs:
+                    carry_strategy: AxisStrategy = Scan(
+                        init=cs.init,
+                        transition=cast("ScanTransition", cs.transition),
+                        ordered_sinks=cs.ordered_sinks,
+                    )
+                    reasoning = f"carry-bearing scan (CarrySpec declared for '{spec.name}')"
+                else:
+                    carry_strategy = WhileCarry(
+                        init=cs.init,
+                        body=cast("WhileBodyFn", cs.transition),
+                        cond=cs.cond,
+                    )
+                    reasoning = (
+                        f"carry-only while-loop (CarrySpec declared for '{spec.name}', "
+                        "collect_outputs=False)"
+                    )
                 decisions.append(
                     AxisDecision(
                         spec=spec,
                         batch_size=1,
-                        reasoning=f"carry-bearing scan (CarrySpec declared for '{spec.name}')",
-                        strategy=scan_strategy,
+                        reasoning=reasoning,
+                        strategy=carry_strategy,
                     ),
                 )
                 continue

@@ -15,6 +15,7 @@ from xtrax.tiling import (
     SafeMapIterator,
     ScanIterator,
     VmapIterator,
+    WhileLoopIterator,
 )
 
 # Values are JAX arrays, numpy arrays, or scalars — heterogeneous, so Any is intentional.
@@ -29,6 +30,7 @@ class RuntimeBundle:
         VmapIterator
         | SafeMapIterator
         | JaxScanIterator
+        | WhileLoopIterator
         | BucketIterator
         | MapIterator
         | ScanIterator

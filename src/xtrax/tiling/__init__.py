@@ -3,10 +3,12 @@
 CORE exports (stable, always available):
     AxisSpec, BatchPlanner, BatchPlan, AxisDecision
     Vmap, SafeMap, Scan, ScanTransition, Bucket, select_bucket, bucketize
+    WhileCarry, WhileBodyFn, WhileCondFn, fixed_step_count_cond
     make_axis_dispatch, axis_dispatch, DispatchRejected
     CarrySpec, CarryShape
     MemoryBudget, BudgetInfeasibleError, device_memory_budget, lowered_memory_estimate
-    VmapIterator, SafeMapIterator, JaxScanIterator, BucketIterator, MapIterator, ScanIterator
+    VmapIterator, SafeMapIterator, JaxScanIterator, WhileLoopIterator, BucketIterator,
+    MapIterator, ScanIterator
 
 OPTIONAL (dedup/gather machinery — import from submodules):
     xtrax.tiling.strategy: DedupGather, DedupFn, GatherFn
@@ -27,6 +29,7 @@ from xtrax.tiling.iterator import (
     SafeMapIterator,
     ScanIterator,
     VmapIterator,
+    WhileLoopIterator,
 )
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan, BatchPlanner
 from xtrax.tiling.strategy import (
@@ -35,6 +38,10 @@ from xtrax.tiling.strategy import (
     Scan,
     ScanTransition,
     Vmap,
+    WhileBodyFn,
+    WhileCarry,
+    WhileCondFn,
+    fixed_step_count_cond,
 )
 
 __all__ = [
@@ -49,6 +56,10 @@ __all__ = [
     "select_bucket",
     "bucketize",
     "ScanTransition",
+    "WhileCarry",
+    "WhileBodyFn",
+    "WhileCondFn",
+    "fixed_step_count_cond",
     "make_axis_dispatch",
     "axis_dispatch",
     "DispatchRejected",
@@ -61,6 +72,7 @@ __all__ = [
     "VmapIterator",
     "SafeMapIterator",
     "JaxScanIterator",
+    "WhileLoopIterator",
     "BucketIterator",
     "MapIterator",
     "ScanIterator",

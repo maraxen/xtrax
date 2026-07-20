@@ -87,3 +87,49 @@ class TestCarrySpecInstantiation:
             ordered_sinks=False,
         )
         assert spec.ordered_sinks is False
+
+    def test_carryspec_collect_outputs_defaults_true(self):
+        """CarrySpec.collect_outputs defaults to True (preserves existing Scan behavior)."""
+
+        def transition(carry, x):
+            return carry, x
+
+        spec = CarrySpec(
+            axis_name="n_samples",
+            init=0,
+            transition=transition,
+        )
+        assert spec.collect_outputs is True
+
+    def test_carryspec_cond_defaults_none(self):
+        """CarrySpec.cond defaults to None (unused when collect_outputs=True)."""
+
+        def transition(carry, x):
+            return carry, x
+
+        spec = CarrySpec(
+            axis_name="n_samples",
+            init=0,
+            transition=transition,
+        )
+        assert spec.cond is None
+
+    def test_carryspec_collect_outputs_false_with_while_body(self):
+        """CarrySpec accepts collect_outputs=False with a carry->carry body and a cond."""
+
+        def body(carry):
+            return carry + 1
+
+        def cond(carry):
+            return carry < 10
+
+        spec = CarrySpec(
+            axis_name="n_steps",
+            init=0,
+            transition=body,
+            collect_outputs=False,
+            cond=cond,
+        )
+        assert spec.collect_outputs is False
+        assert spec.transition is body
+        assert spec.cond is cond
