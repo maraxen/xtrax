@@ -5,8 +5,13 @@ import jax.numpy as jnp
 import pytest
 
 from xtrax.tiling.dispatch import DispatchRejected, axis_dispatch, make_axis_dispatch
-from xtrax.tiling.iterator import JaxScanIterator, SafeMapIterator, VmapIterator
-from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Scan, Vmap
+from xtrax.tiling.iterator import (
+    JaxScanIterator,
+    SafeMapIterator,
+    VmapIterator,
+    WhileLoopIterator,
+)
+from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Scan, Vmap, WhileCarry
 
 
 class TestVmapDispatch:
@@ -187,6 +192,105 @@ class TestScanDispatch:
         result_carry, result_ys = axis_dispatch(strategy, ignored_fn, xs, init=init)
         assert jnp.allclose(result_carry, jnp.sum(xs))
 
+    def test_scan_factory_rejects_heterogeneous_axis(self):
+        """make_axis_dispatch(Scan) raises DispatchRejected on a heterogeneous axis."""
+        strategy = Scan(transition=lambda carry, x: (carry, x))
+
+        with pytest.raises(DispatchRejected, match="heterogeneous"):
+            make_axis_dispatch(strategy, axis="state", heterogeneous_axes={"state"})
+
+
+class TestWhileCarryDispatch:
+    """Test WhileCarry strategy dispatch."""
+
+    def test_whilecarry_factory_returns_iterator(self):
+        """make_axis_dispatch(WhileCarry) returns WhileLoopIterator."""
+        strategy = WhileCarry()
+        iterator = make_axis_dispatch(strategy)
+        assert isinstance(iterator, WhileLoopIterator)
+
+    def test_whilecarry_factory_rejects_heterogeneous_axis(self):
+        """make_axis_dispatch(WhileCarry) raises DispatchRejected on a heterogeneous axis."""
+        strategy = WhileCarry(body=lambda carry: carry, cond=lambda carry: carry < 5, init=0)
+
+        with pytest.raises(DispatchRejected, match="heterogeneous"):
+            make_axis_dispatch(strategy, axis="state", heterogeneous_axes={"state"})
+
+    def test_whilecarry_factory_allows_non_heterogeneous_axis(self):
+        """make_axis_dispatch(WhileCarry) succeeds when axis is not in heterogeneous_axes."""
+        strategy = WhileCarry(body=lambda carry: carry, cond=lambda carry: carry < 5, init=0)
+
+        iterator = make_axis_dispatch(strategy, axis="step", heterogeneous_axes={"other_axis"})
+        assert isinstance(iterator, WhileLoopIterator)
+
+    def test_whilecarry_dispatch_with_init(self):
+        """WhileCarry dispatch uses strategy.cond/.body/.init via axis_dispatch."""
+
+        def cond(carry):
+            return carry < 5
+
+        def body(carry):
+            return carry + 1
+
+        strategy = WhileCarry(body=body, cond=cond, init=jnp.array(0))
+
+        # fn/xs are ignored for WhileCarry; pass placeholders.
+        result = axis_dispatch(strategy, None, None)
+
+        assert result == 5
+
+    def test_whilecarry_dispatch_requires_body(self):
+        """WhileCarry dispatch raises ValueError if body is None."""
+        strategy = WhileCarry(body=None, cond=lambda carry: carry < 5, init=0)
+
+        with pytest.raises(ValueError, match="WhileCarry strategy requires.*body"):
+            axis_dispatch(strategy, None, None)
+
+    def test_whilecarry_dispatch_requires_cond(self):
+        """WhileCarry dispatch raises ValueError if cond is None."""
+        strategy = WhileCarry(body=lambda carry: carry, cond=None, init=0)
+
+        with pytest.raises(ValueError, match="WhileCarry strategy requires.*cond"):
+            axis_dispatch(strategy, None, None)
+
+    def test_whilecarry_dispatch_requires_init(self):
+        """WhileCarry dispatch raises ValueError if init is None (and no init parameter given)."""
+        strategy = WhileCarry(body=lambda carry: carry, cond=lambda carry: carry < 5, init=None)
+
+        with pytest.raises(ValueError, match="WhileCarry strategy requires.*init"):
+            axis_dispatch(strategy, None, None, init=None)
+
+    def test_whilecarry_dispatch_falls_back_to_init_parameter(self):
+        """WhileCarry dispatch uses the init= parameter when strategy.init is None."""
+
+        def cond(carry):
+            return carry < 3
+
+        def body(carry):
+            return carry + 1
+
+        strategy = WhileCarry(body=body, cond=cond, init=None)
+
+        result = axis_dispatch(strategy, None, None, init=jnp.array(0))
+        assert result == 3
+
+    def test_whilecarry_dispatch_ignores_fn(self):
+        """WhileCarry dispatch ignores the fn parameter."""
+
+        def cond(carry):
+            return carry < 3
+
+        def body(carry):
+            return carry + 1
+
+        def ignored_fn(carry):
+            raise RuntimeError("fn should be ignored for WhileCarry")
+
+        strategy = WhileCarry(body=body, cond=cond, init=jnp.array(0))
+
+        result = axis_dispatch(strategy, ignored_fn, None)
+        assert result == 3
+
 
 class TestDedupGatherDispatch:
     """Test DedupGather strategy dispatch."""
@@ -339,6 +443,11 @@ class TestDispatchExhaustiveness:
 
         strategy = Scan(transition=transition)
         assert isinstance(strategy, Scan)
+
+    def test_whilecarry_isinstance(self):
+        """WhileCarry is recognized."""
+        strategy = WhileCarry(body=lambda carry: carry, cond=lambda carry: carry < 5)
+        assert isinstance(strategy, WhileCarry)
 
     def test_dedupgather_isinstance(self):
         """DedupGather is recognized."""

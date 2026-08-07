@@ -14,7 +14,7 @@ from typing import Any
 
 import jax
 
-from xtrax.tiling.strategy import AxisStrategy, SafeMap, Scan, Vmap
+from xtrax.tiling.strategy import AxisStrategy, SafeMap, Scan, Vmap, WhileCarry
 from xtrax.transforms.map import safe_map
 from xtrax.transforms.scan import safe_scan
 
@@ -71,6 +71,7 @@ def make_axis_dispatch(
         JaxScanIterator,
         SafeMapIterator,
         VmapIterator,
+        WhileLoopIterator,
     )
     from xtrax.tiling.strategy import DedupGather
 
@@ -91,6 +92,18 @@ def make_axis_dispatch(
                 "static carry shape across all iterations.",
             )
 
+    # Reject WhileCarry on heterogeneous axes -- lax.while_loop has the identical
+    # static-carry-shape constraint across loop iterations that lax.scan has
+    # across scanned elements.
+    if isinstance(strategy, WhileCarry):
+        het_axes = heterogeneous_axes or set()
+        if axis in het_axes:
+            raise DispatchRejected(
+                f"Cannot use WhileCarry strategy on {axis} axis: {axis} axis contains "
+                "heterogeneous (variable-shape) state elements. lax.while_loop requires "
+                "static carry shape across all iterations, same constraint as Scan.",
+            )
+
     # Dispatch by strategy type.
     if isinstance(strategy, Vmap):
         return VmapIterator()
@@ -98,6 +111,8 @@ def make_axis_dispatch(
         return SafeMapIterator(tile=strategy.batch_size)
     if isinstance(strategy, Scan):
         return JaxScanIterator()
+    if isinstance(strategy, WhileCarry):
+        return WhileLoopIterator()
     # Exhaustiveness check: should never reach here if AxisStrategy is sealed.
     raise TypeError(f"Unknown strategy type: {type(strategy)}")
 
@@ -159,6 +174,28 @@ def axis_dispatch(
         deduped_ys = safe_map(fn, deduped_xs, batch_size=None)  # vmap over deduped
         # Phase 3: gather — scatter K results back to N positions using index_map
         return strategy.gather_fn(deduped_ys, strategy.index_map)
+
+    elif isinstance(strategy, WhileCarry):
+        # WhileCarry: carry-only while-loop, no per-step output collection.
+        # strategy.body/.cond are the actual computation; fn/xs are ignored.
+        if strategy.body is None:
+            raise ValueError(
+                "axis_dispatch: WhileCarry strategy requires a non-None body function. "
+                "Provide via WhileCarry(body=...) argument."
+            )
+        if strategy.cond is None:
+            raise ValueError(
+                "axis_dispatch: WhileCarry strategy requires a non-None cond function. "
+                "Provide via WhileCarry(cond=...) argument, e.g. fixed_step_count_cond(n)."
+            )
+        # Use strategy.init if available, else fall back to init parameter
+        carry_init = strategy.init if strategy.init is not None else init
+        if carry_init is None:
+            raise ValueError(
+                "axis_dispatch: WhileCarry strategy requires a non-None init carry. "
+                "Provide via WhileCarry.init field or init parameter."
+            )
+        return jax.lax.while_loop(strategy.cond, strategy.body, carry_init)
 
     elif isinstance(strategy, Bucket):
         # Bucket is host-side: bucketing pads variable-length inputs *before* the

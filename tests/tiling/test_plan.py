@@ -166,6 +166,58 @@ class TestBatchPlanner:
 
         assert isinstance(decision.strategy, Scan)
 
+    def test_phase0_carry_spec_collect_outputs_false_returns_whilecarry(self):
+        """Phase 0: CarrySpec(collect_outputs=False) declared → WhileCarry."""
+        from xtrax.tiling.carry import CarrySpec
+        from xtrax.tiling.strategy import WhileCarry
+
+        spec = AxisSpec(name="n_infer_steps", cardinality=10, default_batch_size=32)
+
+        def body(carry):
+            return carry + 1
+
+        def cond(carry):
+            return carry < 200
+
+        carry_spec = CarrySpec(
+            axis_name="n_infer_steps",
+            init=0,
+            transition=body,
+            collect_outputs=False,
+            cond=cond,
+        )
+
+        planner = BatchPlanner(carry_specs=[carry_spec])
+        plan = planner.plan([spec])
+
+        assert len(plan.decisions) == 1
+        decision = plan.decisions[0]
+        assert decision.spec is spec
+        assert isinstance(decision.strategy, WhileCarry)
+        assert decision.strategy.init == 0
+        assert decision.strategy.body is body
+        assert decision.strategy.cond is cond
+        assert "while-loop" in decision.reasoning
+        assert "collect_outputs=False" in decision.reasoning
+
+    def test_phase0_carry_spec_heterogeneous_axis_rejects_regardless_of_collect_outputs(self):
+        """Phase 0: a CarrySpec (Scan or WhileCarry) on a heterogeneous axis always raises."""
+        from xtrax.tiling.carry import CarrySpec
+
+        spec = AxisSpec(name="n_infer_steps", cardinality=10, default_batch_size=32)
+
+        carry_spec = CarrySpec(
+            axis_name="n_infer_steps",
+            init=0,
+            transition=lambda carry: carry,
+            collect_outputs=False,
+            cond=lambda carry: carry < 10,
+        )
+
+        planner = BatchPlanner(carry_specs=[carry_spec], heterogeneous_axes={"n_infer_steps"})
+        with pytest.raises(ValueError, match="heterogeneous"):
+            planner.plan([spec])
+
     def test_phase0b_dedup_spec_returns_dedupgather(self):
         """Phase 0b: DedupSpec declared → DedupGather."""
         import numpy as np

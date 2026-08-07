@@ -56,6 +56,49 @@ an already-open campaign instead of creating a fresh one (e.g. resuming a crashe
 new, distinct capability this function does not claim to provide today, left to a future item
 exactly as LC-10 left multi-iteration wiring to itself rather than guessing ahead.
 
+## GW-03 addendum: campaign-approval standing gate wired in before `campaign_create` (T2-32, AC-25)
+
+`campaign_approval_gate.assert_campaign_approved` (T2-32, AC-25, already built and merged) was
+never wired into any production caller before this addendum -- verified directly: `grep` confirmed
+`campaign_approval_gate` was imported only by its own test module anywhere in this repo. That
+meant ANY caller of `run_campaign_loop` could start a real campaign against real bathos/praxia
+infrastructure with zero human-approval check -- an ACTIVE safety gap (this exact unguarded path is
+what LC-12's own real-infrastructure smoke test exercised to create real campaigns), not a latent
+one, per the constitution's own policy text (`.praxia/docs/decisions/260714_2181-autoresearch-loop-
+constitution.md`): "every campaign start requires Marielle's explicit approval before the campaign
+may run... cannot be revoked by the loop under any circumstance."
+
+Wired in as `campaign_approval_fn` (default: the real `assert_campaign_approved`), called with
+`campaign_name` -- not `handle.campaign_id` -- as the approval-gate's own `campaign_id` argument.
+This is a deliberate, load-bearing choice, not an oversight: `campaign_create` itself is what mints
+the real bathos `campaign_id` (`envelope["campaign_id"]`, `bathos_campaign_adapter.py`), so no
+bathos-side identifier exists yet at the point this gate must fire (strictly BEFORE
+`campaign_create`, per [GW-03]'s own filing text). `campaign_name` is the only caller-known,
+human-legible identifier available at that point -- and matches the gate module's own test fixtures
+and TOML convention (`event_ref` values like `"campaign_001_initial"`, human-chosen slugs, not
+bathos UUIDs). A human pre-approves a named campaign in `.praxia/loop_human_gates.toml` before this
+function is ever invoked with that same name.
+
+A `CampaignNotApprovedError` (or either subclass, `NoMatchingApprovalError`/`ApprovalExpiredError`)
+fires before `campaign_create` -- no campaign is created, so nothing needs concluding, the same
+"nothing to conclude" treatment as the `max_candidates < 1` `ValueError` (see the next section's
+own note on this, extended below to cover this gate too).
+
+The external watchdog's kill authority (already wired via LC-10/`start_watchdog`) remains available
+regardless of approval status, unaffected by this change -- `campaign_approval_gate`'s own module
+docstring is explicit that it is purely the "may this campaign START" half of AC-25; the separate,
+always-available kill authority is AC-13's responsibility, never coupled to this gate.
+
+**Operational requirement, not enforced by this code (audit finding, 2026-07-19):**
+`assert_campaign_approved` matches on `(id="T2-32", event_ref==campaign_name)` plus TTL freshness
+only -- it has no single-use consumption. One TOML entry therefore authorizes EVERY campaign start
+using that same `campaign_name` for the entire `ttl_days` window, not just one. To preserve the
+constitution's "every campaign start requires explicit approval" intent, `campaign_name` must be
+minted uniquely per real, approved campaign start (e.g. a fresh random/timestamp suffix decided
+*before* seeking approval, then approved and used exactly once) -- reusing an already-approved name
+for a second, different campaign start silently rides the first approval. This module does not
+mint or validate uniqueness itself; that responsibility sits with the caller.
+
 ## What "a caught per-candidate failure" means here, vs. "an uncaught exception" -- grounded, not
 ## invented
 
@@ -73,12 +116,15 @@ three types originate anywhere in the call chain `run_campaign_loop` -> `run_mul
 - `PraxiaDispatchBackend` (the real backend, LC-04) raises exactly the same three types for the
   same reasons (`controller/praxia_dispatch_backend.py`, grepped directly).
 - Every other module in the chain -- `lineage_interim.py`, `bathos_campaign_adapter.py`,
-  `stats_battery_gate.py`, `seed_gate.py`, `diversity_quota.py` -- raises its *own* distinct
-  exception type (`MultiParentLineageUnsupportedError`, `BathosMcpToolError`/
-  `BathosMcpTransportError`/`BathosTokenMissingError`, `StatsBatteryGateInputError`,
-  `SeedGateInputError`, `DiversityQuotaInputError`), none of which is a `ValueError`/
+  `stats_battery_gate.py`, `seed_gate.py`, `diversity_quota.py`, and (added by [GW-04]'s first
+  slice) `xtrax.loop.candidate_static` -- raises its *own* distinct exception type
+  (`MultiParentLineageUnsupportedError`, `BathosMcpToolError`/`BathosMcpTransportError`/
+  `BathosTokenMissingError`, `StatsBatteryGateInputError`, `SeedGateInputError`,
+  `DiversityQuotaInputError`, `CandidateStaticGateError`), none of which is a `ValueError`/
   `TimeoutError`/`CandidateHandoffFailure` subclass (all grepped and confirmed direct
-  `Exception` subclasses).
+  `Exception` subclasses) -- so `CandidateStaticGateError` falls to the same **uncaught
+  exception** / `outcome_label="aborted"` bucket as the others in this list, with zero special-
+  casing needed here.
 
 So catching exactly `(CandidateHandoffFailure, TimeoutError, ValueError)` unambiguously identifies
 "the dispatch step itself failed in one of its own documented ways" -- a **caught per-candidate
@@ -89,7 +135,9 @@ malformed candidate source file for the diversity-quota window, or a genuine bug
 `max_candidates < 1` `ValueError` is deliberately never reachable inside this ambiguity: this
 module re-validates `max_candidates` itself *before* calling `campaign_create` (see below), so
 that specific `ValueError` propagates before any campaign exists, not through the categorized-vs-
-uncaught branch at all.
+uncaught branch at all. The same is true of a `CampaignNotApprovedError` (or either subclass) from
+the campaign-approval gate ([GW-03], see its own addendum above) -- it, too, fires before
+`campaign_create`, so it never reaches the categorized-vs-uncaught branch either.
 
 **Why this is NOT literal automatic retry-and-continue.** The AC's own phrase "error/retry policy"
 could mean "catch a per-candidate failure, retry that one candidate, and keep going" -- but that
@@ -151,6 +199,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from controller.bathos_campaign_adapter import (
@@ -168,6 +217,9 @@ from controller.multi_iteration_loop import (
     _default_leap_path_handler,
     run_multi_iteration_loop,
 )
+from xtrax.devtools.freshness import Attestation
+from xtrax.loop.campaign_approval_gate import DEFAULT_GATES_TOML, assert_campaign_approved
+from xtrax.loop.candidate_static import assert_candidate_static
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria, WatchdogHandle, start_watchdog
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
@@ -328,6 +380,8 @@ def run_campaign_loop(
     hypothesis_clause_id: str = "",
     stats_battery_fn: Callable[..., BathosStatsBatteryVerdict] = call_stats_battery_gate,
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
+    candidate_static_fn: Callable[..., None] = assert_candidate_static,
+    candidate_static_root: Path | None = None,
     wall_clock_budget_seconds: float | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     diversity_window_size: int = 5,
@@ -335,6 +389,8 @@ def run_campaign_loop(
     start_watchdog_fn: Callable[[int, WatchdogCriteria], WatchdogHandle] = start_watchdog,
     task_id: str = "",
     on_loop_event: Callable[[LoopEvent], None] = _default_loop_event_handler,
+    campaign_approval_fn: Callable[..., Attestation] = assert_campaign_approved,
+    campaign_approval_toml_path: Path = DEFAULT_GATES_TOML,
 ) -> CampaignLoopResult:
     """Open one bathos campaign, run the multi-iteration loop, and guarantee it concludes.
 
@@ -374,6 +430,10 @@ def run_campaign_loop(
             real `call_stats_battery_gate`).
         seed_trial_counts_fn: injection seam, forwarded to `run_multi_iteration_loop` (default:
             LC-07's real `get_seed_trial_counts`).
+        candidate_static_fn: injection seam, forwarded to `run_multi_iteration_loop` (default:
+            T2-11's real `assert_candidate_static`).
+        candidate_static_root: forwarded to `run_multi_iteration_loop` unchanged (jaxlint's
+            subprocess root; default `None` lets jaxlint fall back to `Path.cwd()`).
         wall_clock_budget_seconds: forwarded to `run_multi_iteration_loop` unchanged.
         time_fn: injection seam, forwarded to `run_multi_iteration_loop` (default:
             `time.monotonic`).
@@ -390,6 +450,14 @@ def run_campaign_loop(
             (`campaign_created`, `campaign_concluded`, `campaign_conclude_failed`). Defaults to
             `_default_loop_event_handler` (structured logging). See module docstring's "Telemetry
             hook" section.
+        campaign_approval_fn: injection seam -- the human-approval gate (T2-32, AC-25; [GW-03])
+            checked against `campaign_name` immediately before `campaign_create` is ever called.
+            Defaults to the REAL `xtrax.loop.campaign_approval_gate.assert_campaign_approved`.
+            **Tests of this function must always override this** with a stub returning a fake
+            `Attestation` -- never let a test reach the real TOML-file-backed gate. See the module
+            docstring's GW-03 addendum.
+        campaign_approval_toml_path: forwarded to `campaign_approval_fn` as `toml_path` (default:
+            `campaign_approval_gate.DEFAULT_GATES_TOML`, i.e. `.praxia/loop_human_gates.toml`).
 
     Returns:
         A `CampaignLoopResult` on successful completion (the only path that returns instead of
@@ -398,6 +466,10 @@ def run_campaign_loop(
     Raises:
         ValueError: `max_candidates < 1` -- raised before `campaign_create` is called; no
             campaign is created, so nothing needs concluding.
+        CampaignNotApprovedError (NoMatchingApprovalError, ApprovalExpiredError): `campaign_name`
+            has no fresh T2-32 approval entry in the gates file -- raised before `campaign_create`
+            is called; no campaign is created, so nothing needs concluding (same treatment as the
+            `max_candidates < 1` `ValueError` above; see the module docstring's GW-03 addendum).
         BathosMcpToolError, BathosMcpTransportError, BathosTokenMissingError: `campaign_create`
             itself failed -- raised before this function's guaranteed-conclude region begins.
         CandidateHandoffFailure, TimeoutError, ValueError: a caught per-candidate dispatch
@@ -412,6 +484,13 @@ def run_campaign_loop(
         raise ValueError(msg)
 
     resolved_task_id = task_id or _default_task_id(campaign_name)
+
+    # Campaign-approval gate (T2-32, AC-25; [GW-03]) -- checked against campaign_name (the only
+    # caller-known identifier available before bathos mints a real campaign_id) strictly before
+    # campaign_create is ever called. See the module docstring's GW-03 addendum. A
+    # CampaignNotApprovedError here (or either subclass) propagates before any campaign exists --
+    # same "nothing to conclude" treatment as the max_candidates < 1 ValueError above.
+    campaign_approval_fn(campaign_name, toml_path=campaign_approval_toml_path)
 
     handle: CampaignHandle = campaign_adapter.campaign_create(
         campaign_name,
@@ -443,6 +522,8 @@ def run_campaign_loop(
             hypothesis_clause_id=hypothesis_clause_id,
             stats_battery_fn=stats_battery_fn,
             seed_trial_counts_fn=seed_trial_counts_fn,
+            candidate_static_fn=candidate_static_fn,
+            candidate_static_root=candidate_static_root,
             wall_clock_budget_seconds=wall_clock_budget_seconds,
             time_fn=time_fn,
             diversity_window_size=diversity_window_size,

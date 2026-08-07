@@ -19,6 +19,10 @@ MockDispatchBackend." Exercises:
 6. A dispatch-backend failure (`CandidateHandoffFailure`) propagates unmodified; no bathos or
    gate call is ever attempted -- this module performs zero retry logic (LC-11's own scope).
 7. `GateOutcome.hard_blocked`/`OneCandidatePassResult.accepted` unit-level truth tables.
+8. The candidate-static gate (T2-11, AC-1; [GW-04] first slice) genuinely runs right after
+   dispatch, before lineage resolution or any bathos call: a failing candidate raises
+   `CandidateStaticGateError` with zero bathos calls made, and the real (non-injected) default
+   `assert_candidate_static` is genuinely wired in, not just the injection seam.
 """
 
 import hashlib
@@ -40,11 +44,21 @@ from controller.dispatch import (
 )
 from controller.lineage_interim import CandidateParentage, MultiParentLineageUnsupportedError
 from controller.main_loop import GateOutcome, OneCandidatePassResult, run_one_candidate_pass
+from xtrax.loop.candidate_static import CandidateStaticGateError
 from xtrax.loop.seed_gate import SeedTrialCounts, SeedTrialFloorDecision
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict, ConcludeStatsDecision
 
 _CANDIDATE_CONTENT = "candidate-source"
 _VALID_SHA256 = hashlib.sha256(_CANDIDATE_CONTENT.encode("utf-8")).hexdigest()
+
+
+def _passing_candidate_static_fn(path: Path, root: Path | None = None) -> None:
+    """Stub standing in for T2-11's real `assert_candidate_static` -- every existing LC-09 test
+    exercises dispatch/lineage/gate behavior against a `MockDispatchBackend` candidate_path that
+    doesn't exist on disk (e.g. `Path("candidate.py")`), so the REAL gate (which imports the
+    file) would reject every one of them. Tests that exercise the static gate itself pass their
+    own `candidate_static_fn` instead of this stub."""
+    return None
 
 
 def _ok_envelope(**extra: Any) -> dict[str, Any]:
@@ -152,19 +166,30 @@ class TestFullSequenceOrdering:
             order.append("seed_trial")
             return _passing_seed_counts()
 
+        def candidate_static_fn(path: Path, root: Path | None = None) -> None:
+            order.append("candidate_static")
+
         result = run_one_candidate_pass(
             _OrderTrackingDispatch(),
             adapter,
             campaign_id="camp-1",
             campaign_mode="exploration",
+            candidate_static_fn=candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=stats_fn,
             seed_trial_counts_fn=seed_fn,
         )
 
-        assert order == ["dispatch", "bathos:run", "stats_battery", "seed_trial"], (
-            "the one-candidate pass must sequence dispatch -> bathos run -> gate checks, in "
-            f"that order -- got {order}"
+        expected_order = [
+            "dispatch",
+            "candidate_static",
+            "bathos:run",
+            "stats_battery",
+            "seed_trial",
+        ]
+        assert order == expected_order, (
+            "the one-candidate pass must sequence dispatch -> candidate-static gate -> bathos "
+            f"run -> gate checks, in that order -- got {order}"
         )
         assert isinstance(result, OneCandidatePassResult)
         assert result.accepted is True
@@ -180,6 +205,7 @@ class TestFullSequenceOrdering:
             adapter,
             campaign_id="camp-1",
             campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -213,6 +239,7 @@ class TestDerivedFromThreadedEndToEnd:
             adapter,
             campaign_id="camp-1",
             campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
             parentage=parentage,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
@@ -237,6 +264,7 @@ class TestDerivedFromThreadedEndToEnd:
             adapter,
             campaign_id="camp-1",
             campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -264,6 +292,7 @@ class TestSeedTrialCountsReceivesHandoffSha256:
             adapter,
             campaign_id="camp-1",
             campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
             hypothesis_clause_id="clause-1",
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
@@ -288,6 +317,7 @@ class TestGateCheckIsLoadBearing:
             adapter,
             campaign_id="camp-1",
             campaign_mode="confirmation",
+            candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -306,6 +336,7 @@ class TestGateCheckIsLoadBearing:
             adapter,
             campaign_id="camp-1",
             campaign_mode="confirmation",
+            candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _downgraded_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -328,6 +359,7 @@ class TestGateCheckIsLoadBearing:
             adapter,
             campaign_id="camp-1",
             campaign_mode="sequential",
+            candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -349,6 +381,7 @@ class TestGateCheckIsLoadBearing:
             adapter,
             campaign_id="camp-1",
             campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _downgraded_stats_verdict(),
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
@@ -379,6 +412,7 @@ class TestMultiParentFailsLoudBeforeBathosCall:
                 adapter,
                 campaign_id="camp-1",
                 campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
                 parentage=parentage,
                 stats_battery_kwargs={},
             )
@@ -400,6 +434,7 @@ class TestMultiParentFailsLoudBeforeBathosCall:
             adapter,
             campaign_id="camp-1",
             campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
             parentage=parentage,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
@@ -434,6 +469,7 @@ class TestDispatchFailurePropagatesWithNoRetry:
                 adapter,
                 campaign_id="camp-1",
                 campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
                 stats_battery_kwargs={},
                 stats_battery_fn=stats_fn,
             )
@@ -452,6 +488,7 @@ class TestDispatchFailurePropagatesWithNoRetry:
                 adapter,
                 campaign_id="camp-1",
                 campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
                 stats_battery_kwargs={},
             )
 
@@ -469,6 +506,7 @@ class TestDispatchFailurePropagatesWithNoRetry:
                 adapter,
                 campaign_id="camp-1",
                 campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
                 stats_battery_kwargs={},
             )
 
@@ -507,6 +545,7 @@ class TestBathosRunFailurePropagatesWithNoRetry:
                 adapter,
                 campaign_id="camp-1",
                 campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
                 stats_battery_kwargs={},
                 stats_battery_fn=stats_fn,
                 seed_trial_counts_fn=seed_fn,
@@ -537,6 +576,7 @@ class TestGateParameterForwarding:
             adapter,
             campaign_id="camp-1",
             campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={
                 "candidate_values": [1, 2, 3],
                 "baseline_values": [0.5, 1.5, 2.5],
@@ -569,6 +609,7 @@ class TestGateParameterForwarding:
             adapter,
             campaign_id="camp-1",
             campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_db=sentinel_db,
@@ -658,3 +699,95 @@ class TestOneCandidatePassResultAccepted:
     def test_failure_and_hard_block_rejects(self) -> None:
         result = self._result(run_success=False, hard_blocked=True)
         assert result.accepted is False
+
+
+# ---------------------------------------------------------------------------
+# Candidate-static gate (T2-11, AC-1; [GW-04] first slice): a genuine pre-dispatch reject,
+# not merely an injection seam that's never exercised by its real default.
+# ---------------------------------------------------------------------------
+
+
+class TestCandidateStaticGate:
+    def test_failing_candidate_static_raises_before_lineage_or_bathos_call(self) -> None:
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+        parentage = CandidateParentage(parent_run_ids=("run-a", "run-b"))
+
+        def failing_candidate_static_fn(path: Path, root: Path | None = None) -> None:
+            msg = f"candidate {path} failed static checks"
+            raise CandidateStaticGateError(msg)
+
+        with pytest.raises(CandidateStaticGateError):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                # A genuinely multi-parent parentage would itself raise inside
+                # resolve_derived_from -- passing it here proves candidate_static_fn fires
+                # and raises *before* that lineage-resolution step is ever reached.
+                parentage=parentage,
+                candidate_static_fn=failing_candidate_static_fn,
+                stats_battery_kwargs={},
+            )
+
+        assert transport.calls == [], (
+            "no bathos call should ever happen when the candidate-static gate rejects -- the "
+            "exception must fire before adapter.run is reached"
+        )
+
+    def test_default_candidate_static_fn_is_the_real_gate_and_rejects_a_syntax_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Omitting `candidate_static_fn` entirely must exercise T2-11's REAL
+        `assert_candidate_static` -- not just prove the injection seam works."""
+        candidate_path = tmp_path / "bad_syntax.py"
+        candidate_path.write_text("def f(:\n    pass")
+        dispatch_backend = MockDispatchBackend(
+            candidate_path=candidate_path,
+            candidate_content=_CANDIDATE_CONTENT,
+        )
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+
+        with pytest.raises(CandidateStaticGateError, match="failed static checks"):
+            run_one_candidate_pass(
+                dispatch_backend,
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                candidate_static_root=tmp_path,
+                stats_battery_kwargs={},
+            )
+
+        assert transport.calls == [], "a syntactically invalid candidate must burn zero real run"
+
+    def test_default_candidate_static_fn_lets_a_clean_candidate_proceed(
+        self, tmp_path: Path
+    ) -> None:
+        """The real gate must not block a genuinely clean candidate -- the rest of the pass
+        still runs to completion end-to-end."""
+        candidate_path = tmp_path / "clean.py"
+        candidate_path.write_text('"""A minimal clean module."""\n')
+        dispatch_backend = MockDispatchBackend(
+            candidate_path=candidate_path,
+            candidate_content=_CANDIDATE_CONTENT,
+        )
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+
+        result = run_one_candidate_pass(
+            dispatch_backend,
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_root=tmp_path,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+        )
+
+        assert len(transport.calls) == 1
+        assert result.accepted is True
