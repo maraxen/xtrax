@@ -11,6 +11,10 @@ from xtrax.tiling.strategy import (
     Scan,
     ScanTransition,
     Vmap,
+    WhileBodyFn,
+    WhileCarry,
+    WhileCondFn,
+    fixed_step_count_cond,
 )
 
 
@@ -216,6 +220,117 @@ class TestAxisStrategyUnion:
         """Bucket is a valid AxisStrategy."""
         strategy = Bucket(boundaries=(8, 16))
         assert isinstance(strategy, Bucket)
+
+    def test_whilecarry_is_axis_strategy(self):
+        """WhileCarry is a valid AxisStrategy."""
+
+        def body(carry):
+            return carry
+
+        def cond(carry):
+            return carry < 10
+
+        strategy = WhileCarry(body=body, cond=cond, init=0)
+        assert isinstance(strategy, WhileCarry)
+
+
+class TestWhileCarryStrategy:
+    """WhileCarry variant: instantiation, defaults, and immutability."""
+
+    def test_whilecarry_instantiates_with_all_fields(self):
+        """WhileCarry with body, cond, init instantiates."""
+
+        def body(carry):
+            return carry + 1
+
+        def cond(carry):
+            return carry < 5
+
+        strategy = WhileCarry(body=body, cond=cond, init=0)
+        assert isinstance(strategy, WhileCarry)
+        assert strategy.body is body
+        assert strategy.cond is cond
+        assert strategy.init == 0
+
+    def test_whilecarry_fields_default_to_none(self):
+        """WhileCarry() with no arguments defaults every field to None."""
+        strategy = WhileCarry()
+        assert strategy.body is None
+        assert strategy.cond is None
+        assert strategy.init is None
+
+    def test_whilecarry_frozen(self):
+        """WhileCarry is immutable."""
+        strategy = WhileCarry(init=0)
+        with pytest.raises(Exception):  # FrozenInstanceError
+            strategy.init = 1
+
+    def test_whilecarry_has_expected_fields(self):
+        """WhileCarry exposes exactly body, cond, init -- no batch_size field."""
+        strategy = WhileCarry()
+        field_names = {f.name for f in strategy.__dataclass_fields__.values()}
+        assert field_names == {"body", "cond", "init"}
+        assert not hasattr(strategy, "batch_size")
+
+
+class TestWhileProtocolChecks:
+    """Protocol isinstance checks for WhileBodyFn/WhileCondFn."""
+
+    def test_whilebodyfn_protocol_accepts_matching_callable(self):
+        """A callable with signature (carry) -> carry matches WhileBodyFn."""
+
+        def my_body(carry):
+            return carry
+
+        assert isinstance(my_body, WhileBodyFn)
+
+    def test_whilecondfn_protocol_accepts_matching_callable(self):
+        """A callable with signature (carry) -> bool matches WhileCondFn."""
+
+        def my_cond(carry):
+            return carry < 10
+
+        assert isinstance(my_cond, WhileCondFn)
+
+
+class TestFixedStepCountCond:
+    """fixed_step_count_cond: the (step_i, state) convenience cond helper."""
+
+    def test_fixed_step_count_cond_true_below_n(self):
+        """cond returns True while step_i < n_steps, for a (step_i, state) tuple carry."""
+        cond = fixed_step_count_cond(10)
+        assert cond((0, "state")) is True
+        assert cond((9, "state")) is True
+
+    def test_fixed_step_count_cond_false_at_n(self):
+        """cond returns False once step_i reaches n_steps."""
+        cond = fixed_step_count_cond(10)
+        assert cond((10, "state")) is False
+        assert cond((11, "state")) is False
+
+    def test_fixed_step_count_cond_accepts_step_i_attribute_carry(self):
+        """cond also accepts a carry object exposing a `.step_i` field (non-tuple)."""
+
+        class _Carry:
+            def __init__(self, step_i):
+                self.step_i = step_i
+
+        cond = fixed_step_count_cond(5)
+        assert cond(_Carry(0)) is True
+        assert cond(_Carry(4)) is True
+        assert cond(_Carry(5)) is False
+
+    def test_fixed_step_count_cond_usable_as_whilecarry_cond(self):
+        """The returned cond satisfies the WhileCondFn protocol and wires into WhileCarry."""
+        cond = fixed_step_count_cond(3)
+        assert isinstance(cond, WhileCondFn)
+
+        def body(carry):
+            step_i, state = carry
+            return (step_i + 1, state)
+
+        strategy = WhileCarry(body=body, cond=cond, init=(0, "state"))
+        assert isinstance(strategy, WhileCarry)
 
 
 class TestScanInitField:

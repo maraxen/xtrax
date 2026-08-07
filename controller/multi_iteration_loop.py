@@ -161,6 +161,7 @@ import os
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from controller.bathos_campaign_adapter import BathosCampaignAdapter
@@ -168,6 +169,7 @@ from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed
 from controller.dispatch import DispatchBackend
 from controller.lineage_interim import CandidateParentage
 from controller.main_loop import CampaignMode, OneCandidatePassResult, run_one_candidate_pass
+from xtrax.loop.candidate_static import assert_candidate_static
 from xtrax.loop.diversity_quota import (
     DiversityQuotaDecision,
     assert_diversity_quota,
@@ -273,6 +275,8 @@ def run_multi_iteration_loop(
     hypothesis_clause_id: str = "",
     stats_battery_fn: Callable[..., BathosStatsBatteryVerdict] = call_stats_battery_gate,
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
+    candidate_static_fn: Callable[..., None] = assert_candidate_static,
+    candidate_static_root: Path | None = None,
     wall_clock_budget_seconds: float | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     diversity_window_size: int = 5,
@@ -316,6 +320,10 @@ def run_multi_iteration_loop(
             seam for tests, default: LC-07's real `call_stats_battery_gate`).
         seed_trial_counts_fn: forwarded to `run_one_candidate_pass` on every iteration
             (injection seam for tests, default: LC-07's real `get_seed_trial_counts`).
+        candidate_static_fn: forwarded to `run_one_candidate_pass` on every iteration
+            (injection seam for tests, default: T2-11's real `assert_candidate_static`).
+        candidate_static_root: forwarded to `run_one_candidate_pass` on every iteration
+            (jaxlint's subprocess root; default `None` lets jaxlint fall back to `Path.cwd()`).
         wall_clock_budget_seconds: the SOFT, in-process budget-exhaustion check. `None`
             (default) disables it -- the run then only stops via `max_candidates` or the real
             watchdog's hard kill. When set, checked (via `time_fn`) before each candidate's
@@ -385,6 +393,8 @@ def run_multi_iteration_loop(
                 hypothesis_clause_id=hypothesis_clause_id,
                 stats_battery_fn=stats_battery_fn,
                 seed_trial_counts_fn=seed_trial_counts_fn,
+                candidate_static_fn=candidate_static_fn,
+                candidate_static_root=candidate_static_root,
             )
             iterations.append(result)
 
