@@ -1,8 +1,9 @@
-# praxia Internal Docs
+# xtrax Internal Docs
 
 ## Daily
 
 ## Handoffs
+- [260807_apply-confirmed-disposition-for-s4-closure-declaration-schema-not-one-write](handoffs/260807_apply-confirmed-disposition-for-s4-closure-declaration-schema-not-one-write.md) — User-confirmed plan: amend #4093 and file a new backlog row for the real xtrax-side scope of S4, blocked on plugin:praxia:core MCP not connecting from the affigit corpus session
 - [260623_e1-e2-composition-layer](handoffs/260623_e1-e2-composition-layer.md) — session handoff: E1-MVP (xtrax.inference) + #2561 hardening + E2-MVP (xtrax.cli plan/explain/export) all merged to main (341 tests); deferred run/sweep/resume verbs + push pending
 
 ## Plans
@@ -13,8 +14,6 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
-- [260807_evaluator-integration-decision](specs/260807_evaluator-integration-decision.md) — Resolve
-- [260719_xr-while-carry](specs/260719_xr-while-carry.md) — WhileCarry — a lax.while_loop-backed AxisStrategy
 - [260716_loop-controller-epic-architecture-resolved](specs/260716_loop-controller-epic-architecture-resolved.md) — loop-controller epic architecture spec (contemplex cc8f100b, resolved via research → brainstorm → 2 independent adversarial critic passes, revised): resolves all 3 remaining open questions from the kickoff doc (candidate hand-off via a generic praxia-side write_staged_file MCP tool + DispatchBackend's CandidateHandoff contract; bathos sequencing incl. direct-library-import for unwired stats-battery/seed-floor gaps, MCP-only for lineage edges; same-repo controller/ placement); 13-item AC-labeled decomposition (AC-1 through AC-10, incl. AC-1b bathos-independence gate and AC-8b multi-iteration wiring added during adversarial review after the brainstorm silently dropped the epic's own multi-iteration/budget/Leap-Path phase)
 - [260715_entry-points-based-xtrax-cli-verb-regist](specs/260715_entry-points-based-xtrax-cli-verb-regist.md) — xtrax CLI verb registration spec (contemplex 683e225f, INVEST PASS): Faction C+B combined — document {**REGISTRY, **their_verbs} composition as a sanctioned pattern (REGISTRY promoted to xtrax.cli.__all__) + integration test; explicitly DEFERS the entry_points plugin hook (demand signal was ~zero — plegadx never asked for dispatch through xtrax's own binary); 7 ACs; revisit trigger tracked on idea-004
 - [260715_generic-fail-loud-toml-to-dataclass-conf](specs/260715_generic-fail-loud-toml-to-dataclass-conf.md) — xtrax.config primitive spec (contemplex b93ead41, INVEST PASS): Faction A thin composable validators (load_toml_document/require_sections/require_field/check_schema_version) in a new top-level xtrax.config module, TrainConfig refactored onto it byte-compatible; 8 ACs, gated on demonstrated adoption by a real downstream consumer (plegadx) before/alongside merge
@@ -80,15 +79,8 @@
 
 ## Misc
 
-## Active (legacy)
-
-## Notes (legacy)
-
-## Designs (legacy)
-- [260618_2180_port_validation_design](designs/260618_2180_port_validation_design.md)
-
 ## Superpowers
-> Skill outputs live in `.praxia/docs/superpowers/plans/` and `.praxia/docs/superpowers/specs/.
+> Skill outputs live in `.praxia/docs/superpowers/plans/` and `.praxia/docs/superpowers/specs/`.
 - [plans](superpowers/plans/) — brainstorming + writing-plans outputs
 - [specs](superpowers/specs/) — specification outputs
 
