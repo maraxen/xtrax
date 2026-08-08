@@ -250,9 +250,7 @@ class TestGetSidecarDriftSignalRealBathos:
         bathos_catalog.write_run(baseline_run, catalog_dir)
         bathos_catalog.write_run(current_run, catalog_dir)
 
-        signal = get_sidecar_drift_signal(
-            script_path, "run-current", catalog_dir=str(catalog_dir)
-        )
+        signal = get_sidecar_drift_signal(script_path, "run-current", catalog_dir=str(catalog_dir))
 
         assert isinstance(signal, SidecarDriftSignal)
         assert signal.drifted is True
@@ -281,9 +279,7 @@ class TestGetSidecarDriftSignalRealBathos:
         bathos_catalog.write_run(baseline_run, catalog_dir)
         bathos_catalog.write_run(current_run, catalog_dir)
 
-        signal = get_sidecar_drift_signal(
-            script_path, "run-current", catalog_dir=str(catalog_dir)
-        )
+        signal = get_sidecar_drift_signal(script_path, "run-current", catalog_dir=str(catalog_dir))
 
         assert signal.drifted is False
 
