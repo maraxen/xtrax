@@ -1,20 +1,75 @@
 {
-  "task_id": "260617_xtrax-composition-mission",
-  "generated_at": "2026-06-17T20:00:00Z",
+  "task_id": "260807_autonomous-dev-loop",
   "prioritized_items": [
-    {"id": 1573, "title": "[audit-fw N0.1] import-linter cycle-block foundation gate", "category": "infrastructure", "difficulty": "quick", "source": "backlog", "recommended_action": "sprint_now", "rationale": "Rank-1 foundation epic; blocks all audit dimensions", "priority": "P1"},
-    {"id": 1574, "title": "[audit-fw N0.2] no-from-__future__-import-annotations guard", "category": "infrastructure", "difficulty": "quick", "source": "backlog", "recommended_action": "sprint_now", "rationale": "Foundation gate for jaxtyping track", "priority": "P1"},
-    {"id": 1575, "title": "[audit-fw N0.3] ruff F722/F821 per-file ignores for jaxtyping", "category": "infrastructure", "difficulty": "quick", "source": "backlog", "recommended_action": "sprint_now", "rationale": "Depends on N0.2; enables type-hardening", "priority": "P1"},
-    {"id": 2175, "title": "EPIC [research]: Agent identities, skills, KBs, evolvable tooling", "category": "research", "difficulty": "extended", "source": "backlog", "recommended_action": "research_epic", "rationale": "Parallel contemplex track; blocks #2174 agentic features", "priority": "P2"},
-    {"id": 2174, "title": "Pure-JAX composition layer", "category": "feature", "difficulty": "extended", "source": "backlog", "recommended_action": "defer", "rationale": "Blocked on audit foundation + distribution + #2175 research", "priority": "P2"}
+    {
+      "id": "170",
+      "title": "Rename SafeMap/safe_map → ChunkedMap/chunked_map (or TiledMap)",
+      "category": "infrastructure",
+      "difficulty": "standard",
+      "source": "staging",
+      "recommended_action": "discard",
+      "rationale": "Exact duplicate of already-open backlog #3644, which explicitly records itself as 'Promoted from idea-006 (staging_id 170...)'.",
+      "priority": "P2"
+    },
+    {
+      "id": "169",
+      "title": "Entry-points-based xtrax CLI verb registration",
+      "category": "infrastructure",
+      "difficulty": "quick",
+      "source": "staging",
+      "recommended_action": "discard",
+      "rationale": "Spec's ACs already shipped in commit 77602da / PR #34 (src/xtrax/cli/__init__.py, src/xtrax/cli/registry.py).",
+      "priority": "P3"
+    },
+    {
+      "id": "168",
+      "title": "Generic fail-loud TOML->dataclass config primitive (xtrax.config)",
+      "category": "infrastructure",
+      "difficulty": "quick",
+      "source": "staging",
+      "recommended_action": "discard",
+      "rationale": "Fully implemented in src/xtrax/config.py in the same commit 77602da / PR #34, covered by tests/test_config.py + tests/test_import_isolation.py.",
+      "priority": "P3"
+    },
+    {
+      "id": "idea-001",
+      "title": "Research epics: port-validation pipeline + autoresearch",
+      "category": "research",
+      "difficulty": "extended",
+      "source": "ideas",
+      "recommended_action": "discard",
+      "rationale": "References epics #2180/#2181 no longer present in the open backlog; superseded by the loop-controller + GW-01..06 + T2/T3 DAG work already tracked.",
+      "priority": "P3"
+    },
+    {
+      "id": "idea-002",
+      "title": "xtrax consumer MCP server (xtrax-mcp) exposing RunSpec/CLI primitives",
+      "category": "feature",
+      "difficulty": "extended",
+      "source": "ideas",
+      "recommended_action": "defer",
+      "rationale": "Confirmed real gap, no xtrax-mcp module in repo, but lower priority than active GW-01..06 gate-wiring critical path.",
+      "priority": "P2"
+    },
+    {
+      "id": "idea-005",
+      "title": "Watch hijax; jax.extend adoption triggers",
+      "category": "research",
+      "difficulty": "quick",
+      "source": "ideas",
+      "recommended_action": "defer",
+      "rationale": "Watch-only item; jax.extend/hijax exist upstream but xtrax has no dependency on them yet.",
+      "priority": "P3"
+    }
   ],
-  "sprint_cohort": [
-    {"id": 1573, "title": "import-linter cycle-block", "difficulty": "quick", "epic": "audit-framework-foundation"},
-    {"id": 1574, "title": "no-__future__ guard", "difficulty": "quick", "epic": "audit-framework-foundation"},
-    {"id": 1575, "title": "ruff jaxtyping ignores", "difficulty": "quick", "epic": "audit-framework-foundation"}
-  ],
-  "research_epic_next": {"id": 2175, "phase": "brainstorm", "session_id": "b759c73c", "rationale": "Contemplex architectural brainstorm in progress"},
   "deferred": [
-    {"id": 2174, "reason": "Depends on audit foundation, distribution readiness, and #2175 research decomposition"}
+    {"id": "idea-002", "reason": "Real gap, lower priority than active GW-01..06 critical path; revisit once that chain closes."},
+    {"id": "idea-005", "reason": "Passive watch-only item; no adoption trigger has fired yet."}
+  ],
+  "discarded": [
+    {"id": "170", "reason": "Duplicate of already-open backlog #3644."},
+    {"id": "169", "reason": "Spec fully implemented and merged (commit 77602da / PR #34)."},
+    {"id": "168", "reason": "Spec fully implemented and merged (commit 77602da / PR #34)."},
+    {"id": "idea-001", "reason": "References epics no longer present in the open backlog; superseded."}
   ]
 }

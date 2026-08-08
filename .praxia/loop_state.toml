@@ -19,6 +19,8 @@ last_artifact_path = ""
 iteration_count = 0
 last_activation = "2026-08-08T01:47:52Z"
 autonomy_level = "L2"
+fsm_id = "autoloop-260807_autonomous-dev-loop"
+migrated_at = "2026-08-08T01:49:04.222717296+00:00"
 
 [loop.lock]
 token = ""
