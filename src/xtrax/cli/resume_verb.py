@@ -76,13 +76,19 @@ def run_resume(args: ResumeArgs) -> None:
     new_checkpoint_dir = f".xtrax/runs/{new_run_id}/checkpoints/"
     os.makedirs(new_checkpoint_dir, exist_ok=True)
 
-    # Write manifest for the resumed run
+    # Write manifest for the resumed run, carrying forward the closure declaration (#4117)
+    # if the original run had one -- write_manifest_dict no longer reads it off cfg_dict,
+    # so it must be re-extracted from the manifest we just read and passed through explicitly.
+    closure = manifest.get("closure") or {}
     write_manifest_dict(
         run_dir=new_run_dir,
         cfg_dict=manifest,
         run_id=new_run_id,
         config_hash_val=config_hash,
         resumed_from=manifest["run_id"],
+        evaluator_paths=closure.get("evaluator_paths"),
+        split_paths=closure.get("split_paths"),
+        metric_def_paths=closure.get("metric_def_paths"),
     )
 
     # Run training

@@ -15,8 +15,20 @@ def write_manifest_dict(
     run_id: str,
     config_hash_val: str,
     resumed_from: str | None = None,
+    evaluator_paths: list[str] | None = None,
+    split_paths: list[str] | None = None,
+    metric_def_paths: list[str] | None = None,
 ) -> dict:
-    """Write manifest from a dict representation of the config."""
+    """Write manifest from a dict representation of the config.
+
+    `evaluator_paths`/`split_paths`/`metric_def_paths` are an OPTIONAL, opaque closure
+    declaration (#4117): plain path-string lists, not `xtrax.loop.closure_lock.ClosureManifest`
+    or `Path` objects -- this module never imports `closure_lock`. Persisted as a "closure"
+    section iff the caller supplies at least one of the three; otherwise omitted entirely (no
+    `CURRENT_SCHEMA_VERSION` bump, and deliberately absent from `read_manifest`'s
+    `required_fields` -- see
+    `.praxia/docs/decisions/260811_4117-closure-declaration-persistence-layering.md`).
+    """
     model_path = cfg_dict["model"].get("path")
     if not model_path:
         raise ValueError("manifest invariant violated: model.path is null or missing")
@@ -44,6 +56,12 @@ def write_manifest_dict(
     }
     if resumed_from is not None:
         manifest["resumed_from"] = resumed_from
+    if evaluator_paths is not None or split_paths is not None or metric_def_paths is not None:
+        manifest["closure"] = {
+            "evaluator_paths": evaluator_paths or [],
+            "split_paths": split_paths or [],
+            "metric_def_paths": metric_def_paths or [],
+        }
 
     manifest_path = Path(run_dir) / "manifest.json"
     os.makedirs(run_dir, exist_ok=True)
@@ -69,11 +87,15 @@ def write_manifest(
 
     Returns the manifest dict (for tests to inspect).
     """
+    closure = cfg.closure or {}
     return write_manifest_dict(
         run_dir=run_dir,
         cfg_dict=dataclasses.asdict(cfg),
         run_id=run_id,
         config_hash_val=config_hash_val,
+        evaluator_paths=closure.get("evaluator_paths"),
+        split_paths=closure.get("split_paths"),
+        metric_def_paths=closure.get("metric_def_paths"),
     )
 
 

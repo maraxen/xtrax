@@ -9,7 +9,7 @@ import pytest
 
 from xtrax.cli.config import ConfigError, TrainConfig
 from xtrax.cli.errors import ResumeError
-from xtrax.cli.manifest import read_manifest, write_manifest
+from xtrax.cli.manifest import read_manifest, write_manifest, write_manifest_dict
 
 
 def _make_cfg(**overrides):
@@ -126,6 +126,62 @@ def test_read_manifest_schema_version_mismatch(tmp_path) -> None:
 
     with pytest.raises(ConfigError, match="manifest schema_version 99 != expected 1"):
         read_manifest(str(manifest_path))
+
+
+def test_manifest_closure_absent_when_not_supplied(tmp_path) -> None:
+    """#4117: no closure section in the manifest when the config declares none."""
+    run_dir = str(tmp_path / "runs" / "noclosure")
+    cfg = _make_cfg()
+    m = write_manifest(run_dir, cfg, run_id="noclosure", config_hash_val="noclosure")
+    assert "closure" not in m
+
+
+def test_manifest_closure_persisted_when_present(tmp_path) -> None:
+    """#4117: an optional [closure] TOML section flows through to the manifest verbatim."""
+    run_dir = str(tmp_path / "runs" / "withclosure")
+    cfg = _make_cfg(
+        closure={
+            "evaluator_paths": ["src/xtrax/eval.py"],
+            "split_paths": ["src/xtrax/split.py"],
+            "metric_def_paths": ["src/xtrax/metrics.py"],
+        }
+    )
+    m = write_manifest(run_dir, cfg, run_id="withclosure", config_hash_val="withclosure")
+    assert m["closure"] == {
+        "evaluator_paths": ["src/xtrax/eval.py"],
+        "split_paths": ["src/xtrax/split.py"],
+        "metric_def_paths": ["src/xtrax/metrics.py"],
+    }
+
+    reloaded = read_manifest(str(Path(run_dir) / "manifest.json"))
+    assert reloaded["closure"]["evaluator_paths"] == ["src/xtrax/eval.py"]
+
+
+def test_write_manifest_dict_closure_partial_fills_empty_lists(tmp_path) -> None:
+    """#4117: supplying only one of the three lists still yields a closure section,
+    with the un-supplied lists defaulted to empty rather than raising or omitting."""
+    run_dir = str(tmp_path / "runs" / "partialclosure")
+    cfg_dict = dict(
+        schema_version=1,
+        model={"path": "tests.cli._run_fixtures:make_model", "kwargs": {}},
+        optimizer={"path": "xtrax.training.optim:adamw_with_schedule", "kwargs": {}},
+        loss={"path": "tests.cli._run_fixtures:make_loss", "kwargs": {}},
+        data={"factory": "tests.cli._run_fixtures:make_dataset", "kwargs": {}, "batch_size": 4},
+        seed=42,
+        num_epochs=3,
+    )
+    m = write_manifest_dict(
+        run_dir=run_dir,
+        cfg_dict=cfg_dict,
+        run_id="partialclosure",
+        config_hash_val="partialclosure",
+        evaluator_paths=["src/xtrax/eval.py"],
+    )
+    assert m["closure"] == {
+        "evaluator_paths": ["src/xtrax/eval.py"],
+        "split_paths": [],
+        "metric_def_paths": [],
+    }
 
 
 def test_read_manifest_missing_required_fields(tmp_path) -> None:

@@ -27,6 +27,10 @@ class TrainConfig:
     data: dict
     seed: int
     num_epochs: int
+    closure: dict | None = None
+    """Optional closure declaration (#4117): `evaluator_paths`/`split_paths`/`metric_def_paths`
+    lists, persisted opaquely into the run manifest if present. Not required, not schema-versioned
+    -- xtrax.cli never inspects or validates its contents beyond passing the three lists through."""
 
 
 class ConfigError(CLIError):
@@ -53,4 +57,5 @@ def load_config(path: str) -> TrainConfig:
         data=raw["data"],
         seed=seed,
         num_epochs=num_epochs,
+        closure=raw.get("closure"),
     )
