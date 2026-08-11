@@ -1,0 +1,23 @@
+{
+  "task_id": "260807_autonomous-dev-loop",
+  "selected_item_ids": ["3649"],
+  "selection_mode": "normal",
+  "staleness_downgraded": [],
+  "rubric_version": "1.0",
+  "difficulty_budget_used": 5,
+  "difficulty_budget_total": 6,
+  "item_cap": 3,
+  "greedy_fill_note": "FIFO order [3649 (created 260717, cost 5), 4137 (created 260808, cost 3)]: 3649 selected (remaining_budget 6->1), 4137 skipped (cost 3 > remaining_budget 1). 4137 remains open/executable/P1 for the next TRIAGE pass.",
+  "brainstorm_needed": true,
+  "brainstorm_needed_rationale": "3649: category=feature, difficulty=extended, no dedicated implementation spec exists for GW-02 specifically (only the general #2181 AC-10/AC-14/AC-27 definition doc). Table 1 rule: feature+extended+no-spec -> brainstorm_needed=true.",
+  "adversarial_tier": "TIER3",
+  "adversarial_tier_rationale": "difficulty=extended -> TIER3 per Table 2 (max 6 rounds, 0.85 confidence for auto-accept).",
+  "pcw_template": "spec_driven_dev",
+  "worktree_safe": true,
+  "worktree_safe_rationale": "Touches controller/main_loop.py only; no Cargo.lock/migrations/schema/praxia-mcp public-tool-interface files. No other item concurrently in-flight this sprint.",
+  "escalation_flags": [],
+  "advisory_warnings": [
+    "3649's own description explicitly warns: do not assume scripts/smoke_2181_walking_skeleton.py's in-process fitness-dict wiring (via evaluate_with_provenance) transfers directly to the real bathos-dispatch controller now that #4133/PR#86 shipped SPLIT_COMPUTE -- brainstorm phase must re-derive how fitness dicts actually reach the ratchet decision in the current architecture, not port the walking-skeleton's wiring uncritically."
+  ],
+  "next_phase": "BRAINSTORM"
+}

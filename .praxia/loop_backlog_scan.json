@@ -1,11 +1,20 @@
 {
-  "task_id": "260617_xtrax-composition-mission",
-  "generated_at": "2026-06-17T20:00:00Z",
+  "task_id": "260807_autonomous-dev-loop",
   "executable_items": [
-    {"id": 1573, "title": "[audit-fw N0.1] import-linter cycle-block foundation gate", "category": "infrastructure", "difficulty": "quick", "priority": "P1", "depends_on": [], "spec_path": ".praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md"},
-    {"id": 1574, "title": "[audit-fw N0.2] no-`from __future__ import annotations` guard", "category": "infrastructure", "difficulty": "quick", "priority": "P1", "depends_on": [], "spec_path": ".praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md"},
-    {"id": 1575, "title": "[audit-fw N0.3] ruff F722/F821 per-file ignores for jaxtyping modules", "category": "infrastructure", "difficulty": "quick", "priority": "P1", "depends_on": [1573], "spec_path": ".praxia/docs/specs/260611_re-run-v2-refine-and-enrich-the-xtrax-sy.md"}
+    {"id": "3649", "title": "[GW-02] Wire multi-metric ratchet decision + crash-safe lineage into the accept/promote flow", "category": "feature", "difficulty": "extended", "priority": "P1", "depends_on": [4133], "description": "Wire multi_metric_ratchet (T2-17/AC-10), ratchet_crash_atomicity (T2-10/AC-14), compile_time_clock (T2-19/AC-27) into controller/main_loop.py's OneCandidatePassResult.accepted decision. Real blocker resolved: depends_on #4133 (merged PR #86, SPLIT_COMPUTE), now completed. Item's own text warns not to assume the walking-skeleton's in-process fitness-dict wiring transfers directly to the bathos-dispatch controller -- verify current state before implementing."},
+    {"id": "4137", "title": "Fix double-dispatch risk before wiring BathosSplitComputeEvaluator into run_one_candidate_pass", "category": "bug", "difficulty": "standard", "priority": "P1", "depends_on": [4133], "description": "Refactor run_one_candidate_pass to accept a pre-dispatched CandidateRunResult, or add explicit guard/doc, so BathosSplitComputeEvaluator + run_one_candidate_pass never double-dispatch the same candidate."}
   ],
-  "blocked_items": [],
-  "executable_count": 3
+  "blocked_items": [
+    {"id": "3072", "title": "[T2-05] AC-7 eval-closure-invariant / full-closure SHA lock", "depends_on": [3071, 3060], "note": "3071 now completed (was stale-open); re-check 3060 and re-scan next TRIAGE pass."}
+  ],
+  "excluded_governance_nodes": ["3043", "3047", "3048", "3049", "3050"],
+  "excluded_governance_reason": "HITL gate placeholders (category=audit, gate_type=human) -- no code deliverable exists to fixer-dispatch; these represent standing human sign-off requirements, not implementable backlog work. Excluded from selection by orchestrator judgment (rubric has no explicit rule for this case).",
+  "excluded_in_review": ["3648"],
+  "excluded_in_review_reason": "GW-01's narrowed scope is implemented but sits in open PR #84 (branch gw01-attestation-evidence-sidecar-drift), not yet merged -- handled via review/merge track this session, not new fixer dispatch.",
+  "corrections_this_pass": [
+    "4133 marked completed (merged PR #86, was stale-open)",
+    "3650 (GW-03) marked completed (merged PR #80, was stale-open)",
+    "3071 (T2-04 sealed-seam gate) marked completed (already implemented, scripts/audit_sealed_seam.py + 9/9 passing tests, was stale-open)"
+  ],
+  "executable_count": 2
 }

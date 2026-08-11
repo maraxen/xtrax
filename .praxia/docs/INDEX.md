@@ -1,8 +1,9 @@
-# praxia Internal Docs
+# xtrax Internal Docs
 
 ## Daily
 
 ## Handoffs
+- [260807_apply-confirmed-disposition-for-s4-closure-declaration-schema-not-one-write](handoffs/260807_apply-confirmed-disposition-for-s4-closure-declaration-schema-not-one-write.md) — User-confirmed plan: amend #4093 and file a new backlog row for the real xtrax-side scope of S4, blocked on plugin:praxia:core MCP not connecting from the affigit corpus session
 - [260623_e1-e2-composition-layer](handoffs/260623_e1-e2-composition-layer.md) — session handoff: E1-MVP (xtrax.inference) + #2561 hardening + E2-MVP (xtrax.cli plan/explain/export) all merged to main (341 tests); deferred run/sweep/resume verbs + push pending
 
 ## Plans
@@ -13,8 +14,7 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
-- [260807_evaluator-integration-decision](specs/260807_evaluator-integration-decision.md) — Resolve
-- [260719_xr-while-carry](specs/260719_xr-while-carry.md) — WhileCarry — a lax.while_loop-backed AxisStrategy
+- [260808_hmw-gw-02-wire-multi-metric-ratchet-deci](specs/260808_hmw-gw-02-wire-multi-metric-ratchet-deci.md)
 - [260716_loop-controller-epic-architecture-resolved](specs/260716_loop-controller-epic-architecture-resolved.md) — loop-controller epic architecture spec (contemplex cc8f100b, resolved via research → brainstorm → 2 independent adversarial critic passes, revised): resolves all 3 remaining open questions from the kickoff doc (candidate hand-off via a generic praxia-side write_staged_file MCP tool + DispatchBackend's CandidateHandoff contract; bathos sequencing incl. direct-library-import for unwired stats-battery/seed-floor gaps, MCP-only for lineage edges; same-repo controller/ placement); 13-item AC-labeled decomposition (AC-1 through AC-10, incl. AC-1b bathos-independence gate and AC-8b multi-iteration wiring added during adversarial review after the brainstorm silently dropped the epic's own multi-iteration/budget/Leap-Path phase)
 - [260715_entry-points-based-xtrax-cli-verb-regist](specs/260715_entry-points-based-xtrax-cli-verb-regist.md) — xtrax CLI verb registration spec (contemplex 683e225f, INVEST PASS): Faction C+B combined — document {**REGISTRY, **their_verbs} composition as a sanctioned pattern (REGISTRY promoted to xtrax.cli.__all__) + integration test; explicitly DEFERS the entry_points plugin hook (demand signal was ~zero — plegadx never asked for dispatch through xtrax's own binary); 7 ACs; revisit trigger tracked on idea-004
 - [260715_generic-fail-loud-toml-to-dataclass-conf](specs/260715_generic-fail-loud-toml-to-dataclass-conf.md) — xtrax.config primitive spec (contemplex b93ead41, INVEST PASS): Faction A thin composable validators (load_toml_document/require_sections/require_field/check_schema_version) in a new top-level xtrax.config module, TrainConfig refactored onto it byte-compatible; 8 ACs, gated on demonstrated adoption by a real downstream consumer (plegadx) before/alongside merge
@@ -55,6 +55,7 @@
 - [260702_roadmap-research-synthesis](research/260702_roadmap-research-synthesis.md) — roadmap-cycle research synthesis (task 260702_research-roadmap-dags): 6 adversarially-verified themes → #2181 autoresearch ratchet-loop architecture + gate catalog + bathos capability map, #2174 minimal composition substrate child item (D1–D4, AC1–AC6), neuro-symbolic placement (grounding node in #2174, entry criterion for #2181), praxia plugin contract + rig-run dispatch gaps, cross-cutting gate-design template; brainstorm fork list + dropped-claims appendix
 
 ## Decisions
+- [260811_4117-closure-declaration-persistence-layering](decisions/260811_4117-closure-declaration-persistence-layering.md) — #4117 scoping: closure-declaration persistence stays xtrax.cli-only (optional plain-string params, no closure_lock import); the still-missing build_closure_manifest production caller is controller/-side, filed separately as #4164
 - [260716_t2-33-island-upgrade-delta-scope](decisions/260716_t2-33-island-upgrade-delta-scope.md) — T2-33 (P4-gated island/population-search) scoped as a documented delta only, no code: formalizes T2-03's GEAR+AutoSOTA read into a spec (evaluate() seam unchanged; GEAR-style bounded elite frontier + UCB parent selection extends T2-17/T2-18 rather than literal island migration; bathos B2-03 already covers multi-parent lineage); implementation blocked on a T2-31 scope-expansion approval that does not yet exist
 - [260714_2181-autoresearch-loop-constitution](decisions/260714_2181-autoresearch-loop-constitution.md) — AC-21/T2-28 constitution: governs #2181's five human-approval gates (constitution amendment, evaluator-change, promotion-to-main, scope/allowlist expansion, kill-switch/campaign approval); restates the non-negotiable safety invariants (no autonomous merge to main, sealed evaluator monopoly, external unrevokable kill-switch, metrics provenance, info barrier); attestation bound to T3-05's freshness primitive, 365-day TTL
 
@@ -80,15 +81,8 @@
 
 ## Misc
 
-## Active (legacy)
-
-## Notes (legacy)
-
-## Designs (legacy)
-- [260618_2180_port_validation_design](designs/260618_2180_port_validation_design.md)
-
 ## Superpowers
-> Skill outputs live in `.praxia/docs/superpowers/plans/` and `.praxia/docs/superpowers/specs/.
+> Skill outputs live in `.praxia/docs/superpowers/plans/` and `.praxia/docs/superpowers/specs/`.
 - [plans](superpowers/plans/) — brainstorming + writing-plans outputs
 - [specs](superpowers/specs/) — specification outputs
 
