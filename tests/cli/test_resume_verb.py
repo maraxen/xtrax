@@ -243,6 +243,41 @@ def test_resume_empty_checkpoint_dir_failure(tmp_path, monkeypatch, fixture_toml
         run_resume(args)
 
 
+def test_resume_carries_forward_closure_declaration(tmp_path, monkeypatch):
+    """#4117: an original run's optional closure declaration survives resume (read back
+    from the old manifest and re-passed explicitly -- write_manifest_dict no longer reads
+    it implicitly off cfg_dict)."""
+    monkeypatch.chdir(tmp_path)
+
+    toml_with_closure = (
+        FIXTURE_TOML_CONTENT
+        + """
+[closure]
+evaluator_paths = ["src/xtrax/eval.py"]
+split_paths = ["src/xtrax/split.py"]
+metric_def_paths = ["src/xtrax/metrics.py"]
+"""
+    )
+    p = tmp_path / "config.toml"
+    p.write_text(toml_with_closure)
+
+    cfg = load_config(str(p))
+    run_from_config(cfg)
+
+    run_dirs = list(Path(".xtrax/runs").iterdir())
+    original_run_id = run_dirs[0].name
+    original_manifest = json.loads((run_dirs[0] / "manifest.json").read_text())
+    assert original_manifest["closure"]["evaluator_paths"] == ["src/xtrax/eval.py"]
+
+    args = ResumeArgs(run_id=original_run_id, epochs=1)
+    run_resume(args)
+
+    run_dirs = sorted(Path(".xtrax/runs").iterdir())
+    new_run_dir = [d for d in run_dirs if d.name != original_run_id][0]
+    new_manifest = json.loads((new_run_dir / "manifest.json").read_text())
+    assert new_manifest["closure"] == original_manifest["closure"]
+
+
 def test_tyro_isolation():
     sys.modules.pop("tyro", None)
     assert "tyro" not in sys.modules

@@ -121,6 +121,34 @@ def test_loss_kwargs_default_empty(tmp_path) -> None:
     assert cfg.loss.get("kwargs") == {} or cfg.loss.get("kwargs") is None
 
 
+def test_closure_section_absent_by_default(tmp_path) -> None:
+    """#4117: no [closure] section in the TOML -> cfg.closure is None, not required."""
+    p = _write_toml(tmp_path, VALID_TOML)
+    cfg = load_config(p)
+    assert cfg.closure is None
+
+
+def test_closure_section_parses_when_present(tmp_path) -> None:
+    """#4117: an optional [closure] section hydrates verbatim -- xtrax.cli treats it as
+    opaque and does not validate its contents beyond being a table."""
+    toml = (
+        VALID_TOML
+        + """
+[closure]
+evaluator_paths = ["src/xtrax/eval.py"]
+split_paths = ["src/xtrax/split.py"]
+metric_def_paths = ["src/xtrax/metrics.py"]
+"""
+    )
+    p = _write_toml(tmp_path, toml)
+    cfg = load_config(p)
+    assert cfg.closure == {
+        "evaluator_paths": ["src/xtrax/eval.py"],
+        "split_paths": ["src/xtrax/split.py"],
+        "metric_def_paths": ["src/xtrax/metrics.py"],
+    }
+
+
 def test_multiple_missing_sections_all_named(tmp_path) -> None:
     """xtrax.config AC3: load_config (now composed from require_sections) names
     every missing section, not just the first.
