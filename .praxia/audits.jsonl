@@ -304,3 +304,9 @@
 {"kind":"run_summary","run_id":"rc_1541f433","node_id":"debt_triage_batch1","turns_total":8,"max_prompt_chars":18959,"truncation_count":0,"overflow_count":0,"ts":1786155459}
 {"kind":"frontier_shadow","run_id":"rc_1541f433","node_id":"debt_triage_batch1","candidate_count":0,"candidates_recorded":0,"candidates_truncated":false,"candidates":[],"expanded_count":0,"expanded":[],"ts":1786155459}
 {"kind":"walltime_exhausted","node_id":"join_triage","elapsed_s":1625,"max_walltime_s":900,"ts":1786155459,"run_id":"rc_1541f433"}
+{"kind":"run_summary","run_id":"rc_07444542","node_id":"challenge","turns_total":1,"max_prompt_chars":30727,"truncation_count":0,"overflow_count":0,"ts":1786472529}
+{"kind":"frontier_shadow","run_id":"rc_07444542","node_id":"challenge","candidate_count":0,"candidates_recorded":0,"candidates_truncated":false,"candidates":[],"expanded_count":0,"expanded":[],"ts":1786472529}
+{"kind":"run_summary","run_id":"rc_07444542","node_id":"defend","turns_total":1,"max_prompt_chars":34777,"truncation_count":0,"overflow_count":0,"ts":1786472531}
+{"kind":"frontier_shadow","run_id":"rc_07444542","node_id":"defend","candidate_count":0,"candidates_recorded":0,"candidates_truncated":false,"candidates":[],"expanded_count":0,"expanded":[],"ts":1786472531}
+{"kind":"run_summary","run_id":"rc_07444542","node_id":"commit","turns_total":2,"max_prompt_chars":39787,"truncation_count":0,"overflow_count":0,"ts":1786472544}
+{"kind":"frontier_shadow","run_id":"rc_07444542","node_id":"commit","candidate_count":0,"candidates_recorded":0,"candidates_truncated":false,"candidates":[],"expanded_count":0,"expanded":[],"ts":1786472544}
