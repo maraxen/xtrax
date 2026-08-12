@@ -64,16 +64,18 @@ class TestAC1Documentation:
         assert docstring is not None
         assert "raw artifacts" in docstring.lower()
         assert "SPLIT_COMPUTE" in docstring
-        assert (
-            "fitness" in docstring.lower()
-        ), "docstring must document what raw artifacts are scored against"
+        assert "fitness" in docstring.lower(), (
+            "docstring must document what raw artifacts are scored against"
+        )
 
     def test_ac1_bathoscandidate_docstring_documents_output_paths_constraint(self) -> None:
         """AC1: BathosCandidate.output_paths docstring must state that output_paths must
         contain only raw artifacts, never a pre-computed summary."""
-        docstring = BathosCandidate.__dataclass_fields__["output_paths"].metadata.get(
-            "__doc__"
-        ) or BathosCandidate.__doc__ or ""
+        docstring = (
+            BathosCandidate.__dataclass_fields__["output_paths"].metadata.get("__doc__")
+            or BathosCandidate.__doc__
+            or ""
+        )
         assert "raw artifacts" in docstring.lower() or "output_paths" in docstring.lower(), (
             "BathosCandidate docstring must document output_paths constraint "
             "(checked via class __doc__)"
@@ -357,9 +359,7 @@ class TestAC3AC4TransportRecording:
 
 
 class TestAC5EndToEndWithGuardedEvaluate:
-    def test_ac5_guarded_evaluate_succeeds_with_declared_split_path(
-        self, tmp_path: Path
-    ) -> None:
+    def test_ac5_guarded_evaluate_succeeds_with_declared_split_path(self, tmp_path: Path) -> None:
         """AC5: call guarded_evaluate with a real ClosureManifest built via
         build_closure_manifest, where the raw-artifact path is declared in split_paths.
         Assert this succeeds with no UnlistedReadError."""
@@ -575,9 +575,7 @@ class TestFailurePathDispatchFailure:
             return {"score": 1.0}
 
         # Return a failed envelope
-        failing_envelope = _ok_envelope(
-            script_path="c.py", exit_code=1, success=False
-        )
+        failing_envelope = _ok_envelope(script_path="c.py", exit_code=1, success=False)
         transport = _RecordingTransport(failing_envelope)
         adapter = BathosCampaignAdapter(transport=transport, token="test-token")
 
@@ -623,9 +621,7 @@ class TestFailurePathDispatchFailure:
             return {"score": 1.0}
 
         # Non-zero exit code + success=False
-        failing_envelope = _ok_envelope(
-            script_path="c.py", exit_code=127, success=False
-        )
+        failing_envelope = _ok_envelope(script_path="c.py", exit_code=127, success=False)
         transport = _RecordingTransport(failing_envelope)
         adapter = BathosCampaignAdapter(transport=transport, token="test-token")
 

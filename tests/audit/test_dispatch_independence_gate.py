@@ -23,9 +23,7 @@ def test_detects_praxia_import(tmp_path: Path) -> None:
 
 
 def test_detects_praxia_from_import(tmp_path: Path) -> None:
-    (tmp_path / "offender.py").write_text(
-        "from praxia.mcp import client\n", encoding="utf-8"
-    )
+    (tmp_path / "offender.py").write_text("from praxia.mcp import client\n", encoding="utf-8")
     violations = scan(tmp_path, root=tmp_path, allowlist=frozenset(), patterns=FORBIDDEN_PATTERNS)
     assert len(violations) == 1
     assert violations[0].pattern_label == "praxia-import"
@@ -71,9 +69,7 @@ def test_word_boundary_rejects_unrelated_rig_usage(tmp_path: Path) -> None:
     """`rig` alone, or `rig` followed by an unrelated word, must NOT be flagged -- only the
     `rig_run`/`rig-run` compound is a real dispatch-identifier signal.
     """
-    (tmp_path / "clean.py").write_text(
-        "rig_teardown()\nrigging_config = {}\n", encoding="utf-8"
-    )
+    (tmp_path / "clean.py").write_text("rig_teardown()\nrigging_config = {}\n", encoding="utf-8")
     assert scan(tmp_path, root=tmp_path, allowlist=frozenset(), patterns=FORBIDDEN_PATTERNS) == []
 
 

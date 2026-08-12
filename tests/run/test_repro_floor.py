@@ -219,9 +219,7 @@ class TestWriteReproFloorAttestation:
 
         # Later: a divergent rerun reuses the *same* path P.
         flaky_compute = _flaky_compute(tmp_path / "flaky", diverge_on_call=2)
-        divergent_result = run_repro_floor(
-            flaky_compute, seed=1, rerun_count=3, run_id="run-z"
-        )
+        divergent_result = run_repro_floor(flaky_compute, seed=1, rerun_count=3, run_id="run-z")
         assert not divergent_result.passed
 
         with pytest.raises(ValueError):
