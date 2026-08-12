@@ -562,9 +562,7 @@ def run_campaign_loop(
             ratchet_ref_name=ratchet_ref_name,
             commit_tree_sha=commit_tree_sha,
             candidate_target_path=candidate_target_path,
-            allow_fresh_start_despite_existing_lineage=(
-                allow_fresh_start_despite_existing_lineage
-            ),
+            allow_fresh_start_despite_existing_lineage=(allow_fresh_start_despite_existing_lineage),
             callable_name=callable_name,
             concrete_inputs=concrete_inputs,
         )
