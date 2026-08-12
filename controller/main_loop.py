@@ -100,6 +100,9 @@ wired correctly end-to-end, not to also own what happens when a step fails.
 """
 
 import math
+import os
+import subprocess
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -144,6 +147,20 @@ from xtrax.loop.stats_battery_gate import (
 # stats_battery_gate.py's docstring) -- controller/ sits outside that package but mirrors the
 # same convention rather than picking one sibling's alias as authoritative over the other.
 CampaignMode = Literal["exploration", "confirmation", "sequential"]
+
+
+class PriorBestSoFarLineageConflictError(Exception):
+    """Raised when a fresh-start call (`best_fitness=None`) finds a prior best-so-far commit
+    already present at `ratchet_ref_name` (C6, backlog #4203).
+
+    A fresh-start call implicitly assumes no prior lineage exists yet for `ratchet_ref_name` --
+    when `read_best_so_far` finds one anyway, that's either a genuine crash-resume (the caller
+    intends to continue an existing campaign) or an accidental ref-name collision with a stale,
+    unrelated campaign. This exception makes that ambiguity loud by default; the caller must
+    either supply `allow_fresh_start_despite_existing_lineage=True` (an explicit, opt-in
+    acknowledgment -- never a silent default) or, more likely correct, use a fresh, unique
+    `ratchet_ref_name` for a genuinely new campaign instead of reaching for the override flag.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +208,14 @@ class OneCandidatePassResult:
             For the first candidate in a campaign (`best_fitness=None`), this is the automatic-
             accept sentinel described in `run_one_candidate_pass`'s own docstring, not a real
             `compute_ratchet_decision` verdict.
+        fitness_dict: the raw scored fitness dict returned by `guarded_evaluate_fn` for this
+            candidate (GW-02 addendum, backlog #4203) -- byte-identical to that return value.
+            Populated at the same point as `ratchet_decision`: an exception raised anywhere
+            upstream of `guarded_evaluate_fn`'s return (dispatch, the candidate-static gate, the
+            bathos run, closure-lock scoring itself) aborts the whole `run_one_candidate_pass`
+            call before any `OneCandidatePassResult` -- partial or otherwise -- is constructed,
+            so `fitness_dict` is never observed in a half-populated state (mirrors
+            `ratchet_decision`'s own no-partial-construction guarantee above).
     """
 
     handoff: CandidateHandoff
@@ -198,6 +223,7 @@ class OneCandidatePassResult:
     run_result: CandidateRunResult
     gate_outcome: GateOutcome
     ratchet_decision: RatchetDecision
+    fitness_dict: dict[str, float]
 
     @property
     def accepted(self) -> bool:
@@ -224,6 +250,103 @@ class OneCandidatePassResult:
             and not self.gate_outcome.hard_blocked
             and self.ratchet_decision.improved
         )
+
+
+def _run_git(
+    repo: Path, *args: str, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run a git subcommand in `repo`, raising `ValueError` with `stderr` on failure.
+
+    `env`, when supplied, REPLACES the subprocess's environment entirely (matching
+    `subprocess.run`'s own `env` semantics) -- callers that need `GIT_INDEX_FILE` set while
+    still inheriting the rest of the process environment must build that dict themselves (see
+    `compute_candidate_tree_sha`).
+    """
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=dict(env) if env is not None else None,
+    )
+    if result.returncode != 0:
+        msg = f"git {' '.join(args)} failed in {repo}: {result.stderr.strip()}"
+        raise ValueError(msg)
+    return result
+
+
+def compute_candidate_tree_sha(
+    handoff: CandidateHandoff,
+    repo: Path,
+    candidate_target_path: Path,
+    base_sha: str | None,
+) -> str:
+    """Real default for `run_one_candidate_pass`'s `commit_tree_sha_fn` injection seam (C3-C5,
+    backlog #4203).
+
+    Produces a whole-repo-tree substitution: `base_sha`'s tree with every path unchanged except
+    `candidate_target_path`, which is written (newly added, or replaced if already present) with
+    `handoff.path`'s content -- never a synthetic single-file tree. This matters because
+    `reset_worktree_to_best_so_far` does a real `git reset --hard` onto whatever lineage this
+    tree ends up in; a single-file tree would corrupt the worktree the next time a candidate is
+    rejected.
+
+    `base_sha` is the resolved base COMMIT to substitute against (the caller's own
+    `read_best_so_far`/`bootstrap_base_tree_sha` resolution) -- explicitly and unambiguously NOT
+    `commit_tree_sha` itself, which is this function's own return value, never one of its inputs.
+
+    Git plumbing (via a scratch `GIT_INDEX_FILE` -- `repo`'s real index is never read or
+    mutated):
+        1. Resolve `base_sha^{tree}` (`base_sha` is a COMMIT sha, not a tree sha).
+        2. `git read-tree` that resolved tree into the scratch index.
+        3. `git hash-object -w handoff.path` to write the candidate's blob FIRST.
+        4. `git update-index --add --cacheinfo 100644 <blob-sha> <candidate_target_path>` (file
+           mode `100644` unconditionally -- an executable candidate is an explicitly out-of-scope
+           future extension). `--add` stages the path whether it is new or already present in the
+           base tree -- git's own plumbing does not distinguish the two cases, so no
+           special-casing is needed here for either.
+        5. `git write-tree` from the scratch index, returning the resulting tree sha.
+
+    Raises:
+        ValueError: `base_sha` is `None` (no prior best-so-far commit exists and no
+            `bootstrap_base_tree_sha` fallback was supplied) -- raised immediately, before any
+            git write. Also raised (via the internal git-subcommand runner) if any git command
+            above fails.
+    """
+    if base_sha is None:
+        msg = (
+            "compute_candidate_tree_sha: base_sha is None -- no prior best-so-far commit "
+            "exists (read_best_so_far returned None) and no bootstrap_base_tree_sha fallback "
+            "was supplied"
+        )
+        raise ValueError(msg)
+
+    repo = repo.resolve()
+    with tempfile.TemporaryDirectory() as scratch_dir:
+        index_env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch_dir) / "scratch-index")}
+
+        # 1. base_sha is a COMMIT sha -- resolve its tree explicitly before read-tree (C5).
+        base_tree_sha = _run_git(repo, "rev-parse", f"{base_sha}^{{tree}}").stdout.strip()
+        # 2. Load that tree into the scratch index -- repo's real index untouched.
+        _run_git(repo, "read-tree", base_tree_sha, env=index_env)
+
+        # 3. Write the candidate's blob FIRST, before staging it (C5).
+        blob_sha = _run_git(repo, "hash-object", "-w", str(handoff.path)).stdout.strip()
+        # 4. Stage it at candidate_target_path, mode 100644 unconditionally (C5/C9).
+        _run_git(
+            repo,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "100644",
+            blob_sha,
+            str(candidate_target_path),
+            env=index_env,
+        )
+
+        # 5. Materialize the resulting tree object.
+        return _run_git(repo, "write-tree", env=index_env).stdout.strip()
 
 
 def run_one_candidate_pass(
@@ -253,7 +376,13 @@ def run_one_candidate_pass(
     higher_is_better: Mapping[str, bool] | None = None,
     repo: Path,
     ratchet_ref_name: str,
-    commit_tree_sha: str,
+    commit_tree_sha: str | None = None,
+    commit_tree_sha_fn: Callable[
+        [CandidateHandoff, Path, Path, str | None], str
+    ] = compute_candidate_tree_sha,
+    candidate_target_path: Path | None = None,
+    bootstrap_base_tree_sha: str | None = None,
+    allow_fresh_start_despite_existing_lineage: bool = False,
     commit_parent_sha: str | None = None,
     commit_message: str | None = None,
     callable_name: str,
@@ -342,9 +471,42 @@ def run_one_candidate_pass(
             `repo`/`ratchet_ref_name` pair is reused for both the accept path (`create_pending_
             commit`/`advance_best_so_far`) and the reject path (`reset_worktree_to_best_so_far`),
             one source of truth for which repo/ref this campaign ratchets against.
-        commit_tree_sha: real git tree data the caller supplies for the accept-path pending
-            commit -- this function does not construct or verify it (mirrors the
-            `stats_battery_kwargs` trust boundary: caller-sourced, not computed here).
+        commit_tree_sha: real git tree data the caller supplies directly for the accept-path
+            pending commit, or `None` (the default) to have `commit_tree_sha_fn` compute one
+            instead. When supplied literally, this function does not construct or verify it
+            (mirrors the `stats_battery_kwargs` trust boundary: caller-sourced, not computed
+            here), and `commit_tree_sha_fn` is never invoked -- `candidate_target_path` may be
+            omitted entirely on this path.
+        commit_tree_sha_fn: injection seam for tests -- defaults to the real
+            `compute_candidate_tree_sha` (C3-C5, backlog #4203). Invoked lazily, only inside the
+            accept branch and only when `commit_tree_sha is None` (never eagerly right after
+            dispatch -- nothing between dispatch and the accept branch reads `commit_tree_sha`,
+            so a candidate that is rejected, gate-blocked, or aborts via an upstream exception
+            before ever reaching the accept branch never triggers this call). Called as
+            `commit_tree_sha_fn(handoff, repo, candidate_target_path, base_sha)`, where
+            `base_sha` is resolved via a second, explicit `read_best_so_far` call (falling back
+            to `bootstrap_base_tree_sha`) -- see that param's own docstring.
+        candidate_target_path: the repo-relative destination path for the candidate's content
+            inside the tree substitution `commit_tree_sha_fn` computes (C7, backlog #4203).
+            `None` by default; required (raises `ValueError` immediately, before dispatch) when
+            `commit_tree_sha is None`, since `commit_tree_sha_fn` needs an explicit destination
+            and this function never infers one from `handoff.path`'s basename. May be omitted
+            entirely by literal-`commit_tree_sha` callers, since it is never used on that path.
+        bootstrap_base_tree_sha: fallback base-commit SHA for `commit_tree_sha_fn`'s tree
+            substitution (C3, backlog #4203), used only when
+            `read_best_so_far(repo, ratchet_ref_name)` returns `None` (no prior best-so-far ref
+            exists yet) AND `commit_tree_sha is None`. A `ValueError` is raised (by
+            `compute_candidate_tree_sha`, or an equivalent custom `commit_tree_sha_fn`) if both
+            are `None` on an accept -- mirrors `commit_parent_sha`'s own identical
+            bootstrap-required precedent below.
+        allow_fresh_start_despite_existing_lineage: when `best_fitness is None` (a fresh-start
+            call) and `read_best_so_far(repo, ratchet_ref_name)` finds a prior best-so-far commit
+            already exists, this function raises `PriorBestSoFarLineageConflictError` by default
+            (C6, backlog #4203) -- the caller likely intended a genuinely new campaign but reused
+            a `ratchet_ref_name` that already has unrelated (or stale) lineage on it. Set `True`
+            only when this really is an intentional resume/overwrite of that existing lineage;
+            prefer a fresh, unique `ratchet_ref_name` for a genuinely new campaign instead of
+            reaching for this flag. Default `False` -- silent overwrite is never the default.
         commit_parent_sha: bootstrap fallback parent SHA, used only when `read_best_so_far`
             returns `None` (no prior best-so-far ref exists yet). A `ValueError` is raised if
             both are `None` on an accept.
@@ -375,8 +537,14 @@ def run_one_candidate_pass(
         TimeoutError: dispatch timed out.
         ValueError: dispatch's completion could not be parsed; `output_paths` is empty/`None`
             when scoring is attempted; `best_fitness`/`higher_is_better` were not both supplied
-            or both omitted; or `commit_parent_sha` was not supplied on an accept when no prior
-            best-so-far ref exists yet.
+            or both omitted; `candidate_target_path` was omitted while `commit_tree_sha is None`
+            (raised immediately, before dispatch); `commit_parent_sha` was not supplied on an
+            accept when no prior best-so-far ref exists yet; or (via `commit_tree_sha_fn`)
+            `bootstrap_base_tree_sha` was not supplied on an accept when `commit_tree_sha is
+            None` and no prior best-so-far ref exists yet.
+        PriorBestSoFarLineageConflictError: `best_fitness is None` (a fresh-start call) and
+            `read_best_so_far(repo, ratchet_ref_name)` found a prior best-so-far commit already
+            exists, and `allow_fresh_start_despite_existing_lineage` was not set.
         CandidateStaticGateError: the candidate fails clean-import or has a JL-series jaxlint
             error -- raised right after dispatch, before lineage resolution or any bathos call
             (T2-11, AC-1).
@@ -403,6 +571,14 @@ def run_one_candidate_pass(
         SeedGateInputError: `campaign_mode` is not recognized, or the seed/trial counts are
             malformed (raised by `assess_seed_trial_floor`).
     """
+    # 0. Fail-fast validation (C7, backlog #4203): commit_tree_sha_fn needs an explicit
+    # candidate_target_path to write to -- literal-commit_tree_sha callers may omit it entirely
+    # (never used on that path). Checked before dispatch so this never burns a real dispatch
+    # call on a call that was going to fail anyway.
+    if commit_tree_sha is None and candidate_target_path is None:
+        msg = "candidate_target_path is required when commit_tree_sha is not supplied directly"
+        raise ValueError(msg)
+
     # 1. Dispatch -> hand off source (LC-03).
     handoff = dispatch_backend.dispatch_candidate()
 
@@ -467,6 +643,24 @@ def run_one_candidate_pass(
         raise ValueError(msg)
 
     if best_fitness is None:
+        # C6 (backlog #4203): a fresh-start call (best_fitness=None) implicitly assumes no
+        # prior lineage exists yet for ratchet_ref_name -- if one does, that's either a genuine
+        # crash-resume or an accidental ref-name collision with stale/unrelated data. Fail loud
+        # by default, before the automatic-accept sentinel below is ever constructed;
+        # allow_fresh_start_despite_existing_lineage=True is the caller's explicit opt-in
+        # acknowledgment of that conflict (and skips this read entirely when set).
+        if not allow_fresh_start_despite_existing_lineage:
+            conflicting_sha = read_best_so_far(repo, ratchet_ref_name)
+            if conflicting_sha is not None:
+                msg = (
+                    f"a prior best-so-far commit already exists at ratchet_ref_name "
+                    f"{ratchet_ref_name!r} (sha={conflicting_sha!r}), but this call supplied "
+                    "best_fitness=None (a fresh-start call). If this is genuinely a new "
+                    "campaign, use a fresh, unique ratchet_ref_name -- do not reach for "
+                    "allow_fresh_start_despite_existing_lineage=True unless you intend to "
+                    "proceed despite the existing lineage (e.g. an intentional crash-resume)."
+                )
+                raise PriorBestSoFarLineageConflictError(msg)
         # First candidate in a campaign: nothing to ratchet against yet -- automatic accept
         # sentinel, never a real compute_ratchet_decision verdict. See OneCandidatePassResult.
         # ratchet_decision's own docstring.
@@ -497,10 +691,28 @@ def run_one_candidate_pass(
             f"ratchet best-so-far: candidate {handoff.content_sha256}"
             + (f" derived_from={derived_from}" if derived_from else " (root candidate)")
         )
+        if commit_tree_sha is None:
+            # C3/C4/P1.6 (backlog #4203): a second, explicit, side-effect-free
+            # read_best_so_far call -- deliberately not reusing prior_best_sha above, mirroring
+            # this same accept branch's own precedent of resolving commit_parent_sha
+            # independently. commit_tree_sha_fn is invoked lazily, HERE, only on the accept
+            # path -- see its own docstring for why (nothing upstream of this branch reads
+            # commit_tree_sha, so a rejected/gate-blocked/exception-aborted candidate never
+            # reaches this call).
+            base_sha = read_best_so_far(repo, ratchet_ref_name)
+            if base_sha is None:
+                base_sha = bootstrap_base_tree_sha
+            assert candidate_target_path is not None, (
+                "guaranteed non-None here by the fail-fast validation at the top of this "
+                "function (commit_tree_sha is None implies candidate_target_path is not None)"
+            )
+            resolved_tree_sha = commit_tree_sha_fn(handoff, repo, candidate_target_path, base_sha)
+        else:
+            resolved_tree_sha = commit_tree_sha
         # prior_best_sha serves as BOTH the parent-SHA source AND the CAS expected_old_sha --
         # one read_best_so_far call above, not two. CommitCreationError/RefUpdateConflictError
         # propagate uncaught.
-        pending_sha = create_pending_commit(repo, commit_tree_sha, parent_sha, message)
+        pending_sha = create_pending_commit(repo, resolved_tree_sha, parent_sha, message)
         advance_best_so_far(repo, ratchet_ref_name, pending_sha, prior_best_sha)
     else:
         # RatchetCrashAtomicityError propagates uncaught. reset_worktree_to_best_so_far reuses
@@ -536,6 +748,7 @@ def run_one_candidate_pass(
         run_result=run_result,
         gate_outcome=GateOutcome(stats_battery=stats_decision, seed_trial=seed_decision),
         ratchet_decision=ratchet_decision,
+        fitness_dict=fitness_dict,
     )
 
 
@@ -543,5 +756,7 @@ __all__ = [
     "CampaignMode",
     "GateOutcome",
     "OneCandidatePassResult",
+    "PriorBestSoFarLineageConflictError",
+    "compute_candidate_tree_sha",
     "run_one_candidate_pass",
 ]

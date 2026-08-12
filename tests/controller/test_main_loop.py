@@ -40,6 +40,8 @@ behavior, not real git operations).
 """
 
 import hashlib
+import inspect
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -60,7 +62,13 @@ from controller.dispatch import (
 )
 from controller.evaluate_adapter import BathosFrozenContext, score_raw_artifacts
 from controller.lineage_interim import CandidateParentage, MultiParentLineageUnsupportedError
-from controller.main_loop import GateOutcome, OneCandidatePassResult, run_one_candidate_pass
+from controller.main_loop import (
+    GateOutcome,
+    OneCandidatePassResult,
+    PriorBestSoFarLineageConflictError,
+    compute_candidate_tree_sha,
+    run_one_candidate_pass,
+)
 from xtrax.loop.candidate_static import CandidateStaticGateError
 from xtrax.loop.closure_lock import ClosureHashMismatchError, ClosureManifest, UnlistedReadError
 from xtrax.loop.compile_time_clock import TwoPhaseTiming
@@ -832,6 +840,7 @@ class TestOneCandidatePassResultAccepted:
             ratchet_decision=(
                 _SENTINEL_RATCHET_DECISION if improved else _REJECTING_RATCHET_DECISION
             ),
+            fitness_dict=dict(_PASSING_FITNESS),
         )
 
     def test_run_failure_alone_rejects_even_with_clean_gates(self) -> None:
@@ -1310,3 +1319,507 @@ class TestGatesClearButRatchetRejects:
         )
         assert result.ratchet_decision.improved is False
         assert result.accepted is False
+
+
+# ---------------------------------------------------------------------------
+# Backlog #4203 (Track A, P1.1-P1.7): fitness_dict field, commit_tree_sha_fn tree-substitution
+# seam, candidate_target_path fail-fast validation, PriorBestSoFarLineageConflictError
+# lineage-conflict guard, and the P1.6 lazy-invocation lock-in test.
+# ---------------------------------------------------------------------------
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    """A minimal real git repo with one commit containing one tracked file, so a valid base
+    commit/tree exists for compute_candidate_tree_sha's own tests."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    _git(repo_dir, "init", "--quiet")
+    _git(repo_dir, "config", "user.email", "test@example.com")
+    _git(repo_dir, "config", "user.name", "Test")
+    (repo_dir / "existing.txt").write_text("existing content\n", encoding="utf-8")
+    _git(repo_dir, "add", "existing.txt")
+    _git(repo_dir, "commit", "--quiet", "-m", "initial commit")
+    return repo_dir
+
+
+def _head_sha(repo: Path) -> str:
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def _ls_tree_entries(repo: Path, tree_sha: str) -> dict[str, str]:
+    """path -> mode, for every entry in `git ls-tree -r <tree_sha>`."""
+    entries: dict[str, str] = {}
+    for line in _git(repo, "ls-tree", "-r", tree_sha).stdout.strip().splitlines():
+        meta, path = line.split("\t")
+        mode = meta.split()[0]
+        entries[path] = mode
+    return entries
+
+
+class TestCandidateTargetPathValidation:
+    """C7 (backlog #4203): candidate_target_path is optional, but required (fail-fast) when
+    commit_tree_sha is not supplied directly."""
+
+    def test_literal_commit_tree_sha_with_target_path_omitted_succeeds_fn_never_invoked(
+        self,
+    ) -> None:
+        spy_calls: list[Any] = []
+
+        def spy_commit_tree_sha_fn(
+            handoff: CandidateHandoff, repo: Path, candidate_target_path: Path, base_sha: str | None
+        ) -> str:
+            spy_calls.append((handoff, repo, candidate_target_path, base_sha))
+            return "should-not-be-reached"
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            # commit_tree_sha comes from _new_step_kwargs()'s literal 'unused-tree-sha' default;
+            # candidate_target_path is deliberately left unset (omitted).
+            **_new_step_kwargs(commit_tree_sha_fn=spy_commit_tree_sha_fn),
+        )
+
+        assert result.accepted is True
+        assert spy_calls == [], (
+            "commit_tree_sha_fn must never be invoked when commit_tree_sha is supplied literally"
+        )
+
+    def test_omitting_both_raises_value_error_before_any_dispatch_call(self) -> None:
+        dispatch_calls: list[Any] = []
+
+        class _TrackingDispatch:
+            def dispatch_candidate(self) -> CandidateHandoff:
+                dispatch_calls.append(1)
+                return _mock_dispatch_backend().dispatch_candidate()
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        with pytest.raises(ValueError, match="candidate_target_path is required"):
+            run_one_candidate_pass(
+                _TrackingDispatch(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(commit_tree_sha=None),
+            )
+
+        assert dispatch_calls == [], (
+            "the candidate_target_path validation must fire before dispatch_candidate() is "
+            "ever called"
+        )
+
+
+class TestComputeCandidateTreeShaSignature:
+    """C4 (backlog #4203): exactly 4 named params, in order."""
+
+    def test_signature_has_exactly_four_named_params_in_order(self) -> None:
+        sig = inspect.signature(compute_candidate_tree_sha)
+        assert list(sig.parameters) == ["handoff", "repo", "candidate_target_path", "base_sha"]
+
+
+class TestComputeCandidateTreeShaPlumbing:
+    """C5/C9 (backlog #4203): whole-repo-tree substitution via a scratch GIT_INDEX_FILE."""
+
+    def test_base_sha_none_raises_value_error_before_any_git_write(
+        self, git_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        git_calls: list[Any] = []
+        original_run_git = main_loop_module._run_git
+
+        def spy_run_git(*args: Any, **kwargs: Any) -> Any:
+            git_calls.append(args)
+            return original_run_git(*args, **kwargs)
+
+        monkeypatch.setattr(main_loop_module, "_run_git", spy_run_git)
+
+        handoff = CandidateHandoff(path=git_repo / "existing.txt", content_sha256=_VALID_SHA256)
+
+        with pytest.raises(ValueError, match="base_sha is None"):
+            compute_candidate_tree_sha(handoff, git_repo, Path("new/candidate.py"), None)
+
+        assert git_calls == [], "no git subcommand should run when base_sha is None"
+
+    def test_new_path_resolves_tree_before_read_tree_writes_blob_before_update_index_mode_100644(
+        self, git_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C5: rev-parse (base_sha^{tree}) before read-tree; hash-object -w before
+        update-index --add --cacheinfo; resulting tree entry mode is 100644.
+        C9: candidate_target_path is a genuinely NEW path (absent from the base tree) -- the
+        resulting tree contains it alongside every pre-existing base-tree path unchanged."""
+        base_sha = _head_sha(git_repo)
+        candidate_file = tmp_path / "candidate_source.py"
+        candidate_file.write_text("candidate content\n", encoding="utf-8")
+        handoff = CandidateHandoff(path=candidate_file, content_sha256=_VALID_SHA256)
+
+        subcommand_order: list[str] = []
+        original_run_git = main_loop_module._run_git
+
+        def spy_run_git(repo: Path, *args: str, **kwargs: Any) -> Any:
+            subcommand_order.append(args[0])
+            return original_run_git(repo, *args, **kwargs)
+
+        monkeypatch.setattr(main_loop_module, "_run_git", spy_run_git)
+
+        result_tree_sha = compute_candidate_tree_sha(
+            handoff, git_repo, Path("new/candidate.py"), base_sha
+        )
+
+        assert subcommand_order == [
+            "rev-parse",
+            "read-tree",
+            "hash-object",
+            "update-index",
+            "write-tree",
+        ], (
+            "base_sha^{tree} must be resolved before read-tree, and the blob must be written "
+            "before it is staged via update-index"
+        )
+
+        entries = _ls_tree_entries(git_repo, result_tree_sha)
+        assert entries["new/candidate.py"] == "100644"
+        assert entries["existing.txt"] == "100644", (
+            "every pre-existing base-tree path must remain unchanged"
+        )
+        assert entries != {"new/candidate.py": "100644"}, (
+            "must never be a synthetic single-file tree"
+        )
+
+    def test_replacing_an_existing_path_updates_its_content_only(
+        self, git_repo: Path, tmp_path: Path
+    ) -> None:
+        """git update-index --add does not distinguish new-path from replace-existing-path at
+        the plumbing level (C9) -- confirm the replacement case also works correctly."""
+        base_sha = _head_sha(git_repo)
+        candidate_file = tmp_path / "candidate_source.py"
+        candidate_file.write_text("replacement content\n", encoding="utf-8")
+        handoff = CandidateHandoff(path=candidate_file, content_sha256=_VALID_SHA256)
+
+        result_tree_sha = compute_candidate_tree_sha(
+            handoff, git_repo, Path("existing.txt"), base_sha
+        )
+
+        entries = _ls_tree_entries(git_repo, result_tree_sha)
+        assert entries == {"existing.txt": "100644"}
+        blob_content = _git(git_repo, "cat-file", "-p", f"{result_tree_sha}:existing.txt").stdout
+        assert blob_content == "replacement content\n"
+
+    def test_real_index_never_mutated(self, git_repo: Path, tmp_path: Path) -> None:
+        """The repo's real .git/index must never be read or written by
+        compute_candidate_tree_sha."""
+        real_index_path = git_repo / ".git" / "index"
+        before = real_index_path.read_bytes() if real_index_path.exists() else None
+
+        base_sha = _head_sha(git_repo)
+        candidate_file = tmp_path / "candidate_source.py"
+        candidate_file.write_text("candidate content\n", encoding="utf-8")
+        handoff = CandidateHandoff(path=candidate_file, content_sha256=_VALID_SHA256)
+
+        compute_candidate_tree_sha(handoff, git_repo, Path("new/candidate.py"), base_sha)
+
+        after = real_index_path.read_bytes() if real_index_path.exists() else None
+        assert before == after
+
+
+class TestPriorBestSoFarLineageConflictGuard:
+    """C6 (backlog #4203): a fresh-start call finding a prior best-so-far commit raises, unless
+    explicitly overridden."""
+
+    def test_raises_when_best_fitness_none_and_prior_lineage_exists(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Per the TOML fixer_prompt / loop_sprint_plan.json's own explicit file:line anchor
+        (P1.5: 'inserted in the best_fitness-is-None branch, currently lines 469-479'), this
+        guard fires deep inside run_one_candidate_pass, AFTER dispatch/the bathos run/scoring
+        have already executed -- not before them. (One spec doc's AC bullet [C6] independently
+        says 'before any dispatch/bathos/git call', which is unsatisfiable simultaneously with
+        the TOML/plan's own concrete placement instruction without restructuring the function;
+        the TOML/plan's unambiguous line-anchored instruction is followed here, per this task's
+        own stated precedence for resolving such conflicts.) What IS proven not to happen once
+        the conflict is detected: neither of the accept-branch's own crash-atomicity git calls
+        (create_pending_commit/advance_best_so_far) ever fires.
+        """
+        monkeypatch.setattr(
+            main_loop_module, "read_best_so_far", lambda repo, ref_name: "conflicting-sha-123"
+        )
+        create_calls: list[Any] = []
+        advance_calls: list[Any] = []
+        monkeypatch.setattr(
+            main_loop_module, "create_pending_commit", lambda *a, **kw: create_calls.append(1)
+        )
+        monkeypatch.setattr(
+            main_loop_module, "advance_best_so_far", lambda *a, **kw: advance_calls.append(1)
+        )
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+
+        with pytest.raises(PriorBestSoFarLineageConflictError) as exc_info:
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(best_fitness=None, higher_is_better=None),
+            )
+
+        msg = str(exc_info.value)
+        assert "refs/xtrax/best-so-far" in msg
+        assert "conflicting-sha-123" in msg
+        assert "fresh" in msg.lower(), "message must steer the caller toward a fresh ref name"
+        assert create_calls == [], (
+            "create_pending_commit must never fire once the lineage conflict is detected"
+        )
+        assert advance_calls == [], (
+            "advance_best_so_far must never fire once the lineage conflict is detected"
+        )
+
+    def test_allow_fresh_start_override_proceeds_with_automatic_accept_sentinel_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            main_loop_module, "read_best_so_far", lambda repo, ref_name: "conflicting-sha-123"
+        )
+        create_calls: list[Any] = []
+        advance_calls: list[Any] = []
+
+        def spy_create(repo: Any, tree_sha: Any, parent_sha: Any, message: Any) -> str:
+            create_calls.append((repo, tree_sha, parent_sha, message))
+            return "pending-sha"
+
+        def spy_advance(repo: Any, ref_name: Any, new_sha: Any, expected_old_sha: Any) -> None:
+            advance_calls.append((repo, ref_name, new_sha, expected_old_sha))
+
+        monkeypatch.setattr(main_loop_module, "create_pending_commit", spy_create)
+        monkeypatch.setattr(main_loop_module, "advance_best_so_far", spy_advance)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                best_fitness=None,
+                higher_is_better=None,
+                allow_fresh_start_despite_existing_lineage=True,
+            ),
+        )
+
+        assert result.accepted is True
+        assert result.ratchet_decision.improved is True
+        assert len(create_calls) == 1
+        assert len(advance_calls) == 1
+
+
+class TestFitnessDictRoundTrip:
+    """Base-spec AC bullet 1 (backlog #4203): fitness_dict round-trips byte-identically from
+    guarded_evaluate_fn, and is never observed in a half-populated state on exception."""
+
+    def test_fitness_dict_round_trips_byte_identical_from_guarded_evaluate_fn(self) -> None:
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+        )
+
+        assert result.fitness_dict == _PASSING_FITNESS
+
+    def test_no_partial_result_constructed_when_guarded_evaluate_fn_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        construction_calls: list[Any] = []
+        original_init = OneCandidatePassResult.__init__
+
+        def spy_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            construction_calls.append((args, kwargs))
+            original_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(OneCandidatePassResult, "__init__", spy_init)
+
+        def failing_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
+            msg = "boom mid-scoring"
+            raise RuntimeError(msg)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        with pytest.raises(RuntimeError, match="boom mid-scoring"):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(guarded_evaluate_fn=failing_guarded_evaluate_fn),
+            )
+
+        assert construction_calls == [], (
+            "no OneCandidatePassResult -- partial or otherwise -- may ever be constructed when "
+            "guarded_evaluate_fn raises"
+        )
+
+
+class TestCommitTreeShaFnLazyInvocation:
+    """P1.6 lock-in test (plan-audit-added): commit_tree_sha_fn must never be invoked for a
+    candidate that is rejected, gate-blocked, or aborts via a guarded_evaluate_fn exception
+    before ever reaching the accept branch."""
+
+    def _spy_commit_tree_sha_fn(self, calls: list[Any]) -> Any:
+        def _fn(
+            handoff: CandidateHandoff, repo: Path, candidate_target_path: Path, base_sha: str | None
+        ) -> str:
+            calls.append((handoff, repo, candidate_target_path, base_sha))
+            return "should-not-be-reached"
+
+        return _fn
+
+    def test_never_invoked_for_a_rejected_candidate(self) -> None:
+        spy_calls: list[Any] = []
+
+        def worse_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
+            return dict(_WORSE_FITNESS)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                guarded_evaluate_fn=worse_guarded_evaluate_fn,
+                best_fitness=_BEST_FITNESS,
+                higher_is_better=_HIGHER_IS_BETTER,
+                commit_tree_sha=None,
+                candidate_target_path=Path("target.py"),
+                commit_tree_sha_fn=self._spy_commit_tree_sha_fn(spy_calls),
+            ),
+        )
+
+        assert result.accepted is False
+        assert result.ratchet_decision.improved is False
+        assert spy_calls == []
+
+    def test_never_invoked_for_a_gate_blocked_and_ratchet_rejected_candidate(self) -> None:
+        """Under the current (out-of-scope-to-restructure) control flow, the accept/reject
+        crash-atomicity branch is driven solely by ratchet_decision.improved -- gate checks run
+        strictly AFTER it (module docstring, step 3 vs step 2.7). A candidate that is
+        gate-blocked but still ratchet-improved would therefore still reach the accept branch;
+        this test combines gate-hard-block with a genuinely non-improved ratchet decision, the
+        realistic "doubly rejected" case, to prove commit_tree_sha_fn is skipped."""
+        spy_calls: list[Any] = []
+
+        def worse_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
+            return dict(_WORSE_FITNESS)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="confirmation",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _downgraded_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                guarded_evaluate_fn=worse_guarded_evaluate_fn,
+                best_fitness=_BEST_FITNESS,
+                higher_is_better=_HIGHER_IS_BETTER,
+                commit_tree_sha=None,
+                candidate_target_path=Path("target.py"),
+                commit_tree_sha_fn=self._spy_commit_tree_sha_fn(spy_calls),
+            ),
+        )
+
+        assert result.gate_outcome.hard_blocked is True
+        assert result.accepted is False
+        assert spy_calls == []
+
+    def test_never_invoked_when_guarded_evaluate_fn_raises_before_ratchet_decision(self) -> None:
+        spy_calls: list[Any] = []
+
+        def failing_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
+            msg = "closure drift injected for test"
+            raise ClosureHashMismatchError(msg)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        with pytest.raises(ClosureHashMismatchError):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(
+                    guarded_evaluate_fn=failing_guarded_evaluate_fn,
+                    commit_tree_sha=None,
+                    candidate_target_path=Path("target.py"),
+                    commit_tree_sha_fn=self._spy_commit_tree_sha_fn(spy_calls),
+                ),
+            )
+
+        assert spy_calls == []
