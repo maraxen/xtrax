@@ -32,7 +32,8 @@ BASELINE="$REPO_ROOT/scripts/git-hooks/ty-baseline.txt"
 CURRENT="$(mktemp)"
 trap 'rm -f "$CURRENT"' EXIT
 
-uv run ty check src/ --output-format concise --exit-zero 2>&1 | grep -v "^Found " | sort > "$CURRENT"
+uv run ty check src/ --output-format concise --exit-zero 2>&1 \
+  | grep -E ':[0-9]+:[0-9]+: (warning|error)\[' | sort > "$CURRENT"
 
 NEW_DIAGNOSTICS="$(comm -13 <(sort "$BASELINE") "$CURRENT")"
 if [ -n "$NEW_DIAGNOSTICS" ]; then
