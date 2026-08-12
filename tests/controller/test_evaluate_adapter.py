@@ -23,6 +23,7 @@ from controller.evaluate_adapter import (
     BathosFrozenContext,
     BathosSplitComputeEvaluator,
     RawArtifactsUnavailableError,
+    score_raw_artifacts,
 )
 from xtrax.loop.closure_lock import ClosureManifest, build_closure_manifest, guarded_evaluate
 from xtrax.loop.metrics_provenance import evaluate_with_provenance
@@ -145,6 +146,104 @@ class TestAC2RealFileReadsAndComputation:
         # Assert the result reflects genuine computation over real file contents
         # combined_length = len("hello world") + len("expected output") = 11 + 15 = 26
         assert result == {"combined_length": 26.0, "match_score": 1.0}
+
+
+# ---------------------------------------------------------------------------
+# score_raw_artifacts: standalone scoring function extracted from __call__'s scoring half
+# (#3649, GW-02 Track A)
+# ---------------------------------------------------------------------------
+
+
+class TestScoreRawArtifacts:
+    def test_score_raw_artifacts_matches_call_fitness_dict_shape_and_values(
+        self, tmp_path: Path
+    ) -> None:
+        """score_raw_artifacts(frozen_context, output_paths), called directly, returns the
+        SAME fitness dict shape/values that BathosSplitComputeEvaluator.__call__ previously
+        produced inline for identical inputs -- proves the extraction is behavior-preserving."""
+        raw_artifact = tmp_path / "artifact.txt"
+        raw_artifact.write_text("hello world", encoding="utf-8")
+
+        ground_truth = tmp_path / "ground_truth.txt"
+        ground_truth.write_text("expected output", encoding="utf-8")
+
+        def score_fn(
+            raw_artifact_paths: tuple[Path, ...], split_paths: tuple[Path, ...]
+        ) -> dict[str, float]:
+            artifact_text = raw_artifact_paths[0].read_text(encoding="utf-8")
+            ground_text = split_paths[0].read_text(encoding="utf-8")
+            combined_length = len(artifact_text) + len(ground_text)
+            return {"combined_length": float(combined_length), "match_score": 1.0}
+
+        locked = ClosureManifest(
+            evaluator_paths=(),
+            split_paths=(ground_truth,),
+            metric_def_paths=(),
+            pinned_deps_source=Path("uv.lock"),
+            config={},
+            closure_hash="fake-hash",
+        )
+
+        transport = _RecordingTransport(_ok_envelope(script_path="c.py", exit_code=0, success=True))
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        frozen_context = BathosFrozenContext(
+            locked=locked,
+            campaign_adapter=adapter,
+            campaign_id="camp-1",
+            score_fn=score_fn,
+        )
+
+        output_paths = (str(raw_artifact),)
+
+        # Calling score_raw_artifacts directly, with no dispatch involved.
+        direct_result = score_raw_artifacts(frozen_context, output_paths)
+
+        # combined_length = len("hello world") + len("expected output") = 11 + 15 = 26
+        assert direct_result == {"combined_length": 26.0, "match_score": 1.0}
+
+        # Same inputs threaded through __call__ (which now delegates to score_raw_artifacts
+        # after its own dispatch) must produce a byte-identical fitness dict.
+        candidate = BathosCandidate(script_path="c.py", output_paths=output_paths)
+        evaluator = BathosSplitComputeEvaluator()
+        call_result = evaluator(frozen_context, candidate)
+
+        assert call_result == direct_result
+
+    def test_score_raw_artifacts_raises_for_empty_output_paths(self) -> None:
+        """score_raw_artifacts raises RawArtifactsUnavailableError when given no output_paths,
+        without ever invoking score_fn."""
+        score_fn_calls: list[bool] = []
+
+        def score_fn(
+            _raw_artifact_paths: tuple[Path, ...], _split_paths: tuple[Path, ...]
+        ) -> dict[str, float]:
+            score_fn_calls.append(True)
+            return {"score": 1.0}
+
+        locked = ClosureManifest(
+            evaluator_paths=(),
+            split_paths=(),
+            metric_def_paths=(),
+            pinned_deps_source=Path("uv.lock"),
+            config={},
+            closure_hash="fake-hash",
+        )
+
+        transport = _RecordingTransport(_ok_envelope(script_path="c.py", exit_code=0, success=True))
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        frozen_context = BathosFrozenContext(
+            locked=locked,
+            campaign_adapter=adapter,
+            campaign_id="camp-1",
+            score_fn=score_fn,
+        )
+
+        with pytest.raises(RawArtifactsUnavailableError):
+            score_raw_artifacts(frozen_context, ())
+
+        assert score_fn_calls == []
 
 
 # ---------------------------------------------------------------------------

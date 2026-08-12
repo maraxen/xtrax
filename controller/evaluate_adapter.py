@@ -12,11 +12,14 @@ injection-seam convention (see controller/main_loop.py).
 
 This module deliberately does NOT call controller.main_loop.run_one_candidate_pass: that
 function's own stats_battery gate requires a fitness dict as INPUT (stats_battery_kwargs),
-which is exactly what this module produces -- calling it here would be circular. A future
-multi-iteration driver (out of this item's scope) is expected to call this module's
-BathosSplitComputeEvaluator FIRST (via xtrax.loop.metrics_provenance.evaluate_with_provenance)
-to get a fitness dict, then feed it into run_one_candidate_pass's stats_battery_kwargs
-downstream.
+which is exactly what this module produces -- calling it here would be circular. Instead,
+this module exposes the scoring half of BathosSplitComputeEvaluator as the standalone
+score_raw_artifacts function, so run_one_candidate_pass can keep doing its OWN dispatch
+(record_candidate_run) and then call score_raw_artifacts (via
+xtrax.loop.closure_lock.guarded_evaluate, wired in a follow-on item) to score the
+already-dispatched candidate's raw artifacts -- never a second dispatch of the candidate
+(backlog #4137: calling BathosSplitComputeEvaluator's full __call__, which dispatches AND
+scores, ahead of run_one_candidate_pass would double-dispatch the same candidate).
 """
 
 from __future__ import annotations
@@ -89,6 +92,38 @@ class BathosCandidate:
     no_sidecar: bool = False
 
 
+def score_raw_artifacts(
+    frozen_context: BathosFrozenContext,
+    output_paths: tuple[str, ...],
+) -> dict[str, float]:
+    """Score already-dispatched raw artifacts against the locked closure's split_paths.
+
+    The scoring half of BathosSplitComputeEvaluator's __call__, extracted so a caller that
+    performs its OWN dispatch (e.g. run_one_candidate_pass's record_candidate_run) can score
+    the resulting raw artifacts without triggering a second bathos dispatch -- see this
+    module's docstring and backlog #4137.
+
+    Args:
+        frozen_context: fixed evaluator closure (locked split_paths + injectable score_fn).
+        output_paths: the raw artifact paths a candidate's dispatched subprocess wrote --
+            never a pre-computed summary fitness value (SPLIT_COMPUTE's core invariant).
+
+    Raises:
+        RawArtifactsUnavailableError: if output_paths is empty -- there is nothing legitimate
+            to read, and scoring an absent output_paths set would silently manufacture a
+            fitness number from noise.
+    """
+    if not output_paths:
+        msg = (
+            "no output_paths were provided -- refusing to score raw artifacts that "
+            "may be partial or absent"
+        )
+        raise RawArtifactsUnavailableError(msg)
+
+    raw_artifact_paths = tuple(Path(p) for p in output_paths)
+    return frozen_context.score_fn(raw_artifact_paths, frozen_context.locked.split_paths)
+
+
 class BathosSplitComputeEvaluator:
     """EvaluateFn[BathosFrozenContext, BathosCandidate]: dispatches via bathos, scores raw
     artifacts in-process (SPLIT_COMPUTE). The sole call site in controller/ through which a
@@ -117,8 +152,7 @@ class BathosSplitComputeEvaluator:
             )
             raise RawArtifactsUnavailableError(msg)
 
-        raw_artifact_paths = tuple(Path(p) for p in candidate.output_paths)
-        return frozen_context.score_fn(raw_artifact_paths, frozen_context.locked.split_paths)
+        return score_raw_artifacts(frozen_context, candidate.output_paths)
 
 
 __all__ = [
@@ -126,4 +160,5 @@ __all__ = [
     "BathosFrozenContext",
     "BathosSplitComputeEvaluator",
     "RawArtifactsUnavailableError",
+    "score_raw_artifacts",
 ]
