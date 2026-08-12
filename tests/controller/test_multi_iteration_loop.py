@@ -22,6 +22,41 @@ correctly on both a budget-exhaustion path and a normal-completion path." Exerci
 7. An uncaught exception from `run_one_candidate_pass` propagates unmodified, AND the watchdog
    this function itself started is still stopped (ordinary resource cleanup, not retry policy).
 
+GW-02 (#3649) + backlog #4203 additions -- `run_multi_iteration_loop` now requires
+`higher_is_better`/`frozen_context`/`current_config`/`repo`/`ratchet_ref_name`/`callable_name`/
+`concrete_inputs` (plus optional `commit_tree_sha`/`candidate_target_path`/
+`allow_fresh_start_despite_existing_lineage`), all forwarded unchanged to `run_one_candidate_pass`
+on every iteration except `higher_is_better` (suppressed to `None` while this loop's own live
+`best_fitness` state is `None`). Every `run_multi_iteration_loop(` call site in this file now
+supplies these via the shared `_base_kwargs()` helper. Because `run_multi_iteration_loop` does
+NOT expose `guarded_evaluate_fn`/`measure_two_phase_timing_fn`/`commit_parent_sha` as injection
+seams (out of #4203's own scope -- only the 10 values named above are threaded), every candidate
+that reaches a full `run_one_candidate_pass` pass in this file's tests exercises the REAL
+`guarded_evaluate`/`measure_two_phase_timing` defaults:
+- `_base_kwargs()`'s `frozen_context` carries a genuinely-computed `ClosureManifest`
+  (`build_closure_manifest`, empty declared paths, real `uv.lock` pinned-deps hash) so
+  `verify_closure`'s hash recheck passes for real, and a `score_fn` that returns a
+  monotonically-increasing two-metric fitness dict (equal per-metric deltas -> Cohen's d is
+  always `inf`) so every accept-eligible candidate's `compute_ratchet_decision` call genuinely
+  clears AC-10's thresholds -- required by `TestNormalCompletion`'s own `accepted_count == 4`
+  assertion below.
+- every dispatch backend in this file appends a fixed, `jax.jit`-safe `timing_probe(a, b)`
+  function to each candidate's written source (`callable_name="timing_probe"` in
+  `_base_kwargs()`) -- the diversity-quota-relevant `f(...)` bodies stay untouched by this, since
+  `is_structural_mutation` compares whole-file text and the appended suffix is byte-identical
+  across every candidate.
+- the autouse `_stub_crash_atomicity` fixture's `read_best_so_far` stub returns a FIXED, non-`None`
+  SHA (never a real git ref) -- combined with `allow_fresh_start_despite_existing_lineage=True` in
+  `_base_kwargs()` (a deliberate deviation from a literal reading of the sprint TOML's own "8 new
+  values" list; see this file's own commit message / the fixer's report for why), this avoids the
+  real production chicken-and-egg gap where `commit_parent_sha` is never forwarded through this
+  outer layer: `run_one_candidate_pass`'s accept branch needs a non-`None` parent SHA on every
+  accept, but a strict fresh-empty-ref simulation (`read_best_so_far` returning `None` on a
+  first call) cannot satisfy both the P1.5 lineage-conflict guard (wants `None`) and the
+  accept-branch parent resolution (wants non-`None`) from the SAME two same-value reads within one
+  call. None of this file's own tests exercise the lineage-conflict guard itself -- that is
+  `test_main_loop.py`'s job (P1.5/P1.7).
+
 ## Watchdog safety (mandatory reading for anyone editing this file)
 
 `xtrax.loop.external_stop_watchdog.start_watchdog` is a REAL function that spawns a REAL,
@@ -41,13 +76,17 @@ from typing import Any
 
 import pytest
 
+import controller.main_loop as main_loop_module
+import controller.multi_iteration_loop as multi_iteration_loop_module
 from controller.bathos_campaign_adapter import BathosCampaignAdapter
 from controller.dispatch import CandidateHandoff, CandidateHandoffFailure, MockFailureMode
+from controller.evaluate_adapter import BathosFrozenContext
 from controller.multi_iteration_loop import (
     LeapPathEvent,
     MultiIterationLoopResult,
     run_multi_iteration_loop,
 )
+from xtrax.loop.closure_lock import build_closure_manifest
 from xtrax.loop.diversity_quota import is_structural_mutation
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria, start_watchdog
 from xtrax.loop.seed_gate import SeedTrialCounts
@@ -137,9 +176,14 @@ class _SequentialDispatchBackend:
 
     def dispatch_candidate(self) -> CandidateHandoff:
         source = self._sources[self.call_count % len(self._sources)]
+        # _TIMING_PROBE_SUFFIX is appended (byte-identical every call) so the real, unstubbable
+        # measure_two_phase_timing_fn default has a jax.jit-safe callable to resolve -- see the
+        # module docstring's #4203 addendum. The diversity-quota-relevant diff signal between
+        # candidates still comes entirely from `source` itself.
+        content = source + _TIMING_PROBE_SUFFIX
         path = self._tmp_path / f"candidate_{self.call_count}.py"
-        path.write_text(source, encoding="utf-8")
-        sha256_hex = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        path.write_text(content, encoding="utf-8")
+        sha256_hex = hashlib.sha256(content.encode("utf-8")).hexdigest()
         self.call_count += 1
         return CandidateHandoff(path=path, content_sha256=sha256_hex)
 
@@ -198,6 +242,59 @@ def _passing_seed_counts(
     return SeedTrialCounts(script_sha256=script_sha256, distinct_seed_count=5, trial_count=40)
 
 
+# ---------------------------------------------------------------------------
+# GW-02 (#3649) / #4203 shared fixtures: run_multi_iteration_loop's 8 new required/default
+# values (frozen_context/current_config/repo/ratchet_ref_name/commit_tree_sha/callable_name/
+# concrete_inputs/higher_is_better), plus a real, non-fabricated ClosureManifest and a real
+# jax.jit-safe timing-probe callable -- see the module docstring's #4203 addendum for why these
+# can't just be stubbed away the way test_main_loop.py's own _new_step_kwargs() does.
+# ---------------------------------------------------------------------------
+
+_TIMING_PROBE_NAME = "timing_probe"
+_TIMING_PROBE_SUFFIX = f"\n\ndef {_TIMING_PROBE_NAME}(a, b):\n    return a + b\n"
+_TIMING_CONCRETE_INPUTS: list[Any] = [1.0, 2.0]
+_HIGHER_IS_BETTER = {"metric_a": True, "metric_b": True}
+
+
+def _make_monotonic_score_fn() -> Any:
+    """A fresh, per-test score_fn returning a strictly-improving two-metric fitness dict.
+
+    Both metrics increase by the same amount every call, so `compute_ratchet_decision`'s Cohen's
+    d is always `inf` (zero-stdev, positive mean delta) -- every accept-eligible candidate
+    genuinely clears AC-10's win_rate/breakdown_point/cohens_d thresholds, matching
+    `TestNormalCompletion`'s own `accepted_count == 4` expectation below.
+    """
+    counter = {"n": 0}
+
+    def _score_fn(
+        raw_artifact_paths: tuple[Path, ...], split_paths: tuple[Path, ...]
+    ) -> dict[str, float]:
+        counter["n"] += 1
+        value = float(counter["n"])
+        return {"metric_a": value, "metric_b": value}
+
+    return _score_fn
+
+
+def _frozen_context() -> BathosFrozenContext:
+    """A fresh `BathosFrozenContext` per call -- genuinely-computed `ClosureManifest` (empty
+    declared paths, real `uv.lock` pinned-deps hash) so `verify_closure`'s real hash recheck
+    (unstubbable here -- guarded_evaluate_fn isn't threaded through run_multi_iteration_loop)
+    passes for real, paired with a fresh monotonic score_fn (own counter, no cross-test state).
+    """
+    return BathosFrozenContext(
+        locked=build_closure_manifest(
+            evaluator_paths=(),
+            split_paths=(),
+            metric_def_paths=(),
+            config={},
+        ),
+        campaign_adapter=None,  # type: ignore[arg-type]  # unused -- score_fn never touches it
+        campaign_id="camp-1",
+        score_fn=_make_monotonic_score_fn(),
+    )
+
+
 def _base_kwargs(dispatch_backend: Any) -> dict[str, Any]:
     return {
         "dispatch_backend": dispatch_backend,
@@ -207,7 +304,51 @@ def _base_kwargs(dispatch_backend: Any) -> dict[str, Any]:
         "stats_battery_kwargs": {},
         "stats_battery_fn": _passing_stats_verdict,
         "seed_trial_counts_fn": _passing_seed_counts,
+        "output_paths": ["dummy-output.txt"],
+        "frozen_context": _frozen_context(),
+        "current_config": {},
+        "repo": Path("unused-repo"),
+        "ratchet_ref_name": "refs/xtrax/best-so-far",
+        "commit_tree_sha": "unused-tree-sha",
+        "callable_name": _TIMING_PROBE_NAME,
+        "concrete_inputs": _TIMING_CONCRETE_INPUTS,
+        "higher_is_better": _HIGHER_IS_BETTER,
+        # Deliberate deviation from a literal reading of the sprint TOML's own "8 new values"
+        # list -- see the module docstring's #4203 addendum for why this is required to avoid a
+        # real chicken-and-egg gap (commit_parent_sha is never forwarded through this outer
+        # layer, so a strict fresh-empty-ref simulation cannot satisfy both the P1.5
+        # lineage-conflict guard and the accept-branch parent-SHA resolution from the same two
+        # same-value reads within one run_one_candidate_pass call).
+        "allow_fresh_start_despite_existing_lineage": True,
     }
+
+
+@pytest.fixture(autouse=True)
+def _stub_crash_atomicity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub controller.main_loop's 4 crash-atomicity functions so no test here needs a real git
+    repo (P3.1, backlog #4203). `read_best_so_far` returns a FIXED, non-`None` SHA (never `None`)
+    -- combined with `_base_kwargs()`'s `allow_fresh_start_despite_existing_lineage=True`, this
+    lets every accept-eligible candidate resolve a valid commit parent without ever needing a real
+    git ref or `commit_parent_sha` (not forwarded through `run_multi_iteration_loop` -- see the
+    module docstring's #4203 addendum). See `test_main_loop.py`'s own identically-shaped fixture
+    for the precedent this mirrors.
+    """
+    monkeypatch.setattr(
+        main_loop_module, "read_best_so_far", lambda repo, ref_name: "stub-best-so-far-sha"
+    )
+    monkeypatch.setattr(
+        main_loop_module,
+        "create_pending_commit",
+        lambda repo, tree_sha, parent_sha, message: "pending-sha",
+    )
+    monkeypatch.setattr(
+        main_loop_module,
+        "advance_best_so_far",
+        lambda repo, ref_name, new_sha, expected_old_sha: None,
+    )
+    monkeypatch.setattr(
+        main_loop_module, "reset_worktree_to_best_so_far", lambda repo, ref_name: "best-sha"
+    )
 
 
 _CRITERIA = WatchdogCriteria(wall_clock_budget_seconds=3600.0)
@@ -458,3 +599,157 @@ class TestMockDispatchBackendFileContentAssumption:
         )
         backend.dispatch_candidate()
         assert not candidate_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# 9. C1(amended)/R3-D1 (backlog #4203): higher_is_better is REQUIRED, and its forwarding to
+# run_one_candidate_pass is suppressed to None while this loop's own live best_fitness state is
+# None -- keyed on LIVE state, not a fixed "iteration 1" index -- and lifts once best_fitness
+# becomes non-None post-accept.
+# ---------------------------------------------------------------------------
+
+
+def _downgraded_stats_verdict(**_kwargs: Any) -> BathosStatsBatteryVerdict:
+    return BathosStatsBatteryVerdict(
+        verdict="confounded",
+        scipy_available=True,
+        reasons=("insufficient effect size",),
+        cohens_d=0.05,
+        win_rate=0.5,
+        breakdown_point=0.05,
+        p_superiority=0.5,
+        wilcoxon_p_value=0.4,
+        icc=0.8,
+        baseline_budget_equivalent=False,
+    )
+
+
+def _spy_on_run_one_candidate_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, Any]]:
+    """Patches controller.multi_iteration_loop's own imported name (not main_loop's), recording
+    every call's kwargs before delegating to the real function -- a genuine spy, not a mock that
+    fakes the pass outcome."""
+    calls: list[dict[str, Any]] = []
+    real = multi_iteration_loop_module.run_one_candidate_pass
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(multi_iteration_loop_module, "run_one_candidate_pass", _spy)
+    return calls
+
+
+class TestHigherIsBetterRequired:
+    def test_missing_higher_is_better_raises_type_error_before_any_dispatch(
+        self, tmp_path: Path
+    ) -> None:
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        kwargs = _base_kwargs(dispatch_backend)
+        del kwargs["higher_is_better"]
+
+        with pytest.raises(TypeError, match="higher_is_better"):
+            run_multi_iteration_loop(
+                **kwargs,
+                max_candidates=3,
+                watchdog_criteria=_CRITERIA,
+                start_watchdog_fn=_FakeWatchdogStarter(),
+            )
+
+        assert dispatch_backend.call_count == 0, (
+            "a missing required kwarg must raise before any candidate is ever dispatched"
+        )
+
+
+class TestHigherIsBetterSuppression:
+    def test_suppressed_to_none_on_the_first_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        calls = _spy_on_run_one_candidate_pass(monkeypatch)
+
+        run_multi_iteration_loop(
+            **_base_kwargs(dispatch_backend),
+            max_candidates=1,
+            watchdog_criteria=_CRITERIA,
+            start_watchdog_fn=_FakeWatchdogStarter(),
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["best_fitness"] is None
+        assert calls[0]["higher_is_better"] is None
+
+    def test_suppression_holds_across_multiple_consecutive_none_calls(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Injects a hard-blocking gate (confirmation mode + a downgraded stats verdict) on the
+        first TWO candidates so `OneCandidatePassResult.accepted` stays False for both -- even
+        though the ratchet's own automatic-accept sentinel (best_fitness=None) unconditionally
+        sets `ratchet_decision.improved=True` regardless of the gate. This proves the loop's own
+        `best_fitness` state -- and therefore `higher_is_better`'s suppression -- genuinely
+        tracks LIVE state across N>1 consecutive calls, not a fixed "iteration 1" special case.
+        """
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        calls = _spy_on_run_one_candidate_pass(monkeypatch)
+
+        stats_call_count = {"n": 0}
+
+        def _flaky_stats_battery_fn(**_kwargs: Any) -> BathosStatsBatteryVerdict:
+            stats_call_count["n"] += 1
+            if stats_call_count["n"] <= 2:
+                return _downgraded_stats_verdict()
+            return _passing_stats_verdict()
+
+        kwargs = _base_kwargs(dispatch_backend)
+        kwargs["campaign_mode"] = "confirmation"
+        kwargs["stats_battery_fn"] = _flaky_stats_battery_fn
+
+        result = run_multi_iteration_loop(
+            **kwargs,
+            max_candidates=3,
+            watchdog_criteria=_CRITERIA,
+            start_watchdog_fn=_FakeWatchdogStarter(),
+        )
+
+        assert len(calls) == 3
+        assert [r.accepted for r in result.iterations] == [False, False, True], (
+            "the first two candidates must be genuinely hard-blocked (not accepted), and the "
+            "third must genuinely clear the gate -- otherwise this isn't testing the N>1 case"
+        )
+        assert [c["best_fitness"] for c in calls] == [None, None, None], (
+            "best_fitness must still be None on all three calls -- neither of the first two "
+            "hard-blocked candidates was ever promoted"
+        )
+        assert [c["higher_is_better"] for c in calls] == [None, None, None], (
+            "higher_is_better must stay suppressed on every one of the 3 consecutive calls "
+            "while best_fitness is still None -- proving live-state tracking, not a fixed index"
+        )
+
+    def test_suppression_lifts_once_best_fitness_becomes_non_none_post_accept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        calls = _spy_on_run_one_candidate_pass(monkeypatch)
+
+        result = run_multi_iteration_loop(
+            **_base_kwargs(dispatch_backend),
+            max_candidates=3,
+            watchdog_criteria=_CRITERIA,
+            start_watchdog_fn=_FakeWatchdogStarter(),
+        )
+
+        assert len(calls) == 3
+        assert [r.accepted for r in result.iterations] == [True, True, True], (
+            "every candidate here must genuinely accept (default gates pass, monotonic score_fn) "
+            "so higher_is_better's suppression genuinely lifts, not merely stays None throughout"
+        )
+        assert calls[0]["best_fitness"] is None
+        assert calls[0]["higher_is_better"] is None
+        # From call 2 onward, best_fitness is genuinely set (candidate 1's own fitness_dict) and
+        # higher_is_better forwards as the real, unmutated mapping -- verified by identity, not
+        # just equality, matching the module docstring's "never mutated" guarantee.
+        assert calls[1]["best_fitness"] is not None
+        assert calls[1]["higher_is_better"] is _HIGHER_IS_BETTER
+        assert calls[2]["best_fitness"] is not None
+        assert calls[2]["higher_is_better"] is _HIGHER_IS_BETTER
