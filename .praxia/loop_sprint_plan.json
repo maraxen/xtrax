@@ -1,0 +1,154 @@
+{
+  "plan_id": "260812_backlog-4203-implementation-plan",
+  "task_id": "260807_autonomous-dev-loop",
+  "backlog_id": "4203",
+  "objective": "Implement backlog #4203 (xtrax GW-02 kwargs threading + tree-substitution + lineage-conflict fixes) per the locked C1-C9/D1/D3/R3-D1 design in .praxia/docs/specs/260812_backlog-4203-xtrax-revise-round-1-2-corr-3.md and .../260812_backlog-4203-xtrax-round3-human-authorized.md (amending corr-3.md), plus the base design in .../260812_backlog-4203-xtrax-corrected-re-run-of-s.md (fitness_dict field, commit_tree_sha_fn seam, candidate_target_path) that those two documents carry forward.",
+  "decomposition": [
+    {
+      "agent": "fixer",
+      "step": "P1.1 main_loop.py: add PriorBestSoFarLineageConflictError exception + OneCandidatePassResult.fitness_dict field (C6, base-spec piece b)",
+      "dependencies": [],
+      "success_criteria": "controller/main_loop.py: new module-local exception class defined; OneCandidatePassResult dataclass (currently lines 173-226) gains fitness_dict: dict[str, float] field + docstring; python -c import succeeds"
+    },
+    {
+      "agent": "fixer",
+      "step": "P1.2 main_loop.py: run_one_candidate_pass signature changes -- commit_tree_sha becomes str|None=None (was required str, line 256); add commit_tree_sha_fn: Callable[[CandidateHandoff,Path,Path,str|None],str]=compute_candidate_tree_sha; add candidate_target_path: Path|None=None (C7, amends base-spec's required Path); add bootstrap_base_tree_sha: str|None=None (C3); add allow_fresh_start_despite_existing_lineage: bool=False (C6)",
+      "dependencies": [
+        "P1.1"
+      ],
+      "success_criteria": "inspect.signature(run_one_candidate_pass) shows all 5 new/changed params with correct defaults; existing literal-commit_tree_sha callers (test_main_loop.py _new_step_kwargs) remain valid without changes"
+    },
+    {
+      "agent": "fixer",
+      "step": "P1.3 main_loop.py: new compute_candidate_tree_sha(handoff, repo, candidate_target_path, base_sha) -> str real-default function, defined in controller/main_loop.py directly (placement resolved via layering analysis -- xtrax.loop must not import from controller/; see planner Open Question 2), implementing C5's 3-step git plumbing (resolve base_sha^{tree}, git hash-object -w BEFORE git update-index --add --cacheinfo, mode 100644 unconditionally) via a scratch GIT_INDEX_FILE; raises ValueError immediately when base_sha is None (C3's terminal case)",
+      "dependencies": [
+        "P1.2"
+      ],
+      "success_criteria": "inspect.signature(compute_candidate_tree_sha) has exactly 4 named params (handoff, repo, candidate_target_path, base_sha) in that order (C4 AC); given fixture repo+base commit+candidate file, resolves base_sha^{tree} before read-tree, writes blob before update-index, git ls-tree -r shows mode 100644 (C5 AC); base_sha=None raises ValueError before any git write"
+    },
+    {
+      "agent": "fixer",
+      "step": "P1.4 main_loop.py: C7 fail-fast validation (commit_tree_sha is None and candidate_target_path is None -> ValueError), inserted before dispatch_backend.dispatch_candidate() (currently line 406/407)",
+      "dependencies": [
+        "P1.2"
+      ],
+      "success_criteria": "literal commit_tree_sha with candidate_target_path omitted succeeds, commit_tree_sha_fn never invoked (spy); omitting both raises ValueError before any dispatch/git call"
+    },
+    {
+      "agent": "fixer",
+      "step": "P1.5 main_loop.py: C6 lineage-conflict check inserted in the best_fitness-is-None branch (currently lines 469-479), before sentinel construction -- calls read_best_so_far(repo, ratchet_ref_name); raises PriorBestSoFarLineageConflictError naming ratchet_ref_name + conflicting SHA + steering caller to a fresh ref name, unless allow_fresh_start_despite_existing_lineage=True",
+      "dependencies": [
+        "P1.1",
+        "P1.2"
+      ],
+      "success_criteria": "best_fitness=None + read_best_so_far returning non-None -> PriorBestSoFarLineageConflictError with both ref+sha in message and fresh-ref-name guidance, before any dispatch/bathos/git call; allow_fresh_start_despite_existing_lineage=True proceeds unchanged (C6 AC a+b)"
+    },
+    {
+      "agent": "fixer",
+      "step": "P1.6 main_loop.py: C3/C4 base_sha resolution + commit_tree_sha_fn invocation wired into the accept branch (currently lines 487-509), immediately before create_pending_commit (line 503) -- second, explicit read_best_so_far call (not reusing prior_best_sha) with bootstrap_base_tree_sha fallback, result passed as the single base_sha arg to commit_tree_sha_fn; resolved value replaces the commit_tree_sha argument to create_pending_commit. RESOLVED (plan-audit 260812_backlog-4203-implementation-plan-audit, verdict (a) legitimate implementation-level interpretation, no further escalation needed): base spec's literal text says commit_tree_sha_fn is invoked 'right after step 1' unconditionally, but this step correctly places it lazily on the accept path only -- justified by C3 FIX's own text describing the base_sha read as 'a second... read alongside the existing one used for commit_parent_sha resolution', and commit_parent_sha's existing read already lives inside the accept branch today (main_loop.py:488), not eagerly after dispatch. Nothing between dispatch and the accept branch reads commit_tree_sha. Trade-off accepted: a first-ever campaign's missing bootstrap_base_tree_sha now fails after a full dispatch+bathos-run+scoring pass instead of immediately after dispatch -- matches commit_parent_sha's own existing precedent, not a new inconsistency.",
+      "dependencies": [
+        "P1.3",
+        "P1.4",
+        "P1.5"
+      ],
+      "success_criteria": "given fixture repo with no ratchet_ref_name ref yet (read_best_so_far None): supplying bootstrap_base_tree_sha lets the default proceed; omitting it raises ValueError before any git write (C3 AC a+b). ADDED per plan-audit: a dedicated test proves commit_tree_sha_fn is NEVER invoked for a candidate that is rejected, gate-blocked, or aborts via guarded_evaluate_fn exception before reaching the accept branch -- locks in the lazy-placement decision as intentional, not accidental."
+    },
+    {
+      "agent": "fixer",
+      "step": "P1.7 test_main_loop.py: new tests for C3/C4/C5/C6/C7/C8/C9 + base-spec AC bullet 1 (fitness_dict round-trip) -- new test classes for candidate_target_path validation, compute_candidate_tree_sha signature+plumbing+new-path-not-just-replacement (C9), PriorBestSoFarLineageConflictError both branches, fitness_dict byte-identical round-trip, no-partial-OneCandidatePassResult-on-guarded_evaluate_fn-exception, PLUS (per plan-audit) the lazy-invocation lock-in test from P1.6's amended success_criteria (commit_tree_sha_fn never invoked for rejected/gate-blocked/exception-aborted candidates)",
+      "dependencies": [
+        "P1.2",
+        "P1.3",
+        "P1.4",
+        "P1.5",
+        "P1.6"
+      ],
+      "success_criteria": "uv run pytest tests/controller/test_main_loop.py -q fully green; every C3/C4/C5/C6/C7/C8/C9 AC bullet has a corresponding passing test"
+    },
+    {
+      "agent": "fixer",
+      "step": "P2.1 multi_iteration_loop.py: run_multi_iteration_loop signature gains 10 new kwargs (higher_is_better required no-default; frozen_context/current_config/repo/ratchet_ref_name/callable_name/concrete_inputs required no-default; commit_tree_sha/candidate_target_path optional None; allow_fresh_start_despite_existing_lineage optional False) -- new import controller.evaluate_adapter.BathosFrozenContext needed (not currently imported)",
+      "dependencies": [
+        "P1.2"
+      ],
+      "success_criteria": "inspect.signature shows all 10 new params with correct required/optional shape; module docstring Args section updated"
+    },
+    {
+      "agent": "fixer",
+      "step": "P2.2 multi_iteration_loop.py: CLARIFIED per plan-audit (finding: step text previously left this ambiguous) -- this step wires ALL 10 new values into the run_one_candidate_pass call (currently lines 390-408), not just higher_is_better: the 8 static values received as P2.1's new params (frozen_context, current_config, repo, ratchet_ref_name, commit_tree_sha, candidate_target_path, callable_name, concrete_inputs) forward byte-identical every call; allow_fresh_start_despite_existing_lineage forwards byte-identical every call; higher_is_better forwards via D1's conditional ternary (None if best_fitness is None else higher_is_better). Loop-local best_fitness state (Mapping[str,float]|None=None before the loop, currently near line 377) updated to result.fitness_dict only when result.accepted is True (after line 409), unchanged on reject",
+      "dependencies": [
+        "P2.1",
+        "P1.7"
+      ],
+      "success_criteria": "a spy on run_one_candidate_pass shows all 8 static values forwarded byte-identical every call, allow_fresh_start_despite_existing_lineage forwarded byte-identical every call, and higher_is_better=None exactly on calls where best_fitness=None / real mapping otherwise (C1 amended AC); best_fitness carries forward correctly across accept/reject (base-spec AC bullets 2-3)"
+    },
+    {
+      "agent": "fixer",
+      "step": "P2.3 loop_run.py: run_campaign_loop signature gains the same 10 new kwargs as P2.1 -- same new BathosFrozenContext import needed",
+      "dependencies": [
+        "P2.1"
+      ],
+      "success_criteria": "inspect.signature matches P2.1's shape; module docstring Args section updated"
+    },
+    {
+      "agent": "fixer",
+      "step": "P2.4 loop_run.py: forward all 10 new values unchanged (byte-identical, single call site) into run_multi_iteration_loop (currently lines 507-532)",
+      "dependencies": [
+        "P2.2",
+        "P2.3"
+      ],
+      "success_criteria": "a spy on run_multi_iteration_loop shows all 10 values forwarded byte-identical on the one call run_campaign_loop makes to it"
+    },
+    {
+      "agent": "fixer",
+      "step": "P2.5 regression check: controller/multi_iteration_loop.py + controller/loop_run.py import cleanly; test_main_loop.py suite (Track A, unaffected by Track B) still fully green",
+      "dependencies": [
+        "P2.2",
+        "P2.4"
+      ],
+      "success_criteria": "uv run python -c 'import controller.multi_iteration_loop, controller.loop_run' succeeds; uv run pytest tests/controller/test_main_loop.py -q unchanged pass count"
+    },
+    {
+      "agent": "fixer",
+      "step": "P3.1 test_multi_iteration_loop.py: autouse fixture stubbing controller.main_loop's 4 crash-atomicity functions (read_best_so_far/create_pending_commit/advance_best_so_far/reset_worktree_to_best_so_far) + _base_kwargs() (currently lines 201-210) gains the 8 new required/default values (frozen_context, current_config, repo, ratchet_ref_name, commit_tree_sha='unused-tree-sha', callable_name, concrete_inputs, higher_is_better)",
+      "dependencies": [
+        "P2.2"
+      ],
+      "success_criteria": "uv run pytest tests/controller/test_multi_iteration_loop.py -q fully green (all 8 run_multi_iteration_loop( call sites at lines 226,257,284,314,338,359,385,406 pass via the shared helper, no per-site edits needed)"
+    },
+    {
+      "agent": "fixer",
+      "step": "P3.2 test_loop_run.py: same autouse crash-atomicity stub pattern + _base_kwargs() (currently lines 224-235) gains the same 8 new values",
+      "dependencies": [
+        "P2.4"
+      ],
+      "success_criteria": "uv run pytest tests/controller/test_loop_run.py -q fully green (all 15 run_campaign_loop( call sites at lines 250,287,301,338,382,416,426,458,484,503,533,559,592,623,654 pass via the shared helper)"
+    },
+    {
+      "agent": "fixer",
+      "step": "P3.3 test_multi_iteration_loop.py: new tests for C1(amended)/R3-D1 -- TypeError when higher_is_better omitted (before any dispatch); suppression=None on the first best_fitness=None call; suppression holds across N>1 consecutive best_fitness=None calls (not just call 1, via injected hard-blocking gate); suppression lifts to the real mapping once best_fitness becomes non-None post-accept",
+      "dependencies": [
+        "P3.1"
+      ],
+      "success_criteria": "all 4 new tests pass, each with an explicit spy assertion on run_one_candidate_pass's received higher_is_better per call, matching Amendment 3/4's exact framing"
+    },
+    {
+      "agent": "fixer",
+      "step": "P3.4 test_loop_run.py: new integration/forwarding-spy test spying simultaneously on controller.multi_iteration_loop.run_one_candidate_pass AND controller.loop_run.run_multi_iteration_loop across >=2 iterations, asserting all 10 named values forwarded correctly at both layer boundaries (D3-amended C2 AC, 10 values not 9, with the higher_is_better None/real-mapping caveat)",
+      "dependencies": [
+        "P3.2",
+        "P3.3"
+      ],
+      "success_criteria": "single new test class passes, asserting per-iteration per-boundary equality for frozen_context/current_config/repo/ratchet_ref_name/commit_tree_sha/callable_name/concrete_inputs/candidate_target_path/allow_fresh_start_despite_existing_lineage byte-identical, higher_is_better per Amendment 2's conditional rule"
+    },
+    {
+      "agent": "fixer",
+      "step": "P3.5 full narrow-suite regression + base-spec pre-mortem grep re-run",
+      "dependencies": [
+        "P3.3",
+        "P3.4"
+      ],
+      "success_criteria": "uv run pytest tests/controller/test_main_loop.py tests/controller/test_multi_iteration_loop.py tests/controller/test_loop_run.py -q fully green, 0 skips added; grep -rn 'run_one_candidate_pass(' --include='*.py' . (excluding .venv) re-confirms no hidden callers beyond controller/multi_iteration_loop.py:390 + the two test files, before candidate_target_path's behavior change is considered shippable"
+    }
+  ]
+}

@@ -1,0 +1,371 @@
+[sprint]
+sprint_id = "260812_gw02-followup-4203-caller-wiring"
+sprint_num = 2
+name = "GW-02 follow-up (#4203): thread ratchet/crash-atomicity params through run_multi_iteration_loop and run_campaign_loop"
+description = "Wires the 10 new values GW-02 (#3649, PR #90) added to run_one_candidate_pass through its real production callers -- controller/multi_iteration_loop.py's run_multi_iteration_loop and controller/loop_run.py's run_campaign_loop -- plus a new fitness-carry-forward state machine, a commit_tree_sha_fn tree-substitution seam, and a crash-resume-lineage-conflict guard. Design locked after 3 rounds of adversarial review (2 automatic + 1 human-authorized) and a plan-audit PASS after 1 revision round."
+context = """
+Backlog #4203, depends on #3649 (completed, PR #90 draft pending this item). CI's tier1_core coverage
+gate found 19 failing tests (not the 7 originally estimated) all from this same gap -- controller/
+multi_iteration_loop.py:390 and controller/loop_run.py's transitive call chain both forward none of
+GW-02's 7 new kwargs.
+
+Locked design (3 spec docs, read in this order -- each amends/supersedes parts of the prior):
+1. .praxia/docs/specs/260812_backlog-4203-xtrax-corrected-re-run-of-s.md (session c21cc4e2) -- base:
+   OneCandidatePassResult.fitness_dict field, commit_tree_sha_fn injection seam, candidate_target_path
+   required param, loop-local best_fitness carry-forward state machine.
+2. .praxia/docs/specs/260812_backlog-4203-xtrax-revise-round-1-2-corr-3.md (session 48e73bf2) -- REVISE
+   round fixing 9 objections (C1-C9) adversarial review round 1 found against #1.
+3. .praxia/docs/specs/260812_backlog-4203-xtrax-round3-human-authorized.md -- supersedes #2's C1/C2,
+   adds AC bullet R3-D1. Human-authorized after adversarial review round 2 found D1 (blocking:
+   higher_is_better forwarded unconditionally while best_fitness starts None on iteration 1,
+   contradicting the existing ValueError guard at main_loop.py:461-467) and D3 (warning:
+   allow_fresh_start_despite_existing_lineage not covered by the forwarding-spy AC).
+
+Full 17-step implementation plan (all file:line anchors, dependencies, success_criteria, plan-audit
+PASS with all 5 dimensions at 5/5 after 1 NEEDS_WORK revision) is at .praxia/loop_sprint_plan.json in
+this worktree -- fixer_prompts below are self-contained but that file plus the 3 spec docs are the
+canonical source if any ambiguity arises.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "a"
+is_research = false
+worktree = true
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "4203"
+phase_name = "Track A -- main_loop.py core: new exception/field, signature changes, tree-substitution seam, fail-fast validation, lineage-conflict guard (P1.1-P1.7)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+
+Implement the `controller/main_loop.py` core changes for backlog #4203. Read
+.praxia/docs/specs/260812_backlog-4203-xtrax-corrected-re-run-of-s.md,
+.praxia/docs/specs/260812_backlog-4203-xtrax-revise-round-1-2-corr-3.md, and
+.praxia/docs/specs/260812_backlog-4203-xtrax-round3-human-authorized.md (in that order -- each amends
+the prior) before starting; also read .praxia/loop_sprint_plan.json steps P1.1-P1.7 for the exact
+decomposition this prompt summarizes.
+
+## Step P1.1 -- new exception + fitness_dict field
+Add a module-local `PriorBestSoFarLineageConflictError` exception to `controller/main_loop.py`.
+Add `fitness_dict: dict[str, float]` as a new field on `OneCandidatePassResult` (currently lines
+173-226), populated at the same point `ratchet_decision` is (the existing no-partial-construction
+guarantee already covers it: an exception anywhere upstream of `guarded_evaluate_fn`'s return aborts
+the whole call before any `OneCandidatePassResult` -- partial or otherwise -- is constructed).
+
+## Step P1.2 -- signature changes
+On `run_one_candidate_pass` (currently starting line ~229): change `commit_tree_sha` from required
+`str` to `str | None = None`. Add `commit_tree_sha_fn: Callable[[CandidateHandoff, Path, Path, str | None], str] = compute_candidate_tree_sha`
+(injection seam, matches the file's existing `guarded_evaluate_fn`/`stats_battery_fn` DI convention).
+Add `candidate_target_path: Path | None = None` (NOT unconditionally required -- see P1.4's
+conditional validation). Add `bootstrap_base_tree_sha: str | None = None`. Add
+`allow_fresh_start_despite_existing_lineage: bool = False`. Existing literal-`commit_tree_sha` callers
+(e.g. `test_main_loop.py`'s `_new_step_kwargs()`) must remain valid without any changes -- this is a
+purely additive signature change.
+
+## Step P1.3 -- compute_candidate_tree_sha real default
+New module-level function `compute_candidate_tree_sha(handoff: CandidateHandoff, repo: Path, candidate_target_path: Path, base_sha: str | None) -> str`
+in `controller/main_loop.py` (placement here, not `xtrax.loop/`, since that package must not import
+`CandidateHandoff` from `controller/dispatch.py` -- reverse-dependency direction). `base_sha` is the
+resolved base COMMIT to substitute against, explicitly NOT `commit_tree_sha` itself (this function's
+own return value, never one of its inputs). If `base_sha is None`, raise `ValueError` immediately,
+before any git write. Otherwise, using a scratch `GIT_INDEX_FILE` (never mutate the repo's real
+index):
+1. Resolve `base_sha^{tree}` (e.g. via `git rev-parse`) -- `base_sha` is a COMMIT sha, not a tree sha.
+2. `git read-tree` that resolved tree into the scratch index.
+3. Write the candidate's blob FIRST via `git hash-object -w <handoff.path>` to obtain a blob sha.
+4. `git update-index --add --cacheinfo 100644 <blob-sha> <candidate_target_path>` (file mode 100644
+   unconditionally -- executable candidates are an explicitly out-of-scope future extension).
+5. `git write-tree` from the scratch index, return the resulting tree sha.
+This produces a whole-repo-tree substitution (every base-tree path unchanged except
+`candidate_target_path`), never a synthetic single-file tree -- required because
+`reset_worktree_to_best_so_far` does a real `git reset --hard` onto this lineage, and a single-file
+tree would corrupt the worktree on reject. `git update-index --add` does not distinguish "new path"
+from "replace existing path" at the plumbing level, so no special-casing is needed for either case.
+
+## Step P1.4 -- fail-fast validation
+Insert, before `dispatch_backend.dispatch_candidate()` is called (currently ~line 406/407): if
+`commit_tree_sha is None` AND `candidate_target_path is None`, raise `ValueError`
+("candidate_target_path is required when commit_tree_sha is not supplied directly"). This lets
+literal-`commit_tree_sha` call sites omit `candidate_target_path` entirely (never used on that path,
+`commit_tree_sha_fn` never invoked).
+
+## Step P1.5 -- lineage-conflict guard
+Insert, inside the `best_fitness is None` branch (currently lines 469-479), BEFORE the automatic-accept
+sentinel is constructed: call `read_best_so_far(repo, ratchet_ref_name)`. If it returns non-`None`
+(a prior best-so-far commit already exists in git lineage despite the caller believing this is a fresh
+start), raise `PriorBestSoFarLineageConflictError` naming both `ratchet_ref_name` and the conflicting
+SHA in the message, AND instructing the caller to use a fresh, unique `ratchet_ref_name` per
+genuinely-new campaign rather than reaching for the override flag -- unless
+`allow_fresh_start_despite_existing_lineage=True`, in which case proceed with today's automatic-accept
+sentinel behavior unchanged (the caller has explicitly acknowledged the conflict).
+
+## Step P1.6 -- tree-substitution wired into the accept branch
+Inside the accept branch (currently lines 487-509), immediately BEFORE `create_pending_commit` (line
+~503): resolve `base_sha` via a SECOND, explicit `read_best_so_far(repo, ratchet_ref_name)` call (not
+reusing `prior_best_sha` from the existing `commit_parent_sha` resolution logic -- this mirrors that
+existing code's own precedent of reading twice deliberately, both side-effect-free reads). If that
+returns `None`, fall back to `bootstrap_base_tree_sha`; if that is ALSO `None`,
+`compute_candidate_tree_sha` (P1.3's real default) raises `ValueError` immediately.
+
+**Placement note (already resolved by plan-audit, do not re-litigate):** `commit_tree_sha_fn` is
+invoked HERE (lazily, accept-branch-only), not eagerly right after dispatch. This is deliberate:
+nothing between dispatch and the accept branch reads `commit_tree_sha`, and `commit_parent_sha`'s own
+existing resolution already lives in this same accept branch, not eagerly -- lazy placement avoids
+wasted git-subprocess work and a spurious `bootstrap_base_tree_sha`-required failure for a candidate
+that turns out to be rejected or gate-blocked before ever reaching accept. Pass the resolved `base_sha`
+as `commit_tree_sha_fn`'s 4th arg; its return value replaces the `commit_tree_sha` argument passed to
+`create_pending_commit`.
+
+## Step P1.7 -- tests
+Add to `tests/controller/test_main_loop.py`:
+1. `candidate_target_path` validation: literal `commit_tree_sha` + omitted `candidate_target_path`
+   succeeds, `commit_tree_sha_fn` never invoked (spy); omitting both raises `ValueError` immediately.
+2. `compute_candidate_tree_sha` signature test (`inspect.signature`, exactly 4 named params `handoff`,
+   `repo`, `candidate_target_path`, `base_sha` in that order) + plumbing test (fixture repo + known base
+   commit + candidate file: resolves `base_sha^{tree}` before `read-tree`, writes blob before
+   `update-index`, `git ls-tree -r` shows mode `100644`) + a new-path-not-just-replacement test
+   (`candidate_target_path` absent from the base tree -- asserts it appears correctly in the result,
+   alongside every pre-existing base-tree path unchanged).
+3. `PriorBestSoFarLineageConflictError` both branches (raises naming ref+sha+guidance by default;
+   `allow_fresh_start_despite_existing_lineage=True` proceeds unchanged).
+4. `fitness_dict` byte-identical round-trip from `guarded_evaluate_fn`'s return value, PLUS an explicit
+   no-partial-construction test (patch `guarded_evaluate_fn` to raise mid-call, assert no
+   `OneCandidatePassResult` -- partial or otherwise -- is ever constructed).
+5. **Lock-in test for P1.6's lazy placement** (required by plan-audit): prove `compute_candidate_tree_sha`
+   / `commit_tree_sha_fn` is NEVER invoked for a candidate that is rejected, gate-blocked, or aborts via
+   a `guarded_evaluate_fn` exception before reaching the accept branch (spy assertion).
+
+VERIFY before finishing: `uv run --extra dev --extra cli --extra io pytest tests/controller/test_main_loop.py -v`
+fully green, no pre-existing test weakened. Commit with a descriptive conventional-commit message
+(e.g. `feat(controller): add fitness_dict, commit_tree_sha_fn, lineage-conflict guard to
+run_one_candidate_pass (#4203)`) once tests pass.
+"""
+reviewer_prompt = """
+VERIFY:
+1. `PriorBestSoFarLineageConflictError` exists; `OneCandidatePassResult.fitness_dict: dict[str, float]`
+   field added, populated only on successful scoring (no partial construction on exception).
+2. `run_one_candidate_pass` signature: `commit_tree_sha: str | None = None` (was required); new
+   `commit_tree_sha_fn`, `candidate_target_path: Path | None = None`, `bootstrap_base_tree_sha`,
+   `allow_fresh_start_despite_existing_lineage` params all present with correct defaults. Existing
+   literal-`commit_tree_sha` test call sites unchanged and still passing.
+3. `compute_candidate_tree_sha(handoff, repo, candidate_target_path, base_sha) -> str` exists with
+   exactly that 4-param signature/order; produces a whole-repo-tree substitution (base_sha^{tree}
+   resolved, blob written before cacheinfo, mode 100644, every other base-tree path unchanged) via a
+   SCRATCH GIT_INDEX_FILE (repo's real index never mutated); raises `ValueError` immediately when
+   `base_sha` is `None`, before any git write.
+4. Fail-fast validation present before dispatch: both `commit_tree_sha` and `candidate_target_path`
+   `None` raises `ValueError`; literal `commit_tree_sha` with `candidate_target_path` omitted succeeds
+   with `commit_tree_sha_fn` never invoked.
+5. Lineage-conflict guard in the `best_fitness is None` branch, BEFORE the accept sentinel: raises
+   `PriorBestSoFarLineageConflictError` (naming ref + SHA + fresh-ref-name guidance) when
+   `read_best_so_far` returns non-`None`, unless `allow_fresh_start_despite_existing_lineage=True`.
+6. `commit_tree_sha_fn` invocation is placed in the ACCEPT branch (lazy, not eager right after
+   dispatch) -- and there is a dedicated test proving it's never invoked for a rejected/gate-blocked/
+   exception-aborted candidate.
+7. `base_sha` resolution uses a SECOND, independent `read_best_so_far` call (not reusing
+   `prior_best_sha`), with `bootstrap_base_tree_sha` fallback, `ValueError` if both are `None`.
+8. All new tests from fixer_prompt items 1-5 exist and pass; `uv run --extra dev --extra cli --extra io
+   pytest tests/controller/test_main_loop.py -v` is fully green with the FULL output quoted in the
+   fixer's report, not just an exit code.
+PASS iff all 8 hold. FAIL otherwise, naming which check failed and citing file:line.
+"""
+return_key = "4203_main_loop_core"
+
+[[tracks]]
+id = "b"
+is_research = false
+worktree = true
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "4203"
+phase_name = "Track B -- outer-layer threading: run_multi_iteration_loop + run_campaign_loop gain the 10 new params, forward them correctly (P2.1-P2.5)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+
+Depends on Track A landing first (P1.1-P1.7 must exist -- `run_one_candidate_pass`'s new params,
+`compute_candidate_tree_sha`, `PriorBestSoFarLineageConflictError` are all consumed here).
+
+Wire the 10 new values GW-02 + Track A added to `run_one_candidate_pass` through
+`controller/multi_iteration_loop.py`'s `run_multi_iteration_loop` and `controller/loop_run.py`'s
+`run_campaign_loop`. Read .praxia/loop_sprint_plan.json steps P2.1-P2.5 for the exact decomposition.
+
+## Step P2.1 -- run_multi_iteration_loop signature
+Add 10 new keyword params: `higher_is_better: Mapping[str, bool]` (REQUIRED, no default -- new
+compared to GW-02's original 7), `frozen_context`, `current_config`, `repo`, `ratchet_ref_name`,
+`callable_name`, `concrete_inputs` (all REQUIRED, no default, matching GW-02's own 7),
+`commit_tree_sha: str | None = None`, `candidate_target_path: Path | None = None` (both optional,
+matching Track A's relaxation), `allow_fresh_start_despite_existing_lineage: bool = False`. New import
+needed: `controller.evaluate_adapter.BathosFrozenContext` (not currently imported in this file). Update
+the module docstring's Args section.
+
+## Step P2.2 -- wire ALL 10 values into the per-iteration call + fitness carry-forward
+This step wires ALL 10 new values into the existing per-iteration `run_one_candidate_pass` call
+(currently lines 390-408) -- not just `higher_is_better` in isolation:
+- The 8 static values (`frozen_context`, `current_config`, `repo`, `ratchet_ref_name`,
+  `commit_tree_sha`, `candidate_target_path`, `callable_name`, `concrete_inputs`) forward
+  byte-identical on every call.
+- `allow_fresh_start_despite_existing_lineage` forwards byte-identical on every call.
+- `higher_is_better` forwards via a CONDITIONAL ternary:
+  `higher_is_better=None if best_fitness is None else higher_is_better` (the loop's own received
+  parameter, never mutated) -- NOT unconditional forwarding. This is the fix for a real bug caught in
+  adversarial review: `run_one_candidate_pass` raises `ValueError` unless `best_fitness` and
+  `higher_is_better` are both `None` or both set (existing guard, `main_loop.py:461-467`). Since
+  `best_fitness` is loop-local state starting at `None`, unconditional `higher_is_better` forwarding
+  would crash on literally every campaign's first candidate. The suppression must be keyed on
+  `best_fitness`'s LIVE state on each call, not a fixed "iteration 1" index -- `best_fitness` can
+  legitimately remain `None` across several consecutive calls if multiple early candidates fail
+  dispatch or hard-blocked gates before any candidate is ever accepted (`OneCandidatePassResult.accepted`
+  depends on `run_result.success`/`gate_outcome.hard_blocked` in addition to the ratchet sentinel).
+- Add loop-local state before the loop (currently near line 377): `best_fitness: Mapping[str, float] | None = None`.
+  Update it to `result.fitness_dict` ONLY when `result.accepted is True`, after each call (currently
+  after line 409) -- left UNCHANGED on reject (nothing was promoted, so there is nothing new to
+  ratchet against).
+
+## Step P2.3 -- run_campaign_loop signature
+Same 10 new kwargs as P2.1, added to `run_campaign_loop` (`controller/loop_run.py`). Same new
+`BathosFrozenContext` import needed. Update the module docstring's Args section.
+
+## Step P2.4 -- forward into run_multi_iteration_loop
+`run_campaign_loop`'s existing call to `run_multi_iteration_loop` (currently lines 507-532): forward
+all 10 new values unchanged (byte-identical, single call site -- `run_campaign_loop` itself has no
+loop-local mutation of any of these, it's a pure pass-through layer).
+
+## Step P2.5 -- regression check
+Confirm `controller/multi_iteration_loop.py` and `controller/loop_run.py` import cleanly
+(`uv run python -c 'import controller.multi_iteration_loop, controller.loop_run'`). Confirm
+Track A's test suite (`tests/controller/test_main_loop.py`) is unaffected -- same pass count as
+after Track A landed.
+
+VERIFY before finishing: import check passes; `test_main_loop.py` pass count unchanged from Track A.
+Note: `tests/controller/test_multi_iteration_loop.py` and `tests/controller/test_loop_run.py` will
+still be RED after this track (Track C fixes them) -- that's expected, not a regression to chase here.
+Commit with a descriptive conventional-commit message (e.g. `feat(controller): thread GW-02 ratchet
+params through run_multi_iteration_loop and run_campaign_loop (#4203)`) once the above passes.
+"""
+reviewer_prompt = """
+VERIFY:
+1. `run_multi_iteration_loop` signature gains all 10 new params with correct required/optional shape
+   (`higher_is_better` + GW-02's original 7 required no-default; `commit_tree_sha`/`candidate_target_path`
+   optional `None`; `allow_fresh_start_despite_existing_lineage` optional `False`). New
+   `BathosFrozenContext` import present.
+2. The per-iteration call to `run_one_candidate_pass` forwards ALL 8 static values +
+   `allow_fresh_start_despite_existing_lineage` byte-identical every call (spy assertion) -- not just
+   the `higher_is_better` piece checked in item 3.
+3. `higher_is_better` forwards via the conditional ternary keyed on `best_fitness`'s LIVE state (not a
+   fixed iteration index): `None` on every call where the spy observes `best_fitness=None` (including
+   calls beyond the first, if earlier candidates failed dispatch/gates), the real unmutated mapping on
+   every other call.
+4. Loop-local `best_fitness` state: `None` before the loop; updated to `result.fitness_dict` only when
+   `result.accepted is True`; unchanged on reject.
+5. `run_campaign_loop` signature gains the identical 10 new params (same shape as item 1); same new
+   import present.
+6. `run_campaign_loop`'s call to `run_multi_iteration_loop` forwards all 10 values byte-identical,
+   single call site.
+7. Both files import cleanly; `tests/controller/test_main_loop.py`'s pass count is unchanged from
+   Track A (confirms Track B introduced no regression to Track A's own coverage).
+8. Confirm `tests/controller/test_multi_iteration_loop.py`/`tests/controller/test_loop_run.py` are
+   still red at this point (expected -- Track C's job, not a Track B defect) -- do not fail this
+   review over that.
+PASS iff all 8 hold. FAIL otherwise, naming which check failed and citing file:line.
+"""
+return_key = "4203_outer_layer_threading"
+
+[[tracks]]
+id = "c"
+is_research = false
+worktree = true
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "4203"
+phase_name = "Track C -- test remediation: fix both currently-red test files, add new coverage for C1/D3/R3-D1, full regression (P3.1-P3.5)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+
+Depends on Tracks A and B landing first. Read .praxia/loop_sprint_plan.json steps P3.1-P3.5 for the
+exact decomposition.
+
+## Step P3.1 -- fix tests/controller/test_multi_iteration_loop.py
+This file is currently RED (the original reason #4203 exists -- 7 tests failing with
+`TypeError: run_one_candidate_pass() missing 7 required keyword-only arguments`). Add an autouse
+fixture stubbing `controller.main_loop`'s 4 crash-atomicity functions (`read_best_so_far`,
+`create_pending_commit`, `advance_best_so_far`, `reset_worktree_to_best_so_far`) so tests don't need
+a real git repo. Update `_base_kwargs()` (currently lines 201-210) to supply the 8 new
+required/default values (`frozen_context`, `current_config`, `repo`, `ratchet_ref_name`,
+`commit_tree_sha='unused-tree-sha'`, `callable_name`, `concrete_inputs`, `higher_is_better`) -- all
+8 `run_multi_iteration_loop(` call sites (currently lines 226, 257, 284, 314, 338, 359, 385, 406)
+should pass via the shared helper with no per-site edits needed.
+
+## Step P3.2 -- fix tests/controller/test_loop_run.py
+Same currently-RED situation (12 tests failing, same root cause via `run_campaign_loop ->
+run_multi_iteration_loop -> run_one_candidate_pass`). Same autouse crash-atomicity stub pattern.
+Update `_base_kwargs()` (currently lines 224-235) with the same 8 new values -- all 15
+`run_campaign_loop(` call sites (currently lines 250, 287, 301, 338, 382, 416, 426, 458, 484, 503,
+533, 559, 592, 623, 654) should pass via the shared helper.
+
+## Step P3.3 -- new tests for C1(amended)/R3-D1
+Add to `tests/controller/test_multi_iteration_loop.py`:
+1. `TypeError` raised when `higher_is_better` is omitted from `run_multi_iteration_loop`/
+   `run_campaign_loop`, before any candidate is dispatched.
+2. Suppression is `None` on the FIRST call where `best_fitness=None` (spy assertion).
+3. Suppression holds across N>1 CONSECUTIVE calls where `best_fitness` is STILL `None` -- inject a
+   hard-blocking gate on the first candidate(s) so `best_fitness` legitimately stays `None` past call
+   1, and assert the suppression tracks live state, not a fixed iteration index.
+4. Suppression LIFTS to the real, original mapping once `best_fitness` becomes non-`None` (post-accept).
+
+## Step P3.4 -- cross-boundary forwarding-spy integration test
+Add to `tests/controller/test_loop_run.py`: a new integration test spying SIMULTANEOUSLY on
+`controller.multi_iteration_loop.run_one_candidate_pass` AND `controller.loop_run.run_multi_iteration_loop`
+across >=2 iterations, asserting all 10 named values (`frozen_context`, `current_config`, `repo`,
+`ratchet_ref_name`, `commit_tree_sha`, `callable_name`, `concrete_inputs`, `candidate_target_path`,
+`allow_fresh_start_despite_existing_lineage` byte-identical; `higher_is_better` per the conditional
+rule) are forwarded correctly at BOTH layer boundaries.
+
+## Step P3.5 -- full narrow-suite regression + pre-mortem grep re-run
+Run: `uv run --extra dev --extra cli --extra io pytest tests/controller/test_main_loop.py
+tests/controller/test_multi_iteration_loop.py tests/controller/test_loop_run.py -v` (narrow scoped
+run, not the whole suite -- see local-compute-limits.md). Must be fully green, 0 skips added beyond
+what already existed pre-#4203. Also re-run the blast-radius verification from the spec's own
+pre-mortem: `grep -rn "run_one_candidate_pass(" --include="*.py" .` (excluding `.venv`) -- confirm it
+STILL finds no hidden callers beyond `controller/multi_iteration_loop.py:390` + the two test files,
+now that `candidate_target_path`'s behavior change is about to ship. Report the full grep output.
+
+VERIFY before finishing: the pytest command above is fully green with FULL output quoted (not just
+exit code). Commit with a descriptive conventional-commit message (e.g. `test(controller): fix
+test_multi_iteration_loop/test_loop_run for #4203 kwargs threading, add coverage for C1/D3/R3-D1`)
+once tests pass.
+"""
+reviewer_prompt = """
+VERIFY:
+1. `tests/controller/test_multi_iteration_loop.py` fully passes -- all 8 `run_multi_iteration_loop(`
+   call sites pass via the updated shared `_base_kwargs()` helper, no per-site edits.
+2. `tests/controller/test_loop_run.py` fully passes -- all 15 `run_campaign_loop(` call sites pass via
+   the updated shared `_base_kwargs()` helper.
+3. New tests for C1(amended)/R3-D1 exist and pass: `TypeError` on missing `higher_is_better`;
+   suppression=`None` on first `best_fitness=None` call; suppression HOLDS across N>1 consecutive
+   `best_fitness=None` calls (genuinely tested via an injected hard-blocking gate, not just asserted
+   for call 1); suppression lifts once `best_fitness` becomes non-`None`.
+4. Cross-boundary forwarding-spy integration test exists, spies on BOTH layer boundaries
+   simultaneously, asserts all 10 values correctly forwarded across >=2 iterations, with the
+   `higher_is_better` conditional caveat correctly distinguished from the other 9 values' unconditional
+   forwarding.
+5. `uv run --extra dev --extra cli --extra io pytest tests/controller/test_main_loop.py
+   tests/controller/test_multi_iteration_loop.py tests/controller/test_loop_run.py -v` was actually
+   run (not skipped) and its FULL output is quoted in the fixer's report -- green exit code alone is
+   not sufficient evidence, per this project's "verify by running, not by CI" discipline. Zero new
+   skips beyond what existed pre-#4203.
+6. The pre-mortem blast-radius grep (`run_one_candidate_pass(`) was re-run and its output quoted,
+   confirming no hidden callers beyond the known 3 locations, before considering this shippable.
+7. No test was weakened, skipped, or deleted to force a pass.
+PASS iff all 7 hold. FAIL otherwise, naming which check failed and citing the specific failing
+test(s)/file:line.
+"""
+return_key = "4203_test_remediation"
+
+[orchestration]
+sequential = ["4203_main_loop_core", "4203_outer_layer_threading", "4203_test_remediation"]
+concurrent = []
