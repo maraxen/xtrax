@@ -1,4 +1,0 @@
-src/xtrax/devtools/tombstone.py:36:12: warning[redundant-cast] Value is already of type `Literal["accepted", "wontfix", "out_of_scope"]`
-src/xtrax/inference/ir_schema.py:141:33: error[invalid-argument-type] Argument to function `fields` is incorrect: Expected `DataclassInstance | type[DataclassInstance]`, found `type`
-src/xtrax/loop/closure_lock.py:197:19: error[invalid-argument-type] Argument to constructor `Path.__new__` is incorrect: Expected `str | PathLike[str]`, found `str | bytes | Unknown`
-src/xtrax/tiling/dispatch.py:142:25: error[invalid-argument-type] Argument to function `vmap` is incorrect: Argument type `((...) -> Any) | None` does not satisfy upper bound `(...) -> Unknown` of type variable `F`
