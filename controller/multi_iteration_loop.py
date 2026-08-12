@@ -167,6 +167,7 @@ from typing import Any, Literal
 from controller.bathos_campaign_adapter import BathosCampaignAdapter
 from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
 from controller.dispatch import DispatchBackend
+from controller.evaluate_adapter import BathosFrozenContext
 from controller.lineage_interim import CandidateParentage
 from controller.main_loop import CampaignMode, OneCandidatePassResult, run_one_candidate_pass
 from xtrax.loop.candidate_static import assert_candidate_static
@@ -292,6 +293,16 @@ def run_multi_iteration_loop(
     diversity_window_size: int = 5,
     on_leap_path_required: Callable[[LeapPathEvent], None] = _default_leap_path_handler,
     start_watchdog_fn: Callable[[int, WatchdogCriteria], WatchdogHandle] = start_watchdog,
+    higher_is_better: Mapping[str, bool],
+    frozen_context: BathosFrozenContext,
+    current_config: Mapping[str, Any],
+    repo: Path,
+    ratchet_ref_name: str,
+    callable_name: str,
+    concrete_inputs: list[Any],
+    commit_tree_sha: str | None = None,
+    candidate_target_path: Path | None = None,
+    allow_fresh_start_despite_existing_lineage: bool = False,
 ) -> MultiIterationLoopResult:
     """Run the actual multi-iteration "keep going" loop across candidates (AC-8b).
 
@@ -351,6 +362,28 @@ def run_multi_iteration_loop(
             always override this with a fake watchdog-starter returning a fake
             `WatchdogHandle`-shaped stub** -- see the module docstring's watchdog-wiring section
             for why the real one must never be reachable from a test.
+        higher_is_better: forwarded to `run_one_candidate_pass` on every iteration, but NOT
+            unconditionally -- suppressed to `None` on any call where this loop's own live
+            `best_fitness` state is still `None` (matching `run_one_candidate_pass`'s own
+            all-or-nothing guard on `best_fitness`/`higher_is_better`, `main_loop.py:461-467`),
+            and forwarded as the real, unmutated mapping once `best_fitness` becomes non-`None`.
+            Required (no default) -- GW-02's ratchet decision cannot run without a per-metric
+            comparison direction.
+        frozen_context: forwarded to `run_one_candidate_pass` unchanged on every iteration
+            (SPLIT_COMPUTE, #4133/#3657).
+        current_config: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+        repo: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+        ratchet_ref_name: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+        callable_name: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+        concrete_inputs: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+        commit_tree_sha: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+            `None` (default) lets that function fall back to `commit_tree_sha_fn`.
+        candidate_target_path: forwarded to `run_one_candidate_pass` unchanged on every
+            iteration. `None` (default) is only valid there when `commit_tree_sha` is supplied
+            literally -- see that function's own fail-fast validation.
+        allow_fresh_start_despite_existing_lineage: forwarded to `run_one_candidate_pass`
+            unchanged on every iteration. `False` (default) -- see that function's own
+            lineage-conflict guard.
 
     Returns:
         A `MultiIterationLoopResult` bundling every completed iteration, the termination
@@ -377,6 +410,7 @@ def run_multi_iteration_loop(
     previous_source: str | None = None
     termination_reason: TerminationReason = "normal_completion"
     loop_start = time_fn()
+    best_fitness: Mapping[str, float] | None = None
 
     try:
         for candidate_index in range(max_candidates):
@@ -405,8 +439,23 @@ def run_multi_iteration_loop(
                 seed_trial_counts_fn=seed_trial_counts_fn,
                 candidate_static_fn=candidate_static_fn,
                 candidate_static_root=candidate_static_root,
+                frozen_context=frozen_context,
+                current_config=current_config,
+                best_fitness=best_fitness,
+                higher_is_better=None if best_fitness is None else higher_is_better,
+                repo=repo,
+                ratchet_ref_name=ratchet_ref_name,
+                commit_tree_sha=commit_tree_sha,
+                candidate_target_path=candidate_target_path,
+                allow_fresh_start_despite_existing_lineage=(
+                    allow_fresh_start_despite_existing_lineage
+                ),
+                callable_name=callable_name,
+                concrete_inputs=concrete_inputs,
             )
             iterations.append(result)
+            if result.accepted:
+                best_fitness = result.fitness_dict
 
             candidate_source = result.handoff.path.read_text(encoding="utf-8")
             if previous_source is not None:
