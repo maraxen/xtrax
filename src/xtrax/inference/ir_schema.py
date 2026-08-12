@@ -58,6 +58,7 @@ if typing.TYPE_CHECKING:
     class _DataclassInstance(typing.Protocol):
         __dataclass_fields__: typing.ClassVar[dict[str, Any]]
 
+
 _IMPORT_PATH_DESCRIPTION = (
     "import-path 'module.path:symbol' string (xtrax.composition.serialize convention)"
 )
