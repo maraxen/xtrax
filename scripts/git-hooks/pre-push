@@ -1,0 +1,48 @@
+#!/bin/bash
+# Mirrors the first 3 (cheap, fast) steps of .github/workflows/ci.yml's
+# lint-format-type-test job, so lint/format/type errors are caught locally
+# before a push/PR instead of burning a CI round-trip.
+#
+# Deliberately does NOT run the coverage-gated pytest tiers or doctest step --
+# those are the expensive part of CI and stay CI-only.
+#
+# Installed at the shared .git/hooks/pre-push (git hooks live in the common
+# git dir, not per-worktree -- see scripts/git-hooks/README.md in the repo
+# root for reinstall instructions after a fresh clone or a .git/hooks wipe).
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo "[pre-push] ruff check ."
+uv run ruff check .
+
+echo "[pre-push] ruff format --check ."
+uv run ruff format --check .
+
+# ty check is ratcheted against a checked-in baseline (scripts/git-hooks/ty-baseline.txt)
+# rather than gating on zero diagnostics: as of 260812 there are 4 pre-existing
+# diagnostics in files unrelated to any given push, and blocking every push on
+# unrelated repo-wide debt makes the hook something everyone reaches for --no-verify
+# on instead of something that catches real regressions. Only diagnostics NOT already
+# in the baseline fail the push. Fixing baseline entries and shrinking the file is
+# always welcome but never required by this hook.
+echo "[pre-push] ty check src/ (ratcheted against scripts/git-hooks/ty-baseline.txt)"
+BASELINE="$REPO_ROOT/scripts/git-hooks/ty-baseline.txt"
+CURRENT="$(mktemp)"
+trap 'rm -f "$CURRENT"' EXIT
+
+uv run ty check src/ --output-format concise --exit-zero 2>&1 | grep -v "^Found " | sort > "$CURRENT"
+
+NEW_DIAGNOSTICS="$(comm -13 <(sort "$BASELINE") "$CURRENT")"
+if [ -n "$NEW_DIAGNOSTICS" ]; then
+  echo ""
+  echo "[pre-push] NEW ty diagnostics not in scripts/git-hooks/ty-baseline.txt:"
+  echo "$NEW_DIAGNOSTICS"
+  echo ""
+  echo "[pre-push] fix these, or if they are a deliberate/pre-existing exception,"
+  echo "[pre-push] add them to scripts/git-hooks/ty-baseline.txt with a note why."
+  exit 1
+fi
+
+echo "[pre-push] all cheap CI checks passed"
