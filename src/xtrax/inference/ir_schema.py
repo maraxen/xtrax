@@ -49,6 +49,16 @@ from xtrax.inference.schema import BundleSchema
 from xtrax.stages.boundaries import Fuse, Sink, Tap
 from xtrax.tiling.plan import AxisSpec
 
+if typing.TYPE_CHECKING:
+    # Structurally identical to _typeshed.DataclassInstance, defined locally instead of imported:
+    # _typeshed is a stub-only package (never installed at runtime by design), and Sphinx's
+    # sphinx_autodoc_typehints extension probes TYPE_CHECKING-guarded imports to try to resolve
+    # them for doc generation, which fails loudly there (this project's docs build treats warnings
+    # as errors) even though the guard is otherwise correct and inert at real runtime.
+    class _DataclassInstance(typing.Protocol):
+        __dataclass_fields__: typing.ClassVar[dict[str, Any]]
+
+
 _IMPORT_PATH_DESCRIPTION = (
     "import-path 'module.path:symbol' string (xtrax.composition.serialize convention)"
 )
@@ -134,7 +144,7 @@ def _type_to_json_schema(tp: Any) -> dict[str, Any]:
     raise IRSchemaTypeError(f"no JSON-Schema mapping for type {tp!r}")
 
 
-def _dataclass_to_json_schema(cls: type) -> dict[str, Any]:
+def _dataclass_to_json_schema(cls: "type[_DataclassInstance]") -> dict[str, Any]:
     hints = typing.get_type_hints(cls)
     properties: dict[str, Any] = {}
     required: list[str] = []

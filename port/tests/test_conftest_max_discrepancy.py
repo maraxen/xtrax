@@ -34,9 +34,7 @@ CONFTEST_PATH = Path(__file__).resolve().parent / "conftest.py"
 
 
 def _load_conftest():
-    spec = importlib.util.spec_from_file_location(
-        "port_conftest_under_test", CONFTEST_PATH
-    )
+    spec = importlib.util.spec_from_file_location("port_conftest_under_test", CONFTEST_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules.setdefault("port_conftest_under_test", module)
@@ -113,9 +111,7 @@ def test_max_discrepancy_for_call_none_when_no_excinfo() -> None:
 
 def test_max_discrepancy_for_call_extracts_real_value() -> None:
     call = _FakeCallInfo(
-        excinfo=_FakeExcInfo(
-            AssertionError("Max absolute difference among violations: 0.00042\n")
-        )
+        excinfo=_FakeExcInfo(AssertionError("Max absolute difference among violations: 0.00042\n"))
     )
     assert conftest._max_discrepancy_for_call(call) == 0.00042
 

@@ -1,0 +1,342 @@
+[sprint]
+sprint_id = "260811_gw02-ratchet-wiring"
+sprint_num = 1
+name = "GW-02: multi-metric ratchet decision + crash-safe lineage into accept/promote flow"
+description = "Wire multi_metric_ratchet, ratchet_crash_atomicity, and compile_time_clock into controller/main_loop.py's run_one_candidate_pass, so OneCandidatePassResult.accepted reflects a genuine multi-metric improvement over current best, not just 'run succeeded and wasn't hard-blocked'. Plan audited PASS after 3 revision rounds (plan_id 260811_gw02-ratchet-wiring-r3p)."
+context = """
+Backlog #3649 [GW-02]. Depends on #4133 (merged, PR #86). Companion to #4164 (controller/ closure_lock
+production caller -- separate item, do not touch build_closure_manifest here).
+
+Locked architecture (brainstorm ACCEPT via spec_adversarial, ACs adversarially hardened, plan
+audited PASS 4th pass 260811): extract BathosSplitComputeEvaluator's post-dispatch scoring logic
+into score_raw_artifacts(frozen_context, output_paths), call it ONLY through guarded_evaluate
+(never bare score_fn / score_raw_artifacts), keep record_candidate_run as the SOLE bathos dispatch
+call site (satisfies #4137's double-dispatch concern). Full plan (all 15 steps, all file:line
+anchors, all success_criteria, risks) is at .praxia/loop_sprint_plan.json in this worktree --
+fixer_prompts below are self-contained but that file is the canonical source if any ambiguity
+arises.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "a"
+is_research = false
+worktree = true
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "3649"
+phase_name = "Track A -- Extract shared scorer (S1.1)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+
+Extract BathosSplitComputeEvaluator's post-dispatch scoring logic into a standalone function.
+
+1. In `controller/evaluate_adapter.py:98-121` (the `__call__` method), extract the scoring half
+   (lines 120-121: `raw_artifact_paths = tuple(Path(p) for p in candidate.output_paths); return
+   frozen_context.score_fn(raw_artifact_paths, frozen_context.locked.split_paths)`) into a new
+   module-level function:
+   ```python
+   def score_raw_artifacts(
+       frozen_context: BathosFrozenContext,
+       output_paths: tuple[str, ...],
+   ) -> dict[str, float]:
+       if not output_paths:
+           raise RawArtifactsUnavailableError(...)  # match __call__'s existing empty-check, evaluate_adapter.py:32/106
+       raw_artifact_paths = tuple(Path(p) for p in output_paths)
+       return frozen_context.score_fn(raw_artifact_paths, frozen_context.locked.split_paths)
+   ```
+2. `__call__` (evaluate_adapter.py:98) keeps its dispatch half unchanged and delegates the scoring
+   half to the new function: `return score_raw_artifacts(frozen_context, candidate.output_paths)`.
+3. Fix the module docstring at `controller/evaluate_adapter.py:1-20` (lines 13-19 specifically):
+   it currently proposes calling `BathosSplitComputeEvaluator`'s full `__call__` (dispatch+score)
+   ahead of `run_one_candidate_pass` -- this is the exact double-dispatch anti-pattern the locked
+   design rejects (see backlog #4137). Rewrite it to describe the shared-scorer pattern instead:
+   `run_one_candidate_pass` keeps its own dispatch (`record_candidate_run`), then calls
+   `score_raw_artifacts` (via `guarded_evaluate`, wired in Track B) to score the already-dispatched
+   candidate -- never a second dispatch.
+4. Add a unit test that calls `score_raw_artifacts(frozen_context, output_paths)` directly with a
+   fixture `BathosFrozenContext` + output_paths tuple and asserts it returns the same fitness dict
+   shape/values `__call__` previously produced inline.
+
+VERIFY before finishing: existing `BathosSplitComputeEvaluator.__call__` unit tests
+(`tests/controller/test_evaluate_adapter.py`) pass UNCHANGED (byte-identical fitness dict output --
+you are extracting, not changing behavior). Run: `uv run --extra dev --extra cli --extra io pytest
+tests/controller/test_evaluate_adapter.py -v`.
+
+Commit your work with a descriptive conventional-commit message (e.g. `refactor(controller): extract
+score_raw_artifacts from BathosSplitComputeEvaluator.__call__ (#3649)`) once tests pass.
+"""
+reviewer_prompt = """
+VERIFY:
+1. `score_raw_artifacts(frozen_context, output_paths)` exists as a module-level function in
+   `controller/evaluate_adapter.py`, matching the signature `(frozen_context: BathosFrozenContext,
+   output_paths: tuple[str, ...]) -> dict[str, float]`.
+2. `BathosSplitComputeEvaluator.__call__` still performs its dispatch step unchanged, then delegates
+   scoring to `score_raw_artifacts` -- no duplicated scoring logic remains inline in `__call__`.
+3. The module docstring (lines 1-20) no longer proposes calling `__call__` (dispatch+score) ahead of
+   `run_one_candidate_pass` -- it describes the shared-scorer pattern.
+4. A new test directly exercises `score_raw_artifacts` in isolation (not only through `__call__`).
+5. `uv run --extra dev --extra cli --extra io pytest tests/controller/test_evaluate_adapter.py -v`
+   passes with the SAME assertions as before this change (no test was weakened to make it pass).
+PASS iff all 5 hold. FAIL otherwise, naming which check failed.
+"""
+return_key = "3649_extract_scorer"
+
+[[tracks]]
+id = "b"
+is_research = false
+worktree = true
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "3649"
+phase_name = "Track B -- Wire ratchet decision + crash-safe lineage into run_one_candidate_pass (S2.1, S2.1b, S2.1c, S2.2, S2.3, S2.4)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+
+Wire the real ratchet decision, crash-safe best-so-far lineage (both accept and reject paths), and
+compile-time exclusion into `controller/main_loop.py`'s `run_one_candidate_pass`
+(`controller/main_loop.py:190-209`). This is the core of GW-02: today `OneCandidatePassResult.accepted`
+(`main_loop.py:178-187`) only means "the bathos run succeeded and wasn't hard-blocked by
+stats_battery/seed_trial" -- a candidate strictly worse on every metric than the current best is
+still marked `accepted=True`. Fix that.
+
+Depends on Track A (`score_raw_artifacts` must exist first).
+
+## Step 1 -- New parameters for scoring (S2.1)
+
+Add to `run_one_candidate_pass`'s signature: `frozen_context: BathosFrozenContext` (required),
+`current_config: Mapping[str, Any]` (required -- deliberately distinct from `frozen_context.locked.config`,
+per `verify_closure`'s own docstring: recomputing against the locked manifest's own stored config would
+make config drift undetectable by construction), `candidate_touched_paths: frozenset[Path] = frozenset()`
+(pass-through, matches `guarded_evaluate`'s own default at `closure_lock.py:233`), and a new injection
+seam `guarded_evaluate_fn: Callable[..., dict[str, float]] = guarded_evaluate` (mirrors the file's
+existing `stats_battery_fn`/`seed_trial_counts_fn`/`candidate_static_fn` convention at
+`main_loop.py:205-207` -- this is what a later test patches to assert enforcement).
+
+After the existing `record_candidate_run` dispatch (`controller/lineage_interim.py:155`, KEEP THIS AS
+THE SOLE DISPATCH CALL SITE, do not add or replace it): validate `output_paths` (the function's own
+EXISTING parameter, `main_loop.py:198` -- NOT anything read off `CandidateRunResult`, whose dataclass
+`controller/bathos_campaign_adapter.py:180-191` has only `script_path`/`exit_code`/`success`, no
+`output_paths` field) is non-empty, raising `ValueError` if `None`/empty. Then call:
+```python
+fitness_dict = guarded_evaluate_fn(
+    frozen_context.locked, score_raw_artifacts, frozen_context, tuple(output_paths),
+    current_config=current_config, candidate_touched_paths=candidate_touched_paths,
+)
+```
+`guarded_evaluate`'s real signature (`src/xtrax/loop/closure_lock.py:226-255`) is
+`(locked, evaluator, frozen_context, candidate, *, current_config, candidate_touched_paths=frozenset())`
+-- match it exactly. NEVER call `frozen_context.score_fn(...)` or `score_raw_artifacts` directly
+outside `guarded_evaluate_fn`. Let `ClosureHashMismatchError`/`EvaluatorClosureDriftError`/
+`UnlistedReadError` (`src/xtrax/loop/closure_lock.py:48-65`) propagate UNCAUGHT -- do not wrap in
+try/except.
+
+## Step 2 -- best_fitness/higher_is_better + ratchet decision (S2.1b)
+
+Add two new caller-supplied keyword parameters: `best_fitness: Mapping[str, float] | None = None`,
+`higher_is_better: Mapping[str, bool] | None = None` (mirror `stats_battery_kwargs`'s docstring
+convention at `main_loop.py:202, 234-240`). Immediately validate:
+```python
+if (best_fitness is None) != (higher_is_better is None):
+    raise ValueError(
+        f"best_fitness and higher_is_better must both be supplied or both omitted "
+        f"(got best_fitness={'set' if best_fitness is not None else None}, "
+        f"higher_is_better={'set' if higher_is_better is not None else None})"
+    )
+```
+When both are `None` (first candidate in a campaign, no prior best): do NOT call
+`compute_ratchet_decision` -- construct the sentinel
+`RatchetDecision(improved=True, win_rate=1.0, breakdown_point=1.0, cohens_d=math.inf, per_metric_delta={})`
+directly (check `RatchetDecision`'s real constructor at `src/xtrax/loop/multi_metric_ratchet.py:81-116`
+before writing this call). Otherwise call `compute_ratchet_decision(fitness_dict, best_fitness,
+higher_is_better=higher_is_better)` (`src/xtrax/loop/multi_metric_ratchet.py:148`).
+
+## Step 3 -- Accept-path crash-atomicity (S2.1c)
+
+Add four new parameters: `repo: Path` (required), `ratchet_ref_name: str` (required),
+`commit_tree_sha: str` (required -- real git tree data the caller supplies; this function does not
+construct or verify it, mirroring the `stats_battery_kwargs` trust boundary), `commit_parent_sha:
+str | None = None` (bootstrap fallback), `commit_message: str | None = None` (optional).
+
+On the accept branch (ratchet_decision.improved is True, whether from a real win or the Step-2
+sentinel):
+```python
+prior_best_sha = read_best_so_far(repo, ratchet_ref_name)
+parent_sha = prior_best_sha if prior_best_sha is not None else commit_parent_sha
+if parent_sha is None:
+    raise ValueError(
+        f"commit_parent_sha must be supplied when no prior best-so-far ref exists yet "
+        f"(read_best_so_far({ratchet_ref_name!r}) returned None)"
+    )
+message = commit_message or (
+    f"ratchet best-so-far: candidate {handoff.content_sha256}"
+    + (f" derived_from={parentage.derived_from}" if parentage.derived_from else " (root candidate)")
+)
+pending_sha = create_pending_commit(repo, commit_tree_sha, parent_sha, message)
+advance_best_so_far(repo, ratchet_ref_name, pending_sha, prior_best_sha)
+```
+Check the real signatures of `create_pending_commit`/`advance_best_so_far`/`read_best_so_far` at
+`src/xtrax/loop/ratchet_crash_atomicity.py:91-158` before writing this. `prior_best_sha` serves as
+BOTH the parent-SHA source AND the CAS `expected_old_sha` -- one `read_best_so_far` call, not two.
+Let `CommitCreationError`/`RefUpdateConflictError` (lines 34/38) propagate UNCAUGHT.
+
+## Step 4 -- Compile-time clock, post-decision (S2.2)
+
+AFTER the accept/reject decision from Steps 2-3 (never as an input to it): add three new parameters
+that genuinely cannot be constructed from anything already in scope: `callable_name: str` (required),
+`concrete_inputs: list[Any]` (required), `compile_time_history: Sequence[float] = ()` (this parameter
+has no default in `assert_no_compile_time_regression`'s own signature at `compile_time_clock.py:131-167`,
+but an empty tuple is that function's own documented no-op case, so default it here), plus a pass-through
+`k_threshold: float = 3.0` (matches the module's own default). Derive `candidate_path` internally as
+`handoff.path` -- do NOT add it as a new parameter (the exact value already used identically at the
+`candidate_static_fn` call site, `main_loop.py:286`; `handoff` only exists after
+`dispatch_backend.dispatch_candidate()` runs, so a caller cannot pre-supply a matching path without
+risking drift from what was actually dispatched and scored). Call:
+```python
+timing = measure_two_phase_timing(handoff.path, callable_name, concrete_inputs=concrete_inputs)
+assert_no_compile_time_regression(timing.compile_time_seconds, compile_time_history=compile_time_history, k_threshold=k_threshold)
+```
+(check `measure_two_phase_timing`'s real signature at `compile_time_clock.py:72-116` first).
+`compile_time_seconds` must NEVER be merged into the fitness dict `compute_ratchet_decision` compares
+-- only `runtime_seconds` is fitness-comparable. `CompileTimeRegressionError` (line 55) raised/escalated
+independently, WITHOUT altering the ratchet accept/reject outcome from Steps 2-3.
+
+## Step 5 -- Redefine `.accepted` (S2.3)
+
+Add a `ratchet_decision` field to `OneCandidatePassResult` (`main_loop.py:159`), populated only when
+scoring succeeds (an exception aborts the whole call before any partial result is constructed).
+Redefine `accepted` (`main_loop.py:178-187` -- `@property` at 179, docstring 180-186, `return` at 187,
+NOT line 129 which is an unrelated `CampaignMode` comment) to additionally require
+`ratchet_decision.improved`. Update the docstring at lines 180-186 to describe the stricter semantics,
+including a note on the first-candidate sentinel from Step 2.
+
+## Step 6 -- Reject-path reset (S2.4)
+
+Add `def reset_worktree_to_best_so_far(repo: Path, ref_name: str) -> str` to
+`src/xtrax/loop/ratchet_crash_atomicity.py` (reuse the module's existing private `_git_run` helper --
+read the file first, `ratchet_crash_atomicity.py:145-168` is roughly where it belongs): resolve the best
+SHA via `read_best_so_far(repo, ref_name)` (raise `RatchetCrashAtomicityError` if `None` -- unreachable
+in normal operation given Step 2's automatic-accept-first-candidate design, since a reject can only
+happen once a real prior best already exists), run `git reset --hard <best_sha>`, raise
+`RatchetCrashAtomicityError` on nonzero exit. Wire this into `run_one_candidate_pass`'s reject branch
+(`ratchet_decision.improved is False`): `reset_worktree_to_best_so_far(repo, ratchet_ref_name)` --
+reuse the SAME `repo`/`ratchet_ref_name` parameters from Step 3, one source of truth for which repo/ref
+this campaign ratchets against. `create_pending_commit`/`advance_best_so_far` remain accept-path-only;
+`reset_worktree_to_best_so_far` is reject-path-only. Let `RatchetCrashAtomicityError` propagate UNCAUGHT.
+
+## Step 7 -- Downstream docstring (part of this track, mechanical)
+
+Update `MultiIterationState.accepted_count`'s docstring (`controller/multi_iteration_loop.py:254-256`)
+to describe the stricter "was actually promotable per ratchet" semantics from Step 5. Docstring-only --
+no code change to `accepted_count`'s implementation (it already intends "was actually promotable").
+
+VERIFY before finishing (write these as new tests, colocated with `tests/controller/test_main_loop.py`
+or the existing convention for that file):
+1. Candidate strictly worse on every metric than `best_fitness` -> `accepted=False`,
+   `reset_worktree_to_best_so_far(repo, ratchet_ref_name)` invoked exactly once (mock/spy).
+2. `best_fitness=None, higher_is_better=None` -> `accepted=True` without `compute_ratchet_decision`
+   being called (spy assertion); `create_pending_commit`/`advance_best_so_far` invoked with
+   `parent_sha` falling back to `commit_parent_sha` and `expected_old_sha=None`.
+3. Mismatched `best_fitness`/`higher_is_better` (one `None`, one not) raises `ValueError` before any
+   ratchet or crash-atomicity call.
+4. `guarded_evaluate_fn` is called with the exact args spec'd in Step 1 (spy assertion) -- never
+   anything read off `CandidateRunResult`.
+5. `ClosureHashMismatchError`/`UnlistedReadError` injected from `guarded_evaluate_fn` propagates
+   UNCAUGHT out of `run_one_candidate_pass`.
+6. `compile_time_seconds` is absent from the dict passed to `compute_ratchet_decision`;
+   `measure_two_phase_timing` called with `handoff.path` (spy assertion), never a separately
+   constructed path.
+7. A candidate that clears `stats_battery`/`seed_trial` hard-blocked gates but whose
+   `ratchet_decision.improved` is `False` must NOT have `accepted=True`.
+8. `git diff` on `controller/multi_iteration_loop.py` shows only comment/docstring text changed.
+
+Run: `uv run --extra dev --extra cli --extra io pytest controller/ -k "main_loop or evaluate_adapter or multi_iteration" -v` (narrow scoped run, not the whole suite -- see `local-compute-limits.md`).
+
+Commit with a descriptive conventional-commit message (e.g. `feat(controller): wire multi-metric
+ratchet decision + crash-safe lineage into run_one_candidate_pass (#3649)`) once tests pass.
+"""
+reviewer_prompt = """
+VERIFY:
+1. `run_one_candidate_pass` calls `guarded_evaluate_fn` (not `frozen_context.score_fn` or
+   `score_raw_artifacts` directly) with exactly `(frozen_context.locked, score_raw_artifacts,
+   frozen_context, tuple(output_paths), current_config=..., candidate_touched_paths=...)`, sourcing
+   `output_paths` from the function's OWN existing parameter -- never from `CandidateRunResult`.
+2. `ClosureHashMismatchError`/`EvaluatorClosureDriftError`/`UnlistedReadError` from scoring propagate
+   uncaught (no try/except swallowing them).
+3. `best_fitness`/`higher_is_better` mismatch (one None, one not) raises `ValueError` before any
+   ratchet/crash-atomicity call; both-None triggers the documented sentinel `RatchetDecision`
+   WITHOUT calling `compute_ratchet_decision`.
+4. Accept path: `create_pending_commit`/`advance_best_so_far` called with every argument sourced
+   (repo, ratchet_ref_name, commit_tree_sha, parent_sha/expected_old_sha both from ONE
+   `read_best_so_far` call); `CommitCreationError`/`RefUpdateConflictError` propagate uncaught.
+5. Reject path: `reset_worktree_to_best_so_far(repo, ratchet_ref_name)` invoked, reusing the same
+   `repo`/`ratchet_ref_name` as the accept path; `RatchetCrashAtomicityError` propagates uncaught.
+6. `compile_time_seconds` never appears in the fitness dict passed to `compute_ratchet_decision`;
+   `measure_two_phase_timing` is called with `handoff.path`, not a separately-supplied path.
+7. `OneCandidatePassResult.accepted` (main_loop.py ~178-187) requires `ratchet_decision.improved` in
+   addition to the pre-existing success/not-hard_blocked conditions -- a candidate strictly worse on
+   every metric than best must NOT read `accepted=True`.
+8. `MultiIterationState.accepted_count`'s docstring (multi_iteration_loop.py:254-256) is updated;
+   its implementation is unchanged.
+9. All 8 verification items from the fixer_prompt have a corresponding passing test.
+10. `uv run --extra dev --extra cli --extra io pytest controller/ -k "main_loop or evaluate_adapter or
+    multi_iteration" -v` is green.
+PASS iff all 10 hold. FAIL otherwise, naming which check failed and citing the file:line where it
+fails.
+"""
+return_key = "3649_wire_ratchet"
+
+[[tracks]]
+id = "c"
+is_research = false
+worktree = true
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "3649"
+phase_name = "Track C -- Full verification (S5.1)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+
+Run the scoped regression suite across all touched/called modules from Tracks A and B and confirm
+nothing else broke.
+
+1. Run: `uv run --extra dev --extra cli --extra io pytest controller/ src/xtrax/loop/ -k "main_loop
+   or evaluate_adapter or multi_iteration or ratchet or compile_time or closure_lock" -v`
+   (narrow scoped run per `local-compute-limits.md` -- do NOT run the whole suite).
+2. Confirm `scripts/smoke_2181_walking_skeleton.py`'s `stats_battery`/`seed_trial` gate portions are
+   unaffected by this change (read the script; it is a reference only, not modified by this item --
+   its in-process-evaluator wiring does not transfer directly to this out-of-process bathos-dispatched
+   design, per the backlog item's own explicit warning).
+3. If anything fails, do NOT fix it in this dispatch -- report exactly what failed (test name, file:line,
+   error) so the loop's REMEDIATE phase can target it.
+4. If all scoped tests pass, run `uv run ruff format --check controller/main_loop.py
+   controller/evaluate_adapter.py controller/multi_iteration_loop.py src/xtrax/loop/ratchet_crash_atomicity.py`
+   and `uv run ruff check` on the same files; fix any formatting/lint issues introduced by Tracks A/B
+   (but do not touch unrelated pre-existing repo-wide drift -- see debt #4140, already tracked
+   separately).
+
+Commit any lint/format fixes with message `chore: ruff format/lint fixes for GW-02 (#3649)` if needed.
+This track makes NO functional changes -- verification only.
+"""
+reviewer_prompt = """
+VERIFY:
+1. The scoped pytest command from the fixer_prompt was actually run (not skipped) and its full
+   output is quoted in the fixer's report -- green exit code alone is not sufficient evidence,
+   per this project's "verify by running, not by CI" discipline.
+2. No test was weakened, skipped, or deleted to force a pass.
+3. `ruff format --check` and `ruff check` are clean on the 4 touched files (or any fixes applied are
+   scoped to those files only, not repo-wide).
+4. `scripts/smoke_2181_walking_skeleton.py` was read and its stats_battery/seed_trial-relevant
+   portions confirmed unaffected (cite what was checked).
+PASS iff all 4 hold and the pytest run is genuinely green. FAIL otherwise, naming the specific
+failing test(s).
+"""
+return_key = "3649_full_verification"
+
+[orchestration]
+sequential = ["3649_extract_scorer", "3649_wire_ratchet", "3649_full_verification"]
+concurrent = []

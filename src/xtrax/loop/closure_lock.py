@@ -37,7 +37,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from xtrax.stages.evaluate import Candidate, EvaluateFn, FrozenContext
 
@@ -192,9 +192,16 @@ def _audit_open_hook(event: str, args: tuple[object, ...]) -> None:
     if sink is None:
         return
     path_arg = args[0] if args else None
-    if not isinstance(path_arg, (str, bytes, os.PathLike)):
-        return
-    sink.add(Path(os.fspath(path_arg)).resolve())
+    if isinstance(path_arg, str):
+        sink.add(Path(path_arg).resolve())
+    elif isinstance(path_arg, bytes):
+        sink.add(Path(os.fsdecode(path_arg)).resolve())
+    elif isinstance(path_arg, os.PathLike):
+        # ty narrows a bare (unparameterized) os.PathLike to PathLike[object], which
+        # doesn't structurally match fsdecode's PathLike[str] | PathLike[bytes]
+        # overloads even though every real __fspath__ implementation returns str | bytes.
+        path_like = cast("os.PathLike[str] | os.PathLike[bytes]", path_arg)
+        sink.add(Path(os.fsdecode(path_like)).resolve())
 
 
 def _ensure_hook_installed() -> None:

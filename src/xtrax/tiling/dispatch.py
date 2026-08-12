@@ -139,6 +139,8 @@ def axis_dispatch(
 
     if isinstance(strategy, Vmap):
         # Vmap: vectorize over the leading axis
+        if fn is None:
+            raise ValueError("axis_dispatch: Vmap requires fn")
         return jax.vmap(fn)(xs)
 
     elif isinstance(strategy, SafeMap):

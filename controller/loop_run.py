@@ -209,6 +209,7 @@ from controller.bathos_campaign_adapter import (
 )
 from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
 from controller.dispatch import CandidateHandoffFailure, DispatchBackend
+from controller.evaluate_adapter import BathosFrozenContext
 from controller.lineage_interim import CandidateParentage
 from controller.main_loop import CampaignMode
 from controller.multi_iteration_loop import (
@@ -391,6 +392,16 @@ def run_campaign_loop(
     on_loop_event: Callable[[LoopEvent], None] = _default_loop_event_handler,
     campaign_approval_fn: Callable[..., Attestation] = assert_campaign_approved,
     campaign_approval_toml_path: Path = DEFAULT_GATES_TOML,
+    higher_is_better: Mapping[str, bool],
+    frozen_context: BathosFrozenContext,
+    current_config: Mapping[str, Any],
+    repo: Path,
+    ratchet_ref_name: str,
+    callable_name: str,
+    concrete_inputs: list[Any],
+    commit_tree_sha: str | None = None,
+    candidate_target_path: Path | None = None,
+    allow_fresh_start_despite_existing_lineage: bool = False,
 ) -> CampaignLoopResult:
     """Open one bathos campaign, run the multi-iteration loop, and guarantee it concludes.
 
@@ -458,6 +469,21 @@ def run_campaign_loop(
             docstring's GW-03 addendum.
         campaign_approval_toml_path: forwarded to `campaign_approval_fn` as `toml_path` (default:
             `campaign_approval_gate.DEFAULT_GATES_TOML`, i.e. `.praxia/loop_human_gates.toml`).
+        higher_is_better: forwarded to `run_multi_iteration_loop` unchanged (that function, not
+            this one, applies the conditional suppression against its own loop-local
+            `best_fitness` state). Required (no default).
+        frozen_context: forwarded to `run_multi_iteration_loop` unchanged (SPLIT_COMPUTE,
+            #4133/#3657).
+        current_config: forwarded to `run_multi_iteration_loop` unchanged.
+        repo: forwarded to `run_multi_iteration_loop` unchanged.
+        ratchet_ref_name: forwarded to `run_multi_iteration_loop` unchanged.
+        callable_name: forwarded to `run_multi_iteration_loop` unchanged.
+        concrete_inputs: forwarded to `run_multi_iteration_loop` unchanged.
+        commit_tree_sha: forwarded to `run_multi_iteration_loop` unchanged. `None` (default).
+        candidate_target_path: forwarded to `run_multi_iteration_loop` unchanged. `None`
+            (default).
+        allow_fresh_start_despite_existing_lineage: forwarded to `run_multi_iteration_loop`
+            unchanged. `False` (default).
 
     Returns:
         A `CampaignLoopResult` on successful completion (the only path that returns instead of
@@ -529,6 +555,16 @@ def run_campaign_loop(
             diversity_window_size=diversity_window_size,
             on_leap_path_required=on_leap_path_required,
             start_watchdog_fn=start_watchdog_fn,
+            higher_is_better=higher_is_better,
+            frozen_context=frozen_context,
+            current_config=current_config,
+            repo=repo,
+            ratchet_ref_name=ratchet_ref_name,
+            commit_tree_sha=commit_tree_sha,
+            candidate_target_path=candidate_target_path,
+            allow_fresh_start_despite_existing_lineage=(allow_fresh_start_despite_existing_lineage),
+            callable_name=callable_name,
+            concrete_inputs=concrete_inputs,
         )
     except _CAUGHT_PER_CANDIDATE_FAILURE_TYPES as exc:
         _conclude_best_effort(

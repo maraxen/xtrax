@@ -154,9 +154,7 @@ class TestGuardedEvaluate:
             (closure_dir / "splits.json").read_text()
             return {"score": 1.0}
 
-        result = guarded_evaluate(
-            locked, evaluator, None, None, current_config={"lr": 0.1}
-        )
+        result = guarded_evaluate(locked, evaluator, None, None, current_config={"lr": 0.1})
         assert result == {"score": 1.0}
 
     def test_raises_unlisted_read_error_for_undeclared_path(self, closure_dir: Path) -> None:
