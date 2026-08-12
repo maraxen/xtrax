@@ -1,4 +1,4 @@
-"""Tests for controller.main_loop (LC-09, epic #3611, AC-8a).
+"""Tests for controller.main_loop (LC-09, epic #3611, AC-8a; GW-02 ratchet wiring, #3649).
 
 AC-8a's own measurable criterion: "a single iteration completes end-to-end against
 MockDispatchBackend." Exercises:
@@ -23,14 +23,30 @@ MockDispatchBackend." Exercises:
    dispatch, before lineage resolution or any bathos call: a failing candidate raises
    `CandidateStaticGateError` with zero bathos calls made, and the real (non-injected) default
    `assert_candidate_static` is genuinely wired in, not just the injection seam.
+
+GW-02 (backlog #3649) additions -- `run_one_candidate_pass` now wires in the real multi-metric
+ratchet decision, crash-safe best-so-far lineage (accept and reject paths), and compile-time
+exclusion; see `TestRatchetDecisionDrivesAcceptance`, `TestFirstCandidateSentinel`,
+`TestBestFitnessHigherIsBetterMustBothBeSuppliedOrOmitted`, `TestGuardedEvaluateFnExactArgs`,
+`TestClosureDriftPropagatesUncaught`, and `TestCompileTimeExcludedFromRatchetComparison` below.
+Every test in this module now supplies the new required kwargs
+(`frozen_context`/`current_config`/`repo`/`ratchet_ref_name`/`commit_tree_sha`/`callable_name`/
+`concrete_inputs`) via the shared `_new_step_kwargs()` helper, with `guarded_evaluate_fn`/
+`measure_two_phase_timing_fn` stubbed by default (the real defaults would hash real closure
+files / `jax.jit`-compile a real candidate callable, neither of which exists for
+`MockDispatchBackend`'s synthetic candidate paths) and T2-10 crash-atomicity calls stubbed via
+the autouse `_stub_crash_atomicity` fixture (most tests exercise dispatch/lineage/gate/ratchet
+behavior, not real git operations).
 """
 
 import hashlib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import controller.main_loop as main_loop_module
 from controller.bathos_campaign_adapter import (
     BathosCampaignAdapter,
     BathosMcpToolError,
@@ -42,14 +58,96 @@ from controller.dispatch import (
     MockDispatchBackend,
     MockFailureMode,
 )
+from controller.evaluate_adapter import BathosFrozenContext, score_raw_artifacts
 from controller.lineage_interim import CandidateParentage, MultiParentLineageUnsupportedError
 from controller.main_loop import GateOutcome, OneCandidatePassResult, run_one_candidate_pass
 from xtrax.loop.candidate_static import CandidateStaticGateError
+from xtrax.loop.closure_lock import ClosureHashMismatchError, ClosureManifest, UnlistedReadError
+from xtrax.loop.compile_time_clock import TwoPhaseTiming
+from xtrax.loop.multi_metric_ratchet import RatchetDecision
 from xtrax.loop.seed_gate import SeedTrialCounts, SeedTrialFloorDecision
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict, ConcludeStatsDecision
 
 _CANDIDATE_CONTENT = "candidate-source"
 _VALID_SHA256 = hashlib.sha256(_CANDIDATE_CONTENT.encode("utf-8")).hexdigest()
+
+# ---------------------------------------------------------------------------
+# GW-02 shared fixtures/helpers: every call to run_one_candidate_pass now needs
+# frozen_context/current_config/repo/ratchet_ref_name/commit_tree_sha/callable_name/
+# concrete_inputs (all required, no default). See module docstring.
+# ---------------------------------------------------------------------------
+
+_FROZEN_CONTEXT = BathosFrozenContext(
+    locked=ClosureManifest(
+        evaluator_paths=(),
+        split_paths=(),
+        metric_def_paths=(),
+        pinned_deps_source=Path("uv.lock"),
+        config={},
+        closure_hash="unused-in-tests-guarded_evaluate_fn-is-stubbed",
+    ),
+    campaign_adapter=None,  # type: ignore[arg-type]  # unused: guarded_evaluate_fn is stubbed
+    campaign_id="camp-1",
+    score_fn=lambda *_args: {},
+)
+
+_PASSING_FITNESS = {"accuracy": 0.9, "loss": 0.1}
+_BEST_FITNESS = {"accuracy": 0.9, "loss": 0.1}
+_HIGHER_IS_BETTER = {"accuracy": True, "loss": False}
+_WORSE_FITNESS = {"accuracy": 0.1, "loss": 0.9}
+
+
+def _passing_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
+    return dict(_PASSING_FITNESS)
+
+
+def _passing_timing_fn(*args: Any, **kwargs: Any) -> TwoPhaseTiming:
+    return TwoPhaseTiming(compile_time_seconds=0.0, runtime_seconds=0.0, result=None)
+
+
+def _new_step_kwargs(**overrides: Any) -> dict[str, Any]:
+    """Default GW-02 kwargs shared by every pre-GW-02 test in this module.
+
+    Tests specifically exercising ratchet/crash-atomicity/compile-time behavior override the
+    relevant keys (e.g. `guarded_evaluate_fn`, `best_fitness`/`higher_is_better`).
+    """
+    defaults: dict[str, Any] = {
+        "frozen_context": _FROZEN_CONTEXT,
+        "current_config": {},
+        "guarded_evaluate_fn": _passing_guarded_evaluate_fn,
+        "repo": Path("unused-repo"),
+        "ratchet_ref_name": "refs/xtrax/best-so-far",
+        "commit_tree_sha": "unused-tree-sha",
+        "commit_parent_sha": "unused-parent-sha",
+        "callable_name": "unused_callable",
+        "concrete_inputs": [],
+        "measure_two_phase_timing_fn": _passing_timing_fn,
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+@pytest.fixture(autouse=True)
+def _stub_crash_atomicity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub every T2-10 crash-atomicity call by default -- most tests in this module exercise
+    dispatch/lineage/gate/ratchet behavior, not real git operations. Tests that specifically
+    assert on these calls re-patch the relevant stub within their own test body (a later
+    `monkeypatch.setattr` call overrides this fixture's earlier one for the rest of that test).
+    """
+    monkeypatch.setattr(main_loop_module, "read_best_so_far", lambda repo, ref_name: None)
+    monkeypatch.setattr(
+        main_loop_module,
+        "create_pending_commit",
+        lambda repo, tree_sha, parent_sha, message: "pending-sha",
+    )
+    monkeypatch.setattr(
+        main_loop_module,
+        "advance_best_so_far",
+        lambda repo, ref_name, new_sha, expected_old_sha: None,
+    )
+    monkeypatch.setattr(
+        main_loop_module, "reset_worktree_to_best_so_far", lambda repo, ref_name: "best-sha"
+    )
 
 
 def _passing_candidate_static_fn(path: Path, root: Path | None = None) -> None:
@@ -178,6 +276,8 @@ class TestFullSequenceOrdering:
             stats_battery_kwargs={},
             stats_battery_fn=stats_fn,
             seed_trial_counts_fn=seed_fn,
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         expected_order = [
@@ -211,6 +311,8 @@ class TestFullSequenceOrdering:
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
                 _passing_seed_counts()
             ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert result.handoff.content_sha256 == _VALID_SHA256
@@ -246,6 +348,8 @@ class TestDerivedFromThreadedEndToEnd:
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
                 _passing_seed_counts()
             ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert result.derived_from == "parent-run-uuid-123"
@@ -270,6 +374,8 @@ class TestDerivedFromThreadedEndToEnd:
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
                 _passing_seed_counts()
             ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert result.derived_from == ""
@@ -297,6 +403,8 @@ class TestSeedTrialCountsReceivesHandoffSha256:
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_counts_fn=seed_fn,
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert received["script_sha256"] == _VALID_SHA256
@@ -323,6 +431,8 @@ class TestGateCheckIsLoadBearing:
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
                 _passing_seed_counts()
             ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert result.gate_outcome.hard_blocked is False
@@ -342,6 +452,8 @@ class TestGateCheckIsLoadBearing:
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
                 _passing_seed_counts()
             ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert result.gate_outcome.stats_battery.hard_blocked is True
@@ -365,6 +477,8 @@ class TestGateCheckIsLoadBearing:
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
                 _failing_seed_counts()
             ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert result.gate_outcome.seed_trial.hard_blocked is True
@@ -387,6 +501,8 @@ class TestGateCheckIsLoadBearing:
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
                 _failing_seed_counts()
             ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert result.gate_outcome.stats_battery.advisory is True
@@ -415,6 +531,8 @@ class TestMultiParentFailsLoudBeforeBathosCall:
                 candidate_static_fn=_passing_candidate_static_fn,
                 parentage=parentage,
                 stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(),
             )
 
         assert transport.calls == [], (
@@ -441,6 +559,8 @@ class TestMultiParentFailsLoudBeforeBathosCall:
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
                 _passing_seed_counts()
             ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert result.derived_from == "run-a"
@@ -472,6 +592,8 @@ class TestDispatchFailurePropagatesWithNoRetry:
                 candidate_static_fn=_passing_candidate_static_fn,
                 stats_battery_kwargs={},
                 stats_battery_fn=stats_fn,
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(),
             )
 
         assert transport.calls == [], "no bathos call should happen after a dispatch failure"
@@ -490,6 +612,8 @@ class TestDispatchFailurePropagatesWithNoRetry:
                 campaign_mode="exploration",
                 candidate_static_fn=_passing_candidate_static_fn,
                 stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(),
             )
 
         assert transport.calls == []
@@ -508,6 +632,8 @@ class TestDispatchFailurePropagatesWithNoRetry:
                 campaign_mode="exploration",
                 candidate_static_fn=_passing_candidate_static_fn,
                 stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(),
             )
 
         assert transport.calls == []
@@ -549,6 +675,8 @@ class TestBathosRunFailurePropagatesWithNoRetry:
                 stats_battery_kwargs={},
                 stats_battery_fn=stats_fn,
                 seed_trial_counts_fn=seed_fn,
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(),
             )
 
         assert len(transport.calls) == 1, "the bathos run call itself should still be attempted"
@@ -586,6 +714,8 @@ class TestGateParameterForwarding:
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
                 _passing_seed_counts()
             ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert received_kwargs == {
@@ -614,6 +744,8 @@ class TestGateParameterForwarding:
             stats_battery_fn=lambda **kw: _passing_stats_verdict(),
             seed_trial_db=sentinel_db,
             seed_trial_counts_fn=seed_fn,
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert received_db == [sentinel_db]
@@ -672,8 +804,23 @@ class TestGateOutcomeHardBlocked:
         assert outcome.hard_blocked is True
 
 
+_SENTINEL_RATCHET_DECISION = RatchetDecision(
+    improved=True, win_rate=1.0, breakdown_point=1.0, cohens_d=float("inf"), per_metric_delta={}
+)
+
+_REJECTING_RATCHET_DECISION = RatchetDecision(
+    improved=False,
+    win_rate=0.0,
+    breakdown_point=0.0,
+    cohens_d=-1.0,
+    per_metric_delta={"loss": -1.0},
+)
+
+
 class TestOneCandidatePassResultAccepted:
-    def _result(self, *, run_success: bool, hard_blocked: bool) -> OneCandidatePassResult:
+    def _result(
+        self, *, run_success: bool, hard_blocked: bool, improved: bool = True
+    ) -> OneCandidatePassResult:
         return OneCandidatePassResult(
             handoff=CandidateHandoff(path=Path("c.py"), content_sha256=_VALID_SHA256),
             derived_from="",
@@ -681,6 +828,9 @@ class TestOneCandidatePassResultAccepted:
             gate_outcome=GateOutcome(
                 stats_battery=_stats_decision(hard_blocked=hard_blocked),
                 seed_trial=_seed_decision(hard_blocked=False),
+            ),
+            ratchet_decision=(
+                _SENTINEL_RATCHET_DECISION if improved else _REJECTING_RATCHET_DECISION
             ),
         )
 
@@ -699,6 +849,18 @@ class TestOneCandidatePassResultAccepted:
     def test_failure_and_hard_block_rejects(self) -> None:
         result = self._result(run_success=False, hard_blocked=True)
         assert result.accepted is False
+
+    def test_ratchet_decision_not_improved_alone_rejects_even_with_success_and_clean_gates(
+        self,
+    ) -> None:
+        """GW-02's own core fix: a candidate whose run succeeded and cleared both gates must
+        still be rejected if the ratchet decision itself says it did not improve."""
+        result = self._result(run_success=True, hard_blocked=False, improved=False)
+        assert result.accepted is False
+
+    def test_success_clean_gates_and_improved_ratchet_accepts(self) -> None:
+        result = self._result(run_success=True, hard_blocked=False, improved=True)
+        assert result.accepted is True
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +891,8 @@ class TestCandidateStaticGate:
                 parentage=parentage,
                 candidate_static_fn=failing_candidate_static_fn,
                 stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(),
             )
 
         assert transport.calls == [], (
@@ -758,6 +922,8 @@ class TestCandidateStaticGate:
                 campaign_mode="exploration",
                 candidate_static_root=tmp_path,
                 stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(),
             )
 
         assert transport.calls == [], "a syntactically invalid candidate must burn zero real run"
@@ -787,7 +953,360 @@ class TestCandidateStaticGate:
             seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
                 _passing_seed_counts()
             ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert len(transport.calls) == 1
         assert result.accepted is True
+
+
+# ---------------------------------------------------------------------------
+# GW-02 (backlog #3649): the real multi-metric ratchet decision, crash-safe best-so-far
+# lineage (accept and reject paths), and compile-time exclusion.
+# ---------------------------------------------------------------------------
+
+
+class TestRatchetRejectsWorseCandidateAndResetsWorktree:
+    def test_strictly_worse_candidate_rejected_and_resets_worktree_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """VERIFY item 1: a candidate strictly worse on every metric than best_fitness ->
+        accepted=False, reset_worktree_to_best_so_far invoked exactly once."""
+        reset_calls: list[tuple[Path, str]] = []
+
+        def spy_reset(repo: Path, ref_name: str) -> str:
+            reset_calls.append((repo, ref_name))
+            return "best-sha"
+
+        monkeypatch.setattr(main_loop_module, "reset_worktree_to_best_so_far", spy_reset)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        def worse_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
+            return dict(_WORSE_FITNESS)
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                guarded_evaluate_fn=worse_guarded_evaluate_fn,
+                best_fitness=_BEST_FITNESS,
+                higher_is_better=_HIGHER_IS_BETTER,
+            ),
+        )
+
+        assert result.ratchet_decision.improved is False
+        assert result.accepted is False
+        assert reset_calls == [(Path("unused-repo"), "refs/xtrax/best-so-far")]
+
+
+class TestFirstCandidateSentinelAccept:
+    def test_both_none_accepts_without_compute_ratchet_decision_and_falls_back_to_parent_sha(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """VERIFY item 2: best_fitness=None, higher_is_better=None -> accepted=True without
+        compute_ratchet_decision being called; create_pending_commit/advance_best_so_far
+        invoked with parent_sha falling back to commit_parent_sha and expected_old_sha=None."""
+        compute_calls: list[Any] = []
+        monkeypatch.setattr(
+            main_loop_module,
+            "compute_ratchet_decision",
+            lambda *a, **kw: compute_calls.append((a, kw)),
+        )
+
+        create_calls: list[tuple[Any, Any, Any, Any]] = []
+        advance_calls: list[tuple[Any, Any, Any, Any]] = []
+
+        def spy_create(repo: Any, tree_sha: Any, parent_sha: Any, message: Any) -> str:
+            create_calls.append((repo, tree_sha, parent_sha, message))
+            return "pending-sha"
+
+        def spy_advance(repo: Any, ref_name: Any, new_sha: Any, expected_old_sha: Any) -> None:
+            advance_calls.append((repo, ref_name, new_sha, expected_old_sha))
+
+        monkeypatch.setattr(main_loop_module, "create_pending_commit", spy_create)
+        monkeypatch.setattr(main_loop_module, "advance_best_so_far", spy_advance)
+        # read_best_so_far is already stubbed to return None by the autouse fixture.
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                best_fitness=None,
+                higher_is_better=None,
+                commit_parent_sha="bootstrap-parent-sha",
+            ),
+        )
+
+        assert result.accepted is True
+        assert result.ratchet_decision.improved is True
+        assert compute_calls == [], (
+            "compute_ratchet_decision must never be called for the first candidate in a "
+            "campaign -- the sentinel RatchetDecision is constructed directly"
+        )
+        assert len(create_calls) == 1
+        _, _, parent_sha, _ = create_calls[0]
+        assert parent_sha == "bootstrap-parent-sha"
+        assert len(advance_calls) == 1
+        _, _, _, expected_old_sha = advance_calls[0]
+        assert expected_old_sha is None
+
+
+class TestBestFitnessHigherIsBetterMustBothBeSuppliedOrOmitted:
+    def test_one_none_one_not_raises_before_any_ratchet_or_crash_atomicity_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """VERIFY item 3: mismatched best_fitness/higher_is_better (one None, one not) raises
+        ValueError before any ratchet or crash-atomicity call."""
+        compute_calls: list[Any] = []
+        create_calls: list[Any] = []
+        advance_calls: list[Any] = []
+        reset_calls: list[Any] = []
+        monkeypatch.setattr(
+            main_loop_module,
+            "compute_ratchet_decision",
+            lambda *a, **kw: compute_calls.append(1),
+        )
+        monkeypatch.setattr(
+            main_loop_module, "create_pending_commit", lambda *a, **kw: create_calls.append(1)
+        )
+        monkeypatch.setattr(
+            main_loop_module, "advance_best_so_far", lambda *a, **kw: advance_calls.append(1)
+        )
+        monkeypatch.setattr(
+            main_loop_module,
+            "reset_worktree_to_best_so_far",
+            lambda *a, **kw: reset_calls.append(1),
+        )
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        with pytest.raises(
+            ValueError,
+            match="best_fitness and higher_is_better must both be supplied or both omitted",
+        ):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
+                stats_battery_kwargs={},
+                stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+                seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                    _passing_seed_counts()
+                ),
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(best_fitness=_BEST_FITNESS, higher_is_better=None),
+            )
+
+        assert compute_calls == []
+        assert create_calls == []
+        assert advance_calls == []
+        assert reset_calls == []
+
+
+class TestGuardedEvaluateFnExactArgs:
+    def test_guarded_evaluate_fn_called_with_step1_spec_args(self) -> None:
+        """VERIFY item 4: guarded_evaluate_fn is called with the exact args spec'd in Step 1 --
+        never anything read off CandidateRunResult."""
+        captured: dict[str, Any] = {}
+
+        def spy_guarded_evaluate_fn(
+            locked: Any,
+            evaluator: Any,
+            frozen_context: Any,
+            candidate: Any,
+            *,
+            current_config: Any,
+            candidate_touched_paths: Any,
+        ) -> dict[str, float]:
+            captured["locked"] = locked
+            captured["evaluator"] = evaluator
+            captured["frozen_context"] = frozen_context
+            captured["candidate"] = candidate
+            captured["current_config"] = current_config
+            captured["candidate_touched_paths"] = candidate_touched_paths
+            return dict(_PASSING_FITNESS)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+        sentinel_config = {"lr": 0.01}
+        sentinel_touched = frozenset({Path("touched.py")})
+
+        run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json", "artifact2.json"],
+            **_new_step_kwargs(
+                guarded_evaluate_fn=spy_guarded_evaluate_fn,
+                current_config=sentinel_config,
+                candidate_touched_paths=sentinel_touched,
+            ),
+        )
+
+        assert captured["locked"] is _FROZEN_CONTEXT.locked
+        assert captured["evaluator"] is score_raw_artifacts
+        assert captured["frozen_context"] is _FROZEN_CONTEXT
+        assert captured["candidate"] == ("artifact.json", "artifact2.json")
+        assert captured["current_config"] is sentinel_config
+        assert captured["candidate_touched_paths"] is sentinel_touched
+
+
+class TestClosureDriftPropagatesUncaught:
+    @pytest.mark.parametrize("exc_cls", [ClosureHashMismatchError, UnlistedReadError])
+    def test_closure_drift_from_guarded_evaluate_fn_propagates_uncaught(
+        self, exc_cls: type[Exception]
+    ) -> None:
+        """VERIFY item 5: ClosureHashMismatchError/UnlistedReadError injected from
+        guarded_evaluate_fn propagates UNCAUGHT out of run_one_candidate_pass."""
+
+        def failing_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
+            msg = "closure drift injected for test"
+            raise exc_cls(msg)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        with pytest.raises(exc_cls, match="closure drift injected for test"):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(guarded_evaluate_fn=failing_guarded_evaluate_fn),
+            )
+
+
+class TestCompileTimeExcludedFromRatchetComparison:
+    def test_compile_time_seconds_absent_and_measure_called_with_handoff_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """VERIFY item 6: compile_time_seconds is absent from the dict passed to
+        compute_ratchet_decision; measure_two_phase_timing is called with handoff.path (never a
+        separately constructed path)."""
+        ratchet_calls: list[tuple[dict[str, float], dict[str, float], dict[str, bool]]] = []
+
+        def spy_compute_ratchet_decision(
+            candidate_fitness: Mapping[str, float],
+            best_fitness: Mapping[str, float],
+            *,
+            higher_is_better: Mapping[str, bool],
+        ) -> RatchetDecision:
+            ratchet_calls.append(
+                (dict(candidate_fitness), dict(best_fitness), dict(higher_is_better))
+            )
+            return _SENTINEL_RATCHET_DECISION
+
+        monkeypatch.setattr(
+            main_loop_module, "compute_ratchet_decision", spy_compute_ratchet_decision
+        )
+
+        timing_calls: list[tuple[Any, str, list[Any]]] = []
+
+        def spy_measure_two_phase_timing_fn(
+            candidate_path: Path, callable_name: str, *, concrete_inputs: list[Any]
+        ) -> TwoPhaseTiming:
+            timing_calls.append((candidate_path, callable_name, concrete_inputs))
+            return TwoPhaseTiming(compile_time_seconds=99.0, runtime_seconds=1.0, result=None)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                best_fitness=_BEST_FITNESS,
+                higher_is_better=_HIGHER_IS_BETTER,
+                measure_two_phase_timing_fn=spy_measure_two_phase_timing_fn,
+                callable_name="candidate_fn",
+                concrete_inputs=[1, 2, 3],
+            ),
+        )
+
+        assert len(ratchet_calls) == 1
+        candidate_fitness, _, _ = ratchet_calls[0]
+        assert "compile_time_seconds" not in candidate_fitness
+        assert candidate_fitness == _PASSING_FITNESS
+
+        assert len(timing_calls) == 1
+        candidate_path, callable_name, concrete_inputs = timing_calls[0]
+        assert candidate_path == result.handoff.path
+        assert callable_name == "candidate_fn"
+        assert concrete_inputs == [1, 2, 3]
+
+
+class TestGatesClearButRatchetRejects:
+    def test_gates_clear_but_ratchet_not_improved_must_not_read_accepted_true(self) -> None:
+        """VERIFY item 7: a candidate that clears stats_battery/seed_trial hard-blocked gates
+        but whose ratchet_decision.improved is False must NOT have accepted=True."""
+
+        def worse_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
+            return dict(_WORSE_FITNESS)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="confirmation",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                guarded_evaluate_fn=worse_guarded_evaluate_fn,
+                best_fitness=_BEST_FITNESS,
+                higher_is_better=_HIGHER_IS_BETTER,
+            ),
+        )
+
+        assert result.gate_outcome.hard_blocked is False, (
+            "gates must genuinely clear for this test to prove ratchet is independently "
+            "load-bearing, not just redundant with the existing gate checks"
+        )
+        assert result.ratchet_decision.improved is False
+        assert result.accepted is False

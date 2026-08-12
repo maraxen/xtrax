@@ -7,10 +7,12 @@ import pytest
 
 from xtrax.loop.ratchet_crash_atomicity import (
     CommitCreationError,
+    RatchetCrashAtomicityError,
     RefUpdateConflictError,
     advance_best_so_far,
     create_pending_commit,
     read_best_so_far,
+    reset_worktree_to_best_so_far,
 )
 
 _REF_NAME = "refs/xtrax/best-so-far"
@@ -135,3 +137,27 @@ class TestFirstEverRefCreation:
 class TestReadBestSoFar:
     def test_returns_none_for_a_ref_that_never_existed(self, repo: Path) -> None:
         assert read_best_so_far(repo, "refs/xtrax/never-created") is None
+
+
+class TestResetWorktreeToBestSoFar:
+    """GW-02 (#3649) reject-path addition: T2-10's accept-path helpers get a reset counterpart."""
+
+    def test_resets_working_tree_to_the_best_so_far_commit(self, repo: Path) -> None:
+        old_sha = _head_sha(repo)
+        advance_best_so_far(repo, _REF_NAME, old_sha, expected_old_sha=None)
+
+        # Simulate a rejected candidate mutating the worktree after the best-so-far commit.
+        (repo / "rejected_candidate.txt").write_text("bad candidate\n", encoding="utf-8")
+        _git(repo, "add", "rejected_candidate.txt")
+        _git(repo, "commit", "--quiet", "-m", "rejected candidate work")
+        assert _head_sha(repo) != old_sha
+
+        returned_sha = reset_worktree_to_best_so_far(repo, _REF_NAME)
+
+        assert returned_sha == old_sha
+        assert _head_sha(repo) == old_sha
+        assert not (repo / "rejected_candidate.txt").exists()
+
+    def test_raises_when_no_best_so_far_ref_exists_yet(self, repo: Path) -> None:
+        with pytest.raises(RatchetCrashAtomicityError):
+            reset_worktree_to_best_so_far(repo, "refs/xtrax/never-created")

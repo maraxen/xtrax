@@ -252,7 +252,17 @@ class MultiIterationLoopResult:
 
     @property
     def accepted_count(self) -> int:
-        """Count of iterations whose `OneCandidatePassResult.accepted` is `True`."""
+        """Count of iterations that were actually promotable per the ratchet (GW-02).
+
+        `OneCandidatePassResult.accepted` gained a stricter meaning once `run_one_candidate_pass`
+        wired in the real multi-metric ratchet decision (AC-10): it now additionally requires
+        `ratchet_decision.improved`, not just "the bathos run succeeded and neither gate hard-
+        blocked" (see `main_loop.py`'s own module docstring and `OneCandidatePassResult.accepted`
+        for the full rationale -- a candidate strictly worse on every metric than the current
+        best no longer reads `accepted=True` here). This property's own implementation is
+        unchanged by that -- it always intended "was actually promotable," it simply inherits the
+        stricter, now-correct definition of `accepted` for free.
+        """
         return sum(1 for result in self.iterations if result.accepted)
 
 
