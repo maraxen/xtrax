@@ -23,7 +23,7 @@ import hashlib
 import io
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import jax
 import pytest
@@ -186,11 +186,11 @@ class TestMakeSmokeScoreFnFreshness:
         first = _make_smoke_score_fn()
         second = _make_smoke_score_fn()
 
-        first(raw_artifact_paths=(), split_paths=())
-        first(raw_artifact_paths=(), split_paths=())
-        first(raw_artifact_paths=(), split_paths=())
+        first((), ())
+        first((), ())
+        first((), ())
 
-        second_result = second(raw_artifact_paths=(), split_paths=())
+        second_result = second((), ())
         assert second_result == {"metric_a": 1.0, "metric_b": 1.0}
 
 
@@ -218,17 +218,17 @@ class TestAssertPassCampaignResultRatchetAssertion:
         )
 
     def test_all_improved_true_passes_silently(self) -> None:
-        from scripts.smoke_lc12_real_e2e import _assert_pass_campaign_result
+        from scripts.smoke_lc12_real_e2e import CampaignLoopResult, _assert_pass_campaign_result
 
         result = self._fake_result(improved_flags=[True, True])
-        _assert_pass_campaign_result(result)  # must not raise
+        _assert_pass_campaign_result(cast(CampaignLoopResult, result))  # must not raise
 
     def test_one_improved_false_raises_assertion_error(self) -> None:
-        from scripts.smoke_lc12_real_e2e import _assert_pass_campaign_result
+        from scripts.smoke_lc12_real_e2e import CampaignLoopResult, _assert_pass_campaign_result
 
         result = self._fake_result(improved_flags=[True, False])
         with pytest.raises(AssertionError, match="ratchet_decision.improved"):
-            _assert_pass_campaign_result(result)
+            _assert_pass_campaign_result(cast(CampaignLoopResult, result))
 
 
 class _RecordingRunCampaignLoop:
@@ -332,7 +332,7 @@ class TestCampaignWiring:
 
         frozen_context = kwargs["frozen_context"]
         assert frozen_context.score_fn is not None
-        first = frozen_context.score_fn(raw_artifact_paths=(), split_paths=())
+        first = frozen_context.score_fn((), ())
         assert first == {"metric_a": 1.0, "metric_b": 1.0}
 
         assert "lc12_smoke_campaign" in kwargs["current_config"]
@@ -368,8 +368,8 @@ class TestCampaignWiring:
         first = _make_smoke_frozen_context("campaign-a", {"lc12_smoke_campaign": "campaign-a"})
         second = _make_smoke_frozen_context("campaign-b", {"lc12_smoke_campaign": "campaign-b"})
 
-        first.score_fn(raw_artifact_paths=(), split_paths=())
-        first.score_fn(raw_artifact_paths=(), split_paths=())
+        first.score_fn((), ())
+        first.score_fn((), ())
 
-        second_first_call = second.score_fn(raw_artifact_paths=(), split_paths=())
+        second_first_call = second.score_fn((), ())
         assert second_first_call == {"metric_a": 1.0, "metric_b": 1.0}
