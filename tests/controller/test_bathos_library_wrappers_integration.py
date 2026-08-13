@@ -116,10 +116,27 @@ class TestGetCapabilityProbeResultRealBathos:
         assert isinstance(result.seed_live, bool)
         assert isinstance(result.stats_battery_live, bool)
 
-    def test_default_catalog_dir_returns_capability_probe_result(self):
-        """Test with default catalog_dir (empty string)."""
-        result = get_capability_probe_result()
+    def test_default_catalog_dir_returns_capability_probe_result(self, tmp_path):
+        """Test with default catalog_dir (empty string) using isolated temp directory.
 
-        assert isinstance(result, CapabilityProbeResult)
-        assert isinstance(result.seed_live, bool)
-        assert isinstance(result.stats_battery_live, bool)
+        This test verifies the function works when called without an explicit catalog_dir
+        by setting BTH_CATALOG_DIR env var to tmp_path, ensuring isolation from the real
+        ~/.bth catalog directory.
+        """
+        import os
+
+        # Set BTH_CATALOG_DIR to override the default catalog_dir resolution path
+        old_env = os.environ.get("BTH_CATALOG_DIR")
+        try:
+            os.environ["BTH_CATALOG_DIR"] = str(tmp_path)
+            result = get_capability_probe_result()
+
+            assert isinstance(result, CapabilityProbeResult)
+            assert isinstance(result.seed_live, bool)
+            assert isinstance(result.stats_battery_live, bool)
+        finally:
+            # Restore original environment
+            if old_env is None:
+                os.environ.pop("BTH_CATALOG_DIR", None)
+            else:
+                os.environ["BTH_CATALOG_DIR"] = old_env
