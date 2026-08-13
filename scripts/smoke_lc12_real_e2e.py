@@ -244,6 +244,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from jax import ShapeDtypeStruct
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -290,6 +292,10 @@ _BAD_BASELINE_VALUES = [5.0, 5.2, 4.8, 5.1, 4.9, 5.3, 4.7, 5.0, 5.2, 4.9, 5.1, 5
 _TIMING_PROBE_NAME = "smoke_timing_probe"
 _TIMING_PROBE_SUFFIX = f"\n\ndef {_TIMING_PROBE_NAME}(a, b):\n    return a + b\n"
 _TIMING_CONCRETE_INPUTS: list[Any] = [1.0, 2.0]
+_TIMING_ABSTRACT_INPUTS: list[Any] = [
+    ShapeDtypeStruct(shape=(), dtype="float32"),
+    ShapeDtypeStruct(shape=(), dtype="float32"),
+]
 _HIGHER_IS_BETTER = {"metric_a": True, "metric_b": True}
 
 
@@ -535,6 +541,7 @@ def _run_pass_campaign(
         ratchet_ref_name=ratchet_ref_name,
         callable_name=_TIMING_PROBE_NAME,
         concrete_inputs=_TIMING_CONCRETE_INPUTS,
+        abstract_inputs=_TIMING_ABSTRACT_INPUTS,
         higher_is_better=_HIGHER_IS_BETTER,
         candidate_target_path=Path("candidate.py"),
         bootstrap_commit_sha=bootstrap_sha,
@@ -594,6 +601,7 @@ def _run_fail_campaign(
         ratchet_ref_name=ratchet_ref_name,
         callable_name=_TIMING_PROBE_NAME,
         concrete_inputs=_TIMING_CONCRETE_INPUTS,
+        abstract_inputs=_TIMING_ABSTRACT_INPUTS,
         higher_is_better=_HIGHER_IS_BETTER,
         candidate_target_path=Path("candidate.py"),
         bootstrap_commit_sha=bootstrap_sha,

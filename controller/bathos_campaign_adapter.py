@@ -119,6 +119,7 @@ real `tools/call`.
 Both are left to a future AC-10-style cross-repo gap-filing item, not silently worked around.
 """
 
+import hashlib
 import json
 import os
 import selectors
@@ -126,6 +127,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -184,11 +186,16 @@ class CandidateRunResult:
     Campaign attachment (when `campaign_id` was supplied to `run`) already happened inside
     bathos's own `run_script` via its internal `add_run_to_campaign` call
     (`bathos/src/bathos/runner.py:543`) -- nothing further to do here.
+
+    The `run_id` field is populated post-call by querying the bathos catalog for a run
+    matching the script_sha256 and timestamp -- grounding confirmed the MCP run_tool does
+    not return run_id in its envelope (step 1.1/1.2, fallback path).
     """
 
     script_path: str
     exit_code: int
     success: bool
+    run_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,6 +438,54 @@ class BathosCampaignAdapter:
     def _resolved_token(self) -> str:
         return self._token if self._token is not None else _read_local_mcp_token()
 
+    def _query_run_id_by_script_sha256(
+        self, script_path: str, catalog_dir: str | None = None
+    ) -> str:
+        """Query bathos for a run matching the script's SHA256 hash, returning its run_id.
+
+        This is the fallback strategy for retrieving run_id when the MCP run envelope does not
+        include it (grounding confirmed it doesn't, step 1.1/1.2). Uses bathos.query.find_runs
+        to look up runs by script_sha256 within the last few seconds.
+
+        Args:
+            script_path: path to the script that was just run.
+            catalog_dir: bathos catalog directory (None uses default).
+
+        Returns:
+            The run_id of the matching run, or "" if no match found.
+        """
+        import bathos.query
+
+        # Calculate script_sha256
+        script = Path(script_path)
+        if not script.exists():
+            return ""
+        try:
+            script_sha256 = hashlib.sha256(script.read_bytes()).hexdigest()
+        except (OSError, ValueError):
+            return ""
+
+        # Query bathos for runs matching this script_sha256, within the last 10 seconds
+        cat_dir = Path(catalog_dir) if catalog_dir else Path.home() / ".bth"
+        try:
+            # Look for runs in the last 10 seconds to account for test delays or clock skew
+            since = datetime.now(UTC) - timedelta(seconds=10)
+            runs = bathos.query.find_runs(
+                catalog_dir=cat_dir,
+                since=since,
+                project=self._project_slug or None,
+            )
+
+            # Find the run matching this script_sha256
+            for run in runs:
+                if run.script_sha256 == script_sha256:
+                    return run.id
+        except Exception:
+            # If the query fails, return empty string - the caller will proceed without run_id
+            pass
+
+        return ""
+
     def _invoke(self, tool_name: str, arguments: dict[str, Any], *, write: bool) -> dict[str, Any]:
         call_arguments = dict(arguments)
         if write:
@@ -553,10 +608,13 @@ class BathosCampaignAdapter:
             },
             write=True,
         )
+        # Query for the run_id using script_sha256 (fallback strategy per step 1.2)
+        run_id = self._query_run_id_by_script_sha256(script_path, self._catalog_dir)
         return CandidateRunResult(
             script_path=envelope["script_path"],
             exit_code=envelope["exit_code"],
             success=envelope["success"],
+            run_id=run_id,
         )
 
     def campaign_conclude(

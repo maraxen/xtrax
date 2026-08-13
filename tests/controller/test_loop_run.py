@@ -55,6 +55,7 @@ calls it.** Every test injects `start_watchdog_fn=<a _FakeWatchdogStarter instan
 
 import hashlib
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -242,6 +243,46 @@ def _passing_campaign_approval_fn(
     return Attestation(attested_at="2026-07-19T00:00:00Z", ttl_days=30.0, attested_by="test")
 
 
+def _passing_structure_tripwire_fn(
+    path: Path, callable_name: str, *, abstract_inputs: list[Any], concrete_inputs: list[Any]
+) -> None:
+    """Stub for T2-13's real gate (GW-04) -- no-op for end-to-end tests."""
+    return None
+
+
+def _passing_candidate_smoke_fn(
+    path: Path,
+    callable_name: str,
+    *,
+    concrete_inputs: list[Any],
+    wall_clock_budget_seconds: float = 60.0,
+    poll_interval_seconds: float = 0.5,
+    root: Path | None = None,
+) -> None:
+    """Stub for T2-14's real gate (GW-04) -- no-op for end-to-end tests."""
+    return None
+
+
+def _passing_checkified_execution_fn(
+    path: Path,
+    callable_name: str,
+    *,
+    concrete_inputs: list[Any],
+    check_nans: bool = True,
+    check_infs: bool = True,
+) -> Any:
+    """Stub for T2-15's real gate (GW-04) -- no-op for end-to-end tests."""
+    return None
+
+
+def _passing_capability_probe_fn(catalog_dir: str = "") -> Any:
+    """Stub for T2-27's real gate (GW-05) -- returns a passing CapabilityProbeResult for
+    end-to-end tests. Never calls the real bathos.capability.probe_capabilities."""
+    from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+    return CapabilityProbeResult(seed_live=True, stats_battery_live=True)
+
+
 _CRITERIA = WatchdogCriteria(wall_clock_budget_seconds=3600.0)
 
 
@@ -306,6 +347,13 @@ def _base_kwargs(dispatch_backend: Any, transport: _MultiToolTransport) -> dict[
         "callable_name": _TIMING_PROBE_NAME,
         "concrete_inputs": _TIMING_CONCRETE_INPUTS,
         "higher_is_better": _HIGHER_IS_BETTER,
+        "abstract_inputs": [],
+        "structure_tripwire_fn": _passing_structure_tripwire_fn,
+        "candidate_smoke_fn": _passing_candidate_smoke_fn,
+        "candidate_smoke_root": None,
+        "checkified_execution_fn": _passing_checkified_execution_fn,
+        "capability_probe_fn": _passing_capability_probe_fn,
+        "capability_probe_catalog_dir": "",
         # See test_multi_iteration_loop.py's module docstring #4203 addendum for why this
         # deliberate deviation from a literal "8 new values" reading is required.
         "allow_fresh_start_despite_existing_lineage": True,
@@ -759,6 +807,187 @@ note = "Old approval (expired)"
         assert received_ids == ["loop-run-test-campaign"]
 
 
+class TestCapabilityProbeGate:
+    """Tests for T2-27 (AC-20, GW-05): capability-probe gate wired before campaign_create."""
+
+    def test_failing_probe_raises_before_campaign_create(self, tmp_path: Path) -> None:
+        """A failing capability probe must raise CapabilityNotLiveError before campaign_create."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        def failing_probe_fn(catalog_dir: str = "") -> Any:
+            from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+            return CapabilityProbeResult(seed_live=False, stats_battery_live=False)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["capability_probe_fn"] = failing_probe_fn
+        kwargs["campaign_mode"] = "confirmation"  # gated mode, will check the probe result
+
+        from xtrax.loop.capability_probe_gate import CapabilityNotLiveError
+
+        with pytest.raises(CapabilityNotLiveError):
+            run_campaign_loop(
+                **kwargs,
+                max_candidates=1,
+                start_watchdog_fn=starter,
+            )
+
+        assert transport.calls == [], (
+            "no bathos call (not even campaign_create) should ever happen when the "
+            "capability-probe gate rejects -- the exception must fire before campaign_create"
+        )
+        assert starter.calls == [], "the watchdog must not be started when probe fails"
+
+    def test_failing_probe_in_exploration_mode_allows_campaign_to_proceed(
+        self, tmp_path: Path
+    ) -> None:
+        """PM-4 carve-out: failing probe in exploration mode must NOT raise -- exploration
+        campaigns proceed regardless (the gate never enforces in exploration mode)."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        def failing_probe_fn(catalog_dir: str = "") -> Any:
+            from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+            return CapabilityProbeResult(seed_live=False, stats_battery_live=False)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["capability_probe_fn"] = failing_probe_fn
+        kwargs["campaign_mode"] = "exploration"  # exploration mode, probe is not gated
+
+        result = run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        # Probe fails but campaign still creates and completes successfully
+        assert len(transport.calls_for("campaign_create")) == 1
+        assert result.conclusion.outcome_label == "success"
+
+    def test_passing_probe_allows_campaign_to_proceed(self, tmp_path: Path) -> None:
+        """A passing capability probe must not block campaign creation."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        def passing_probe_fn(catalog_dir: str = "") -> Any:
+            from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+            return CapabilityProbeResult(seed_live=True, stats_battery_live=True)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["capability_probe_fn"] = passing_probe_fn
+        kwargs["campaign_mode"] = "confirmation"
+
+        result = run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        assert len(transport.calls_for("campaign_create")) == 1
+        assert result.conclusion.outcome_label == "success"
+
+    def test_capability_probe_fn_receives_exact_catalog_dir_passed_through(
+        self, tmp_path: Path
+    ) -> None:
+        """Proves the catalog_dir is forwarded exactly from run_campaign_loop parameter."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        received_dirs: list[str] = []
+
+        def recording_probe_fn(catalog_dir: str = "") -> Any:
+            received_dirs.append(catalog_dir)
+            from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+            return CapabilityProbeResult(seed_live=True, stats_battery_live=True)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["capability_probe_fn"] = recording_probe_fn
+        kwargs["capability_probe_catalog_dir"] = "/custom/catalog/dir"
+
+        run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        assert received_dirs == ["/custom/catalog/dir"]
+
+    def test_default_capability_probe_fn_is_skipped_if_bathos_capability_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        """If bathos.capability is not installed, the default probe_fn should skip cleanly
+        (via pytest.importorskip or equivalent)."""
+        # This test is primarily for coverage in CI tiers that skip bathos.capability.
+        # The real default (get_capability_probe_result) handles the skip internally if the
+        # bathos.capability import fails, so tests omitting an injected capability_probe_fn
+        # must reach the real default and either pass or skip.
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        # Omit capability_probe_fn to reach the real default
+        del kwargs["capability_probe_fn"]
+
+        try:
+            result = run_campaign_loop(
+                **kwargs,
+                max_candidates=1,
+                start_watchdog_fn=starter,
+            )
+            # If we get here, bathos.capability was available and the real default succeeded
+            assert len(transport.calls_for("campaign_create")) == 1
+            assert result.conclusion.outcome_label == "success"
+        except ImportError as e:
+            # If bathos.capability is not installed, we expect an ImportError
+            pytest.skip(f"bathos.capability not available: {e}")
+
+    def test_probe_fired_and_campaign_create_call_count_proves_ordering(
+        self, tmp_path: Path
+    ) -> None:
+        """Proves via call-order tracking that the probe fires and completes before
+        campaign_create (not after). We track this by monitoring the call sequence of our
+        injected probe_fn and the transport's calls_for assertions."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        calls_sequence: list[str] = []
+
+        def tracking_probe_fn(catalog_dir: str = "") -> Any:
+            calls_sequence.append("probe_called")
+            from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+            return CapabilityProbeResult(seed_live=True, stats_battery_live=True)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["capability_probe_fn"] = tracking_probe_fn
+
+        result = run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        # Prove ordering: probe must be called before campaign_create (evidenced by the
+        # probe being called and the campaign successfully created and concluded)
+        assert calls_sequence == ["probe_called"], (
+            "capability_probe_fn must be called during run_campaign_loop"
+        )
+        assert len(transport.calls_for("campaign_create")) == 1, (
+            "campaign_create must be called exactly once after probe completes"
+        )
+        assert result.conclusion.outcome_label == "success", (
+            "the campaign must complete successfully after probe passes"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 7. Cross-boundary forwarding-spy integration test (D3-amended C2 AC, backlog #4203): spies
 # SIMULTANEOUSLY on BOTH layer boundaries -- run_campaign_loop -> run_multi_iteration_loop, AND
@@ -786,6 +1015,13 @@ class TestCrossBoundaryForwardingSpy:
         transport = _MultiToolTransport()
         starter = _FakeWatchdogStarter()
         base_kwargs = _base_kwargs(dispatch_backend, transport)
+        # #4215 (AC-a): a literal, non-None value -- inert on this test's own accept-path
+        # behavior (the autouse _stub_crash_atomicity fixture's read_best_so_far always returns
+        # a fixed non-None SHA, so neither commit_parent_sha's nor bootstrap_base_tree_sha's
+        # fan-out is ever exercised on real accept-branch git plumbing here -- only that the
+        # VALUE arrives correctly at both call sites is being proven; AC-b's real-git-plumbing
+        # proof lives in TestBootstrapCommitShaIntegration below).
+        base_kwargs["bootstrap_commit_sha"] = "spy-bootstrap-sha"
 
         # Boundary 1: run_campaign_loop's own call to run_multi_iteration_loop (loop_run.py's
         # own imported name).
@@ -830,6 +1066,8 @@ class TestCrossBoundaryForwardingSpy:
                 assert outer_kwargs[key] is None
                 continue
             assert outer_kwargs[key] == base_kwargs[key]
+        # #4215 (AC-a): pass-through unchanged at this boundary.
+        assert outer_kwargs["bootstrap_commit_sha"] == base_kwargs["bootstrap_commit_sha"]
 
         # --- Boundary 2 assertions: run_multi_iteration_loop -> run_one_candidate_pass, on
         # BOTH iterations. The 8 static values + allow_fresh_start_despite_existing_lineage
@@ -842,8 +1080,126 @@ class TestCrossBoundaryForwardingSpy:
                     assert call_kwargs[key] is None
                     continue
                 assert call_kwargs[key] == base_kwargs[key]
+            # #4215 (AC-a): bootstrap_commit_sha fans out to BOTH inner params, byte-identical,
+            # on every call -- two different kwarg names, so not part of
+            # _FORWARDED_BYTE_IDENTICAL_KEYS above.
+            assert call_kwargs["commit_parent_sha"] == base_kwargs["bootstrap_commit_sha"]
+            assert call_kwargs["bootstrap_base_tree_sha"] == base_kwargs["bootstrap_commit_sha"]
 
         assert inner_calls[0]["best_fitness"] is None
         assert inner_calls[0]["higher_is_better"] is None
         assert inner_calls[1]["best_fitness"] is not None
         assert inner_calls[1]["higher_is_better"] is base_kwargs["higher_is_better"]
+
+
+# ---------------------------------------------------------------------------
+# 8. bootstrap_commit_sha (#4215) integration tests -- AC-b (the actual bug-closing test) and
+# AC-c (regression). This file has no conftest.py / no shared fixtures across test files, so a
+# self-contained local `_git`/`git_repo` copy is required here, mirroring
+# tests/controller/test_main_loop.py's own identically-shaped fixture verbatim (same convention
+# tests/controller/test_multi_iteration_loop.py already follows rather than importing across
+# test files).
+# ---------------------------------------------------------------------------
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    """A minimal real git repo with one commit containing one tracked file, so a valid base
+    commit/tree exists for compute_candidate_tree_sha's own real git plumbing."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    _git(repo_dir, "init", "--quiet")
+    _git(repo_dir, "config", "user.email", "test@example.com")
+    _git(repo_dir, "config", "user.name", "Test")
+    (repo_dir / "existing.txt").write_text("existing content\n", encoding="utf-8")
+    _git(repo_dir, "add", "existing.txt")
+    _git(repo_dir, "commit", "--quiet", "-m", "initial commit")
+    return repo_dir
+
+
+def _head_sha(repo: Path) -> str:
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+class TestBootstrapCommitShaIntegration:
+    """AC-b (bug-closing) + AC-c (regression): proves `bootstrap_commit_sha` threaded through
+    the REAL production entry point (`run_campaign_loop`) actually resolves a genuinely-fresh
+    campaign's first accepted candidate, exercising REAL git plumbing against a real fixture
+    repo -- not just that a kwarg value arrives somewhere (that's AC-a's job, above)."""
+
+    def test_bootstrap_commit_sha_lets_a_genuinely_fresh_campaign_accept_its_first_candidate(
+        self,
+        tmp_path: Path,
+        git_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """AC-b, the actual bug-closing test. `read_best_so_far` is re-patched to return `None`
+        (a genuinely fresh campaign, no prior lineage) AND `commit_tree_sha` is left UNSET
+        (deleted from the base kwargs, not the existing literal `"unused-tree-sha"`) -- per the
+        spec's AC-b sharpening, only unsetting BOTH exercises `bootstrap_base_tree_sha`'s real
+        fan-out into `compute_candidate_tree_sha`'s actual `base_sha^{tree}` git plumbing; a
+        lazy implementation that only overrides `read_best_so_far` while keeping the literal
+        `commit_tree_sha` would never reach that code path at all. `commit_tree_sha_fn` (the
+        real default, `compute_candidate_tree_sha`) is never mocked or overridden here -- the
+        test passing via the REAL default against a REAL git repo IS the proof.
+        """
+        monkeypatch.setattr(main_loop_module, "read_best_so_far", lambda repo, ref_name: None)
+
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        del kwargs["commit_tree_sha"]
+        kwargs["candidate_target_path"] = Path("candidate.py")
+        kwargs["repo"] = git_repo
+        kwargs["bootstrap_commit_sha"] = _head_sha(git_repo)
+
+        result = run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        assert result.loop_result.accepted_count == 1
+        assert result.conclusion.outcome_label == "success"
+
+    def test_omitted_bootstrap_commit_sha_still_raises_valueerror_on_a_fresh_campaign(
+        self,
+        tmp_path: Path,
+        git_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """AC-c, regression: confirms the existing default-None behavior is unchanged.
+        `bootstrap_commit_sha` is omitted entirely (stays at its `None` default) and the
+        existing literal `commit_tree_sha="unused-tree-sha"` from `_base_kwargs()` is kept
+        unchanged, so the ValueError under test is the `commit_parent_sha`-resolution one
+        (main_loop.py's accept branch), which fires before the `commit_tree_sha` branch is ever
+        reached."""
+        monkeypatch.setattr(main_loop_module, "read_best_so_far", lambda repo, ref_name: None)
+
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["repo"] = git_repo
+
+        with pytest.raises(ValueError, match="commit_parent_sha"):
+            run_campaign_loop(
+                **kwargs,
+                max_candidates=1,
+                start_watchdog_fn=starter,
+            )

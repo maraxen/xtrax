@@ -65,36 +65,44 @@ this is the gates' final, only call site; a future multi-iteration/conclude-time
 LC-11) may call `assess_stats_battery_verdict`/`assess_seed_trial_floor` again at true campaign-
 conclude time with accumulated data, independent of this per-candidate usage.
 
-## GW-04 addendum: candidate-static gate wired in as a genuine pre-dispatch reject (T2-11, AC-1)
+## GW-04 addendum: 4-of-6 candidate-validation gates wired pre-bathos (T2-11, T2-13, T2-14, T2-15)
 
 The "Scoping decision" above (LC-09/AC-8a) explicitly deferred `xtrax.loop` gates without an
-LC-07-style bathos-data wrapper, precisely because wiring one in here would mean inventing that
-wrapper as a side effect. `candidate_static` (T2-11, AC-1, F0) needs no such wrapper: `xtrax.loop.
-candidate_static.assert_candidate_static` takes only the already-available `handoff.path` and an
-optional `root` for its own jaxlint subprocess -- there is no bathos data-sourcing gap to invent.
-Filed and wired here as [GW-04]'s first slice (backlog id 3651): a candidate that fails static
-checks (an import error, or a JL-series jaxlint error) is rejected **before** `resolve_derived_
-from`/the real bathos `run` call -- AC-1's own "zero GPU time spent" contract, matching `scripts/
-smoke_2181_walking_skeleton.py`'s reference sequencing (`assert_candidate_static` called
-immediately after a candidate's path is known, before schema/structure/smoke/checkified/prereg).
-The remaining five gates in [GW-04]'s pipeline (schema_gate, structure_tripwire, candidate_smoke,
-checkified_execution, prereg_match) are explicitly out of this item's scope -- each needs its own
-integration surface (a StageBundle slot's declared schema, a live tiny-batch execution, the pinned
-uv lockfile, a SafetyManager instance, a bathos prereg sidecar) that this narrowly-scoped change
-does not invent.
+LC-07-style bathos-data wrapper. Four of the six gates in [GW-04]'s pipeline need NO such wrapper:
 
-Like the dispatch/lineage/bathos-run steps above, a `CandidateStaticGateError` propagates
-unmodified -- this module still performs zero retry logic (LC-11/AC-8c's own scope).
+1. `candidate_static` (T2-11, AC-1, F0): takes `handoff.path` + optional jaxlint `root`.
+2. `structure_tripwire` (T2-13, AC-3): takes `handoff.path`, `callable_name`, `abstract_inputs`
+   (caller-sourced), `concrete_inputs` (caller-sourced). No bathos dependency.
+3. `candidate_smoke` (T2-14, AC-4): takes `handoff.path`, `callable_name`, `concrete_inputs`
+   (caller-sourced), optional `root`. No bathos dependency.
+4. `checkified_execution` (T2-15, AC-5): takes `handoff.path`, `callable_name`, `concrete_inputs`
+   (caller-sourced). No bathos dependency.
+
+All four are wired here (backlog #3651) as [GW-04]'s composition: candidates rejected by any of
+these gates fail **before** `resolve_derived_from`/the real bathos `run` call, matching AC-1's
+own "zero GPU time spent" contract and `smoke_2181_walking_skeleton.py`'s reference sequencing.
+
+The remaining two gates in [GW-04]'s pipeline (schema_gate, prereg_match) are explicitly
+DEFERRED to a follow-up backlog item -- schema_gate needs a `declared_schema` data type in
+controller/'s data model (CandidateHandoff or a new StageBundle field, zero existing producers);
+prereg_match needs a bathos-sidecar sourcing gap closed (see backlog #3652 for the narrower,
+deferred `capability_probe_gate` wiring and its own documented deferrals). These two data-sourcing
+gaps are structural, not implementation-easy, so this narrowly-scoped item does not attempt them.
+
+Like the dispatch/lineage/bathos-run steps above, exceptions from any of these four gate functions
+propagate unmodified -- this module still performs zero retry logic (LC-11/AC-8c's own scope).
 
 ## Error/retry policy is explicitly NOT this module's job
 
 `run_one_candidate_pass` performs zero retry logic and does not catch any exception raised by
 the pieces it sequences: `dispatch_backend.dispatch_candidate()` (`CandidateHandoffFailure`,
-`TimeoutError`, `ValueError`), `candidate_static_fn` (`CandidateStaticGateError`, see the GW-04
-addendum above), `record_candidate_run`/`resolve_derived_from`
-(`MultiParentLineageUnsupportedError`), or `campaign_adapter.run` via `record_candidate_run`
-(`BathosMcpToolError`, `BathosMcpTransportError`, `BathosTokenMissingError`). Every one of these
-propagates to the caller unmodified. AC-8c (LC-11) owns error/retry policy and the "conclude
+`TimeoutError`, `ValueError`), `candidate_static_fn` (`CandidateStaticGateError`), the three
+[GW-04] gates (`StructureMismatchError`, `CandidateResolutionError`, `CandidateSmokeTimeoutError`,
+`CandidateSmokeFailedError`, `CheckifiedExecutionError`, see the GW-04 addendum above),
+`record_candidate_run`/`resolve_derived_from` (`MultiParentLineageUnsupportedError`), or
+`campaign_adapter.run` via `record_candidate_run` (`BathosMcpToolError`, `BathosMcpTransportError`,
+`BathosTokenMissingError`). Every one of these propagates to the caller unmodified. AC-8c (LC-11)
+owns error/retry policy and the "conclude
 fires on every code path" guarantee; this module's job is to prove the happy-path sequence is
 wired correctly end-to-end, not to also own what happens when a step fails.
 """
@@ -109,7 +117,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from controller.bathos_campaign_adapter import BathosCampaignAdapter, CandidateRunResult
-from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
+from controller.bathos_library_wrappers import (
+    call_stats_battery_gate,
+    get_evidence_candidate_for_run,
+    get_seed_trial_counts,
+    get_sidecar_drift_signal,
+)
 from controller.dispatch import CandidateHandoff, DispatchBackend
 from controller.evaluate_adapter import BathosFrozenContext, score_raw_artifacts
 from controller.lineage_interim import (
@@ -117,7 +130,10 @@ from controller.lineage_interim import (
     record_candidate_run,
     resolve_derived_from,
 )
+from xtrax.loop.attestation_evidence_gate import EvidenceAdmissionResult, EvidenceCandidate
+from xtrax.loop.candidate_smoke import assert_candidate_smoke
 from xtrax.loop.candidate_static import assert_candidate_static
+from xtrax.loop.checkified_execution import assert_checkified_execution
 from xtrax.loop.closure_lock import guarded_evaluate
 from xtrax.loop.compile_time_clock import (
     TwoPhaseTiming,
@@ -136,11 +152,17 @@ from xtrax.loop.seed_gate import (
     SeedTrialFloorDecision,
     assess_seed_trial_floor,
 )
+from xtrax.loop.sidecar_drift_gate import (
+    SidecarDriftDecision,
+    SidecarDriftSignal,
+    assert_sidecar_drift_reaction,
+)
 from xtrax.loop.stats_battery_gate import (
     BathosStatsBatteryVerdict,
     ConcludeStatsDecision,
     assess_stats_battery_verdict,
 )
+from xtrax.loop.structure_tripwire import assert_structure_tripwire
 
 # Redefined locally rather than imported from either sibling gate module, matching every
 # xtrax.loop gate module's own stated independence-from-siblings convention (see e.g.
@@ -165,15 +187,23 @@ class PriorBestSoFarLineageConflictError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class GateOutcome:
-    """Both gate decisions computed for one candidate pass.
+    """All gate decisions computed for one candidate pass (GW-01, GW-02, GW-04, etc.).
 
     Attributes:
         stats_battery: `xtrax.loop.stats_battery_gate.assess_stats_battery_verdict`'s decision.
         seed_trial: `xtrax.loop.seed_gate.assess_seed_trial_floor`'s decision.
+        evidence_admission: `xtrax.loop.attestation_evidence_gate.admit_evidence`'s decision
+            (GW-01, advisory-only -- not folded into hard_blocked). None when evidence_candidate_fn
+            is not called or returns empty result.
+        sidecar_drift: `xtrax.loop.sidecar_drift_gate.assert_sidecar_drift_reaction`'s decision
+            (GW-01, AC-18). Carries should_warn flag for collaborative mode, or is absent when
+            agent_mode='' or no drift detected. None when sidecar_drift_signal_fn is skipped.
     """
 
     stats_battery: ConcludeStatsDecision
     seed_trial: SeedTrialFloorDecision
+    evidence_admission: EvidenceAdmissionResult | None = None
+    sidecar_drift: SidecarDriftDecision | None = None
 
     @property
     def hard_blocked(self) -> bool:
@@ -182,7 +212,9 @@ class GateOutcome:
         This is the load-bearing signal a failing gate check must actually produce: a
         `confirmation`/`sequential` campaign whose stats-battery verdict downgraded, or whose
         seed/trial floor isn't cleared, hard-blocks here -- it is not silently plumbed through
-        and ignored by `OneCandidatePassResult.accepted` below.
+        and ignored by `OneCandidatePassResult.accepted` below. Sidecar drift does NOT fold
+        into hard_blocked; SidecarHashMismatchError is raised directly (autonomous mode) or
+        sidecar_drift.should_warn is set (collaborative mode).
         """
         return self.stats_battery.hard_blocked or self.seed_trial.hard_blocked
 
@@ -366,8 +398,16 @@ def run_one_candidate_pass(
     hypothesis_clause_id: str = "",
     stats_battery_fn: Callable[..., BathosStatsBatteryVerdict] = call_stats_battery_gate,
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
+    evidence_candidate_fn: Callable[..., EvidenceCandidate] = get_evidence_candidate_for_run,
+    stdout_verified: bool | None = None,
+    sidecar_drift_signal_fn: Callable[..., SidecarDriftSignal] = get_sidecar_drift_signal,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
+    abstract_inputs: list[Any],
+    structure_tripwire_fn: Callable[..., None] = assert_structure_tripwire,
+    candidate_smoke_fn: Callable[..., None] = assert_candidate_smoke,
+    candidate_smoke_root: Path | None = None,
+    checkified_execution_fn: Callable[..., Any] = assert_checkified_execution,
     frozen_context: BathosFrozenContext,
     current_config: Mapping[str, Any],
     candidate_touched_paths: frozenset[Path] = frozenset(),
@@ -432,12 +472,46 @@ def run_one_candidate_pass(
             `call_stats_battery_gate` (which lazily imports bathos, no MCP call).
         seed_trial_counts_fn: injection seam for tests -- defaults to LC-07's real
             `get_seed_trial_counts` (which lazily imports bathos, no MCP call).
+        evidence_candidate_fn: injection seam for tests -- defaults to GW-01's real
+            `get_evidence_candidate_for_run` (which lazily imports bathos, no MCP call). Called
+            after the bathos run to verify evidence attestation. Raises ValueError if run_id is
+            empty (fallback strategy in bathos_campaign_adapter didn't find the run).
+        stdout_verified: Optional caller-supplied stdout verification result (True iff
+            `Run.stdout_sha256` was recorded AND re-hash matched; False if recorded but
+            mismatched; None if never recorded). Passed through to evidence_candidate_fn and
+            then threaded into EvidenceCandidate for consumption by admit_evidence.
+        sidecar_drift_signal_fn: injection seam for tests -- defaults to GW-01's real
+            `get_sidecar_drift_signal` (which lazily imports bathos, no MCP call). Called
+            immediately after the bathos run, BEFORE ratchet/commit (audit-required ordering).
+            Skipped entirely when agent_mode is not 'collaborative'/'autonomous' (agent_mode=''
+            is an explicit opt-out for existing callers). On drift + autonomous mode, raises
+            SidecarHashMismatchError (HALT before any commit lands). On drift + collaborative
+            mode, returns a decision with should_warn=True for non-blocking warning.
         candidate_static_fn: injection seam for tests -- defaults to T2-11's real
             `assert_candidate_static` (clean import + zero jaxlint JL-series errors). Called
             immediately after dispatch, before lineage resolution or the real bathos run -- see
             the module docstring's GW-04 addendum.
         candidate_static_root: forwarded to `candidate_static_fn` as its `root` kwarg (jaxlint's
             subprocess root; default `None` lets jaxlint fall back to `Path.cwd()`).
+        abstract_inputs: required list of abstract input shapes (JAX ShapeDtypeStruct instances)
+            for structure-tripwire and checkified-execution gates -- supplied by the caller,
+            caller-sourced, not computed here.
+        structure_tripwire_fn: injection seam for tests -- defaults to T2-13's real
+            `assert_structure_tripwire` (abstract vs concrete pytree/shape/dtype comparison).
+            Called immediately after candidate_static_fn, in the same pre-bathos window, to reject
+            candidates with data-dependent control flow before any real execution. Raises
+            `StructureMismatchError` or `CandidateResolutionError` unchanged.
+        candidate_smoke_fn: injection seam for tests -- defaults to T2-14's real
+            `assert_candidate_smoke` (L1 dry-run + L2 CPU smoke test). Called after
+            structure_tripwire_fn, before checkified_execution_fn, in the same pre-bathos window.
+            Raises `CandidateSmokeTimeoutError` or `CandidateSmokeFailedError` unchanged.
+        candidate_smoke_root: forwarded to `candidate_smoke_fn` as its `root` kwarg (working
+            directory for `uv run --locked`; default `None` falls back to the repo root).
+        checkified_execution_fn: injection seam for tests -- defaults to T2-15's real
+            `assert_checkified_execution` (SafetyManager NaN/Inf/overflow checks). Called after
+            candidate_smoke_fn, in the same pre-bathos window, to reject candidates with numeric
+            violations before bathos submission. Raises `CheckifiedExecutionError` or
+            `CandidateResolutionError` unchanged.
         frozen_context: the fixed `BathosFrozenContext` (SPLIT_COMPUTE, #4133/#3657) this
             candidate's raw artifacts are scored against -- `frozen_context.locked` is the
             closure-lock's `ClosureManifest`, forwarded to `guarded_evaluate_fn` unchanged.
@@ -548,6 +622,15 @@ def run_one_candidate_pass(
         CandidateStaticGateError: the candidate fails clean-import or has a JL-series jaxlint
             error -- raised right after dispatch, before lineage resolution or any bathos call
             (T2-11, AC-1).
+        StructureMismatchError, CandidateResolutionError: the structure-tripwire gate (T2-13, AC-3)
+            detected an abstract vs concrete pytree/shape/dtype mismatch, or candidate resolution
+            failed -- raised before the real bathos run.
+        CandidateSmokeTimeoutError, CandidateSmokeFailedError: the candidate-smoke gate (T2-14,
+            AC-4) L1/L2 budget was exhausted or a phase exited nonzero -- raised before the real
+            bathos run.
+        CheckifiedExecutionError, CandidateResolutionError: the checkified-execution gate (T2-15,
+            AC-5) detected a NaN/Inf/overflow violation, or candidate resolution failed -- raised
+            before the real bathos run.
         MultiParentLineageUnsupportedError: `parentage` names more than one distinct, real
             parent run ID -- raised before any bathos call.
         BathosMcpToolError: `campaign_adapter.run` itself failed (bathos-side validation or the
@@ -587,6 +670,25 @@ def run_one_candidate_pass(
     # bathos run is attempted. See the module docstring's GW-04 addendum.
     candidate_static_fn(handoff.path, root=candidate_static_root)
 
+    # 1.6. Structure-tripwire gate (T2-13, AC-3; [GW-04]) -- verify abstract vs concrete pytree
+    # structure before any real bathos run. Same pre-bathos window as candidate_static (T2-11).
+    structure_tripwire_fn(
+        handoff.path,
+        callable_name,
+        abstract_inputs=abstract_inputs,
+        concrete_inputs=concrete_inputs,
+    )
+
+    # 1.7. Candidate-smoke gate (T2-14, AC-4; [GW-04]) -- L1 dry-run + L2 CPU smoke test before
+    # any GPU/cluster submission. Same pre-bathos window as candidate_static/structure_tripwire.
+    candidate_smoke_fn(
+        handoff.path, callable_name, concrete_inputs=concrete_inputs, root=candidate_smoke_root
+    )
+
+    # 1.8. Checkified-execution gate (T2-15, AC-5; [GW-04]) -- SafetyManager NaN/Inf/overflow
+    # checks before bathos submission. Same pre-bathos window as prior gates.
+    checkified_execution_fn(handoff.path, callable_name, concrete_inputs=concrete_inputs)
+
     # Resolved directly here (not only inside record_candidate_run) so a genuine multi-parent
     # parentage fails loud before the bathos-run step is even attempted, and so the resolved
     # value is available on the composed result without record_candidate_run needing to expose
@@ -608,6 +710,32 @@ def run_one_candidate_pass(
         agent_mode=agent_mode,
         no_sidecar=no_sidecar,
     )
+
+    # 2.4. Sidecar-drift check (GW-01, AC-18) -- MUST fire BEFORE any best-so-far commit
+    # lands, to prevent a drift-tainted candidate from becoming the new best-so-far. Skip
+    # entirely when agent_mode is not 'collaborative'/'autonomous' (explicit opt-out for
+    # existing callers). On drift + autonomous: raise SidecarHashMismatchError (HALT). On
+    # drift + collaborative: return decision with should_warn=True (non-blocking warning).
+    sidecar_drift_decision: SidecarDriftDecision | None = None
+    if agent_mode in ("collaborative", "autonomous") and run_result.run_id:
+        # Query the Run object to extract sidecar_sha256 for the check
+        from pathlib import Path as PathlibPath
+
+        import bathos.query
+
+        cat_dir = PathlibPath.home() / ".bth"
+        run_obj = bathos.query.get_run(run_result.run_id, cat_dir)
+        if run_obj:
+            sidecar_signal = sidecar_drift_signal_fn(
+                script_path=str(handoff.path),
+                catalog_dir="",
+                current_sidecar_sha256=run_obj.sidecar_sha256,
+                script_id=handoff.path.stem,
+            )
+            sidecar_drift_decision = assert_sidecar_drift_reaction(
+                sidecar_signal,
+                agent_mode=agent_mode,  # type: ignore
+            )
 
     # 2.5. Score raw artifacts through the AC-7 closure-lock gate (S2.1, GW-02). output_paths is
     # this function's OWN existing parameter -- CandidateRunResult carries no output_paths field
@@ -699,6 +827,17 @@ def run_one_candidate_pass(
             # path -- see its own docstring for why (nothing upstream of this branch reads
             # commit_tree_sha, so a rejected/gate-blocked/exception-aborted candidate never
             # reaches this call).
+            # AC-h (#4215, adversarial review finding C3, warning, pre-existing/orthogonal --
+            # not blocking): this is the second of two independent read_best_so_far calls in
+            # this accept branch (the first, above, feeds parent_sha). A theoretical TOCTOU
+            # window exists where a concurrent writer could advance ratchet_ref_name between the
+            # two reads, making commit_parent_sha and bootstrap_base_tree_sha resolve to
+            # different commits even when a caller (e.g. #4215's bootstrap_commit_sha fan-out)
+            # supplies them identically. This race pre-dates #4215 and is not introduced or
+            # worsened by it -- documented here as a known, low-likelihood limitation
+            # (single-process sequential campaign loop, no evidence of concurrent multi-process
+            # writers to the same ref anywhere in this codebase), not a bug or new test
+            # requirement.
             base_sha = read_best_so_far(repo, ratchet_ref_name)
             if base_sha is None:
                 base_sha = bootstrap_base_tree_sha
@@ -727,6 +866,25 @@ def run_one_candidate_pass(
     seed_counts = seed_trial_counts_fn(seed_trial_db, handoff.content_sha256, hypothesis_clause_id)
     seed_decision = assess_seed_trial_floor(seed_counts, campaign_mode=campaign_mode)
 
+    # 3.5. Evidence attestation check (GW-01, AC-19, advisory-only) -- verify run provenance.
+    # May raise ValueError if run_id lookup failed (indicating a broken fallback strategy).
+    evidence_admission: EvidenceAdmissionResult | None = None
+    if run_result.run_id:
+        try:
+            evidence_candidate = evidence_candidate_fn(
+                run_id=run_result.run_id,
+                catalog_dir="",
+                stdout_verified=stdout_verified,
+            )
+            # Admit evidence (advisory only, not hard-blocking) -- returns partitioned
+            # (admitted, excluded) sets of candidates.
+            from xtrax.loop.attestation_evidence_gate import admit_evidence
+
+            evidence_admission = admit_evidence([evidence_candidate])
+        except ValueError:
+            # run_id lookup failed; proceed without evidence result
+            pass
+
     # 4. Compile-time two-phase clock (S2.2, AC-27) -- strictly AFTER the accept/reject decision
     # above, never an input to it. compile_time_seconds is intentionally never merged into
     # fitness_dict / never passed to compute_ratchet_decision -- only runtime_seconds is
@@ -746,7 +904,12 @@ def run_one_candidate_pass(
         handoff=handoff,
         derived_from=derived_from,
         run_result=run_result,
-        gate_outcome=GateOutcome(stats_battery=stats_decision, seed_trial=seed_decision),
+        gate_outcome=GateOutcome(
+            stats_battery=stats_decision,
+            seed_trial=seed_decision,
+            evidence_admission=evidence_admission,
+            sidecar_drift=sidecar_drift_decision,
+        ),
         ratchet_decision=ratchet_decision,
         fitness_dict=fitness_dict,
     )

@@ -1,0 +1,21 @@
+name: Promotion Gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  promotion-gate:
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.labels.*.name, 'loop:promotion-candidate')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v3
+      - name: Run promotion gate check
+        run: |
+          uv run python scripts/audit_promotion_gate.py \
+            --commit-sha ${{ github.event.pull_request.head.sha }}

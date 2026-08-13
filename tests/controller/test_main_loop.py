@@ -69,11 +69,16 @@ from controller.main_loop import (
     compute_candidate_tree_sha,
     run_one_candidate_pass,
 )
+from xtrax.inference.errors import StructureMismatchError
+from xtrax.loop.attestation_evidence_gate import EvidenceAdmissionResult, EvidenceCandidate
+from xtrax.loop.candidate_smoke import CandidateSmokeTimeoutError
 from xtrax.loop.candidate_static import CandidateStaticGateError
+from xtrax.loop.checkified_execution import CheckifiedExecutionError
 from xtrax.loop.closure_lock import ClosureHashMismatchError, ClosureManifest, UnlistedReadError
 from xtrax.loop.compile_time_clock import TwoPhaseTiming
 from xtrax.loop.multi_metric_ratchet import RatchetDecision
 from xtrax.loop.seed_gate import SeedTrialCounts, SeedTrialFloorDecision
+from xtrax.loop.sidecar_drift_gate import SidecarDriftDecision, SidecarDriftSignal
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict, ConcludeStatsDecision
 
 _CANDIDATE_CONTENT = "candidate-source"
@@ -103,6 +108,7 @@ _PASSING_FITNESS = {"accuracy": 0.9, "loss": 0.1}
 _BEST_FITNESS = {"accuracy": 0.9, "loss": 0.1}
 _HIGHER_IS_BETTER = {"accuracy": True, "loss": False}
 _WORSE_FITNESS = {"accuracy": 0.1, "loss": 0.9}
+_PASSING_ABSTRACT_INPUTS: list[Any] = []
 
 
 def _passing_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
@@ -114,10 +120,12 @@ def _passing_timing_fn(*args: Any, **kwargs: Any) -> TwoPhaseTiming:
 
 
 def _new_step_kwargs(**overrides: Any) -> dict[str, Any]:
-    """Default GW-02 kwargs shared by every pre-GW-02 test in this module.
+    """Default GW-02/GW-04 kwargs shared by every pre-GW-02 test in this module.
 
     Tests specifically exercising ratchet/crash-atomicity/compile-time behavior override the
     relevant keys (e.g. `guarded_evaluate_fn`, `best_fitness`/`higher_is_better`).
+    GW-04 tests override gate-fn injection seams (structure_tripwire_fn, candidate_smoke_fn,
+    checkified_execution_fn) as needed.
     """
     defaults: dict[str, Any] = {
         "frozen_context": _FROZEN_CONTEXT,
@@ -130,6 +138,11 @@ def _new_step_kwargs(**overrides: Any) -> dict[str, Any]:
         "callable_name": "unused_callable",
         "concrete_inputs": [],
         "measure_two_phase_timing_fn": _passing_timing_fn,
+        "abstract_inputs": _PASSING_ABSTRACT_INPUTS,
+        "structure_tripwire_fn": _passing_structure_tripwire_fn,
+        "candidate_smoke_fn": _passing_candidate_smoke_fn,
+        "candidate_smoke_root": None,
+        "checkified_execution_fn": _passing_checkified_execution_fn,
     }
     defaults.update(overrides)
     return defaults
@@ -164,6 +177,53 @@ def _passing_candidate_static_fn(path: Path, root: Path | None = None) -> None:
     doesn't exist on disk (e.g. `Path("candidate.py")`), so the REAL gate (which imports the
     file) would reject every one of them. Tests that exercise the static gate itself pass their
     own `candidate_static_fn` instead of this stub."""
+    return None
+
+
+def _passing_structure_tripwire_fn(
+    path: Path, callable_name: str, *, abstract_inputs: list[Any], concrete_inputs: list[Any]
+) -> None:
+    """Stub standing in for T2-13's real `assert_structure_tripwire` (GW-04).
+
+    MockDispatchBackend candidates don't exist on disk, so the real gate (which imports and
+    traces the candidate) would reject every one. Tests exercising structure_tripwire itself pass
+    their own `structure_tripwire_fn`.
+    """
+    return None
+
+
+def _passing_candidate_smoke_fn(
+    path: Path,
+    callable_name: str,
+    *,
+    concrete_inputs: list[Any],
+    wall_clock_budget_seconds: float = 60.0,
+    poll_interval_seconds: float = 0.5,
+    root: Path | None = None,
+) -> None:
+    """Stub standing in for T2-14's real `assert_candidate_smoke` (GW-04).
+
+    MockDispatchBackend candidates don't exist on disk, so the real gate (which spawns a
+    subprocess to resolve and run the candidate) would reject every one. Tests exercising
+    candidate_smoke itself pass their own `candidate_smoke_fn`.
+    """
+    return None
+
+
+def _passing_checkified_execution_fn(
+    path: Path,
+    callable_name: str,
+    *,
+    concrete_inputs: list[Any],
+    check_nans: bool = True,
+    check_infs: bool = True,
+) -> Any:
+    """Stub standing in for T2-15's real `assert_checkified_execution` (GW-04).
+
+    MockDispatchBackend candidates don't exist on disk, so the real gate (which imports and
+    calls the candidate under SafetyManager) would reject every one. Tests exercising
+    checkified_execution itself pass their own `checkified_execution_fn`.
+    """
     return None
 
 
@@ -967,6 +1027,324 @@ class TestCandidateStaticGate:
         )
 
         assert len(transport.calls) == 1
+        assert result.accepted is True
+
+
+# ---------------------------------------------------------------------------
+# GW-04 (backlog #3651): structure-tripwire, candidate-smoke, checkified-
+# execution gates wired pre-bathos (T2-13, T2-14, T2-15, AC-3/AC-4/AC-5).
+# ---------------------------------------------------------------------------
+
+
+class TestStructureTripwireGate:
+    def test_failing_structure_tripwire_raises_before_bathos_call(self) -> None:
+        """Structure-tripwire gate (T2-13, AC-3) must raise and reject before any bathos call."""
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+
+        def failing_structure_tripwire_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            abstract_inputs: list[Any],
+            concrete_inputs: list[Any],
+        ) -> None:
+            msg = f"candidate {path} failed structure checks: abstract vs concrete mismatch"
+            raise StructureMismatchError(msg)
+
+        with pytest.raises(StructureMismatchError):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(
+                    candidate_static_fn=_passing_candidate_static_fn,
+                    structure_tripwire_fn=failing_structure_tripwire_fn,
+                ),
+            )
+
+        assert transport.calls == [], (
+            "no bathos call should ever happen when the structure-tripwire gate rejects -- the "
+            "exception must fire before adapter.run is reached"
+        )
+
+    def test_structure_tripwire_gate_ordering_dispatch_static_tripwire_then_bathos(self) -> None:
+        """Structure-tripwire must fire after candidate-static but before bathos run.
+
+        This verifies the call order: dispatch → candidate_static → structure_tripwire → bathos_run
+        """
+        order: list[str] = []
+
+        class _OrderTrackingDispatch:
+            def __init__(self) -> None:
+                self._inner = _mock_dispatch_backend()
+
+            def dispatch_candidate(self) -> CandidateHandoff:
+                order.append("dispatch")
+                return self._inner.dispatch_candidate()
+
+        transport = _RecordingTransport(_run_envelope(), order=order)
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        def tracking_candidate_static_fn(path: Path, root: Path | None = None) -> None:
+            order.append("candidate_static")
+
+        def tracking_structure_tripwire_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            abstract_inputs: list[Any],
+            concrete_inputs: list[Any],
+        ) -> None:
+            order.append("structure_tripwire")
+
+        result = run_one_candidate_pass(
+            _OrderTrackingDispatch(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                candidate_static_fn=tracking_candidate_static_fn,
+                structure_tripwire_fn=tracking_structure_tripwire_fn,
+            ),
+        )
+
+        expected_order = [
+            "dispatch",
+            "candidate_static",
+            "structure_tripwire",
+            "bathos:run",
+        ]
+        assert order == expected_order, (
+            "gates must fire in order: dispatch -> candidate_static -> structure_tripwire "
+            f"-> bathos:run, got {order}"
+        )
+        assert result.accepted is True
+
+
+class TestCandidateSmokeGate:
+    def test_failing_candidate_smoke_raises_before_bathos_call(self) -> None:
+        """Candidate-smoke gate (T2-14, AC-4) must raise and reject before any bathos call."""
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+
+        def failing_candidate_smoke_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            wall_clock_budget_seconds: float = 60.0,
+            poll_interval_seconds: float = 0.5,
+            root: Path | None = None,
+        ) -> None:
+            msg = f"candidate {path} failed smoke test: L1 or L2 phase exceeded budget"
+            raise CandidateSmokeTimeoutError(msg)
+
+        with pytest.raises(CandidateSmokeTimeoutError):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(
+                    candidate_static_fn=_passing_candidate_static_fn,
+                    candidate_smoke_fn=failing_candidate_smoke_fn,
+                ),
+            )
+
+        assert transport.calls == [], (
+            "no bathos call should ever happen when the candidate-smoke gate rejects -- the "
+            "exception must fire before adapter.run is reached"
+        )
+
+    def test_candidate_smoke_gate_ordering_after_structure_tripwire_before_checkified(
+        self,
+    ) -> None:
+        """Candidate-smoke must fire after structure-tripwire but before checkified-execution."""
+        order: list[str] = []
+
+        transport = _RecordingTransport(_run_envelope(), order=order)
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        def tracking_structure_tripwire_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            abstract_inputs: list[Any],
+            concrete_inputs: list[Any],
+        ) -> None:
+            order.append("structure_tripwire")
+
+        def tracking_candidate_smoke_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            wall_clock_budget_seconds: float = 60.0,
+            poll_interval_seconds: float = 0.5,
+            root: Path | None = None,
+        ) -> None:
+            order.append("candidate_smoke")
+
+        def tracking_checkified_execution_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            check_nans: bool = True,
+            check_infs: bool = True,
+        ) -> Any:
+            order.append("checkified_execution")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                candidate_static_fn=_passing_candidate_static_fn,
+                structure_tripwire_fn=tracking_structure_tripwire_fn,
+                candidate_smoke_fn=tracking_candidate_smoke_fn,
+                checkified_execution_fn=tracking_checkified_execution_fn,
+            ),
+        )
+
+        # Extract just the gate-related calls from the order
+        gate_calls = [
+            c
+            for c in order
+            if c in ("structure_tripwire", "candidate_smoke", "checkified_execution", "bathos:run")
+        ]
+        expected_order = [
+            "structure_tripwire",
+            "candidate_smoke",
+            "checkified_execution",
+            "bathos:run",
+        ]
+        assert gate_calls == expected_order, (
+            "gates must fire in order: structure_tripwire -> candidate_smoke -> "
+            f"checkified_execution -> bathos:run, got {gate_calls}"
+        )
+        assert result.accepted is True
+
+
+class TestCheckifiedExecutionGate:
+    def test_failing_checkified_execution_raises_before_bathos_call(self) -> None:
+        """Checkified-execution gate (T2-15, AC-5) must raise and reject before bathos call."""
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+
+        def failing_checkified_execution_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            check_nans: bool = True,
+            check_infs: bool = True,
+        ) -> Any:
+            msg = f"candidate {path} failed checkified-execution: NaN or Inf detected"
+            raise CheckifiedExecutionError(msg)
+
+        with pytest.raises(CheckifiedExecutionError):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(
+                    candidate_static_fn=_passing_candidate_static_fn,
+                    checkified_execution_fn=failing_checkified_execution_fn,
+                ),
+            )
+
+        assert transport.calls == [], (
+            "no bathos call should ever happen when the checkified-execution gate rejects -- "
+            "the exception must fire before adapter.run is reached"
+        )
+
+    def test_checkified_execution_gate_fires_last_before_bathos(self) -> None:
+        """Checkified-execution must fire as the last pre-bathos gate."""
+        order: list[str] = []
+
+        transport = _RecordingTransport(_run_envelope(), order=order)
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        def tracking_candidate_smoke_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            wall_clock_budget_seconds: float = 60.0,
+            poll_interval_seconds: float = 0.5,
+            root: Path | None = None,
+        ) -> None:
+            order.append("candidate_smoke")
+
+        def tracking_checkified_execution_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            check_nans: bool = True,
+            check_infs: bool = True,
+        ) -> Any:
+            order.append("checkified_execution")
+            return None
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                candidate_static_fn=_passing_candidate_static_fn,
+                candidate_smoke_fn=tracking_candidate_smoke_fn,
+                checkified_execution_fn=tracking_checkified_execution_fn,
+            ),
+        )
+
+        # Find the indices of the last gate and bathos:run
+        gate_calls = [
+            c for c in order if c in ("candidate_smoke", "checkified_execution", "bathos:run")
+        ]
+        assert len(gate_calls) >= 2
+        checkified_idx = None
+        bathos_idx = None
+        for i, call in enumerate(gate_calls):
+            if call == "checkified_execution":
+                checkified_idx = i
+            elif call == "bathos:run":
+                bathos_idx = i
+
+        assert checkified_idx is not None and bathos_idx is not None
+        assert checkified_idx < bathos_idx, (
+            f"checkified_execution must fire before bathos:run, got order {gate_calls}"
+        )
         assert result.accepted is True
 
 
@@ -1823,3 +2201,299 @@ class TestCommitTreeShaFnLazyInvocation:
             )
 
         assert spy_calls == []
+
+
+class TestGW01EvidenceAndSidecarDrift:
+    """Tests for GW-01 (evidence_admission and sidecar_drift gate integration).
+
+    AC-19 (evidence attestation) and AC-18 (sidecar drift) both land on GateOutcome after a
+    successful candidate pass. These tests verify:
+    1. evidence_admission lands on gate_outcome when evidence_candidate_fn returns a result
+    2. sidecar_drift lands on gate_outcome when sidecar_drift_signal_fn is called
+    3. sidecar-drift check fires BEFORE best-so-far commit (ordering requirement)
+    4. agent_mode='' opts out of sidecar-drift check entirely
+    """
+
+    def test_evidence_admission_lands_on_gate_outcome(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC-19: evidence_admission lands on GateOutcome after successful candidate pass."""
+
+        def mock_evidence_fn(
+            run_id: str, catalog_dir: str = "", stdout_verified: bool | None = None
+        ) -> EvidenceCandidate:
+            return EvidenceCandidate(
+                run_id=run_id, manifest_verified=True, stdout_verified=stdout_verified
+            )
+
+        # Mock bathos.query.get_run to return a run object with a non-empty sidecar_sha256
+        from unittest.mock import MagicMock
+
+        mock_run = MagicMock()
+        mock_run.sidecar_sha256 = "test-sidecar-sha256"
+
+        # Create an adapter that returns a non-empty run_id (via mocking the query)
+        def mock_query_run_id(self: Any, script_path: str, catalog_dir: str) -> str:
+            return "run-test-123"
+
+        monkeypatch.setattr(
+            "controller.bathos_campaign_adapter.BathosCampaignAdapter._query_run_id_by_script_sha256",
+            mock_query_run_id,
+        )
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            evidence_candidate_fn=mock_evidence_fn,
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+        )
+
+        # Verify evidence_admission is populated (not None) when run_id is non-empty
+        assert result.run_result.run_id != ""
+        assert result.gate_outcome.evidence_admission is not None
+        assert isinstance(result.gate_outcome.evidence_admission, EvidenceAdmissionResult)
+
+    def test_sidecar_drift_lands_on_gate_outcome_collaborative_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC-18: sidecar_drift lands on GateOutcome when agent_mode='collaborative'."""
+        from unittest.mock import MagicMock
+
+        sidecar_signal = SidecarDriftSignal(
+            drifted=True,
+            script_id="test_script",
+            first_run_sha256="old-hash",
+            current_sha256="new-hash",
+        )
+
+        def mock_sidecar_drift_fn(
+            script_path: str,
+            catalog_dir: str = "",
+            current_sidecar_sha256: str = "",
+            script_id: str = "",
+        ) -> SidecarDriftSignal:
+            return sidecar_signal
+
+        # Mock bathos.query.get_run to return a run object with non-empty sidecar_sha256
+        mock_run = MagicMock()
+        mock_run.sidecar_sha256 = "test-sidecar-sha256"
+
+        def mock_bathos_get_run(run_id: str, catalog_dir: Any) -> Any:
+            return mock_run
+
+        # Mock the _query_run_id_by_script_sha256 to return a non-empty run_id
+        def mock_query_run_id(self: Any, script_path: str, catalog_dir: str) -> str:
+            return "run-test-456"
+
+        # Patch both _query_run_id_by_script_sha256 and bathos.query.get_run
+        monkeypatch.setattr(
+            "controller.bathos_campaign_adapter.BathosCampaignAdapter._query_run_id_by_script_sha256",
+            mock_query_run_id,
+        )
+        monkeypatch.setattr("bathos.query.get_run", mock_bathos_get_run)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            agent_mode="collaborative",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            sidecar_drift_signal_fn=mock_sidecar_drift_fn,
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+        )
+
+        # Verify sidecar_drift is populated (not None) in collaborative mode
+        assert result.run_result.run_id != ""
+        assert result.gate_outcome.sidecar_drift is not None
+        assert isinstance(result.gate_outcome.sidecar_drift, SidecarDriftDecision)
+
+    def test_sidecar_drift_skipped_when_agent_mode_empty_string(self) -> None:
+        """AC-18: sidecar-drift check is skipped entirely when agent_mode='' (explicit opt-out)."""
+        sidecar_calls: list[Any] = []
+
+        def mock_sidecar_drift_fn(
+            script_path: str,
+            catalog_dir: str = "",
+            current_sidecar_sha256: str = "",
+            script_id: str = "",
+        ) -> SidecarDriftSignal:
+            sidecar_calls.append((script_path, current_sidecar_sha256))
+            return SidecarDriftSignal(
+                drifted=False,
+                script_id="test",
+                first_run_sha256="",
+                current_sha256="",
+            )
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            agent_mode="",  # Explicit opt-out
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            sidecar_drift_signal_fn=mock_sidecar_drift_fn,
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+        )
+
+        # Verify sidecar_drift_signal_fn was never called (sidecar_drift is None)
+        assert result.gate_outcome.sidecar_drift is None
+        assert len(sidecar_calls) == 0
+
+    def test_sidecar_drift_fires_before_commit_ordering(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC-18: sidecar-drift check MUST fire BEFORE any best-so-far commit lands.
+
+        This is a critical ordering requirement per the AC-18 spec: a drift-tainted candidate
+        must not become the new best-so-far (autonomous mode) or trigger a warning before
+        the commit (collaborative mode).
+        """
+        from unittest.mock import MagicMock
+
+        call_order: list[str] = []
+
+        sidecar_signal = SidecarDriftSignal(
+            drifted=True,
+            script_id="test_script",
+            first_run_sha256="old-hash",
+            current_sha256="new-hash",
+        )
+
+        def mock_sidecar_drift_fn(
+            script_path: str,
+            catalog_dir: str = "",
+            current_sidecar_sha256: str = "",
+            script_id: str = "",
+        ) -> SidecarDriftSignal:
+            call_order.append("sidecar_drift_signal_fn")
+            return sidecar_signal
+
+        # Mock bathos.query.get_run
+        mock_run = MagicMock()
+        mock_run.sidecar_sha256 = "test-sidecar-sha256"
+
+        def mock_bathos_get_run(run_id: str, catalog_dir: Any) -> Any:
+            return mock_run
+
+        # Mock the _query_run_id_by_script_sha256 to return a non-empty run_id
+        def mock_query_run_id(self: Any, script_path: str, catalog_dir: str) -> str:
+            return "run-test-ordering-789"
+
+        monkeypatch.setattr(
+            "controller.bathos_campaign_adapter.BathosCampaignAdapter._query_run_id_by_script_sha256",
+            mock_query_run_id,
+        )
+        monkeypatch.setattr("bathos.query.get_run", mock_bathos_get_run)
+
+        # Spy on advance_best_so_far to record when it's called
+        original_advance = main_loop_module.advance_best_so_far
+
+        def spy_advance_best_so_far(
+            repo: Path, ref_name: str, new_sha: str, expected_old_sha: str | None
+        ) -> None:
+            call_order.append("advance_best_so_far")
+            return original_advance(repo, ref_name, new_sha, expected_old_sha)
+
+        # Spy on create_pending_commit to record when it's called
+        original_create = main_loop_module.create_pending_commit
+
+        def spy_create_pending_commit(
+            repo: Path, tree_sha: str, parent_sha: str, message: str
+        ) -> str:
+            call_order.append("create_pending_commit")
+            return original_create(repo, tree_sha, parent_sha, message)
+
+        monkeypatch.setattr(main_loop_module, "advance_best_so_far", spy_advance_best_so_far)
+        monkeypatch.setattr(main_loop_module, "create_pending_commit", spy_create_pending_commit)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            agent_mode="collaborative",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            sidecar_drift_signal_fn=mock_sidecar_drift_fn,
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                best_fitness=None,
+                higher_is_better=None,
+                allow_fresh_start_despite_existing_lineage=True,
+                commit_tree_sha="test-tree-sha",  # Use direct tree_sha to skip computation
+            ),
+        )
+
+        # Verify sidecar_drift_signal_fn was called before any commit operations
+        assert "sidecar_drift_signal_fn" in call_order
+        # The sidecar check must happen before any commit (create_pending_commit or advance)
+        if "create_pending_commit" in call_order or "advance_best_so_far" in call_order:
+            sidecar_idx = call_order.index("sidecar_drift_signal_fn")
+            for commit_op in ["create_pending_commit", "advance_best_so_far"]:
+                if commit_op in call_order:
+                    commit_idx = call_order.index(commit_op)
+                    assert sidecar_idx < commit_idx, (
+                        f"sidecar_drift_signal_fn (idx={sidecar_idx}) must fire BEFORE "
+                        f"{commit_op} (idx={commit_idx})"
+                    )
+
+    def test_evidence_admission_none_when_no_run_id(self) -> None:
+        """When bathos run fails and run_id is empty, evidence_admission should be None."""
+        # No monkeypatch of _query_run_id_by_script_sha256 here (unlike the other tests in
+        # this class): the real lookup short-circuits to "" because the candidate script
+        # path doesn't exist on disk, so run_id ends up empty and evidence_admission must
+        # be None -- this is the actual no-run-id code path, not a mocked substitute.
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+        )
+
+        assert result.run_result.run_id == ""
+        assert result.gate_outcome.evidence_admission is None

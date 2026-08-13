@@ -170,7 +170,9 @@ from controller.dispatch import DispatchBackend
 from controller.evaluate_adapter import BathosFrozenContext
 from controller.lineage_interim import CandidateParentage
 from controller.main_loop import CampaignMode, OneCandidatePassResult, run_one_candidate_pass
+from xtrax.loop.candidate_smoke import assert_candidate_smoke
 from xtrax.loop.candidate_static import assert_candidate_static
+from xtrax.loop.checkified_execution import assert_checkified_execution
 from xtrax.loop.diversity_quota import (
     DiversityQuotaDecision,
     assert_diversity_quota,
@@ -184,6 +186,7 @@ from xtrax.loop.external_stop_watchdog import (
 )
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
+from xtrax.loop.structure_tripwire import assert_structure_tripwire
 
 _logger = logging.getLogger(__name__)
 
@@ -288,6 +291,11 @@ def run_multi_iteration_loop(
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
+    abstract_inputs: list[Any],
+    structure_tripwire_fn: Callable[..., None] = assert_structure_tripwire,
+    candidate_smoke_fn: Callable[..., None] = assert_candidate_smoke,
+    candidate_smoke_root: Path | None = None,
+    checkified_execution_fn: Callable[..., Any] = assert_checkified_execution,
     wall_clock_budget_seconds: float | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     diversity_window_size: int = 5,
@@ -303,6 +311,7 @@ def run_multi_iteration_loop(
     commit_tree_sha: str | None = None,
     candidate_target_path: Path | None = None,
     allow_fresh_start_despite_existing_lineage: bool = False,
+    bootstrap_commit_sha: str | None = None,
 ) -> MultiIterationLoopResult:
     """Run the actual multi-iteration "keep going" loop across candidates (AC-8b).
 
@@ -384,6 +393,12 @@ def run_multi_iteration_loop(
         allow_fresh_start_despite_existing_lineage: forwarded to `run_one_candidate_pass`
             unchanged on every iteration. `False` (default) -- see that function's own
             lineage-conflict guard.
+        bootstrap_commit_sha: forwarded to BOTH `run_one_candidate_pass`'s `commit_parent_sha`
+            and `bootstrap_base_tree_sha` unconditionally on every call; inert except on a
+            genuinely fresh campaign's first accepted candidate (`read_best_so_far` returns
+            `None`); callers needing the two inner values to diverge must call
+            `run_one_candidate_pass` directly; not validated before use (garbage-in surfaces as
+            a real git-subprocess error, not a friendlier `ValueError`).
 
     Returns:
         A `MultiIterationLoopResult` bundling every completed iteration, the termination
@@ -439,6 +454,11 @@ def run_multi_iteration_loop(
                 seed_trial_counts_fn=seed_trial_counts_fn,
                 candidate_static_fn=candidate_static_fn,
                 candidate_static_root=candidate_static_root,
+                abstract_inputs=abstract_inputs,
+                structure_tripwire_fn=structure_tripwire_fn,
+                candidate_smoke_fn=candidate_smoke_fn,
+                candidate_smoke_root=candidate_smoke_root,
+                checkified_execution_fn=checkified_execution_fn,
                 frozen_context=frozen_context,
                 current_config=current_config,
                 best_fitness=best_fitness,
@@ -452,6 +472,8 @@ def run_multi_iteration_loop(
                 ),
                 callable_name=callable_name,
                 concrete_inputs=concrete_inputs,
+                commit_parent_sha=bootstrap_commit_sha,
+                bootstrap_base_tree_sha=bootstrap_commit_sha,
             )
             iterations.append(result)
             if result.accepted:
