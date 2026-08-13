@@ -69,8 +69,11 @@ from controller.main_loop import (
     compute_candidate_tree_sha,
     run_one_candidate_pass,
 )
+from xtrax.inference.errors import StructureMismatchError
 from xtrax.loop.attestation_evidence_gate import EvidenceAdmissionResult, EvidenceCandidate
+from xtrax.loop.candidate_smoke import CandidateSmokeTimeoutError
 from xtrax.loop.candidate_static import CandidateStaticGateError
+from xtrax.loop.checkified_execution import CheckifiedExecutionError
 from xtrax.loop.closure_lock import ClosureHashMismatchError, ClosureManifest, UnlistedReadError
 from xtrax.loop.compile_time_clock import TwoPhaseTiming
 from xtrax.loop.multi_metric_ratchet import RatchetDecision
@@ -1024,6 +1027,324 @@ class TestCandidateStaticGate:
         )
 
         assert len(transport.calls) == 1
+        assert result.accepted is True
+
+
+# ---------------------------------------------------------------------------
+# GW-04 (backlog #3651): structure-tripwire, candidate-smoke, checkified-
+# execution gates wired pre-bathos (T2-13, T2-14, T2-15, AC-3/AC-4/AC-5).
+# ---------------------------------------------------------------------------
+
+
+class TestStructureTripwireGate:
+    def test_failing_structure_tripwire_raises_before_bathos_call(self) -> None:
+        """Structure-tripwire gate (T2-13, AC-3) must raise and reject before any bathos call."""
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+
+        def failing_structure_tripwire_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            abstract_inputs: list[Any],
+            concrete_inputs: list[Any],
+        ) -> None:
+            msg = f"candidate {path} failed structure checks: abstract vs concrete mismatch"
+            raise StructureMismatchError(msg)
+
+        with pytest.raises(StructureMismatchError):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(
+                    candidate_static_fn=_passing_candidate_static_fn,
+                    structure_tripwire_fn=failing_structure_tripwire_fn,
+                ),
+            )
+
+        assert transport.calls == [], (
+            "no bathos call should ever happen when the structure-tripwire gate rejects -- the "
+            "exception must fire before adapter.run is reached"
+        )
+
+    def test_structure_tripwire_gate_ordering_dispatch_static_tripwire_then_bathos(self) -> None:
+        """Structure-tripwire must fire after candidate-static but before bathos run.
+
+        This verifies the call order: dispatch → candidate_static → structure_tripwire → bathos_run
+        """
+        order: list[str] = []
+
+        class _OrderTrackingDispatch:
+            def __init__(self) -> None:
+                self._inner = _mock_dispatch_backend()
+
+            def dispatch_candidate(self) -> CandidateHandoff:
+                order.append("dispatch")
+                return self._inner.dispatch_candidate()
+
+        transport = _RecordingTransport(_run_envelope(), order=order)
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        def tracking_candidate_static_fn(path: Path, root: Path | None = None) -> None:
+            order.append("candidate_static")
+
+        def tracking_structure_tripwire_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            abstract_inputs: list[Any],
+            concrete_inputs: list[Any],
+        ) -> None:
+            order.append("structure_tripwire")
+
+        result = run_one_candidate_pass(
+            _OrderTrackingDispatch(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                candidate_static_fn=tracking_candidate_static_fn,
+                structure_tripwire_fn=tracking_structure_tripwire_fn,
+            ),
+        )
+
+        expected_order = [
+            "dispatch",
+            "candidate_static",
+            "structure_tripwire",
+            "bathos:run",
+        ]
+        assert order == expected_order, (
+            "gates must fire in order: dispatch -> candidate_static -> structure_tripwire "
+            f"-> bathos:run, got {order}"
+        )
+        assert result.accepted is True
+
+
+class TestCandidateSmokeGate:
+    def test_failing_candidate_smoke_raises_before_bathos_call(self) -> None:
+        """Candidate-smoke gate (T2-14, AC-4) must raise and reject before any bathos call."""
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+
+        def failing_candidate_smoke_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            wall_clock_budget_seconds: float = 60.0,
+            poll_interval_seconds: float = 0.5,
+            root: Path | None = None,
+        ) -> None:
+            msg = f"candidate {path} failed smoke test: L1 or L2 phase exceeded budget"
+            raise CandidateSmokeTimeoutError(msg)
+
+        with pytest.raises(CandidateSmokeTimeoutError):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(
+                    candidate_static_fn=_passing_candidate_static_fn,
+                    candidate_smoke_fn=failing_candidate_smoke_fn,
+                ),
+            )
+
+        assert transport.calls == [], (
+            "no bathos call should ever happen when the candidate-smoke gate rejects -- the "
+            "exception must fire before adapter.run is reached"
+        )
+
+    def test_candidate_smoke_gate_ordering_after_structure_tripwire_before_checkified(
+        self,
+    ) -> None:
+        """Candidate-smoke must fire after structure-tripwire but before checkified-execution."""
+        order: list[str] = []
+
+        transport = _RecordingTransport(_run_envelope(), order=order)
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        def tracking_structure_tripwire_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            abstract_inputs: list[Any],
+            concrete_inputs: list[Any],
+        ) -> None:
+            order.append("structure_tripwire")
+
+        def tracking_candidate_smoke_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            wall_clock_budget_seconds: float = 60.0,
+            poll_interval_seconds: float = 0.5,
+            root: Path | None = None,
+        ) -> None:
+            order.append("candidate_smoke")
+
+        def tracking_checkified_execution_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            check_nans: bool = True,
+            check_infs: bool = True,
+        ) -> Any:
+            order.append("checkified_execution")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                candidate_static_fn=_passing_candidate_static_fn,
+                structure_tripwire_fn=tracking_structure_tripwire_fn,
+                candidate_smoke_fn=tracking_candidate_smoke_fn,
+                checkified_execution_fn=tracking_checkified_execution_fn,
+            ),
+        )
+
+        # Extract just the gate-related calls from the order
+        gate_calls = [
+            c
+            for c in order
+            if c in ("structure_tripwire", "candidate_smoke", "checkified_execution", "bathos:run")
+        ]
+        expected_order = [
+            "structure_tripwire",
+            "candidate_smoke",
+            "checkified_execution",
+            "bathos:run",
+        ]
+        assert gate_calls == expected_order, (
+            "gates must fire in order: structure_tripwire -> candidate_smoke -> "
+            f"checkified_execution -> bathos:run, got {gate_calls}"
+        )
+        assert result.accepted is True
+
+
+class TestCheckifiedExecutionGate:
+    def test_failing_checkified_execution_raises_before_bathos_call(self) -> None:
+        """Checkified-execution gate (T2-15, AC-5) must raise and reject before bathos call."""
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+
+        def failing_checkified_execution_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            check_nans: bool = True,
+            check_infs: bool = True,
+        ) -> Any:
+            msg = f"candidate {path} failed checkified-execution: NaN or Inf detected"
+            raise CheckifiedExecutionError(msg)
+
+        with pytest.raises(CheckifiedExecutionError):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-1",
+                campaign_mode="exploration",
+                stats_battery_kwargs={},
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(
+                    candidate_static_fn=_passing_candidate_static_fn,
+                    checkified_execution_fn=failing_checkified_execution_fn,
+                ),
+            )
+
+        assert transport.calls == [], (
+            "no bathos call should ever happen when the checkified-execution gate rejects -- "
+            "the exception must fire before adapter.run is reached"
+        )
+
+    def test_checkified_execution_gate_fires_last_before_bathos(self) -> None:
+        """Checkified-execution must fire as the last pre-bathos gate."""
+        order: list[str] = []
+
+        transport = _RecordingTransport(_run_envelope(), order=order)
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        def tracking_candidate_smoke_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            wall_clock_budget_seconds: float = 60.0,
+            poll_interval_seconds: float = 0.5,
+            root: Path | None = None,
+        ) -> None:
+            order.append("candidate_smoke")
+
+        def tracking_checkified_execution_fn(
+            path: Path,
+            callable_name: str,
+            *,
+            concrete_inputs: list[Any],
+            check_nans: bool = True,
+            check_infs: bool = True,
+        ) -> Any:
+            order.append("checkified_execution")
+            return None
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                candidate_static_fn=_passing_candidate_static_fn,
+                candidate_smoke_fn=tracking_candidate_smoke_fn,
+                checkified_execution_fn=tracking_checkified_execution_fn,
+            ),
+        )
+
+        # Find the indices of the last gate and bathos:run
+        gate_calls = [
+            c for c in order if c in ("candidate_smoke", "checkified_execution", "bathos:run")
+        ]
+        assert len(gate_calls) >= 2
+        checkified_idx = None
+        bathos_idx = None
+        for i, call in enumerate(gate_calls):
+            if call == "checkified_execution":
+                checkified_idx = i
+            elif call == "bathos:run":
+                bathos_idx = i
+
+        assert checkified_idx is not None and bathos_idx is not None
+        assert (
+            checkified_idx < bathos_idx
+        ), f"checkified_execution must fire before bathos:run, got order {gate_calls}"
         assert result.accepted is True
 
 
