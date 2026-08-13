@@ -244,8 +244,6 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-import duckdb
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -473,6 +471,8 @@ def _short_lived_seed_trial_counts(
     `get_seed_trial_counts`, unmodified -- only the connection's lifetime differs from the
     default.
     """
+    import duckdb
+
     db = duckdb.connect(str(_CATALOG_PATH), read_only=True)
     try:
         return get_seed_trial_counts(db, script_sha256, hypothesis_clause_id)
@@ -609,6 +609,8 @@ def _check_campaign_coherence(
     instruction). Opened AFTER all real writes for this script are complete (module docstring
     point 5: never held open across a real bathos MCP write).
     """
+    import duckdb
+
     db = duckdb.connect(str(_CATALOG_PATH), read_only=True)
     try:
         campaign_rows = db.execute(
