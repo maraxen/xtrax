@@ -449,6 +449,7 @@ def run_campaign_loop(
     commit_tree_sha: str | None = None,
     candidate_target_path: Path | None = None,
     allow_fresh_start_despite_existing_lineage: bool = False,
+    bootstrap_commit_sha: str | None = None,
 ) -> CampaignLoopResult:
     """Open one bathos campaign, run the multi-iteration loop, and guarantee it concludes.
 
@@ -538,6 +539,12 @@ def run_campaign_loop(
             (default).
         allow_fresh_start_despite_existing_lineage: forwarded to `run_multi_iteration_loop`
             unchanged. `False` (default).
+        bootstrap_commit_sha: forwarded to `run_multi_iteration_loop` unchanged; that function
+            fans it out to BOTH `run_one_candidate_pass`'s `commit_parent_sha` and
+            `bootstrap_base_tree_sha` unconditionally on every call. Inert except on a genuinely
+            fresh campaign's first accepted candidate (`read_best_so_far` returns `None`);
+            callers needing the two inner values to diverge must call `run_one_candidate_pass`
+            directly. See `run_multi_iteration_loop`'s own docstring for the full rationale.
 
     Returns:
         A `CampaignLoopResult` on successful completion (the only path that returns instead of
@@ -632,6 +639,7 @@ def run_campaign_loop(
             allow_fresh_start_despite_existing_lineage=(allow_fresh_start_despite_existing_lineage),
             callable_name=callable_name,
             concrete_inputs=concrete_inputs,
+            bootstrap_commit_sha=bootstrap_commit_sha,
         )
     except _CAUGHT_PER_CANDIDATE_FAILURE_TYPES as exc:
         _conclude_best_effort(

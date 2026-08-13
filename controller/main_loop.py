@@ -135,7 +135,6 @@ from xtrax.loop.candidate_smoke import assert_candidate_smoke
 from xtrax.loop.candidate_static import assert_candidate_static
 from xtrax.loop.checkified_execution import assert_checkified_execution
 from xtrax.loop.closure_lock import guarded_evaluate
-from xtrax.loop.structure_tripwire import assert_structure_tripwire
 from xtrax.loop.compile_time_clock import (
     TwoPhaseTiming,
     assert_no_compile_time_regression,
@@ -163,6 +162,7 @@ from xtrax.loop.stats_battery_gate import (
     ConcludeStatsDecision,
     assess_stats_battery_verdict,
 )
+from xtrax.loop.structure_tripwire import assert_structure_tripwire
 
 # Redefined locally rather than imported from either sibling gate module, matching every
 # xtrax.loop gate module's own stated independence-from-siblings convention (see e.g.
@@ -827,6 +827,17 @@ def run_one_candidate_pass(
             # path -- see its own docstring for why (nothing upstream of this branch reads
             # commit_tree_sha, so a rejected/gate-blocked/exception-aborted candidate never
             # reaches this call).
+            # AC-h (#4215, adversarial review finding C3, warning, pre-existing/orthogonal --
+            # not blocking): this is the second of two independent read_best_so_far calls in
+            # this accept branch (the first, above, feeds parent_sha). A theoretical TOCTOU
+            # window exists where a concurrent writer could advance ratchet_ref_name between the
+            # two reads, making commit_parent_sha and bootstrap_base_tree_sha resolve to
+            # different commits even when a caller (e.g. #4215's bootstrap_commit_sha fan-out)
+            # supplies them identically. This race pre-dates #4215 and is not introduced or
+            # worsened by it -- documented here as a known, low-likelihood limitation
+            # (single-process sequential campaign loop, no evidence of concurrent multi-process
+            # writers to the same ref anywhere in this codebase), not a bug or new test
+            # requirement.
             base_sha = read_best_so_far(repo, ratchet_ref_name)
             if base_sha is None:
                 base_sha = bootstrap_base_tree_sha
