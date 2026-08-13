@@ -109,7 +109,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from controller.bathos_campaign_adapter import BathosCampaignAdapter, CandidateRunResult
-from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
+from controller.bathos_library_wrappers import (
+    call_stats_battery_gate,
+    get_evidence_candidate_for_run,
+    get_seed_trial_counts,
+    get_sidecar_drift_signal,
+)
 from controller.dispatch import CandidateHandoff, DispatchBackend
 from controller.evaluate_adapter import BathosFrozenContext, score_raw_artifacts
 from controller.lineage_interim import (
@@ -117,6 +122,7 @@ from controller.lineage_interim import (
     record_candidate_run,
     resolve_derived_from,
 )
+from xtrax.loop.attestation_evidence_gate import EvidenceAdmissionResult, EvidenceCandidate
 from xtrax.loop.candidate_static import assert_candidate_static
 from xtrax.loop.closure_lock import guarded_evaluate
 from xtrax.loop.compile_time_clock import (
@@ -135,6 +141,11 @@ from xtrax.loop.seed_gate import (
     SeedTrialCounts,
     SeedTrialFloorDecision,
     assess_seed_trial_floor,
+)
+from xtrax.loop.sidecar_drift_gate import (
+    SidecarDriftDecision,
+    SidecarDriftSignal,
+    assert_sidecar_drift_reaction,
 )
 from xtrax.loop.stats_battery_gate import (
     BathosStatsBatteryVerdict,
@@ -165,15 +176,23 @@ class PriorBestSoFarLineageConflictError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class GateOutcome:
-    """Both gate decisions computed for one candidate pass.
+    """All gate decisions computed for one candidate pass (GW-01, GW-02, GW-04, etc.).
 
     Attributes:
         stats_battery: `xtrax.loop.stats_battery_gate.assess_stats_battery_verdict`'s decision.
         seed_trial: `xtrax.loop.seed_gate.assess_seed_trial_floor`'s decision.
+        evidence_admission: `xtrax.loop.attestation_evidence_gate.admit_evidence`'s decision
+            (GW-01, advisory-only -- not folded into hard_blocked). None when evidence_candidate_fn
+            is not called or returns empty result.
+        sidecar_drift: `xtrax.loop.sidecar_drift_gate.assert_sidecar_drift_reaction`'s decision
+            (GW-01, AC-18). Carries should_warn flag for collaborative mode, or is absent when
+            agent_mode='' or no drift detected. None when sidecar_drift_signal_fn is skipped.
     """
 
     stats_battery: ConcludeStatsDecision
     seed_trial: SeedTrialFloorDecision
+    evidence_admission: EvidenceAdmissionResult | None = None
+    sidecar_drift: SidecarDriftDecision | None = None
 
     @property
     def hard_blocked(self) -> bool:
@@ -182,7 +201,9 @@ class GateOutcome:
         This is the load-bearing signal a failing gate check must actually produce: a
         `confirmation`/`sequential` campaign whose stats-battery verdict downgraded, or whose
         seed/trial floor isn't cleared, hard-blocks here -- it is not silently plumbed through
-        and ignored by `OneCandidatePassResult.accepted` below.
+        and ignored by `OneCandidatePassResult.accepted` below. Sidecar drift does NOT fold
+        into hard_blocked; SidecarHashMismatchError is raised directly (autonomous mode) or
+        sidecar_drift.should_warn is set (collaborative mode).
         """
         return self.stats_battery.hard_blocked or self.seed_trial.hard_blocked
 
@@ -366,6 +387,9 @@ def run_one_candidate_pass(
     hypothesis_clause_id: str = "",
     stats_battery_fn: Callable[..., BathosStatsBatteryVerdict] = call_stats_battery_gate,
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
+    evidence_candidate_fn: Callable[..., EvidenceCandidate] = get_evidence_candidate_for_run,
+    stdout_verified: bool | None = None,
+    sidecar_drift_signal_fn: Callable[..., SidecarDriftSignal] = get_sidecar_drift_signal,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
     frozen_context: BathosFrozenContext,
@@ -432,6 +456,21 @@ def run_one_candidate_pass(
             `call_stats_battery_gate` (which lazily imports bathos, no MCP call).
         seed_trial_counts_fn: injection seam for tests -- defaults to LC-07's real
             `get_seed_trial_counts` (which lazily imports bathos, no MCP call).
+        evidence_candidate_fn: injection seam for tests -- defaults to GW-01's real
+            `get_evidence_candidate_for_run` (which lazily imports bathos, no MCP call). Called
+            after the bathos run to verify evidence attestation. Raises ValueError if run_id is
+            empty (fallback strategy in bathos_campaign_adapter didn't find the run).
+        stdout_verified: Optional caller-supplied stdout verification result (True iff
+            `Run.stdout_sha256` was recorded AND re-hash matched; False if recorded but
+            mismatched; None if never recorded). Passed through to evidence_candidate_fn and
+            then threaded into EvidenceCandidate for consumption by admit_evidence.
+        sidecar_drift_signal_fn: injection seam for tests -- defaults to GW-01's real
+            `get_sidecar_drift_signal` (which lazily imports bathos, no MCP call). Called
+            immediately after the bathos run, BEFORE ratchet/commit (audit-required ordering).
+            Skipped entirely when agent_mode is not 'collaborative'/'autonomous' (agent_mode=''
+            is an explicit opt-out for existing callers). On drift + autonomous mode, raises
+            SidecarHashMismatchError (HALT before any commit lands). On drift + collaborative
+            mode, returns a decision with should_warn=True for non-blocking warning.
         candidate_static_fn: injection seam for tests -- defaults to T2-11's real
             `assert_candidate_static` (clean import + zero jaxlint JL-series errors). Called
             immediately after dispatch, before lineage resolution or the real bathos run -- see
@@ -609,6 +648,31 @@ def run_one_candidate_pass(
         no_sidecar=no_sidecar,
     )
 
+    # 2.4. Sidecar-drift check (GW-01, AC-18) -- MUST fire BEFORE any best-so-far commit
+    # lands, to prevent a drift-tainted candidate from becoming the new best-so-far. Skip
+    # entirely when agent_mode is not 'collaborative'/'autonomous' (explicit opt-out for
+    # existing callers). On drift + autonomous: raise SidecarHashMismatchError (HALT). On
+    # drift + collaborative: return decision with should_warn=True (non-blocking warning).
+    sidecar_drift_decision: SidecarDriftDecision | None = None
+    if agent_mode in ("collaborative", "autonomous") and run_result.run_id:
+        # Query the Run object to extract sidecar_sha256 for the check
+        from pathlib import Path as PathlibPath
+
+        import bathos.query
+
+        cat_dir = PathlibPath.home() / ".bth"
+        run_obj = bathos.query.get_run(run_result.run_id, cat_dir)
+        if run_obj:
+            sidecar_signal = sidecar_drift_signal_fn(
+                script_path=str(handoff.path),
+                catalog_dir="",
+                current_sidecar_sha256=run_obj.sidecar_sha256,
+                script_id=handoff.path.stem,
+            )
+            sidecar_drift_decision = assert_sidecar_drift_reaction(
+                sidecar_signal, agent_mode=agent_mode  # type: ignore
+            )
+
     # 2.5. Score raw artifacts through the AC-7 closure-lock gate (S2.1, GW-02). output_paths is
     # this function's OWN existing parameter -- CandidateRunResult carries no output_paths field
     # to read this off of instead. guarded_evaluate_fn is the sole call site through which
@@ -727,6 +791,25 @@ def run_one_candidate_pass(
     seed_counts = seed_trial_counts_fn(seed_trial_db, handoff.content_sha256, hypothesis_clause_id)
     seed_decision = assess_seed_trial_floor(seed_counts, campaign_mode=campaign_mode)
 
+    # 3.5. Evidence attestation check (GW-01, AC-19, advisory-only) -- verify run provenance.
+    # May raise ValueError if run_id lookup failed (indicating a broken fallback strategy).
+    evidence_admission: EvidenceAdmissionResult | None = None
+    if run_result.run_id:
+        try:
+            evidence_candidate = evidence_candidate_fn(
+                run_id=run_result.run_id,
+                catalog_dir="",
+                stdout_verified=stdout_verified,
+            )
+            # Admit evidence (advisory only, not hard-blocking) -- returns partitioned
+            # (admitted, excluded) sets of candidates.
+            from xtrax.loop.attestation_evidence_gate import admit_evidence
+
+            evidence_admission = admit_evidence([evidence_candidate])
+        except ValueError:
+            # run_id lookup failed; proceed without evidence result
+            pass
+
     # 4. Compile-time two-phase clock (S2.2, AC-27) -- strictly AFTER the accept/reject decision
     # above, never an input to it. compile_time_seconds is intentionally never merged into
     # fitness_dict / never passed to compute_ratchet_decision -- only runtime_seconds is
@@ -746,7 +829,12 @@ def run_one_candidate_pass(
         handoff=handoff,
         derived_from=derived_from,
         run_result=run_result,
-        gate_outcome=GateOutcome(stats_battery=stats_decision, seed_trial=seed_decision),
+        gate_outcome=GateOutcome(
+            stats_battery=stats_decision,
+            seed_trial=seed_decision,
+            evidence_admission=evidence_admission,
+            sidecar_drift=sidecar_drift_decision,
+        ),
         ratchet_decision=ratchet_decision,
         fitness_dict=fitness_dict,
     )

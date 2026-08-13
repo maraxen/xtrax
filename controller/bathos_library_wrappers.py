@@ -1,25 +1,31 @@
-"""Direct bathos-library-import wrapper for stats-battery and seed-floor gates (LC-07, AC-6).
+"""Direct bathos-library-import wrappers for gate functions (LC-07, AC-6, GW-01).
 
 This module wraps pure-read/compute bathos functions directly as a Python library,
-bypassing MCP entirely. It feeds results into xtrax's already-merged gate functions
-(T2-22's stats_battery_gate and T2-23's seed_gate).
+bypassing MCP entirely. It feeds results into xtrax's already-merged gate functions.
 
-Grounding (per AC-6): bathos.stats_gates.run_stats_battery,
-check_baseline_budget_equivalence, bathos.campaigns.count_seeds_for_script, and
-count_runs_for_script are all pure functions over caller-supplied data or read-only
-database queries — no write-path integrity concern. Controller living outside src/xtrax
-violates no existing constraint. This matches #2181's "no bathos item blocks the walking
-skeleton" principle.
+Grounding (per AC-6): bathos.stats_gates.run_stats_battery, check_baseline_budget_
+equivalence, bathos.campaigns.count_seeds_for_script, count_runs_for_script,
+bathos.prereg.verify_run_manifest, and bathos.prereg.check_sidecar_drift are all pure
+functions over caller-supplied data or read-only database queries — no write-path
+integrity concern. Controller living outside src/xtrax violates no existing constraint.
+This matches #2181's "no bathos item blocks the walking skeleton" principle.
 
 Per AC-6's explicit requirement: NO MCP call appears anywhere in this item's code path.
 Only direct Python imports (lazy-imported at function-call time, not module-import time,
 for testability).
+
+GW-01 additions (step 2.1/2.2): get_evidence_candidate_for_run and get_sidecar_drift_
+signal wrap attestation_evidence_gate and sidecar_drift_gate gate requirements; they
+resolve Run objects via bathos.query.get_run and call the real bathos prereg verification
+functions (verify_run_manifest, check_sidecar_drift).
 """
 
 from dataclasses import dataclass
 
 # xtrax imports (always available)
+from xtrax.loop.attestation_evidence_gate import EvidenceCandidate
 from xtrax.loop.seed_gate import SeedTrialCounts
+from xtrax.loop.sidecar_drift_gate import SidecarDriftSignal
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
 
 # bathos imports are lazy — deferred to function-call time for testability.
@@ -137,8 +143,128 @@ def get_seed_trial_counts(
     )
 
 
+def get_evidence_candidate_for_run(
+    run_id: str,
+    catalog_dir: str = "",
+    stdout_verified: bool | None = None,
+) -> EvidenceCandidate:
+    """Verify a run's attestation evidence and return an EvidenceCandidate for admission.
+
+    This wrapper resolves a Run object via bathos.query.get_run (step 1.2's grounding
+    strategy), calls bathos.prereg.verify_run_manifest on it, and threads the result into
+    xtrax.loop.attestation_evidence_gate.EvidenceCandidate for consumption by
+    admit_evidence.
+
+    Args:
+        run_id: The bathos run ID to verify evidence for (obtained from CandidateRunResult).
+        catalog_dir: bathos catalog directory (empty = use default). Forwarded to
+            bathos.query.get_run.
+        stdout_verified: Optional caller-supplied stdout verification result (True iff
+            `Run.stdout_sha256` was recorded AND the caller's own re-hash matched it; False
+            if recorded but mismatched; None if never recorded). Passed through to
+            EvidenceCandidate verbatim -- see attestation_evidence_gate's module docstring
+            for the integration seam.
+
+    Returns:
+        An EvidenceCandidate with run_id, manifest_verified (from verify_run_manifest),
+        and stdout_verified (from the caller-supplied passthrough argument).
+
+    Raises:
+        ValueError: run_id is empty or the run was not found in the catalog.
+
+    Note:
+        This function calls bathos directly as a pure Python library (no MCP, no subprocess).
+        It performs read-only database queries only (no writes). See the module docstring
+        for the cross-repo integration seam (bathos.prereg verification, not xtrax-side
+        verification).
+    """
+    # Lazy imports — only at function-call time, not module-import time.
+    import bathos.prereg
+    import bathos.query
+
+    if not run_id:
+        raise ValueError("run_id is required and cannot be empty")
+
+    # Resolve the Run object via the step 1.2 strategy (direct bathos.query.get_run)
+    from pathlib import Path as PathlibPath
+
+    cat_dir = PathlibPath(catalog_dir) if catalog_dir else PathlibPath.home() / ".bth"
+    run = bathos.query.get_run(run_id, cat_dir)
+    if run is None:
+        raise ValueError(f"run {run_id!r} not found in catalog at {cat_dir}")
+
+    # Call verify_run_manifest (step 2.1)
+    manifest_verified = bathos.prereg.verify_run_manifest(run)
+
+    # Thread into xtrax's EvidenceCandidate shape
+    return EvidenceCandidate(
+        run_id=run_id,
+        manifest_verified=manifest_verified,
+        stdout_verified=stdout_verified,
+    )
+
+
+def get_sidecar_drift_signal(
+    script_path: str,
+    catalog_dir: str = "",
+    current_sidecar_sha256: str = "",
+    script_id: str = "",
+) -> SidecarDriftSignal:
+    """Check for sidecar drift and return a SidecarDriftSignal for AC-18 reaction.
+
+    This wrapper calls bathos.prereg.check_sidecar_drift (step 2.2) and threads the result
+    into xtrax.loop.sidecar_drift_gate.SidecarDriftSignal for consumption by
+    assert_sidecar_drift_reaction.
+
+    Args:
+        script_path: Path to the candidate script to check sidecar drift for.
+        catalog_dir: bathos catalog directory (empty = use default). Forwarded to
+            bathos.prereg.check_sidecar_drift.
+        current_sidecar_sha256: The sidecar SHA256 from the current run (typically from
+            CandidateRunResult or a Run object). Required for meaningful drift detection.
+        script_id: Optional human-readable script identifier (path or stem) for message
+            building. If empty, script_path is used as the identifier.
+
+    Returns:
+        A SidecarDriftSignal with drifted (from check_sidecar_drift), script_id, and
+        sidecar hashes (for message building).
+
+    Note:
+        This function calls bathos directly as a pure Python library (no MCP, no subprocess).
+        It performs read-only database queries only (no writes). The actual bathos call
+        (check_sidecar_drift) is a pure function with no write operations.
+    """
+    # Lazy import — only at function-call time, not module-import time.
+    # Resolve catalog_dir
+    from pathlib import Path as PathlibPath
+
+    import bathos.prereg
+
+    cat_dir = PathlibPath(catalog_dir) if catalog_dir else PathlibPath.home() / ".bth"
+    script = PathlibPath(script_path)
+
+    # Call check_sidecar_drift (step 2.2) — returns True iff the current run's sidecar
+    # hash differs from the script's first-run manifest baseline.
+    drifted = bathos.prereg.check_sidecar_drift(
+        script, cat_dir, current_sidecar_sha256
+    )
+
+    # Use script_id if provided, else derive from script_path
+    script_id_final = script_id if script_id else script.stem
+
+    # Thread into xtrax's SidecarDriftSignal shape
+    return SidecarDriftSignal(
+        drifted=drifted,
+        script_id=script_id_final,
+        first_run_sha256="",  # Not queried by this wrapper (caller responsible)
+        current_sha256=current_sidecar_sha256,
+    )
+
+
 __all__ = [
     "call_stats_battery_gate",
+    "get_evidence_candidate_for_run",
     "get_seed_trial_counts",
+    "get_sidecar_drift_signal",
     "StatsBatteryResult",
 ]
