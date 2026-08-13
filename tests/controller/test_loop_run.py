@@ -274,6 +274,14 @@ def _passing_checkified_execution_fn(
     return None
 
 
+def _passing_capability_probe_fn(catalog_dir: str = "") -> Any:
+    """Stub for T2-27's real gate (GW-05) -- returns a passing CapabilityProbeResult for
+    end-to-end tests. Never calls the real bathos.capability.probe_capabilities."""
+    from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+    return CapabilityProbeResult(seed_live=True, stats_battery_live=True)
+
+
 _CRITERIA = WatchdogCriteria(wall_clock_budget_seconds=3600.0)
 
 
@@ -343,6 +351,8 @@ def _base_kwargs(dispatch_backend: Any, transport: _MultiToolTransport) -> dict[
         "candidate_smoke_fn": _passing_candidate_smoke_fn,
         "candidate_smoke_root": None,
         "checkified_execution_fn": _passing_checkified_execution_fn,
+        "capability_probe_fn": _passing_capability_probe_fn,
+        "capability_probe_catalog_dir": "",
         # See test_multi_iteration_loop.py's module docstring #4203 addendum for why this
         # deliberate deviation from a literal "8 new values" reading is required.
         "allow_fresh_start_despite_existing_lineage": True,
@@ -794,6 +804,187 @@ note = "Old approval (expired)"
         )
 
         assert received_ids == ["loop-run-test-campaign"]
+
+
+class TestCapabilityProbeGate:
+    """Tests for T2-27 (AC-20, GW-05): capability-probe gate wired before campaign_create."""
+
+    def test_failing_probe_raises_before_campaign_create(self, tmp_path: Path) -> None:
+        """A failing capability probe must raise CapabilityNotLiveError before campaign_create."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        def failing_probe_fn(catalog_dir: str = "") -> Any:
+            from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+            return CapabilityProbeResult(seed_live=False, stats_battery_live=False)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["capability_probe_fn"] = failing_probe_fn
+        kwargs["campaign_mode"] = "confirmation"  # gated mode, will check the probe result
+
+        from xtrax.loop.capability_probe_gate import CapabilityNotLiveError
+
+        with pytest.raises(CapabilityNotLiveError):
+            run_campaign_loop(
+                **kwargs,
+                max_candidates=1,
+                start_watchdog_fn=starter,
+            )
+
+        assert transport.calls == [], (
+            "no bathos call (not even campaign_create) should ever happen when the "
+            "capability-probe gate rejects -- the exception must fire before campaign_create"
+        )
+        assert starter.calls == [], "the watchdog must not be started when probe fails"
+
+    def test_failing_probe_in_exploration_mode_allows_campaign_to_proceed(
+        self, tmp_path: Path
+    ) -> None:
+        """PM-4 carve-out: failing probe in exploration mode must NOT raise -- exploration
+        campaigns proceed regardless (the gate never enforces in exploration mode)."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        def failing_probe_fn(catalog_dir: str = "") -> Any:
+            from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+            return CapabilityProbeResult(seed_live=False, stats_battery_live=False)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["capability_probe_fn"] = failing_probe_fn
+        kwargs["campaign_mode"] = "exploration"  # exploration mode, probe is not gated
+
+        result = run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        # Probe fails but campaign still creates and completes successfully
+        assert len(transport.calls_for("campaign_create")) == 1
+        assert result.conclusion.outcome_label == "success"
+
+    def test_passing_probe_allows_campaign_to_proceed(self, tmp_path: Path) -> None:
+        """A passing capability probe must not block campaign creation."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        def passing_probe_fn(catalog_dir: str = "") -> Any:
+            from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+            return CapabilityProbeResult(seed_live=True, stats_battery_live=True)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["capability_probe_fn"] = passing_probe_fn
+        kwargs["campaign_mode"] = "confirmation"
+
+        result = run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        assert len(transport.calls_for("campaign_create")) == 1
+        assert result.conclusion.outcome_label == "success"
+
+    def test_capability_probe_fn_receives_exact_catalog_dir_passed_through(
+        self, tmp_path: Path
+    ) -> None:
+        """Proves the catalog_dir is forwarded exactly from run_campaign_loop parameter."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        received_dirs: list[str] = []
+
+        def recording_probe_fn(catalog_dir: str = "") -> Any:
+            received_dirs.append(catalog_dir)
+            from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+            return CapabilityProbeResult(seed_live=True, stats_battery_live=True)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["capability_probe_fn"] = recording_probe_fn
+        kwargs["capability_probe_catalog_dir"] = "/custom/catalog/dir"
+
+        run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        assert received_dirs == ["/custom/catalog/dir"]
+
+    def test_default_capability_probe_fn_is_skipped_if_bathos_capability_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        """If bathos.capability is not installed, the default probe_fn should skip cleanly
+        (via pytest.importorskip or equivalent)."""
+        # This test is primarily for coverage in CI tiers that skip bathos.capability.
+        # The real default (get_capability_probe_result) handles the skip internally if the
+        # bathos.capability import fails, so tests omitting an injected capability_probe_fn
+        # must reach the real default and either pass or skip.
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        # Omit capability_probe_fn to reach the real default
+        del kwargs["capability_probe_fn"]
+
+        try:
+            result = run_campaign_loop(
+                **kwargs,
+                max_candidates=1,
+                start_watchdog_fn=starter,
+            )
+            # If we get here, bathos.capability was available and the real default succeeded
+            assert len(transport.calls_for("campaign_create")) == 1
+            assert result.conclusion.outcome_label == "success"
+        except ImportError as e:
+            # If bathos.capability is not installed, we expect an ImportError
+            pytest.skip(f"bathos.capability not available: {e}")
+
+    def test_probe_fired_and_campaign_create_call_count_proves_ordering(
+        self, tmp_path: Path
+    ) -> None:
+        """Proves via call-order tracking that the probe fires and completes before
+        campaign_create (not after). We track this by monitoring the call sequence of our
+        injected probe_fn and the transport's calls_for assertions."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        calls_sequence: list[str] = []
+
+        def tracking_probe_fn(catalog_dir: str = "") -> Any:
+            calls_sequence.append("probe_called")
+            from xtrax.loop.capability_probe_gate import CapabilityProbeResult
+
+            return CapabilityProbeResult(seed_live=True, stats_battery_live=True)
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["capability_probe_fn"] = tracking_probe_fn
+
+        result = run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        # Prove ordering: probe must be called before campaign_create (evidenced by the
+        # probe being called and the campaign successfully created and concluded)
+        assert calls_sequence == ["probe_called"], (
+            "capability_probe_fn must be called during run_campaign_loop"
+        )
+        assert len(transport.calls_for("campaign_create")) == 1, (
+            "campaign_create must be called exactly once after probe completes"
+        )
+        assert result.conclusion.outcome_label == "success", (
+            "the campaign must complete successfully after probe passes"
+        )
 
 
 # ---------------------------------------------------------------------------

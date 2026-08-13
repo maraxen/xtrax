@@ -99,6 +99,35 @@ minted uniquely per real, approved campaign start (e.g. a fresh random/timestamp
 for a second, different campaign start silently rides the first approval. This module does not
 mint or validate uniqueness itself; that responsibility sits with the caller.
 
+## GW-05 addendum: capability-probe gate wired in before `campaign_create` (T2-27, AC-20)
+
+`capability_probe_gate.assert_capability_live` (T2-27, AC-20, already built and merged) was never
+wired into any production caller before this addendum. This gate machine-probes bathos for two
+independent liveness checks (`seed_live` and `stats_battery_live`) and enforces them for
+confirmatory/sequential campaigns while allowing exploration campaigns to proceed regardless
+(PM-4's explicit carve-out).
+
+Wired in as `capability_probe_fn` (default: the real `get_capability_probe_result`), called with
+`capability_probe_catalog_dir` immediately after `campaign_approval_fn` and strictly before
+`campaign_create`. See capability_probe_gate's module docstring for the two independent checks
+and the cross-repo integration seam (bathos.capability probe, not xtrax-side verification).
+
+A `CapabilityNotLiveError` fires before `campaign_create` -- no campaign is created, so nothing
+needs concluding, the same "nothing to conclude" treatment as approval failures above.
+
+**Deferred sub-gates (T2-01, T2-08):** This item wires capability_probe only. Two other T2-27
+candidate sub-gates remain unimplemented:
+
+- **admission (T2-01, AC-E1):** deliberately closed as already-satisfied. admit_candidate/
+  validate_graph operate on HostPrepGraph, structurally disjoint from controller's CandidateHandoff
+  (path, sha256) model (zero hits repo-wide). AC-E1's intent is already served by the live `xtrax
+  graph-validate` CLI verb as an upstream authoring-time gate.
+- **evaluator_completeness (T2-08, AC-11):** deliberately deferred (filed as a follow-up backlog
+  item). InvariantManifest/SyntheticGroundTruthCase have zero producers anywhere in the repo;
+  wiring a call site now would force fabricating inputs ad hoc, worse than leaving it open and
+  documented. This gap is tracked in the live backlog and requires its own future brainstorm/
+  adversarial-review pass (task_id: 260813_epic2181-gw-sprint-compose).
+
 ## What "a caught per-candidate failure" means here, vs. "an uncaught exception" -- grounded, not
 ## invented
 
@@ -207,7 +236,11 @@ from controller.bathos_campaign_adapter import (
     CampaignConclusion,
     CampaignHandle,
 )
-from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
+from controller.bathos_library_wrappers import (
+    call_stats_battery_gate,
+    get_capability_probe_result,
+    get_seed_trial_counts,
+)
 from controller.dispatch import CandidateHandoffFailure, DispatchBackend
 from controller.evaluate_adapter import BathosFrozenContext
 from controller.lineage_interim import CandidateParentage
@@ -222,6 +255,10 @@ from xtrax.devtools.freshness import Attestation
 from xtrax.loop.campaign_approval_gate import DEFAULT_GATES_TOML, assert_campaign_approved
 from xtrax.loop.candidate_smoke import assert_candidate_smoke
 from xtrax.loop.candidate_static import assert_candidate_static
+from xtrax.loop.capability_probe_gate import (
+    CapabilityProbeResult,
+    assert_capability_live,
+)
 from xtrax.loop.checkified_execution import assert_checkified_execution
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria, WatchdogHandle, start_watchdog
 from xtrax.loop.seed_gate import SeedTrialCounts
@@ -400,6 +437,8 @@ def run_campaign_loop(
     on_loop_event: Callable[[LoopEvent], None] = _default_loop_event_handler,
     campaign_approval_fn: Callable[..., Attestation] = assert_campaign_approved,
     campaign_approval_toml_path: Path = DEFAULT_GATES_TOML,
+    capability_probe_fn: Callable[..., CapabilityProbeResult] = get_capability_probe_result,
+    capability_probe_catalog_dir: str = "",
     higher_is_better: Mapping[str, bool],
     frozen_context: BathosFrozenContext,
     current_config: Mapping[str, Any],
@@ -477,6 +516,13 @@ def run_campaign_loop(
             docstring's GW-03 addendum.
         campaign_approval_toml_path: forwarded to `campaign_approval_fn` as `toml_path` (default:
             `campaign_approval_gate.DEFAULT_GATES_TOML`, i.e. `.praxia/loop_human_gates.toml`).
+        capability_probe_fn: injection seam -- the capability-probe gate (T2-27, AC-20; [GW-05])
+            checked immediately after campaign_approval_fn and strictly before `campaign_create`.
+            Defaults to the REAL `get_capability_probe_result`. **Tests of this function must
+            always override this** with a stub returning a fake `CapabilityProbeResult` -- never
+            let a test reach the real bathos.capability.probe_capabilities call.
+        capability_probe_catalog_dir: forwarded to `capability_probe_fn` as `catalog_dir`
+            (default: "" = use bathos default resolution).
         higher_is_better: forwarded to `run_multi_iteration_loop` unchanged (that function, not
             this one, applies the conditional suppression against its own loop-local
             `best_fitness` state). Required (no default).
@@ -525,6 +571,14 @@ def run_campaign_loop(
     # CampaignNotApprovedError here (or either subclass) propagates before any campaign exists --
     # same "nothing to conclude" treatment as the max_candidates < 1 ValueError above.
     campaign_approval_fn(campaign_name, toml_path=campaign_approval_toml_path)
+
+    # Capability-probe gate (T2-27, AC-20; [GW-05]) -- checked immediately after campaign approval
+    # and strictly before campaign_create. Probe result carries seed_live and stats_battery_live
+    # booleans; assert_capability_live enforces them for confirmatory/sequential campaigns and
+    # allows exploration campaigns to proceed. See capability_probe_gate's module docstring and
+    # the module docstring's GW-05 addendum (added step 5 of the plan).
+    probe_result = capability_probe_fn(catalog_dir=capability_probe_catalog_dir)
+    assert_capability_live(probe_result, campaign_mode=campaign_mode)
 
     handle: CampaignHandle = campaign_adapter.campaign_create(
         campaign_name,

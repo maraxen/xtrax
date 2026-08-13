@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 # xtrax imports (always available)
 from xtrax.loop.attestation_evidence_gate import EvidenceCandidate
+from xtrax.loop.capability_probe_gate import CapabilityProbeResult
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.sidecar_drift_gate import SidecarDriftSignal
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
@@ -259,8 +260,63 @@ def get_sidecar_drift_signal(
     )
 
 
+def get_capability_probe_result(catalog_dir: str = "") -> CapabilityProbeResult:
+    """Probe bathos capability and return a CapabilityProbeResult.
+
+    This wrapper calls bathos.capability.probe_capabilities and threads the result
+    into xtrax.loop.capability_probe_gate.CapabilityProbeResult for consumption by
+    assert_capability_live (T2-27, AC-20).
+
+    Args:
+        catalog_dir: bathos catalog directory (empty = use default, resolved via
+            bathos.config.default_catalog_dir()). Matches the resolution order used
+            by bathos/mcp.py's _get_catalog_dir.
+
+    Returns:
+        A CapabilityProbeResult with seed_live and stats_battery_live booleans,
+        ready for consumption by assert_capability_live.
+
+    Note:
+        This function calls bathos directly as a pure Python library (no MCP, no subprocess).
+        It performs read-only database queries only (no writes). See capability_probe_gate's
+        module docstring for the cross-repo integration seam (bathos.capability probe, not
+        xtrax-side verification).
+    """
+    # Lazy imports — only at function-call time, not module-import time.
+    import os
+    from pathlib import Path as PathlibPath
+
+    import bathos.capability
+    import bathos.config
+
+    # Resolve catalog_dir matching bathos/mcp.py's _get_catalog_dir order:
+    # catalog_dir arg > BTH_CATALOG_DIR env > bathos.config.default_catalog_dir()
+    if catalog_dir:
+        resolved_dir = PathlibPath(catalog_dir)
+    else:
+        env_dir = os.environ.get("BTH_CATALOG_DIR", "")
+        if env_dir:
+            resolved_dir = PathlibPath(env_dir)
+        else:
+            resolved_dir = PathlibPath(bathos.config.default_catalog_dir())
+
+    # Call probe_capabilities (T2-27's step 1)
+    report = bathos.capability.probe_capabilities(resolved_dir)
+
+    # Thread into xtrax's CapabilityProbeResult shape, mapping the returned
+    # CapabilityReport's two independent liveness booleans exactly (see
+    # capability_probe_gate's module docstring). Deliberately drop
+    # missing_seed_columns/stats_unavailable_reason since CapabilityProbeResult's
+    # fixed 2-field shape doesn't carry them.
+    return CapabilityProbeResult(
+        seed_live=report.seed_live,
+        stats_battery_live=report.stats_battery_live,
+    )
+
+
 __all__ = [
     "call_stats_battery_gate",
+    "get_capability_probe_result",
     "get_evidence_candidate_for_run",
     "get_seed_trial_counts",
     "get_sidecar_drift_signal",

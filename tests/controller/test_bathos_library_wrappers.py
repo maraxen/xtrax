@@ -20,6 +20,7 @@ import pytest
 
 from controller.bathos_library_wrappers import (
     call_stats_battery_gate,
+    get_capability_probe_result,
     get_seed_trial_counts,
 )
 
@@ -33,6 +34,7 @@ class TestModuleImport:
 
         expected_names = {
             "call_stats_battery_gate",
+            "get_capability_probe_result",
             "get_seed_trial_counts",
             "StatsBatteryResult",
         }
@@ -44,6 +46,7 @@ class TestModuleImport:
     def test_functions_are_callable(self):
         """Verify the wrapper functions are callable."""
         assert callable(call_stats_battery_gate), "call_stats_battery_gate is not callable"
+        assert callable(get_capability_probe_result), "get_capability_probe_result is not callable"
         assert callable(get_seed_trial_counts), "get_seed_trial_counts is not callable"
 
 
@@ -150,6 +153,17 @@ class TestDataThreading:
         assert params[1] == "script_sha256"
         assert params[2] == "hypothesis_clause_id"
         assert sig.parameters["hypothesis_clause_id"].default == ""
+
+    def test_get_capability_probe_result_signature(self):
+        """Verify get_capability_probe_result has correct function signature."""
+        import inspect
+
+        sig = inspect.signature(get_capability_probe_result)
+        params = list(sig.parameters.keys())
+
+        # Should accept only catalog_dir with default ""
+        assert params == ["catalog_dir"]
+        assert sig.parameters["catalog_dir"].default == ""
 
 
 class TestAcceptanceRequirements:
