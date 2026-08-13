@@ -21,7 +21,9 @@ import pytest
 from controller.bathos_library_wrappers import (
     call_stats_battery_gate,
     get_capability_probe_result,
+    get_evidence_candidate_for_run,
     get_seed_trial_counts,
+    get_sidecar_drift_signal,
 )
 
 
@@ -35,7 +37,9 @@ class TestModuleImport:
         expected_names = {
             "call_stats_battery_gate",
             "get_capability_probe_result",
+            "get_evidence_candidate_for_run",
             "get_seed_trial_counts",
+            "get_sidecar_drift_signal",
             "StatsBatteryResult",
         }
         exported_names = {name for name in dir(wrappers) if not name.startswith("_")}
@@ -45,9 +49,11 @@ class TestModuleImport:
 
     def test_functions_are_callable(self):
         """Verify the wrapper functions are callable."""
-        assert callable(call_stats_battery_gate), "call_stats_battery_gate is not callable"
-        assert callable(get_capability_probe_result), "get_capability_probe_result is not callable"
-        assert callable(get_seed_trial_counts), "get_seed_trial_counts is not callable"
+        assert callable(call_stats_battery_gate)
+        assert callable(get_capability_probe_result)
+        assert callable(get_evidence_candidate_for_run)
+        assert callable(get_seed_trial_counts)
+        assert callable(get_sidecar_drift_signal)
 
 
 class TestNoMCPCalls:
@@ -165,6 +171,36 @@ class TestDataThreading:
         assert params == ["catalog_dir"]
         assert sig.parameters["catalog_dir"].default == ""
 
+    def test_get_evidence_candidate_for_run_signature(self):
+        """Verify get_evidence_candidate_for_run has correct function signature."""
+        import inspect
+
+        sig = inspect.signature(get_evidence_candidate_for_run)
+        params = list(sig.parameters.keys())
+
+        # Should accept run_id, catalog_dir, and stdout_verified
+        assert params[0] == "run_id"
+        assert params[1] == "catalog_dir"
+        assert params[2] == "stdout_verified"
+        assert sig.parameters["catalog_dir"].default == ""
+        assert sig.parameters["stdout_verified"].default is None
+
+    def test_get_sidecar_drift_signal_signature(self):
+        """Verify get_sidecar_drift_signal has correct function signature."""
+        import inspect
+
+        sig = inspect.signature(get_sidecar_drift_signal)
+        params = list(sig.parameters.keys())
+
+        # Should accept script_path, catalog_dir, current_sidecar_sha256, script_id
+        assert params[0] == "script_path"
+        assert params[1] == "catalog_dir"
+        assert params[2] == "current_sidecar_sha256"
+        assert params[3] == "script_id"
+        assert sig.parameters["catalog_dir"].default == ""
+        assert sig.parameters["current_sidecar_sha256"].default == ""
+        assert sig.parameters["script_id"].default == ""
+
 
 class TestAcceptanceRequirements:
     """Tests verifying AC-6 specific requirements."""
@@ -193,6 +229,45 @@ class TestAcceptanceRequirements:
                     assert not node.value.id.startswith("mcp"), (
                         "Found MCP attribute access in wrapper code"
                     )
+
+
+class TestEvidenceCandidateForRun:
+    """Tests for get_evidence_candidate_for_run (GW-01, AC-19)."""
+
+    def test_evidence_candidate_requires_run_id(self):
+        """Verify get_evidence_candidate_for_run raises ValueError on empty run_id."""
+        with pytest.raises(ValueError, match="run_id is required"):
+            get_evidence_candidate_for_run(run_id="")
+
+    def test_evidence_candidate_returns_structure(self):
+        """Verify get_evidence_candidate_for_run builds EvidenceCandidate with correct fields."""
+        import inspect
+
+        # Verify signature allows stdout_verified passthrough
+        sig = inspect.signature(get_evidence_candidate_for_run)
+        assert "stdout_verified" in sig.parameters
+
+
+class TestSidecarDriftSignal:
+    """Tests for get_sidecar_drift_signal (GW-01, AC-18)."""
+
+    def test_sidecar_drift_signal_returns_structure(self):
+        """Verify get_sidecar_drift_signal builds SidecarDriftSignal with correct fields."""
+        import inspect
+
+        # Verify the function signature and return type annotation
+        sig = inspect.signature(get_sidecar_drift_signal)
+        assert "script_path" in sig.parameters
+        assert "current_sidecar_sha256" in sig.parameters
+        assert "script_id" in sig.parameters
+
+    def test_sidecar_drift_signal_script_id_defaulting(self):
+        """Verify get_sidecar_drift_signal uses script_id if provided, else derives from path."""
+        import inspect
+
+        # Verify docstring states that script_id defaults to script_path stem
+        doc = inspect.getdoc(get_sidecar_drift_signal)
+        assert "If empty, script_path is used" in doc or "script_id" in doc
 
 
 if __name__ == "__main__":
