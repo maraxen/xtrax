@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from subprocess import run
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _fresh_attestation(sha: str = "abc123def456", now: datetime | None = None) -> str:
@@ -53,7 +56,7 @@ class TestPromotionGateCIHappyPath:
                 "--toml-path",
                 str(gates_file),
             ],
-            cwd="/home/marielle/projects/xtrax/.claude/worktrees/wt-20260811-233351",
+            cwd=str(ROOT),
             capture_output=True,
             text=True,
         )
@@ -83,7 +86,7 @@ class TestPromotionGateCINoMatchingApproval:
                 "--toml-path",
                 str(gates_file),
             ],
-            cwd="/home/marielle/projects/xtrax/.claude/worktrees/wt-20260811-233351",
+            cwd=str(ROOT),
             capture_output=True,
             text=True,
         )
@@ -113,7 +116,7 @@ class TestPromotionGateCIExpiredApproval:
                 "--toml-path",
                 str(gates_file),
             ],
-            cwd="/home/marielle/projects/xtrax/.claude/worktrees/wt-20260811-233351",
+            cwd=str(ROOT),
             capture_output=True,
             text=True,
         )
@@ -140,7 +143,7 @@ class TestPromotionGateCIMissingToml:
                 "--toml-path",
                 str(missing_file),
             ],
-            cwd="/home/marielle/projects/xtrax/.claude/worktrees/wt-20260811-233351",
+            cwd=str(ROOT),
             capture_output=True,
             text=True,
         )
@@ -168,7 +171,7 @@ class TestPromotionGateCIMalformedToml:
                 "--toml-path",
                 str(gates_file),
             ],
-            cwd="/home/marielle/projects/xtrax/.claude/worktrees/wt-20260811-233351",
+            cwd=str(ROOT),
             capture_output=True,
             text=True,
         )
@@ -196,7 +199,7 @@ class TestPromotionGateCIEmptyGates:
                 "--toml-path",
                 str(gates_file),
             ],
-            cwd="/home/marielle/projects/xtrax/.claude/worktrees/wt-20260811-233351",
+            cwd=str(ROOT),
             capture_output=True,
             text=True,
         )
@@ -251,7 +254,7 @@ note = "Third approval"
                 "--toml-path",
                 str(gates_file),
             ],
-            cwd="/home/marielle/projects/xtrax/.claude/worktrees/wt-20260811-233351",
+            cwd=str(ROOT),
             capture_output=True,
             text=True,
         )
@@ -274,7 +277,7 @@ class TestPromotionGateCIRequiredArg:
                 "python",
                 "scripts/audit_promotion_gate.py",
             ],
-            cwd="/home/marielle/projects/xtrax/.claude/worktrees/wt-20260811-233351",
+            cwd=str(ROOT),
             capture_output=True,
             text=True,
         )
