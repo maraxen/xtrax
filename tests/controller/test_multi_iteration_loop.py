@@ -242,6 +242,38 @@ def _passing_seed_counts(
     return SeedTrialCounts(script_sha256=script_sha256, distinct_seed_count=5, trial_count=40)
 
 
+def _passing_structure_tripwire_fn(
+    path: Path, callable_name: str, *, abstract_inputs: list[Any], concrete_inputs: list[Any]
+) -> None:
+    """Stub for T2-13's real gate (GW-04) -- no-op for end-to-end tests."""
+    return None
+
+
+def _passing_candidate_smoke_fn(
+    path: Path,
+    callable_name: str,
+    *,
+    concrete_inputs: list[Any],
+    wall_clock_budget_seconds: float = 60.0,
+    poll_interval_seconds: float = 0.5,
+    root: Path | None = None,
+) -> None:
+    """Stub for T2-14's real gate (GW-04) -- no-op for end-to-end tests."""
+    return None
+
+
+def _passing_checkified_execution_fn(
+    path: Path,
+    callable_name: str,
+    *,
+    concrete_inputs: list[Any],
+    check_nans: bool = True,
+    check_infs: bool = True,
+) -> Any:
+    """Stub for T2-15's real gate (GW-04) -- no-op for end-to-end tests."""
+    return None
+
+
 # ---------------------------------------------------------------------------
 # GW-02 (#3649) / #4203 shared fixtures: run_multi_iteration_loop's 8 new required/default
 # values (frozen_context/current_config/repo/ratchet_ref_name/commit_tree_sha/callable_name/
@@ -313,6 +345,11 @@ def _base_kwargs(dispatch_backend: Any) -> dict[str, Any]:
         "callable_name": _TIMING_PROBE_NAME,
         "concrete_inputs": _TIMING_CONCRETE_INPUTS,
         "higher_is_better": _HIGHER_IS_BETTER,
+        "abstract_inputs": [],
+        "structure_tripwire_fn": _passing_structure_tripwire_fn,
+        "candidate_smoke_fn": _passing_candidate_smoke_fn,
+        "candidate_smoke_root": None,
+        "checkified_execution_fn": _passing_checkified_execution_fn,
         # Deliberate deviation from a literal reading of the sprint TOML's own "8 new values"
         # list -- see the module docstring's #4203 addendum for why this is required to avoid a
         # real chicken-and-egg gap (commit_parent_sha is never forwarded through this outer

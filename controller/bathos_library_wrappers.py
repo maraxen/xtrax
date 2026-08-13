@@ -245,9 +245,7 @@ def get_sidecar_drift_signal(
 
     # Call check_sidecar_drift (step 2.2) — returns True iff the current run's sidecar
     # hash differs from the script's first-run manifest baseline.
-    drifted = bathos.prereg.check_sidecar_drift(
-        script, cat_dir, current_sidecar_sha256
-    )
+    drifted = bathos.prereg.check_sidecar_drift(script, cat_dir, current_sidecar_sha256)
 
     # Use script_id if provided, else derive from script_path
     script_id_final = script_id if script_id else script.stem

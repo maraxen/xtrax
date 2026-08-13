@@ -220,10 +220,13 @@ from controller.multi_iteration_loop import (
 )
 from xtrax.devtools.freshness import Attestation
 from xtrax.loop.campaign_approval_gate import DEFAULT_GATES_TOML, assert_campaign_approved
+from xtrax.loop.candidate_smoke import assert_candidate_smoke
 from xtrax.loop.candidate_static import assert_candidate_static
+from xtrax.loop.checkified_execution import assert_checkified_execution
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria, WatchdogHandle, start_watchdog
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
+from xtrax.loop.structure_tripwire import assert_structure_tripwire
 
 _logger = logging.getLogger(__name__)
 
@@ -383,6 +386,11 @@ def run_campaign_loop(
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
+    abstract_inputs: list[Any],
+    structure_tripwire_fn: Callable[..., None] = assert_structure_tripwire,
+    candidate_smoke_fn: Callable[..., None] = assert_candidate_smoke,
+    candidate_smoke_root: Path | None = None,
+    checkified_execution_fn: Callable[..., Any] = assert_checkified_execution,
     wall_clock_budget_seconds: float | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     diversity_window_size: int = 5,
@@ -550,6 +558,11 @@ def run_campaign_loop(
             seed_trial_counts_fn=seed_trial_counts_fn,
             candidate_static_fn=candidate_static_fn,
             candidate_static_root=candidate_static_root,
+            abstract_inputs=abstract_inputs,
+            structure_tripwire_fn=structure_tripwire_fn,
+            candidate_smoke_fn=candidate_smoke_fn,
+            candidate_smoke_root=candidate_smoke_root,
+            checkified_execution_fn=checkified_execution_fn,
             wall_clock_budget_seconds=wall_clock_budget_seconds,
             time_fn=time_fn,
             diversity_window_size=diversity_window_size,

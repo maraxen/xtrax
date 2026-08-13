@@ -65,36 +65,44 @@ this is the gates' final, only call site; a future multi-iteration/conclude-time
 LC-11) may call `assess_stats_battery_verdict`/`assess_seed_trial_floor` again at true campaign-
 conclude time with accumulated data, independent of this per-candidate usage.
 
-## GW-04 addendum: candidate-static gate wired in as a genuine pre-dispatch reject (T2-11, AC-1)
+## GW-04 addendum: 4-of-6 candidate-validation gates wired pre-bathos (T2-11, T2-13, T2-14, T2-15)
 
 The "Scoping decision" above (LC-09/AC-8a) explicitly deferred `xtrax.loop` gates without an
-LC-07-style bathos-data wrapper, precisely because wiring one in here would mean inventing that
-wrapper as a side effect. `candidate_static` (T2-11, AC-1, F0) needs no such wrapper: `xtrax.loop.
-candidate_static.assert_candidate_static` takes only the already-available `handoff.path` and an
-optional `root` for its own jaxlint subprocess -- there is no bathos data-sourcing gap to invent.
-Filed and wired here as [GW-04]'s first slice (backlog id 3651): a candidate that fails static
-checks (an import error, or a JL-series jaxlint error) is rejected **before** `resolve_derived_
-from`/the real bathos `run` call -- AC-1's own "zero GPU time spent" contract, matching `scripts/
-smoke_2181_walking_skeleton.py`'s reference sequencing (`assert_candidate_static` called
-immediately after a candidate's path is known, before schema/structure/smoke/checkified/prereg).
-The remaining five gates in [GW-04]'s pipeline (schema_gate, structure_tripwire, candidate_smoke,
-checkified_execution, prereg_match) are explicitly out of this item's scope -- each needs its own
-integration surface (a StageBundle slot's declared schema, a live tiny-batch execution, the pinned
-uv lockfile, a SafetyManager instance, a bathos prereg sidecar) that this narrowly-scoped change
-does not invent.
+LC-07-style bathos-data wrapper. Four of the six gates in [GW-04]'s pipeline need NO such wrapper:
 
-Like the dispatch/lineage/bathos-run steps above, a `CandidateStaticGateError` propagates
-unmodified -- this module still performs zero retry logic (LC-11/AC-8c's own scope).
+1. `candidate_static` (T2-11, AC-1, F0): takes `handoff.path` + optional jaxlint `root`.
+2. `structure_tripwire` (T2-13, AC-3): takes `handoff.path`, `callable_name`, `abstract_inputs`
+   (caller-sourced), `concrete_inputs` (caller-sourced). No bathos dependency.
+3. `candidate_smoke` (T2-14, AC-4): takes `handoff.path`, `callable_name`, `concrete_inputs`
+   (caller-sourced), optional `root`. No bathos dependency.
+4. `checkified_execution` (T2-15, AC-5): takes `handoff.path`, `callable_name`, `concrete_inputs`
+   (caller-sourced). No bathos dependency.
+
+All four are wired here (backlog #3651) as [GW-04]'s composition: candidates rejected by any of
+these gates fail **before** `resolve_derived_from`/the real bathos `run` call, matching AC-1's
+own "zero GPU time spent" contract and `smoke_2181_walking_skeleton.py`'s reference sequencing.
+
+The remaining two gates in [GW-04]'s pipeline (schema_gate, prereg_match) are explicitly
+DEFERRED to a follow-up backlog item -- schema_gate needs a `declared_schema` data type in
+controller/'s data model (CandidateHandoff or a new StageBundle field, zero existing producers);
+prereg_match needs a bathos-sidecar sourcing gap closed (see backlog #3652 for the narrower,
+deferred `capability_probe_gate` wiring and its own documented deferrals). These two data-sourcing
+gaps are structural, not implementation-easy, so this narrowly-scoped item does not attempt them.
+
+Like the dispatch/lineage/bathos-run steps above, exceptions from any of these four gate functions
+propagate unmodified -- this module still performs zero retry logic (LC-11/AC-8c's own scope).
 
 ## Error/retry policy is explicitly NOT this module's job
 
 `run_one_candidate_pass` performs zero retry logic and does not catch any exception raised by
 the pieces it sequences: `dispatch_backend.dispatch_candidate()` (`CandidateHandoffFailure`,
-`TimeoutError`, `ValueError`), `candidate_static_fn` (`CandidateStaticGateError`, see the GW-04
-addendum above), `record_candidate_run`/`resolve_derived_from`
-(`MultiParentLineageUnsupportedError`), or `campaign_adapter.run` via `record_candidate_run`
-(`BathosMcpToolError`, `BathosMcpTransportError`, `BathosTokenMissingError`). Every one of these
-propagates to the caller unmodified. AC-8c (LC-11) owns error/retry policy and the "conclude
+`TimeoutError`, `ValueError`), `candidate_static_fn` (`CandidateStaticGateError`), the three
+[GW-04] gates (`StructureMismatchError`, `CandidateResolutionError`, `CandidateSmokeTimeoutError`,
+`CandidateSmokeFailedError`, `CheckifiedExecutionError`, see the GW-04 addendum above),
+`record_candidate_run`/`resolve_derived_from` (`MultiParentLineageUnsupportedError`), or
+`campaign_adapter.run` via `record_candidate_run` (`BathosMcpToolError`, `BathosMcpTransportError`,
+`BathosTokenMissingError`). Every one of these propagates to the caller unmodified. AC-8c (LC-11)
+owns error/retry policy and the "conclude
 fires on every code path" guarantee; this module's job is to prove the happy-path sequence is
 wired correctly end-to-end, not to also own what happens when a step fails.
 """
@@ -123,8 +131,11 @@ from controller.lineage_interim import (
     resolve_derived_from,
 )
 from xtrax.loop.attestation_evidence_gate import EvidenceAdmissionResult, EvidenceCandidate
+from xtrax.loop.candidate_smoke import assert_candidate_smoke
 from xtrax.loop.candidate_static import assert_candidate_static
+from xtrax.loop.checkified_execution import assert_checkified_execution
 from xtrax.loop.closure_lock import guarded_evaluate
+from xtrax.loop.structure_tripwire import assert_structure_tripwire
 from xtrax.loop.compile_time_clock import (
     TwoPhaseTiming,
     assert_no_compile_time_regression,
@@ -392,6 +403,11 @@ def run_one_candidate_pass(
     sidecar_drift_signal_fn: Callable[..., SidecarDriftSignal] = get_sidecar_drift_signal,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
+    abstract_inputs: list[Any],
+    structure_tripwire_fn: Callable[..., None] = assert_structure_tripwire,
+    candidate_smoke_fn: Callable[..., None] = assert_candidate_smoke,
+    candidate_smoke_root: Path | None = None,
+    checkified_execution_fn: Callable[..., Any] = assert_checkified_execution,
     frozen_context: BathosFrozenContext,
     current_config: Mapping[str, Any],
     candidate_touched_paths: frozenset[Path] = frozenset(),
@@ -477,6 +493,25 @@ def run_one_candidate_pass(
             the module docstring's GW-04 addendum.
         candidate_static_root: forwarded to `candidate_static_fn` as its `root` kwarg (jaxlint's
             subprocess root; default `None` lets jaxlint fall back to `Path.cwd()`).
+        abstract_inputs: required list of abstract input shapes (JAX ShapeDtypeStruct instances)
+            for structure-tripwire and checkified-execution gates -- supplied by the caller,
+            caller-sourced, not computed here.
+        structure_tripwire_fn: injection seam for tests -- defaults to T2-13's real
+            `assert_structure_tripwire` (abstract vs concrete pytree/shape/dtype comparison).
+            Called immediately after candidate_static_fn, in the same pre-bathos window, to reject
+            candidates with data-dependent control flow before any real execution. Raises
+            `StructureMismatchError` or `CandidateResolutionError` unchanged.
+        candidate_smoke_fn: injection seam for tests -- defaults to T2-14's real
+            `assert_candidate_smoke` (L1 dry-run + L2 CPU smoke test). Called after
+            structure_tripwire_fn, before checkified_execution_fn, in the same pre-bathos window.
+            Raises `CandidateSmokeTimeoutError` or `CandidateSmokeFailedError` unchanged.
+        candidate_smoke_root: forwarded to `candidate_smoke_fn` as its `root` kwarg (working
+            directory for `uv run --locked`; default `None` falls back to the repo root).
+        checkified_execution_fn: injection seam for tests -- defaults to T2-15's real
+            `assert_checkified_execution` (SafetyManager NaN/Inf/overflow checks). Called after
+            candidate_smoke_fn, in the same pre-bathos window, to reject candidates with numeric
+            violations before bathos submission. Raises `CheckifiedExecutionError` or
+            `CandidateResolutionError` unchanged.
         frozen_context: the fixed `BathosFrozenContext` (SPLIT_COMPUTE, #4133/#3657) this
             candidate's raw artifacts are scored against -- `frozen_context.locked` is the
             closure-lock's `ClosureManifest`, forwarded to `guarded_evaluate_fn` unchanged.
@@ -587,6 +622,15 @@ def run_one_candidate_pass(
         CandidateStaticGateError: the candidate fails clean-import or has a JL-series jaxlint
             error -- raised right after dispatch, before lineage resolution or any bathos call
             (T2-11, AC-1).
+        StructureMismatchError, CandidateResolutionError: the structure-tripwire gate (T2-13, AC-3)
+            detected an abstract vs concrete pytree/shape/dtype mismatch, or candidate resolution
+            failed -- raised before the real bathos run.
+        CandidateSmokeTimeoutError, CandidateSmokeFailedError: the candidate-smoke gate (T2-14,
+            AC-4) L1/L2 budget was exhausted or a phase exited nonzero -- raised before the real
+            bathos run.
+        CheckifiedExecutionError, CandidateResolutionError: the checkified-execution gate (T2-15,
+            AC-5) detected a NaN/Inf/overflow violation, or candidate resolution failed -- raised
+            before the real bathos run.
         MultiParentLineageUnsupportedError: `parentage` names more than one distinct, real
             parent run ID -- raised before any bathos call.
         BathosMcpToolError: `campaign_adapter.run` itself failed (bathos-side validation or the
@@ -625,6 +669,25 @@ def run_one_candidate_pass(
     # that fails clean-import or jaxlint JL-series checks before lineage resolution or any real
     # bathos run is attempted. See the module docstring's GW-04 addendum.
     candidate_static_fn(handoff.path, root=candidate_static_root)
+
+    # 1.6. Structure-tripwire gate (T2-13, AC-3; [GW-04]) -- verify abstract vs concrete pytree
+    # structure before any real bathos run. Same pre-bathos window as candidate_static (T2-11).
+    structure_tripwire_fn(
+        handoff.path,
+        callable_name,
+        abstract_inputs=abstract_inputs,
+        concrete_inputs=concrete_inputs,
+    )
+
+    # 1.7. Candidate-smoke gate (T2-14, AC-4; [GW-04]) -- L1 dry-run + L2 CPU smoke test before
+    # any GPU/cluster submission. Same pre-bathos window as candidate_static/structure_tripwire.
+    candidate_smoke_fn(
+        handoff.path, callable_name, concrete_inputs=concrete_inputs, root=candidate_smoke_root
+    )
+
+    # 1.8. Checkified-execution gate (T2-15, AC-5; [GW-04]) -- SafetyManager NaN/Inf/overflow
+    # checks before bathos submission. Same pre-bathos window as prior gates.
+    checkified_execution_fn(handoff.path, callable_name, concrete_inputs=concrete_inputs)
 
     # Resolved directly here (not only inside record_candidate_run) so a genuine multi-parent
     # parentage fails loud before the bathos-run step is even attempted, and so the resolved
@@ -670,7 +733,8 @@ def run_one_candidate_pass(
                 script_id=handoff.path.stem,
             )
             sidecar_drift_decision = assert_sidecar_drift_reaction(
-                sidecar_signal, agent_mode=agent_mode  # type: ignore
+                sidecar_signal,
+                agent_mode=agent_mode,  # type: ignore
             )
 
     # 2.5. Score raw artifacts through the AC-7 closure-lock gate (S2.1, GW-02). output_paths is

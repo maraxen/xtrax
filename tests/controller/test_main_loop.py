@@ -103,6 +103,7 @@ _PASSING_FITNESS = {"accuracy": 0.9, "loss": 0.1}
 _BEST_FITNESS = {"accuracy": 0.9, "loss": 0.1}
 _HIGHER_IS_BETTER = {"accuracy": True, "loss": False}
 _WORSE_FITNESS = {"accuracy": 0.1, "loss": 0.9}
+_PASSING_ABSTRACT_INPUTS: list[Any] = []
 
 
 def _passing_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
@@ -114,10 +115,12 @@ def _passing_timing_fn(*args: Any, **kwargs: Any) -> TwoPhaseTiming:
 
 
 def _new_step_kwargs(**overrides: Any) -> dict[str, Any]:
-    """Default GW-02 kwargs shared by every pre-GW-02 test in this module.
+    """Default GW-02/GW-04 kwargs shared by every pre-GW-02 test in this module.
 
     Tests specifically exercising ratchet/crash-atomicity/compile-time behavior override the
     relevant keys (e.g. `guarded_evaluate_fn`, `best_fitness`/`higher_is_better`).
+    GW-04 tests override gate-fn injection seams (structure_tripwire_fn, candidate_smoke_fn,
+    checkified_execution_fn) as needed.
     """
     defaults: dict[str, Any] = {
         "frozen_context": _FROZEN_CONTEXT,
@@ -130,6 +133,11 @@ def _new_step_kwargs(**overrides: Any) -> dict[str, Any]:
         "callable_name": "unused_callable",
         "concrete_inputs": [],
         "measure_two_phase_timing_fn": _passing_timing_fn,
+        "abstract_inputs": _PASSING_ABSTRACT_INPUTS,
+        "structure_tripwire_fn": _passing_structure_tripwire_fn,
+        "candidate_smoke_fn": _passing_candidate_smoke_fn,
+        "candidate_smoke_root": None,
+        "checkified_execution_fn": _passing_checkified_execution_fn,
     }
     defaults.update(overrides)
     return defaults
@@ -164,6 +172,53 @@ def _passing_candidate_static_fn(path: Path, root: Path | None = None) -> None:
     doesn't exist on disk (e.g. `Path("candidate.py")`), so the REAL gate (which imports the
     file) would reject every one of them. Tests that exercise the static gate itself pass their
     own `candidate_static_fn` instead of this stub."""
+    return None
+
+
+def _passing_structure_tripwire_fn(
+    path: Path, callable_name: str, *, abstract_inputs: list[Any], concrete_inputs: list[Any]
+) -> None:
+    """Stub standing in for T2-13's real `assert_structure_tripwire` (GW-04).
+
+    MockDispatchBackend candidates don't exist on disk, so the real gate (which imports and
+    traces the candidate) would reject every one. Tests exercising structure_tripwire itself pass
+    their own `structure_tripwire_fn`.
+    """
+    return None
+
+
+def _passing_candidate_smoke_fn(
+    path: Path,
+    callable_name: str,
+    *,
+    concrete_inputs: list[Any],
+    wall_clock_budget_seconds: float = 60.0,
+    poll_interval_seconds: float = 0.5,
+    root: Path | None = None,
+) -> None:
+    """Stub standing in for T2-14's real `assert_candidate_smoke` (GW-04).
+
+    MockDispatchBackend candidates don't exist on disk, so the real gate (which spawns a
+    subprocess to resolve and run the candidate) would reject every one. Tests exercising
+    candidate_smoke itself pass their own `candidate_smoke_fn`.
+    """
+    return None
+
+
+def _passing_checkified_execution_fn(
+    path: Path,
+    callable_name: str,
+    *,
+    concrete_inputs: list[Any],
+    check_nans: bool = True,
+    check_infs: bool = True,
+) -> Any:
+    """Stub standing in for T2-15's real `assert_checkified_execution` (GW-04).
+
+    MockDispatchBackend candidates don't exist on disk, so the real gate (which imports and
+    calls the candidate under SafetyManager) would reject every one. Tests exercising
+    checkified_execution itself pass their own `checkified_execution_fn`.
+    """
     return None
 
 

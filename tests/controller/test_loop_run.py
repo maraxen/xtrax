@@ -242,6 +242,38 @@ def _passing_campaign_approval_fn(
     return Attestation(attested_at="2026-07-19T00:00:00Z", ttl_days=30.0, attested_by="test")
 
 
+def _passing_structure_tripwire_fn(
+    path: Path, callable_name: str, *, abstract_inputs: list[Any], concrete_inputs: list[Any]
+) -> None:
+    """Stub for T2-13's real gate (GW-04) -- no-op for end-to-end tests."""
+    return None
+
+
+def _passing_candidate_smoke_fn(
+    path: Path,
+    callable_name: str,
+    *,
+    concrete_inputs: list[Any],
+    wall_clock_budget_seconds: float = 60.0,
+    poll_interval_seconds: float = 0.5,
+    root: Path | None = None,
+) -> None:
+    """Stub for T2-14's real gate (GW-04) -- no-op for end-to-end tests."""
+    return None
+
+
+def _passing_checkified_execution_fn(
+    path: Path,
+    callable_name: str,
+    *,
+    concrete_inputs: list[Any],
+    check_nans: bool = True,
+    check_infs: bool = True,
+) -> Any:
+    """Stub for T2-15's real gate (GW-04) -- no-op for end-to-end tests."""
+    return None
+
+
 _CRITERIA = WatchdogCriteria(wall_clock_budget_seconds=3600.0)
 
 
@@ -306,6 +338,11 @@ def _base_kwargs(dispatch_backend: Any, transport: _MultiToolTransport) -> dict[
         "callable_name": _TIMING_PROBE_NAME,
         "concrete_inputs": _TIMING_CONCRETE_INPUTS,
         "higher_is_better": _HIGHER_IS_BETTER,
+        "abstract_inputs": [],
+        "structure_tripwire_fn": _passing_structure_tripwire_fn,
+        "candidate_smoke_fn": _passing_candidate_smoke_fn,
+        "candidate_smoke_root": None,
+        "checkified_execution_fn": _passing_checkified_execution_fn,
         # See test_multi_iteration_loop.py's module docstring #4203 addendum for why this
         # deliberate deviation from a literal "8 new values" reading is required.
         "allow_fresh_start_despite_existing_lineage": True,
