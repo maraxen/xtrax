@@ -1342,9 +1342,9 @@ class TestCheckifiedExecutionGate:
                 bathos_idx = i
 
         assert checkified_idx is not None and bathos_idx is not None
-        assert (
-            checkified_idx < bathos_idx
-        ), f"checkified_execution must fire before bathos:run, got order {gate_calls}"
+        assert checkified_idx < bathos_idx, (
+            f"checkified_execution must fire before bathos:run, got order {gate_calls}"
+        )
         assert result.accepted is True
 
 
@@ -2474,17 +2474,10 @@ class TestGW01EvidenceAndSidecarDrift:
 
     def test_evidence_admission_none_when_no_run_id(self) -> None:
         """When bathos run fails and run_id is empty, evidence_admission should be None."""
-
-        def mock_run_result(*args: Any, **kwargs: Any) -> CandidateRunResult:
-            # Return a run result with empty run_id (fallback strategy)
-            return CandidateRunResult(
-                success=True,
-                run_id="",  # Empty run_id means run lookup failed
-                score=0.5,
-                score_fn_source="test",
-            )
-
-        # Mock the campaign adapter's run method
+        # No monkeypatch of _query_run_id_by_script_sha256 here (unlike the other tests in
+        # this class): the real lookup short-circuits to "" because the candidate script
+        # path doesn't exist on disk, so run_id ends up empty and evidence_admission must
+        # be None -- this is the actual no-run-id code path, not a mocked substitute.
         adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
 
         result = run_one_candidate_pass(
@@ -2502,7 +2495,5 @@ class TestGW01EvidenceAndSidecarDrift:
             **_new_step_kwargs(),
         )
 
-        # When run_id is empty or not found, evidence_admission should be None
-        # (the actual run has run_id="run-xyz" from the envelope, so this test verifies
-        # the structure exists even when run_id lookup would fail)
-        assert result.gate_outcome.evidence_admission is not None or result.run_result.run_id == ""
+        assert result.run_result.run_id == ""
+        assert result.gate_outcome.evidence_admission is None
