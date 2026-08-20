@@ -144,6 +144,11 @@ from xtrax.loop.compile_time_clock import (
     assert_no_compile_time_regression,
     measure_two_phase_timing,
 )
+from xtrax.loop.metrics_provenance import (
+    MetricsProvenanceRecord,
+    verify_metrics_provenance,
+    write_metrics_provenance_attestation,
+)
 from xtrax.loop.multi_metric_ratchet import RatchetDecision, compute_ratchet_decision
 from xtrax.loop.ratchet_crash_atomicity import (
     advance_best_so_far,
@@ -252,6 +257,10 @@ class OneCandidatePassResult:
             call before any `OneCandidatePassResult` -- partial or otherwise -- is constructed,
             so `fitness_dict` is never observed in a half-populated state (mirrors
             `ratchet_decision`'s own no-partial-construction guarantee above).
+        provenance_record: the `MetricsProvenanceRecord` wrapping `fitness_dict` after
+            `verify_metrics_provenance` + attestation write succeed (backlog #3075). Never
+            constructed as a partial result -- empty `run_id` and provenance-verify failures
+            abort before this dataclass is built (and before any ratchet commit).
     """
 
     handoff: CandidateHandoff
@@ -260,6 +269,7 @@ class OneCandidatePassResult:
     gate_outcome: GateOutcome
     ratchet_decision: RatchetDecision
     fitness_dict: dict[str, float]
+    provenance_record: MetricsProvenanceRecord
 
     @property
     def accepted(self) -> bool:
@@ -469,6 +479,8 @@ def run_one_candidate_pass(
     current_config: Mapping[str, Any],
     candidate_touched_paths: frozenset[Path] = frozenset(),
     guarded_evaluate_fn: Callable[..., dict[str, float]] = guarded_evaluate,
+    metrics_provenance_dir: Path,
+    verify_metrics_provenance_fn: Callable[..., None] = verify_metrics_provenance,
     best_fitness: Mapping[str, float] | None = None,
     higher_is_better: Mapping[str, bool] | None = None,
     repo: Path,
@@ -592,6 +604,13 @@ def run_one_candidate_pass(
             seam. `ClosureHashMismatchError`/`EvaluatorClosureDriftError`/`UnlistedReadError`
             propagate unmodified (see the module docstring: this is a non-recoverable HALT
             signal, not a candidate-rejection result).
+        metrics_provenance_dir: directory that receives `write_metrics_provenance_attestation`
+            output as `{run_id}.toml` (backlog #3075). Required -- callers (including tests)
+            supply an isolated path; this function does not default to cwd.
+        verify_metrics_provenance_fn: injection seam for tests -- defaults to the real
+            `xtrax.loop.metrics_provenance.verify_metrics_provenance`. Called after wrapping
+            the already-scored `fitness_dict`; `UnprovenancedMetricsError` propagates uncaught
+            (HALT before ratchet commit and before `OneCandidatePassResult` construction).
         best_fitness: the current best-so-far candidate's fitness dict, or `None` for the first
             candidate in a campaign (no prior best to ratchet against). Must be supplied
             together with `higher_is_better` (both `None` or both set) -- a `ValueError` is
@@ -818,6 +837,22 @@ def run_one_candidate_pass(
         candidate_touched_paths=candidate_touched_paths,
     )
 
+    # 2.55. Metrics provenance (#3075) -- wrap already-scored fitness_dict; do not re-evaluate.
+    # Empty run_id and UnprovenancedMetricsError HALT before ratchet commit and before
+    # OneCandidatePassResult is constructed.
+    if not run_result.run_id:
+        msg = "run_id must be non-empty to attest metrics provenance"
+        raise ValueError(msg)
+    record = MetricsProvenanceRecord(
+        fitness=fitness_dict,
+        evaluator_closure_hash=frozen_context.locked.closure_hash,
+        run_id=run_result.run_id,
+    )
+    verify_metrics_provenance_fn(record, locked=frozen_context.locked)
+    write_metrics_provenance_attestation(
+        record, metrics_provenance_dir / f"{run_result.run_id}.toml"
+    )
+
     # 2.6. Multi-metric ratchet decision (S2.1b, AC-10). best_fitness/higher_is_better must both
     # be supplied or both omitted -- validated before either the ratchet or the crash-atomicity
     # step below is ever reached.
@@ -997,6 +1032,7 @@ def run_one_candidate_pass(
         ),
         ratchet_decision=ratchet_decision,
         fitness_dict=fitness_dict,
+        provenance_record=record,
     )
 
 

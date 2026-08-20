@@ -442,6 +442,7 @@ def run_campaign_loop(
     capability_probe_catalog_dir: str = "",
     higher_is_better: Mapping[str, bool],
     frozen_context: BathosFrozenContext,
+    metrics_provenance_dir: Path,
     current_config: Mapping[str, Any],
     repo: Path,
     ratchet_ref_name: str,
@@ -531,6 +532,8 @@ def run_campaign_loop(
         frozen_context: re-locked against `current_config` after approval/probe and before
             `campaign_create`, then forwarded to `run_multi_iteration_loop` (SPLIT_COMPUTE,
             #4133/#3657/#4164).
+        metrics_provenance_dir: forwarded to `run_multi_iteration_loop` unchanged (backlog
+            #3075 metrics-provenance attestation directory).
         current_config: forwarded to `run_multi_iteration_loop` unchanged.
         repo: forwarded to `run_multi_iteration_loop` unchanged.
         ratchet_ref_name: forwarded to `run_multi_iteration_loop` unchanged.
@@ -647,6 +650,7 @@ def run_campaign_loop(
             higher_is_better=higher_is_better,
             frozen_context=frozen_context,
             current_config=current_config,
+            metrics_provenance_dir=metrics_provenance_dir,
             repo=repo,
             ratchet_ref_name=ratchet_ref_name,
             commit_tree_sha=commit_tree_sha,

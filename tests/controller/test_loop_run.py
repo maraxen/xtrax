@@ -296,6 +296,8 @@ _TIMING_PROBE_NAME = "timing_probe"
 _TIMING_PROBE_SUFFIX = f"\n\ndef {_TIMING_PROBE_NAME}(a, b):\n    return a + b\n"
 _TIMING_CONCRETE_INPUTS: list[Any] = [1.0, 2.0]
 _HIGHER_IS_BETTER = {"metric_a": True, "metric_b": True}
+_PROV_RUN_ID = "prov-run-1"
+_METRICS_PROVENANCE_DIR = Path("unused-metrics-provenance")
 
 
 def _make_monotonic_score_fn() -> Any:
@@ -358,6 +360,7 @@ def _base_kwargs(dispatch_backend: Any, transport: _MultiToolTransport) -> dict[
         # See test_multi_iteration_loop.py's module docstring #4203 addendum for why this
         # deliberate deviation from a literal "8 new values" reading is required.
         "allow_fresh_start_despite_existing_lineage": True,
+        "metrics_provenance_dir": _METRICS_PROVENANCE_DIR,
     }
 
 
@@ -380,6 +383,18 @@ def _stub_crash_atomicity(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         main_loop_module, "reset_worktree_to_best_so_far", lambda repo, ref_name: "best-sha"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _stub_metrics_provenance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate metrics-provenance writes under tmp_path and supply a non-empty run_id."""
+    global _METRICS_PROVENANCE_DIR
+    _METRICS_PROVENANCE_DIR = tmp_path / "metrics_provenance"
+    _METRICS_PROVENANCE_DIR.mkdir()
+    monkeypatch.setattr(
+        "controller.bathos_campaign_adapter.BathosCampaignAdapter._query_run_id_by_script_sha256",
+        lambda self, script_path, catalog_dir: _PROV_RUN_ID,
     )
 
 
@@ -1006,6 +1021,7 @@ _FORWARDED_BYTE_IDENTICAL_KEYS = (
     "concrete_inputs",
     "candidate_target_path",
     "allow_fresh_start_despite_existing_lineage",
+    "metrics_provenance_dir",
 )
 
 
