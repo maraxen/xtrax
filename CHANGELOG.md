@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a6] - 2026-08-20
+
+### Added
+
+- **`WhileCarry`** (`xtrax.tiling`): `lax.while_loop`-backed `AxisStrategy`
+  for carry-only loops (no input sequence, no per-step `ys`).
+  `CarrySpec(collect_outputs=False)` pre-demotes to `WhileCarry`;
+  `make_axis_dispatch` returns `WhileLoopIterator`. Not reverse-mode AD
+  safe. (#81 spec, #83 implementation)
+
 ## [0.4.0a5] - 2026-07-08
 
 ### Added
