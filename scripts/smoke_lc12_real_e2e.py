@@ -241,6 +241,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -260,6 +261,10 @@ from controller.evaluate_adapter import (  # noqa: E402
 from controller.loop_run import CampaignLoopResult, run_campaign_loop  # noqa: E402
 from controller.praxia_dispatch_backend import PraxiaDispatchBackend  # noqa: E402
 from xtrax.loop.closure_lock import ClosureManifest, build_closure_manifest  # noqa: E402
+from xtrax.loop.evaluator_completeness import (  # noqa: E402
+    InvariantManifest,
+    SyntheticGroundTruthCase,
+)
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria  # noqa: E402
 from xtrax.loop.seed_gate import SeedTrialCounts  # noqa: E402
 from xtrax.run.freshness import Attestation  # noqa: E402
@@ -425,6 +430,56 @@ def _head_sha(repo: Path) -> str:
     return _run_git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
+def _fresh_empty_invariant_manifest() -> InvariantManifest:
+    """Fresh empty-invariant manifest for the campaign-start completeness gate (#3076).
+
+    Does not invent production invariant content -- empty `invariants` plus a fresh
+    attestation is enough for the gate to pass.
+    """
+    return InvariantManifest(
+        invariants=(),
+        attestation=Attestation(
+            attested_at=datetime.now(UTC).isoformat(),
+            ttl_days=30.0,
+            attested_by="lc12-smoke",
+        ),
+    )
+
+
+def _trivial_one_hot_sanity_case() -> SyntheticGroundTruthCase:
+    """Trivial one-hot compatible with default `score_raw_artifacts` + `"score"` ranking.
+
+    Candidate keys are output-path tuples. The sanity-case frozen_context's score_fn returns
+    `{"score": ...}` keyed by filename so the campaign's synthetic metric_a/metric_b score_fn
+    is never consulted by the completeness gate.
+    """
+
+    def score_fn(
+        raw_artifact_paths: tuple[Path, ...], split_paths: tuple[Path, ...]
+    ) -> dict[str, float]:
+        del split_paths
+        name = Path(raw_artifact_paths[0]).name
+        return {"score": {"best.txt": 1.0, "worse.txt": 0.0}[name]}
+
+    frozen = BathosFrozenContext(
+        locked=build_closure_manifest(
+            evaluator_paths=(),
+            split_paths=(),
+            metric_def_paths=(),
+            config={},
+        ),
+        campaign_adapter=None,  # type: ignore[arg-type]
+        campaign_id="completeness-sanity",
+        score_fn=score_fn,
+    )
+    best_key = ("best.txt",)
+    worse_key = ("worse.txt",)
+    return SyntheticGroundTruthCase(
+        candidates={best_key: frozen, worse_key: frozen},
+        known_best=best_key,
+    )
+
+
 def _smoke_campaign_approval_fn(campaign_id: str, *, toml_path: Path | None = None) -> Attestation:
     """Stub standing in for T2-32's real `assert_campaign_approved` -- matches its real
     `campaign_approval_fn` signature exactly, unconditionally returns a valid `Attestation`, and
@@ -553,6 +608,8 @@ def _run_pass_campaign(
         candidate_target_path=Path("candidate.py"),
         bootstrap_commit_sha=bootstrap_sha,
         campaign_approval_fn=_smoke_campaign_approval_fn,
+        invariant_manifest=_fresh_empty_invariant_manifest(),
+        completeness_sanity_case=_trivial_one_hot_sanity_case(),
     )
 
 
@@ -614,6 +671,8 @@ def _run_fail_campaign(
         candidate_target_path=Path("candidate.py"),
         bootstrap_commit_sha=bootstrap_sha,
         campaign_approval_fn=_smoke_campaign_approval_fn,
+        invariant_manifest=_fresh_empty_invariant_manifest(),
+        completeness_sanity_case=_trivial_one_hot_sanity_case(),
     )
 
 

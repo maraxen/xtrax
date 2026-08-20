@@ -115,18 +115,17 @@ and the cross-repo integration seam (bathos.capability probe, not xtrax-side ver
 A `CapabilityNotLiveError` fires before `campaign_create` -- no campaign is created, so nothing
 needs concluding, the same "nothing to conclude" treatment as approval failures above.
 
-**Deferred sub-gates (T2-01, T2-08):** This item wires capability_probe only. Two other T2-27
-candidate sub-gates remain unimplemented:
+**T2-27 sibling gates (T2-01, T2-08):** This item originally wired capability_probe only.
 
 - **admission (T2-01, AC-E1):** deliberately closed as already-satisfied. admit_candidate/
   validate_graph operate on HostPrepGraph, structurally disjoint from controller's CandidateHandoff
   (path, sha256) model (zero hits repo-wide). AC-E1's intent is already served by the live `xtrax
   graph-validate` CLI verb as an upstream authoring-time gate.
-- **evaluator_completeness (T2-08, AC-11):** deliberately deferred (filed as a follow-up backlog
-  item). InvariantManifest/SyntheticGroundTruthCase have zero producers anywhere in the repo;
-  wiring a call site now would force fabricating inputs ad hoc, worse than leaving it open and
-  documented. This gap is tracked in the live backlog and requires its own future brainstorm/
-  adversarial-review pass (task_id: 260813_epic2181-gw-sprint-compose).
+- **evaluator_completeness (T2-08, AC-11, backlog #3076):** wired as `completeness_fn` (default:
+  `assert_evaluator_completeness`) after frozen_context re-lock and strictly before
+  `campaign_create`. Callers supply `invariant_manifest` and `completeness_sanity_case`
+  (required; no default). Failures propagate before any campaign exists -- nothing to conclude.
+  Completeness is not forwarded to `run_multi_iteration_loop` / `run_one_candidate_pass`.
 
 ## What "a caught per-candidate failure" means here, vs. "an uncaught exception" -- grounded, not
 ## invented
@@ -242,7 +241,7 @@ from controller.bathos_library_wrappers import (
     get_seed_trial_counts,
 )
 from controller.dispatch import CandidateHandoffFailure, DispatchBackend
-from controller.evaluate_adapter import BathosFrozenContext
+from controller.evaluate_adapter import BathosFrozenContext, score_raw_artifacts
 from controller.lineage_interim import CandidateParentage
 from controller.main_loop import CampaignMode
 from controller.multi_iteration_loop import (
@@ -260,6 +259,11 @@ from xtrax.loop.capability_probe_gate import (
 )
 from xtrax.loop.checkified_execution import assert_checkified_execution
 from xtrax.loop.closure_lock import build_closure_manifest
+from xtrax.loop.evaluator_completeness import (
+    InvariantManifest,
+    SyntheticGroundTruthCase,
+    assert_evaluator_completeness,
+)
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria, WatchdogHandle, start_watchdog
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
@@ -452,6 +456,10 @@ def run_campaign_loop(
     candidate_target_path: Path | None = None,
     allow_fresh_start_despite_existing_lineage: bool = False,
     bootstrap_commit_sha: str | None = None,
+    completeness_fn: Callable[..., None] = assert_evaluator_completeness,
+    completeness_evaluator: Callable[..., dict[str, float]] = score_raw_artifacts,
+    invariant_manifest: InvariantManifest,
+    completeness_sanity_case: SyntheticGroundTruthCase,
 ) -> CampaignLoopResult:
     """Open one bathos campaign, run the multi-iteration loop, and guarantee it concludes.
 
@@ -550,6 +558,17 @@ def run_campaign_loop(
             fresh campaign's first accepted candidate (`read_best_so_far` returns `None`);
             callers needing the two inner values to diverge must call `run_one_candidate_pass`
             directly. See `run_multi_iteration_loop`'s own docstring for the full rationale.
+        completeness_fn: injection seam -- the evaluator-completeness gate (#3076, T2-08, AC-11)
+            invoked after frozen_context re-lock and strictly before `campaign_create`. Defaults
+            to `assert_evaluator_completeness`. Called as
+            `completeness_fn(completeness_evaluator, invariant_manifest, completeness_sanity_case)`.
+            Not forwarded to `run_multi_iteration_loop` / `run_one_candidate_pass`.
+        completeness_evaluator: first argument to `completeness_fn`. Defaults to
+            `score_raw_artifacts` (in-process; does not dispatch a bathos `run`).
+        invariant_manifest: required (no default). Reviewed invariant set handed to
+            `completeness_fn`.
+        completeness_sanity_case: required (no default). One-hot synthetic ground-truth case
+            handed to `completeness_fn`.
 
     Returns:
         A `CampaignLoopResult` on successful completion (the only path that returns instead of
@@ -562,6 +581,9 @@ def run_campaign_loop(
             has no fresh T2-32 approval entry in the gates file -- raised before `campaign_create`
             is called; no campaign is created, so nothing needs concluding (same treatment as the
             `max_candidates < 1` `ValueError` above; see the module docstring's GW-03 addendum).
+        InvariantManifestStaleError, SyntheticSanityCheckFailedError, InvariantViolationError:
+            evaluator-completeness gate (#3076) failed -- raised after frozen_context re-lock and
+            before `campaign_create`; no campaign is created, so nothing needs concluding.
         BathosMcpToolError, BathosMcpTransportError, BathosTokenMissingError: `campaign_create`
             itself failed -- raised before this function's guaranteed-conclude region begins.
         CandidateHandoffFailure, TimeoutError, ValueError: a caught per-candidate dispatch
@@ -603,6 +625,15 @@ def run_campaign_loop(
             config=current_config,
             pinned_deps_source=frozen_context.locked.pinned_deps_source,
         ),
+    )
+
+    # Evaluator-completeness gate (#3076, T2-08, AC-11): after frozen_context re-lock and
+    # strictly before campaign_create. Failures propagate with nothing to conclude. Not
+    # forwarded to run_multi_iteration_loop / run_one_candidate_pass.
+    completeness_fn(
+        completeness_evaluator,
+        invariant_manifest,
+        completeness_sanity_case,
     )
 
     handle: CampaignHandle = campaign_adapter.campaign_create(

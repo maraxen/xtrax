@@ -72,7 +72,7 @@ from controller.dispatch import (
     MockDispatchBackend,
     MockFailureMode,
 )
-from controller.evaluate_adapter import BathosFrozenContext
+from controller.evaluate_adapter import BathosFrozenContext, score_raw_artifacts
 from controller.lineage_interim import CandidateParentage, MultiParentLineageUnsupportedError
 from controller.loop_run import CampaignLoopResult, LoopEvent, run_campaign_loop
 from xtrax.loop.campaign_approval_gate import (
@@ -80,6 +80,13 @@ from xtrax.loop.campaign_approval_gate import (
     NoMatchingApprovalError,
 )
 from xtrax.loop.closure_lock import build_closure_manifest
+from xtrax.loop.evaluator_completeness import (
+    InvariantManifest,
+    InvariantManifestStaleError,
+    SyntheticGroundTruthCase,
+    SyntheticSanityCheckFailedError,
+    assert_evaluator_completeness,
+)
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
@@ -330,6 +337,51 @@ def _frozen_context() -> BathosFrozenContext:
     )
 
 
+def _fresh_empty_invariant_manifest() -> InvariantManifest:
+    return InvariantManifest(
+        invariants=(),
+        attestation=Attestation(
+            attested_at=datetime.now(UTC).isoformat(),
+            ttl_days=30.0,
+            attested_by="test",
+        ),
+    )
+
+
+def _trivial_one_hot_sanity_case() -> SyntheticGroundTruthCase:
+    """Trivial one-hot compatible with default `score_raw_artifacts` + `"score"` ranking.
+
+    Candidate keys are output-path tuples. The sanity-case frozen_context's score_fn returns
+    `{"score": ...}` keyed by filename so existing tests' campaign score_fn (`metric_a` /
+    `metric_b`) is never consulted by the completeness gate.
+    """
+
+    def score_fn(
+        raw_artifact_paths: tuple[Path, ...], split_paths: tuple[Path, ...]
+    ) -> dict[str, float]:
+        del split_paths
+        name = Path(raw_artifact_paths[0]).name
+        return {"score": {"best.txt": 1.0, "worse.txt": 0.0}[name]}
+
+    frozen = BathosFrozenContext(
+        locked=build_closure_manifest(
+            evaluator_paths=(),
+            split_paths=(),
+            metric_def_paths=(),
+            config={},
+        ),
+        campaign_adapter=None,  # type: ignore[arg-type]
+        campaign_id="completeness-sanity",
+        score_fn=score_fn,
+    )
+    best_key = ("best.txt",)
+    worse_key = ("worse.txt",)
+    return SyntheticGroundTruthCase(
+        candidates={best_key: frozen, worse_key: frozen},
+        known_best=best_key,
+    )
+
+
 def _base_kwargs(dispatch_backend: Any, transport: _MultiToolTransport) -> dict[str, Any]:
     return {
         "dispatch_backend": dispatch_backend,
@@ -361,6 +413,8 @@ def _base_kwargs(dispatch_backend: Any, transport: _MultiToolTransport) -> dict[
         # deliberate deviation from a literal "8 new values" reading is required.
         "allow_fresh_start_despite_existing_lineage": True,
         "metrics_provenance_dir": _METRICS_PROVENANCE_DIR,
+        "invariant_manifest": _fresh_empty_invariant_manifest(),
+        "completeness_sanity_case": _trivial_one_hot_sanity_case(),
     }
 
 
@@ -1340,3 +1394,293 @@ class TestCampaignStartRelock:
             "re-lock must happen after approval/probe and BEFORE campaign_create"
         )
         assert order.index("campaign_create") < order.index("run_multi_iteration_loop")
+
+
+# ---------------------------------------------------------------------------
+# 10. Evaluator-completeness gate (#3076): after re-lock, BEFORE campaign_create.
+# `_base_kwargs` supplies a fresh empty-invariant manifest + trivial one-hot so
+# existing tests collect. This class still passes completeness kwargs explicitly
+# when it needs a spy, a stale attestation, or a failing known-best.
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluatorCompleteness3076:
+    """Backlog #3076: production caller of xtrax.loop.evaluator_completeness.
+
+    Production (not these tests) must call completeness_fn(completeness_evaluator,
+    invariant_manifest, completeness_sanity_case) after frozen_context re-lock and
+    before campaign_create. Failures propagate with nothing to conclude.
+    """
+
+    @staticmethod
+    def _stale_attestation() -> Attestation:
+        return Attestation(
+            attested_at="2000-01-01T00:00:00+00:00",
+            ttl_days=1.0,
+            attested_by="test",
+        )
+
+    @staticmethod
+    def _fresh_empty_manifest() -> InvariantManifest:
+        return _fresh_empty_invariant_manifest()
+
+    @staticmethod
+    def _stale_empty_manifest() -> InvariantManifest:
+        return InvariantManifest(
+            invariants=(), attestation=TestEvaluatorCompleteness3076._stale_attestation()
+        )
+
+    @staticmethod
+    def _score_by_output_name_frozen() -> BathosFrozenContext:
+        """score_fn returns {"score": ...} keyed by output-path name — required by
+        run_synthetic_sanity_check, which ranks on the "score" key."""
+
+        def score_fn(
+            raw_artifact_paths: tuple[Path, ...], split_paths: tuple[Path, ...]
+        ) -> dict[str, float]:
+            del split_paths
+            name = Path(raw_artifact_paths[0]).name
+            scores = {"best.txt": 1.0, "worse.txt": 0.0}
+            return {"score": scores[name]}
+
+        return BathosFrozenContext(
+            locked=build_closure_manifest(
+                evaluator_paths=(),
+                split_paths=(),
+                metric_def_paths=(),
+                config={},
+            ),
+            campaign_adapter=None,  # type: ignore[arg-type]
+            campaign_id="camp-1",
+            score_fn=score_fn,
+        )
+
+    @staticmethod
+    def _artifact_sanity_case(
+        tmp_path: Path, *, known_best_name: str = "best.txt"
+    ) -> SyntheticGroundTruthCase:
+        """One-hot fixture files. Candidate keys are output_paths tuples so the
+        default completeness_evaluator (score_raw_artifacts) can score them."""
+        best = tmp_path / "best.txt"
+        worse = tmp_path / "worse.txt"
+        best.write_text("best-artifact", encoding="utf-8")
+        worse.write_text("worse-artifact", encoding="utf-8")
+        frozen = TestEvaluatorCompleteness3076._score_by_output_name_frozen()
+        best_key = (str(best),)
+        worse_key = (str(worse),)
+        known_best = best_key if known_best_name == "best.txt" else worse_key
+        return SyntheticGroundTruthCase(
+            candidates={best_key: frozen, worse_key: frozen},
+            known_best=known_best,
+        )
+
+    def _kwargs(
+        self,
+        tmp_path: Path,
+        dispatch_backend: Any,
+        transport: _MultiToolTransport,
+        **overrides: Any,
+    ) -> dict[str, Any]:
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["invariant_manifest"] = self._fresh_empty_manifest()
+        kwargs["completeness_sanity_case"] = self._artifact_sanity_case(tmp_path)
+        kwargs.update(overrides)
+        return kwargs
+
+    def test_completeness_runs_after_relock_and_before_campaign_create(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Order spy: relock, then completeness, then campaign_create. Completeness
+        itself must not dispatch (zero "run" / "campaign_create" during the callback)."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        order: list[str] = []
+
+        real_build = loop_run_module.build_closure_manifest
+
+        def _relock_spy(*args: Any, **kw: Any) -> Any:
+            order.append("relock")
+            return real_build(*args, **kw)
+
+        monkeypatch.setattr(loop_run_module, "build_closure_manifest", _relock_spy)
+
+        def _completeness_spy(evaluator: Any, manifest: Any, sanity_case: Any) -> None:
+            order.append("completeness")
+            assert transport.calls_for("run") == []
+            assert transport.calls_for("campaign_create") == []
+            assert_evaluator_completeness(evaluator, manifest, sanity_case)
+            assert transport.calls_for("run") == [], (
+                "completeness must not dispatch bathos run (in-process score_raw_artifacts)"
+            )
+            assert transport.calls_for("campaign_create") == [], (
+                "completeness must finish before campaign_create"
+            )
+
+        kwargs = self._kwargs(tmp_path, dispatch_backend, transport)
+        kwargs["completeness_fn"] = _completeness_spy
+
+        real_create = kwargs["campaign_adapter"].campaign_create
+
+        def _create_spy(*args: Any, **kw: Any) -> Any:
+            order.append("campaign_create")
+            return real_create(*args, **kw)
+
+        monkeypatch.setattr(kwargs["campaign_adapter"], "campaign_create", _create_spy)
+
+        from controller.multi_iteration_loop import MultiIterationLoopResult
+
+        def _outer_spy(*args: Any, **kw: Any) -> Any:
+            order.append("run_multi_iteration_loop")
+            return MultiIterationLoopResult(
+                iterations=(),
+                termination_reason="normal_completion",
+                leap_path_events=(),
+                watchdog_handle=_FakeWatchdogHandle(),
+            )
+
+        monkeypatch.setattr(loop_run_module, "run_multi_iteration_loop", _outer_spy)
+
+        result = run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+        assert result.conclusion.outcome_label == "success"
+
+        assert "relock" in order
+        assert "completeness" in order
+        assert "campaign_create" in order
+        assert order.index("relock") < order.index("completeness"), (
+            "completeness must run after frozen_context re-lock"
+        )
+        assert order.index("completeness") < order.index("campaign_create"), (
+            "completeness must run BEFORE campaign_create"
+        )
+        assert len(transport.calls_for("campaign_create")) == 1
+
+    def test_completeness_raise_prevents_campaign_create_and_makes_zero_run_calls(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A completeness raise means campaign_create is never called (nothing to conclude).
+        Completeness is in-process: zero bathos "run" calls as well."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        order: list[str] = []
+
+        real_build = loop_run_module.build_closure_manifest
+
+        def _relock_spy(*args: Any, **kw: Any) -> Any:
+            order.append("relock")
+            return real_build(*args, **kw)
+
+        monkeypatch.setattr(loop_run_module, "build_closure_manifest", _relock_spy)
+
+        def _raising_completeness_fn(evaluator: Any, manifest: Any, sanity_case: Any) -> None:
+            del evaluator, manifest, sanity_case
+            order.append("completeness")
+            raise InvariantManifestStaleError("injected completeness failure")
+
+        with pytest.raises(InvariantManifestStaleError, match="injected completeness failure"):
+            run_campaign_loop(
+                **self._kwargs(
+                    tmp_path,
+                    dispatch_backend,
+                    transport,
+                    completeness_fn=_raising_completeness_fn,
+                ),
+                max_candidates=1,
+                start_watchdog_fn=starter,
+            )
+
+        assert transport.calls_for("campaign_create") == []
+        assert transport.calls_for("run") == []
+        assert "relock" in order
+        assert "completeness" in order
+        assert order.index("relock") < order.index("completeness")
+        assert "campaign_create" not in order
+
+    def test_happy_path_fresh_manifest_one_hot_sanity_with_score_raw_artifacts(
+        self, tmp_path: Path
+    ) -> None:
+        """Default completeness_evaluator is score_raw_artifacts; campaign proceeds.
+        Completeness itself must not dispatch; campaign_create fires after the gate."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        captured: dict[str, Any] = {}
+
+        def _recording_completeness_fn(evaluator: Any, manifest: Any, sanity_case: Any) -> None:
+            captured["evaluator"] = evaluator
+            assert transport.calls_for("run") == []
+            assert transport.calls_for("campaign_create") == []
+            assert_evaluator_completeness(evaluator, manifest, sanity_case)
+            assert transport.calls_for("run") == [], (
+                "completeness must not dispatch; score_raw_artifacts is in-process"
+            )
+            assert transport.calls_for("campaign_create") == []
+
+        result = run_campaign_loop(
+            **self._kwargs(
+                tmp_path,
+                dispatch_backend,
+                transport,
+                completeness_fn=_recording_completeness_fn,
+            ),
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+
+        assert captured["evaluator"] is score_raw_artifacts
+        assert result.conclusion.outcome_label == "success"
+        assert len(transport.calls_for("campaign_create")) == 1
+        assert result.campaign_id == "camp-loop-run-test"
+
+    def test_stale_attestation_raises_before_campaign_create(self, tmp_path: Path) -> None:
+        """Default completeness_fn (assert_evaluator_completeness) rejects a stale
+        attestation. No campaign_create, no run."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        with pytest.raises(InvariantManifestStaleError, match="not reviewed/fresh"):
+            run_campaign_loop(
+                **self._kwargs(
+                    tmp_path,
+                    dispatch_backend,
+                    transport,
+                    invariant_manifest=self._stale_empty_manifest(),
+                ),
+                max_candidates=1,
+                start_watchdog_fn=starter,
+            )
+
+        assert transport.calls_for("campaign_create") == []
+        assert transport.calls_for("run") == []
+
+    def test_known_best_not_strictly_top_raises_before_campaign_create(
+        self, tmp_path: Path
+    ) -> None:
+        """Default completeness_fn + score_raw_artifacts: known-best not strictly top
+        raises SyntheticSanityCheckFailedError before campaign_create (zero run)."""
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        with pytest.raises(SyntheticSanityCheckFailedError, match="did not score strictly top"):
+            run_campaign_loop(
+                **self._kwargs(
+                    tmp_path,
+                    dispatch_backend,
+                    transport,
+                    completeness_sanity_case=self._artifact_sanity_case(
+                        tmp_path, known_best_name="worse.txt"
+                    ),
+                ),
+                max_candidates=1,
+                start_watchdog_fn=starter,
+            )
+
+        assert transport.calls_for("campaign_create") == []
+        assert transport.calls_for("run") == []
