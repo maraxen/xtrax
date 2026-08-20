@@ -726,9 +726,7 @@ class TestLockBathosFrozenContext:
 
 
 class TestClosureDeclarationLists:
-    def test_closure_declaration_lists_roundtrip_write_manifest_dict(
-        self, tmp_path: Path
-    ) -> None:
+    def test_closure_declaration_lists_roundtrip_write_manifest_dict(self, tmp_path: Path) -> None:
         """#4164: factory lock → closure_declaration_lists → write_manifest_dict produces
         manifest["closure"] with those string paths. Tests MAY import write_manifest_dict;
         controller production code must not.
