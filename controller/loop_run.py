@@ -227,7 +227,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -260,6 +260,7 @@ from xtrax.loop.capability_probe_gate import (
     assert_capability_live,
 )
 from xtrax.loop.checkified_execution import assert_checkified_execution
+from xtrax.loop.closure_lock import build_closure_manifest
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria, WatchdogHandle, start_watchdog
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
@@ -527,8 +528,9 @@ def run_campaign_loop(
         higher_is_better: forwarded to `run_multi_iteration_loop` unchanged (that function, not
             this one, applies the conditional suppression against its own loop-local
             `best_fitness` state). Required (no default).
-        frozen_context: forwarded to `run_multi_iteration_loop` unchanged (SPLIT_COMPUTE,
-            #4133/#3657).
+        frozen_context: re-locked against `current_config` after approval/probe and before
+            `campaign_create`, then forwarded to `run_multi_iteration_loop` (SPLIT_COMPUTE,
+            #4133/#3657/#4164).
         current_config: forwarded to `run_multi_iteration_loop` unchanged.
         repo: forwarded to `run_multi_iteration_loop` unchanged.
         ratchet_ref_name: forwarded to `run_multi_iteration_loop` unchanged.
@@ -586,6 +588,19 @@ def run_campaign_loop(
     # the module docstring's GW-05 addendum (added step 5 of the plan).
     probe_result = capability_probe_fn(catalog_dir=capability_probe_catalog_dir)
     assert_capability_live(probe_result, campaign_mode=campaign_mode)
+
+    # Campaign-start re-lock (#4164): hash declared paths + the config actually in effect
+    # for this campaign, after approval/probe and strictly before campaign_create.
+    frozen_context = replace(
+        frozen_context,
+        locked=build_closure_manifest(
+            evaluator_paths=frozen_context.locked.evaluator_paths,
+            split_paths=frozen_context.locked.split_paths,
+            metric_def_paths=frozen_context.locked.metric_def_paths,
+            config=current_config,
+            pinned_deps_source=frozen_context.locked.pinned_deps_source,
+        ),
+    )
 
     handle: CampaignHandle = campaign_adapter.campaign_create(
         campaign_name,

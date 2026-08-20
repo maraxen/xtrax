@@ -1061,7 +1061,17 @@ class TestCrossBoundaryForwardingSpy:
 
         # --- Boundary 1 assertions: run_campaign_loop -> run_multi_iteration_loop ---
         outer_kwargs = outer_calls[0]
-        assert outer_kwargs["frozen_context"] is base_kwargs["frozen_context"]
+        incoming_frozen = base_kwargs["frozen_context"]
+        forwarded_frozen = outer_kwargs["frozen_context"]
+        # #4164: campaign-start re-lock replaces frozen_context.locked before campaign_create.
+        # Adapter/id/score_fn stay the same object; locked is a new ClosureManifest hashed
+        # against current_config. The replaced frozen_context is then forwarded unchanged
+        # through run_multi_iteration_loop -> run_one_candidate_pass.
+        assert forwarded_frozen is not incoming_frozen
+        assert forwarded_frozen.campaign_adapter is incoming_frozen.campaign_adapter
+        assert forwarded_frozen.campaign_id == incoming_frozen.campaign_id
+        assert forwarded_frozen.score_fn is incoming_frozen.score_fn
+        assert dict(forwarded_frozen.locked.config) == dict(base_kwargs["current_config"])
         assert outer_kwargs["higher_is_better"] is base_kwargs["higher_is_better"]
         for key in _FORWARDED_BYTE_IDENTICAL_KEYS:
             if key == "candidate_target_path":
@@ -1076,7 +1086,7 @@ class TestCrossBoundaryForwardingSpy:
         # forward byte-identical on every call; higher_is_better forwards per the conditional
         # rule (D1): None while best_fitness is None, the real mapping once best_fitness is set.
         for call_kwargs in inner_calls:
-            assert call_kwargs["frozen_context"] is base_kwargs["frozen_context"]
+            assert call_kwargs["frozen_context"] is forwarded_frozen
             for key in _FORWARDED_BYTE_IDENTICAL_KEYS:
                 if key == "candidate_target_path":
                     assert call_kwargs[key] is None
@@ -1205,3 +1215,112 @@ class TestBootstrapCommitShaIntegration:
                 max_candidates=1,
                 start_watchdog_fn=starter,
             )
+
+
+# ---------------------------------------------------------------------------
+# 9. Campaign-start re-lock (#4164): after approval+probe, BEFORE campaign_create,
+#    replace frozen_context.locked using declared paths + current_config.
+# ---------------------------------------------------------------------------
+
+
+class TestCampaignStartRelock:
+    def test_run_campaign_loop_relocks_using_current_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Incoming locked.config is {}; current_config is {"k": "v"}. The frozen_context
+        forwarded to run_multi_iteration_loop must be re-locked against current_config, and
+        that re-lock must fire before campaign_create.
+        """
+        import xtrax.loop.closure_lock as closure_lock_module
+
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+
+        incoming_locked = build_closure_manifest(
+            evaluator_paths=(),
+            split_paths=(),
+            metric_def_paths=(),
+            config={},
+        )
+        incoming_frozen = BathosFrozenContext(
+            locked=incoming_locked,
+            campaign_adapter=None,  # type: ignore[arg-type]
+            campaign_id="camp-1",
+            score_fn=_make_monotonic_score_fn(),
+        )
+        current_config = {"k": "v"}
+
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["frozen_context"] = incoming_frozen
+        kwargs["current_config"] = current_config
+
+        order: list[str] = []
+        forwarded: list[BathosFrozenContext] = []
+
+        real_build = closure_lock_module.build_closure_manifest
+
+        def _relock_spy(*args: Any, **kw: Any) -> Any:
+            order.append("relock")
+            return real_build(*args, **kw)
+
+        monkeypatch.setattr(closure_lock_module, "build_closure_manifest", _relock_spy)
+        if hasattr(loop_run_module, "build_closure_manifest"):
+            monkeypatch.setattr(loop_run_module, "build_closure_manifest", _relock_spy)
+        import controller.evaluate_adapter as evaluate_adapter_module
+
+        if hasattr(evaluate_adapter_module, "build_closure_manifest"):
+            monkeypatch.setattr(evaluate_adapter_module, "build_closure_manifest", _relock_spy)
+
+        real_create = kwargs["campaign_adapter"].campaign_create
+
+        def _create_spy(*args: Any, **kw: Any) -> Any:
+            order.append("campaign_create")
+            return real_create(*args, **kw)
+
+        monkeypatch.setattr(kwargs["campaign_adapter"], "campaign_create", _create_spy)
+
+        from controller.multi_iteration_loop import MultiIterationLoopResult
+
+        def _outer_spy(*args: Any, **kw: Any) -> Any:
+            order.append("run_multi_iteration_loop")
+            forwarded.append(kw["frozen_context"])
+            # Do not call through: verify_closure would HALT on the incoming locked.config={}
+            # vs current_config mismatch, masking the re-lock assertion. The spy's job is the
+            # forwarded frozen_context and call order.
+            return MultiIterationLoopResult(
+                iterations=(),
+                termination_reason="normal_completion",
+                leap_path_events=(),
+                watchdog_handle=_FakeWatchdogHandle(),
+            )
+
+        monkeypatch.setattr(loop_run_module, "run_multi_iteration_loop", _outer_spy)
+
+        result = run_campaign_loop(
+            **kwargs,
+            max_candidates=1,
+            start_watchdog_fn=starter,
+        )
+        assert result.conclusion.outcome_label == "success"
+
+        assert len(forwarded) == 1
+        locked = forwarded[0].locked
+        assert dict(locked.config) == current_config
+
+        expected = real_build(
+            evaluator_paths=incoming_locked.evaluator_paths,
+            split_paths=incoming_locked.split_paths,
+            metric_def_paths=incoming_locked.metric_def_paths,
+            config=current_config,
+            pinned_deps_source=incoming_locked.pinned_deps_source,
+        )
+        assert locked.closure_hash == expected.closure_hash
+
+        assert "relock" in order, "campaign-start re-lock must call build_closure_manifest"
+        assert "campaign_create" in order
+        assert "run_multi_iteration_loop" in order
+        assert order.index("relock") < order.index("campaign_create"), (
+            "re-lock must happen after approval/probe and BEFORE campaign_create"
+        )
+        assert order.index("campaign_create") < order.index("run_multi_iteration_loop")
