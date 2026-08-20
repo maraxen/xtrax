@@ -60,6 +60,44 @@ class _RecordingTransport:
 # ---------------------------------------------------------------------------
 
 
+def test_run_returns_empty_run_id_when_bathos_is_not_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CI installs ``--extra dev/eda/io``, not ``--extra controller``. The post-run
+    ``run_id`` catalog fallback must return ``""`` when bathos cannot be imported,
+    not raise ``ModuleNotFoundError`` (that failure currently takes down every
+    controller test that completes a mocked ``run`` call).
+    """
+    import builtins
+    import sys
+
+    script = tmp_path / "candidate.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+
+    for name in list(sys.modules):
+        if name == "bathos" or name.startswith("bathos."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    real_import = builtins.__import__
+
+    def _block_bathos(name: str, *args: object, **kwargs: object) -> object:
+        if name == "bathos" or name.startswith("bathos."):
+            raise ModuleNotFoundError("No module named 'bathos'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _block_bathos)
+
+    transport = _RecordingTransport(
+        _ok_envelope(script_path=str(script), exit_code=0, success=True)
+    )
+    adapter = BathosCampaignAdapter(token="stub-token", transport=transport)
+
+    result = adapter.run(str(script), campaign_id="camp-1")
+
+    assert result.success is True
+    assert result.run_id == ""
+
+
 def test_run_threads_derived_from_via_injected_transport() -> None:
     """`run`'s `derived_from` kwarg must reach the transport's `arguments["derived_from"]`
     verbatim -- the exact field name bathos's real `run` MCP tool expects."""

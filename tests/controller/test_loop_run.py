@@ -56,6 +56,7 @@ calls it.** Every test injects `start_watchdog_fn=<a _FakeWatchdogStarter instan
 import hashlib
 import re
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -721,12 +722,13 @@ class TestCampaignApprovalGate:
         transport = _MultiToolTransport()
         starter = _FakeWatchdogStarter()
         gates_toml = tmp_path / "gates.toml"
+        attested_at = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         gates_toml.write_text(
-            """
+            f"""
 [[gates]]
 id = "T2-32"
 event_ref = "loop-run-test-campaign"
-attested_at = "2026-07-19T00:00:00Z"
+attested_at = "{attested_at}"
 ttl_days = 30.0
 attested_by = "Marielle Russo"
 note = "Approved for this test run"

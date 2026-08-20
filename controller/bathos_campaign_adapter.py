@@ -452,11 +452,9 @@ class BathosCampaignAdapter:
             catalog_dir: bathos catalog directory (None uses default).
 
         Returns:
-            The run_id of the matching run, or "" if no match found.
+            The run_id of the matching run, or "" if no match found (including when
+            bathos is not installed -- CI does not install the ``controller`` extra).
         """
-        import bathos.query
-
-        # Calculate script_sha256
         script = Path(script_path)
         if not script.exists():
             return ""
@@ -468,6 +466,8 @@ class BathosCampaignAdapter:
         # Query bathos for runs matching this script_sha256, within the last 10 seconds
         cat_dir = Path(catalog_dir) if catalog_dir else Path.home() / ".bth"
         try:
+            import bathos.query
+
             # Look for runs in the last 10 seconds to account for test delays or clock skew
             since = datetime.now(UTC) - timedelta(seconds=10)
             runs = bathos.query.find_runs(

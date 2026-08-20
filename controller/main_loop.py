@@ -483,10 +483,12 @@ def run_one_candidate_pass(
         sidecar_drift_signal_fn: injection seam for tests -- defaults to GW-01's real
             `get_sidecar_drift_signal` (which lazily imports bathos, no MCP call). Called
             immediately after the bathos run, BEFORE ratchet/commit (audit-required ordering).
-            Skipped entirely when agent_mode is not 'collaborative'/'autonomous' (agent_mode=''
-            is an explicit opt-out for existing callers). On drift + autonomous mode, raises
-            SidecarHashMismatchError (HALT before any commit lands). On drift + collaborative
-            mode, returns a decision with should_warn=True for non-blocking warning.
+            Forwards ``run_id`` so the default wrapper can look up sidecar_sha256; this
+            function itself does not import bathos. Skipped entirely when agent_mode is not
+            'collaborative'/'autonomous' (agent_mode='' is an explicit opt-out for existing
+            callers). On drift + autonomous mode, raises SidecarHashMismatchError (HALT before
+            any commit lands). On drift + collaborative mode, returns a decision with
+            should_warn=True for non-blocking warning.
         candidate_static_fn: injection seam for tests -- defaults to T2-11's real
             `assert_candidate_static` (clean import + zero jaxlint JL-series errors). Called
             immediately after dispatch, before lineage resolution or the real bathos run -- see
@@ -718,24 +720,20 @@ def run_one_candidate_pass(
     # drift + collaborative: return decision with should_warn=True (non-blocking warning).
     sidecar_drift_decision: SidecarDriftDecision | None = None
     if agent_mode in ("collaborative", "autonomous") and run_result.run_id:
-        # Query the Run object to extract sidecar_sha256 for the check
-        from pathlib import Path as PathlibPath
-
-        import bathos.query
-
-        cat_dir = PathlibPath.home() / ".bth"
-        run_obj = bathos.query.get_run(run_result.run_id, cat_dir)
-        if run_obj:
-            sidecar_signal = sidecar_drift_signal_fn(
-                script_path=str(handoff.path),
-                catalog_dir="",
-                current_sidecar_sha256=run_obj.sidecar_sha256,
-                script_id=handoff.path.stem,
-            )
-            sidecar_drift_decision = assert_sidecar_drift_reaction(
-                sidecar_signal,
-                agent_mode=agent_mode,  # type: ignore
-            )
+        # Sidecar hash lookup lives in the default `get_sidecar_drift_signal` wrapper
+        # (lazy bathos import), not here -- this function must stay importable without
+        # the controller extra so CI/--extra dev tests can inject a stub.
+        sidecar_signal = sidecar_drift_signal_fn(
+            script_path=str(handoff.path),
+            catalog_dir="",
+            current_sidecar_sha256="",
+            script_id=handoff.path.stem,
+            run_id=run_result.run_id,
+        )
+        sidecar_drift_decision = assert_sidecar_drift_reaction(
+            sidecar_signal,
+            agent_mode=agent_mode,  # type: ignore
+        )
 
     # 2.5. Score raw artifacts through the AC-7 closure-lock gate (S2.1, GW-02). output_paths is
     # this function's OWN existing parameter -- CandidateRunResult carries no output_paths field
@@ -881,8 +879,9 @@ def run_one_candidate_pass(
             from xtrax.loop.attestation_evidence_gate import admit_evidence
 
             evidence_admission = admit_evidence([evidence_candidate])
-        except ValueError:
-            # run_id lookup failed; proceed without evidence result
+        except (ValueError, ImportError):
+            # run_id lookup failed, or bathos is not installed (CI / no controller extra);
+            # evidence is advisory-only -- proceed without a result.
             pass
 
     # 4. Compile-time two-phase clock (S2.2, AC-27) -- strictly AFTER the accept/reject decision

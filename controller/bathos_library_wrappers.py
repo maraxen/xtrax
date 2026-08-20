@@ -180,14 +180,15 @@ def get_evidence_candidate_for_run(
         verification).
     """
     # Lazy imports — only at function-call time, not module-import time.
-    import bathos.prereg
-    import bathos.query
-
     if not run_id:
         raise ValueError("run_id is required and cannot be empty")
 
-    # Resolve the Run object via the step 1.2 strategy (direct bathos.query.get_run)
     from pathlib import Path as PathlibPath
+
+    import bathos.prereg
+    import bathos.query
+
+    # Resolve the Run object via the step 1.2 strategy (direct bathos.query.get_run)
 
     cat_dir = PathlibPath(catalog_dir) if catalog_dir else PathlibPath.home() / ".bth"
     run = bathos.query.get_run(run_id, cat_dir)
@@ -210,6 +211,7 @@ def get_sidecar_drift_signal(
     catalog_dir: str = "",
     current_sidecar_sha256: str = "",
     script_id: str = "",
+    run_id: str = "",
 ) -> SidecarDriftSignal:
     """Check for sidecar drift and return a SidecarDriftSignal for AC-18 reaction.
 
@@ -223,8 +225,12 @@ def get_sidecar_drift_signal(
             bathos.prereg.check_sidecar_drift.
         current_sidecar_sha256: The sidecar SHA256 from the current run (typically from
             CandidateRunResult or a Run object). Required for meaningful drift detection.
+            If empty and ``run_id`` is set, looked up via ``bathos.query.get_run``.
         script_id: Optional human-readable script identifier (path or stem) for message
             building. If empty, script_path is used as the identifier.
+        run_id: Optional bathos run ID. Used only when ``current_sidecar_sha256`` is empty,
+            to resolve the hash from the catalog so ``run_one_candidate_pass`` does not
+            import bathos itself.
 
     Returns:
         A SidecarDriftSignal with drifted (from check_sidecar_drift), script_id, and
@@ -244,9 +250,17 @@ def get_sidecar_drift_signal(
     cat_dir = PathlibPath(catalog_dir) if catalog_dir else PathlibPath.home() / ".bth"
     script = PathlibPath(script_path)
 
+    sidecar_sha = current_sidecar_sha256
+    if not sidecar_sha and run_id:
+        import bathos.query
+
+        run_obj = bathos.query.get_run(run_id, cat_dir)
+        if run_obj is not None:
+            sidecar_sha = run_obj.sidecar_sha256
+
     # Call check_sidecar_drift (step 2.2) — returns True iff the current run's sidecar
     # hash differs from the script's first-run manifest baseline.
-    drifted = bathos.prereg.check_sidecar_drift(script, cat_dir, current_sidecar_sha256)
+    drifted = bathos.prereg.check_sidecar_drift(script, cat_dir, sidecar_sha)
 
     # Use script_id if provided, else derive from script_path
     script_id_final = script_id if script_id else script.stem
@@ -256,7 +270,7 @@ def get_sidecar_drift_signal(
         drifted=drifted,
         script_id=script_id_final,
         first_run_sha256="",  # Not queried by this wrapper (caller responsible)
-        current_sha256=current_sidecar_sha256,
+        current_sha256=sidecar_sha,
     )
 
 

@@ -192,14 +192,16 @@ class TestDataThreading:
         sig = inspect.signature(get_sidecar_drift_signal)
         params = list(sig.parameters.keys())
 
-        # Should accept script_path, catalog_dir, current_sidecar_sha256, script_id
+        # Should accept script_path, catalog_dir, current_sidecar_sha256, script_id, run_id
         assert params[0] == "script_path"
         assert params[1] == "catalog_dir"
         assert params[2] == "current_sidecar_sha256"
         assert params[3] == "script_id"
+        assert params[4] == "run_id"
         assert sig.parameters["catalog_dir"].default == ""
         assert sig.parameters["current_sidecar_sha256"].default == ""
         assert sig.parameters["script_id"].default == ""
+        assert sig.parameters["run_id"].default == ""
 
 
 class TestAcceptanceRequirements:
