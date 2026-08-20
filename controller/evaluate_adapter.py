@@ -24,12 +24,13 @@ scores, ahead of run_one_candidate_pass would double-dispatch the same candidate
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from controller.bathos_campaign_adapter import BathosCampaignAdapter, CandidateRunResult
-from xtrax.loop.closure_lock import ClosureManifest
+from xtrax.loop.closure_lock import ClosureManifest, build_closure_manifest
 
 
 class RawArtifactsUnavailableError(Exception):
@@ -62,6 +63,56 @@ class BathosFrozenContext:
     campaign_adapter: BathosCampaignAdapter
     campaign_id: str
     score_fn: Callable[[tuple[Path, ...], tuple[Path, ...]], dict[str, float]]
+
+
+def lock_bathos_frozen_context(
+    *,
+    evaluator_paths: tuple[Path, ...],
+    split_paths: tuple[Path, ...],
+    metric_def_paths: tuple[Path, ...],
+    config: Mapping[str, Any],
+    campaign_adapter: BathosCampaignAdapter,
+    campaign_id: str,
+    score_fn: Callable[[tuple[Path, ...], tuple[Path, ...]], dict[str, float]],
+    pinned_deps_source: Path | None = None,
+) -> BathosFrozenContext:
+    """Hash declared evaluator/split/metric files (and optional pinned deps) into a frozen context.
+
+    Empty path tuples are valid -- they produce a config-and-pinned-deps-only closure hash,
+    matching existing test/smoke helpers. `pinned_deps_source` is omitted from the lock call
+    when unset so `build_closure_manifest` uses its own default (`uv.lock`).
+    """
+    lock_kwargs: dict[str, Any] = {}
+    if pinned_deps_source is not None:
+        lock_kwargs["pinned_deps_source"] = pinned_deps_source
+    locked = build_closure_manifest(
+        evaluator_paths=evaluator_paths,
+        split_paths=split_paths,
+        metric_def_paths=metric_def_paths,
+        config=config,
+        **lock_kwargs,
+    )
+    return BathosFrozenContext(
+        locked=locked,
+        campaign_adapter=campaign_adapter,
+        campaign_id=campaign_id,
+        score_fn=score_fn,
+    )
+
+
+def closure_declaration_lists(
+    locked: ClosureManifest,
+) -> tuple[list[str], list[str], list[str]]:
+    """String paths from a locked ClosureManifest's three declared-path tuples.
+
+    The lists are the persistence-layer shape (`write_manifest_dict`'s closure fields). This
+    helper lives here so controller production code never imports `xtrax.cli.manifest`.
+    """
+    return (
+        [str(path) for path in locked.evaluator_paths],
+        [str(path) for path in locked.split_paths],
+        [str(path) for path in locked.metric_def_paths],
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,5 +211,7 @@ __all__ = [
     "BathosFrozenContext",
     "BathosSplitComputeEvaluator",
     "RawArtifactsUnavailableError",
+    "closure_declaration_lists",
+    "lock_bathos_frozen_context",
     "score_raw_artifacts",
 ]

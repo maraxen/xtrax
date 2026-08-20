@@ -253,7 +253,10 @@ if str(ROOT) not in sys.path:
 from controller.bathos_campaign_adapter import BathosCampaignAdapter  # noqa: E402
 from controller.bathos_library_wrappers import get_seed_trial_counts  # noqa: E402
 from controller.dispatch import CandidateHandoff  # noqa: E402
-from controller.evaluate_adapter import BathosFrozenContext  # noqa: E402
+from controller.evaluate_adapter import (  # noqa: E402
+    BathosFrozenContext,
+    lock_bathos_frozen_context,
+)
 from controller.loop_run import CampaignLoopResult, run_campaign_loop  # noqa: E402
 from controller.praxia_dispatch_backend import PraxiaDispatchBackend  # noqa: E402
 from xtrax.devtools.freshness import Attestation  # noqa: E402
@@ -372,8 +375,11 @@ def _make_smoke_frozen_context(
     `guarded_evaluate_fn`) only touches `frozen_context.score_fn`/`frozen_context.locked.
     split_paths`, never `campaign_adapter`/`campaign_id`.
     """
-    return BathosFrozenContext(
-        locked=_build_smoke_closure_manifest(config),
+    return lock_bathos_frozen_context(
+        evaluator_paths=(),
+        split_paths=(),
+        metric_def_paths=(),
+        config=config,
         campaign_adapter=None,  # type: ignore[arg-type]  # unused -- score_fn never touches it
         campaign_id=campaign_name,
         score_fn=_make_smoke_score_fn(),

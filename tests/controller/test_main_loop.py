@@ -2472,3 +2472,82 @@ class TestGW01EvidenceAndSidecarDrift:
 
         assert result.run_result.run_id == ""
         assert result.gate_outcome.evidence_admission is None
+
+
+class TestDoubleDispatch4137:
+    """Backlog #4137: one bathos run per pass; scoring is score_raw_artifacts, not __call__."""
+
+    def test_happy_path_records_exactly_one_bathos_run(self) -> None:
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+
+        run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+        )
+
+        run_calls = [name for name, _ in transport.calls if name == "run"]
+        assert run_calls == ["run"]
+
+    def test_guarded_evaluate_evaluator_is_score_raw_artifacts(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def spy_guarded_evaluate_fn(
+            locked: Any,
+            evaluator: Any,
+            frozen_context: Any,
+            candidate: Any,
+            *,
+            current_config: Any,
+            candidate_touched_paths: Any,
+        ) -> dict[str, float]:
+            captured["locked"] = locked
+            captured["evaluator"] = evaluator
+            captured["frozen_context"] = frozen_context
+            captured["candidate"] = candidate
+            captured["current_config"] = current_config
+            captured["candidate_touched_paths"] = candidate_touched_paths
+            return dict(_PASSING_FITNESS)
+
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+
+        run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(guarded_evaluate_fn=spy_guarded_evaluate_fn),
+        )
+
+        assert captured["evaluator"] is score_raw_artifacts
+
+    def test_score_raw_artifacts_does_not_invoke_transport(self) -> None:
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="t")
+        frozen = BathosFrozenContext(
+            locked=_FROZEN_CONTEXT.locked,
+            campaign_adapter=adapter,
+            campaign_id="camp-1",
+            score_fn=lambda *_: {"m": 1.0},
+        )
+
+        score_raw_artifacts(frozen, ("artifact.json",))
+
+        assert transport.calls == []

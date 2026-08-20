@@ -652,3 +652,124 @@ class TestFailurePathDispatchFailure:
             evaluator(frozen_context, candidate)
 
         assert score_fn_calls == []
+
+
+# ---------------------------------------------------------------------------
+# #4164: production constructor + declaration-lists helper
+# ---------------------------------------------------------------------------
+
+
+def _dummy_lock_score_fn(
+    _raw_artifact_paths: tuple[Path, ...], _split_paths: tuple[Path, ...]
+) -> dict[str, float]:
+    return {"score": 1.0}
+
+
+def _lock_factory_kwargs(
+    evaluator: Path, split: Path, metric: Path, pinned: Path
+) -> dict[str, Any]:
+    transport = _RecordingTransport(_ok_envelope(script_path="c.py", exit_code=0, success=True))
+    adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+    return {
+        "evaluator_paths": (evaluator,),
+        "split_paths": (split,),
+        "metric_def_paths": (metric,),
+        "config": {"k": "v"},
+        "pinned_deps_source": pinned,
+        "campaign_adapter": adapter,
+        "campaign_id": "camp-1",
+        "score_fn": _dummy_lock_score_fn,
+    }
+
+
+def _write_declared_closure_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    evaluator = tmp_path / "evaluator.py"
+    evaluator.write_text("# evaluator v1\n", encoding="utf-8")
+    split = tmp_path / "split.txt"
+    split.write_text("split v1\n", encoding="utf-8")
+    metric = tmp_path / "metric.txt"
+    metric.write_text("metric v1\n", encoding="utf-8")
+    pinned = tmp_path / "uv.lock"
+    pinned.write_text("# pinned v1\n", encoding="utf-8")
+    return evaluator, split, metric, pinned
+
+
+class TestLockBathosFrozenContext:
+    def test_lock_bathos_frozen_context_hashes_declared_files(self, tmp_path: Path) -> None:
+        """#4164: lock_bathos_frozen_context hashes declared evaluator/split/metric files
+        via build_closure_manifest. Hash is deterministic; changing a declared file changes it.
+        Empty path tuples remain valid (existing tests/smoke) -- this test uses real files.
+        """
+        from controller.evaluate_adapter import lock_bathos_frozen_context
+
+        evaluator, split, metric, pinned = _write_declared_closure_files(tmp_path)
+        kwargs = _lock_factory_kwargs(evaluator, split, metric, pinned)
+
+        first = lock_bathos_frozen_context(**kwargs)
+        second = lock_bathos_frozen_context(**kwargs)
+        assert first.locked.closure_hash == second.locked.closure_hash
+
+        expected = build_closure_manifest(
+            evaluator_paths=(evaluator,),
+            split_paths=(split,),
+            metric_def_paths=(metric,),
+            config={"k": "v"},
+            pinned_deps_source=pinned,
+        )
+        assert first.locked.closure_hash == expected.closure_hash
+        assert first.campaign_id == "camp-1"
+        assert first.score_fn is _dummy_lock_score_fn
+
+        evaluator.write_text("# evaluator v2\n", encoding="utf-8")
+        after = lock_bathos_frozen_context(**kwargs)
+        assert after.locked.closure_hash != first.locked.closure_hash
+
+
+class TestClosureDeclarationLists:
+    def test_closure_declaration_lists_roundtrip_write_manifest_dict(self, tmp_path: Path) -> None:
+        """#4164: factory lock → closure_declaration_lists → write_manifest_dict produces
+        manifest["closure"] with those string paths. Tests MAY import write_manifest_dict;
+        controller production code must not.
+        """
+        from controller.evaluate_adapter import (
+            closure_declaration_lists,
+            lock_bathos_frozen_context,
+        )
+        from xtrax.cli.manifest import write_manifest_dict
+
+        evaluator, split, metric, pinned = _write_declared_closure_files(tmp_path)
+        frozen = lock_bathos_frozen_context(
+            **_lock_factory_kwargs(evaluator, split, metric, pinned)
+        )
+        evaluator_paths, split_paths, metric_def_paths = closure_declaration_lists(frozen.locked)
+
+        cfg_dict = dict(
+            schema_version=1,
+            model={"path": "tests.cli._run_fixtures:make_model", "kwargs": {}},
+            optimizer={"path": "xtrax.training.optim:adamw_with_schedule", "kwargs": {}},
+            loss={"path": "tests.cli._run_fixtures:make_loss", "kwargs": {}},
+            data={
+                "factory": "tests.cli._run_fixtures:make_dataset",
+                "kwargs": {},
+                "batch_size": 4,
+            },
+            seed=42,
+            num_epochs=3,
+        )
+        manifest = write_manifest_dict(
+            run_dir=str(tmp_path / "runs" / "roundtrip"),
+            cfg_dict=cfg_dict,
+            run_id="roundtrip",
+            config_hash_val="roundtrip",
+            evaluator_paths=evaluator_paths,
+            split_paths=split_paths,
+            metric_def_paths=metric_def_paths,
+        )
+        assert manifest["closure"] == {
+            "evaluator_paths": evaluator_paths,
+            "split_paths": split_paths,
+            "metric_def_paths": metric_def_paths,
+        }
+        assert evaluator_paths == [str(evaluator.resolve())]
+        assert split_paths == [str(split.resolve())]
+        assert metric_def_paths == [str(metric.resolve())]
