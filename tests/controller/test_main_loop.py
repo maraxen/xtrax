@@ -2226,13 +2226,6 @@ class TestGW01EvidenceAndSidecarDrift:
                 run_id=run_id, manifest_verified=True, stdout_verified=stdout_verified
             )
 
-        # Mock bathos.query.get_run to return a run object with a non-empty sidecar_sha256
-        from unittest.mock import MagicMock
-
-        mock_run = MagicMock()
-        mock_run.sidecar_sha256 = "test-sidecar-sha256"
-
-        # Create an adapter that returns a non-empty run_id (via mocking the query)
         def mock_query_run_id(self: Any, script_path: str, catalog_dir: str) -> str:
             return "run-test-123"
 
@@ -2268,8 +2261,6 @@ class TestGW01EvidenceAndSidecarDrift:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """AC-18: sidecar_drift lands on GateOutcome when agent_mode='collaborative'."""
-        from unittest.mock import MagicMock
-
         sidecar_signal = SidecarDriftSignal(
             drifted=True,
             script_id="test_script",
@@ -2282,26 +2273,18 @@ class TestGW01EvidenceAndSidecarDrift:
             catalog_dir: str = "",
             current_sidecar_sha256: str = "",
             script_id: str = "",
+            **_kwargs: Any,
         ) -> SidecarDriftSignal:
             return sidecar_signal
-
-        # Mock bathos.query.get_run to return a run object with non-empty sidecar_sha256
-        mock_run = MagicMock()
-        mock_run.sidecar_sha256 = "test-sidecar-sha256"
-
-        def mock_bathos_get_run(run_id: str, catalog_dir: Any) -> Any:
-            return mock_run
 
         # Mock the _query_run_id_by_script_sha256 to return a non-empty run_id
         def mock_query_run_id(self: Any, script_path: str, catalog_dir: str) -> str:
             return "run-test-456"
 
-        # Patch both _query_run_id_by_script_sha256 and bathos.query.get_run
         monkeypatch.setattr(
             "controller.bathos_campaign_adapter.BathosCampaignAdapter._query_run_id_by_script_sha256",
             mock_query_run_id,
         )
-        monkeypatch.setattr("bathos.query.get_run", mock_bathos_get_run)
 
         adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
 
@@ -2336,6 +2319,7 @@ class TestGW01EvidenceAndSidecarDrift:
             catalog_dir: str = "",
             current_sidecar_sha256: str = "",
             script_id: str = "",
+            **_kwargs: Any,
         ) -> SidecarDriftSignal:
             sidecar_calls.append((script_path, current_sidecar_sha256))
             return SidecarDriftSignal(
@@ -2377,8 +2361,6 @@ class TestGW01EvidenceAndSidecarDrift:
         must not become the new best-so-far (autonomous mode) or trigger a warning before
         the commit (collaborative mode).
         """
-        from unittest.mock import MagicMock
-
         call_order: list[str] = []
 
         sidecar_signal = SidecarDriftSignal(
@@ -2393,16 +2375,10 @@ class TestGW01EvidenceAndSidecarDrift:
             catalog_dir: str = "",
             current_sidecar_sha256: str = "",
             script_id: str = "",
+            **_kwargs: Any,
         ) -> SidecarDriftSignal:
             call_order.append("sidecar_drift_signal_fn")
             return sidecar_signal
-
-        # Mock bathos.query.get_run
-        mock_run = MagicMock()
-        mock_run.sidecar_sha256 = "test-sidecar-sha256"
-
-        def mock_bathos_get_run(run_id: str, catalog_dir: Any) -> Any:
-            return mock_run
 
         # Mock the _query_run_id_by_script_sha256 to return a non-empty run_id
         def mock_query_run_id(self: Any, script_path: str, catalog_dir: str) -> str:
@@ -2412,7 +2388,6 @@ class TestGW01EvidenceAndSidecarDrift:
             "controller.bathos_campaign_adapter.BathosCampaignAdapter._query_run_id_by_script_sha256",
             mock_query_run_id,
         )
-        monkeypatch.setattr("bathos.query.get_run", mock_bathos_get_run)
 
         # Spy on advance_best_so_far to record when it's called
         original_advance = main_loop_module.advance_best_so_far
