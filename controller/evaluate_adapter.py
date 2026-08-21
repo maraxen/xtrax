@@ -192,7 +192,7 @@ class BathosSplitComputeEvaluator:
             no_sidecar=candidate.no_sidecar,
         )
 
-        if not run_result.success:
+        if not run_result.success or run_result.exit_code != 0:
             msg = (
                 f"bathos dispatch did not succeed for {candidate.script_path!r} "
                 f"(exit_code={run_result.exit_code}) -- refusing to score raw artifacts that "
