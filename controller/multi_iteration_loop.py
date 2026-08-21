@@ -478,6 +478,7 @@ def run_multi_iteration_loop(
                 concrete_inputs=concrete_inputs,
                 commit_parent_sha=bootstrap_commit_sha,
                 bootstrap_base_tree_sha=bootstrap_commit_sha,
+                iteration=candidate_index + 1,
             )
             iterations.append(result)
             if result.accepted:
