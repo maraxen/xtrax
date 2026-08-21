@@ -87,6 +87,94 @@ class TestAC1Documentation:
 
 
 # ---------------------------------------------------------------------------
+# #4139: leftover overclaims in evaluate_adapter module + class docstrings
+# ---------------------------------------------------------------------------
+
+
+def _evaluate_adapter_module_and_class_docs() -> tuple[str, str]:
+    """Return (module __doc__, BathosSplitComputeEvaluator __doc__), never None."""
+    import controller.evaluate_adapter
+
+    module_doc = controller.evaluate_adapter.__doc__
+    class_doc = BathosSplitComputeEvaluator.__doc__
+    assert module_doc is not None, "controller.evaluate_adapter must have a module docstring"
+    assert class_doc is not None, "BathosSplitComputeEvaluator must have a class docstring"
+    return module_doc, class_doc
+
+
+class TestDocstring4139:
+    """#4139: module + BathosSplitComputeEvaluator class docstrings must drop leftover
+    overclaims and name the production scoring path (score_raw_artifacts via guarded_evaluate).
+    """
+
+    def test_module_docstring_omits_stats_battery_kwargs(self) -> None:
+        """Circularity framed as this module's fitness dict feeding stats_battery_kwargs is
+        false: that mapping stays caller-supplied. Phrase must be absent from the module doc."""
+        module_doc, _ = _evaluate_adapter_module_and_class_docs()
+        assert "stats_battery_kwargs" not in module_doc, (
+            "module docstring must not claim this module's fitness dict is what "
+            "stats_battery_kwargs needs (caller-supplied; not produced here)"
+        )
+
+    def test_module_docstring_omits_wired_in_a_follow_on_item(self) -> None:
+        """score_raw_artifacts is already wired via guarded_evaluate in
+        run_one_candidate_pass; the module docstring must not claim a follow-on item."""
+        module_doc, _ = _evaluate_adapter_module_and_class_docs()
+        assert "wired in a follow-on item" not in module_doc, (
+            "module docstring must not say score_raw_artifacts is "
+            "'wired in a follow-on item' — it is already wired"
+        )
+
+    def test_class_docstring_omits_sole_call_site(self) -> None:
+        """Production fitness is score_raw_artifacts via guarded_evaluate. Calling
+        BathosSplitComputeEvaluator.__call__ from the pass would double-dispatch (#4137)."""
+        _, class_doc = _evaluate_adapter_module_and_class_docs()
+        assert "sole call site" not in class_doc.lower(), (
+            "BathosSplitComputeEvaluator class docstring must not claim it is the "
+            "'sole call site' through which a candidate's fitness is obtained"
+        )
+
+    def test_module_or_class_docstring_names_score_raw_artifacts(self) -> None:
+        module_doc, class_doc = _evaluate_adapter_module_and_class_docs()
+        combined = f"{module_doc}\n{class_doc}"
+        assert "score_raw_artifacts" in combined, (
+            "module and/or BathosSplitComputeEvaluator docstring must name "
+            "score_raw_artifacts as the production scoring path"
+        )
+
+    def test_module_or_class_docstring_names_guarded_evaluate(self) -> None:
+        module_doc, class_doc = _evaluate_adapter_module_and_class_docs()
+        combined = f"{module_doc}\n{class_doc}"
+        assert "guarded_evaluate" in combined, (
+            "module and/or BathosSplitComputeEvaluator docstring must name "
+            "guarded_evaluate (production path is guarded_evaluate(..., "
+            "score_raw_artifacts, ...))"
+        )
+
+    def test_module_or_class_docstring_names_4137_or_double_dispatch(self) -> None:
+        module_doc, class_doc = _evaluate_adapter_module_and_class_docs()
+        combined = f"{module_doc}\n{class_doc}"
+        has_ticket = "#4137" in combined
+        has_double_dispatch = (
+            "double-dispatch" in combined.lower() or "double dispatch" in combined.lower()
+        )
+        assert has_ticket or has_double_dispatch, (
+            "module and/or BathosSplitComputeEvaluator docstring must mention "
+            "#4137 or double-dispatch (calling __call__ from the pass would "
+            "double-dispatch)"
+        )
+
+    def test_module_docstring_keeps_ac1_grep_strings(self) -> None:
+        """GREEN must not drop TestAC1Documentation's module-docstring greps."""
+        module_doc, _ = _evaluate_adapter_module_and_class_docs()
+        assert "raw artifacts" in module_doc.lower()
+        assert "SPLIT_COMPUTE" in module_doc
+        assert "fitness" in module_doc.lower(), (
+            "docstring must document what raw artifacts are scored against"
+        )
+
+
+# ---------------------------------------------------------------------------
 # AC2: real temp files, real file reads, real fitness computation
 # ---------------------------------------------------------------------------
 

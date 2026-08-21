@@ -10,16 +10,12 @@ xtrax.loop.closure_lock.ClosureManifest's locked split_paths using a caller-supp
 scoring function -- mirroring xtrax's existing stats_battery_fn/seed_trial_counts_fn
 injection-seam convention (see controller/main_loop.py).
 
-This module deliberately does NOT call controller.main_loop.run_one_candidate_pass: that
-function's own stats_battery gate requires a fitness dict as INPUT (stats_battery_kwargs),
-which is exactly what this module produces -- calling it here would be circular. Instead,
-this module exposes the scoring half of BathosSplitComputeEvaluator as the standalone
-score_raw_artifacts function, so run_one_candidate_pass can keep doing its OWN dispatch
-(record_candidate_run) and then call score_raw_artifacts (via
-xtrax.loop.closure_lock.guarded_evaluate, wired in a follow-on item) to score the
-already-dispatched candidate's raw artifacts -- never a second dispatch of the candidate
-(backlog #4137: calling BathosSplitComputeEvaluator's full __call__, which dispatches AND
-scores, ahead of run_one_candidate_pass would double-dispatch the same candidate).
+This module does not call controller.main_loop.run_one_candidate_pass. Production scoring
+is already wired: run_one_candidate_pass dispatches via record_candidate_run, then calls
+guarded_evaluate(..., score_raw_artifacts, ...) to score the already-dispatched candidate's
+raw artifacts. Do not call BathosSplitComputeEvaluator.__call__ from the pass -- that
+would double-dispatch the same candidate (#4137). This module exposes the scoring half of
+BathosSplitComputeEvaluator as the standalone score_raw_artifacts function for that path.
 """
 
 from __future__ import annotations
@@ -177,8 +173,9 @@ def score_raw_artifacts(
 
 class BathosSplitComputeEvaluator:
     """EvaluateFn[BathosFrozenContext, BathosCandidate]: dispatches via bathos, scores raw
-    artifacts in-process (SPLIT_COMPUTE). The sole call site in controller/ through which a
-    candidate's fitness is obtained -- resolves #3657.
+    artifacts in-process (SPLIT_COMPUTE). ``__call__`` is the EvaluateFn protocol impl;
+    using it from the pass would double-dispatch. Production fitness is score_raw_artifacts
+    via guarded_evaluate -- resolves #3657.
     """
 
     def __call__(
