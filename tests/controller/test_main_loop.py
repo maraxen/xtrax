@@ -791,3 +791,94 @@ class TestCandidateStaticGate:
 
         assert len(transport.calls) == 1
         assert result.accepted is True
+
+
+# ---------------------------------------------------------------------------
+# Phase C (scope doc 260824): opt-in provenance ProbeRecord emission
+# ---------------------------------------------------------------------------
+
+
+class TestProbeRecordEmission:
+    def test_probe_record_dir_opt_in_writes_structural_record(self, tmp_path: Path) -> None:
+        from xtrax.profiling.claims import ClaimClass, permitted_claims
+        from xtrax.profiling.record import ProbeRecord
+
+        records_dir = tmp_path / "probe_records"
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-probe-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            probe_record_dir=records_dir,
+        )
+
+        assert result.accepted is True
+        written = sorted(records_dir.glob("pass_*.json"))
+        assert len(written) == 1
+        record = ProbeRecord.read(written[0])
+        assert record.stage == 0
+        assert record.metrics["wall_seconds"] > 0.0
+        assert record.config["campaign_id"] == "camp-probe-1"
+        assert record.config["derived_from"] == ""
+        assert record.config["handoff_content_sha256"] == _VALID_SHA256
+        # Host-side wall duration only: must never back a dispatch/ranking claim.
+        assert permitted_claims(record) == {ClaimClass.STRUCTURAL}
+
+    def test_no_probe_record_dir_emits_nothing(self, tmp_path: Path) -> None:
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-probe-2",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+        )
+
+        assert result.accepted is True
+
+    def test_gate_failure_leaves_record_with_outcome(self, tmp_path: Path) -> None:
+        """A COMPLETED but hard-blocked pass still records (forensics), with
+        the gate verdicts in the config. Exceptions leave no record at all."""
+        from xtrax.profiling.record import ProbeRecord
+
+        records_dir = tmp_path / "probe_records"
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-probe-3",
+            campaign_mode="confirmation",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _downgraded_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            probe_record_dir=records_dir,
+        )
+
+        assert result.accepted is False
+        assert result.gate_outcome.hard_blocked is True
+        written = sorted(records_dir.glob("pass_*.json"))
+        assert len(written) == 1
+        record = ProbeRecord.read(written[0])
+        assert record.config["accepted"] == "false"
+        assert record.config["hard_blocked"] == "true"

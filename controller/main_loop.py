@@ -102,6 +102,7 @@ wired correctly end-to-end, not to also own what happens when a step fails.
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal
 
 from controller.bathos_campaign_adapter import BathosCampaignAdapter, CandidateRunResult
@@ -187,6 +188,55 @@ class OneCandidatePassResult:
         return self.run_result.success and not self.gate_outcome.hard_blocked
 
 
+def _emit_candidate_pass_probe_record(
+    *,
+    out_dir: Path,
+    campaign_id: str,
+    derived_from: str,
+    handoff_sha: str,
+    wall_seconds: float,
+    accepted: bool,
+    hard_blocked: bool,
+) -> Path:
+    """Emit a Stage-0 provenance ProbeRecord for one candidate pass (Phase C).
+
+    Opt-in via ``probe_record_dir``; the only bathos-adjacent site allowed to
+    attach probe records to campaign context (scope doc D7). Written once ALL
+    gates have resolved -- every COMPLETED pass gets one (including
+    hard-blocked ones; the outcome is in the config). STRUCTURAL-only:
+    wall_seconds is a host-side dispatch+run+gates duration, not a device
+    measurement, so the record deliberately carries no scopes/attribution and
+    cannot back DISPATCH_COUNT or ranking claims.
+    """
+    from xtrax.profiling.emitters import emit_probe_record
+
+    slug = f"{campaign_id}" if campaign_id else "candidate"
+    if derived_from:
+        slug = f"{slug}__{derived_from}"
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in slug)[-80:]
+    path = out_dir / f"pass_{safe}.json"
+    emit_probe_record(
+        path=path,
+        probe_id=f"candidate_pass_{safe}",
+        stage=0,
+        n_atoms=1,
+        platform="cpu",
+        metrics={"wall_seconds": wall_seconds},
+        config={
+            "campaign_id": campaign_id,
+            "derived_from": derived_from,
+            "handoff_content_sha256": handoff_sha,
+            "accepted": str(accepted).lower(),
+            "hard_blocked": str(hard_blocked).lower(),
+            "source": "controller.run_one_candidate_pass",
+            "axis_note": (
+                "provenance artifact; n_atoms placeholder by contract"
+            ),
+        },
+    )
+    return path
+
+
 def run_one_candidate_pass(
     dispatch_backend: DispatchBackend,
     campaign_adapter: BathosCampaignAdapter,
@@ -206,6 +256,7 @@ def run_one_candidate_pass(
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
+    probe_record_dir: Path | None = None,
 ) -> OneCandidatePassResult:
     """Run one candidate through the full dispatch -> bathos-run -> gate-check sequence.
 
@@ -254,6 +305,9 @@ def run_one_candidate_pass(
             the module docstring's GW-04 addendum.
         candidate_static_root: forwarded to `candidate_static_fn` as its `root` kwarg (jaxlint's
             subprocess root; default `None` lets jaxlint fall back to `Path.cwd()`).
+        probe_record_dir: opt-in Phase C seam -- when set, one Stage-0 provenance ProbeRecord
+            (wall-clock pass duration + campaign/run identity) is written under this directory
+            after the gates resolve. `None` (default) emits nothing.
 
     Returns:
         A `OneCandidatePassResult` bundling the handoff, resolved lineage, run result, and both
@@ -278,6 +332,7 @@ def run_one_candidate_pass(
             malformed (raised by `assess_seed_trial_floor`).
     """
     # 1. Dispatch -> hand off source (LC-03).
+    pass_started_at = perf_counter()
     handoff = dispatch_backend.dispatch_candidate()
 
     # 1.5. Candidate-static gate (T2-11, AC-1, F0; [GW-04] first slice) -- reject a candidate
@@ -313,6 +368,22 @@ def run_one_candidate_pass(
 
     seed_counts = seed_trial_counts_fn(seed_trial_db, handoff.content_sha256, hypothesis_clause_id)
     seed_decision = assess_seed_trial_floor(seed_counts, campaign_mode=campaign_mode)
+
+    # 3.5. Optional provenance record (Phase C, scope doc D7): written only when
+    # the caller opted in, AFTER all gates resolve so the artifact always
+    # carries their verdicts. Exceptions still leave no record (they propagate
+    # before this point).
+    if probe_record_dir is not None:
+        probe_record_dir.mkdir(parents=True, exist_ok=True)
+        _emit_candidate_pass_probe_record(
+            out_dir=probe_record_dir,
+            campaign_id=campaign_id,
+            derived_from=derived_from,
+            handoff_sha=handoff.content_sha256,
+            wall_seconds=perf_counter() - pass_started_at,
+            accepted=(stats_decision.honored and seed_decision.held),
+            hard_blocked=(stats_decision.hard_blocked or seed_decision.hard_blocked),
+        )
 
     # 4. Composed result.
     return OneCandidatePassResult(

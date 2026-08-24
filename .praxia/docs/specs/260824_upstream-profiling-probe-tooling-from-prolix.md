@@ -285,6 +285,33 @@ Deferred, with rationale:
 
 ### Phase C — integration surfaces (est. 2 days)
 
+**Phase C STATUS (2026-08-24): delivered, with one scope adjustment.**
+1. Dispatch tripwires: `_dispatch_probe.py` measures
+   n_executions/n_compilations/n_jit_traces from a real traced run (one guarded callable
+   built ONCE and reused -- run_trace_gate's per-call re-wrap recompiles inside the window
+   and poisons n_compilations); `performance.py` ProbeSpec gains opt-in `max_compilations`
+   /`max_jit_traces`/`emit_probe_record`; violations emit major findings
+   (`violation_kind=dispatch_count`) and count into a NEW baseline metric
+   `performance.dispatch_violation_count`. Ratchet semantics preserved: the dispatch metric
+   is evaluated ONLY when some probe configures ceilings (otherwise bootstrap-on-missing-key
+   would stamp 0.0 into every repo's baseline uninvited), so the repo's own
+   performance_targets.toml + audit_baseline.json behave byte-identically pre/post Phase C
+   (pinned by tests). Ceilings for the real sparse kernel deliberately NOT set yet --
+   thresholds need data from CI runs first (scope doc Phase D item).
+2. Controller hook: `run_one_candidate_pass(..., probe_record_dir=...)` writes one Stage-0
+   provenance record per COMPLETED pass after all gates resolve: campaign_id, derived_from,
+   handoff sha, host wall seconds, accepted/hard_blocked verdicts. Hard-blocked passes still
+   record (forensics; outcome in config); exceptions leave no record. The only
+   bathos-adjacent site permitted by D7.
+3. Docs: `agent_assets/skills/using-xtrax/references/profiling.md` (TIER-2 reference,
+   Verify-path citation style). Justfile `audit-profiling-contract` recipe extended to cover
+   the Phase C files.
+
+Scope adjustment vs original plan: baseline-ratchet entries for wall-time metrics were
+NOT added beyond the dispatch metric -- adding ratchets without threshold data would
+fabricate anchors; same reasoning as (1).
+
+
 1. Extend `gates/performance.py` + `performance_targets.toml` with profiler-backed probe
    kinds (dispatch-count tripwire: n_compilations/n_jit_traces ceilings; optional
    wall-time→ProbeRecord emission), keeping existing ProbeResult plumbing intact.
