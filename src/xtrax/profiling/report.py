@@ -23,6 +23,12 @@ from xtrax.profiling.record import ProbeRecord
 _SKIP_SUFFIXES = ("_summary.json",)
 _SKIP_NAMES = {"coverage.json"}
 
+# D6 of the upstream scope doc: prolix resolved the default discovery root
+# from Path.cwd(), making the same command silently discover nothing (or the
+# wrong records) depending on the caller's working directory. Anchor the
+# default at THIS repository's root instead; explicit paths/root still win.
+_DEFAULT_DISCOVERY_ROOT = Path(__file__).resolve().parents[3]
+
 _COLUMNS = (
     "scope",
     "exclusive_seconds",
@@ -57,7 +63,7 @@ def discover_records(
             else:
                 files.append(p)
     else:
-        base = (root or Path.cwd()) / "outputs" / "profiling"
+        base = (root or _DEFAULT_DISCOVERY_ROOT) / "outputs" / "profiling"
         files = sorted(base.glob("stage*/*.json"))
     records: list[ProbeRecord] = []
     for path in files:

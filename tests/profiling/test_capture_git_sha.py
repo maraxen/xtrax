@@ -20,3 +20,17 @@ def test_capture_git_sha_from_file(monkeypatch, tmp_path):
     sha_file.write_text("cafebabeface\n")
     monkeypatch.setattr(rec, "_REPO_ROOT", tmp_path)
     assert rec._capture_git_sha() == "cafebabeface"
+
+
+def test_repo_root_anchors_at_repository_root():
+    """D3 port-bug guard: _REPO_ROOT must be the repository root, not <repo>/src.
+
+    prolix's scripts/profiling layout needed parents[2]; src/xtrax/profiling
+    needs parents[3]. A wrong depth silently breaks the `.git_sha` sidecar
+    and `git rev-parse` fallback chain (records would stamp "unknown").
+    """
+    assert (rec._REPO_ROOT / "pyproject.toml").is_file(), (
+        f"_REPO_ROOT resolved to {rec._REPO_ROOT}, which does not contain "
+        "pyproject.toml -- the parents[N] depth no longer matches the "
+        "package layout; fix _REPO_ROOT in xtrax/profiling/record.py"
+    )

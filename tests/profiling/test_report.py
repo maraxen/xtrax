@@ -87,3 +87,16 @@ def test_none_scope_renders_as_absent_not_zero():
         if "dense_bonded_bond" in line:
             assert "0.0" not in line.split("|")[2]
             assert "absent" in line
+
+
+def test_default_discovery_root_is_repository_root_not_cwd(
+    monkeypatch, tmp_path
+):
+    """D6: discovery must not depend on the caller's working directory."""
+    from xtrax.profiling import report as rep
+
+    monkeypatch.chdir(tmp_path)  # cwd now provably wrong for discovery
+    assert (rep._DEFAULT_DISCOVERY_ROOT / "pyproject.toml").is_file(), (
+        f"_DEFAULT_DISCOVERY_ROOT resolved to {rep._DEFAULT_DISCOVERY_ROOT}, "
+        "which is not the repository root"
+    )
