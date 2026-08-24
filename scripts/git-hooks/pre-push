@@ -14,6 +14,14 @@ set -e
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
+# CI parity (backlog #4398): the lint-format-type-test job syncs dev+eda+io
+# extras before ruff/ty. Without them, a fresh worktree's base-only venv makes
+# ty report false unresolved-imports for optional deps (zarr, chex, pandas,
+# matplotlib, seaborn, libcst) and blocks unrelated pushes. uv sync is fast
+# and idempotent when the env already matches.
+echo "[pre-push] uv sync --extra dev --extra eda --extra io (CI parity)"
+uv sync --extra dev --extra eda --extra io --quiet
+
 echo "[pre-push] ruff check ."
 uv run ruff check .
 
