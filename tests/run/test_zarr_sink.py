@@ -266,7 +266,10 @@ def test_git_unknown_failing_shellout_warns(
     (fake_bin / "git").write_text(script)
     (fake_bin / "git").chmod(0o755)
     monkeypatch.setenv("PATH", str(fake_bin))
-    with pytest.warns(UserWarning, match="shellout failed"):
+    # Trailing "(" pins this to the narrow CalledProcessError branch's wording
+    # ("a git shellout failed (...)"); the broad-catch fallback says
+    # "failed unexpectedly: ..." and must NOT satisfy this match.
+    with pytest.warns(UserWarning, match=r"shellout failed \("):
         _sink(tmp_path)
     root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
     assert root.attrs["git_sha"] == "unknown"
@@ -383,6 +386,33 @@ def test_finalize_consolidates_exactly_once_then_locks(
         sink.drain()
     with pytest.raises(RuntimeError, match="finalize"):
         sink.stage((1,), value=np.array([2]))
+
+
+def test_finalize_refuses_with_pending_buffers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    real = zarr.consolidate_metadata
+
+    def spy(store: object, **kwargs: object) -> object:
+        calls.append(str(store))
+        return real(store)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(zarr, "consolidate_metadata", spy)
+    sink = _sink(tmp_path, flush_every=10)  # >1 so stage() does NOT auto-drain
+    sink.stage((0,), value=np.array([1]))
+    assert len(sink) == 1
+
+    # Refusal must happen before any consolidation or locking.
+    with pytest.raises(RuntimeError, match="drain\\(\\)"):
+        sink.finalize()
+    assert calls == []  # nothing was consolidated behind the caller's back
+    assert len(sink) == 1  # payload neither stranded nor lost
+
+    # After an explicit drain, finalize proceeds normally, exactly once.
+    sink.drain()
+    sink.finalize()
+    assert len(calls) == 1
 
 
 def test_second_sink_with_different_run_id_raises(tmp_path: Path) -> None:

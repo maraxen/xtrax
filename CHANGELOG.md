@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   minimal `run_id`/`git_sha` pointer. Git capture never raises (falls back to
   `git_sha="unknown"` with a `UserWarning`). Core field names are reserved
   against caller attrs; schema validation happens at `stage()` time. New
-  `finalize()` method consolidates store metadata exactly once and locks the
-  sink; opening a second sink on the same `output_dir` with a different
+  `finalize()` method consolidates store metadata exactly once (refusing to
+  run while staged payloads are undrained) and locks the sink; opening a
+  second sink on the same `output_dir` with a different
   `run_id` now raises. (spec: #96, task 260824_default-sink-provenance-tracking)
 
 ### Changed

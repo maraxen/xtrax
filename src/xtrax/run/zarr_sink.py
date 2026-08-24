@@ -136,7 +136,9 @@ class ZarrStagingSink:
     plus ``spec.run_id`` and a UTC ``created_at`` timestamp, captured once.
     The full record lands on the store's root group; each drained key's own
     group gets a minimal ``run_id``/``git_sha`` pointer. Call
-    :meth:`finalize` once at run end to consolidate store metadata.
+    :meth:`finalize` once at run end to consolidate store metadata; it
+    refuses to run while staged payloads are undrained, so nothing is ever
+    stranded silently.
     """
 
     def __init__(self, spec: SinkSpec) -> None:
@@ -353,10 +355,20 @@ class ZarrStagingSink:
         further ``stage()``/``drain()`` calls are legitimate on this instance.
 
         Raises:
-            RuntimeError: If called more than once on the same instance.
+            RuntimeError: If staged payloads are still pending (``drain()``
+                them first -- finalize never strands buffered payloads), or if
+                called more than once on the same instance.
         """
         if self._finalized:
             msg = "ZarrStagingSink: finalize() already ran for this sink; it may run only once."
+            raise RuntimeError(msg)
+        if self._pending:
+            msg = (
+                f"ZarrStagingSink: finalize() refuses to consolidate with "
+                f"{len(self._pending)} staged key(s) undrained -- call drain() "
+                "(to persist) or take() (to discard) first; finalize() will not "
+                "strand buffered payloads silently."
+            )
             raise RuntimeError(msg)
         import zarr
 
