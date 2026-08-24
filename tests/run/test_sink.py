@@ -11,22 +11,24 @@ from xtrax.run.zarr_sink import ZarrStagingSink
 
 
 def test_sink_spec_defaults() -> None:
-    spec = SinkSpec()
+    spec = SinkSpec(run_id="r")
+    assert spec.run_id == "r"
     assert spec.output_dir is None
     assert spec.format == "jsonl"
     assert spec.flush_every == 1
+    assert spec.extension_schema is None
 
 
 def test_make_sink_none_format_returns_none() -> None:
-    assert make_sink(SinkSpec(format="none")) is None
+    assert make_sink(SinkSpec(run_id="r", format="none")) is None
 
 
 def test_make_sink_zarr_format_returns_zarr_staging_sink(tmp_path: Path) -> None:
-    sink = make_sink(SinkSpec(output_dir=tmp_path / "out.zarr", format="zarr"))
+    sink = make_sink(SinkSpec(run_id="r", output_dir=tmp_path / "out.zarr", format="zarr"))
     assert isinstance(sink, ZarrStagingSink)
 
 
 @pytest.mark.parametrize("fmt", ["jsonl", "h5"])
 def test_make_sink_unimplemented_formats_raise(fmt: str, tmp_path: Path) -> None:
     with pytest.raises(NotImplementedError, match=fmt):
-        make_sink(SinkSpec(output_dir=tmp_path, format=fmt))  # type: ignore[arg-type]
+        make_sink(SinkSpec(run_id="r", output_dir=tmp_path, format=fmt))  # type: ignore[arg-type]
