@@ -259,6 +259,30 @@ Exit criteria: ≥3 committed example records under `outputs/profiling/`; `rende
 produces a claim-gated table from them; perturbation harness demonstrated once on one
 scope group.
 
+**Phase B STATUS (2026-08-24):** core delivered, two items consciously deferred.
+Delivered: xtrax scope-label registry (tiling_vmap / tiling_safemap / tiling_dedup_gather,
+driver-local per D8); generic emitter `xtrax.profiling.emitters` with the
+empty-attribution regression pinned by tests; Stage-0 cost-analysis driver over the three
+tiling strategies (`scripts/prof_stage0_tiling_cost.py`, never executes); Stage-1 CPU
+micro driver (`scripts/prof_stage1_tiling_micro.py`: one jitted program applying all
+three strategies under named_scopes, trace + HLO-text attribution via
+`scope_map_from_hlo_text`/`parse_scopes`/`parse_dispatch_counts`, warm-up outside the
+timed window); 4 committed example records + HLO text under `outputs/profiling/`
+(regeneration commands in its README); all three labels recovered with real non-zero
+exclusive time and named_scope attribution. D9 spike result recorded above.
+
+Deferred, with rationale:
+1. *Claim-gated table from xtrax-native records* -- impossible honestly on this machine:
+   render_report's TERM_RANKING gate requires Stage>=2 GPU sources and this box has a
+   CPU-only jaxlib (D9 note). The fail-closed raise IS demonstrated live by the stage-1
+   driver; table rendering itself stays covered by the fixture-based tests until GPU data
+   exists.
+2. *Perturbation harness demonstration* -- its purpose is to certify that instrumentation
+   doesn't perturb a hot path backing a citable claim. No xtrax claim is backed by these
+   records yet (nothing above STRUCTURAL/DISPATCH_COUNT), so there is no decision the
+   harness would de-risk today. Revisit together with the first performance-backed claim
+   or the perf-gate integration (Phase C).
+
 ### Phase C — integration surfaces (est. 2 days)
 
 1. Extend `gates/performance.py` + `performance_targets.toml` with profiler-backed probe

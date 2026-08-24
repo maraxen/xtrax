@@ -1,0 +1,39 @@
+{
+  "attribution_method": null,
+  "config": {
+    "axis_note": "n_atoms == padded leading batch rows",
+    "dedup_k_bucket": "8",
+    "kernel": "sin_mul_rowsum",
+    "n_cols": "32",
+    "n_rows": "256",
+    "safemap_batch": "8",
+    "strategy": "safemap"
+  },
+  "contract_version": "3.0",
+  "device_kind": null,
+  "git_sha": "88b6d865dc15185eee3b17bfc404ab7b0212a07d",
+  "jax_version": "0.10.2",
+  "jaxlib_version": "0.10.2",
+  "metrics": {
+    "bytes_accessed": 2173.0,
+    "bytes_accessed0{}": 20.0,
+    "bytes_accessed1{}": 12.0,
+    "bytes_accessed2{}": 1024.0,
+    "bytes_accessed3{}": 8.0,
+    "bytes_accessedout{}": 1117.0,
+    "flops": 506.0,
+    "transcendentals": 256.0,
+    "utilization0{}": 15.0,
+    "utilization1{}": 5.0,
+    "utilization2{}": 3.0,
+    "utilization3{}": 2.0
+  },
+  "n_atoms": 256,
+  "platform": "cpu",
+  "probe_id": "stage0_tiling_safemap",
+  "scopes": null,
+  "stage": 0,
+  "timestamp": "2026-08-24T23:02:55.931427+00:00",
+  "x64_enabled": false,
+  "xla_flags": ""
+}

@@ -1,0 +1,231 @@
+HloModule jit_program, is_scheduled=true, entry_computation_layout={(f32[256,32]{1,0}, f32[256,32]{1,0})->f32[]}, allow_spmd_sharding_propagation_to_parameters={true,true}, allow_spmd_sharding_propagation_to_output={true}
+
+FileNames
+1 "/home/marielle/projects/xtrax/scripts/prof_stage1_tiling_micro.py"
+2 "/home/marielle/projects/xtrax/src/xtrax/tiling/iterator.py"
+3 "/home/marielle/projects/xtrax/src/xtrax/transforms/map.py"
+4 "/home/marielle/projects/xtrax/src/xtrax/tiling/dispatch.py"
+
+FunctionNames
+1 "<module>"
+2 "main"
+3 "_build_program.<locals>.program"
+4 "VmapIterator.__call__"
+5 "_core"
+6 "SafeMapIterator.__call__"
+7 "safe_map"
+8 "axis_dispatch"
+9 "_build_program.<locals>.<lambda>"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=215 end_line=215 column=21 end_column=27}
+2 {file_name_id=1 function_name_id=2 line=122 end_line=122 column=15 end_column=45}
+3 {file_name_id=1 function_name_id=3 line=79 end_line=79 column=16 end_column=36}
+4 {file_name_id=2 function_name_id=4 line=116 end_line=116 column=15 end_column=48}
+5 {file_name_id=1 function_name_id=5 line=59 end_line=59 column=11 end_column=43}
+6 {file_name_id=1 function_name_id=3 line=81 end_line=81 column=16 end_column=40}
+7 {file_name_id=2 function_name_id=6 line=151 end_line=151 column=15 end_column=53}
+8 {file_name_id=3 function_name_id=7 line=40 end_line=40 column=11 end_column=53}
+9 {file_name_id=1 function_name_id=5 line=59 end_line=59 column=12 end_column=29}
+10 {file_name_id=1 function_name_id=3 line=83 end_line=83 column=16 end_column=47}
+11 {file_name_id=4 function_name_id=8 line=174 end_line=174 column=21 end_column=62}
+12 {file_name_id=3 function_name_id=7 line=30 end_line=30 column=15 end_column=31}
+13 {file_name_id=4 function_name_id=8 line=172 end_line=172 column=21 end_column=67}
+14 {file_name_id=1 function_name_id=9 line=71 end_line=71 column=30 end_column=34}
+15 {file_name_id=4 function_name_id=8 line=176 end_line=176 column=15 end_column=65}
+16 {file_name_id=1 function_name_id=9 line=72 end_line=72 column=31 end_column=35}
+17 {file_name_id=1 function_name_id=3 line=84 end_line=84 column=15 end_column=20}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+2 {file_location_id=2 parent_frame_id=2}
+3 {file_location_id=3 parent_frame_id=3}
+4 {file_location_id=4 parent_frame_id=4}
+5 {file_location_id=5 parent_frame_id=5}
+6 {file_location_id=6 parent_frame_id=1}
+7 {file_location_id=7 parent_frame_id=7}
+8 {file_location_id=8 parent_frame_id=8}
+9 {file_location_id=5 parent_frame_id=1}
+10 {file_location_id=9 parent_frame_id=1}
+11 {file_location_id=6 parent_frame_id=3}
+12 {file_location_id=7 parent_frame_id=12}
+13 {file_location_id=8 parent_frame_id=13}
+14 {file_location_id=6 parent_frame_id=14}
+15 {file_location_id=7 parent_frame_id=15}
+16 {file_location_id=8 parent_frame_id=16}
+17 {file_location_id=6 parent_frame_id=17}
+18 {file_location_id=7 parent_frame_id=18}
+19 {file_location_id=8 parent_frame_id=19}
+20 {file_location_id=10 parent_frame_id=3}
+21 {file_location_id=11 parent_frame_id=21}
+22 {file_location_id=12 parent_frame_id=22}
+23 {file_location_id=5 parent_frame_id=23}
+24 {file_location_id=9 parent_frame_id=23}
+25 {file_location_id=9 parent_frame_id=5}
+26 {file_location_id=13 parent_frame_id=21}
+27 {file_location_id=14 parent_frame_id=27}
+28 {file_location_id=15 parent_frame_id=21}
+29 {file_location_id=16 parent_frame_id=29}
+30 {file_location_id=17 parent_frame_id=3}
+31 {file_location_id=6 parent_frame_id=20}
+32 {file_location_id=7 parent_frame_id=32}
+33 {file_location_id=8 parent_frame_id=33}
+34 {file_location_id=9 parent_frame_id=20}
+35 {file_location_id=5 parent_frame_id=20}
+
+
+%region_3.4 (reduce_sum.17: f32[], reduce_sum.18: f32[]) -> f32[] {
+  %reduce_sum.17 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.18 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.19 = f32[] add(%reduce_sum.17, %reduce_sum.18), metadata={op_name="vmap()/reduce_sum" stack_frame_id=9}
+}
+
+%fused_computation.1 (param_0.2: f32[32,8], param_1.3: s32[], param_2.4: f32[32,8,32]) -> f32[32,8] {
+  %param_0.2 = f32[32,8]{1,0} parameter(0)
+  %param_2.4 = f32[32,8,32]{2,1,0} parameter(2)
+  %param_1.3 = s32[] parameter(1)
+  %constant.6 = s32[] constant(0), metadata={op_name="jit(program)/tiling_safemap/while/body/jit(dynamic_index_in_dim)" stack_frame_id=19}
+  %dynamic_slice.2 = f32[1,8,32]{2,1,0} dynamic-slice(%param_2.4, %param_1.3, %constant.6, %constant.6), dynamic_slice_sizes={1,8,32}, metadata={op_name="jit(program)/tiling_safemap/while/body/jit(dynamic_index_in_dim)/dynamic_slice" stack_frame_id=33}
+  %sin.6 = f32[1,8,32]{2,1,0} sine(%dynamic_slice.2), metadata={op_name="jit(program)/tiling_safemap/while/body/closed_call/vmap()/sin" stack_frame_id=34}
+  %constant.5 = f32[] constant(2), metadata={op_name="jit(program)/tiling_safemap/while/body/closed_call" stack_frame_id=19}
+  %broadcast.4 = f32[1,8,32]{2,1,0} broadcast(%constant.5), dimensions={}, metadata={op_name="jit(program)/tiling_safemap/while/body/closed_call/vmap()/mul" stack_frame_id=34}
+  %mul.12 = f32[1,8,32]{2,1,0} multiply(%sin.6, %broadcast.4), metadata={op_name="jit(program)/tiling_safemap/while/body/closed_call/vmap()/mul" stack_frame_id=34}
+  %constant.4 = f32[] constant(0), metadata={op_name="jit(program)/tiling_safemap/while/body/closed_call" stack_frame_id=19}
+  %reduce_sum.8 = f32[8]{0} reduce(%mul.12, %constant.4), dimensions={0,2}, to_apply=%region_3.4, metadata={op_name="jit(program)/tiling_safemap/while/body/closed_call/vmap()/reduce_sum" stack_frame_id=35}
+  %bitcast.3 = f32[1,8]{1,0} bitcast(%reduce_sum.8), metadata={op_name="jit(program)/tiling_safemap/while/body/closed_call/vmap()/reduce_sum" stack_frame_id=35}
+  ROOT %dynamic_update_slice.2 = f32[32,8]{1,0} dynamic-update-slice(%param_0.2, %bitcast.3, %param_1.3, %constant.6), metadata={op_name="jit(program)/tiling_safemap/while/body/jit(dynamic_update_index_in_dim)/dynamic_update_slice" stack_frame_id=33}
+}
+
+%wrapped_add_computation (param_0.11: s32[], param_1.13: s32[]) -> s32[] {
+  %param_0.11 = s32[] parameter(0)
+  %param_1.13 = s32[] parameter(1)
+  ROOT %add.3 = s32[] add(%param_0.11, %param_1.13), metadata={op_name="jit(program)/tiling_safemap/while/body/add" stack_frame_id=19}
+}
+
+%region_2.7 (arg_tuple.1: (s32[], f32[32,8], f32[32,8,32])) -> (s32[], f32[32,8], f32[32,8,32]) {
+  %arg_tuple.1 = (s32[], f32[32,8]{1,0}, f32[32,8,32]{2,1,0}) parameter(0)
+  %constant.16 = s32[] constant(1)
+  %get-tuple-element.14 = f32[32,8,32]{2,1,0} get-tuple-element(%arg_tuple.1), index=2
+  %get-tuple-element.7 = f32[32,8]{1,0} get-tuple-element(%arg_tuple.1), index=1
+  %get-tuple-element.6 = s32[] get-tuple-element(%arg_tuple.1), index=0
+  %copy.3 = s32[] copy(%get-tuple-element.6)
+  %bitcast_dynamic-update-slice_fusion = f32[32,8]{1,0} fusion(%get-tuple-element.7, %copy.3, %get-tuple-element.14), kind=kLoop, calls=%fused_computation.1, metadata={op_name="jit(program)/tiling_safemap/while/body/jit(dynamic_update_index_in_dim)/dynamic_update_slice" stack_frame_id=33}
+  %wrapped_add = s32[] fusion(%copy.3, %constant.16), kind=kLoop, calls=%wrapped_add_computation, metadata={op_name="jit(program)/tiling_safemap/while/body/add" stack_frame_id=19}
+  ROOT %tuple.3 = (s32[], f32[32,8]{1,0}, f32[32,8,32]{2,1,0}) tuple(%wrapped_add, %bitcast_dynamic-update-slice_fusion, %get-tuple-element.14)
+}
+
+%wrapped_compare_computation (param_0.12: s32[], param_1.14: s32[]) -> pred[] {
+  %param_0.12 = s32[] parameter(0)
+  %param_1.14 = s32[] parameter(1)
+  ROOT %lt.0 = pred[] compare(%param_0.12, %param_1.14), direction=LT, metadata={op_name="jit(program)/tiling_safemap/while/cond/lt" stack_frame_id=19}
+}
+
+%region_4.8 (arg_tuple.3: (s32[], f32[32,8], f32[32,8,32])) -> pred[] {
+  %arg_tuple.3 = (s32[], f32[32,8]{1,0}, f32[32,8,32]{2,1,0}) parameter(0)
+  %constant.18 = s32[] constant(32)
+  %get-tuple-element.9 = s32[] get-tuple-element(%arg_tuple.3), index=0
+  ROOT %wrapped_compare = pred[] fusion(%get-tuple-element.9, %constant.18), kind=kLoop, calls=%wrapped_compare_computation, metadata={op_name="jit(program)/tiling_safemap/while/cond/lt" stack_frame_id=19}
+}
+
+%region_1.2 (reduce_sum.10: f32[], reduce_sum.11: f32[]) -> f32[] {
+  %reduce_sum.10 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.11 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.12 = f32[] add(%reduce_sum.10, %reduce_sum.11), metadata={op_name="jit(program)/tiling_vmap/reduce_sum" stack_frame_id=3}
+}
+
+%fused_computation (param_0.1: f32[], param_1.1: f32[256,32], param_2.1: f32[]) -> f32[] {
+  %param_1.1 = f32[256,32]{1,0} parameter(1)
+  %param_2.1 = f32[] parameter(2)
+  %mul.7 = f32[256,32]{1,0} broadcast(%param_2.1), dimensions={}, metadata={op_name="jit(program)/tiling_vmap/vmap()/mul" stack_frame_id=25}
+  %mul.4 = f32[256,32]{1,0} multiply(%param_1.1, %mul.7), metadata={op_name="jit(program)/tiling_vmap/vmap()/mul" stack_frame_id=25}
+  %param_0.1 = f32[] parameter(0)
+  ROOT %reduce_sum.7 = f32[] reduce(%mul.4, %param_0.1), dimensions={0,1}, to_apply=%region_1.2, metadata={op_name="jit(program)/tiling_vmap/reduce_sum" stack_frame_id=3}
+}
+
+%region_7.11.clone (reduce_sum.1: f32[], reduce_sum.2: f32[]) -> f32[] {
+  %reduce_sum.1 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.2 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.6 = f32[] add(%reduce_sum.1, %reduce_sum.2), metadata={op_name="jit(program)/tiling_dedup_gather/reduce_sum" stack_frame_id=20}
+}
+
+%region_5.9 (reduce_sum.25: f32[], reduce_sum.26: f32[]) -> f32[] {
+  %reduce_sum.25 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.26 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.27 = f32[] add(%reduce_sum.25, %reduce_sum.26), metadata={op_name="jit(program)/tiling_safemap/reduce_sum" stack_frame_id=11}
+}
+
+%fused_computation.2 (param_0.4: f32[8], param_1.7: f32[], param_2.7: f32[32,8]) -> f32[] {
+  %param_1.7 = f32[] parameter(1)
+  %param_2.7 = f32[32,8]{1,0} parameter(2)
+  %constant.7 = f32[] constant(0)
+  %reduce_sum.13 = f32[] reduce(%param_2.7, %constant.7), dimensions={0,1}, to_apply=%region_5.9, metadata={op_name="jit(program)/tiling_safemap/reduce_sum" stack_frame_id=11}
+  %add.2 = f32[] add(%param_1.7, %reduce_sum.13), metadata={op_name="jit(program)/add" stack_frame_id=30}
+  %param_0.4 = f32[8]{0} parameter(0)
+  %reduce_sum.9 = f32[] reduce(%param_0.4, %constant.7), dimensions={0}, to_apply=%region_7.11.clone, metadata={op_name="jit(program)/tiling_dedup_gather/reduce_sum" stack_frame_id=20}
+  ROOT %add.0 = f32[] add(%add.2, %reduce_sum.9), metadata={op_name="jit(program)/add" stack_frame_id=30}
+}
+
+%region_6.10 (reduce_sum.32: f32[], reduce_sum.33: f32[]) -> f32[] {
+  %reduce_sum.32 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.33 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.34 = f32[] add(%reduce_sum.32, %reduce_sum.33), metadata={op_name="jit(program)/tiling_dedup_gather/vmap()/reduce_sum" stack_frame_id=23}
+}
+
+%fused_computation.3 (param_0.7: s32[256,1], param_1.11: f32[256,32], param_2.12: s32[8,1]) -> f32[256] {
+  %param_1.11 = f32[256,32]{1,0} parameter(1)
+  %param_2.12 = s32[8,1]{1,0} parameter(2)
+  %gather.5 = f32[8,1,32]{2,1,0} gather(%param_1.11, %param_2.12), offset_dims={1,2}, collapsed_slice_dims={}, start_index_map={0}, index_vector_dim=1, slice_sizes={1,32}, metadata={op_name="jit(program)/tiling_dedup_gather/gather" stack_frame_id=27}
+  %sin.7 = f32[8,1,32]{2,1,0} sine(%gather.5), metadata={op_name="jit(program)/tiling_dedup_gather/vmap()/sin" stack_frame_id=24}
+  %constant.8 = f32[] constant(2)
+  %broadcast.5 = f32[8,1,32]{2,1,0} broadcast(%constant.8), dimensions={}, metadata={op_name="jit(program)/tiling_dedup_gather/vmap()/mul" stack_frame_id=24}
+  %mul.13 = f32[8,1,32]{2,1,0} multiply(%sin.7, %broadcast.5), metadata={op_name="jit(program)/tiling_dedup_gather/vmap()/mul" stack_frame_id=24}
+  %constant.10 = f32[] constant(0)
+  %reduce_sum.14 = f32[8]{0} reduce(%mul.13, %constant.10), dimensions={1,2}, to_apply=%region_6.10, metadata={op_name="jit(program)/tiling_dedup_gather/vmap()/reduce_sum" stack_frame_id=23}
+  %param_0.7 = s32[256,1]{1,0} parameter(0)
+  %gather.4 = f32[256,1]{1,0} gather(%reduce_sum.14, %param_0.7), offset_dims={1}, collapsed_slice_dims={}, start_index_map={0}, index_vector_dim=1, slice_sizes={1}, metadata={op_name="jit(program)/tiling_dedup_gather/gather" stack_frame_id=29}
+  ROOT %bitcast.4 = f32[256]{0} bitcast(%gather.4), metadata={op_name="jit(program)/tiling_dedup_gather/gather" stack_frame_id=29}
+}
+
+%region_7.11 (reduce_sum.39: f32[], reduce_sum.40: f32[]) -> f32[] {
+  %reduce_sum.39 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.40 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.41 = f32[] add(%reduce_sum.39, %reduce_sum.40), metadata={op_name="jit(program)/tiling_dedup_gather/reduce_sum" stack_frame_id=20}
+}
+
+%wrapped_reduce-window_computation (param_0.8: f32[256], param_1.12: f32[]) -> f32[8] {
+  %param_0.8 = f32[256]{0} parameter(0)
+  %param_1.12 = f32[] parameter(1)
+  ROOT %reduce-window.1 = f32[8]{0} reduce-window(%param_0.8, %param_1.12), window={size=32 stride=32}, to_apply=%region_7.11
+}
+
+%wrapped_sine_computation (param_0.9: f32[256,32]) -> f32[256,32] {
+  %param_0.9 = f32[256,32]{1,0} parameter(0)
+  ROOT %sin.8 = f32[256,32]{1,0} sine(%param_0.9), metadata={op_name="jit(program)/tiling_vmap/vmap()/sin" stack_frame_id=25}
+}
+
+%wrapped_broadcast_computation (param_0.10: f32[]) -> f32[32,8] {
+  %param_0.10 = f32[] parameter(0)
+  ROOT %broadcast_in_dim.1 = f32[32,8]{1,0} broadcast(%param_0.10), dimensions={}, metadata={op_name="jit(program)/tiling_safemap/broadcast_in_dim" stack_frame_id=16}
+}
+
+ENTRY %main.12 (xv.1: f32[256,32], xsd.1: f32[256,32]) -> f32[] {
+  %xv.1 = f32[256,32]{1,0} parameter(0), metadata={op_name="xv"}
+  %xsd.1 = f32[256,32]{1,0} parameter(1), metadata={op_name="xsd"}
+  %constant.19 = s32[256,1]{1,0} constant({...})
+  %constant.20 = f32[] constant(2)
+  %constant.21 = s32[8,1]{1,0} constant({ {0}, {1}, {2}, {3}, {4}, {5}, {6}, {7} })
+  %constant.22 = f32[] constant(0)
+  %constant.24 = s32[] constant(0)
+  %wrapped_sine = f32[256,32]{1,0} fusion(%xv.1), kind=kLoop, calls=%wrapped_sine_computation, metadata={op_name="jit(program)/tiling_vmap/vmap()/sin" stack_frame_id=25}
+  %bitcast.1 = f32[32,8,32]{2,1,0} bitcast(%xsd.1), metadata={op_name="xsd"}
+  %gather_bitcast_fusion = f32[256]{0} fusion(%constant.19, %xv.1, %constant.21), kind=kLoop, calls=%fused_computation.3, metadata={op_name="jit(program)/tiling_dedup_gather/gather" stack_frame_id=29}
+  %wrapped_broadcast = f32[32,8]{1,0} fusion(%constant.22), kind=kLoop, calls=%wrapped_broadcast_computation, metadata={op_name="jit(program)/tiling_safemap/broadcast_in_dim" stack_frame_id=16}
+  %copy.7 = s32[] copy(%constant.24)
+  %ynn_fusion = f32[] fusion(%constant.22, %wrapped_sine, %constant.20), kind=kCustom, calls=%fused_computation, metadata={op_name="jit(program)/tiling_vmap/reduce_sum" stack_frame_id=3}, backend_config={"fusion_config":{"kind":"__ynn_fusion"},"outer_dimension_partitions":[]}
+  %wrapped_reduce-window = f32[8]{0} fusion(%gather_bitcast_fusion, %constant.22), kind=kLoop, calls=%wrapped_reduce-window_computation
+  %tuple = (s32[], f32[32,8]{1,0}, f32[32,8,32]{2,1,0}) tuple(%copy.7, %wrapped_broadcast, %bitcast.1)
+  %while.5 = (s32[], f32[32,8]{1,0}, f32[32,8,32]{2,1,0}) while(%tuple), condition=%region_4.8, body=%region_2.7, metadata={op_name="jit(program)/tiling_safemap/while" stack_frame_id=16}, backend_config={"dynamic_variables":[],"known_induction_variable":{"tuple_index":"0"},"known_init_step":{"init":"0","step":"1"},"known_trip_count":{"n":"32"}}
+  %while.7 = f32[32,8]{1,0} get-tuple-element(%while.5), index=1, metadata={op_name="jit(program)/tiling_safemap/while" stack_frame_id=16}
+  ROOT %reduce_add_fusion = f32[] fusion(%wrapped_reduce-window, %ynn_fusion, %while.7), kind=kLoop, calls=%fused_computation.2, metadata={op_name="jit(program)/add" stack_frame_id=30}
+}
+
