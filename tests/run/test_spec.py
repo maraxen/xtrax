@@ -14,7 +14,7 @@ def test_run_spec_constructs():
 
 def test_sink_spec_defaults():
     """SinkSpec uses correct default values."""
-    s = SinkSpec()
+    s = SinkSpec(run_id="r")
     assert s.format == "jsonl"
     assert s.flush_every == 1
     assert s.output_dir is None
