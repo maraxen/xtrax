@@ -208,6 +208,23 @@ command-buffer swallowing on GPU) were empirically resolved on prolix's pinned J
 presence-not-spelling spike on xtrax's installed JAX version and record the result here.
 Budgeted inside Phase B.
 
+**Spike RESULT (2026-08-24, xtrax venv):** jax/jaxlib 0.10.2 (identical major.minor to
+prolix's fixtures). CPU-only jaxlib despite a machine GPU being present ("CUDA-enabled
+jaxlib is not installed") -- xtrax probes stay Stage 0/1 until a CUDA jaxlib lands here.
+Confirmed present, same shapes as prolix:
+`CommonPjRtLoadedExecutable::ExecuteHelperOnSingleDevice` (1:1 with jitted calls);
+`PjitFunction(<fn>)` at 2x per Python-level call (enter+exit bookkeeping);
+`backend_compile_and_load` appears iff compilation happens inside the trace window
+(pre-compiling outside yields 0 -- warm records legitimately have n_compilations=0);
+executed-thunk events carry post-fusion names in `args["hlo_op"]`
+(`broadcast_multiply_fusion`, `wrapped_reduce`) plus near-zero-duration `"end: "`
+bookkeeping events; compiled HLO text carries
+`op_name="jit(fn)/<named_scope>/<primitive>"` so scope paths survive ONLY in HLO text.
+Perfetto export kwarg on this install is
+`jax.profiler.trace(dir, create_perfetto_trace=True)` (not `create_perfetto_trace_file`).
+Conclusion: trace.py's parsers are valid AS-IS on xtrax's current install; re-spike again
+on any JAX upgrade.
+
 ## 5. Phased plan
 
 ### Phase A — core package port (est. 1–2 days)
