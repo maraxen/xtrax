@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from xtrax.devtools.freshness import Attestation
+from xtrax.run.freshness import Attestation
 from xtrax.run.zarr_integrity import fsync_tree, zarr_content_digest
 
 
@@ -303,7 +303,7 @@ def repro_floor_freshness_attestation(
     ttl_days: float,
 ) -> Attestation:
     """Wrap a PASSing repro_floor result as an
-    :class:`xtrax.devtools.freshness.Attestation` so callers can gate reuse
+    :class:`xtrax.run.freshness.Attestation` so callers can gate reuse
     of the PASS verdict against a TTL (:func:`evaluate_freshness`) instead of
     treating it as permanently valid -- a repro_floor PASS recorded against
     since-changed code should eventually stop authorizing promotion on its

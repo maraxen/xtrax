@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from xtrax.devtools.emit import assert_schema_version_compatible
+from xtrax.findings import assert_schema_version_compatible
 
 BASELINE_SCHEMA_VERSION = 1
 

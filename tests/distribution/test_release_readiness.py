@@ -18,7 +18,7 @@ from scripts.audit_release_readiness import (
     load_release_readiness_config,
     verify_workflow_markers,
 )
-from xtrax.devtools.freshness import ProbeResult
+from xtrax.run.freshness import ProbeResult
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "distribution" / "release_readiness.toml"

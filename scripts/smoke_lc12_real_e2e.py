@@ -259,10 +259,10 @@ from controller.evaluate_adapter import (  # noqa: E402
 )
 from controller.loop_run import CampaignLoopResult, run_campaign_loop  # noqa: E402
 from controller.praxia_dispatch_backend import PraxiaDispatchBackend  # noqa: E402
-from xtrax.devtools.freshness import Attestation  # noqa: E402
 from xtrax.loop.closure_lock import ClosureManifest, build_closure_manifest  # noqa: E402
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria  # noqa: E402
 from xtrax.loop.seed_gate import SeedTrialCounts  # noqa: E402
+from xtrax.run.freshness import Attestation  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("smoke_lc12_real_e2e")

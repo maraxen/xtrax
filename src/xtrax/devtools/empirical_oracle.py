@@ -7,8 +7,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from xtrax.devtools.emit import append_finding, emit_judgment_finding
 from xtrax.devtools.refute_promote import JudgmentCandidate
+from xtrax.findings import append_finding, emit_judgment_finding
 
 DEFAULT_ORACLE_PATH = Path("audit/empirical_oracle.toml")
 BUG_LABEL = "bug"

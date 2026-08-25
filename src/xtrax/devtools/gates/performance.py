@@ -16,7 +16,6 @@ from xtrax.devtools.baseline import (
     save_baseline,
     update_metric,
 )
-from xtrax.devtools.emit import append_finding, emit_metric_finding
 from xtrax.devtools.gates._dispatch_probe import measure_dispatch_counts
 from xtrax.devtools.gates._trace_probe import (
     ProbeResult,
@@ -25,6 +24,7 @@ from xtrax.devtools.gates._trace_probe import (
     run_trace_gate,
     run_trace_probe,
 )
+from xtrax.findings import append_finding, emit_metric_finding
 from xtrax.profiling.emitters import emit_probe_record
 
 METRIC_KEY = "performance.trace_violation_count"

@@ -110,10 +110,10 @@ def test_emit_tier_verdict_writes_jsonl(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(
     not port_emit.devtools_emit_available(),
-    reason="xtrax.devtools.emit (#1577) not importable",
+    reason="xtrax.findings (#1577) not importable",
 )
 def test_dual_validation_against_n11_envelope(tmp_path: Path) -> None:
-    from xtrax.devtools.emit import finding_from_dict, round_trip_finding
+    from xtrax.findings import finding_from_dict, round_trip_finding
 
     audits_path = tmp_path / "audits.jsonl"
     port_emit.emit_tier_verdict(

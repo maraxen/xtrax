@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from xtrax.devtools.emit import Severity
+from xtrax.findings import Severity
 
 
 def map_severity(jaxlint_level: str) -> Severity:

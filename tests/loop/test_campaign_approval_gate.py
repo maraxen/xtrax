@@ -4,13 +4,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from xtrax.devtools.freshness import Attestation
 from xtrax.loop.campaign_approval_gate import (
     ApprovalExpiredError,
     CampaignNotApprovedError,
     NoMatchingApprovalError,
     assert_campaign_approved,
 )
+from xtrax.run.freshness import Attestation
 
 
 def _fresh_attestation(now: datetime | None = None) -> dict:

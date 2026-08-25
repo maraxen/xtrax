@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from xtrax.devtools.emit import (
+from xtrax.findings import (
     AuditFinding,
     Severity,
     append_finding,

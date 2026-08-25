@@ -46,9 +46,9 @@ from scripts.smoke_lc12_real_e2e import (
     _run_pass_campaign,
     _smoke_campaign_approval_fn,
 )
-from xtrax.devtools.freshness import Attestation
 from xtrax.loop.compile_time_clock import TwoPhaseTiming, measure_two_phase_timing
 from xtrax.loop.schema_gate import resolve_candidate_callable
+from xtrax.run.freshness import Attestation
 
 
 class TestBuildSmokeClosureManifest:

@@ -13,12 +13,12 @@ from xtrax.devtools.baseline import (
     save_baseline,
     update_metric,
 )
-from xtrax.devtools.emit import append_finding, emit_metric_finding
-from xtrax.devtools.gates._jaxlint import (
+from xtrax.findings import append_finding, emit_metric_finding
+from xtrax.jaxlint_runner import (
     file_line,
     map_severity,
 )
-from xtrax.devtools.gates._jaxlint import (
+from xtrax.jaxlint_runner import (
     run_jaxlint_json as _run_jaxlint_json,
 )
 

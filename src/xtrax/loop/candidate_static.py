@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from xtrax.devtools.gates._jaxlint import run_jaxlint_json
+from xtrax.jaxlint_runner import run_jaxlint_json
 
 
 class CandidateStaticGateError(Exception):
