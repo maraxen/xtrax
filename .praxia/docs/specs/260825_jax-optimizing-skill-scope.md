@@ -1,7 +1,7 @@
 # Scope: JAX/kernel optimization skill (`xtrax-optimizing`) grounded in ProbeRecord discipline
 
 Date: 2026-08-25
-Status: SCOPE DRAFT -- not yet approved for implementation
+Status: DELIVERED -- P1/P2/P3 shipped; user-owned remainders listed in section 7b.
 Lineage: extends 260824_upstream-profiling-probe-tooling-from-prolix.md (Phase B/C probe
 infra) and prolix's 260817_jax-profiling-optimization-workflow.md (P4 attribution rules).
 Sibling skills: `agent_assets/skills/using-xtrax`, `agent_assets/skills/xtrax-probing`.
@@ -169,3 +169,33 @@ Explicitly out of scope: grain pipeline sharding (deferred Phase 5/6 per
    discover_records already takes explicit paths.
 3. Name: `xtrax-optimizing` vs `xtrax-perf`. Existing pair is
    `using-xtrax`/`xtrax-probing`, so gerund form fits the family.
+
+## 7b. Resolution + delivery record (2026-08-25)
+
+Q1 RESOLVED per lean: parity is captured IN-RECORD (`parity_max_abs_diff`
+metric) and gated BEFORE measurement -- `prof_stage1_onehot_micro.py` refuses
+to emit at all if variants disagree beyond tolerance. Q2 RESOLVED per lean:
+losers go to `outputs/profiling/rejected/`; no such records exist yet, the
+convention is documented in the skill's measurement-protocol reference. Q3
+RESOLVED per lean: `xtrax-optimizing`.
+
+Delivered (commits 7de4ead, d8ae444, 20bdc62, 346daef, 3ad9bcd):
+- Skill: SKILL.md + measurement-protocol / tier1 / tier2 / tier3 references,
+  every measured claim citing a real driver run (including two honest
+  negative/ambiguous findings: CPU one-hot wall ratios unstable across runs;
+  async feed overlap 0.70x SLOWER on sub-ms CPU steps).
+- Drivers: prof_stage0_onehot_cost.py, prof_stage1_onehot_micro.py,
+  prof_stage1_host_boundary.py, prof_stage1_feed_overlap.py -- all emitting
+  claim-valid ProbeRecords, all smoke/end-to-end pinned by
+  tests/scripts/test_prof_optimizing_drivers.py (11 tests).
+- Cross-links from using-xtrax and xtrax-probing; outputs README regeneration
+  list extended.
+
+User-owned remainders (not done on purpose):
+- Stage-2 GPU re-runs of all three probe families to unlock TERM_RANKING /
+  END_TO_END pairs (this machine is CPU-only jaxlib).
+- Performance-gate tripwire wiring for these probes. House policy pins
+  repo targets to NO dispatch config
+  (tests/audit/test_performance_gate.py::test_repo_targets_have_no_dispatch_config);
+  enabling ceilings is a policy change requiring Marielle's call.
+- Any `xtrax.perf` library package only if future driver count justifies it.
