@@ -130,6 +130,10 @@ type = "forbidden"
 # Regression guard: xtrax.run.repro_floor and three loop gates briefly
 # imported xtrax.devtools.freshness while the wheel excludes devtools --
 # breaking every downstream install (found by aminx dogfood smoke, 2026-08-25).
+# Exhaustive over shipped units: modules AND subpackages, including the
+# top-level primitives this PR itself relocated (findings/jaxlint_runner/
+# tombstone) -- a partial list let a devtools import slip through in
+# findings.py during review (juror repro).
 source_modules = [
   "xtrax.transforms",
   "xtrax.tiling",
@@ -146,6 +150,13 @@ source_modules = [
   "xtrax.inference",
   "xtrax.loop",
   "xtrax.profiling",
+  "xtrax.cli",
+  "xtrax.composition",
+  "xtrax.eda",
+  "xtrax.config",
+  "xtrax.findings",
+  "xtrax.jaxlint_runner",
+  "xtrax.tombstone",
 ]
 forbidden_modules = ["xtrax.devtools"]
 
