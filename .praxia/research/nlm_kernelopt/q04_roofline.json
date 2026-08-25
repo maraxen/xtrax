@@ -1,0 +1,399 @@
+{
+  "answer": "The **Roofline model**, introduced by Williams, Waterman, and Patterson, is a visual performance model that guides the optimization of compute kernels by combining peak computational performance, memory bandwidth, and local data reuse into a single framework [1, 2]. \n\n---\n\n### 1. The Roofline Model’s Core Claims\nThe model establishes three fundamental concepts that govern execution limits on any processor:\n\n*   **Operational Intensity (Arithmetic Intensity)**: This is the ratio of work to data movement, measured in **FLOPs per byte** [2, 3]. It is calculated as the total number of floating-point operations executed by a kernel divided by the total bytes transferred between global memory (DRAM/HBM) and the processor’s fast on-chip memory (SRAM/registers) [2].\n*   **The Ridge Point**: This is the critical inflection point on the roofline graph where the sloped **Memory Bandwidth Boundary** meets the flat **Peak Performance Boundary** [4, 5]. \n    *   The ridge point is defined mathematically as:\n        \\\\[\\text{Ridge Point (FLOP/byte)} = \\frac{\\text{Peak Performance (FLOP/s)}}{\\text{Memory Bandwidth (Bytes/s)}}\\\\]\n    *   The ridge point splits the graph into two performance regions:\n        1.  **Memory-Bound Region (left of the ridge point)**: Operational intensity is low. The hardware cannot feed data fast enough to keep the compute units busy; maximum performance is strictly throttled by memory bandwidth [6, 7].\n        2.  **Compute-Bound Region (right of the ridge point)**: Operational intensity is high. The hardware is saturated with computation, and performance is limited by the peak execution rate of the processing cores [6, 7].\n*   **Ceilings for Optimizations**: The model uses \"ceilings\" to represent intermediate performance bottlenecks (such as lack of instruction-level parallelism, uncoalesced memory accesses, or register resource limits) [7, 8]. To climb from a lower performance ceiling toward the absolute theoretical hardware \"roof,\" a developer must apply targeted optimizations (such as vectorization, memory coalescing, or loop unrolling) to break through each intermediate barrier [7, 9].\n\n---\n\n### 2. Limitations and Refinements for Modern Accelerators & DNN Workloads\nApplying classical roofline reasoning to modern deep neural network (DNN) workloads on advanced accelerators (like NVIDIA Ampere and Hopper GPUs) reveals major gaps in the original model, leading to several modern refinements:\n\n#### A. Multi-Tiered Memory Hierarchy Rooflines\n*   **Limitation**: The original model assumes a simple, flat transition between off-chip DRAM and the processor [10, 11].\n*   **Refinement**: Modern accelerators utilize highly partitioned L2 caches with NUMA-like latency tiers (near hit, far hit, near miss, far miss) [12, 13], heavily banked shared memory (SRAM) [11], and inter-SM networks like Distributed Shared Memory (DSM) [14]. \n*   **Impact**: Developers must analyze **hierarchical rooflines** (e.g., DRAM rooflines vs. L2 cache rooflines vs. Shared Memory rooflines) [15]. For instance, weight-quantization studies like **MARLIN** show that global memory transfers can be restricted strictly to loading quantized weights, while activation and output tiles are continuously reloaded from the L2 cache without thashing [16]. If the L2 cache bandwidth is not exceeded, the DRAM roofline remains the sole global bottleneck even if the total traffic across all cache layers is far higher [16].\n\n#### B. Batch Size as a Dynamic Driver of Arithmetic Intensity\n*   **Limitation**: Classical roofline analysis assumes that a program's arithmetic intensity is static and algorithm-dependent.\n*   **Refinement**: In DNN processing—specifically autoregressive LLM inference—the arithmetic intensity is a **dynamic variable heavily modulated by batch size** [17, 18].\n*   **Impact**: At a batch size of 1 (single-user token generation), LLM execution is deeply memory-bound because the GPU must read gigabytes of model weights from global memory to perform just a single multiply-accumulate operation per weight (low arithmetic intensity) [18, 19]. As the batch size increases, the loaded weights are reused across multiple tokens in parallel [17, 20]. This causes the arithmetic intensity to scale up linearly, eventually shifting the execution past the hardware's ridge point into the compute-bound regime [17, 20].\n\n#### C. Variable Compute Ceilings via Specialized Cores & Low-Precision Formats\n*   **Limitation**: Peak compute performance was traditionally modeled as a single, static horizontal line.\n*   **Refinement**: Modern accelerators feature specialized **Tensor Core Units (TCUs)** [21] and support a wide spectrum of numerical precisions (FP16, BF16, FP8, INT8, FP4) [22, 23].\n*   **Impact**: Changing the precision (e.g., migrating from FP16 to FP8) doubles the peak compute throughput of the SMs [24-26]. However, doubling the peak compute height **shifts the ridge point dramatically to the right** [25, 27]. A kernel that was comfortably compute-bound at FP16 can suddenly become memory-bound at FP8, requiring a much higher operational intensity (or heavier tiling and data reuse) to saturate the new, higher compute roof [25, 27].\n\n#### D. Asynchronous Execution and Hardware Offloading\n*   **Limitation**: The traditional roofline model assumes a sequential, synchronous execution model where data transfers and arithmetic operations block one another.\n*   **Refinement**: Accelerator architectures decouple memory movement from compute using hardware-managed asynchronous copy engines, such as the **Tensor Memory Accelerator (TMA)** on Hopper [28, 29], and asynchronous math instructions like `wgmma` [29].\n*   **Impact**: Using techniques like **warp specialization** (allocating separate, dedicated warps for \"producers\" to load data and \"consumers\" to compute math) [30, 31], the latency of memory transfers can be completely hidden underneath the compute cycles of active Tensor Cores [16, 32]. This overlapping allows kernels (like FlashAttention-3) to run at near-peak compute utilization even if their static arithmetic intensity sits near or below the traditional memory-bound ridge point [16, 33].\n\n#### E. Local Dataflows and Energy Stationary Bottlenecks (Sze et al.)\n*   **Limitation**: The standard Roofline model is strictly performance-centric (FLOPs/s) and does not capture the physical energy costs of internal data movement, which is the primary bottleneck in DNN hardware accelerators [34].\n*   **Refinement**: Sze et al. outline how accelerators are designed around **specialized dataflows**—such as **Weight Stationary (WS)**, **Output Stationary (OS)**, and **Row Stationary (RS)**—to maximize local data reuse at the lowest-energy storage tiers (register files and accumulators) [35-38].\n*   **Impact**: Minimizing off-chip DRAM access is the primary objective because DRAM accesses consume several orders of magnitude more energy than computational logic (e.g., 200× the cost of an ALU operation) [34, 35]. While a WS dataflow minimizes weight loading, and an OS dataflow minimizes partial sum transfers, a unified dataflow like Row Stationary (as implemented in the Eyeriss accelerator) optimizes for *overall* chip energy by keeping weights, input activations, and partial sums stationary on-chip simultaneously, which is a multidimensional resource optimization not represented by standard roofline projections [38, 39].\n\n#### F. Physical and Thermal Walls\n*   **Limitation**: Static roofline equations assume the GPU can run indefinitely at theoretical boost clock speeds.\n*   **Refinement**: Microbenchmarks on modern GPUs (such as Turing T4 and Hopper H800) reveal that running intensive Tensor Core computations (such as continuous, dense `wgmma` instructions with non-zero inputs) consistently triggers **power-limit and thermal-limit clock throttling** [40-42].\n*   **Impact**: Once the GPU hits its physical power threshold (e.g., the 350-watt power limit of the H800-PCIe), the hardware dynamically lowers its core frequency, dropping the real peak performance roof [41]. This physical \"power wall\" acts as a dynamic, environmental ceiling that forces developers to balance extreme computational density against energy efficiency [41, 43].\n\n---\n\n📊 I can write a Python script to model and plot custom roofline curves for your specific target GPUs (such as V100, T4, A100, or H100) alongside your model's exact layer dimensions to show precisely where your workloads fall. Would you like to set that up?",
+  "question": "What are the roofline model's core claims (Williams, Waterman, Patterson) — operational intensity, ridge point, ceilings for optimizations — and what limitations or refinements do the sources (including Sze et al. DNN survey) identify when applying roofline reasoning to modern accelerators and deep neural network workloads?",
+  "conversation_id": "66228072-8454-4d68-ab54-1e0f585fc80a",
+  "sources_used": [
+    "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+    "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+    "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7"
+  ],
+  "citations": {
+    "1": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "2": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "3": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "4": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "5": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "6": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "7": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "8": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "9": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "10": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+    "11": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "12": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "13": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "14": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "15": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "16": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "17": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "18": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "19": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "20": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "21": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "22": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "23": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+    "24": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "25": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "26": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "27": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "28": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "29": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "30": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "31": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "32": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "33": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "34": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+    "35": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+    "36": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+    "37": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+    "38": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+    "39": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+    "40": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "41": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "42": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+    "43": "4aef3fe9-15e9-468e-a450-6c8665032dc5"
+  },
+  "references": [
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 1,
+      "cited_text": "The results shown in Fig. 11 can be summarized in two points. First, in addition to cluster size from 1 to 2, as cluster size increases, performance actually decreases. This reflects the broadcast-like access pattern degrading performance with larger clusters, corresponding to the results in Fig. 9. Second, increasing block size can significantly improve throughput. This demonstrates how higher block sizes can compensate for low ILP scenarios, which corresponds to the results in Fig. 10. These findings demonstrate how the fundamental DSM behavior patterns we identified can be used to predict and understand real application performance, providing practical guidance for optimizing DSM-based applications."
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 2,
+      "cited_text": "www.nvidia.com Kernel Profiling Guide v2021.2.1 33 Chapter 7. ROOFLINE CHARTS Roofline charts provide a very helpful way to visualize achieved performance on complex processing units, like GPUs. This section introduces the Roofline charts that are presented within a profile report. 7.1. Overview Kernel performance is not only dependent on the operational speed of the GPU. Since a kernel requires data to work on, performance is also dependent on the rate at which the GPU can feed data to the kernel. A typical roofline chart combines the peak performance and memory bandwidth of the GPU, with a metric called Arithmetic Intensity (a ratio between Work and Memory Traffic), into a single chart, to more realistically represent the achieved performance of the profiled kernel. A simple roofline chart might look like the following:"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 3,
+      "cited_text": "2147483648 12582912 Now that we can calculate the total number of FLOPs and (minimum) memory bandwidth usage of a matrix multiplication, let's see what a real 1 This notebook was run on a TPU v5e chip so we'll use the v5e numbers (if you are running this notebook, your numbers may differ). TPU v5es ł compute and 819 GB/s of memory bandwidth. By looking at the ratio of these numbers (called the arithmetic intensity), we can get a bound on bandwidth usage\" ratio can get before we become IO bound (about 240 FLOPs/byte on TPU v5e)."
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 4,
+      "cited_text": "0.39 SM Frequency [cycle/nsecond] 0.34 DRAM Frequency [cycle/nsecond] Floating Point Operations Roofline 2.59 2,933 20.79 1.13 1.42 Performance [FLOP/s] (1 = 1,000,000,000) 100,000 10,000- 1,000- 100 10- 1- 0.1- 0.01- 0.001- 0.0001- Memory Bandwidth Boundary Ridge Point 1e-05- 0.001 0.01 www.nvidia.com Kernel Profiling Guide 0.1 Peak Pe ma 10 Arithmetic Intensity [FLOP/byte] 100 1,000 10,000 v2021.2.1 34 Roofline Charts This chart actually shows two different rooflines. However, the following components can be identified for each:"
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 5,
+      "cited_text": "► Ridge Point - The ridge point is the point at which the memory bandwidth ► boundary meets the peak performance boundary. This point is a useful reference when analyzing kernel performance. Achieved Value - The achieved value represents the performance of the profiled kernel. If baselines are being used, the roofline chart will also contain an achieved value for each baseline. The outline color of the plotted achieved value point can be used to determine from which baseline the point came. 7.2. Analysis"
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 6,
+      "cited_text": "SOL SM [%] SOL Memory [%] SOL L1/TEX Cache [%] SOL L2 Cache [%] SOL DRAM [%] Performance [FLOP/s] (1 = 1,000,000,000) 100,000 10,000- 1,000- 100- 10- 1- 0.1- 0.01- 0.001- 0.0001- Memory Bound Reg 1e-05+ 0.001 0.01 0.1 0.02 Duration [usecond] 0.39 Elapsed Cycles [cycle] 14.43 SM Active Cycles [cycle] 0.39 SM Frequency [cycle/nsecond] 0.34 DRAM Frequency [cycle/nsecond] Floating Point Operations Roofline 10 Compute Bound Region 100 1,000 10,000 D 2.59 2,933 20.79 1.13 1.42 Arithmetic Intensity [FLOP/byte]"
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 7,
+      "cited_text": "As shown here, the ridge point partitions the roofline chart into two regions. The area shaded in blue under the sloped Memory Bandwidth Boundary is the Memory Bound region, while the area shaded in green under the Peak Performance Boundary is the Compute Bound region. The region in which the achieved value falls, determines the current limiting factor of kernel performance. The distance from the achieved value to the respective roofline boundary (shown in this figure as a dotted white line), represents the opportunity for performance improvement. The closer the achieved value is to the roofline boundary, the more optimal is its performance. An achieved value that lies on the Memory Bandwidth Boundary but is not yet at the height of the ridge point would indicate that any further improvements in overall FLOP/s are only possible if the Arithmetic Intensity is increased at the same time. Using the baseline feature in combination with roofline charts, is a good way to track optimization progress over a number of kernel executions."
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 8,
+      "cited_text": "www.nvidia.com Kernel Profiling Guide v2021.2.1 40 Memory Tables <cited_table>",
+      "cited_table": {
+        "num_columns": 2,
+        "rows": [
+          [
+            "",
+            "architectures, each shared memory"
+          ],
+          [
+            "Wavefronts",
+            "Number of wavefronts required to service"
+          ],
+          [
+            "",
+            "Wavefronts are serialized and processed"
+          ],
+          [
+            "% Peak",
+            "Percentage of peak utilization. Higher"
+          ],
+          [
+            "",
+            "as it does not necessarily indicate efficient"
+          ],
+          [
+            "Bank Conflicts",
+            "If multiple threads' requested addresses"
+          ],
+          [
+            "",
+            "The hardware splits a conflicting memory"
+          ],
+          [
+            "",
+            "request into as many separate conflict-"
+          ],
+          [
+            "",
+            "free requests as necessary, decreasing the"
+          ],
+          [
+            "",
+            "effective bandwidth by a factor equal to"
+          ],
+          [
+            "",
+            "the number of colliding memory requests."
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 9,
+      "cited_text": "Pipelines of simple map operations can be optimized by tradi- tional loop fusion: merging multiple successive operations on each point into a single compound operation improves arithmetic intensity by maximizing producer-consumer locality, keeping intermediate data values in fast local memory (caches or registers) as it flows through the pipeline. But traditional loop fusion does not apply to stencil operations, where neighboring points in a consumer stage depend on overlapping regions of a producer stage. Instead, sten- cils require a complex tradeoff between producer-consumer locality, synchronization, and redundant computation. Because this tradeoff is made by interleaving the order of allocation, execution, and com- munication of each stage, we call it the pipeline's schedule. These tradeoffs exist in scheduling individual iterated stencil computations in scientific applications, and the complexity of the choice space is reflected by the many different tiling and scheduling strategies introduced in past work [10, 16, 19]. In image processing pipelines, this tradeoff must be made for each producer-consumer relationship between stages in the graph-often dozens or hundreds and the ideal schedule depends on the global interaction among every stage, often requiring the composition of many different strategies."
+    },
+    {
+      "source_id": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+      "citation_number": 10,
+      "cited_text": "In this paper, we argue that a missing principle is making attention algorithms IO-aware [1] that is, carefully accounting for reads and writes to different levels of fast and slow memory (e.g., between fast GPU on-chip SRAM and relatively slow GPU high bandwidth memory, or HBM [45], Figure 1 left). On modern 1 Outer Loop KT: dx N Attention on GPT-2 Copy Block to SRAM Outer Loop Matmul Q: Nx d GPU SRAM: 19 TB/s (20 MB) SRAM GPU HBM: 1.5 TB/s (40 GB) HBM Main Memory DRAM: 12.8 GB/s Inner Loop (CPU DRAM)"
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 11,
+      "cited_text": "We describe the aspects of the GPU's execution model relevant for FLASHATTENTION-3, with a focus on the NVIDIA Hopper architecture as a concrete instantiation of this model. Memory hierarchy: The GPU's memories are organized as a hierarchy of data locales, with capacity inversely related to bandwidth (Table 1)4. Global memory (GMEM), also known as HBM, is the off-chip DRAM accessible to all streaming multiprocessors (SMs). Data from GMEM gets transparently cached into an on-chip L2 cache. Next, each SM contains a small on-chip, programmer-managed highly banked cache called shared memory (SMEM). Lastly, there is the register file within each SM."
+    },
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 12,
+      "cited_text": "The differing L2 cache latencies observed in the A100 and H800 GPUs arise from their partitioned architectures, which traditional P-chase benchmarking methods cannot fully characterize. To address this limitation, we conduct a subsequent fine-grained analysis. Table 3. Latency in clock cycles for different memory scopes using traditional P-chase <cited_table> Fine-grained P-chase benchmarking. We employ fine-grained P-chase [29] to measure the latency of each memory access, revealing patterns in GPU L2 cache and global memory latency. Our analysis is based on the following assumptions: 1) Two L2 cache partitions have the same capacity. 2) When the size of the data allocated for benchmarking is significantly smaller than half of the total L2 cache capacity, we assume that all memory accesses remain within the cache partition, thus, the result of P-chase does not demonstrate global memory latency. 3) Due to the architectural layout of the GPU, there are differences in the physical proximity between streaming multiprocessors (SMs) and L2 cache partitions. Accessing an L2 partition closer to an SM results in lower latency compared to accessing a farther partition; 4) Any measured latency significantly higher than what can be explained by cache capacity, data size being fully cached, or SM proximity to L2 partitions should be attributed to global memory access due to cache misses. The access sequence of fine-grained P-chase aligns with a uniform 32-byte stride.",
+      "cited_table": {
+        "num_columns": 4,
+        "rows": [
+          [
+            "Type",
+            "RTX4090",
+            "A100",
+            "H800"
+          ],
+          [
+            "L1 Cache",
+            "32.0",
+            "33.0",
+            "32.0"
+          ],
+          [
+            "Shared Memory",
+            "30.1",
+            "29.0",
+            "29.0"
+          ],
+          [
+            "L2 Cache",
+            "273.0",
+            "202.8~408",
+            "264.5~502"
+          ],
+          [
+            "Global Memory",
+            "571",
+            "566",
+            "656"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 13,
+      "cited_text": "https://resources.nvidia.com/en-us-data-center-overview/gtc22-whitepaper-hopper Manuscript submitted to ACM Dissecting the NVIDIA Hopper Architecture through Microbenchmarking and Multiple Level Analysis 8 On the A100, with an array length of 30MB, four distinct latency groups emerged, corresponding to the four categories in the Table 4. In the H800, an 8MB array exhibited two latency types: L2 cache hit near partition (\"near hit\") and L2 cache hit far partition (\"far hit\"). With a 40MB array, three latency groups were observed: L2 cache near partition hit, L2 cache near partition miss (\"near miss\"), and L2 cache far partition miss (\"far miss\"). We apply the K-means clustering algorithm to each device's four data groups, with cluster center results shown in Table 4. We observe that the A100 and H800, with their dual-partitioned L2 caches, exhibit significantly different behavior compared to the RTX 4090, which has an unpartitioned L2 cache. Additionally, their global memory access latency is considerably higher than that of the RTX 4090."
+    },
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 14,
+      "cited_text": "Insight 1. wgmma can achieve 95% of Hopper's theoretical peak performance, while the backward-compatible mma can only reach 62.9%. 2. Using wgmma requires attention to power wall constraints, whereas mma demonstrates better energy efficiency. 3. Utilizing 4th-generation Tensor Core low-precision formats (FP8) is beneficial for libraries and applications, but careful consideration must be given to problem size, precision conversion overhead and accuracy loss. 7 Distributed Shared Memory The Hopper architecture features a direct SM-to-SM communication network within clusters, enabling threads from one thread block to access shared memory of another block, known as distributed shared memory (DSM). Additionally, for cases where shared memory demand restricts active block numbers on an SM, DSM can partition data within the same cluster, alleviating shared memory demand per block. The programmability of DSM is facilitated through the CUDA C function, cluster.map_shared_rank(SMEM, DST_BLOCK_RANK), returning the shared memory address of the target block. Here, SMEM represents the shared memory pointer, and DST_BLOCK_RANK is the target block rank in the cluster. This is compiled into PTX code mapa, which maps the address of the shared variable in the target block. We benchmark DSM using three aspects: DSM latency, throughput under various scheduling strategies and access patterns, and histogram applications. This multi-faceted testing approach helps uncover the programming performance of DSM."
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 15,
+      "cited_text": "GPU Speed Of Light A SOL Rooflines High-level overview of the utilization for compute and memory resources of the GPU. For each unit, the Speed Of Light (SOL) reports the achieved percentage of utilization with respect to the theoretical maximum. High-level overview of the utilization for compute and memory resources of the GPU presented as a roofline chart. SOL SM [%] SOL Memory [%] SOL L1/TEX Cache [%] SOL L2 Cache [%] SOL DRAM [%] 0.02 Duration [usecond] 0.39 Elapsed Cycles [cycle] 14.43 SM Active Cycles [cycle]"
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 16,
+      "cited_text": "The key to working around these problems is exploiting the GPU's L2 cache, which is usually significantly faster than global memory. Additionally, a GPU can load from L2 to L1 and from global to L2 simultaneously. Thus, we can pipeline these loads and essentially hide the bandwidth cost of the $A_{sm}$ block loads completely, as long as the overall required memory traffic does not exceed the L2 bandwidth. Consequently, we will proceed by partitioning C into blocks of size $M\\times N_{sm}$ with $N_{sm}\\in\\{64,128,256\\}$, i.e., moder- ately wide tiles of full input batchsize, and then assigning each corresponding independent matmul sub-problem to one SM. At $N_{sm}=256$, even batchsize $M=64$ remains bound by global weight loading. More precisely, global loading of $A_{sm}$ blocks remains the bottleneck as long as reading both $A_{sm}$ and $B_{sm}$ blocks from L2 is faster, i.e.:"
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 17,
+      "cited_text": "Reducing memory movement leads to substantial practical speedups by compressing the network weights, as shown by various recent works (Frantar et al., 2022; Lin et al., 2023; Shao et al., 2023; Dettmers et al., 2023), in particular in the context of quantization. Specifically, during infer- ence, weights can often be loaded from GPU memory in compressed form-reducing movement costs and then dy- namically decompressed in registers before multiplication. A key limitation of existing such mixed-precision inference implementations is that they cease to provide significant speedups in the batched inference case, that is, when mul- tiple tokens must be generated in parallel. Intuitively, this is because this case has significantly higher arithmetic in- tensity, making it much harder to fully hide all required computations behind the reduced memory movement."
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 18,
+      "cited_text": "3. The MARLIN Kernel 3.1. Motivation LLM weight quantization is motivated by the fact that mod- ern GPUs have large FLOPs/Bytes ratios, meaning that they can execute floating point operations much faster than they can read from memory. As an example, an A10 GPU has a FLOPs/Bytes ratio of $\\approx200$ (NVIDIA, 2022a). In the context of a single layer matrix multiplication, processing MARLIN: Mixed-Precision Auto-Regressive Parallel Inference on Large Language Models one input token takes 2 FLOPs per weight and the GPU can execute 100 FLOPs in the time it takes to load one 4-bit weight. Hence, memory loading will dominate runtime as long as the input batchsize is less than $b_{opt}\\approx50.$ In fact, $b_{opt}$ is the batchsize where latency is neither bound by memory nor by compute, i.e., where we achieve the lowest latency at maximum throughput. In principle, this is precisely the batchsize that we would like to operate at in practice: any smaller does not yield further speedup and any larger does not improve throughput. (This analysis is further detailed in Section 5.1.)"
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 19,
+      "cited_text": "Institute of Science and Technology Austria (ISTA), Klosterneuburg, Austria 2CITIC, Universidade da Coruña, A Coruña, Spain 3D-INFK, ETH Zurich, Zurich, Switzerland Neural Magic, Inc., Somerville, United States. Correspondence to: Jiale Chen <jiale.chen@ist.ac.at>. Copyright 2024 by the authors. 1. Introduction The capabilities of large language models (LLMs) (Rad- ford et al., 2019; Zhang et al., 2022; Touvron et al., 2023a) have led to significant research and industrial interest. Con- sequently, a lot of effort has been dedicated to reducing their computational costs, and notably their inference costs (Dettmers et al., 2022; Frantar et al., 2022; Lin et al., 2023; Xiao et al., 2022; Dettmers & Zettlemoyer, 2022; Shao et al., 2023; Sheng et al., 2023). A large fraction of this work starts from the observation that generative workloads-in which a model produces a next token (often a word) based on a cached context can be heavily memory-bound when ex- ecuted on GPUs or CPUs, as the cost of reading the LLM weights dwarfs that of the arithmetic operations, and their footprint greatly exceeds the cache size."
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 20,
+      "cited_text": "First, note that the GPU itself offers different performance levels, depending on whether the boost clock is enabled and can be sustained (see horizontal lines). Generally, we first observe that batchsizes smaller than 64 are memory-bound, while the larger batchsizes are compute-bound, confirming our prior intuition. Further, the MARLIN kernel achieves strong hardware utilization across matrix sizes and arith- metic intensities, with the best results for larger matrices. Interestingly, we observe that for time intensive computa- tions (large matrices and batchsizes), the GPU's clock rate is automatically throttled and FLOP/s correspondingly drop towards the base clock limit."
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 21,
+      "cited_text": "2.1.1. MODERN TENSOR CORE UNITS Ampere's new asynchronous copy saves SM internal band- width by avoiding intermediate RF access. There are two variants of this instruction, \"access\" that saves data into L1 for subsequent accesses and reuse (Figure 2), and \"bypass\", which also skips L1 cache (Figure 23). 2.2. Mixed-Precision Inference on LLMS Tensor Core Units (TCUs) Sparse TCUs RF RF GMEM Load SMEM SMEM SPTC 01234567 0312 SMEM Store SMEM Load With 24 0356 RF Async-Copy 个 (Access L1) 1 Without Async-Copy"
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 22,
+      "cited_text": "20.9. Compute Capability 10.0 20.9.1. Architecture A Streaming Multiprocessor (SM) consists of: ► 128 FP32 cores for single-precision arithmetic operations, 64 FP64 cores for double-precision arithmetic operations, 502 20. Compute Capabilities CUDA C++ Programming Guide, Release 13.3 64 INT32 cores for integer math, ► 4 mixed-precision fifth-generation Tensor Cores supporting FP8 input type in either E4M3 or E5M2 for exponent (E) and mantissa (M), half-precision (fp16), __nv_bfloat16, tf32, INT8 and double precision (fp64) matrix arithmetic (see Warp Matrix Functions for details) with sparsity support,"
+    },
+    {
+      "source_id": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+      "citation_number": 23,
+      "cited_text": "Undoubtedly, both larger datasets and datasets for new domains will serve as important resources for profiling and exploring the efficiency of future DNN engines. V. HARDWARE FOR DNN PROCESSING Due to the popularity of DNNs, many recent hardware platforms have special features that target DNN processing. For 12 instance, the Intel Knights Landing CPU features special vector instructions for deep learning; the Nvidia PASCAL GP100 GPU features 16-bit floating point (FP16) arithmetic support to perform two FP16 operations on a single precision core for faster deep learning computation. Systems have also been built specifically for DNN processing such as Nvidia DGX-1 and Facebook's Big Basin custom DNN server [73]. DNN inference has also been demonstrated on various embedded System-on- Chips (SoC) such as Nvidia Tegra and Samsung Exynos as well as FPGAs. Accordingly, it's important to have a good understanding of how the processing is being performed on these platforms, and how application-specific accelerators can be designed for DNNs for further improvement in throughput and energy efficiency."
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 24,
+      "cited_text": "New DPX Instructions accelerate Dynamic Programming algorithms by up to 7x over the A100 GPU. Two examples include the Smith-Waterman algorithm for genomics processing, and the Floyd-Warshall algorithm used to find optimal routes for a fleet of robots through a dynamic warehouse environment. 3x faster IEEE FP64 and FP32 processing rates chip-to-chip compared to A100, due to 2x faster clock-for-clock performance per SM, plus additional SM counts and higher clocks of H100. New Thread Block Cluster feature allows programmatic control of locality at a granularity larger than a single Thread Block on a single SM. This extends the CUDA programming model by adding another level to the programming hierarchy to now include Threads, Thread Blocks, Thread Block Clusters, and Grids. Clusters enable multiple Thread Blocks running concurrently across multiple SMs to synchronize and collaboratively fetch and exchange data. New Asynchronous Execution features include a new Tensor Memory Accelerator (TMA) unit that can transfer large blocks of data very efficiently between global memory and shared memory. TMA also supports asynchronous copies between Thread Blocks in a Cluster. There is also a new Asynchronous Transaction Barrier for doing atomic data movement and synchronization."
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 25,
+      "cited_text": "SM Allocate 1 bit to either Figure 9. range or precision Support for multiple accumulator and output types New Hopper FP8 Precisions - 2x throughput and half the footprint of H100 FP16/BF16 A100 FP16 H100 FP8 6X THROUGHPUT Figure 10. H100 FP8 Tensor Core 6x throughput compared to A100 FP16 Tensor Core NVIDIA H100 Tensor Core GPU Architecture 24 NVIDIA H100 GPU Architecture In-Depth A100 TF32 H100 TF32 A100 FP64 H100 FP64 A100 INT8 H100 INT8 Figure 11. H100 TF32, FP64, and INT8 Tensor Cores all have 3x throughput versus A100"
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 26,
+      "cited_text": "Low-precision number formats: Modern GPUs have specialized hardware units for accelerating low-precision computation. For example, the WGMMA instruction can target the FP8 Tensor Cores on Hopper to deliver 2x the throughput per SM when compared to FP16 or BF16. However, correctly invoking FP8 WGMMA entails understanding the layout constraints on its operands. Given a GEMM call to multiply $A\\times B^{\\top}$ for an $M\\times K.$ matrix A and an $N\\times K$-matrix B, we say that the A or B operand is mn-major if it is contiguous in the outer M or N dimension, and k-major if is instead contiguous in the inner K-dimension. Then for FP16 WGMMA, both mn-major and k-major input operands are accepted for operands in SMEM, but for FP8 WGMMA, only the k-major format is supported. Moreover, in situations such as attention where one wants to fuse back-to-back GEMMs in a single kernel, clashing FP32 accumulator and FP8 operand layouts pose an obstacle to invoking dependent FP8 WGMMAS."
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 27,
+      "cited_text": "Pingpong scheduling The asynchronous nature of WGMMA and TMA, along with warp-specialization, opens up the opportunity to overlap the softmax computation of one warpgroup with the GEMM of another warpgroup. To motivate this, notice that non-matmul operations have much lower throughput than matmul operations on modern hardware accelerators. As an example, the H100 SXM5 GPU has 989 TFLOPS of FP16 matmul but only 3.9 TFLOPS of special functions such as exponential (necessary for softmax). For the attention forward pass in FP16 with head dimension 128, there are 512x more matmul FLOPS compared to exponential operations, but the exponential has 256x lower throughput, so exponential can take 50% of the cycle compared to matmul. The situation is even worse with FP8, where the matmul throughput doubles but the exponential throughput stays the same."
+    },
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 28,
+      "cited_text": "• New asynchronous execution features include the (TMA) and an asynchronous transaction barrier. SM New wgmma instructions. Graphics Processing Cluster SM SM Register File 16384 * 32bit DPX instructions INT32 * 16 FP32 * 32 FP64 * 16 4th Gen TC LD/ST * 8 SFU Async shared- shared copy L2 Cache TMA Shared Mem TMA Shared Mem SM to SM Network TMA Shared Mem 1 Tensor Memory Accelerator 256 KB L1 / Shared Memory L2 Cache Global Memory Async global-shared copy Copy Descriptor Base address Tensor height & width Padding Region to copy Size"
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 29,
+      "cited_text": "Table 1: Thread-Memory hierarchy for the NVIDIA Hopper H100 SXM5 GPU. <cited_table> Asynchrony and warp-specialization: GPUs are throughput processors that rely on concurrency and asynchrony to hide memory and execution latencies. For async memory copy between GMEM and SMEM, Hopper has the Tensor Memory Accelerator (TMA) as a dedicated hardware unit [38, §7.29]. Furthermore, unlike prior architectures such as Ampere, the Tensor Core of Hopper, exposed via the warpgroup-wide WGMMA instruction [40, §9.7.14], is also asynchronous and can source its inputs directly from shared memory.",
+      "cited_table": {
+        "num_columns": 4,
+        "rows": [
+          [
+            "Hardware Level",
+            "Parallel Agent",
+            "Data Locale",
+            "Capacity @ Bandwidth"
+          ],
+          [
+            "Chip",
+            "Grid",
+            "GMEM",
+            "80 GiB @ 3.35 TB/s"
+          ],
+          [
+            "GPC",
+            "Threadblock Clusters",
+            "L2",
+            "50 MiB @ 12 TB/s"
+          ],
+          [
+            "SM",
+            "Threadblock (CTA)",
+            "SMEM",
+            "228 KiB per SM, 31TB/s per GPU"
+          ],
+          [
+            "Thread",
+            "Thread",
+            "RMEM",
+            "256 KiB per SM"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 30,
+      "cited_text": "it can begin executing a different warp. In practice, this can be more performant than programming a single instruction stream where the compi operations and attempt to overlap them optimally. In particular, we are interested in warpgroup specialization on Hopper+ GPUs, where it can be useful to have a separate warpgroup issuing TMA the warpgroups performing arithmetic, since indexing calculations and issuing TMAs can take up a significant amount of time and potentially le figure below depicts a standard, non-specialized kernel on the left where TMAs (async copies) and matrix multiplication are issued from a singl warp-specialized version on the right where communication and arithmetic are handled on separate warpgroups. A consumed barrier is used to specialized warpgroups that signals to the memory warpgroup when it is safe to begin the next TMA."
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 31,
+      "cited_text": "To this end, we propose FLASH ATTENTION-3, which contributes and synthesizes three new ideas to further improve performance on newer GPU architectures:¹ 1. Producer-Consumer asynchrony: We define a warp-specialized software pipelining scheme that exploits the asynchronous execution of data movement and Tensor Cores by splitting producers and consumers of data into separate warps, thereby extending the algorithm's ability to hide memory and instruction issue latencies. 2. Hiding softmax under asynchronous block-wise GEMMs: We overlap the comparatively low-throughput non-GEMM operations involved in softmax, such as floating point multiply-add and exponential, with the asynchronous WGMMA instructions for GEMM. As part of this, we rework the FLASHATTENTION-2 algorithm to circumvent certain sequential dependencies between softmax and the GEMMs. For example, in the 2-stage version of our algorithm, while softmax executes on one block of the scores matrix, WGMMA executes in the asynchronous proxy to compute the next block."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 32,
+      "cited_text": "Time The diagram above depicts how an idealized pipelined program can be scheduled across time. The key insight is that in the majority of the kern executed in parallel with compute operations, meaning we can ideally \"hide\" the cost of transferring between HBM/SRAM with computation anc as much uptime as possible. The initial startup time and final teardown time known as \"bubbles\", where only a subset of the stages are being executed while the pipeline is k bulk of the time is spent in the \"steady-state\" phase of the pipeline, where each pipeline stage is being executed in parallel across different iter with more general pipelining approaches the goal is to achieve N-way parallelism (where N is the number of stages), with kernel pipelining we a by memory bandwidth or processing speed. Therefore, our goal with kernel pipelining is typically to achieve full utilization of the FLOPs/s of our point in time there is always a compute block active. In the figure above, the compute block is active in $6/8$ timeslots, and assuming we are full compute timeslot, we would have achieved 75% utilization of the processor."
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 33,
+      "cited_text": "FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision Jay Shah*¹, Ganesh Bikshandi*¹, Ying Zhang², Vijay Thakkar³¹, Pradeep Ramani³, and Tri Dao Colfax Research Meta NVIDIA Georgia Tech Princeton University Together AI {jayhshah,ganesh}@colfax-intl.com, yingz@meta.com, {vithakkar, prraman}@nvidia.com, tri@tridao.me July 12, 2024 5,6 Abstract Attention, as a core layer of the ubiquitous Transformer architecture, is the bottleneck for large language models and long-context applications. FLASH ATTENTION elaborated an approach to speed up attention on GPUs through minimizing memory reads/writes. However, it has yet to take advantage of new capabilities present in recent hardware, with FLASH ATTENTION-2 achieving only 35% utilization on the H100 GPU. We develop three main techniques to speed up attention on Hopper GPUs: exploiting asynchrony of the Tensor Cores and TΜΑ to (1) overlap overall computation and data movement via warp-specialization and (2) interleave block-wise matmul and softmax operations, and (3) block quantization and incoherent processing that leverages hardware support for FP8 low-precision. We demonstrate that our method, FLASHATTENTION-3, achieves speedup on H100 GPUs by 1.5-2.0x with FP16 reaching up to 740 TFLOPs/s (75% utilization), and with FP8 reaching close to 1.2 PFLOPs/s. We validate that FP8 FLASHATTENTION-3 achieves 2.6x lower numerical error than a baseline FP8 attention."
+    },
+    {
+      "source_id": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+      "citation_number": 34,
+      "cited_text": "B. Energy-Efficient Dataflow for Accelerators For DNNs, the bottleneck for processing is in the memory access. Each MAC requires three memory reads (for filter weight, fmap activation, and partial sum) and one memory write (for the updated partial sum) as shown in Fig. 21. In the worst case, all of the memory accesses have to go through the off-chip DRAM, which will severely impact both throughput and energy efficiency. For example, in AlexNet, to support its 724M MACs, nearly 3000M DRAM accesses will be required. Furthermore, DRAM accesses require up to several orders of magnitude higher energy than computation [79]."
+    },
+    {
+      "source_id": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+      "citation_number": 35,
+      "cited_text": "Accelerators can be designed to support specialized process- ing dataflows that leverage this memory hierarchy. The dataflow PEPE DRAM Global Buffer PE ALU fetch data to run a MAC here Normalized Energy Cost ALU 1x (Reference) 0.5-1.0 kB RF ALU 1x NoC: 200-1000 PES PE ALU 2x 100-500 kB Buffer ALU 6x DRAM ALU 200x Convolutional Reuse CONV layers only (sliding window) Fmap Reuse CONV and FC layers Filter Reuse CONV and FC layers (batch size > 1) Input Fmaps Filters Input Fmap Input Fmap Filter Filter"
+    },
+    {
+      "source_id": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+      "citation_number": 36,
+      "cited_text": "1) Weight stationary (WS): The weight stationary dataflow is designed to minimize the energy consumption of reading weights by maximizing the accesses of weights from the register file (RF) at the PE (Fig. 25(a)). Each weight is read from DRAM into the RF of each PE and stays stationary for further accesses. The processing runs as many MACs that use the same weight as possible while the weight is present in the RF; it maximizes convolutional and filter reuse of weights. The inputs and partial sums must move through the spatial array and global buffer. The input fmap activations are broadcast to all PEs and then the partial sums are spatially accumulated across the PE array."
+    },
+    {
+      "source_id": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+      "citation_number": 37,
+      "cited_text": "2) Output stationary (OS): The output stationary dataflow is designed to minimize the energy consumption of reading and writing the partial sums (Fig. 25(b)). It keeps the accumulation of partial sums for the same output activation value local in the RF. In order to keep the accumulation of partial sums stationary in the RF, one common implementation is to stream the input activations across the PE array and broadcast the weight to all PEs in the array. One example that implements the output stationary dataflow is ShiDianNao [89], where each PE handles the processing for each output activation value by fetching the corresponding input activations from neighboring PEs. The PE array implements dedicated networks to pass data horizontally and vertically. Each PE also has data delay registers to keep data around for the required amount of cycles. At the system level, the global buffer streams the input activations and broadcasts the weights into the PE array. The partial sums are accumulated inside each PE and then get streamed out back to the global buffer. Other examples of output stationary are found in [88, 90]."
+    },
+    {
+      "source_id": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+      "citation_number": 38,
+      "cited_text": "4) Row stationary (RS): A row stationary dataflow is proposed in [80], which aims to maximize the reuse and accumulation at the RF level for all types of data (weights, pixels, partial sums) for the overall energy efficiency. This differs from WS or OS dataflows, which optimize for only weights and partial sums, respectively. The row stationary dataflow assigns the processing of a 1-D row convolution into each PE for processing as shown in Fig. 27. It keeps the row of filter weights stationary inside the RF of the PE and then streams the input activations into the PE. The PE does the MACs for each sliding window at a time, which uses just one memory space for the accumulation of partial sums. Since there are overlaps of input activations between different sliding windows, the input activations can then be kept in the RF and get reused. By going through all the sliding windows in the row, it completes the 1-D convolution and maximize the data reuse and local accumulation of data in this row."
+    },
+    {
+      "source_id": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+      "citation_number": 39,
+      "cited_text": "needs of each dataflow under the same area constraint. For example, since the no local reuse dataflow does not require any RF in PE, it is allocated with a much larger global buffer. The simulation uses the layer configurations from AlexNet with a batch size of 16. The simulation also takes into account the fact that accessing different levels of the memory hierarchy requires different energy cost. Fig. 33 compares the chip and DRAM energy consumption of each dataflow for the CONV layers of AlexNet with a batch size of 16. The WS and OS dataflows have the lowest energy consumption for accessing weights and partial sums, respectively. However, the RS dataflow has the lowest total energy consumption since it optimizes for the overall energy efficiency instead of only for a certain data type."
+    },
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 40,
+      "cited_text": "wgmma results. As a set of warp-group-level Tensor Core instructions designed specifically for Hopper GPUs, wgmma instructions are the pioneering instructions to be executed asynchronously. Table 8 show the measured latency and throughput of dense instructions. When initializing matrices with zeros, we achieve throughputs exceeding 95% of the theoretical peak performance. We observe a decrease in Tensor Core performance when initializing matrices with random values, especially pronounced when utilizing FP16 as the computation type and FP32 for accumulation. This phenomenon is primarily attributed to the power consumption nearing the 350 W power limit of the H800-PCIe, subsequently causing a reduction in frequency. Users working with Tensor Cores on the H800-PCIe GPU should take into full consideration the power constraints when performing computations."
+    },
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 41,
+      "cited_text": "For wgmma instructions, we focus on both the frequency and efficiency when these instructions are executed con- tinuously. The instruction formats are consistent with those described in Table 8. The results are presented in Table 11. It is observed that, during continuous execution of wgmma instructions, the core frequency drops below 1620 MHz specified in the whitepaper, as it reaches the 350-watt power limit. Furthermore, the initialization of inputs significantly impacts both power consumption and frequency. When inputs are set to zero, power consumption remains below 200 watts. However, with random inputs, the power consumption rapidly hits the 350-watt threshold. Consequently, the performance results in Table 11 are inferior to those in Table 8. Notably, sparse instructions cause a substantial reduction in frequency, explaining why their performance is not twice that of dense instructions. Regarding energy efficiency, wgmma dense and sparse instructions achieve average 0.67 times and 0.78 times the efficiency of mma dense and sparse instructions, respectively. Compared to different architectures, the energy efficiency of Hopper wgmma is on average 1.05 times and 1.10 times that of Ampere mma and Ada mma instructions, respectively."
+    },
+    {
+      "source_id": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+      "citation_number": 42,
+      "cited_text": "are Tesla-qualified. Our T4 and P4 experiments ran on HPE Proliant DL360 Gen9 servers. This server model does not appear in NVidia's Tesla-qualified server cata- log. Power and thermal performance of a GPU also depend on the server that hosts it, and could be suboptimal on a non-qualified server. The server generation immediately following the one we employed (HPE Proliant DL360 Gen10) is Tesla-qualified, but we were unable to arrange for an upgrade before the publication of this manuscript. In our experiments, we were able to trigger clock throttling on the T4 GPU consistently, using benchmarks based on cuBLAS matrix multiplication ker- nels cublas<t>gemm. On the T4 GPU, clock throttling triggers for two rea- sons:"
+    },
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 43,
+      "cited_text": "Based on these results, we conclude that wgmma instructions can fully utilize the GPU's potential to achieve maximum performance, but they do not exhibit good energy efficiency. If extreme performance is desired, wgmma instructions should be chosen. However, if greater emphasis is placed on energy efficiency and compatibility, mma instructions are the better choice. 6.3 Library-level The Transformer Engine (TE) [33] is a library specifically designed to accelerate Transformer models [52], following the introduction of the Hopper architecture. It is capable of leveraging the FP8 precision offered by both the Hopper and Ada architectures. In particular, it provides a variety of optimized modules for Transformer layers that can be utilized within the widely-used deep learning framework, PyTorch [35]. In this subsection, we benchmark two modules of the Transformer Engine to explore their potential as key components in large language models."
+    }
+  ]
+}

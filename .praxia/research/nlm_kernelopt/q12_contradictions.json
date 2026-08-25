@@ -1,0 +1,433 @@
+{
+  "answer": "Across the landscape of accelerator-oriented compilation and kernel engineering, two core conceptual battlegrounds emerge from the literature. These tensions are not merely software engineering debates; they represent deep trade-offs forced by the physical limits of hardware memory hierarchies and execution pipelines.\n\n---\n\n### Tension 1: Fusion Enthusiasm vs. Separation of Concerns\n\nAt the compilation and programming model level, there is a fundamental conflict between the aggressive **fusing of operations** to maximize data locality versus the traditional software design principle of **separation of concerns** (modularity, portability, and composability).\n\n#### The Case for Aggressive Fusion (Bypassing the HBM Bottleneck)\nThe primary driver of the enthusiasm for fusion is the physical disparity between on-chip compute throughput (Tensor Cores) and off-chip memory bandwidth (DRAM/HBM). Modern high-performance kernels must minimize memory round-trips at almost any cost:\n*   **FlashAttention / FlashAttention-3**: These algorithms are built entirely on the premise of extreme kernel fusion `[1]`. By fusing matrix multiplication, softmax, masking, and dropout into a single fused CUDA kernel, they prevent the materialization of the massive \\\\(O(N^2)\\\\) similarity matrix to HBM `[1, 2]`. This saves substantial memory traffic, achieving massive speedups even though the backward pass is forced to redundantly *recompute* the forward softmax pass on-the-fly in SRAM `[1]`.\n*   **Triton**: Triton allows developers to easily author custom fused operators (such as fusing a shift operator directly into a convolution kernel `[3, 4]`) to completely hide data-shifting overheads and bypass standard library limitations.\n*   **JAX / XLA**: The very objective of JAX’s `jax.jit` and its underlying compiler, XLA, is to trace functional Python code and generate a single, highly fused executable, eliminating temporary arrays and intermediate memory allocations `[5, 6]`. XLA even exposes metadata hooks like `MUST_FUSE` to force compiler-level fusions `[7, 8]`.\n\n#### The Case for Separation of Concerns (Portability & Composability)\nIn contrast, general-purpose programming frameworks prioritize clean abstractions where algorithms are decoupled from execution mechanics:\n*   **Halide**: Halide is built entirely on the principle of **strict separation of concerns**, explicitly decoupling the **algorithm** (what is computed) from the **schedule** (how it is executed) `[9]`. The authors argue that hand-writing fused, tiled, and vectorized CUDA code causes simple pipelines to balloon into thousands of lines of intricately interleaved code, destroying portability and composability `[10]`. Decoupling allows a developer to write a simple, elegant algorithm once and compile it to highly optimized schedules across multi-core CPUs, GPUs, or vector processors without modifying the mathematical logic `[9, 11]`.\n*   **JAX's Functional Paradigm**: JAX embraces a pure functional paradigm `[12, 13]`. It relies on a decentralized, modular technology stack where the JAX core is narrowly-scoped and composable program transformations (like `vmap` and `grad`) operate globally on array types `[14-16]`. \n\n#### The Resulting Friction Points\n*   **Triton’s Rejection of Separation**: Triton explicitly rejects the strict Halide-style division of algorithm and schedule `[17]`. Instead, Triton embeds block-level parametric tiling (using tunable variables like `TM`, `TN`, `TK`) directly *inside* the single-threaded tiled kernel code `[3, 18]`. It trades away strict algorithm-schedule separation to provide programmers with a more familiar, imperative, CUDA-like model where execution schedules are inferred automatically from tile-level operations `[17, 19]`.\n*   **The \"Opaque Kernel\" Problem in JAX**: Because JAX values functional modularity, it suffers from a performance cliff when developers must write custom low-level GPU kernels `[20, 21]`. While expert \"escape hatches\" like Pallas are necessary to achieve bare-metal performance, a Pallas kernel is structurally **opaque to the XLA compiler** `[20, 22]`. As a result, XLA can no longer perform automatic inter-operator fusions, global memory planning, or asynchronous scheduling across the boundaries of custom-written blocks `[22]`.\n*   **Compiler Optimization Failures**: When compiler automation attempts to manage memory-time trade-offs dynamically, it often fails. JAX developers frequently find that XLA’s automatic rematerialization pass makes poor choices, forcing experts to disable the automatic pass and manually coordinate memory checkpointing via name-based `jax.checkpoint` policies to avoid OOM crashes `[23]`.\n\n---\n\n### Tension 2: Autotuning vs. Hand-Tuning (Microarchitectural Specialization)\n\nThe second structural tension lies in *how* optimal performance is achieved: should we rely on **stochastic search engines (autotuners)** to find optimal schedules, or must we rely on **expert hand-tuning** to manually exploit highly volatile, undocumented hardware quirks?\n\n#### The Autotuner Perspective: Humans Cannot Navigate the Search Space\nAutotuning frameworks argue that modern processors are too complex for humans to schedule optimally:\n*   **Combinatorial Explosion**: Halide establishes that even moderately complex image processing pipelines have search spaces with a lower bound of \\\\(10^{720}\\\\) unique scheduling configurations `[24]`. Human programmers cannot hope to navigate this multi-dimensional space of tiling, unrolling, and storage granularities `[24]`.\n*   **Counter-Intuitive Solutions**: Halide’s autotuner frequently discovers scheduling configurations that are completely counter-intuitive to human experts—such as *sacrificing* raw thread-level parallelism to minimize thread synchronization overheads, or introducing redundant computation to improve SRAM data locality `[25, 26]`. This allows simple, short programs to run up to **5x faster** than human-optimized equivalents that took weeks to build `[9, 27]`.\n*   **Bypassing Template Limits (Ansor)**: Traditional autotuners (like AutoTVM) are throttled because they rely on rigid, manually written code templates `[28, 29]`. Ansor solves this by completely automating the search space creation, generating high-level structured sketches, and using evolutionary search with a learned gradient-boosted decision tree (GBDT) cost model to perform out-of-order program rewrites `[30-32]`. This template-free approach consistently beats manually tuned libraries and TVM templates by up to 22.5× `[29]`.\n\n#### The Hand-Tuning Perspective: Bare-Metal Realities Elude compilers\nConversely, microbenchmarking and hardware-specific studies argue that general-purpose compilers and cost models are fundamentally blind to low-level hardware phenomena:\n*   **The Inaccessibility of Peak FLOPs**: Microbenchmarking papers by Jia et al. show that bare-metal peak performance is essentially inaccessible to plain CUDA or off-the-shelf compilers `[33]`. Reaching optimal performance requires specialized SASS assembly optimizations, patching compiler-emitted code to bypass register cache limitations, and leveraging undocumented instruction behaviors `[34, 35]`. For example, simply modifying a single-precision linear algebra kernel (`Saxpy`) to manually issue 128-bit vectorized global loads instead of the compiler's 64-bit instructions doubled memory throughput on Turing GPUs `[36-38]`.\n*   **The Power Wall and Thermal Throttling**: Traditional cost models assume a static, ideal clock speed. However, microbenchmarks on Turing and Hopper show that executing continuous, high-intensity Tensor Core math (like dense `wgmma` instructions with non-zero inputs) consistently pushes the GPU to its physical **350 W power limit, causing the hardware to dynamically throttle its frequency** and degrade throughput `[39, 40]`. A learned cost model evaluating programs in a virtual environment cannot easily anticipate this complex thermal-power relationship.\n*   **Warp-Level Scheduling Primers**: State-of-the-art hand-written kernels (such as FlashAttention-3) rely on highly deliberate, timing-dependent physical synchronization patterns:\n    *   **Pingpong Scheduling**: Manually phase-shifting the instruction streams of two warpgroups to run low-throughput exponential softmax operations \"under\" active Tensor Core GEMM math `[41]`.\n    *   **Dynamic Register Management**: Relying on Hopper-specific inline PTX assembly (`setmaxnreg`) to dynamically deallocate registers from Producer warps and allocate them to Consumer warps, preventing register spilling to high-latency local memory `[42, 43]`.\n*   **Autotuner Fragility**: The authors of Halide openly admit that brute-force autotuning possesses significant robustness challenges `[44]`. The search process is highly sensitive to noise in the testing environment, can easily get trapped in local minima, and requires heavy, algorithm-specific heuristic mutation rules to converge in a reasonable amount of time `[44, 45]`.\n\n---\n\n### Summary of Conceptual Alignments\n\n| Domain Dimension | Fusion Enthusiasm / Hand-Tuning | Separation of Concerns / Autotuning |\n| :--- | :--- | :--- |\n| **Primary Goal** | Touch absolute hardware limits (peak TFLOPs) `[33, 46]`. | Maximize programmer productivity and portability `[9, 10]`. |\n| **Abstraction Level** | Low-level (inline PTX, SASS patching, explicit thread tiles) `[18, 34]`. | High-level (declarative functions, math equations, auto-tracing) `[47, 48]`. |\n| **Scheduling Strategy** | Manually orchestrated (pingpong scheduling, warp specialization) `[17, 41]`. | Stochastically searched (evolutionary algorithms, learned cost models) `[30, 49]`. |\n| **Optimization Focus** | Strict hardware overlap, register caching, and avoiding HBM access `[1, 35]`. | Navigating multi-dimensional trade-offs of locality and redundancy `[31, 50]`. |\n\n📊 We can write a Python profiling script utilizing JAX and custom-locked clock controls to inspect how these compiler-driven fusion or rematerialization decisions physically impact your memory traffic and execution latency on target GPUs. Let me know if you would like to run that profile!",
+  "question": "What tensions/contradictions appear across sources (fusion enthusiasm vs separation-of-concerns; autotuning vs hand-tuning)?",
+  "conversation_id": "66228072-8454-4d68-ab54-1e0f585fc80a",
+  "sources_used": [
+    "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+    "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "22ab01a2-c3c4-48e7-bbf0-7bde99ec848c",
+    "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+    "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "31f4cc99-8827-49ae-a246-27633a9a4f34"
+  ],
+  "citations": {
+    "1": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+    "2": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "3": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "4": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "5": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "6": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "7": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "8": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "9": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "10": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "11": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "12": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "13": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "14": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "15": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "16": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "17": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "18": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "19": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "20": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "21": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "22": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "23": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "24": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "25": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "26": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "27": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "28": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "29": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "30": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "31": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "32": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "33": "22ab01a2-c3c4-48e7-bbf0-7bde99ec848c",
+    "34": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+    "35": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+    "36": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+    "37": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+    "38": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+    "39": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "40": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+    "41": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "42": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "43": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "44": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "45": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "46": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "47": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "48": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "49": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "50": "57c99885-0f27-4dd4-b88d-9258326c2ef3"
+  },
+  "references": [
+    {
+      "source_id": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+      "citation_number": 1,
+      "cited_text": "Implementation details: Kernel fusion. Tiling enables us to implement our algorithm in one CUDA kernel, loading input from HBM, performing all the computation steps (matrix multiply, softmax, optionally masking and dropout, matrix multiply), then write the result back to HBM (masking and dropout in Appendix B). This avoids repeatedly reading and writing of inputs and outputs from and to HBM. Algorithm 1 FLASHATTENTION Require: Matrices $Q,K,V\\in\\mathbb{R}^{N\\times d}$ in HBM, on-chip SRAM of size M."
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 2,
+      "cited_text": "7: 8: 9: 10: 11: 12: 13: 14: 15: 16: 17: 18: 19: 20: 21: 22: 23: 24: 25: for $0\\le j<T_{c}$ do Wait for $K_{j}$ to be loaded in shared memory. Compute $S_{i}^{(j)}=Q_{i}K_{j}^{T}$ (SS-GEMM). Commit and wait. Store $m_{i}^{old}=m_{i}$ and compute $m_{i}=max(m_{i}^{old},rowmax(S_{i}^{(j)})).$ Compute $\\tilde{P}_{i}^{(j)}=exp(S_{i}^{(j)}-m_{i})$ and $l_{i}=exp(m_{i}^{old}-m_{i})l_{i}+rowsum(\\tilde{P}_{i}^{(j)})$. Wait for $V_{j}$ to be loaded in shared memory. Compute $O_{i}=diag(exp(m_{i}^{old}-m_{i}))^{-1}O_{i}+\\tilde{P}_{i}^{(j)}V_{j}$ (RS-GEMM). Commit and wait."
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 3,
+      "cited_text": "We present Triton, a language and compiler centered around the concept of tile, i.e., statically shaped multi-dimensional sub-arrays. Our approach revolves around (1) a C-based lan- guage and an LLVM-based intermediate representation (IR) for expressing tensor programs in terms of operations on parametric tile variables and (2) a set of novel tile-level opti- mization passes for compiling these programs into efficient GPU code. We demonstrate how Triton can be used to build portable implementations of matrix multiplication and con- volution kernels on par with hand-tuned vendor libraries (cuBLAS / cuDNN), or for efficiently implementing recent research ideas such as shift convolutions."
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 4,
+      "cited_text": "int ryc [TN] = get_global_range [TN](1); float $pc[TM,\\overline{T}N]=c+r\\times c[:,$ $newa\\times is]+ryc*M;$ bool checkc0 $:kc\\theta[TM]=r\\times c<M;$ bool checkc1 $ckc1[TN]=ryc<N;$ bool checkc [TM, TN] = checkc0[:, newaxis] && checkc1; @checkc pc = C; DeepSpeech2 Figure 10. Performance of implicit matrix multiplication 6.2.2 Shift Convolutions We finally consider an implementation of Task1-5 from Table 1 as shifted convolutions - a novel approach to CNNs (see Figure 9a). We compare our implementation of a fused shift-conv module in Triton (Listing 8) against that of a naive implementation relying on a hand-written shift kernel and a separate call to cuBLAS. We also report the maximum attainable performance when shift is not done (i.e., 1 × 1 convolution). As we can see in Figure 11, our Triton imple- mentation is able to almost entirely hide the cost of shifting."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 5,
+      "cited_text": "12. Controlling XLA from JAX - XLA flags per function or process-wide, and attaching metadata to operations. 13. GPU memory allocation - how the allocator works, and what to do about out-of-memory failures. A couple of performance topics - computation/communication overlap and memory spaces will be added here as those parts of JAX stabiliz Just-in-time compilation jax.jit() is the transformation that makes JAX code fast: it compiles a Python function into a single optimized computation, fused and speci page is about what compilation buys you, when it happens (and re-happens), and the levers you control: static arguments, caching, in-place up donation, and asynchronous dispatch."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 6,
+      "cited_text": "What compilation buys you Without jit, JAX executes operations (think jnp function calls) one at a time, dispatching each to the device as it's encountered. That's flexi Python control flow, but it limits performance in two ways: each dispatch carries Python and runtime overhead, and a compiler never gets to se once, so it can't optimize across operations. jax.jit addresses both limitations. It traces the function to a jaxpr (How transformations work: tracing) and hands the whole jaxpr to $XLA,$ wł optimized executable, fusing operations, eliminating temporary arrays, and specializing for your CPU, GPU, or TPU. Consider a scaled exponeni operation commonly used in deep learning:"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 7,
+      "cited_text": "jax.experimental.sparse.linalg Sparse linear algebra routines. <cited_table> jax.experimental.xla_metadata module Experimental XLA metadata APIs. These context managers, decorators, and function wrappers allow annotating JAX operations with XLA metadata to attach arbitrary attributes ( decisions (e.g., forcing operations to be fused together or setting fusion boundaries).",
+      "cited_table": {
+        "num_columns": 2,
+        "rows": [
+          [
+            "spsolve (data, indices, indptr, b[, tol, reorder])",
+            "A sparse direct solver using QR factorization."
+          ],
+          [
+            "lobpcg_standard (A, X[, m, tol])",
+            "Compute the top-k standard eigenvalues using the LOBPCG routine."
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 8,
+      "cited_text": "to_apply=%xla_metadata_call.2, frontend_attributes={MUST_FUSE=\"1\"} After HLO optimization passes, all the operators within this call are guaranteed to be part of a single outermost fusion as seen below. Note nested-fusion. %fused_computation (param_0.2: f32 [128]) -> (f32[], f32 [128]) { } %param_0.2  f32 [128] {0:T(128)} parameter(0) %square.2 = f32 [128] {0:T(128)} multiply(%param_0.2, %param_0.2), frontend_attributes={MUST_FUSE=\"1\"} %constant.2 = f32[]{:T(128)} constant(0), frontend_attributes={MUST_FUSE=\"1\"}"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 9,
+      "cited_text": "We present a systematic model of the tradeoff space fundamen- tal to stencil pipelines, a schedule representation which describes concrete points in this space for each stage in an image processing pipeline, and an optimizing compiler for the Halide image process- ing language that synthesizes high performance implementations from a Halide algorithm and a schedule. Combining this compiler with stochastic search over the space of schedules enables terse, composable programs to achieve state-of-the-art performance on a wide range of real image processing pipelines, and across different hardware architectures, including multicores with SIMD, and hetero- geneous CPU+GPU execution. From simple Halide programs writ- ten in a few hours, we demonstrate performance up to 5x faster than hand-tuned C, intrinsics, and CUDA implementations optimized by experts over weeks or months, for image processing applications beyond the reach of past automatic compilers."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 10,
+      "cited_text": "As a result of this structure, the performance difference between a naive implementation of a given pipeline and a highly optimized one is frequently an order of magnitude or more. With current tools, often the only way to approach peak performance is by hand-writing parallel, vectorized, tiled, and globally fused code in low-level C, CUDA, intrinsics, and assembly. Simple pipelines become hun- dreds of lines of intricately interleaved code; complex pipelines, like Adobe's Camera Raw engine, become hundreds of thousands. Tun- ing them requires immense effort by expert programmers, and the end result is not portable to different architectures, nor composable with other algorithms, without sacrificing much of this painstakingly earned performance. Libraries of optimized subroutines do not solve the problem, either, since many critical optimizations involve fusion for producer-consumer locality across stages."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 11,
+      "cited_text": "Given a schedule, our compiler automatically synthesizes high quality parallel vector code for x86 and ARM CPUs with SSE/AVX and NEON, and graphs of CUDA kernels interwoven with host management code for hybrid GPU execution. It automatically infers all internal allocations and a complete loop nest using simple but general interval analysis [18]. Directly mapping data parallel dimensions to SIMD execution, including careful treatment of strided access patterns, enables high quality vector code generation, without requiring any general-purpose loop auto-vectorization."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 12,
+      "cited_text": "print(\"z\", z) # Implicit transfers are disallowed. assert False, \"This line is expected to be unreachable.\" except: print(\"z could not be fetched\") z could not be fetched JAX - The Sharp Bits CO Open in Colab  Open in Kaggle When walking about the countryside of Italy, the people will not hesitate to tell you that JAX has \"una anima di pura programmazione funzional JAX is a language for expressing and composing transformations of numerical programs. JAX is also able to compile numerical programs fo (GPU/TPU). JAX works great for many numerical and scientific programs, but only if they are written with certain constraints that we descrit"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 13,
+      "cited_text": "CPU JAX's analog of numpy.ndarray. See jax. Array. Short for Central Processing Unit, CPUs are the standard computational architecture available in most computers. JAX can run computatior achieve much better performance on GPU and TPU. Device The generic name used to refer to the CPU, GPU, or TPU used by JAX to perform computations. forward-mode autodiff See JVP functional programming A programming paradigm in which programs are defined by applying and composing pure functions. JAX is designed for use with functiona"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 14,
+      "cited_text": "JAX 401-kernels and FFI: writing custom GPU and TPU kernels with Pallas, and calling external code through the foreign function interfa JAX 501 - systems topics: multi-controller JAX across many hosts, distributed data loading, fault tolerance, exporting and serialization, tl and transfer guards. Already know JAX? See Newly documented for the features these docs cover for the first time. Ecosystem JAX itself is narrowly-scoped and focuses on efficient array operations & program transformations. Built around JAX is an evolving ecosystem ( numerical computing tools; the following is just a small sample of what is out there:"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 15,
+      "cited_text": "This example uses internal JAX APIs, which may break at any time. Anything not in the API Documentation should be assumed interna import jax import jax.numpy as jnp from jax import jit, grad, vmap from jax import random What is JAX doing? JAX provides a NumPy-like API for numerical computing which can be used as is, but JAX's true power comes from composable function transt function transformation, which takes in a function and returns a semantically identical function but is lazily compiled by XLA for accelerators."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 16,
+      "cited_text": "At the heart of the project is the JAX core library, which focuses on the fundamentals of machine learning and numerical computing, at scale. When developing the core, we want to maintain agility and a focused scope, so we lean heavily on a surrounding modular technology stack. Firs be composable and extensible, so that a wide variety of domain-specific libraries can thrive outside of it in a decentralized manner. Second, we backend stack (compiler and runtime) to target different accelerators. Whether you are writing a new domain-specific library built with JAX, or hardware, you can often contribute these with minimal to no modifications to the JAX core codebase."
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 17,
+      "cited_text": "• Loop synthesizers have been used by Halide [37] and TVM [10] to transform tensor computations into loop nests that can be manually optimized using user- defined (though possibly parametric [11]) schedules. By contrast, Triton relies on the addition of tile-level opera- tions and optimizations into traditional compilation pipelines. This approach provides (1) more flexibility than XLA and Glow; (2) support for non-affine tensor indices contrary to TC and Diesel; and (3) automatic inference of possible exe- cution schedule that would otherwise have to be specified manually to Halide or TVM. The benefits of Triton come at the cost of increased programming efforts - see Listing 2 for implementations of matrix multiplication in these DSLs."
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 18,
+      "cited_text": "Triton-C Interface to existing DSLs (Not addressed in this paper) Triton-IR Philippe Tillet, H. T. Kung, and David Cox Listing 1. $C=A\\times B^{T}$ in Triton-C. Keywords specific to Triton are shown in purple. <cited_table>",
+      "cited_table": {
+        "num_columns": 1,
+        "rows": [
+          [
+            "// Tile shapes are parametric and can be optimized"
+          ],
+          [
+            "// by compilation backends"
+          ],
+          [
+            "128}"
+          ],
+          [
+            "128}"
+          ],
+          [
+            "const tunable int $TK=\\{8,16\\}$"
+          ],
+          [
+            "// 1D tile of indices"
+          ],
+          [
+            ""
+          ],
+          [
+            "int rn [TN]"
+          ],
+          [
+            "float pb [TN, TK] brn [:, newaxis] + rk K:"
+          ],
+          [
+            ""
+          ],
+          [
+            "bool check_k [TK $J=rk<k;$"
+          ],
+          [
+            "// load tile operands"
+          ],
+          [
+            "float A[TM, TK] check_a $?*pa:0$;"
+          ],
+          [
+            "// accumulate"
+          ],
+          [
+            "// update pointers"
+          ],
+          [
+            "$\\overline{pb}=\\overline{pb}+TK*N;$"
+          ],
+          [
+            "}"
+          ],
+          [
+            "// write-back accumulators"
+          ],
+          [
+            "float"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 19,
+      "cited_text": "3.3 Programming Model The execution of CUDA [33] code on GPUs is supported by an SPMD [4] programming model in which each kernel is associated with an identifiable thread-block in a so-called launch grid. The Triton programming model is similar, but each kernel is single-threaded - though automatically par- allelized and associated with a set of global ranges that varies from instance to instance (see Figure 3). This approach leads to simpler kernels in which CUDA-like concurrency primitives (shared memory synchronization, inter-thread communication, etc.) are inexistent."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 20,
+      "cited_text": "Introduction JAX is being used for a diverse set of workloads, from large scale machine learning to scientific computing. JAX's success story is as much a si primary compiler that JAX targets - XLA compiles JAX programs for accelerators and has enabled JAX to scale to the largest ML models. JAX ( in XLA's representation, HLO. HLO describes how computations happen logically but not physically. Given a logical HLO computation, XLA deci be executed physically. For a wide variety of ML applications, XLA does a good job of compiling user programs but inevitably some users hit XL we need to provide an \"escape hatch\" to allow experts to write hand-tuned kernels that outperform XLA at that point in time. Furthermore, adva take some time to be incorporated into XLA and users often want to run ahead with them. Over time, the compiler can incorporate the optimiza experimentally through hand-tuned kernels."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 21,
+      "cited_text": "XLA does offer the CustomCall mechanism as an escape hatch, but it requires users to write C++ and on GPU it requires users to learn the CL CUDA programming model is arguably too low-level for many machine learning GPU kernels, like matrix multiplication, and even expert users w implement efficient matrix multiplication or multi-headed attention. Not only this, JAX users are usually familiar with Python and NumPy-style a involve writing any C++ or thinking about GPU parallelism. All popular machine learning frameworks share this idea: manipulating (usually) array matmul or convolution. Unfortunately, this means implementing a custom operation via CustomCall is a big investment, involving potentiall programming."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 22,
+      "cited_text": "Interaction with XLA In this tutorial we covered several kernel examples which replicate the functionality of collective operations in JAX such as lax.all_gather, 1 lax.psum_scatter. An important caveat to note is that a Pallas kernel is somewhat opaque to the XLA compiler and may cause it to miss some perform. For example, XLA can asynchronously dispatch collective operations in order to interleave communication and computation without w not guaranteed to happen when Pallas kernels are involved so it is important to profile your program to see if this is an issue. Another example i emit_pipeline function we used in this tutorial to generate nested pipelines is not visible to the XLA compiler, and therefore cannot be fused"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 23,
+      "cited_text": "Running JAX on the display GPU. Use XLA_CLIENT_MEM_FRACTION or XLA_PYTHON_CLIENT_PREALLOCATE. Poor choices by the automatic rematerialization pass. Sometimes disabling XLA's automatic rematerialization HLO pass is favorable, to avoid poor remat choices by the compiler. The pass can be en jax.config.update('jax_compiler_enable_remat_pass', True) (or False). Enabling or disabling it produces different trade-offs between algorithm is basic, and you can often get a better trade-off by disabling the pass and rematerializing manually with the jax.remat API (see Gra jax.checkpoint (jax.remat))."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 24,
+      "cited_text": "5. Autotuning Pipeline Schedules We apply stochastic search to automatically find good schedules for Halide pipelines. The automatic optimizer takes a fixed algorithm and attempts to optimize the running time by searching for the most efficient schedule. The schedule search space is enormous-far too large to search exhaustively. For example in the local Laplacian filters pipeline, we estimate a lower bound of $10^{720}$ schedules. This is derived by labeling functions with three tilings per function and all possible store and compute granularities. The actual dimensionality of the space is likely much higher. The optimal schedule dependends on machine architecture, image dimensions, and code generation in complex ways, and exhibits global dependencies between choices due to loop fusion and caching behavior."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 25,
+      "cited_text": "We also compared our implementation to a hand-tuned GPU implementation from the original authors, written in 370 lines of CUDA code. The same Halide algorithm-less than 1/10th the code-found a different schedule which was 2.3x faster than the hand-written CUDA. The Halide compiler generates similar CUDA code to the reference, but the autotuner found an unintuitive point in the schedule space which sacrificed some parallelism in the grid construction step to reduce synchronization overhead in the scattering reduction. It also uses a tiled fusion strategy which"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 26,
+      "cited_text": "Figure 7. Comparison of autotuned Halide program running times to hand-optimized programs created by domain experts in C, in- trinsics, and CUDA. Halide programs are both faster and require fewer code lines. (*No GPU reference available, compared to CPU reference.) passes intermediate results through GPU scratchpad memory to improve locality through the blur steps at the expense of redundant computation. These tradeoffs were counter-intuitive to the original author, and also much harder to express in CUDA, but are easily described by our schedule representation and found by our autotuner."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 27,
+      "cited_text": "The end result is a system which enables terse, composable programs to achieve state-of-the-art performance on a wide range of real image processing pipelines, and across different hardware architectures, including multicores with SIMD, and heterogeneous CPU+GPU execution. From simple Halide programs written in a few hours, we demonstrate performance up to 5x faster than hand- tuned C, intrinsics, and CUDA implementations written by experts over weeks or months, for image processing applications beyond the reach of past automatic compilers."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 28,
+      "cited_text": "The task scheduler (§6) in Ansor uses a scheduling algorithm based on gradient descent to allocate resources to the sub- graphs that are more likely to improve the end-to-end DNN performance. 4 Program Sampling The search space an algorithm explores determines the best programs it can find. The considered search spaces in existing approaches are limited by the following factors: (1) Manual enumeration (e.g., TVM [12]). It is impractical to manually enumerate all possible choices by templates, so existing man- ual templates only cover a limited search space heuristically. (2) Aggressive early pruning (e.g., Halide auto-scheduler [2]). Aggressive early pruning based on evaluating incomplete pro- grams prevents the search algorithm from exploring certain regions in the space."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 29,
+      "cited_text": "Normalization. Figure 6 shows the normalized perfor- mance. For each test case, we normalize the throughputs to the best performing framework. We then plot the geometric mean of the four shapes of each operator. The geometric mean is also normalized to the best performing framework, so the best framework has a normalized performance of 1 in the figure. The error bar denotes the standard deviation of the normalized throughput of four shapes of each operator. Results. As shown in the Figure 6, Ansor performs the best or equally the best in all operator and batch size set- tings. Ansor outperforms existing search frameworks by 1.1-22.5x. The performance improvements of Ansor come from both its large search space and effective exploration strat- egy. For most operators, we found the best program generated by Ansor is outside the search space of existing search frame- works because Ansor is able to explore more optimization combinations. For example, the significant speedup on NRM is because Ansor can parallelize reduction loops, while other frameworks do not. The large speedup on T2D is because Ansor can use correct tile structures and unrolling strategies to let the code generator simplify the multiplication of zeros in strided transposed convolution. In contrast, other frameworks fail to capture many effective optimizations in their search space, making them unable to find the programs that Ansor does. For example, the unfolding rules in Halide do not split the reduction loop in GMM and do not split reduction loops in C2D when padding is computed outside of reduction loops. The templates in AutoTVM have limited tile structures, as they cannot cover the structure of \"Generated Sketch 1\" in Figure 5. The template in FlexTensor does not change the computation location of padding. The template in FlexTensor fails to run for reduction operators like NRM."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 30,
+      "cited_text": "We present Ansor, a tensor program generation framework for deep learning applications. Compared with existing search strategies, Ansor explores many more optimization combina- tions by sampling programs from a hierarchical representation of the search space. Ansor then fine-tunes the sampled pro- grams with evolutionary search and a learned cost model to identify the best programs. Ansor can find high-performance programs that are outside the search space of existing state-of- the-art approaches. In addition, Ansor utilizes a task scheduler to simultaneously optimize multiple subgraphs in deep neural networks. We show that Ansor improves the execution perfor- mance of deep neural networks relative to the state-of-the-art on the Intel CPU, ARM CPU, and NVIDIA GPU by up to 3.8x, 2.6x, and 1.7x, respectively."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 31,
+      "cited_text": "To this end, we design and implement Ansor, a framework for automated tensor program generation. Ansor utilizes a hierarchical representation to cover a large search space. This representation decouples high-level structures and low-level details, enabling flexible enumeration of high-level structures and efficient sampling of low-level details. The space is con- structed automatically for a given computation definition. Ansor then samples complete programs from the search space and fine-tunes these programs with evolutionary search and a learned cost model. To optimize the performance of DNNs with multiple subgraphs, Ansor dynamically prioritizes sub- graphs of the DNNs that are more likely to improve the end- to-end performance."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 32,
+      "cited_text": "Performance tuner. The performance of randomly sam- pled programs is not necessarily good. The next challenge is to fine-tune them. Ansor employs evolutionary search and a learned cost model to perform fine-tuning iteratively (§5). At each iteration, Ansor uses re-sampled new programs as well as good programs from previous iterations as the ini- tial population to start the evolutionary search. Evolutionary search fine-tunes programs by mutation and crossover which perform out-of-order rewrite and address the limitation of sequential construction. Querying the learned cost model is orders of magnitude faster than actual measurement, so we can evaluate thousands of programs in seconds."
+    },
+    {
+      "source_id": "22ab01a2-c3c4-48e7-bbf0-7bde99ec848c",
+      "citation_number": 33,
+      "cited_text": "Published work, together with our experiments, consistently show that bare-metal peak performance is inaccessible to software written in plain CUDA and without a deeper understanding of the hardware compared to what is currently publicly available. There is consensus that the high degree of optimization found in NVIDIA's libraries such as cuBlas and cuDNN is inaccessible to authors of CUDA code, even when they use inline PTX as- sembly. We believe that manufacturers write optimized libraries as low-level SASS code, possibly with assemblers which they do not make available to the public."
+    },
+    {
+      "source_id": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+      "citation_number": 34,
+      "cited_text": "It takes disproportionate effort to optimize code on the basis of a deep un- derstanding of its target architecture. This approach frequently resorts to writ- ing inline PTX assembly and, when pushed to its extreme, to patching binary code in the pursuit of specific SASS assembly that the compiler won't emit, following undocumented instruction encoding formats, without any support from NVidia's toolchain. Whether the gains are worth the effort is a central question but, ultimately, one that only you can answer depending on your unique circumstances and pressure for performance. For a large majority of GPU software developers, the answer is no:"
+    },
+    {
+      "source_id": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+      "citation_number": 35,
+      "cited_text": "• if one of the mature libraries provided by NVidia (such as cuBlas, cuFFT, cuSparse, cuRand, cuDNN, etc.) covers the computation desired, the performance obtained is close to ideal in most circumstances; • in other applications, for which developers write CUDA code, NVCC usually emits efficient machine code, if the source code is written suffi- ciently well. Rare are the cases where the pressure for performance justifies extreme, low-level optimization. A prolific line of research has traditionally focused on understanding GPU instruction encoding [4, 5, 6] precisely to improve the performance of compute kernels [7, 8, 9]. Our prior work on Volta [2] also offered such an example: we patched compiler-emitted code so that it used the register cache better, and achieved a 15% higher floating-point arithmetic throughput."
+    },
+    {
+      "source_id": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+      "citation_number": 36,
+      "cited_text": "5 6 Elapsed time (με) CHAPTER 1. LOW-LEVEL DETAILS MAKE A DIFFERENCE 8 improved_Saxpy 7 cublas_Saxpy 6 5 4 3 2 1 0 0 100 200 300 400 500 Operand array size (KiB) Figure 1.1: Performance of our improved saxpy implementation that uses 128-bit wide global memory access instructions, compared with cublasSaxpy from NVidia's cuBlas library, that uses 32- and 64-bit wide instructions. Elapsed time in microseconds; lower is better. This time, we show that the knowledge of Turing's instructions allows de- signers to improve the performance of a common linear algebra function (i.e., BLAS ?axpy), whose library implementation for single-precision operands contains memory access operations limited to a 64-bit width. We show a sim- ple replacement that uses vectorized 128-bit accesses, and improves perfor- mance substantially (see Fig. 1.1)."
+    },
+    {
+      "source_id": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+      "citation_number": 37,
+      "cited_text": ".headerflags @\"EF_CUDA_SM75 EF_CUDA_PTX_SM (EF_CUDA_SM75)\" /*01 0*/ LDG.E.64.SYS R2, [R2] ; /*0200*/ LDG.E.64.SYS R8, [R4] ; /*0330*/ LDG.E.64.SYS R2, [R2] ; /*0340*/ LDG.E.64.SYS R8, [R4] ; This access width is suboptimal on Turing, especially considering that: 1. Turing has only half as many load/store units per SM as Volta (16 vs. 32, as per public NVidia information [10, 3]); 2. a T4 device supports only half as many threads per SM than a V100 device (1,024 vs. 2,048); it is therefore harder to saturate the available memory bandwidth on Turing by just increasing block count."
+    },
+    {
+      "source_id": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+      "citation_number": 38,
+      "cited_text": "<cited_table> The performance of this improved_Saxpy code proves to be significantly higher than the performance of cublas Saxpy (see Figure 1.1) except for triv- ially small arrays (<20 Kib), and it asymptotically tends to be almost twice as fast for large ones.",
+      "cited_table": {
+        "num_columns": 2,
+        "rows": [
+          [
+            ".headerflags",
+            "@\"EF_CUDA_SM75 EF_CUDA_PTX_SM (EF_CUDA_SM75)\""
+          ],
+          [
+            "/*00d0*/",
+            "LDG.E.128.SYS R8,"
+          ],
+          [
+            "$/*00e0*/$",
+            "LDG.E.128.SYS R4,"
+          ],
+          [
+            "$/*0110*/$",
+            "FFMA R4,"
+          ],
+          [
+            "$/*0120*/$",
+            "FFMA R5,"
+          ],
+          [
+            "$/*0130*/$",
+            "R10, $y[0\\times0][0\\times170]$, R6 ;"
+          ],
+          [
+            "$/*0140*/$",
+            "FFMA R7,"
+          ],
+          [
+            "$/*0150*/$",
+            "STG.E.128.SYS [R2], R4;"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 39,
+      "cited_text": "wgmma results. As a set of warp-group-level Tensor Core instructions designed specifically for Hopper GPUs, wgmma instructions are the pioneering instructions to be executed asynchronously. Table 8 show the measured latency and throughput of dense instructions. When initializing matrices with zeros, we achieve throughputs exceeding 95% of the theoretical peak performance. We observe a decrease in Tensor Core performance when initializing matrices with random values, especially pronounced when utilizing FP16 as the computation type and FP32 for accumulation. This phenomenon is primarily attributed to the power consumption nearing the 350 W power limit of the H800-PCIe, subsequently causing a reduction in frequency. Users working with Tensor Cores on the H800-PCIe GPU should take into full consideration the power constraints when performing computations."
+    },
+    {
+      "source_id": "3c0e6e5e-42be-4c7f-995d-83ffc8b862f7",
+      "citation_number": 40,
+      "cited_text": "To confirm the cause of throttling, we designed an experiment that invokes cuBLAS<t>gemm kernels with input matrices of growing size. We observed the T4 GPU exceeded its power limit more and more frequently, and lower its clock rates more and more, with growing input sizes. The reduced clock frequency eventually hurts overall arithmetic throughput. See Figure 4.3. In the experiment, we set the application clock for graphics on the T4 card to 1,590 MHz, and prevent GPU temperatures from exceeding the maximum operating temperature of the T4 GPU. We record the clock frequency of the T4 card while computing cublas<t>gemm in half precision."
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 41,
+      "cited_text": "Since the exponential is performed by a separate hardware unit (the multi-function unit), ideally we'd want the exponential calculation to be scheduled when the Tensor Cores are performing the matmul. To do so, we use synchronization barriers (bar. sync instructions) to force the GEMMs (GEMM1 - PV of one iteration, and GEMMO - QKT of the next iteration) of warpgroup 1 to be scheduled before the GEMMs of warpgroup 2. As a result, the softmax of warpgroup 1 will be scheduled while warpgroup 2 is performing its GEMMs. Then the roles swap, with warpgroup 2 doing softmax while warpgroup 1 doing GEMMs (hence, \"pingpong\" scheduling). This is illustrated"
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 42,
+      "cited_text": "10.37. Execution Configuration 273 CUDA C++ Programming Guide, Release 13.3 10.38. Launch Bounds As discussed in detail in Multiprocessor Level, the fewer registers a kernel uses, the more threads and thread blocks are likely to reside on a multiprocessor, which can improve performance. Therefore, the compiler uses heuristics to minimize register usage while keeping register spilling (see Device Memory Accesses) and instruction count to a minimum. An application can optionally aid these heuristics by providing additional information to the compiler in the form of launch bounds that are specified using the __launch_bounds__() qualifier in the definition of a__global__ function:"
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 43,
+      "cited_text": "10.38, Launch Bounds 275 CUDA C++ Programming Guide, Release 13.3 10.39. Maximum Number of Registers per Thread To provide a mechanism for low-level performance tuning, CUDA C++ provides the __maxnreg__() function qualifier to pass performance tuning information to the backend optimizing compiler. The __maxnreg__() qualifier specifies the maximum number of registers to be allocated to a single thread in a thread block. In the definition of a__global__ function: __global__ void __maxnreg__(maxNumberRegisters Per Thread) MyKernel(...)"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 44,
+      "cited_text": "Nonetheless, based on our experience, brute force autotuning still poses significant challenges of robustness and usability in a real system. The tuning process is an entire extra stage added to a programmer's normal development process. Straightforward implementations are sensitive to noise in testing environment and many other factors. In Halide, while simple pipelines (like blur) can tune effectively with only trivial mutation rules, we found heuristic mutation rules are essential to converge in a reasonable amount"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 45,
+      "cited_text": "of time when tuning more complex imaging pipelines. However these rules may be specific to the algorithm structure. For example, different template mutation rules may be necessary for 3D voxel data or unconventional color layouts. We also found that it is necessary to maintain diversity to avoid becoming trapped in local minima, which we did by using a large population (128 individuals per generation). Even so, the tuner can occasionally become trapped, requiring restarting with a new random initialization, and taking the best of several runs. In general, we feel that high dimensional stochastic autotuning has not yet developed the robust methodology or infrastructure for real-world use found elsewhere in the compiler community."
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 46,
+      "cited_text": "Hardware-aware Algorithms Our work presented in this paper focuses on the micro-architecture specific tuning to leverage new instruction sets and adopt a natively asynchronous programming model. There are other orthogonal axes for hardware-aware algorithm co-design being explored. A recent example of this is LeanAttention [49], which recognizes the poor GPU occupancy and high memory bandwidth requirements of the sequential token generation phase as primary bottlenecks for inference and optimizes it via a smarter load balancing strategy similar to Stream-K load balancing [41] to achieve nearly peak occupancy. There is a large literature on optimizing GEMM for specific hardware that employs many of the same techniques. As an example, Abdelfattah et al. [1] presents a high performance batched GEMM kernel on K40c Graphics Processing Units (GPU) for both fixed and variable sizes, proposing specialized GEMM designs and a comprehensive autotuning process to deliver state-of-the-art performance."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 47,
+      "cited_text": "x.sharding SingleDeviceSharding (device=CpuDevice(id=0), memory_kind=device) On a single-device machine this isn't very interesting, but it's the foundation of JAX's approach to parallelism and scaling. That story is told in tl docs; see Distributed arrays and automatic parallelization. Under the hood: jax.numpy, jax.lax, and XLA jax.numpy is a convenience layer. Its functions are implemented in terms of jax.lax, a stricter, lower-level API. Most jax.numpy functions a NumPy-style conveniences and then defer to their jax. lax counterpart. Here's jnp.sin, simplified from the real implementation:"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 48,
+      "cited_text": "algorithm autotuner COMPILER lowering bound inference sliding window optimization flattening vectorization & unrolling schedule & storage folding running time code generation Input: Algorithm blurx $rx(x,y)=in(x-1,y)$ + $in(x,y)$ + $in(x+1,y)$ $out(x,y)=blurx(x,y-1)$ $+blurx(x,y)$ + blurx(x,y+1 Input: Schedule blurx: split x by $4\\rightarrow x_{o^{\\prime}},x_{i}$ vectorize: x store at out $x_{\\theta}$ compute at out.y. out: split x by $4\\rightarrow x_{0},x$ split y by $4\\rightarrow y_{o},y_{i}$ reorder: $y_{o},x_{o},y_{i},x$ parallelize: y"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 49,
+      "cited_text": "good starting points for functions that vectorize well, or fall back to naive parallelism when that is not the case. The dimensions  and y are chosen from adjacent dimensions at random, except when there are optional bounds annotations provided by the Halide programmer (such as the number of color channels): dimensions with small bound are not tiled. Genetic Algorithm Search We use a fixed population size (128 individuals per generation, for all examples in this paper) and construct each new generation with population frequencies of elitism, crossover, mutated individuals, and random individuals. Elitism copies the top individuals from the previous generation. Crossover selects parents by tournament selection, followed by two-point crossover, with crossover points selected at random between functions. Random individuals are generated either by the reasonable schedules described previously, or with equal probability, by scheduling each function independently with random schedule choices. This is directly derived from the PetaBricks autotuner [2]."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 50,
+      "cited_text": "coarse interleaving low locality compute granularity overlapping tiles high parallelism breadth first low locality valid schedules more parallelism less synchronization fine interleaving high locality Joop fusion storage sliding windows within tiles sliding window fine storage granularity coarse storage granularity redundant computation granularity no redundant computation Figure 2. A natural way to visualize the space of scheduling choices is by granularity of storage (x-axis), and granularity of computation (y-axis). Breadth-first execution does coarse-grain computation into coarse-grain storage. Total fusion performs fine-grain computation into fine-grain storage (small temporary buffers). Sliding window strategies allocate enough space for the entire intermediate stage, but compute it in in fine-grain chunks as late as possible. These extremes each have their pitfalls. Breadth-first execution has poor locality, total fusion often does redundant work, and using sliding windows to avoid redundant recomputation constrains parallelism by introducing dependencies across loop iterations. The best strategies tend to be mixed, and lie somewhere in the middle of the space."
+    }
+  ]
+}

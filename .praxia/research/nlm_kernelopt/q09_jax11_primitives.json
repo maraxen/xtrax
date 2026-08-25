@@ -1,0 +1,686 @@
+{
+  "answer": "### 1. `donate_argnums` (and `donate_argnames`) Semantics\nIn JAX, arrays are immutable, meaning that at a JIT compilation boundary, every output typically gets allocated a fresh memory buffer `[1]`. **Buffer donation** provides a memory-efficient escape hatch by allowing the compiler to reuse the device memory of an input to hold an output, reducing peak memory usage `[2]`. \n\nWhile the XLA compiler aggressively reuses buffers *within* a compiled computation, JAX must assume at the Python/JIT boundary that the user still holds a reference to the input array unless told otherwise via `donate_argnums` (or `donate_argnames`) `[2, 3]`. This is typically used in training or update loops where the next state replaces the old one: `params, state = jax.jit(update_fn, donate_argnums=(0,1))(params, state)` `[2]`.\n\nHowever, buffer donation carries strict rules and \"sharp edges\" that developers must navigate:\n*   **Donated Means Gone**: After the JIT-compiled call, the donated input buffer is invalidated `[4]`. Attempting to access or reuse the original input array subsequently will result in a runtime `RuntimeError` (e.g., `CopyToHostAsync() called on invalid buffer`) `[4, 5]`.\n*   **Keyword Arguments Exception**: Arguments passed as Python keywords (e.g., `params=params`) are **never** donated by `donate_argnums`, meaning no buffer reuse occurs `[5]`.\n*   **PyTree Unpacking**: If a donated argument is a PyTree, JAX donates **every constituent array** within that PyTree `[5, 6]`.\n*   **Unusable Donations**: If more buffers are donated than there are outputs of matching shape and element type to hold them, the unused donations are safely dropped, and JAX outputs a `UserWarning` `[6]`.\n*   **Alternative (Refs)**: When restructuring is possible, JAX's newer mutable **Refs** (`jax.new_ref`) can be passed into JIT functions to express in-place updates natively without relying on donation promises `[1, 7-9]`. Buffer donation also extends to `jax.device_put(x, donate=True)` for memory-efficient host-to-device placement `[10]`.\n\n---\n\n### 2. `remat` / `checkpointing` (Trading FLOPs for Memory)\nDuring reverse-mode automatic differentiation (VJPs), JAX's default behavior is to compute and save intermediate forward pass values—known as **residuals**—to consume during the backward pass `[11, 12]`. In deep neural networks, storing these residuals is often the primary driver of Out-Of-Memory (OOM) errors `[12]`. \n\nThe `jax.checkpoint()` decorator (aliased as `jax.remat()`) allows developers to control this trade-off by forcing JAX to discard sub-function intermediates on the forward pass and **rematerialize (recompute)** them on-the-fly during the backward pass, saving substantial memory at the cost of redundant FLOPs `[12, 13]`.\n\nUnder JAX's newer rematerialization implementation (`jax_remat3`) `[14]`, several advanced features are exposed for precise memory tuning:\n*   **Fine-Grained Policies**: Rather than choosing between the extremes of saving everything or recomputing everything, the `policy` argument on `jax.checkpoint` lets users define exactly what gets saved `[15]`. Developers can label intermediate variables in their model using `jax.ad_checkpoint.checkpoint_name()` `[16, 17]`. They then apply policy constructors from `jax.checkpoint_policies` `[16]:`\n    *   `save_only_these_names(*names)`: Keeps named values on-device and recomputes everything else `[16]`.\n    *   `save_any_names_but_these(*names)`: Saves all named intermediates except those specified `[16]`.\n    *   `save_and_offload_only_these_names(...)`: Instead of choosing between storing on-device or recomputing, this policy **offloads** specified residuals from device (GPU/TPU) memory to pinned host (CPU) memory after the forward pass, and fetches them back when needed in the backward pass `[18, 19]`. This trades PCIe transfer bandwidth for device memory footprint `[18, 20]`.\n*   **`custom_remat`**: For extreme control, `jax.custom_remat(f, f_fwd, f_rem, f_bwd)` allows kernel or library authors to override the remat behavior of a function entirely `[21, 22]`. Authors define custom forward passes (deciding what to keep based on the ambient policy), custom rematerialization passes, and custom backward rules `[22]`. For example, a custom `jnp.sin` can be configured to always save its cosine derivative to avoid recomputing sines or cosines entirely `[23]`.\n*   **Recursive Checkpointing**: For deep sequential architectures, recursive application of `jax.checkpoint` allows memory consumption to scale logarithmically with depth (\\\\(\\mathcal{O}(\\log_2 D)\\\\)) instead of linearly (\\\\(\\mathcal{O}(D)\\\\)) `[24, 25]`.\n*   **Scan Integration**: While XLA's automatic compiler-level remat pass works well for simple graphs, it struggles across structured control-flow loops `[26, 27]`. Manually applying `jax.checkpoint` to the loop body function passed to `jax.lax.scan` is a standard technique to prevent extreme memory bloat `[27, 28]`.\n\n---\n\n### 3. `shard_map` (Manual SPMD Multi-Device Parallelism)\nWhile `pjit` compiles programs from a \"global view\" and relies on the compiler to automatically insert collectives `[29-31]`, **`shard_map`** acts as a single-program multiple-data (SPMD) multi-device parallelism API `[31, 32]`. It lets programmers bypass compiler automatic partitioning, dropping into a \"manual collectives\" mode inside `jax.jit` to write hand-optimized parallel partitions `[31, 33]`.\n\nIts behavior differs fundamentally from other mapping transforms:\n*   **Rank-Preserving Semantics**: Unlike `vmap` (which is rank-reducing and adds/removes batch dimensions) `[34, 35]`, `shard_map` is **rank-preserving** `[34, 36]`. Logically, it slices (\"unconcentates\") inputs into block shards along target mesh axes, executes the mapped function on individual devices, and concatenates the resulting output blocks back together `[36, 37]`.\n*   **Tiling & Un-tiling (Implicit Resharding)**:\n    *   *Tiling*: If a mesh axis is not mentioned in an input PartitionSpec (`in_specs`), `shard_map` logically tiles/replicates the input array across that mesh axis, making a copy available to all participating devices `[38-40]`.\n    *   *Un-tiling*: If a mesh axis name is omitted from `out_specs`, it represents an un-tiling `[41, 42]`. The programmer promises that the output blocks across those devices are identical `[41, 42]`. JAX will then extract only one block copy instead of concatenating duplicates `[41, 42]`.\n*   **VMA Validation (`check_vma=True`)**: `shard_map` features a static **Varying Manual Axis (VMA)** type-checking system `[43, 44]`. It statically tracks whether intermediates within the kernel are device-varying (V) or device-invariant (invarying) `[43, 44]`. If a programmer attempts to un-tile an output axis that has not been mathematically reduced across devices (e.g., omitting an all-reduce or `psum`), JAX will catch the replication mismatch at compile-time and throw an error `[43, 45]`. VMA tracking is also used to optimize automatic differentiation of sharded programs `[46, 47]`.\n*   **Hardware Collectives**: It exposes low-level collective primitives (`jax.lax.psum`, `jax.lax.all_gather`, `jax.lax.psum_scatter`, `jax.lax.ppermute`) directly within the mapped body `[47-51]`, enabling manual optimizations like bidirectional ring-based matrix multiplications with overlapped compute and communication `[51, 52]`.\n\n---\n\n### 4. `pallas` and `CustomCall`/FFI\nWhen high-level XLA compilations fail to produce optimal code, JAX provides two key \"escape hatches\" to run customized hardware routines `[53, 54]`.\n\n#### A. Pallas (Custom JAX Kernel Language)\nPallas is an extension to JAX that allows developers to write custom GPU and TPU kernels directly in Python using `jax.numpy` and a subset of JAX primitives `[55-57]`. \n*   **The Ref Programming Model**: Unlike standard functional JAX, Pallas kernels do not take or return immutable arrays `[58]`. Instead, they operate on mutable **`Ref`** types which represent physical memory spaces (GMEM for global memory, SMEM for shared L1 cache, and TMEM for Blackwell tensor memory) `[57-59]`. Data movement is explicit: reading a `Ref` (e.g., `x_ref[...]`) loads data into vector registers, and writing to an output `Ref` commits it back `[60, 61]`.\n*   **Grid & BlockSpec**: Kernels are executed over a multi-dimensional execution grid `[55, 62]`. Developers supply `BlockSpec`s to define how inputs are carved up into blocks and streamed through fast on-chip SRAM via hardware pipelines `[55, 62-64]`.\n*   **Platform LOWERING (Triton Deprecation)**: Pallas is platform-dependent `[65]`. Notably, on GPUs, **the legacy Triton Python lowering path has been deprecated and completely removed** in favor of NVIDIA’s **Mosaic GPU** (`plgpu`) backend, which targets Hopper (H100) and Blackwell architectures `[66, 67]`.\n*   **Mosaic GPU Advanced Features**: The Mosaic GPU backend exposes lower-level hardware coordination directly in Python:\n    *   *Warp-Level Abstraction*: Each Pallas thread mapped to the grid corresponds to a physical warpgroup (128 CUDA threads executing in lockstep) `[68]`.\n    *   *Asynchronous Pipelines*: Exposes manual pipeline control (`plgpu.emit_pipeline`) and warp-specialization (`plgpu.emit_pipeline_warp_specialized`), allowing dedicated Producer warps to manage global-to-shared memory transfers (via hardware TMA or `cp.async`) while Consumer warps compute matrix math `[69-71]`.\n    *   *Hardware Barriers*: Coordinated via allocation of Regular and Cluster-level Barriers (`plgpu.Barrier` and `plgpu.ClusterBarrier`) `[72, 73]`.\n\n#### B. `CustomCall` and JAX FFI\nWhen targeting pre-existing C++ or CUDA libraries, JAX exposes XLA’s low-level **`CustomCall`** mechanism `[74, 75]`. JAX wraps this via its modern **Foreign Function Interface (FFI)** (`jax.ffi`), providing a structured way to register external compiled binaries `[53, 76, 77]`.\n*   **SPMD Sharding Integration**: To prevent XLA from gathering distributed inputs to the host before running an external binary, the FFI supports explicit integration with JAX's sharding types `[78]`. By utilizing a **HiJAX primitive** wrapper, developers can wrap FFI calls inside a `shard_map` in the primitive's `expand` rule `[79, 80]`. This ensures the FFI call only ever sees and operates on the process-local shard of the array, executing in parallel without communication `[80]`.\n*   **`custom_partitioning`**: This decorator allows custom operations to register bespoke SPMD lowering rules `[81]`. Rather than relying on default compiler heuristics, the user-defined `propagate_user_sharding` and `infer_sharding_from_operands` callbacks explicitly instruct the XLA GSPMD partitioner how to propagate and transform sharding layouts across the custom C++ boundary `[81, 82]`.\n\n---\n\n📊 We can write a Python script to profile your custom JAX workloads, analyzing how memory donation or name-based checkpointing policies affect your peak device memory usage. Would you like to set up that memory-profiling pipeline?",
+  "question": "From the JAX 0.11 reference PDF: what primitive-level features matter for performance work (donate_argnums semantics, remat/checkpointing, shard_map, pallas/CustomCall)?",
+  "conversation_id": "66228072-8454-4d68-ab54-1e0f585fc80a",
+  "sources_used": [
+    "ae6d8565-978f-4129-867c-5fa7f8cce2e5"
+  ],
+  "citations": {
+    "1": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "2": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "3": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "4": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "5": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "6": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "7": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "8": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "9": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "10": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "11": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "12": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "13": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "14": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "15": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "16": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "17": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "18": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "19": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "20": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "21": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "22": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "23": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "24": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "25": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "26": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "27": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "28": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "29": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "30": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "31": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "32": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "33": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "34": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "35": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "36": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "37": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "38": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "39": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "40": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "41": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "42": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "43": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "44": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "45": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "46": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "47": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "48": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "49": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "50": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "51": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "52": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "53": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "54": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "55": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "56": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "57": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "58": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "59": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "60": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "61": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "62": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "63": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "64": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "65": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "66": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "67": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "68": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "69": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "70": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "71": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "72": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "73": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "74": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "75": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "76": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "77": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "78": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "79": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "80": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "81": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+    "82": "ae6d8565-978f-4129-867c-5fa7f8cce2e5"
+  },
+  "references": [
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 1,
+      "cited_text": "In-place updates with refs A compiled function's inputs and outputs are immutable arrays, so at the jit boundary every output gets a fresh buffer, even when you're cor as in a training step that maps parameters to new parameters. Inside the compiled computation XLA reuses memory aggressively, but it can't re output unless you tell it something extra. JAX has two ways to say it: pass the data as a ref, or donate the input buffer. Refs express the intent donation, next, is the longer-standing mechanism you'll meet throughout existing JAX code."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 2,
+      "cited_text": "Buffer donation When JAX executes a computation, it uses device buffers for all inputs and outputs. If you know an input won't be needed after the computatio element type of an output, you can donate the input buffer to hold that output, reducing peak memory by the size of the donated buffer. The ca update, where the new state replaces the old: params, state = jax.jit(update_fn, donate_argnums $=(0,1))$ (params, state) Think of donation as a memory-efficient functional update on immutable arrays. Within a compiled computation, XLA reuses buffers automatica though, JAX must assume you might still hold a reference to the input unless you promise otherwise with donate_argnums (or donate_argnam"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 3,
+      "cited_text": "Changes: • Sparse CSR matrix multiplications via the experimental jax sparse APIs no longer uses a deterministic algorithm on NVIDIA GPUs. This compatibility with CUDA 12.2.1. Bug fixes: • Fixed a crash on Windows due to a fatal LLVM error related to out-of-order sections and IMAGE_REL_AMD64_ADDR32NB relocations (https://github.com/openxla/xla/commit/cb732a921f0c4184995cbed82394931011d12bd4). jax 0.4.14 (July 27, 2023) Changes jax.jit takes donate_argnames as an argument. It's semantics are similar to static_argnames. If neither donate_argnums nor dor arguments are donated. If donate_argnums is not provided but donate_argnames is, or vice versa, JAX uses inspect.signature(fun arguments that correspond to donate_argnames (or vice versa). If both donate_argnums and donate_argnames are provided, inspect. actual parameters listed in either donate_argnums or donate_argnames will be donated."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 4,
+      "cited_text": "def add(x, y): return $x+y$ $x=$ jax.device_put(np.ones((2, 3))) $y=$ jax.device_put(np.ones((2, 3))) # Execute `add` with donation of the buffer for  y`. The result has # the same shape and type as `y`, so it will share its buffer. $z=$ jax.jit(add, donate_argnums=(1,))(x, y) Donation comes with rules and sharp edges: Donated means gone. After the call, the donated input is invalid, and using it is an error: z = jax.jit(add, donate_argnums $;=(1,))(x,y)$ $w=y+1$ # Reuses `y`, whose buffer was donated above"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 5,
+      "cited_text": "$\\#>>$ RuntimeError: Invalid argument: CopyToHostAsync() called on invalid buffer Keyword arguments aren't donated by donate_argnums. This code donates nothing: params, state  jax.jit(update_fn, donate_argnums $i=(0,1))$ (params=params, state=state) Pytree arguments donate all their buffers. Donating an argument that's a pytree donates every array in it: def add_ones (xs: list [jax.Array]): return $[x+1$ for x in xs] $\\times s=$ [jax.device_put(np.ones((2, 3))), jax.device_put(np.ones((3, 4)))]"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 6,
+      "cited_text": "# Donates the buffers of both arrays in `xs` $z=$ jax.jit(add_ones, donate_argnums=0)(xs) • Unusable donations are dropped, with a warning. If there are more donated buffers than outputs to hold them, or no output matches a c element type, you'll see UserWarning: Some donated buffers were not usable. As the sharp edges above suggest, donation is a promise layered on top of immutable semantics, and it's possible to get subtly wrong. The pro and only at runtime. When you have the freedom to restructure, refs (In-place updates with refs above) express the same intent with less to mis workhorse for functionally-written code, which is to say most JAX code today."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 7,
+      "cited_text": "For cases like this, JAX has refs: mutable arrays that can be read and written in place. Create one with jax.new_ref: x_ref = jax.new_ref(jnp.zeros(3)) # new array ref, with initial value [0., 0., 0.] @jax.jit def f(): x_ref [1] += 1. # indexed add-update print(x_ref) f() f() $\\#~Ref([0.,0.,0.])$ print(x_ref) # Ref([0., 2., 0.]) Ref([0., 0., Ref ([0., 2., 0.1, dtype=float32) 0.1, dtype=float32) For a ref called x_ref, we can read its entire value into an Array by writing x_ref [...], and write its entire value using x_ref [...]  A fo expression A:"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 8,
+      "cited_text": "A ref (Refs: mutable arrays) passed into a jitted function represents mutable memory: writes through it happen in place, and no fresh buffer is a buffer address stay fixed across the call: @jax.jit def sin_inplace(x_ref): x_ref [...] = jnp.sin(x_ref[...]) x_ref = jax.new_ref(jnp.arange(3.0)) print(x_ref.unsafe_buffer_pointer(), x_ref) sin_inplace(x_ref) print(x_ref.unsafe_buffer_pointer(), x_ref) 95925618141632 Ref ([0., 1., 2.], dtype=float32) 95925618141632 Ref ([0. , 0.84147096, 0.9092974), dtype=float32)"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 9,
+      "cited_text": "sin_inplace updates the buffer backing x_ref, so its address stays the same. In general, under a jit you should expect refs to point to fix indexed updates to be performed in place. Note Temporary caveat: dispatch from Python to impure jit-compiled functions that take ref inputs is currently slower than dispatch to pure since it takes a less optimized path. Working with refs does mean writing the function differently: mutation through indexed writes, rather than functional updates. For code already most existing JAX code, and the convention across the ecosystem), buffer donation can achieve the in-place effect without changing the funct"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 10,
+      "cited_text": "Everything on this page generalizes to multiple processes: meshes can span hosts, can cover just a subset of the devices in a cluster, and jax. between meshes across processes over high-speed interconnects. That story is in the multi-process systems docs; see Introduction to multi-c process/multi-host JAX). Notes jax.device_put (x) with no target is (at most) a transfer to the default placement, and the result is uncommitted. jax.device_put accepts donate True to reuse the input's buffers when possible, in the same spirit as jit 's buffer donation (Buffer do Placement round-trips through the host too: np.asarray(x) copies device data back to host memory as a NumPy array."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 11,
+      "cited_text": "5. Custom JVPs or VJPs with custom_jvp and custom_vjp - the classic decorators, customizing one differentiation mode at a time: still fully: convenient tool for simple cases. 6. Autodiff with refs - autodiff with mutable arrays: plumbing values out of backward passes, in-place gradient accumulation with with_refs respect to refs. 7. Gradient checkpointing with jax.checkpoint (jax.remat) - gradient checkpointing with jax.checkpoint: what autodiff saves versus recom offloading, and per-function control with custom_remat."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 12,
+      "cited_text": "Here, the loop runs immediately, updating rin-place and binding ys to be the mapped result. Gradient checkpointing with jax.checkpoint (jax.remat) When you differentiate a function in reverse mode, JAX's autodiff saves intermediate values from the forward pass called residuals - to use i models, residual memory is often the memory problem. The jax.checkpoint() decorator (aliased as jax.remat()) gives you control over wl and which are rematerialized - recomputed on the backward pass - trading memory for FLOPs."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 13,
+      "cited_text": "return x_bar In general, jax.checkpoint(foo) is a new function which has the same input-output behavior as foo, but behaves differently under autodiff, jax.linearize() and jax.vjp() (and their wrappers, like jax.grad()) but not jax.jvp(). When differentiated, only the input to a jax.cl function is stored on the forward pass. On the backward pass, the residuals (intermediates from foo and its Jacobian coefficient values neede recomputed. Notice that if $f=$ lambda x: $h(g(x))$ is the function you want to differentiate (in other words, if you want to apply jax.grad(f)) you don't g applying jax.checkpoint() to f itself. That's because evaluating jax.grad(jax.checkpoint (f)) (x) would lead to a computation such as:"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 14,
+      "cited_text": "This page describes JAX's new rematerialization implementation, enabled with the jax_remat3 flag (on its way to becoming the default): import jax jax.config.update('jax_remat3', True) import jax.numpy as jnp Seeing what's saved Consider a little three-layer network: def g(W, x): $y=jnp.dot(W,x)$ return jnp.sin(y def f(W1, W2, W3, x): $x=g(W1,x)$ $x=g(W2,x)$ $x=g(W3,x)$ return x $W1=j~np.ones((5,4))$ $N2=$ jnp.ones((6,5)) $W3=$((7,6)) $x=$ jnp.ones(4) # Inspect the 'residual' values to be saved on the forward pass # if you were to evaluate `jax.grad(f) (W1, W2, W3, x)`"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 15,
+      "cited_text": "Policies: naming what's saveable As shown so far, using jax.checkpoint() switches from one extreme to another: Without jax.checkpoint(), JAX's autodiff tends to compute everything possible on the forward pass and store it for the backward pass. With a jax.checkpoint() decorator, you instead compute as little as possible on the forward pass and recompute values as needed on th To operate between these two extremes, saving some things and not others, you use the policy argument to jax.checkpoint(). A policy is values are allowed to be saved as residuals, and everything else is recomputed. The workflow has two halves:"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 16,
+      "cited_text": "1. Name values in the function being differentiated with jax.ad_checkpoint.checkpoint_name(). By itself, checkpoint_name is just an ide a label. 2. Select names in the policy, with one of the constructors on jax.checkpoint_policies: save_only_these_names (*names) values with these names are saveable; everything else is recomputed; save_any_names_but_these(*names) every named value is saveable except these; ve_and_offload_only_these_names(...) like save_only_these_names, but some names are offloaded to another memory spa"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 17,
+      "cited_text": ">>> import numpy as np >>> # Declare a 2D mesh with axes `x` and `y`. >>> devices = np.array(jax.devices()).reshape(4, 2) >>> mesh = Mesh (devices, ('x', 'y')) >>> inp = np.arange(16).reshape(8, 2) >>> arr = jax.device_put(inp, NamedSharding (mesh, P('x', 'y'))) >>> out = jax.jit (lambda x: x * 2) (arr) >>> assert out.sharding == NamedSharding (mesh, P('x', 'y')) jax.ad_checkpoint module checkpoint_name (x, name) jax.debug module Runtime value debugging utilities Identifies a value with a name within jax.checkpoint()."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 18,
+      "cited_text": "Offloading instead of recomputing Recomputation isn't the only alternative to keeping a residual in accelerator memory: a residual can also be offloaded to another memory space forward pass and brought back when the backward pass needs it, trading transfer bandwidth instead of FLOPs. The policy jax.checkpoint_policies.save_and_offload_only_these_names takes four arguments: names_which_can_be_saved (kept on de names_which_can_be_offloaded (moved to the destination memory space), and the offloading source and destination. Values with other nam recomputed."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 19,
+      "cited_text": "Checkpoint Policies This checkpoint policy implements a memory management strategy that optimizes memory usage during computation. It manages memory by through three strategies: 1. Recomputing during backward pass (default behavior) 2. Storing on device 3. Offloading to host memory after forward pass and loading back during backward pass from jax import checkpoint_policies as cp policy  cp.save_and_offload_only_these_names( ) names_which_can_be_saved $=[]$, names_which_can_be_offloaded=[\"x\"], offload_src=\"device\","
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 20,
+      "cited_text": "The offloading performance can vary for different device types. It may degrade performance due to memory transfers between host and device this trade-off when designing your optimization strategy. Optimizer State Offloading Optimizer state offloading is a memory management technique that stores optimizer states in host memory instead of device memory. This app when optimizer states are large, as it reduces device memory usage. A basic JAX implementation using the Adam optimizer can serve as a starting point, where all tensors are stored on the device. This will serve a before introducing optimizer state offloading."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 21,
+      "cited_text": "print_saved_residuals(f_offload, jnp.arange(4.)) [ 1. 0.26450825 -0.18009877 -0.9704719 ] f32 [4] from the argument x f32 [4] named 'y' from /tmp/ipykernel_3101/4114525438.py:9:6 (f_offload) f32<host> [4] output of device_put from /tmp/ipykernel_3101/4114525438.py:10:6 (f_offload) The f32<host> [4] residual is the offloaded value: it's kept, but in host memory rather than device memory. Custom remat behavior with custom_remat Name-based policies choose among values a function has named. Sometimes a function author knows something better: a specific quantity th makes the backward pass cheap, or a way to restructure the recomputation entirely. custom_remat lets a function carry its own rematerializati that depends on the ambient policy."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 22,
+      "cited_text": "jax.custom_remat() called as custom_remat(f, f_fwd, f_rem, f_bwd) takes four functions: f is the primal function, used everywhere outside of rematerialized differentiation; f_fwd(policy, *args) -> (out, res) runs on the forward pass inside a rematerialized region: it receives the ambient checkpoint policy any) to keep; f_rem(res, *args) -> (out, res2) runs on the backward pass to rematerialize: given whatever f_fwd kept, plus the original argument and the residuals the backward rule needs; f_bwd(res2, g) -> arg_cotangents is the backward rule."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 23,
+      "cited_text": "For example: the derivative of sin is cos, so a memory/FLOPs sweet spot for sin under rematerialization can be to save the cosine a valu recompute. Here's a sin that always saves its cosine when rematerialized: sin  jax.custom_remat(jnp.sin, lambda x: (jnp.sin(x), jnp.cos(x)), lambda cos_x, x: (jnp.sin(x), cos_x), lambda cos_x, g: (cos_x  g,)) # keep cos(x) # rematerialize # backward rule $f=$ jax.remat (lambda x: sin(sin(x)) ) print(jax.grad(f) (1.0)) print(jax.grad(jnp.sin) (jnp.sin(1.0))  jnp.cos(1.0)) # chain rule, for reference"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 24,
+      "cited_text": "Advanced: recursive jax.checkpoint By applying jax.checkpoint() in the right way, there are many tradeoffs between memory usage and (re) computation that can be expressed. recursive checkpointing, where you apply jax.checkpoint() to a function which itself calls jax.checkpoint() -decorated functions in a way chain composition of D functions scales like $\\mathcal{O}(log_{2}D)$ rather than $\\mathcal{O}(D)$. As a toy example, consider the chain composition of multiple jax.numpy.sin() functions: def chain_compose(funs):"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 25,
+      "cited_text": "But you can apply jax.checkpoint() recursively to improve the scaling: def recursive_checkpoint(funs): if len(funs) $==1$: return funs [0] elif len(funs) == 2: f1, $f2=$ funs return lambda x: f1(f2(x)) else: $f1=$ recursive_checkpoint (funs[:len (funs)//2]) $+2=$ recursive_checkpoint (funs [len (funs)//2:]) return lambda x: f1(jax.checkpoint(f2)(x)) $f=$ recursive_checkpoint([jnp.sin] * 8) print_saved_residuals (f, 3.) f32[] from the argument x f32[] output of sin from /tmp/ipykernel_3101/1943107544.py:6:21 (recursive_checkpoint.<locals>.<lambda>) f32 [] output of cos from /tmp/ipykernel_3101/1943107544.py:6:24 (recursive_checkpoint.<locals>.<lambda>) f32[] output of cos from /tmp/ipykernel_3101/1943107544.py:6:21 (recursive_checkpoint.<locals>.<lambda>)"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 26,
+      "cited_text": "Running JAX on the display GPU. Use XLA_CLIENT_MEM_FRACTION or XLA_PYTHON_CLIENT_PREALLOCATE. Poor choices by the automatic rematerialization pass. Sometimes disabling XLA's automatic rematerialization HLO pass is favorable, to avoid poor remat choices by the compiler. The pass can be en jax.config.update('jax_compiler_enable_remat_pass', True) (or False). Enabling or disabling it produces different trade-offs between algorithm is basic, and you can often get a better trade-off by disabling the pass and rematerializing manually with the jax.remat API (see Gra jax.checkpoint (jax.remat))."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 27,
+      "cited_text": "in (x,) } Practical notes When differentiated functions are staged out to XLA for compilation - for example by applying jax.jit() to a function which contains a jax automatically optimize the computation, including decisions about when to compute or rematerialize values. As a result, jax.checkpoint() of differentiated functions under a jax.jit(). XLA will optimize things for you. One exception is when using staged-out control flow, like jax.lax.scan(). Automatic compiler optimizations across multiple control flow prim forward-pass scan and the corresponding backward-pass scan), typically aren't as thorough. As a result, it's often a good idea to use jax.c function passed to jax.lax.scan()."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 28,
+      "cited_text": "offload_dst=\"pinned_host\" # No values stored on device # Offload activations labeled \"x\" # Move from device memory # To pinned host memory jax.lax.scan() is commonly used in JAX for handling sequential operations (like RNNs or transformers). It can be integrated with JAX's rema sequential data. Key components: jax.remat() creates a rematerialized version of the layer function using jax.remat() and applies the checkpoint policy to the layer func prevent_cse=False enables XLA's common subexpression elimination for better performance"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 29,
+      "cited_text": "Next steps With placement in hand, the natural question is what happens within a mesh: how an array's data is partitioned over the mesh's devices, and hc coordinated per-device computation. That's Distributed arrays and automatic parallelization. Distributed arrays and automatic parallelization JAX has three styles of multi-device distributed parallelism, which can be mixed and composed. They differ in how much the compiler automati is controlled explicitly in the program: • Compiler-based automatic sharding is where you program as if using a single \"global view\" machine, and the compiler chooses how to s provided constraints via with_sharding_constraint) and how to partition computation into per-device programs with collectives."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 30,
+      "cited_text": "Explicit sharding and automatic partitioning is where you still have a global view but data shardings are explicit in JAX types, inspectabl compiler still partitions the computation. Manual per-device programming is where you have a per-device view of data and computation, and write explicit communication collect <cited_table> Before getting into details, here's a quick example using explicit mode. First, we create a jax. Array sharded across multiple devices:",
+      "cited_table": {
+        "num_columns": 4,
+        "rows": [
+          [
+            "Mode",
+            "View",
+            "Explicit sharding?",
+            "Explicit collectives?"
+          ],
+          [
+            "Auto",
+            "Global",
+            "X",
+            "X"
+          ],
+          [
+            "Explicit",
+            "Global",
+            "",
+            "X"
+          ],
+          [
+            "Manual",
+            "Per-device",
+            "",
+            ""
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 31,
+      "cited_text": "Manual parallelism with shard_map Overview shard_map is a single-program multiple-data (SPMD) multi-device parallelism API to map a function over shards of data. Mapped function app communicate with each other via explicit collective communication operations. shard_map is complementary to, and composable with, the automatic compiler-based parallelization built into jit. With jit you write code compiler can automatically partition computation over multiple devices, generating per-device code and communication collectives behind the take control, writing your own partitioned code and explicit collectives. Or you can do a bit of both: take manual control across groups of device device partitioning up to the compiler. The two approaches can be mixed, matched, and composed as needed."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 32,
+      "cited_text": "We can level-up the second school with shmap. shmap is: a simple multi-device parallelism API which lets us write per-device code with explicit collectives, where logical shapes match per-device p collectives correspond exactly to cross-device communication; a specialization of xmap with scaled-back features and a few tweaks; a fairly direct surfacing of the XLA SPMD Partitioner's 'manual' mode; a fun-to-say Seussian name which could stand for shard_map, shpecialized_xmap, sholto_map, or sharad_map."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 33,
+      "cited_text": "For pjit users, shmap is a complementary tool. It can be used inside a pjit computation to drop temporarily into a \"manual collectives\" mc the compiler's automatic partitioning. That way, users get the convenience and familiar just-NumPy programming model of pjit for most of th to hand-optimize collective communication with shmap wherever it's needed. It's the best of both worlds! For pmap users, shmap is a strict upgrade. It's more expressive, performant, and composable with other JAX APIs, without making basic batc"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 34,
+      "cited_text": "CPU 0,1 CPU 2,3 CPU 4,5 CPU 6,7 At a high level, shard_map is kind of like vmap, in that we're mapping a function over pieces of array data, but notice that shard_map slices up inputs into blocks (and the output is formed by concatenating result blocks), keeping the rank the same, whereas vm mapping away an axis; the mesh argument lets us control precise device placement of computation and results; we're mapping over multiple data axes at once, and setting up multiple axis names for collectives (both 'x' and 'y' here);"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 35,
+      "cited_text": "Another thing not represented here, but present in the mainline JAX, is that applying transformations to two jaxprs of equal type might result in example, applying the mainline JAX version of vmap_jaxpr to the identity-function jaxpr { lambda a:float32 [] let in (a)} would result in a jaxpr with a batched output, of type [float32 [10]] -> [float32 [10]] if the batch size were 10, while applying it to the zero { lambda a:float32[] let in (0.)} would result in a jaxpr with an unbatched output, of type [float32[10]] -> [float32 []]. This is an optimization, aimed at not batching value that in cond we'd need an extra step of joining the two transformed jaxprs to have consistent output types. We don't need this step here becau always to batch all outputs over the leading axis."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 36,
+      "cited_text": "def check_shmap(f, y): ans = jax.shard_map(f, in_specs=jax.P('i'), out_specs=jax.P('i'))(y) expected = jnp.concatenate([f(y_blk) for y_blk in jnp.split(y, mesh.shape['i'])]) print(allclose(ans, expected)) check_shmap(lambda x: x.T @ x, jnp.arange(32).reshape(8,4)) True Recall that jnp.split slices its input into equally-sized blocks with the same rank, so that if in the above example y had shape f32 [8,5] thi shape f32 [2,5], and if each f(y_blk) had shape f32 [3,7] then the final concatenated result shard_map(f, ...)(y) would have shape maps over shards, or blocks, of its inputs. We can say it's a rank-preserving map with unconcatenating/concatenating of its inputs/outputs."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 37,
+      "cited_text": "m = Mesh(devices, ('i',)) # mesh.shape['i'] = 4 shard_map(f, m, in_specs=P('i'), out_specs=P('i'))(y) == jnp.concatenate ([f(y_blk) for y_blk in jnp.split(y, 4)]) Recall that jnp.split slices its input into equally-sized blocks with the same rank, so that if in the above example y has shape f32 [8,5] the f32 [2,5], and if each f(y_blk) has shape f32 [3,7] then the final concatenated result shard_map(f, ...) (y) has shape f32 [12, 7]. So over shards, or blocks, of its inputs. We can say it's a rank-preserving map with unconcatenating/concatenating of its inputs/outputs."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 38,
+      "cited_text": "mesh = jax.make_mesh((4, 2), ('i', 'j')) jax.set_mesh(mesh) @jax.shard_map(in_specs=jax.P('i', None), out_specs=jax.P('i', 'j')) def f1(x_block): print(x_block.shape) # prints (3, 12) return x_block $\\times1=$ jax.device_put(jnp.arange $(12*12)$ .reshape(12, 12), jax.P('i', None)) $y=f1(x1)$ (3, 12) Here, because the input pspec did not mention the mesh axis name 'j', no input array axis is split over that mesh axis; similarly, because the not identified with (and hence split over) any mesh axis, application of f1 gets a full view of the input along that axis."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 39,
+      "cited_text": "When a mesh axis is not mentioned in an input pspec, we can always rewrite to a less efficient program where all mesh axes are mentioned but jnp.tile, for example: @jax.shard_map(in_specs=jax.P('i', 'j'), out_specs=jax.P('i', 'j')) def $f2(x\\_block)$: print(x_block.shape) return x_block $x=jnp.arange(12*12).reshape(12,12)$ x_= jnp.tile(x, (1, mesh.shape['j'])) # x has shape (12, 24) x_ = jax.device_put(x, jax.P('i', 'j' $y=f2(x\\_)$ # prints (3,12), and $f1(x)==f2(x\\_)$ (3,6) In other words, because each input pspec can mention each mesh axis name zero or one times, rather than having to mention each name exact addition to the jnp.split built into its input, shard_map also has a jnp.tile built into its input, at least logically (though the tiling may not n depending on the arguments' physical sharding layout). The tiling to use is not unique; we could also have tiled along the first axis, and used th None)."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 40,
+      "cited_text": "In other words, because each input pspec can mention each mesh axis name zero or one times, rather than having to mention each name exact addition to the jnp.split built into its input, shard_map also has a jnp.tile built into its input, at least logically (though the tiling may not n depending on the arguments' physical sharding layout). The tiling to use is not unique; we could also have tiled along the first axis, and used th Physical data movement is possible on inputs, as each device needs to have a copy of the appropriate data."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 41,
+      "cited_text": "When a mesh axis name is not mentioned in an output pspec, it represents an un-tiling: when the user writes an output pspec which does not n names, they promise that the output blocks are equal along that mesh axis, and so only one block along that axis is used in the output (rather tl together along that mesh axis). For example, using the same mesh as above: auto_mesh  jax.make_mesh((4, 2), ('i', 'j'), (Auto, Auto)) with jax.set_mesh(auto_mesh): $x=$ jnp.array([[3.]]) $z=$ jax.shard_map(lambda: x, in_specs=(), out_specs=jax.P('i', 'j'))()"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 42,
+      "cited_text": "When a mesh axis name is not mentioned in an output pspec, it represents an un-tiling: when the user writes an output pspec which does not n names, they promise that the output blocks are equal along that mesh axis, and so only one block along that axis is used in the output (rather tl together along that mesh axis). For example, using the same mesh as above: $x=jnp.array([[3.]])$ $z=$ shard_map(lambda: $x,$ mesh=m, $in\\_specs=()$, $out\\_specs=P(\"i\",\"j\"))()$ print(z) # prints the same as jnp.tile(x, (4, 2"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 43,
+      "cited_text": "On cpu:0 at mesh coordinates $(i,)=(\\emptyset,)$: [3. 5. 7.] On cpu:1 at mesh coordinates $(i,)=(1,)$: [3. 5. 7.] Array ([3., 5., 7. , dtype=float32) In general, each intermediate value in a shard_map can be either invarying or possibly-varying over each manual mesh axis. That information c system, enabled by the check_vma=True argument to shard_map: @jax.shard_map(in_specs=jax.P('i'), out_specs=jax.P()) def f(x): print(jax.typeof(x)) # f32 [3] {V:1} y = jax.lax.psum(x, 'i') print(jax.typeof(y)) # f32 [3]"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 44,
+      "cited_text": "return y x = $f(x)$ device_put(jnp.arange(6.), jax.P('i')) float32 [3] {V:i} float32 [3] Array ([3., 5., 7. , dtype=float32) Here, the type f32 [3] {V:i} means that the value of x is varying over mesh axis 'i'. The type of y printing as f32 [3] indicates it is invary empty sets are not printed. We call this part of the type the manual axis type, and it can be accessed via jax. typeof(x).manual_axis_type.vi In general, the VMA type of a value can include any subset of the manual mesh axes over which the shard_map is acting:"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 45,
+      "cited_text": "$x=$ jax.device_put(jnp.arange(6.), jax.P('i')) try: $y=$ jax.shard_map(lambda x: x, in_specs=jax.P('i'), out_specs=jax.P())(x) except Exception as e: print(e) shard_map applied to the function '_rem_singleton' was given out_specs which require replication which can't be staticall The mesh given has shape (2,) with corresponding axis names ('i',). out_specs is P() which implies that the corresponding output value is replicated across mesh axis 'i', but could not infe Check if these output values are meant to be replicated over those mesh axes. If not, consider revising the corresponding"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 46,
+      "cited_text": "see Autodiff and sharding for that story. Here we just summarize how they appear inside a shard_map. Each manual type corresponds to a sharding type outside the shard_map, with in_specs and out_specs mediating the correspondence: <cited_table>",
+      "cited_table": {
+        "num_columns": 3,
+        "rows": [
+          [
+            "outside (explicit mode)",
+            "inside (manual mode)",
+            "along mesh axis 'i', instances hold"
+          ],
+          [
+            "sharded, f32 [8@i]",
+            "varying, f32 [4] {V:i}",
+            "different values"
+          ],
+          [
+            "replicated, f32 [4]",
+            "invarying, f32 [4]",
+            "the same value"
+          ],
+          [
+            "unreduced, f32 [4] {U:i}",
+            "unreduced, f32 [4] {U:i}",
+            "partial sums of the true value"
+          ],
+          [
+            "reduced, f32 [4] {R: i}",
+            "reduced, f32 [4] {R: i}",
+            "the same value (autodiff treats specially)"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 47,
+      "cited_text": "API Specification from jax.sharding import Mesh Specs  PyTree [PartitionSpec] def shard_map( f: Callable, /, *, out_specs: Specs, mesh: Mesh | None = None, in_specs: Specs | None = None, axis_names: collections.abc.Set [AxisName] = set(), check_vma: bool = True, ) -> Callable: where: communication collectives like psum in the body of f can mention the axis names of mesh; mesh encodes devices arranged in an array and with associated axis names, just like it does for sharding.NamedSharding; If None, mesh which can be set via the jax. set_mesh context manager."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 48,
+      "cited_text": "If we apply the psum over both axes, the y_block value is equal along both axes: @jax.shard_map(in_specs=jax.P('i', 'j'), out_specs=jax.P(None, None)) def f3(x_block): print('BEFORE:\\n', x_block) y_block jax.lax.psum(x_block, ('i', 'j')) print('AFTER:\\n', y_block) return y_block y  f3(jnp.arange(16).reshape(4, 4)) print('FINAL RESULT:\\n', y) BEFORE: On cpu:0 at mesh coordinates $(i,j,)=(\\emptyset,\\emptyset)$: [[01] [45]] On cpu:1 at mesh coordinates $(i,j,)=(\\emptyset,1):$ [[23] [67]] On cpu:2 at mesh coordinates $(i,j,)=(1,\\emptyset);$"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 49,
+      "cited_text": "Next, we'll see how psum can be implemented in terms of other primitives, which gives some intuition about its communication cost. all_gather Another fundamental operation is gathering array shards along an axis, so that each function application has a full copy of the data along that a X X X X Device 0 3 Device 1 9 Device 2 5 y[0] yl <cited_table> Device 3 2 Argument values jax.set_mesh (mesh1d) @jax.shard_map(in_specs=jax.P('i'), out_specs=jax.P('i')) def f4(x_block):",
+      "cited_table": {
+        "num_columns": 2,
+        "rows": [
+          [
+            "Device 0",
+            "3"
+          ],
+          [
+            "Device 1",
+            "3"
+          ],
+          [
+            "Device 2",
+            "3"
+          ],
+          [
+            "Device 3",
+            "3"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 50,
+      "cited_text": "return [combine(x_blocks)  len(x_blocks) In deep learning, we might use all_gathers on parameters in fully sharded data parallelism (FSDP). psum_scatter The jax.lax.psum_scatter collective may be less familiar. It's like psum except each function instance gets only one shard of the result: <cited_table> y Device 0 22 Device 1 2 Device 2 Device 3 Argument values @jax.shard_map(in_specs=jax.P('i'), out_specs=jax.P('i')) def f6(x_block):",
+      "cited_table": {
+        "num_columns": 5,
+        "rows": [
+          [
+            "",
+            "$x[\\theta]$",
+            "$x[1]$",
+            "$x[2]$",
+            "$x[3]$"
+          ],
+          [
+            "Device 0",
+            "3",
+            "1",
+            "4",
+            "1"
+          ],
+          [
+            "Device 1",
+            "5",
+            "9",
+            "2",
+            "6"
+          ],
+          [
+            "Device 2",
+            "5",
+            "3",
+            "5",
+            "8"
+          ],
+          [
+            "Device 3",
+            "9",
+            "7",
+            "1",
+            "2"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 51,
+      "cited_text": "True As in the previous example, to fully utilize interconnects on TPU, we'd run a bidirectional version: @jax.shard_map(in_specs=(lhs_spec, rhs_spec), def out_specs=rhs_spec) matmul_psumscatter_overlapped_bidi(lhs_block, rhs_block): size  jax.lax.axis_size('i') idx = jax.lax.axis_index('i') shift_up = partial(jax.lax.ppermute, axis_name='i', perm=[(i, (i + 1) % size) for i in range(size)]) shift_dn = partial(jax.lax.ppermute, axis_name='i', perm=[(i, (i 1) % size) for i in range(size)]) B = lhs_block.shape[0] // size // 2 # half-size blocks"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 52,
+      "cited_text": "all-gather.6 fut jit(matmul_allgather) jit(main) jit(shmap_body) dot g <ipython-input-3-1 all_gather <ipython-input-3-687d939c2097>:14 jit_matmul_allgather (16582976805589163028) all-gather.6 jit(matmul_allgather) jit(main) jit(shmap_body) all_gather dot_g <ipython-input-3-687d939c2097>:14 <ipython-input-3-1 jit_matmul_allgather(16582976805589163028) all-gather.6 fu jit(matmul_allgather) jit(main) jit(shmap_body) all_gather dot <ipython-input-3-687d939c2097>:14 <ipython-input-3- We can get compute/communication overlap if instead of calling all_gather we basically inline our above implementation of all_gather in t interleave steps of the gather permutation with local matrix multiplies:"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 53,
+      "cited_text": "1. Pallas: custom kernels in JAX - Pallas, JAX's kernel language for writing custom GPU and TPU kernels; mostly a map to the extensive Palla pallas.jax.dev. 2. Writing High-Performance GPU Kernels with CuTe DSL and JAX - writing high-performance GPU kernels with NVIDIA's CuTe DSL and calli 3. Foreign function interface (FFI) - the foreign function interface: wrapping external C++/CUDA code as a JAX operation, and teaching it to and sharding. Pallas: custom kernels in JAX Most of the time, you don't write kernels: you write jax.numpy programs, and the compiler decides how to turn them into device code. Usually know something the compiler doesn't - a fusion it won't find, a memory-access pattern it won't discover (think FlashAttention), a sparsity stru way to get that last factor of performance is to take over and write the kernel yourself."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 54,
+      "cited_text": "Introduction JAX is being used for a diverse set of workloads, from large scale machine learning to scientific computing. JAX's success story is as much a si primary compiler that JAX targets - XLA compiles JAX programs for accelerators and has enabled JAX to scale to the largest ML models. JAX ( in XLA's representation, HLO. HLO describes how computations happen logically but not physically. Given a logical HLO computation, XLA deci be executed physically. For a wide variety of ML applications, XLA does a good job of compiling user programs but inevitably some users hit XL we need to provide an \"escape hatch\" to allow experts to write hand-tuned kernels that outperform XLA at that point in time. Furthermore, adva take some time to be incorporated into XLA and users often want to run ahead with them. Over time, the compiler can incorporate the optimiza experimentally through hand-tuned kernels."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 55,
+      "cited_text": "Pallas is JAX's kernel language: an extension of JAX that lets you write custom kernels for GPU and TPU, with fine-grained control over the gen tracing and the jax.numpy API. Kernels are written as functions over Ref s in fast on-chip memory, launched over a grid with pl.kernel, anc JAX - you can jit, vmap, and differentiate around them. Pallas has its own extensive documentation site, which we won't duplicate here: pallas.jax.dev Good entry points: Pallas quickstart - kernels, Ref s, grids, and BlockSpec s, on both GPU and TPU."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 56,
+      "cited_text": "Pallas: a JAX kernel language Pallas is an extension to JAX for writing custom kernels for GPU and TPU. Use it to achieve peak performance when XLA's automated optimizat you need to: Write custom fusions that XLA cannot generate automatically. Take explicit control over memory movement and pipelining. Directly access low-level hardware features. Both backends build on shared ideas (Ref s, BlockSpec s, and pipelining) but provide distinct, hardware-specific APIs. Note Pallas is under active development. See the Pallas Changelog for recent changes."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 57,
+      "cited_text": "%c0_3 arith.constant 0 index %c0_4 arith.constant : index %3 vector.load karg2(c0_3, c0_4) vector.store 12, Sarg2(c0_3, %c0_4) return memref<128x128xf16, vector 128x128xf16> memref<128x128xf16, vector 128x128xf16> Visualizati Pallas: Extending JAX for kernels The key point we'd like to make is that Pallas is just JAX, with some extensions: 1. Users now use reference types called Ref s in their JAX code. This gives users more precise control over memory access and layout in JA physical layout. 2. Users write their JAX programs using a subset of JAX primitives, along with a set of Pallas-specific primitives."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 58,
+      "cited_text": "Hello world in Pallas from functools import partial import jax from jax.experimental import pallas as pl import jax.numpy as jnp import numpy as np We'll first write the \"hello world\" in Pallas, a kernel that adds two vectors. def add_vectors_kernel(x_ref, y_ref, o_ref): x, y = x_ref [...], y_ref [...] $o\\_ref[...]=x+y$ Ref types Let's dissect this function a bit. Unlike most JAX functions you've probably written, it does not take in jax. Arrays as inputs and doesn't returr Ref objects as inputs, which represent mutable buffers in memory. Note that we also don't have any outputs but we are given an o_ref, whic output."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 59,
+      "cited_text": "GPU memory spaces Pallas kernels access memory through Refs, JAX's mutable array references. On GPU, each Ref lives in a specific memory space: GMEM (global memory / HBM): large, slow. Used for kernel inputs and outputs. SMEM (shared memory): small, fast, per-SM. Shared between threads within a block, used to stage data for Tensor Core ops. TMEM (tensor memory): fast, per-SM. Used for Tensor Core ops (only available on Blackwell GPUs). The typical data flow for Tensor Core work on Hopper is: $:GMEM\\rightarrow SMEM\\rightarrow Tensor~Cores\\rightarrow registers\\rightarrow SMEM\\rightarrow GMEM$ (on Blackwell, TMEM Tensor Core inputs and outputs). Simpler ALU work (like elementwise operations) bypasses SMEM and Tensor Cores entirely: GMEM → register primarily needed if threads within a block must exchange or reuse data."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 60,
+      "cited_text": "Reading from Ref s In the body, we are first reading from x_ref and y_ref, indicated by the ..] (the ellipsis means we are reading the whole Ref; alternativ x_ref [:]). Reading from a Ref like this returns a jax. Array. Writing to Ref s We then write x + y to o_ref. Mutation has not historically been supported in JAX - jax. Arrays are immutable! Ref s are new (experimen under certain circumstances. We can interpret writing to a Ref as mutating its underlying buffer. Indexing and Slicing Ref s with .at"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 61,
+      "cited_text": "x, y  jnp.ones((512, 512)), jnp.ones((512, 512)) add_matrices (x, y) Array([[2., 2., 2., [2., 2., 2., [2., 2., 2., ..., 2., 2., .. 2., 2., 2., 2., 2.], 2.], 2.1, 2.], [2., 2., 2., ..., 2., 2., 2.] , [2., 2., 2., 2., 2., 2.], [2., 2., 2., ..., 2., 2., 2.]], dtype=float32) We've written two functions: add_matrices_kernel and add_matrices. add_matrices_kernel operates using Refs that live in SRAM. Loading from a SRAM Ref produces a value that lives in registers. Values in reg that we can use jnp and jax.lax operations on them to produce new values that live in registers. When we produce the values we'd like to re output SRAM Ref."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 62,
+      "cited_text": "Part of writing Pallas kernels is thinking about how to take big arrays that live in high-bandwidth memory (HBM, also known as DRAM) and expr operate on \"blocks\" of those arrays that can fit in SRAM. Grids by example To automatically \"carve\" up the inputs and outputs, you provide a grid and BlockSpecs to pallas_call. A grid is a tuple of integers (e.g. (), (2, 3, 4), or (8,)) that specifies an iteration space. For example, a grid (4, 5) would have 20 ele (0, 4), (1, 0), (3, 4). We run the kernel function once for each element, a style of single-program multiple-data (SPMD) programmi"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 63,
+      "cited_text": "You can read more details at grid, a.k.a. kernels in a loop and Noteworthy properties and restrictions. Block specs by example With grid and program_id in mind, Pallas provides an abstraction that takes care of some common indexing patterns seen in a lot of kernels implement a matrix multiplication. A simple strategy for implementing a matrix multiplication in Pallas is to implement it recursively. We know our underlying hardware has support (using GPU and TPU tensorcores), so we just express a big matrix multiplication in terms of smaller ones."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 64,
+      "cited_text": "Forx, we use BlockSpec((512, 1024), lambda i, j: ( , 0)) - this carves x up into \"row\" blocks. To see this, see how both program ins pick the (1,0) block in x. For y, we use a transposed version BlockSpec((1024, 512), lambda i, j: (0, j)). Finally, for z we use B i, j: (i, j)). These BlockSpec s are passed into pallas_call via in_specs and out_specs For more detail on BlockSpec s see BlockSpec, a.k.a. how to chunk up inputs. Underneath the hood, pallas_call will automatically carve up your inputs and outputs into Ref s for each block that will be passed into the k"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 65,
+      "cited_text": "Pipelining and grids and BlockSpecs - the core concepts for expressing how data is carved up and streamed through on-chip memory. The TPU backend guide and the Mosaic GPU backend guide - per-platform details, lowering paths, and platform-specific features. The jax.experimental.pallas module API reference. Note that Pallas is experimental and changes frequently: expect sharp edges, and see the Pallas changelog for recent developments. Writing High-Performance GPU Kernels with CuTe DSL and JAX Overview"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 66,
+      "cited_text": "Released with JAX 0.11.0 (July 16, 2026) Changes jax.experimental.pallas.kernel() now only aliases closed over or passed in refs if the kernel writes to them. If you need aliasing v jax.experimental.pallas.tpu.touch(). Triton The Triton backend is deprecated and will be removed in a future version of JAX. To keep using Pallas on GPU, please migrate to the Mosaic GF Triton, switch to the official Triton bindings and jax_triton. New features • Added jax.experimental.pallas.triton.CUSTOM_CALL_TARGET_NAME, the name of the custom call targeted by Pallas Triton. The exa stable, but it is safe to assume that it is always aligned with what the lowering emits. This is useful, for example, when exporting a com kernels via jax.experimental.export.export(), since the corresponding custom call is not considered export-stable and needs to I"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 67,
+      "cited_text": "• On GPU, the Threefry PRNG implementation no longer lowers to a kernel call by default. This choice can improve runtime memory usaç behavior, which produces a kernel call, can be recovered with jax.config.update('jax_threefry_gpu_kernel_lowering', True).I please file a bug. Otherwise, we intend to remove this flag in a future release. Deprecations & Removals • Pallas now exclusively uses XLA for compiling kernels on GPU. The old lowering pass via Triton Python APIs has been removed and the environment variable no longer has any effect."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 68,
+      "cited_text": "Pallas Mosaic GPU Backend specific documentation for the Mosaic GPU backend. Quickstart: GPU This quickstart shows you how to write Pallas kernels for NVIDIA GPUs using Mosaic GPU. The examples target Hopper (H100) GPUs, but the c grids, pipelining - apply to all supported GPU generations. import jax import jax.numpy as jnp from jax.experimental import pallas as pl from jax.experimental.pallas import mosaic_gpu as plgpu The programming model In Mosaic GPU, each Pallas \"thread\" corresponds to a warpgroup (4 warps = 128 CUDA threads). You write straight-line code that operates on it in lockstep, so there are no individual CUDA threads to manage."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 69,
+      "cited_text": "Functions <cited_table> Loop-like functions <cited_table>",
+      "cited_table": {
+        "num_columns": 2,
+        "rows": [
+          [
+            "as_torch_kernel (fn)",
+            "Makes a Mosaic GPU kernel callable with PyTorch tensors."
+          ],
+          [
+            "kernel ([body, out_shape, out_type, ...])",
+            "Entry point for defining a Mosaic GPU kernel."
+          ],
+          [
+            "layout_cast (x, new_layout)",
+            "Casts the layout of the given array."
+          ],
+          [
+            "set_max_registers (n, *, action)",
+            "Sets the maximum number of per-lane registers in the thread. Converts a linear index into an index into shape, trying to optimize locality."
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 70,
+      "cited_text": "Warp specialization can be enabled in Pallas by using the plgpu.emit_pipeline_warp_specialized helper. This pipeline helper handles all of and the user only needs to specify the work done in the compute threads. It shares the a similar API as the standard emit_pipeline, and curre arguments: plgpu.emit_pipeline_warp_specialized( ) body: Callable, * grid: tuple[int, ...], in_specs: Sequence [pallas_core.BlockSpec] = (), out_specs: Sequence [pallas_core.BlockSpec] $=()$, max_concurrent_steps: int,"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 71,
+      "cited_text": "Mosaic GPU New features • Added support for Ampere matrix multiply-accumulate instructions via jax.experimental.pallas.mosaic_gpu.mma() • Added support for cp.async to jax.experimental.pallas.mosaic_gpu.copy_gmem_to_smem(). jax.experimental.pallas.mosaic_gpu.wgmma() now supports mixing the e4m3 and e5m2 FP8 types across its two operands. • Added support for manual \"ready\" barriers to jax.experimental.pallas.mosaic_gpu.emit_pipeline_warp_specialized(). • Added oob_fill_mode to jax.experimental.pallas.mosaic_gpu.BlockSpec, which controls the behavior for out-of-bounds access SMEM copies."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 72,
+      "cited_text": "jax.experimental.pallas.mosaic_gpu module Experimental GPU backend for Pallas targeting H100. These APIs are highly unstable and can change weekly. Use at your own risk. Classes <cited_table>",
+      "cited_table": {
+        "num_columns": 2,
+        "rows": [
+          [
+            "Barrier (*[, num_arrivals, num_barriers, ...])",
+            "Describes a barrier reference."
+          ],
+          [
+            "BlockSpec ([block_shape, index_map, ...])",
+            "A GPU-specific BlockSpec."
+          ],
+          [
+            "CompilerParams (*[, approx_math, ...])",
+            "Mosaic GPU compiler parameters."
+          ],
+          [
+            "MemorySpace (value[, names, module, ...])",
+            ""
+          ],
+          [
+            "Layout (value[, names, module, qualname, ...])",
+            ""
+          ],
+          [
+            "SemaphoreType (value[, names, module, ...])",
+            ""
+          ],
+          [
+            "SwizzleTransform (swizzle)",
+            ""
+          ],
+          [
+            "Tiling Transform (tiling)",
+            "Represents a tiling transformation for memory refs."
+          ],
+          [
+            "WGMMAAccumulatorRef (shape, dtype, _init)",
+            ""
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 73,
+      "cited_text": "Mosaic GPU New features • Support using jax.experimental.pallas.multiple_of() to specify divisibility requirements on dynamic indices. • Support allocating multidimensional plgpu. Barriers and plgpu.ClusterBarriers, by providing a nD shape as the num_barriers • Support for TMEM references with batch dimensions. This includes indexing over batch dimensions and plgpu.async_store_tmem su batch dimensions. • Support TMA scatter. • Rename TMA_GATHER_INDICES_LAYOUT to TMA_INDICES_LAYOUT. Changes • Breaking change: jax.experimental.pallas.program_id() and jax.experimental.pallas.num_programs() no longer work inside jax.experimental.pallas.mosaic_gpu.kernel(). Use jax.lax.axis_index() and jax.lax.axis_size() instead."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 74,
+      "cited_text": "^^^^^^^^^^^ File \"/home/docs/checkouts/readthedocs.org/user_builds/jax/envs/latest/lib/python3.12/site-packages/jax/_src/pjit.py\", executable, pgle_profiler, const_args) = _run_python_pjit( Not ImplementedError: MLIR translation rule for primitive 'multiply_add' not found for platform cpu XLA Compilation rules JAX compilation works by compiling each primitive into a graph of XLA operations. This is the biggest hurdle to adding new functionality to JAX, because the set of XLA operations is limited, and JAX already has pre-defined pri However, XLA includes a CustomCall operation that can be used to encapsulate arbitrary functionality defined using C++."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 75,
+      "cited_text": "XLA does offer the CustomCall mechanism as an escape hatch, but it requires users to write C++ and on GPU it requires users to learn the CL CUDA programming model is arguably too low-level for many machine learning GPU kernels, like matrix multiplication, and even expert users w implement efficient matrix multiplication or multi-headed attention. Not only this, JAX users are usually familiar with Python and NumPy-style a involve writing any C++ or thinking about GPU parallelism. All popular machine learning frameworks share this idea: manipulating (usually) array matmul or convolution. Unfortunately, this means implementing a custom operation via CustomCall is a big investment, involving potentiall programming."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 76,
+      "cited_text": "Export and serialize JAX functions containing CUTLASS kernels with jax.export CuTe DSL is the right tool when you need direct control over tensor core matrix multiply-accumulate (MMA) instructions, shared memory layout Foreign function interface (FFI) The later sections of this tutorial, which add custom transformation rules, use the experimental jax.experimental.hijax API. While a wide range of numerical operations can be easily and efficiently implemented using JAX's built in jax.numpy and jax. lax interfaces, explicitly call out to external compiled libraries via a \"foreign function interface\" (FFI). This can be particularly useful when particular operations implemented in an optimized C or CUDA library, and it would be non-trivial to reimplement these computations directly using JAX, but it can als runtime or memory performance of JAX programs. That being said, the FFI should typically be considered a last resort option because the XLA backend, or the Pallas kernel language, which provides lower level control, typically produce performant code with a lower development and ma"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 77,
+      "cited_text": "Building and registering an FFI handler Now that we have our minimal FFI wrapper implemented, we need to expose this function (RmsNorm) to Python. In this tutorial, we compile Rms load it using ctypes, but another common pattern is to use nanobind or pybind11 as discussed below. To compile the shared library, we're using CMake here, but any build system should work. !cmake -DCMAKE_BUILD_TYPE=Release -B ffi/_build ffi !cmake --build ffi/_build !cmake --install ffi/_build ► Show code cell output With this compiled library in hand, we now need to register this handler with XLA via the register_ffi_target() function. This function expe pointer to the C++ function RmsNorm) to be wrapped in a PyCapsule. JAX provides a helper function pycapsule() to help with this:"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 78,
+      "cited_text": "To see why this matters, recall that our implementation treats all leading axes of the input as batch dimensions, and normalizes along the last a a batch dimension (but replicated along the last axis), the normalization is embarrassingly parallel and no communication is required. XLA can t pure-JAX rms_norm_ref, but it can't see inside our FFI call to do the same: if we naively shard the input, XLA will first gather the whole array o all-gather, run the FFI call redundantly on the full data, and then slice out each device's portion."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 79,
+      "cited_text": "Each of grad(), jvp(), and vmap() works on its own, but composing them doesn't work yet. For example, vmap() of grad() (a batched g error like Batching rule for 'ffi_call' not implemented. The reason is that our AD rules call the rms_norm_fwd and rms_norm_bwd helpers, which call ffi_call() directly, and a raw ffi_call() ha when vmap() tries to push through the differentiation rule, it eventually reaches an un-batchable ffi_call() and gives up. The fix is to give those FFI calls a batch rule, by wrapping each one in its own small HiJAX primitive (exactly as we did for rms_norm). Becaus the rms_norm_fwd and rms_norm_bwd helpers by name, we only need to replace those two helpers; RMSNorm itself doesn't change:"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 80,
+      "cited_text": "We can do better by handling the sharding inside the primitive, in its expand rule. When using JAX's explicit sharding mode (see Distributed ar parallelization), the output sharding of each operation is determined by the shardings of its inputs, and our primitive's out_aval carries that sh shard_map() to drop into manual (\"per-device\") mode inside expand, so that the FFI call only ever sees the local shard of the data. Because I over the last (replicated) axis, running the FFI call on each shard independently computes exactly the right answer, with no communication."
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 81,
+      "cited_text": "Return type: None jax.experimental.compilation_cache.compilation_cache.reset_cache() Get back to pristine, uninitialized state. For more information, see the persistent compilation cache guide. Return type: None jax.experimental.custom_partitioning module API jax.experimental.custom_partitioning.custom_partitioning (fun, static_argnums=()) Inserts a CustomCallOp into the XLA graph with custom SPMD lowering rules. @custom_partitioning def f(*args): return def propagate_user_sharding (mesh, user_shape):"
+    },
+    {
+      "source_id": "ae6d8565-978f-4129-867c-5fa7f8cce2e5",
+      "citation_number": 82,
+      "cited_text": "partition: Callable which takes the SPMD suggested partition shapes and partition specs and returns the mesh, a per-shard lowerir and output sharding specs (the SPMD partitioner will repartition the inputs to match). The mesh is returned to allow configuring axis_n mesh is provided. infer_sharding_from_operands: Callable which computes an output Named Sharding from the Named Sharding chosen for each arg decode_shardings: When set to True, convert input GSPMDSharding``s to ``Named Sharding if possible. This may not be possible it contextual mesh."
+    }
+  ]
+}

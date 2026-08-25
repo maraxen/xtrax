@@ -1,0 +1,15 @@
+RUN q06_mixed_precision_scaling attempt=1 2026-08-25T14:59:45-07:00
+OK q06_mixed_precision_scaling rc=0
+RUN q07_cuda_best_practices_occupancy attempt=1 2026-08-25T15:00:43-07:00
+OK q07_cuda_best_practices_occupancy rc=0
+RUN q08_gpudirect_pagedattention attempt=1 2026-08-25T15:01:48-07:00
+OK q08_gpudirect_pagedattention rc=0
+RUN q09_jax11_primitives attempt=1 2026-08-25T15:02:50-07:00
+OK q09_jax11_primitives rc=0
+RUN q10_bio_workload_kernels attempt=1 2026-08-25T15:04:09-07:00
+OK q10_bio_workload_kernels rc=0
+RUN q11_measurement_methodology attempt=1 2026-08-25T15:05:25-07:00
+OK q11_measurement_methodology rc=0
+RUN q12_contradictions attempt=1 2026-08-25T15:06:42-07:00
+OK q12_contradictions rc=0
+ALLDONE 2026-08-25T15:08:05-07:00

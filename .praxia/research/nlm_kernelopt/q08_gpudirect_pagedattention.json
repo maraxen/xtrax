@@ -1,0 +1,181 @@
+{
+  "answer": "**GPUDirect Storage (GDS)** and **PagedAttention** represent two complementary paradigms of data-movement optimization on GPUs. While GPUDirect Storage addresses physical bottlenecks between storage hardware and GPU memory by bypassing the host CPU, PagedAttention addresses software-defined memory allocation bottlenecks within GPU global memory (HBM) specifically for generative LLM workloads.\n\n---\n\n### 1. GPUDirect Storage (GDS) Optimizations\nGPUDirect Storage is designed to optimize data movement at the hardware and system-driver levels, primarily by streamlining the path between NVMe drives or network-attached storage (via NICs) and GPU memory:\n\n*   **Direct DMA (Avoidance of CPU Bounce Buffers)**: In traditional POSIX operations (`pread`/`pwrite`), data transfers between storage and GPU memory require staging through a CPU-resident \"bounce buffer\" in system memory, introducing extra memory copies, latency, and high CPU utilization [1-3]. GDS establishes a **direct data path for Direct Memory Access (DMA)** transfers directly between storage controllers (local NVMe or network NICs) and GPU memory [1]. It maps GPU virtual addresses to physical DMA bus addresses via a kernel module (`nvidia-fs.ko`), allowing storage controllers to read and write directly to GPU memory [4-6].\n*   **Dynamic Routing**: Peer-to-peer (P2P) traffic that crosses CPU root complexes is highly inefficient [7]. When a storage NIC and the target GPU do not share a common PCIe parent switch, GDS automatically pre-computes physical PCIe distances and dynamically routes I/O [7, 8]. If an intermediate GPU (e.g., GPU1) shares a root port with the storage NIC but the target GPU (e.g., GPU0) does not, GDS allocates a **bounce buffer in GPU1 memory** to receive the P2P transfer, then copies the data to GPU0 [9]. If the GPUs are connected via high-speed **NVLinks**, GDS leverages them instead of PCIe to accelerate the device-to-device transfer [9, 10].\n*   **Compatibility Fallback**: If a system configuration or file system cannot support direct transfers (e.g., if files cannot be opened with the `O_DIRECT` flag), GDS provides a **compatibility mode** that seamlessly falls back to staging through CPU system memory without breaking application functionality [11, 12].\n\n---\n\n### 2. PagedAttention (vLLM) Optimizations\nPagedAttention optimizes dynamic data-movement and memory consumption within GPU global memory (HBM) during autoregressive LLM serving:\n\n*   **Non-Contiguous KV Block Paging**: Standard deep learning frameworks require tensors to be stored in contiguous physical memory, forcing LLM servers to pre-allocate contiguous chunks of memory for the KV cache matching the maximum sequence length (e.g., 2048 tokens) [13-15]. This leads to up to 60–80% memory waste via internal and external fragmentation [14, 16]. PagedAttention divides the KV cache into fixed-size **logical blocks** (typically 16 tokens), which a centralized scheduler maps to non-contiguous **physical blocks** on the GPU DRAM using a page-table-like translation [17-20]. This limits memory waste to at most a single block per request, enabling near-zero fragmentation [21, 22].\n*   **Zero-Copy Multi-Sequence Memory Sharing**: Advanced LLM decoding scenarios (parallel sampling, beam search, and prefix sharing) can generate multiple sequences from the same prompt [23, 24]. Rather than copying the prompt's KV cache to multiple contiguous regions, PagedAttention allows multiple logical blocks across different sequences to point to the exact same physical blocks, tracking them with a **reference count** [25].\n*   **Block-Level Copy-on-Write (CoW)**: When sharing a prompt's KV cache, the generation phase eventually causes sequences to diverge as they output different tokens [25]. vLLM implements a **Copy-on-Write mechanism at the block granularity** [25]. When a sequence attempts to write to a shared block whose reference count is greater than 1, vLLM allocates a new physical block, copies the 16-token data from the old block, decrements the reference count, and resumes writing locally—fully avoiding redundant, massive memory copy operations across beams or samples [25, 26].\n*   **GPU-to-CPU Swapping Pipeline**: When request volume exceeds GPU memory capacity, vLLM prevents out-of-memory crashes by evicting physical blocks to a swap space on CPU RAM using a **CPU block allocator** [27]. When the request is rescheduled, the blocks are swapped back to GPU memory [27]. Because small block sizes can throttle effective PCIe bandwidth due to numerous small transfers, vLLM balances this swapping strategy against a **recomputation strategy** (where evicted caches are simply re-evaluated), showing that recomputation is more efficient for small block sizes, whereas swapping excels at larger block sizes [28].\n\n---\n\n🧠 We could map out an architectural flowchart of how an end-to-end LLM request flows through these optimizations—from storage to GPU memory via GDS, and then through the paged KV cache in vLLM during inference.",
+  "question": "What data-movement optimizations do GPUDirect Storage and PagedAttention describe?",
+  "conversation_id": "66228072-8454-4d68-ab54-1e0f585fc80a",
+  "sources_used": [
+    "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "5365100b-bffb-4e76-8d2f-b07d5896286d"
+  ],
+  "citations": {
+    "1": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "2": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "3": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "4": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "5": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "6": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "7": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "8": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "9": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "10": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "11": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "12": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+    "13": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "14": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "15": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "16": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "17": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "18": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "19": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "20": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "21": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "22": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "23": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "24": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "25": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "26": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "27": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "28": "5365100b-bffb-4e76-8d2f-b07d5896286d"
+  },
+  "references": [
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 1,
+      "cited_text": "i !! Chapter 1. Overview Guide The NVIDIA® Magnum IO GPUDirect® Storage Overview Guide provides a high-level overview of GPUDI- rect® Storage (GDS). 1.1. Introduction GPUDirect® Storage (GDS) enables a direct data path for direct memory access (DMA) transfers be- tween GPU memory and storage, which avoids a bounce buffer through the CPU. Using this direct path can relieve system bandwidth bottlenecks and decrease the latency and utilization load on the CPU. This guide provides you guidance to help you enable filesystems for GDS, and some insights about the features of a file system and how it relates to GDS. The guide also outlines the functionalities, considerations, and software architecture about GDS. This high-level introduction sets the stage for deeper technical information in the cuFile API Reference Guide for GDS users who need to modify the kernel."
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 2,
+      "cited_text": "Note Reactive activity tends to induce more overhead. As a result of being explicit and proactive, GDS maximizes performance with its explicit cuFile APIs. Latency is lower when extra copies are avoided, and the highest bandwidth paths are taken. Without GDS, an extra copy through a bounce buffer in the CPU is necessary, which introduces latency and lowers effective bandwidth. 1.2. Functional Overview 3 GPUDirect Storage Overview Guide, Release r1.18 Note The latency improvements from GDS are most apparent with small transfers."
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 3,
+      "cited_text": "void *mgd_mem_buf; cudaMallocManaged(mgd_mem_buf, buf_size); mmap(mgd_mem_buf, buf_size, doit<<<mgd_mem_buf, ...>>> fd, ...) // fault on references to mgdmem_buf In the first sample, pread is used to move data from storage into a CPU bounce buffer, sysmem_buf, and cudaMemcpy is used to move that data to the GPU. In the second sample, mmap makes the man- aged memory backed by the file. The references to managed memory from the GPU that are not present in GPU memory will induce a fault back to the CPU and then to storage, which causes an implicit transfer."
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 4,
+      "cited_text": "(nvidia-fs.ko) kernel driver handle IOCTL handle DMA callbacks Virtual file system Vendor driver Call out to nvidia fs ib_core.ko 18 Figure 1.2: Workflows for GDS Functionality Chapter 1. Overview Guide GPUDirect Storage Overview Guide, Release r1.18 1.3.2.2 Workflow 1 Use the following steps to complete Workflow 1. The first workflow pertains to cuFileRead and cuFileWrite usage. The GPU virtual addresses are represented by proxy CPU system memory ad- dresses. The proxy CPU system memory addresses are passed through the Linux IO stack and are converted to device-specific DMA bus addresses."
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 5,
+      "cited_text": "5. Storage kernel drivers to nvidia-fs.ko``: Callback APIs are regis- tered via the cuFileDriver Open initialization, as described in Filesys- tems Interoperability in the GDS External Architecture Spec. With this design, drivers only need to handle GPU addresses through the substeps below. GPU memory addresses are available in a sepa- rate map, outside the Linux page map, so the nvidia-fs.ko APIs are used to complete the following tasks: ► Check whether the DMA target address is on the GPU (nvfs_is_gpu_page) and needs to be handled differently."
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 6,
+      "cited_text": "1.3. Software Architecture 19 GPUDirect Storage Overview Guide, Release r1.18 Query the list of GPU DMA target addresses by using nvfs_dma_map_sg*, which are used instead of the CPU system memory address that is passed through the VFS. 6. Storage kernel drivers to DMA/RDMA engines: After the appropriate GPU memory addresses are obtained, the underlying DMA engines at (for example, NVMe drivers) or near (for example, NIC) storage can be programmed to move data directly between storage (for exam- ple, NVMe or storage controller or NIC) and GPU memory. The special proxy addresses in CPU system memory are not accessed by the DMA engines."
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 7,
+      "cited_text": "► Licensed under GPLv2. Likewise, any kernel third-party kernel components that call the nvidia-fs APIs should expect to be subject to GPLv2. ► Not needed for NVMe (local drives or DOCA SNAP) as of CUDA 12.8 ► Third-party content ► Proprietary code stacks that replace portions of the Linux filesystem and block system, and so on. 1.2.6. Dynamic Routing GDS Dynamic Routing is a feature for choosing the optimal path for cuFileReads and cuFileWrites to and from files on network-based file systems such as DDN-EXAScaler, VAST-NFS, and WekaFS. For hardware platforms, where GPUs do not share the same Root Port with the Storage NICs, peer-to- peer transactions (p2p) may have higher latency and are inefficient compared to p2p traffic under PCle switches."
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 8,
+      "cited_text": "For each mount/volume, cuFile library pre-computes the best GPUs having the smallest PCI-distance with the available storage NICs for routing the I/O. During reads and writes cuFile checks if the target GPU shares a common PCle switch and does not need traffic to cross the CPU root complex. If the path is already optimal, then dynamic routing does not apply, otherwise cuFile library selects a candidate GPU for intermediate bounce buffer and performs a device-to-device copy to the target GPU buffer."
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 9,
+      "cited_text": "With this feature, based on platform configuration, the cuFile library tries to efficiently route the I/O to and from GPU without paying the penalty of cross-root port p2p traffic. For example, if the storage NIC shares a common PCle root port with another allowed GPU (say GPU1) and the target GPU (say GPUO) is across the CPU root complex, cuFile library can use a bounce buffer on GPU1 to perform the p2p transaction to GPU1 and copy the data to target GPUO. The presence of NVLINKs across GPUs can further accelerate the subsequent device to device (GPU1->GPUO) I/O transfers using NVLINK instead of PCIe."
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 10,
+      "cited_text": "► policy GPU_MEM_NVLINKS: use GPU memory with NVLink to transfer data between GPUs ► policy GPU_MEM: use GPU memory with PCle to transfer data between GPUs ► policy SYS_MEM: use system memory with PCIe to transfer data to GPU ► policy P2P: use P2P PCle to transfer across between NIC and GPU ► \"rdma_dynamic_routing_order\":  \"GPU_MEM_NVLINKS\", \"GPU_MEM\", \"SYS_MEM\", \"P2P\" ] The table below summarizes the use cases where dynamic routing can apply and describes each rout- ing policy. 1.2. Functional Overview"
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 11,
+      "cited_text": "For direct data transfers between GPU memory and storage, the file must be opened in O_DIRECT mode. If the file is not opened in this mode, contents might be buffered in the CPU system memory, which is incompatible with direct transfers. Refer to the GPUDirect Storage O_DIRECT Requirements Guide for more details. Note Starting from CUDA Toolkit 12.2 (GDS version 1.7.x) even for files opened in non-O_DIRECT mode, the cuFile library takes the GDS driven O_DIRECT path for transfers between GPU memory and storage for page aligned buffers with aligned sizes and offsets."
+    },
+    {
+      "source_id": "db840e88-01bd-4bd0-8b45-979d94c9202d",
+      "citation_number": 12,
+      "cited_text": "Although the purpose of GDS is to avoid using a bounce buffer in CPU system memory, the ability to fall back to this approach allows the cuFile APIs to be used ubiquitously even under suboptimal circum- stances. A compatibility mode is available for unsupported configurations that maps IO operations to a fallback path. This path stages through CPU system memory for systems where one or more of the following con- ditions is true: ► Explicit configuration control by using the user version of the cufile.json file. Refer to the cuFile API Reference Guide for more information."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 13,
+      "cited_text": "In this paper, we observe that existing LLM serving sys- tems [31, 60] fall short of managing the KV cache memory efficiently. This is mainly because they store the KV cache of a request in contiguous memory space, as most deep learning frameworks [33, 39] require tensors to be stored in contigu- ous memory. However, unlike the tensors in the traditional deep learning workloads, the KV cache has unique charac- teristics: it dynamically grows and shrinks over time as the model generates new tokens, and its lifetime and length are not known a priori. These characteristics make the existing systems' approach significantly inefficient in two ways:"
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 14,
+      "cited_text": "First, the existing systems [31, 60] suffer from internal and external memory fragmentation. To store the KV cache of a request in contiguous space, they pre-allocate a contigu- ous chunk of memory with the request's maximum length (e.g., 2048 tokens). This can result in severe internal frag- mentation, since the request's actual length can be much shorter than its maximum length (e.g., Fig. 11). Moreover, even if the actual length is known a priori, the pre-allocation is still inefficient: As the entire chunk is reserved during the request's lifetime, other shorter requests cannot utilize any part of the chunk that is currently unused. Besides, external memory fragmentation can also be significant, since the pre- allocated size can be different for each request. Indeed, our profiling results in Fig. 2 show that only 20.4% - 38.2% of the KV cache memory is used to store the actual token states in the existing systems."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 15,
+      "cited_text": "3.1 Memory Management in Existing Systems Since most operators in current deep learning frameworks [33, 39] require tensors to be stored in contiguous memory, previous LLM serving systems [31, 60] also store the KV cache of one request as a contiguous tensor across the differ- ent positions. Due to the unpredictable output lengths from the LLM, they statically allocate a chunk of memory for a request based on the request's maximum possible sequence length, irrespective of the actual input or eventual output length of the request."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 16,
+      "cited_text": "Fig. 3 illustrates two requests: request A with 2048 max- imum possible sequence length and request B with a max- imum of 512. The chunk pre-allocation scheme in existing systems has three primary sources of memory wastes: re- served slots for future tokens, internal fragmentation due to over-provisioning for potential maximum sequence lengths, and external fragmentation from the memory allocator like the buddy allocator. The external fragmentation will never be used for generated tokens, which is known before serving a request. Internal fragmentation also remains unused, but this is only realized after a request has finished sampling. They are both pure memory waste. Although the reserved memory is eventually used, reserving this space for the en- tire request's duration, especially when the reserved space is large, occupies the space that could otherwise be used to process other requests. We visualize the average percentage of memory wastes in our experiments in Fig. 2, revealing that the actual effective memory in previous systems can be as low as 20.4%."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 17,
+      "cited_text": "Second, the existing systems cannot exploit the opportu- nities for memory sharing. LLM services often use advanced decoding algorithms, such as parallel sampling and beam search, that generate multiple outputs per request. In these scenarios, the request consists of multiple sequences that can partially share their KV cache. However, memory sharing is not possible in the existing systems because the KV cache of the sequences is stored in separate contiguous spaces. To address the above limitations, we propose PagedAt- tention, an attention algorithm inspired by the operating system's (OS) solution to memory fragmentation and shar- ing: virtual memory with paging. PagedAttention divides the request's KV cache into blocks, each of which can contain the attention keys and values of a fixed number of tokens. In PagedAttention, the blocks for the KV cache are not neces- sarily stored in contiguous space. Therefore, we can manage the KV cache in a more flexible way as in OS's virtual mem- ory: one can think of blocks as pages, tokens as bytes, and requests as processes. This design alleviates internal frag- mentation by using relatively small blocks and allocating them on demand. Moreover, it eliminates external fragmen- tation as all blocks have the same size. Finally, it enables memory sharing at the granularity of a block, across the different sequences associated with the same request or even across the different requests."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 18,
+      "cited_text": "Next, We describe the PagedAttention algorithm in §4.1. With that, we show the design of the KV cache manager in §4.2 and how it facilitates PagedAttention in §4.3, respec- tively. Then, we show how this design facilitates effective memory management for various decoding methods (§4.4) and handles the variable length input and output sequences (§4.5). Finally, we show how the system design of vLLM works in a distributed setting (§4.6). 4.1 PagedAttention To address the memory challenges in §3, we introduce Page- dAttention, an attention algorithm inspired by the classic idea of paging [25] in operating systems. Unlike the traditional attention algorithms, PagedAttention allows storing continu- ous keys and values in non-contiguous memory space. Specif- ically, PagedAttention partitions the KV cache of each se- quence into KV blocks. Each block contains the key and value vectors for a fixed number of tokens,¹ which we denote as KV"
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 19,
+      "cited_text": "03 04 340 01 Block 3 Physical KV blocks (on GPU DRAM) Physical KV blocks Block 0 Request Block 1 years 10 ago our fathers Logical KV blocks Block 0 Block 1 years ago Block 2 of times our fathers Block 2 Block 3 brought Block 0 Block 1 Four score and Block 3 brought Block 4 Block 2 Block 5 Block 4 Block 3 Block 6 Block 5 Block 7 Four Block 6 Block 8 Block 7 Four score and seven Request Logical KV blocks best Block 0 Block Block 2 bes Block 8 Figure 6. Block table translation in vLLM. divides it into physical KV blocks (this is also done on CPU RAM for swapping; see §4.5). The KV block manager also maintains block tables-the mapping between logical and physical KV blocks of each request. Each block table entry records the corresponding physical blocks of a logical block and the number of filled positions. Separating logical and physical KV blocks allows VLLM to dynamically grow the KV cache memory without reserving it for all positions in advance, which eliminates most memory waste in existing systems, as in Fig. 2."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 20,
+      "cited_text": "In Fig. 18b, we evaluate the performance of VLLM with dif- ferent block sizes, using the ShareGPT and Alpaca traces with basic sampling under fixed request rates. In the ShareGPT trace, block sizes from 16 to 128 lead to the best performance. In the Alpaca trace, while the block size 16 and 32 work well, larger block sizes significantly degrade the performance since the sequences become shorter than the block sizes. In practice, we find that the block size 16 is large enough to efficiently utilize the GPU and small enough to avoid signifi- cant internal fragmentation in most workloads. Accordingly, VLLM sets its default block size as 16."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 21,
+      "cited_text": "arXiv:2309.06180v1 [cs.LG] 12 Sep 2023 Efficient Memory Management for Large Language Model Serving with PagedAttention Woosuk Kwon¹* Zhuohan $Li^{1,*}$ Siyuan Zhuang¹ Ying Sheng 1,2 Lianmin Zheng¹ Cody Hao $Yu^{3}$ Abstract Joseph E. Gonzalez¹ Hao Zhang4 Ion Stoica¹ 1UC Berkeley 2Stanford University Independent Researcher 4UC San Diego High throughput serving of large language models (LLMs) requires batching sufficiently many requests at a time. How- ever, existing systems struggle because the key-value cache (KV cache) memory for each request is huge and grows and shrinks dynamically. When managed inefficiently, this memory can be significantly wasted by fragmentation and redundant duplication, limiting the batch size. To address this problem, we propose PagedAttention, an attention al- gorithm inspired by the classical virtual memory and pag- ing techniques in operating systems. On top of it, we build VLLM, an LLM serving system that achieves (1) near-zero waste in KV cache memory and (2) flexible sharing of KV cache within and across requests to further reduce mem- ory usage. Our evaluations show that vLLM improves the throughput of popular LLMs by 2-4x with the same level of latency compared to the state-of-the-art systems, such as FasterTransformer and Orca. The improvement is more pronounced with longer sequences, larger models, and more complex decoding algorithms. vLLM's source code is publicly available at https://github.com/vllm-project/vllm."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 22,
+      "cited_text": "Again, vLLM dynamically assigns new physical blocks to logical blocks as more tokens and their KV cache are gener- ated. As all the blocks are filled from left to right and a new physical block is only allocated when all previous blocks are full, vLLM limits all the memory wastes for a request within one block, so it can effectively utilize all the memory, as shown in Fig. 2. This allows more requests to fit into mem- ory for batching-hence improving the throughput. Once a request finishes its generation, its KV blocks can be freed to store the KV cache of other requests. In Fig. 7, we show an example of VLLM managing the memory for two sequences. The logical blocks of the two sequences are mapped to differ- ent physical blocks within the space reserved by the block engine in GPU workers. The neighboring logical blocks of both sequences do not need to be contiguous in physical GPU memory and the space of physical blocks can be effectively utilized by both sequences."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 23,
+      "cited_text": "4.4 Application to Other Decoding Scenarios §4.3 shows how PagedAttention and vLLM handle basic de- coding algorithms, such as greedy decoding and sampling, that take one user prompt as input and generate a single out- put sequence. In many successful LLM applications [18, 34], an LLM service must offer more complex decoding scenarios that exhibit complex accessing patterns and more opportuni- ties for memory sharing. We show the general applicability of vLLM on them in this section. Parallel sampling. In LLM-based program assistants [6, 18], an LLM generates multiple sampled outputs for a single in- put prompt; users can choose a favorite output from various candidates. So far we have implicitly assumed that a request"
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 24,
+      "cited_text": "Sam A1 Logical KV blocks Block 0 Four score and Physical KV blocks Block 0 Beam candidate 0 Ref count: 2-1 Block 5 Block 9 years ago A2 Copy-on-write years ago Beam candidate 1 Block 0 Block 1 Block 3 Block 6 Block 10 fathers Block 0 Four Logical KV blocks score and Beam candidate 2 Block 4 Block 5 Block 6 Block Beam candidate 3 Block 7 Block 11 Block 2 Block 4 X Block 8 Block 12 Four score and Block 8 Figure 8. Parallel sampling example. generates a single sequence. In the remainder of this paper, we assume the more general case in which a request gener- ates multiple sequences. In parallel sampling, one request includes multiple samples sharing the same input prompt, allowing the KV cache of the prompt to be shared as well. Via its PagedAttention and paged memory management, vLLM can realize this sharing easily and save memory."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 25,
+      "cited_text": "Fig. 8 shows an example of parallel decoding for two out- puts. Since both outputs share the same prompt, we only reserve space for one copy of the prompt's state at the prompt phase; the logical blocks for the prompts of both sequences are mapped to the same physical blocks: the logical block 0 and 1 of both sequences are mapped to physical blocks 7 and 1, respectively. Since a single physical block can be mapped to multiple logical blocks, we introduce a reference count for each physical block. In this case, the reference counts for physical blocks 7 and 1 are both 2. At the generation phase, the two outputs sample different output tokens and need separate storage for KV cache. vLLM implements a copy-on- write mechanism at the block granularity for the physical blocks that need modification by multiple sequences, similar to the copy-on-write technique in OS virtual memory (e.g., when forking a process). Specifically, in Fig. 8, when sample A1 needs to write to its last logical block (logical block 1), VLLM recognizes that the reference count of the correspond- ing physical block (physical block 1) is greater than 1; it allocates a new physical block (physical block 3), instructs the block engine to copy the information from physical block 1, and decreases the reference count to 1. Next, when sample A2 writes to physical block 1, the reference count is already reduced to 1; thus A2 directly writes its newly generated KV cache to physical block 1."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 26,
+      "cited_text": "Previous LLM serving systems require frequent memory copies of the KV cache across the beam candidates. For exam- ple, in the case shown in Fig. 9, after the dotted line, candidate 3 would need to copy a large portion of candidate 2's KV cache to continue generation. This frequent memory copy overhead is significantly reduced by vLLM's physical block sharing. In vLLM, most blocks of different beam candidates can be shared. The copy-on-write mechanism is applied only when the newly generated tokens are within an old shared block, as in parallel decoding. This involves only copying one block of data."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 27,
+      "cited_text": "Swapping. This is the classic technique used by most virtual memory implementations which copy the evicted pages to a swap space on the disk. In our case, we copy evicted blocks to the CPU memory. As shown in Fig. 4, besides the GPU block allocator, VLLM includes a CPU block allocator to manage the physical blocks swapped to CPU RAM. When VLLM exhausts free physical blocks for new tokens, it selects a set of sequences to evict and transfer their KV cache to the CPU. Once it preempts a sequence and evicts its blocks, VLLM stops accepting new requests until all preempted sequences are completed. Once a request completes, its blocks are freed from memory, and the blocks of a preempted sequence are brought back in to continue the processing of that sequence. Note that with this design, the number of blocks swapped to the CPU RAM never exceeds the number of total physical blocks in the GPU RAM, so the swap space on the CPU RAM is bounded by the GPU memory allocated for the KV cache. Recomputation. In this case, we simply recompute the KV cache when the preempted sequences are rescheduled. Note that recomputation latency can be significantly lower than the original latency, as the tokens generated at decoding can be concatenated with the original user prompt as a new prompt-their KV cache at all positions can be generated in one prompt phase iteration."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 28,
+      "cited_text": "12 Time (ms) 140- 20- Recompute Swap in Swap out Swap in + out 8 16 32 64 128 256 Block size (a) Microbenchmark Normalized latency (s/token) 1.0 0.5 0.0 i Recompute Swap 8 16 32 64 128 256 Block size (b) End-to-end performance Figure 19. (a) Overhead of recomputation and swapping for different block sizes. (b) Performance when serving OPT-13B with the ShareGPT traces at the same request rate. 7.3 Comparing Recomputation and Swapping VLLM supports both recomputation and swapping as its re- covery mechanisms. To understand the tradeoffs between the two methods, we evaluate their end-to-end performance and microbenchmark their overheads, as presented in Fig. 19. Our results reveal that swapping incurs excessive overhead with small block sizes. This is because small block sizes often result in numerous small data transfers between CPU and GPU, which limits the effective PCIe bandwidth. In contrast, the overhead of recomputation remains constant across dif- ferent block sizes, as recomputation does not utilize the KV blocks. Thus, recomputation is more efficient when the block size is small, while swapping is more efficient when the block size is large, though recomputation overhead is never higher than 20% of swapping's latency. For medium block sizes from 16 to 64, the two methods exhibit comparable end-to-end performance."
+    }
+  ]
+}
