@@ -1,7 +1,8 @@
 #!/bin/bash
-# Mirrors the first 3 (cheap, fast) steps of .github/workflows/ci.yml's
-# lint-format-type-test job, so lint/format/type errors are caught locally
-# before a push/PR instead of burning a CI round-trip.
+# Mirrors the environment sync plus the first three (cheap, fast) checks of
+# .github/workflows/ci.yml's lint-format-type-test job, so lint/format/type
+# errors are caught locally before a push/PR instead of burning a CI
+# round-trip.
 #
 # Deliberately does NOT run the coverage-gated pytest tiers or doctest step --
 # those are the expensive part of CI and stay CI-only.
@@ -19,8 +20,18 @@ cd "$REPO_ROOT"
 # ty report false unresolved-imports for optional deps (zarr, chex, pandas,
 # matplotlib, seaborn, libcst) and blocks unrelated pushes. uv sync is fast
 # and idempotent when the env already matches.
-echo "[pre-push] uv sync --extra dev --extra eda --extra io (CI parity)"
-uv sync --extra dev --extra eda --extra io --quiet
+#
+# --frozen (jury rec): a validation gate must not re-resolve/mutate uv.lock;
+# with drift between pyproject.toml and uv.lock the push fails here instead.
+# NOTE side effect: uv sync makes .venv match EXACTLY these extras -- extras
+# you installed locally beyond dev/eda/io (e.g. torch, sphinx) are stripped
+# from the venv. Re-install them afterwards if your follow-up work needs them.
+# Cold-cache cost is real (~919MB / minutes on slow links); warm runs are
+# sub-second. Duration is echoed below so a first-ever sync is visible.
+echo "[pre-push] uv sync --frozen --extra dev --extra eda --extra io (CI parity)"
+SYNC_START=$SECONDS
+uv sync --frozen --extra dev --extra eda --extra io
+echo "[pre-push] env sync took $((SECONDS - SYNC_START))s"
 
 echo "[pre-push] ruff check ."
 uv run ruff check .
@@ -29,12 +40,12 @@ echo "[pre-push] ruff format --check ."
 uv run ruff format --check .
 
 # ty check is ratcheted against a checked-in baseline (scripts/git-hooks/ty-baseline.txt)
-# rather than gating on zero diagnostics: as of 260812 there are 4 pre-existing
-# diagnostics in files unrelated to any given push, and blocking every push on
-# unrelated repo-wide debt makes the hook something everyone reaches for --no-verify
-# on instead of something that catches real regressions. Only diagnostics NOT already
-# in the baseline fail the push. Fixing baseline entries and shrinking the file is
-# always welcome but never required by this hook.
+# rather than gating on repo-wide zero diagnostics: entries in that file are
+# diagnostics that predate this hook (in files unrelated to any given push),
+# so only NEW diagnostics fail the push. The baseline may legitimately be
+# empty -- in which case the hook is exactly as strict as CI's hard gate; do
+# not treat an empty file as a broken state. Fixing baseline entries and
+# shrinking the file is always welcome but never required by this hook.
 echo "[pre-push] ty check src/ (ratcheted against scripts/git-hooks/ty-baseline.txt)"
 BASELINE="$REPO_ROOT/scripts/git-hooks/ty-baseline.txt"
 CURRENT="$(mktemp)"
