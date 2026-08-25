@@ -148,9 +148,9 @@ class ZarrStagingSink:
         if spec.output_dir is None:
             msg = "ZarrStagingSink requires SinkSpec.output_dir"
             raise ValueError(msg)
-        if not spec.run_id:
+        if not spec.run_id or not spec.run_id.strip():
             msg = (
-                "ZarrStagingSink requires a non-empty SinkSpec.run_id -- it is the "
+                "ZarrStagingSink requires a non-blank SinkSpec.run_id -- it is the "
                 "provenance join key stamped into the store. Derive one via "
                 "xtrax.run ident helpers or pass an explicit id."
             )

@@ -83,3 +83,32 @@ class TestDeriveSinkSpec:
         spec = self.make_run_spec()
         with pytest.raises(TypeError):
             derive_sink_spec(spec)  # type: ignore[call-arg]
+
+
+def test_sink_spec_run_id_type_enforced_outside_test_hook() -> None:
+    """Production-path acceptance: without the conftest beartype hook, a plain
+    TypeError still guards the provenance join key (jury B finding 1)."""
+    import subprocess
+    import sys
+
+    code = (
+        "from xtrax.run import SinkSpec\n"
+        "for bad in (None, 4242):\n"
+        "    try:\n"
+        "        SinkSpec(run_id=bad)\n"
+        "    except TypeError as e:\n"
+        "        assert 'run_id' in str(e), e\n"
+        "    else:\n"
+        "        raise AssertionError(f'no TypeError for run_id={bad!r}')\n"
+        "print('prod-guard-ok')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "prod-guard-ok"
+
+
+def test_sink_spec_run_id_type_error_in_process() -> None:
+    """In-process: non-str run_id raises TypeError naming the field."""
+    with pytest.raises(TypeError, match="run_id"):
+        SinkSpec(run_id=4242)  # type: ignore[arg-type]

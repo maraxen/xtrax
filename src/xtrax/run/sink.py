@@ -6,11 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from xtrax.run.ident import new_run_id
+from xtrax.run.spec import RunSpec
+
 if TYPE_CHECKING:
-    from xtrax.run.spec import RunSpec
     from xtrax.run.zarr_sink import ZarrStagingSink
 
-    _Format = Literal["jsonl", "h5", "zarr", "none"]
+Format = Literal["jsonl", "h5", "zarr", "none"]
 
 
 @dataclass
@@ -23,9 +25,17 @@ class SinkSpec:
 
     run_id: str
     output_dir: Path | None = None
-    format: Literal["jsonl", "h5", "zarr", "none"] = "jsonl"
+    format: Format = "jsonl"
     flush_every: int = 1
     extension_schema: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        # Plain-Python backstop: beartype/jaxtyping wrapping is test-env-only
+        # (conftest import hook), but the provenance contract must hold for
+        # production drivers too.
+        if not isinstance(self.run_id, str):
+            msg = f"SinkSpec.run_id must be str, got {type(self.run_id).__name__}"
+            raise TypeError(msg)
 
 
 def make_sink(spec: SinkSpec) -> ZarrStagingSink | None:
@@ -53,7 +63,7 @@ def derive_sink_spec(
     *,
     run_id: str | None = None,
     output_dir: Path | None,
-    format: _Format = "zarr",
+    format: Format = "zarr",
     flush_every: int = 1,
     extension_schema: dict[str, Any] | None = None,
 ) -> SinkSpec:
@@ -65,6 +75,10 @@ def derive_sink_spec(
     1. explicit ``run_id=`` override
     2. ``run_spec.run_id``
     3. a freshly generated id (:func:`xtrax.run.ident.new_run_id`)
+
+    Note: precedence uses truthiness, so an explicitly passed empty string
+    falls through to lower-precedence sources rather than raising; the
+    fail-loud backstop for empty ids remains sink construction (#96).
 
     Note on defaults: this helper pins ``format="zarr"`` (the provenance seam
     it serves) while bare ``SinkSpec`` defaults to ``"jsonl"``. That divergence
@@ -82,8 +96,6 @@ def derive_sink_spec(
         A fully-resolved ``SinkSpec`` whose ``run_id`` is never empty --
         falsy values are additionally rejected at sink construction (#96).
     """
-    from xtrax.run.ident import new_run_id
-
     return SinkSpec(
         run_id=run_id or run_spec.run_id or new_run_id(),
         output_dir=output_dir,
