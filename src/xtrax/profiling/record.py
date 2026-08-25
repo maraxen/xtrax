@@ -90,7 +90,9 @@ def _capture_timestamp() -> str:
 def _capture_x64_enabled() -> bool:
     import jax
 
-    return bool(jax.config.x64_enabled)
+    # getattr (not attribute access): ty cannot resolve jax.config's
+    # dynamic attrs; default False is the fail-closed reading.
+    return bool(getattr(jax.config, "x64_enabled", False))
 
 
 def _capture_jax_version() -> str:

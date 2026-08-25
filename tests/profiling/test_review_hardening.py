@@ -171,7 +171,7 @@ class TestBenchHardening:
     """Findings on the bridge itself."""
 
     def test_bool_declaration_rejected(self):
-        with pytest.raises(ClaimValidityError, match="boolean"):
+        with pytest.raises(ClaimValidityError, match="bools rejected"):
             parse_bench_extra_info({"xtrax_stage": True, "xtrax_n_atoms": 32})
 
     def test_non_coercible_stat_wrapped(self):

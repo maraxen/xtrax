@@ -215,8 +215,8 @@ def parse_scopes(
         dur_seconds = float(event.get("dur", 0.0)) / 1e6
         bucket = totals.setdefault(label, [0.0, 0])
         bucket[0] += dur_seconds
-        bucket[1] += 1
-    return {label: (seconds, count) for label, (seconds, count) in totals.items()}
+        bucket[1] = bucket[1] + 1
+    return {label: (float(seconds), int(count)) for label, (seconds, count) in totals.items()}
 
 
 def parse_hlo_op_times(
@@ -246,8 +246,8 @@ def parse_hlo_op_times(
         dur_seconds = float(event.get("dur", 0.0)) / 1e6
         bucket = totals.setdefault(str(hlo_op), [0.0, 0])
         bucket[0] += dur_seconds
-        bucket[1] += 1
-    return {op: (seconds, count) for op, (seconds, count) in totals.items()}
+        bucket[1] = bucket[1] + 1
+    return {op: (float(seconds), int(count)) for op, (seconds, count) in totals.items()}
 
 
 def parse_dispatch_counts(

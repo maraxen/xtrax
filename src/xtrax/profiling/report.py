@@ -66,7 +66,7 @@ def discover_records(
         base = (root or _DEFAULT_DISCOVERY_ROOT) / "outputs" / "profiling"
         files = sorted(base.glob("stage*/*.json"))
     records: list[ProbeRecord] = []
-    skipped: list[tuple[Path, str]] = []
+    skipped: list[tuple[Path, Exception]] = []
     for path in files:
         if path.name in _SKIP_NAMES or path.name.endswith(_SKIP_SUFFIXES):
             continue

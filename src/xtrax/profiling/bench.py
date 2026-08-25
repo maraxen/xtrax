@@ -126,27 +126,31 @@ def parse_bench_extra_info(
             "a wall-clock bench has no intrinsic molecular scale, so it "
             "must declare one to be recorded"
         )
+    raw_stage = extra_info[DECLARATION_STAGE_KEY]
+    if isinstance(raw_stage, bool) or not isinstance(raw_stage, (str, int)):
+        raise ClaimValidityError(
+            f"{DECLARATION_STAGE_KEY}={raw_stage!r} must be an int or an "
+            "int-valued string (bools rejected: true/false would silently "
+            "become stage 1/0)"
+        )
     try:
-        stage = int(extra_info[DECLARATION_STAGE_KEY])  # type: ignore[arg-type]
+        stage = int(raw_stage)
     except (TypeError, ValueError) as exc:
         raise ClaimValidityError(
-            f"{DECLARATION_STAGE_KEY}={extra_info[DECLARATION_STAGE_KEY]!r} is not coercible to int"
+            f"{DECLARATION_STAGE_KEY}={raw_stage!r} is not coercible to int"
         ) from exc
-    if isinstance(extra_info[DECLARATION_STAGE_KEY], bool):
+    raw_n = extra_info[DECLARATION_N_ATOMS_KEY]
+    if isinstance(raw_n, bool) or not isinstance(raw_n, (str, int)):
         raise ClaimValidityError(
-            f"{DECLARATION_STAGE_KEY} is boolean -- JSON true/false would silently become stage 1/0"
-        )
-    if isinstance(extra_info[DECLARATION_N_ATOMS_KEY], bool):
-        raise ClaimValidityError(
-            f"{DECLARATION_N_ATOMS_KEY} is boolean -- JSON true/false would "
-            "silently become n_atoms 1/0"
+            f"{DECLARATION_N_ATOMS_KEY}={raw_n!r} must be an int or an "
+            "int-valued string (bools rejected: true/false would silently "
+            "become n_atoms 1/0)"
         )
     try:
-        n_atoms = int(extra_info[DECLARATION_N_ATOMS_KEY])  # type: ignore[arg-type]
+        n_atoms = int(raw_n)
     except (TypeError, ValueError) as exc:
         raise ClaimValidityError(
-            f"{DECLARATION_N_ATOMS_KEY}="
-            f"{extra_info[DECLARATION_N_ATOMS_KEY]!r} is not coercible to int"
+            f"{DECLARATION_N_ATOMS_KEY}={raw_n!r} is not coercible to int"
         ) from exc
 
     config: dict[str, str] = {}
@@ -161,7 +165,7 @@ def parse_bench_extra_info(
 
 def bench_metrics_from_stats(
     stats_dict: dict[str, float | int | str],
-) -> dict[str, float]:
+) -> dict[str, float | int | str]:
     """Stats.as_dict() -> contract metrics: durations s->ms, counts through.
 
     Unknown stat keys raise ClaimValidityError (strict schema, see module
@@ -180,7 +184,7 @@ def bench_metrics_from_stats(
             "pytest-benchmark schema -- examine the plugin upgrade before "
             "recording its numbers, then extend bench.py deliberately"
         )
-    metrics: dict[str, float] = {}
+    metrics: dict[str, float | int | str] = {}
     for name, value in stats_dict.items():
         if name in _NON_NUMERIC_STAT_FIELDS:
             continue
@@ -217,7 +221,7 @@ class BenchRecordPlan:
     stage: int
     n_atoms: int
     platform: str
-    metrics: dict[str, float]
+    metrics: dict[str, float | int | str]
     config: dict[str, str]
 
 
