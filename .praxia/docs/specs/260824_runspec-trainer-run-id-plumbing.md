@@ -133,6 +133,11 @@ already deferred.
 - Given other kwargs (`format`, `output_dir`, `flush_every`, `extension_schema`),
   when `derive_sink_spec` runs, then they are forwarded verbatim onto the
   `SinkSpec`.
+- Given a falsy-but-type-valid `run_id` (e.g. `""`) on any path into
+  `ZarrStagingSink`, when the sink is constructed, then it raises `ValueError`
+  naming `run_id`; given `run_id=None`, `SinkSpec` construction itself is
+  rejected by runtime type enforcement (both landed in this batch, pinned by
+  tests).
 - Given the wiring lands, then `agent_assets/skills/using-xtrax/references/run.md`
   shows the driver-side snippet (`spec = derive_sink_spec(run_spec, output_dir=...)`).
 
