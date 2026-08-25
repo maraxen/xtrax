@@ -134,6 +134,19 @@ sink_spec = derive_sink_spec(run_spec, output_dir=Path("/path/to/outputs"))
 sink = make_sink(sink_spec)  # format defaults to "zarr" here (not "jsonl")
 ```
 
+**The `xtrax run` CLI itself uses this exact path (#457(1))**: after writing
+`manifest.json` it builds an axes-free `RunSpec` carrying the CLI's
+config-hash `run_id`, derives the sink spec, and persists a provenance store
+at `.xtrax/runs/<run_id>/metrics.zarr`. Post-fit it stages one attrs-only
+record under key `("run", "final")` echoing `config_hash`/`seed`/
+`num_epochs`/`checkpoint_dir` + resolved component class names, then drains
+and finalizes. Sink construction happens BEFORE fit: missing `[io]` extra
+fails loud before compute; a mid-fit crash leaves a root-provenance
+tombstone (git sha of the code under test) instead of no trace. Scope
+note: `xtrax resume` does not yet persist stores (it drives fit directly);
+re-running with the SAME explicit run_id refreshes the store's root
+provenance attrs in place.
+
 Zarr sinks auto-capture static run provenance: git SHA/branch/dirty +
 `run_id` + UTC `created_at` on the store's root group, and a minimal
 `run_id`/`git_sha` pointer per drained key's group. Git capture never raises

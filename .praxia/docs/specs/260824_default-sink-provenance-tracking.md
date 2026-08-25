@@ -49,6 +49,7 @@ to guess at.
 | Consumer scope: downstream domain libraries (e.g. aminx) calling `ZarrStagingSink` directly | Selected | Matches where the actual write happens; CLI end-users already get `manifest.json` from a different entry point. |
 | Consumer scope: CLI end-users of `xtrax run` | Rejected | Different entry point, already served by the existing always-write manifest. |
 | Consumer scope: both, via one shared layer | Deferred | Reasonable follow-on once the sink-level mechanism lands and is proven; not needed to solve the identified gap now. |
+
 | Concern: static run provenance only | Selected | xtrax has zero existing telemetry concept (confirmed: no hits for the word in the codebase); scoping in a live-metrics stream would balloon this into an unrelated feature. |
 | Concern: static provenance + live telemetry | Rejected | Same reason — no existing telemetry substrate to build on; out of scope. |
 | Automaticity: auto-injected inside `ZarrStagingSink` | Selected | Only mechanism that satisfies "by default" — can't be skipped short of not using the sink at all. |
@@ -78,6 +79,13 @@ to guess at.
 | AC2 warning mechanism: unspecified vs. `warnings.warn` | `warnings.warn(msg, UserWarning, stacklevel=2)` selected (post-review, closes C7) | Neither the codebase (`zarr_sink.py`/`zarr_integrity.py` have zero precedent) nor the cited bathos file actually warns in this exact scenario (bathos's `_legacy_git_shellout`/`capture_git_state` silently return `None`/`_UNKNOWN`) — needed an explicit choice rather than inheriting one from the model. |
 | Run-completion signal for AC8/consolidation: none vs. new `finalize()`/context-manager method | New `finalize()` method selected (post-review, closes C14 and, by construction, C16) | `ZarrStagingSink` has no lifecycle method today (`__init__`/`stage`/`take`/`drain`/`__len__` only) — "per completed run" presupposes an event the class can't currently observe. Placing the once-only `consolidate_metadata()` call inside `finalize()` also makes post-consolidation staleness (C16) structurally impossible, since no further `drain()` is legitimate after it. |
 | Multi-run reuse of the same `output_dir`: silent overwrite vs. guard | Guard (raise on `run_id` mismatch at init) selected (post-review, closes C11) | `ZarrStagingSink` already opens with `mode='a'`, so multi-run reuse of one directory is real, pre-existing, supported behavior — a silent root-attrs overwrite would leave the store internally inconsistent (root claims run B, earlier per-key pointers still reference run A) with no way to detect it after the fact. |
+
+> **260825 addendum (#457(1))**: the "both, via one shared layer" deferral has
+> fired for the run CLI — `xtrax run` now derives its sink through
+> `derive_sink_spec` (see `260824_runspec-trainer-run-id-plumbing.md`, status:
+> adopted). The "CLI end-users | Rejected" row above is superseded for
+> persistence provenance: CLI runs additionally get a zarr provenance store at
+> `.xtrax/runs/<run_id>/metrics.zarr` alongside (not replacing) the manifest.
 
 ## Assumptions
 

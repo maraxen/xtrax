@@ -24,7 +24,12 @@ def get_checkpoint_manager(
     Returns:
         A CheckpointManager instance with PyTreeCheckpointHandler configured.
     """
-    directory = Path(directory)
+    directory = Path(directory).resolve()
+    # Resolve to absolute: orbax CheckpointManager rejects relative paths at
+    # save/load time ("Checkpoint path should be absolute"), and both CLI verbs
+    # construct checkpoint dirs relative to cwd (.xtrax/runs/<id>/checkpoints).
+    # Resolving here fixes save AND resume without changing the manifest's
+    # durable relative-path contract.
 
     # Create options for the checkpoint manager
     options = ocp.CheckpointManagerOptions(
