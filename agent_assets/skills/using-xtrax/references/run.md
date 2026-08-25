@@ -124,6 +124,8 @@ explicit override > `run_spec.run_id` > auto-generated (`run-` + 12 hex
 chars, via `new_run_id()`):
 
 ```python
+from pathlib import Path
+
 from xtrax.run import RunSpec, derive_sink_spec, make_sink
 
 run_spec = RunSpec(seed=0, axes=[], carry_specs=[], boundaries=None,
