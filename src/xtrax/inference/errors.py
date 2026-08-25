@@ -15,6 +15,10 @@ __all__ = [
     "AmbiguousAxisError",
     "AxisRole",
     "CseTraceError",
+    "MemoImpurityError",
+    "MemoKeyUnsupportedLeafError",
+    "MemoMultiDeviceError",
+    "MemoStalenessError",
     "StructureMismatchError",
     "XtraxInferenceError",
 ]
@@ -40,6 +44,22 @@ class StructureMismatchError(XtraxInferenceError):
     """
 
     pass
+
+
+class MemoImpurityError(XtraxInferenceError):
+    """Static screen detected a likely-impure function at admission."""
+
+
+class MemoMultiDeviceError(XtraxInferenceError):
+    """Wrapper requires exactly one local device (spec N5)."""
+
+
+class MemoKeyUnsupportedLeafError(XtraxInferenceError):
+    """A pytree leaf type cannot be safely digested for the cache key."""
+
+
+class MemoStalenessError(XtraxInferenceError):
+    """Spot-check found a cached entry diverging from fresh computation."""
 
 
 class CseTraceError(XtraxInferenceError):
