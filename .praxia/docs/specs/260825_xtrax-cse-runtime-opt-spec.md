@@ -471,3 +471,21 @@ Both amendments are additive to §4.3; no prior decision changes.
   passes its own suites.
 - Minor API note: `load_performance_targets` requires a `pathlib.Path` (a bare str raises
   AttributeError) — trivially fixed at implementation time; recorded for the P1 planner.
+
+### 10.6 Round 6 — budget bypass observed live, dispatch division verified, png format, full suite
+
+- **R4's budget bypass OBSERVED LIVE**: identical tight MemoryBudget (1 byte) + impossible
+  estimate → without a DedupSpec the planner correctly raises `BudgetInfeasibleError`; WITH a
+  DedupSpec on the same axis, Phase 0b plans DedupGather and the budget error fires anyway
+  naming "final strategies: batch=DedupGather" — i.e., even in budget mode the dedup decision
+  escapes estimation and then *fails the whole plan*. This sharpens R4: auto-synthesis under
+  budget mode would not merely produce optimistic estimates, it could make previously-feasible
+  plans infeasible. Strengthens the case for the deferred budget-integration backlog item.
+- **Dispatch division of labor verified**: `make_axis_dispatch(DedupGather)` raises
+  `DispatchRejected` ("handled elsewhere") while `axis_dispatch` executes it — the runtime path
+  component C relies on is exactly the documented one.
+- **png CLI format**: exit 0, writes a real 45 KB PNG. All four emit formats now exercised.
+- **Full repo suite**: 205 passed / 1 failed / 1 skipped. The single failure
+  (`test_bathos_mcp_reachable_from_a_no_claude_node`) is environmental and unrelated to this
+  sprint: it probes the external bathos MCP server, whose entry point fails on a missing
+  `cisternal` dependency in ~/projects/bathos. This sprint modified no source files.
