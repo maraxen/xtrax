@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from xtrax.composition.graph import HostPrepGraph, HostPrepGraphNode
-from xtrax.devtools.gates._jaxlint import run_jaxlint_json as _run_jaxlint_json
+from xtrax.jaxlint_runner import run_jaxlint_json as _run_jaxlint_json
 from xtrax.stages.topology import PlanTopologyError, validate_plan_topology
 
 PASS = "PASS"

@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from xtrax.devtools.freshness import (
+from xtrax.run.freshness import (
     Attestation,
     FreshnessVerdict,
     ProbeResult,
@@ -310,7 +310,7 @@ def load_coverage_state(root: Path) -> dict[str, Any]:
 
 #: Named probes for the freshness primitive (T3-05/AC-X6), keyed by the
 #: `[[backlog_items]].probe` TOML field. Each probe can only INVALIDATE an
-#: attestation, never satisfy one — see xtrax.devtools.freshness.
+#: attestation, never satisfy one — see xtrax.run.freshness.
 def probe_pypi_and_git_tag(version: str, root: Path) -> ProbeResult:
     """Invalidate n9 (PyPI OIDC) if there's no matching git tag or PyPI release.
 

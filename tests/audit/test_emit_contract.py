@@ -1,11 +1,11 @@
-"""Merge-blocking contract tests for xtrax.devtools.emit (N1.1 / AC-1.1)."""
+"""Merge-blocking contract tests for xtrax.findings (N1.1 / AC-1.1)."""
 
 import json
 from pathlib import Path
 
 import pytest
 
-from xtrax.devtools.emit import (
+from xtrax.findings import (
     SCHEMA_VERSION,
     SchemaVersionMismatchError,
     append_finding,

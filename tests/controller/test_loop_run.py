@@ -75,7 +75,6 @@ from controller.dispatch import (
 from controller.evaluate_adapter import BathosFrozenContext
 from controller.lineage_interim import CandidateParentage, MultiParentLineageUnsupportedError
 from controller.loop_run import CampaignLoopResult, LoopEvent, run_campaign_loop
-from xtrax.devtools.freshness import Attestation
 from xtrax.loop.campaign_approval_gate import (
     ApprovalExpiredError,
     NoMatchingApprovalError,
@@ -84,6 +83,7 @@ from xtrax.loop.closure_lock import build_closure_manifest
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
+from xtrax.run.freshness import Attestation
 
 # ---------------------------------------------------------------------------
 # Fakes: watchdog starter/handle (NEVER the real subprocess-spawning start_watchdog)

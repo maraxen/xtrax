@@ -7,7 +7,7 @@ status, and cannot be revoked by the loop under any circumstance, including mid-
 
 This module enforces the per-campaign-start check: given a campaign ID, verify that an explicit
 approval entry exists in the TOML gates file, and that its attestation is still fresh (per
-`xtrax.devtools.freshness.Attestation`/`evaluate_freshness` semantics).
+`xtrax.run.freshness.Attestation`/`evaluate_freshness` semantics).
 
 TOML schema: `[[gates]]` entries for `id="T2-32"` carry an `event_ref` field holding the
 campaign's own identifier (a caller-supplied string). No other gate type uses `event_ref` -- it
@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from xtrax.devtools.freshness import Attestation, evaluate_freshness
+from xtrax.run.freshness import Attestation, evaluate_freshness
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_GATES_TOML = ROOT / ".praxia" / "loop_human_gates.toml"
@@ -55,7 +55,7 @@ class GateEntry:
     """A single [[gates]] entry from the TOML file, cast to structured form.
 
     `event_ref` is the campaign ID for T2-32 entries; optional for other gate types.
-    The other fields mirror `xtrax.devtools.freshness.Attestation` plus gate metadata.
+    The other fields mirror `xtrax.run.freshness.Attestation` plus gate metadata.
     """
 
     id: str

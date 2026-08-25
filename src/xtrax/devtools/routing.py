@@ -6,7 +6,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from xtrax.devtools.emit import Severity, SourceTrack
+from xtrax.findings import Severity, SourceTrack
 
 DEFAULT_ROUTING_PATH = Path("audit/routing.toml")
 

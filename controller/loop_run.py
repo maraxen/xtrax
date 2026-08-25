@@ -251,7 +251,6 @@ from controller.multi_iteration_loop import (
     _default_leap_path_handler,
     run_multi_iteration_loop,
 )
-from xtrax.devtools.freshness import Attestation
 from xtrax.loop.campaign_approval_gate import DEFAULT_GATES_TOML, assert_campaign_approved
 from xtrax.loop.candidate_smoke import assert_candidate_smoke
 from xtrax.loop.candidate_static import assert_candidate_static
@@ -265,6 +264,7 @@ from xtrax.loop.external_stop_watchdog import WatchdogCriteria, WatchdogHandle, 
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
 from xtrax.loop.structure_tripwire import assert_structure_tripwire
+from xtrax.run.freshness import Attestation
 
 _logger = logging.getLogger(__name__)
 

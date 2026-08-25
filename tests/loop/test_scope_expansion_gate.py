@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from xtrax.devtools.freshness import Attestation
 from xtrax.loop.scope_expansion_gate import (
     ApprovalExpiredError,
     NoMatchingApprovalError,
     ScopeExpansionNotApprovedError,
     assert_scope_expansion_approved,
 )
+from xtrax.run.freshness import Attestation
 
 
 def _fresh_attestation(now: datetime | None = None) -> dict:

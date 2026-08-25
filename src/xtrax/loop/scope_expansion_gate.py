@@ -20,7 +20,7 @@ and owns the escalation workflow.
 import tomllib
 from pathlib import Path
 
-from xtrax.devtools.freshness import Attestation, evaluate_freshness
+from xtrax.run.freshness import Attestation, evaluate_freshness
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_GATES_TOML = ROOT / ".praxia" / "loop_human_gates.toml"

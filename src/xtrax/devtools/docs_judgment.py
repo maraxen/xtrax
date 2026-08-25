@@ -7,12 +7,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from xtrax.devtools.emit import append_finding, emit_judgment_finding
 from xtrax.devtools.gates._interrogate import run_interrogate_coverage
-from xtrax.devtools.gates._jaxlint import run_jaxlint_json as _run_jaxlint_json
 from xtrax.devtools.gates.documentation import filter_jd_jm_errors
 from xtrax.devtools.refute_promote import OBSERVATION_LABEL
 from xtrax.devtools.rubrics import RubricTable, load_rubric
+from xtrax.findings import append_finding, emit_judgment_finding
+from xtrax.jaxlint_runner import run_jaxlint_json as _run_jaxlint_json
 
 DEFAULT_JUDGMENT_PATH = Path("audit/docs_judgment.toml")
 

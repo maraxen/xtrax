@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 
 import pytest
 
-from xtrax.devtools.freshness import Attestation
 from xtrax.loop.evaluator_completeness import (
     Invariant,
     InvariantManifest,
@@ -15,6 +14,7 @@ from xtrax.loop.evaluator_completeness import (
     assert_evaluator_completeness,
     run_synthetic_sanity_check,
 )
+from xtrax.run.freshness import Attestation
 
 FITNESS_BY_CANDIDATE = {"a": 0.0, "b": 1.0, "c": 0.2}
 

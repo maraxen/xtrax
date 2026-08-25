@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from xtrax.devtools.emit import AuditFinding
+from xtrax.findings import AuditFinding
 
 DEFAULT_TOMBSTONE_PATH = Path(".praxia/audit_tombstones.jsonl")
 

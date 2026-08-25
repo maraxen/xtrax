@@ -160,7 +160,7 @@ def _append_sketch_jsonl(record: PortEmitRecord, audits_path: Path) -> None:
 
 def _try_delegate_append(record: PortEmitRecord, audits_path: Path) -> bool:
     try:
-        from xtrax.devtools.emit import AuditFinding, append_finding
+        from xtrax.findings import AuditFinding, append_finding
     except ImportError:
         return False
 
@@ -221,9 +221,9 @@ def emit_tier_verdict(
 
 
 def devtools_emit_available() -> bool:
-    """Feature-detect xtrax.devtools.emit (#1577) for dual-validation tests."""
+    """Feature-detect xtrax.findings (#1577) for dual-validation tests."""
     try:
-        import xtrax.devtools.emit  # noqa: F401
+        import xtrax.findings  # noqa: F401
     except ImportError:
         return False
     return True

@@ -17,7 +17,7 @@ from xtrax.devtools.baseline import (
     save_baseline,
     update_metric,
 )
-from xtrax.devtools.emit import append_finding, emit_metric_finding
+from xtrax.findings import append_finding, emit_metric_finding
 
 LINE_METRIC = "test_rigor.line_coverage_pct"
 BRANCH_METRIC = "test_rigor.branch_coverage_pct"
