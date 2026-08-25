@@ -19,7 +19,7 @@ consumers do not thread it manually.
 Code facts this design is grounded in (verified on main @ aebfc2e):
 
 - `RunSpec` (`src/xtrax/run/spec.py`) is an `eqx.Module` base config (`seed`,
-  `axes`, `carry_specs`, `boundaries`); `aminox.run.RunSpec` extends it and is
+  `axes`, `carry_specs`, `boundaries`); `aminx.run.RunSpec` extends it and is
   built from a `RunSpecification`. It is the one object already threaded
   through every execution path.
 - `Trainer` (`src/xtrax/training/trainer.py`) has **zero sink surface**: grep
@@ -84,12 +84,22 @@ Code facts this design is grounded in (verified on main @ aebfc2e):
    deliberate -- drivers reaching for a provenance sink get zarr without
    restating it -- and covered by the forwarding AC below.
 
-**None-propagation is closed at two layers.** `SinkSpec.run_id: str` is
-runtime-enforced at construction (jaxtyping/beartype rejects `None`
-outright), and `ZarrStagingSink.__init__` additionally rejects any falsy
-`run_id` (e.g. `""`) with `ValueError` naming the field -- landed in this
-batch. Neither the manual nor the derived construction path can stamp an
-empty provenance key into a store.
+**None-propagation is closed at three layers.** `SinkSpec.run_id: str` is
+runtime-enforced at construction by a plain-Python `__post_init__` check
+(`TypeError` on non-str -- beartype/jaxtyping only wrap under the test-suite
+import hook, so a dataclass-level guard is what makes the guarantee hold for
+production drivers), and `ZarrStagingSink.__init__` additionally rejects any
+falsy or whitespace-only `run_id` (e.g. `""`, `"   "`) with `ValueError`
+naming the field. Neither the manual nor the derived construction path can
+stamp an empty or blank provenance key into a store.
+
+**Positional-construction caveat (recorded, external-only).** `run_id` was
+appended as the fifth base field: any *external* `RunSpec` subclass whose
+callers construct positionally past `boundaries` would now bind that argument
+into `run_id`. In-tree risk is zero today (no subclasses; all call sites are
+keyword-based or use <= 4 positional args); equinox's generated `__init__` is
+not beartype-wrapped even under the test hook, so adoption sign-off (assumption
+table below) should include an audit of positional constructors.
 
 **Static-field caveat (recorded).** `run_id` on an eqx.Module is static aux
 data: a jitted function receiving a RunSpec-bearing pytree would re-trace per
@@ -145,7 +155,7 @@ already deferred.
 
 | Assumption | Owner | Verification |
 |------------|-------|--------------|
-| `aminox.run.RunSpec` can surface `run_id` from its own inputs when its maintainers adopt this | aminx maintainer | Sign-off at adoption time (parent spec assumption #4 rolls forward). |
+| `aminx.run.RunSpec` can surface `run_id` from its own inputs when its maintainers adopt this | aminx maintainer | Sign-off at adoption time (parent spec assumption #4 rolls forward). |
 | Generated-id collisions across a single process are negligible (uuid4) | xtrax maintainer | None needed at this scale; explicit ids remain the escape hatch. |
 
 ## TBDs

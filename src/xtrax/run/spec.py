@@ -17,6 +17,9 @@ class RunSpec(eqx.Module):
     axes: list[AxisSpec]
     carry_specs: list[CarrySpec] = eqx.field(default_factory=list)
     boundaries: list[AxisBoundary] | None = None
+    # Static aux data (not a pytree leaf): jitted code receiving a RunSpec-bearing
+    # pytree re-traces per distinct run_id; see spec 260824 caveat.
+    run_id: str | None = eqx.field(default=None, static=True)
 
     @classmethod
     def from_spec(cls, spec: Any) -> Any:
