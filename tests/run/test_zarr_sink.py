@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import zarr
+from beartype.roar import BeartypeCallHintParamViolation
 
 from xtrax.run.sink import SinkSpec
 from xtrax.run.zarr_sink import ZarrStagingSink
@@ -24,6 +25,19 @@ def _sink(tmp_path: Path, flush_every: int = 1, run_id: str = "test-run") -> Zar
 def test_requires_zarr_format() -> None:
     with pytest.raises(ValueError, match="zarr"):
         ZarrStagingSink(SinkSpec(run_id="r", format="jsonl"))
+
+
+def test_rejects_empty_run_id(tmp_path: Path) -> None:
+    """Fail loud per #96: an empty run_id would poison store provenance attrs."""
+    spec = SinkSpec(run_id="", output_dir=tmp_path / "out.zarr", format="zarr")
+    with pytest.raises(ValueError, match="run_id"):
+        ZarrStagingSink(spec)
+
+
+def test_rejects_none_run_id_at_spec_construction() -> None:
+    """None never reaches ZarrStagingSink: typing enforces str at SinkSpec."""
+    with pytest.raises((BeartypeCallHintParamViolation, TypeError)):
+        SinkSpec(run_id=None)  # type: ignore[arg-type]
 
 
 def test_requires_output_dir() -> None:
