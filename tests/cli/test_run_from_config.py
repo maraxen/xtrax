@@ -25,7 +25,6 @@ from xtrax.cli.run import run_from_config
 zarr = pytest.importorskip("zarr")
 
 
-
 def _make_cfg(**overrides):
     defaults = dict(
         schema_version=1,
