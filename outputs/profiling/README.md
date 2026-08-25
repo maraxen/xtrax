@@ -15,6 +15,11 @@ XTRAX_GIT_SHA=$(git rev-parse HEAD) \
     uv run python scripts/prof_stage0_tiling_cost.py
 XTRAX_GIT_SHA=$(git rev-parse HEAD) \
     uv run python scripts/prof_stage1_tiling_micro.py
+# One-hot encoding exemplar (P1 of 260825_jax-optimizing-skill-scope.md):
+XTRAX_GIT_SHA=$(git rev-parse HEAD) \
+    uv run python scripts/prof_stage0_onehot_cost.py
+XTRAX_GIT_SHA=$(git rev-parse HEAD) \
+    uv run python scripts/prof_stage1_onehot_micro.py
 ```
 
 Current contents are Stage 0/1 (CPU-only jaxlib on this machine): they

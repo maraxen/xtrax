@@ -1,0 +1,47 @@
+{
+  "attribution_method": {
+    "onehot_materialized": "named_scope",
+    "onehot_onthefly": "named_scope"
+  },
+  "config": {
+    "axis_note": "n_atoms == padded leading batch rows",
+    "kernel": "onehot_matmul_sq_rowsum_x2",
+    "n_classes": "32",
+    "n_cols": "16",
+    "n_rows": "256",
+    "n_trials": "20",
+    "parity_note": "max abs diff vs tolerance 1e-05, gated pre-trace",
+    "variants": "materialized+onthefly"
+  },
+  "contract_version": "3.0",
+  "device_kind": null,
+  "git_sha": "d8ae44426b986e684ad9461701a4bc285e3dec13",
+  "jax_version": "0.10.2",
+  "jaxlib_version": "0.10.2",
+  "metrics": {
+    "materialized_seconds": 0.0010800689924508333,
+    "n_compilations": 0.0,
+    "n_executions": 20.0,
+    "n_jit_traces": 40.0,
+    "onthefly_seconds": 0.0005754970479756594,
+    "parity_max_abs_diff": 0.0,
+    "total_step_seconds": 0.06350005487911403
+  },
+  "n_atoms": 256,
+  "platform": "cpu",
+  "probe_id": "stage1_onehot_micro",
+  "scopes": {
+    "onehot_materialized": [
+      0.00033510199999999994,
+      20
+    ],
+    "onehot_onthefly": [
+      0.00029018599999999984,
+      40
+    ]
+  },
+  "stage": 1,
+  "timestamp": "2026-08-25T20:05:33.022938+00:00",
+  "x64_enabled": false,
+  "xla_flags": ""
+}
