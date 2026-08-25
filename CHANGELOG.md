@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`xtrax-optimizing` skill + Tier-gated probe drivers** (`agent_assets/skills/xtrax-optimizing`,
+  `scripts/prof_stage{0,1}_*.py`): three-tier taxonomy separating host-boundary
+  mechanics (ordered/unordered Tap/Sink cost), data movement
+  (`async_indexed_stream` prefetch overlap), and composition-level changes
+  (on-the-fly vs materialized one-hot), each exemplified by a driver that emits
+  claim-valid ProbeRecords: `prof_stage0_onehot_cost` (never-execute cost
+  analysis), `prof_stage1_onehot_micro` (named-scope attribution +
+  parity gate before measurement), `prof_stage1_host_boundary` (correctness
+  gate + per-variant dispatch counts), `prof_stage1_feed_overlap` (regime
+  guard in-record). Smoke/unit pins in `tests/scripts/test_prof_optimizing_drivers.py`.
+  (scope: `.praxia/docs/specs/260825_jax-optimizing-skill-scope.md`)
 - **Sink provenance tracking** (`xtrax.run`): `ZarrStagingSink` now auto-captures
   static run provenance for downstream consumers. `SinkSpec` gains a required
   `run_id` and an optional JSON-Schema-style `extension_schema`. The store's
