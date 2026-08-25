@@ -48,3 +48,35 @@ def test_runtime_bundle_constructs():
     bundle = RuntimeBundle(iterator=None, model=eqx.nn.Identity())
     assert bundle.iterator is None
     assert isinstance(bundle.model, eqx.Module)
+
+
+def test_run_spec_run_id_defaults_none():
+    """run_id is optional static metadata defaulting to None (#4397)."""
+    spec = RunSpec(seed=0, axes=[], carry_specs=[], boundaries=None)
+    assert spec.run_id is None
+
+
+def test_run_spec_run_id_is_static_not_leaf():
+    """run_id rides as static aux data, not a pytree leaf (#4397)."""
+    import jax
+
+    spec = RunSpec(seed=42, axes=[], carry_specs=[], boundaries=None, run_id="run-abc123def456")
+    leaves, _ = jax.tree_util.tree_flatten(spec)
+    assert all(leaf != "run-abc123def456" for leaf in leaves)
+
+
+def test_run_spec_treedef_tracks_run_id():
+    """Differing run_id => differing treedef (the documented re-trace caveat).
+
+    Leaves stay identical; only static aux data moves, so jit re-traces per
+    distinct run_id and structural equality separates the two specs.
+    """
+    import jax
+
+    a = RunSpec(seed=1, axes=[], carry_specs=[], boundaries=None, run_id="run-a")
+    b = RunSpec(seed=1, axes=[], carry_specs=[], boundaries=None, run_id="run-b")
+    leaves_a, treedef_a = jax.tree_util.tree_flatten(a)
+    leaves_b, treedef_b = jax.tree_util.tree_flatten(b)
+    assert leaves_a == leaves_b
+    assert treedef_a != treedef_b
+    assert a != b  # eqx structural equality sees the static field

@@ -118,6 +118,22 @@ spec = SinkSpec(
 sink = make_sink(spec)  # ZarrStagingSink for "zarr", None for "none"
 ```
 
+**Driver shortcut — `derive_sink_spec`**: when your driver has a `RunSpec`,
+derive the sink spec instead of hand-building one. Run id precedence:
+explicit override > `run_spec.run_id` > auto-generated (`run-` + 12 hex
+chars, via `new_run_id()`):
+
+```python
+from pathlib import Path
+
+from xtrax.run import RunSpec, derive_sink_spec, make_sink
+
+run_spec = RunSpec(seed=0, axes=[], carry_specs=[], boundaries=None,
+                   run_id=None)  # optional static field; None = auto-generate
+sink_spec = derive_sink_spec(run_spec, output_dir=Path("/path/to/outputs"))
+sink = make_sink(sink_spec)  # format defaults to "zarr" here (not "jsonl")
+```
+
 Zarr sinks auto-capture static run provenance: git SHA/branch/dirty +
 `run_id` + UTC `created_at` on the store's root group, and a minimal
 `run_id`/`git_sha` pointer per drained key's group. Git capture never raises
