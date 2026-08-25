@@ -42,6 +42,22 @@ STRATEGIES = {
 
 @pytest.mark.parametrize("strategy_name", ["vmap", "safe_map", "dedup"])
 def test_tiling_dispatch_overhead(benchmark, strategy_name):
+    # Declaration protocol for XTRAX_BENCH_RECORD_DIR emission (see
+    # xtrax.profiling.bench): stage 1 micro-bench; scale basis stated
+    # explicitly so the record is never mistaken for molecular n_atoms.
+    benchmark.extra_info.update(
+        {
+            "xtrax_stage": 1,
+            "xtrax_n_atoms": 32,
+            "xtrax_scale_basis": "batch_rows",
+            # DedupGather rides the backward-compatible eager shim; Vmap/
+            # SafeMap go through the factory. Recorded so cross-strategy
+            # comparisons know the entry point differed.
+            "xtrax_dispatch_entry": (
+                "axis_dispatch" if strategy_name == "dedup" else "make_axis_dispatch"
+            ),
+        }
+    )
     strategy = STRATEGIES[strategy_name]()
     xs = jnp.ones((32, 4))
     if strategy_name == "dedup":

@@ -109,3 +109,24 @@ result in the scope doc): executed events carry post-fusion thunk names in
 only if compilation happens inside the window; `PjitFunction(<fn>)` counts 2×
 per Python call. Re-spike presence-not-spelling after ANY jax upgrade.
 Verify: `src/xtrax/profiling/trace.py` module docstring
+
+## Benchmark wall-clock records (opt-in via XTRAX_BENCH_RECORD_DIR)
+
+pytest-benchmark sessions under `benchmarks/` can persist one ProbeRecord
+per bench. Declaration protocol (declared-not-inferred, fail-closed): each
+bench sets `benchmark.extra_info["xtrax_stage"]` and
+`benchmark.extra_info["xtrax_n_atoms"]` (+ free-form `xtrax_*` config keys);
+undeclared benches are NEVER recorded -- they surface as
+skipped-with-reason lines in a terminal summary. Stats schema is pinned to
+the installed pytest-benchmark `Stats.fields`: durations convert s->ms with
+an `_ms` suffix, counts pass through, the display-only composite string
+`outliers` is dropped, and any unknown field aborts loudly (examine plugin
+upgrades before their numbers become citable).
+
+```bash
+XTRAX_GIT_SHA=$(git rev-parse HEAD) \
+XTRAX_BENCH_RECORD_DIR=outputs/profiling/stage1 \
+    uv run pytest benchmarks --benchmark-only
+```
+
+Verify: `src/xtrax/profiling/bench.py`, `benchmarks/conftest.py::pytest_sessionfinish`

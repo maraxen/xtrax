@@ -366,3 +366,22 @@ fabricate anchors; same reasoning as (1).
 | `_emit_probe_record` (experiments) | `src/xtrax/profiling/_emit.py` or probe driver util | generalize config vocab (D8) |
 | stage0/1/perturbation explore scripts | `scripts/probes/` (new, xtrax-flavored) | pattern port, new label registry |
 | SLURM/bathos stage-2 wrappers | NOT PORTED | controller-layer pattern only |
+
+## Phase D progress (2026-08-25, resumed session)
+
+**D-bench DONE**: benchmark wall-clock stats -> ProbeRecord bridge shipped.
+Decision D10 (bench declaration protocol): pytest-benchmark runs have no
+intrinsic stage/molecular scale, so benches DECLARE `xtrax_stage` /
+`xtrax_n_atoms` / free-form `xtrax_*` config via `benchmark.extra_info`;
+undeclared benches are never recorded (skipped-with-reason summary).
+Stats schema pinned to installed Stats.fields: durations s->ms (`_ms`
+suffix), counts passthrough, display-string composite `outliers` dropped
+(it is "iqr;stddev" text, both components already numeric fields), unknown
+fields abort loudly. Emission strictly opt-in via XTRAX_BENCH_RECORD_DIR;
+off by default so local runs never dirty the tree. All three existing bench
+modules now declare stage=1 / n_atoms=32 / scale_basis=batch_rows.
+Verify: src/xtrax/profiling/bench.py, benchmarks/conftest.py,
+tests/profiling/test_bench_records.py (incl. subprocess end-to-end).
+
+Remaining deferred: CI-data dispatch ceilings, GPU Stage-2 story, prolix-side
+dep bump, perturbation harness demo.

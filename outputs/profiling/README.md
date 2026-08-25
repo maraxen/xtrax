@@ -22,3 +22,21 @@ support STRUCTURAL and DISPATCH_COUNT claims. A TERM_RANKING over them fails
 closed by design (`xtrax.profiling.claims.assert_claim_supported`) until
 GPU-measured Stage-2 records exist -- verified live by the stage-1 driver's
 self-check.
+
+## Benchmark runs (opt-in)
+
+`benchmarks/` sessions can persist one ProbeRecord per benchmark via the
+declaration protocol in `src/xtrax/profiling/bench.py`: each bench declares
+`xtrax_stage` / `xtrax_n_atoms` (+ free-form `xtrax_*` config) through
+`benchmark.extra_info`, and nothing is recorded without a declaration. Off
+by default; emission requires:
+
+```bash
+XTRAX_GIT_SHA=$(git rev-parse HEAD) \
+XTRAX_BENCH_RECORD_DIR=outputs/profiling/stage1 \
+    uv run pytest benchmarks --benchmark-only
+```
+
+Undeclared or empty-stats benches are reported skipped-with-reason in a
+terminal summary; records land as `<probe_id>.json` named from the node id.
+
