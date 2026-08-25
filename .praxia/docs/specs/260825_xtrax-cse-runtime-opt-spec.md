@@ -418,3 +418,27 @@ silently reads aliased data. Recorded as a documented invariant with a P2 test a
 padded-slot results are never selected.
 
 Both amendments are additive to §4.3; no prior decision changes.
+
+### 10.3 CLI subprocess acceptance + runtime numerical round (round 3)
+
+- **DedupGather runtime numerics via `axis_dispatch`** (real execution path): semantically
+  coherent inputs (duplicate rows → identical payloads) give EXACT equality at k=1, k=N, and
+  N=1000/k=12; N=10000/k=30 is numerically equal but not bitwise (max |Δ| 1.9e-6 — different
+  XLA fusion layouts between vmap-per-row and gather-per-canonical). `verify_dedup_spec` must
+  therefore compare NUMERICALLY (mirrors §4.2.5 spot-check rationale).
+- **F3 (construction contract, REQUIRED)**: demonstrated that the docstring's "indices of unique
+  elements" is dangerously ambiguous — a value-as-index reading passes every existing
+  `__post_init__` invariant yet yields silently wrong results (max error ≈2e5). Pinned contract:
+  `unique_indices` = ascending FIRST-OCCURRENCE POSITIONS; slot j ↔ positions[j]. New P2 AC:
+  rows [v1,v0,v0,v1] (first-occurrence order ≠ sorted-value order) must produce
+  unique_indices [0,1], not [0,1]-by-value.
+- **F4 (padding aliasing invariant, REQUIRED)**: edge-padding repeats the LAST real index into
+  slots k..k_bucket-1, so padded slots compute a duplicate of the final canonical row. Safe only
+  while no index_map entry selects ≥k; documented as an invariant with a P2 test; custom
+  gather_fns must preserve it.
+- **CLI subprocess acceptance**: real `.venv/bin/xtrax plan --fn module:symbol --shapes ...`
+  runs end-user workflows end-to-end (exit 0, human summary with per-axis strategy/reasoning);
+  real `xtrax explain --fmt json` emits the machine contract (`_meta.schema_version == 1`,
+  axes/strategy_counts/dedup_stats keys) that parses cleanly. Two usability observations for the
+  backlog: shapes parser rejects `<float32>` (docs say `<dtype>`; only f32/f64/i32/bool aliases
+  accepted) and its error message quotes the angle-bracket form it does not accept.
