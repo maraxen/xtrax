@@ -23,6 +23,11 @@ import pytest
 
 from xtrax.cli.config import ConfigError, load_config
 
+# run_from_config now constructs a real zarr sink pre-fit (#457(1)); without
+# the [io] extra these tests fail loud instead of exercising mocked-fit logic.
+zarr = pytest.importorskip("zarr")
+
+
 FIXTURE_TOML_CONTENT = """
 schema_version = 1
 seed = 0

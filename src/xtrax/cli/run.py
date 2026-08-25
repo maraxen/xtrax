@@ -68,11 +68,7 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
     checkpoint_dir = f".xtrax/runs/{run_id}/checkpoints/"
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # AC6: always-write the manifest BEFORE training, not after. The manifest is
-    # the contract `resume` consumes; writing it only on success would leave a
-    # crashed-but-checkpointed run (the exact resume use-case) unresumable.
     run_dir = f".xtrax/runs/{run_id}"
-    write_manifest(run_dir, cfg, run_id=run_id, config_hash_val=hash_val)
 
     # #457(1): first real adoption of the derive_sink_spec seam. The CLI never
     # constructs SinkSpec literally -- precedence (explicit override >
@@ -80,6 +76,14 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
     # RunSpec is axes-free by design: the plain run verb trains without a
     # sparsity axis schedule. Its run_id pins the CLI's config-hash id so the
     # store joins manifest.json and checkpoint_dir on one key.
+    #
+    # Created BEFORE write_manifest so the sink's git-state capture cannot see
+    # the run's own untracked manifest (which would force git_dirty=True on
+    # every default-config production run). .xtrax/ is also gitignored, making
+    # capture honest regardless of ordering.
+    # Created BEFORE fit: missing zarr fails loud before compute is wasted, and
+    # a mid-fit crash leaves a root-provenance tombstone (git sha of the code
+    # that was running) instead of no trace at all.
     driver_spec = RunSpec(
         seed=cfg.seed,
         axes=[],
@@ -87,10 +91,12 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
         boundaries=None,
         run_id=run_id,
     )
-    # Created BEFORE fit: missing zarr fails loud before compute is wasted, and
-    # a mid-fit crash leaves a root-provenance tombstone (git sha of the code
-    # that was running) instead of no trace at all.
     sink = make_sink(derive_sink_spec(driver_spec, output_dir=Path(run_dir) / "metrics.zarr"))
+
+    # AC6: always-write the manifest BEFORE training, not after. The manifest is
+    # the contract `resume` consumes; writing it only on success would leave a
+    # crashed-but-checkpointed run (the exact resume use-case) unresumable.
+    write_manifest(run_dir, cfg, run_id=run_id, config_hash_val=hash_val)
 
     engine = Engine(trainer=Trainer(loss_fn, optimizer), callbacks=())
     final_state = engine.fit_sync(

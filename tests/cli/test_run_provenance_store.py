@@ -1,22 +1,23 @@
 """#457(1) acceptance tests: run CLI persists provenance through derive_sink_spec.
 
 These drive the REAL public interface (`run_from_config`) end-to-end against a
-real zarr store -- no mocks for the persistence layer itself. The single
-mocked surface (Engine.fit_sync in the crash-window test) exists solely to
-inject a mid-training failure.
+real zarr store AND real orbax checkpoints -- no mocks for the persistence
+layers. The single mocked surface (Engine in the crash-window test) exists
+solely to inject a mid-training failure.
 
 Contract under test:
 - store lands at `.xtrax/runs/<run_id>/metrics.zarr`
 - store root `run_id` == manifest `run_id` (single-sourced join key)
 - `("run", "final")` record attrs echo config_hash/seed/num_epochs/
   checkpoint_dir + resolved component class names
-- finalize() ran (.zmetadata consolidated)
+- finalize() consolidated the store (open_consolidated succeeds)
 - CLI layer never constructs SinkSpec literally (seam boundary)
 """
 
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -26,19 +27,6 @@ zarr = pytest.importorskip("zarr")
 
 from tests.cli.test_run_from_config import _make_cfg  # noqa: E402
 from xtrax.cli.run import run_from_config  # noqa: E402
-
-
-def _real_fit_without_orbax():
-    """Stub ONLY the orbax checkpoint writer during real fits.
-
-    Latent main-branch bug (found by these tests, out of scope here):
-    run_from_config passes a RELATIVE checkpoint dir and orbax refuses
-    non-absolute paths -- every pre-existing CLI test mocks Engine.fit_sync,
-    so the real fit->checkpoint path had never been exercised end-to-end.
-    Everything else here is real: DataModule iteration, trainer steps,
-    adamw schedule, zarr persistence through the seam.
-    """
-    return patch("xtrax.checkpoint.orbax.save_checkpoint")
 
 
 def _e2e_cfg(**overrides):
@@ -62,8 +50,7 @@ def _run_and_load_manifest(monkeypatch, tmp_path, **run_kwargs):
     """Run one real training pass in tmp cwd; return (manifest dict, run_id)."""
     monkeypatch.chdir(tmp_path)
     cfg = _e2e_cfg()
-    with _real_fit_without_orbax():
-        final_state = run_from_config(cfg, **run_kwargs)
+    final_state = run_from_config(cfg, **run_kwargs)
     assert final_state is not None
     runs_root = Path(".xtrax/runs")
     candidates = sorted(p for p in runs_root.iterdir() if p.is_dir())
@@ -102,9 +89,13 @@ def test_final_record_attrs_match_manifest(monkeypatch, tmp_path) -> None:
     assert attrs["seed"] == manifest["seed"]
     assert attrs["num_epochs"] == manifest["num_epochs"]
     assert attrs["checkpoint_dir"] == manifest["checkpoint_dir"]
-    for name in ("model", "optimizer", "loss", "data"):
+    for name, expected in (("model", "Linear"), ("data", "DataModule")):
+        # 'data' records the DataModule WRAPPER (what train_iter actually
+        # drives), not the raw factory product -- that is the honest value.
+        assert attrs[name] == expected, f"resolved {name} class name must be recorded exactly"
+    for name in ("optimizer", "loss"):
         assert isinstance(attrs.get(name), str) and attrs[name], (
-            f"resolved {name} class name must be recorded as a non-empty string"
+            f"resolved {name} must be recorded as a non-empty string"
         )
     # Per-key provenance pointer stamped by ZarrStagingSink.drain().
     assert final_group.attrs["run_id"] == manifest["run_id"]
@@ -115,7 +106,9 @@ def test_explicit_run_id_flows_to_store(monkeypatch, tmp_path) -> None:
     """AC1/AC3: caller-supplied run_id is the single id across manifest + store."""
     monkeypatch.chdir(tmp_path)
     cfg = _e2e_cfg()
-    with _real_fit_without_orbax():
+    # Outside any git repo the sink must degrade HONESTLY: warn + record
+    # git_sha='unknown' rather than silently skipping provenance.
+    with pytest.warns(UserWarning, match="could not determine git state"):
         run_from_config(cfg, run_id="explicit-test-id")
     manifest = json.loads(Path(".xtrax/runs/explicit-test-id/manifest.json").read_text())
     assert manifest["run_id"] == "explicit-test-id"
@@ -124,30 +117,25 @@ def test_explicit_run_id_flows_to_store(monkeypatch, tmp_path) -> None:
 
 
 def test_store_is_finalized_after_run(monkeypatch, tmp_path) -> None:
-    """AC5 lifecycle proof: finalize() consolidates metadata exactly once.
+    """AC5 lifecycle proof: the persisted store opens CONSOLIDATED post-run.
 
-    zarr v3 note: consolidation updates zarr.json docs rather than writing a
-    v2-style .zmetadata file, so the observable here is the consolidate call
-    itself (wrapped, not replaced) plus a fully readable store afterwards.
+    zarr v3 evidence: zarr.open_consolidated succeeds only after
+    finalize()'s consolidate_metadata call, giving an artifact-based,
+    refactor-tolerant observable (no call-spies).
     """
     monkeypatch.chdir(tmp_path)
     cfg = _e2e_cfg()
-    with (
-        _real_fit_without_orbax(),
-        patch(
-            "zarr.consolidate_metadata",
-            wraps=zarr.consolidate_metadata,
-        ) as spy,
-    ):
+    with warnings.catch_warnings():
+        # zarr warns that consolidation is not yet in the v3 spec; expected.
+        warnings.filterwarnings("ignore", message=".*not part in the Zarr format 3 spec.*")
         run_from_config(cfg)
-    assert spy.call_count == 1, "finalize() must consolidate store metadata exactly once"
-    # Store fully readable post-run: root join key intact, final record present.
     runs_root = Path(".xtrax/runs")
     run_dir = next(p for p in runs_root.iterdir() if (p / "manifest.json").exists())
-    root = zarr.open_group(str(run_dir / "metrics.zarr"), mode="r")
-    assert root.attrs["run_id"] == json.loads((run_dir / "manifest.json").read_text())["run_id"]
-    final_group = root["run/final"]  # nested: 'run' -> 'final'
-    assert final_group.attrs["config_hash"], "final record must be present post-finalize"
+    store = str(run_dir / "metrics.zarr")
+    consolidated = zarr.open_consolidated(store, mode="r")
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert consolidated.attrs["run_id"] == manifest["run_id"]
+    assert consolidated["run/final"].attrs["config_hash"] == manifest["config_hash"]
 
 
 def test_crash_mid_fit_leaves_provenance_tombstone(monkeypatch, tmp_path) -> None:
@@ -169,7 +157,11 @@ def test_crash_mid_fit_leaves_provenance_tombstone(monkeypatch, tmp_path) -> Non
     assert root.attrs["run_id"], "tombstone must carry the run's provenance record"
     assert "git_sha" in root.attrs
     # No final record staged: the crash happened before any stage call.
-    assert "run/final" not in {k for k in _group_keys(root)}
+    # Compare against TOP-LEVEL group names ('run'), not joined paths --
+    # 'run/final' is a nested path and would make this assertion vacuous.
+    assert "run" not in set(_group_keys(root)), (
+        "crashed run must not carry a ('run','final') record"
+    )
 
 
 def _group_keys(group):
@@ -178,6 +170,18 @@ def _group_keys(group):
         return list(group.group_keys())
     except AttributeError:  # pragma: no cover - older zarr
         return [k for k, v in group.items() if hasattr(v, "groups")]
+
+
+def test_real_fit_saves_checkpoints_with_relative_cli_dir(monkeypatch, tmp_path) -> None:
+    """Regression proof for the orbax boundary fix: the CLI's RELATIVE
+    checkpoint dir (.xtrax/runs/<id>/checkpoints/) must survive a real
+    epoch-end save (orbax rejects relative paths; get_checkpoint_manager now
+    resolves). No stubs: full fit including checkpoint persistence."""
+    monkeypatch.chdir(tmp_path)
+    cfg = _e2e_cfg()
+    run_from_config(cfg)
+    checkpoints = list(Path(".xtrax/runs").glob("*/checkpoints/*"))
+    assert checkpoints, "epoch-end checkpoint must be persisted by the real fit"
 
 
 def test_cli_layer_never_constructs_sink_spec_literally() -> None:

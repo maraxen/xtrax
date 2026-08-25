@@ -142,7 +142,10 @@ record under key `("run", "final")` echoing `config_hash`/`seed`/
 `num_epochs`/`checkpoint_dir` + resolved component class names, then drains
 and finalizes. Sink construction happens BEFORE fit: missing `[io]` extra
 fails loud before compute; a mid-fit crash leaves a root-provenance
-tombstone (git sha of the code under test) instead of no trace.
+tombstone (git sha of the code under test) instead of no trace. Scope
+note: `xtrax resume` does not yet persist stores (it drives fit directly);
+re-running with the SAME explicit run_id refreshes the store's root
+provenance attrs in place.
 
 Zarr sinks auto-capture static run provenance: git SHA/branch/dirty +
 `run_id` + UTC `created_at` on the store's root group, and a minimal

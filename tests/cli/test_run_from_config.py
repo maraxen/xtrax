@@ -20,6 +20,11 @@ from xtrax.cli.hash import config_hash
 from xtrax.cli.loader import CLIImportError
 from xtrax.cli.run import run_from_config
 
+# run_from_config now constructs a real zarr sink pre-fit (#457(1)); without
+# the [io] extra these tests fail loud instead of exercising mocked-fit logic.
+zarr = pytest.importorskip("zarr")
+
+
 
 def _make_cfg(**overrides):
     defaults = dict(

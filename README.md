@@ -30,9 +30,13 @@ For the full rationale — why this layer has to live above the JIT boundary —
 
 ```bash
 pip install xtrax
+# For `xtrax run` provenance persistence (zarr metrics stores), also:
+pip install "xtrax[io]"
 ```
 
-Requires Python 3.13 or later.
+Requires Python 3.13 or later. The `xtrax run` CLI persists a provenance
+store (`.xtrax/runs/<run_id>/metrics.zarr`) for every invocation by default
+and fails loud before training if the `[io]` extra is missing.
 
 ## Quick Start
 

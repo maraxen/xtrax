@@ -28,10 +28,15 @@ def make_loss():
 
 
 class _TinyDataset:
-    """Minimal dataset: returns (x, y) pairs."""
+    """Minimal dataset: returns (x, y) tuples."""
 
     def __len__(self):
         return 4
+
+    def __iter__(self):
+        # REQUIRED for real iteration: legacy getitem-only protocol loops
+        # forever under DataModule.train_iter (jnp ops never raise IndexError).
+        yield from (self[i] for i in range(len(self)))
 
     def __getitem__(self, idx):
         x = jnp.ones(2) * idx
