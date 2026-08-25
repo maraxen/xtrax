@@ -151,6 +151,42 @@ def _resolve_scope(
     return None
 
 
+def _blocks_with_labels(hlo_text: str, known_labels: frozenset[str]) -> dict[str, list[str]]:
+    """{named_block: [known labels voted by op_name lines inside it]}.
+
+    Brace-stack scan handling arbitrarily nested XLA pretty-printed HLO:
+    real-model dumps put fused bodies INLINE under their parent computation,
+    which defeats line-based computation splitting. Every op_name-bearing
+    line votes for its label in favor of the innermost open named block AND
+    all enclosing ones (containment semantics); callers take the majority.
+    """
+    header_re = re.compile(r"(?:^|\s)%?([A-Za-z_][\w.\-]*)\s*\([^{}]*)\s*\{\s*$")
+    opname_re = re.compile(r'op_name="([^"]*)"')
+    close_re = re.compile(r"^}[\s,;]*$")
+
+    votes: dict[str, list[str]] = {}
+    stack: list[str] = []
+    pending_header = ""
+    for raw_line in hlo_text.splitlines():
+        line = raw_line.rstrip()
+        if stack:
+            for m in opname_re.finditer(line):
+                cand = _deepest_known_label(m.group(1), known_labels)
+                if cand is not None:
+                    for name in stack:
+                        votes.setdefault(name, []).append(cand)
+        while True:
+            m = header_re.search(line)
+            if not m:
+                break
+            name = m.group(1)
+            stack.append(name)
+            line = line[m.end() :]
+        if stack and close_re.match(line.strip()):
+            stack.pop()
+    return votes
+
+
 def scope_map_from_hlo_text(hlo_text: str, known_labels: frozenset[str]) -> dict[str, str | None]:
     """Map every instruction name (in every computation) to its scope.
 
@@ -177,6 +213,59 @@ def scope_map_from_hlo_text(hlo_text: str, known_labels: frozenset[str]) -> dict
             if instr_name in result:
                 continue
             result[instr_name] = _resolve_scope(instr_name, lines, computations, known_labels)
+
+    # Computation-level entries (first external GPU dogfood, 2026-08-25):
+    # executed trace events name FUSED computations ("copy_bitcast_fusion.4",
+    # "ynn_fusion.11"), never their inner instructions -- so without these
+    # entries, real-model traces attribute NOTHING even though every inner
+    # instruction carries op_name metadata. Resolve each computation from its
+    # own body: deepest-known-label of the first instruction that yields one.
+    # A computation mixing several labels keeps its first hit (exclusive-time
+    # attribution to a dominant scope beats dropping the row entirely); fully
+    # unlabeled bodies map to None exactly as instructions do.
+    for comp_name, lines in computations.items():
+        if comp_name in result:
+            continue
+        votes: list[str] = []
+        for line in lines:
+            m = _OP_NAME_RE.search(line)
+            if m:
+                cand = _deepest_known_label(m.group(1), known_labels)
+                if cand is not None:
+                    votes.append(cand)
+                    continue
+            mm = _INSTR_NAME_RE.match(line)
+            if mm:
+                cand = _resolve_scope(mm.group(2), lines, computations, known_labels)
+                if cand is not None:
+                    votes.append(cand)
+        # Majority vote across the body's instructions: HLO emission order is
+        # not semantic, so first-hit attribution would be order-fragile. A
+        # tie resolves deterministically to the earliest-inserted label.
+        if votes:
+            counts: dict[str, int] = {}
+            for v in votes:
+                counts[v] = counts.get(v, 0) + 1
+            label = max(counts.items(), key=lambda kv: kv[1])[0]
+        else:
+            label = None
+        result[comp_name] = label
+    # Named-block votes (brace-stack scan above): covers inline fused bodies
+    # that _split_computations cannot see. Majority per block, ties to first
+    # inserted -- same policy as instruction-level resolution.
+    try:
+        block_votes = _blocks_with_labels(hlo_text, known_labels)
+    except Exception:  # noqa: BLE001 -- best-effort enrichment; core map stands
+        block_votes = {}
+    for block_name, vlist in block_votes.items():
+        if block_name in result:
+            continue
+        if vlist:
+            counts: dict[str, int] = {}
+            for v in vlist:
+                counts[v] = counts.get(v, 0) + 1
+            result[block_name] = max(counts.items(), key=lambda kv: kv[1])[0]
+
     return result
 
 

@@ -151,3 +151,54 @@ ENTRY %main.1 (x: f32[]) -> f32[] {
     known = frozenset({"outer", "inner"})
     scope_map = scope_map_from_hlo_text(hlo_text, known)
     assert scope_map["op"] == "inner"
+
+
+def _fusion_hlo() -> str:
+    """Synthetic fused-model HLO: ENTRY calls a kLoop fusion whose body's
+    instructions carry op_name paths under the ebm_state_axis scope -- the
+    exact shape real aminx/ConditionalDecode traces take after XLA fusion."""
+    return """
+ENTRY %main (p0: f32[8]) -> f32[] {
+  %x = f32[8] parameter(0)
+  %f = f32[8] fusion(f32[8] %x), kind=kLoop, calls=%fused_computation
+  ROOT %r = f32[] reduce(f32[8] %f, f32[], directions={f}), to_apply=%sum
+}
+
+%fused_computation (param: f32[8]) -> f32[8] {
+  %sin = f32[8] sin(f32[8] %param), metadata={op_name="jit(_decode)/ebm_state_axis/sin"}
+  %mul = f32[8] multiply(f32[8] %sin, f32[8] %sin), metadata={op_name="jit(_decode)/ebm_conditional_decode/mul"}
+  ROOT %out = f32[8] negate(f32[8] %mul), metadata={op_name="jit(_decode)/ebm_conditional_decode/negate"}
+}
+"""
+
+
+def test_fusion_computation_names_resolve_to_scope_labels():
+    hlo = _fusion_hlo()
+    sm = scope_map_from_hlo_text(hlo, frozenset({"ebm_state_axis", "ebm_conditional_decode"}))
+    # The executed trace event names the FUSED computation, not its inner
+    # instructions -- it must resolve like its dominant scope.
+    assert sm.get("fused_computation") == "ebm_conditional_decode"
+    # Inner instructions still resolve individually.
+    assert sm.get("sin") == "ebm_state_axis"
+
+
+def test_parse_scopes_attributes_fused_events():
+    import time
+
+    hlo = _fusion_hlo()
+    sm = scope_map_from_hlo_text(hlo, frozenset({"ebm_state_axis", "ebm_conditional_decode"}))
+    events = [
+        {
+            "name": "fused_computation",
+            "ph": "X",
+            "dur": 250,
+            "args": {"hlo_op": "fused_computation"},
+        }
+    ]
+    before = time.perf_counter()
+    scopes = parse_scopes(events, sm)
+    build_s = time.perf_counter() - before
+    assert set(scopes) == {"ebm_conditional_decode"}
+    seconds, n_occ = scopes["ebm_conditional_decode"]
+    assert n_occ == 1
+    assert abs(seconds - 0.00025) < build_s + 1e-6
