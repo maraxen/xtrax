@@ -3,12 +3,14 @@
 import dataclasses
 import os
 import uuid
+from pathlib import Path
 
 from xtrax.cli.config import TrainConfig
 from xtrax.cli.hash import config_hash as compute_config_hash
 from xtrax.cli.manifest import write_manifest
 from xtrax.cli.resolve import resolve_components
 from xtrax.engine.engine import Engine
+from xtrax.run import RunSpec, derive_sink_spec, make_sink
 from xtrax.training import ResumableState, init_state
 from xtrax.training.trainer import Trainer
 
@@ -45,6 +47,9 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
     AC11: section-labeled CLIImportError on bad import paths
     AC13/M5: callbacks=() — no logging (explicit MVP limitation)
     M4/AC3: DataModule wrap is ALWAYS unconditional (no isinstance branch)
+    #457(1): output sink built exclusively via derive_sink_spec/make_sink;
+    provenance store persisted at .xtrax/runs/<run_id>/metrics.zarr with the
+    CLI's run_id as join key (matches manifest.json + checkpoint_dir).
     """
     resolved = resolve_components(dataclasses.asdict(cfg), cfg.num_epochs)
     model = resolved.model
@@ -69,6 +74,24 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
     run_dir = f".xtrax/runs/{run_id}"
     write_manifest(run_dir, cfg, run_id=run_id, config_hash_val=hash_val)
 
+    # #457(1): first real adoption of the derive_sink_spec seam. The CLI never
+    # constructs SinkSpec literally -- precedence (explicit override >
+    # spec.run_id > generated) is single-sourced in xtrax.run.sink. The driver
+    # RunSpec is axes-free by design: the plain run verb trains without a
+    # sparsity axis schedule. Its run_id pins the CLI's config-hash id so the
+    # store joins manifest.json and checkpoint_dir on one key.
+    driver_spec = RunSpec(
+        seed=cfg.seed,
+        axes=[],
+        carry_specs=[],
+        boundaries=None,
+        run_id=run_id,
+    )
+    # Created BEFORE fit: missing zarr fails loud before compute is wasted, and
+    # a mid-fit crash leaves a root-provenance tombstone (git sha of the code
+    # that was running) instead of no trace at all.
+    sink = make_sink(derive_sink_spec(driver_spec, output_dir=Path(run_dir) / "metrics.zarr"))
+
     engine = Engine(trainer=Trainer(loss_fn, optimizer), callbacks=())
     final_state = engine.fit_sync(
         state,
@@ -76,5 +99,24 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
         num_epochs=cfg.num_epochs,
         checkpoint_dir=checkpoint_dir,
     )
+
+    # Post-fit record: echo the manifest's identity fields + resolved component
+    # class names into the ('run', 'final') group so one zarr read answers
+    # "what ran here". drain() stamps run_id/git_sha onto the key group too.
+    sink.stage(
+        ("run", "final"),
+        attrs={
+            "config_hash": hash_val,
+            "seed": cfg.seed,
+            "num_epochs": cfg.num_epochs,
+            "model": type(model).__name__,
+            "optimizer": type(optimizer).__name__,
+            "loss": type(loss_fn).__name__,
+            "data": type(data).__name__,
+            "checkpoint_dir": checkpoint_dir,
+        },
+    )
+    sink.drain()
+    sink.finalize()
 
     return final_state
