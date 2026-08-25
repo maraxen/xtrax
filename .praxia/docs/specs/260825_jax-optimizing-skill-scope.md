@@ -27,6 +27,7 @@ the gap this skill closes.
 | Keyed staging sink | `xtrax.run.zarr_sink.ZarrStagingSink` | io_callback streaming drain pattern |
 | Shape bucketing | `xtrax.tiling.bucket` | bounds recompiles for variable-length axes |
 | Donation helper (only consumer-facing one) | `xtrax.sparse.inference.sparse_filter_jit` | donate plumbing exists here, nowhere else |
+| Scan-based gradient accumulation | `xtrax.training.grad.accumulate_grads` | microbatches via lax.scan; Tier-3 relevant (carry shape, fusion) |
 
 ### What does NOT exist
 
