@@ -335,3 +335,32 @@ nondeterminism → numeric comparison; bidirectional donation hazard; static-siz
 data-dependent dedup (`jnp.unique(size=)`, BCOO nse); disk stores inherit code-execution trust
 (v1 declines disk persistence, N2 stands). Code-grounded corrections from challenger r1 cited
 inline throughout §4.
+
+## 10. Empirical verification appendix (independent post-verdict execution, 260825)
+
+After verdict ACCEPT, the two load-bearing mechanisms were REIMPLEMENTED INDEPENDENTLY from the
+spec text (not from challenger code) and executed on the project venv (JAX 0.10.2), plus the
+component-C output contract was exercised through xtrax's real public interfaces:
+
+- **§4.1 fixpoint algorithm**: verbatim reimplementation converges (3 rounds) on AC1's flagship
+  function and reports exactly TWO duplicate classes ({sin: 2}, {mul: 2}); clean control fn
+  yields zero classes. AC1 achievable by the specified algorithm alone.
+- **§4.2.2 const-folded program digest**: bare text digest PROVABLY collides for two programs
+  differing only in captured 64-elem array constant (str() byte-identical); folded digest
+  discriminates them; equal programs produce equal folded digests (determinism direction).
+- **A1′ hash non-determinism**: re-pinned — three fresh traces of an equal-text program yield
+  three distinct `hash(ClosedJaxpr)` values while text remains stable.
+- **Component C real-path exercise (acceptance path)**: an exact-stage-built
+  `DedupSpec(axis_name="batch", unique_indices, index_map, k=30)` over N=10000 rows passes
+  `__post_init__`, round-trips through `to_dedup_gather()` (k_bucket 30→32 =
+  `get_k_bucket(30)`), and drives the REAL planner end-to-end via the documented injection
+  route — `BatchPlanner(dedup_specs=[spec])` (constructor param, `plan.py:150/184`) — producing
+  a genuine `DedupGather` AxisDecision with the expected reasoning string. NOTE: `plan()` takes
+  NO dedup_specs kwarg; the constructor is the injection seam.
+- **F1 (validates self-assertion requirement)**: `DedupSpec.__post_init__` demonstrably does NOT
+  reject a half-length index_map — the synthesizer-side `len(index_map)==N` self-assertion in
+  §4.3 is mandatory, now proven rather than assumed.
+- **F2 (validates collision design)**: the silent last-wins hazard is LIVE — two caller-declared
+  specs on axis 'batch' (k=30 then k=5) silently plan with k=5. `merge_dedup_specs` /
+  `DedupSpecCollisionError` address a demonstrated defect, and the backlog migration of plan()
+  onto the helper is justified by observed behavior.
