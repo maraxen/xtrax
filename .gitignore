@@ -17,3 +17,8 @@ logs/
 coverage.xml
 .coverage_html/
 docs/_build/
+
+# Profiling probe trace artifacts (large; only ProbeRecords + HLO text are
+# committed -- prolix convention: traces stay off-repo)
+outputs/profiling/**/_traces/
+.fastembed_cache/

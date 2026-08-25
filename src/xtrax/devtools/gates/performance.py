@@ -17,6 +17,7 @@ from xtrax.devtools.baseline import (
     update_metric,
 )
 from xtrax.devtools.emit import append_finding, emit_metric_finding
+from xtrax.devtools.gates._dispatch_probe import measure_dispatch_counts
 from xtrax.devtools.gates._trace_probe import (
     ProbeResult,
     import_probe,
@@ -24,12 +25,17 @@ from xtrax.devtools.gates._trace_probe import (
     run_trace_gate,
     run_trace_probe,
 )
+from xtrax.profiling.emitters import emit_probe_record
 
 METRIC_KEY = "performance.trace_violation_count"
 WALL_TIME_METRIC_KEY = "performance.wall_time_median_ms"
+DISPATCH_METRIC_KEY = "performance.dispatch_violation_count"
 DIMENSION = "performance"
 DEFAULT_TARGETS_PATH = Path("audit/performance_targets.toml")
 WALL_TIME_SAMPLES = 3
+# D6-style anchoring: records land under the REPOSITORY's outputs/, never the
+# caller's cwd.
+DEFAULT_PROBE_RECORD_DIR = Path(__file__).resolve().parents[4] / "outputs" / "profiling" / "gate"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +43,15 @@ class ProbeSpec:
     qualname: str
     max_traces: int
     trace_probe: str | None = None
+    # Phase C profiler-backed probe kinds -- all opt-in; absent fields leave
+    # gate behavior byte-identical to the pre-profiling configuration.
+    max_compilations: int | None = None
+    max_jit_traces: int | None = None
+    emit_probe_record: bool = False
+
+    @property
+    def has_dispatch_ceilings(self) -> bool:
+        return self.max_compilations is not None or self.max_jit_traces is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +70,7 @@ class GateResult:
     findings_emitted: int
     baseline_updated: bool
     metric_key: str = METRIC_KEY
+    dispatch_violation_count: int = 0
 
 
 def load_performance_targets(path: Path) -> PerformanceTargets:
@@ -90,11 +106,30 @@ def load_performance_targets(path: Path) -> PerformanceTargets:
             raise ValueError(msg)
         trace_probe = entry.get("trace_probe")
         probe_value = trace_probe if isinstance(trace_probe, str) else None
+
+        def _optional_ceiling(name: str) -> int | None:
+            raw = entry.get(name)
+            if raw is None:
+                return None
+            if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+                # bool rejection: TOML `max_compilations = true` would
+                # otherwise silently become ceiling 1 (review finding).
+                msg = f"probe {name} must be a positive int for {qualname!r}, got {raw!r}"
+                raise ValueError(msg)
+            return raw
+
+        emit_record_raw = entry.get("emit_probe_record", False)
+        if not isinstance(emit_record_raw, bool):
+            msg = f"probe emit_probe_record must be a bool for {qualname!r}"
+            raise ValueError(msg)
         probes.append(
             ProbeSpec(
                 qualname=qualname,
                 max_traces=max_traces,
                 trace_probe=probe_value,
+                max_compilations=_optional_ceiling("max_compilations"),
+                max_jit_traces=_optional_ceiling("max_jit_traces"),
+                emit_probe_record=emit_record_raw,
             )
         )
 
@@ -153,6 +188,111 @@ def _measure_wall_time_median_ms(
     return float(statistics.median(timings_ms))
 
 
+def _emit_dispatch_failure(
+    spec: ProbeSpec,
+    counter: str,
+    observed: int,
+    ceiling: int,
+    *,
+    audits_path: Path,
+    run_id: str | None,
+) -> None:
+    record = emit_metric_finding(
+        dim=DIMENSION,
+        severity="major",
+        file_line=f"probe:{spec.qualname}",
+        evidence=(f"{counter}={observed} exceeded max_{counter}={ceiling} for {spec.qualname}"),
+        rule_id="performance.dispatch_count",
+        symbol_qualname=spec.qualname,
+        payload={
+            "violation_kind": "dispatch_count",
+            "counter": counter,
+            "observed": observed,
+            "ceiling": ceiling,
+        },
+        run_id=run_id,
+    )
+    append_finding(record, audits_path=audits_path)
+
+
+def _run_dispatch_probes(
+    targets: PerformanceTargets,
+    *,
+    audits_path: Path,
+    run_id: str | None,
+    probe_record_dir: Path,
+) -> tuple[int, int]:
+    """Opt-in dispatch tripwires + ProbeRecord emission; returns (violations, emitted)."""
+    violations = 0
+    emitted = 0
+    for spec in targets.probes:
+        if not (spec.has_dispatch_ceilings or spec.emit_probe_record):
+            continue
+        try:
+            result = measure_dispatch_counts(spec.qualname, spec.trace_probe)
+        except Exception as exc:  # noqa: BLE001 — a broken probe reports; it must not crash the gate
+            finding = emit_metric_finding(
+                dim=DIMENSION,
+                severity="major",
+                file_line=f"probe:{spec.qualname}",
+                evidence=(f"dispatch probe for {spec.qualname} failed to run: {exc}"),
+                rule_id="performance.dispatch_probe_error",
+                symbol_qualname=spec.qualname,
+                payload={"violation_kind": "probe_error"},
+                run_id=run_id,
+            )
+            append_finding(finding, audits_path=audits_path)
+            violations += 1
+            emitted += 1
+            continue
+        if result.skipped:
+            if spec.emit_probe_record:
+                # Loud, not silent (review finding): an opt-in record that
+                # cannot be emitted must be visible to the operator.
+                import sys
+
+                print(
+                    f"WARNING: dispatch probe for {spec.qualname!r} was "
+                    "skipped, so its opt-in ProbeRecord was NOT emitted",
+                    file=sys.stderr,
+                )
+            continue
+        for counter, ceiling in (
+            ("compilations", spec.max_compilations),
+            ("jit_traces", spec.max_jit_traces),
+        ):
+            if ceiling is None:
+                continue
+            observed = result.counts.get(f"n_{counter}", 0)
+            if observed > ceiling:
+                _emit_dispatch_failure(
+                    spec,
+                    f"n_{counter}",
+                    observed,
+                    ceiling,
+                    audits_path=audits_path,
+                    run_id=run_id,
+                )
+                violations += 1
+                emitted += 1
+        if spec.emit_probe_record:
+            safe = spec.qualname.replace(".", "_")
+            emit_probe_record(
+                path=probe_record_dir / f"gate_{safe}.json",
+                probe_id=f"perf_gate_{safe}",
+                stage=1,
+                n_atoms=1,
+                platform="cpu",
+                metrics=dict(result.counts),
+                config={
+                    "qualname": spec.qualname,
+                    "source": "performance_gate",
+                    "axis_note": ("scale-free gate artifact; n_atoms placeholder by contract"),
+                },
+            )
+    return violations, emitted
+
+
 def run_performance_gate(
     targets_path: Path,
     audits_path: Path,
@@ -160,6 +300,7 @@ def run_performance_gate(
     *,
     run_id: str | None = None,
     write_baseline: bool = True,
+    probe_record_dir: Path | None = None,
 ) -> GateResult:
     """Run trace-count gate (blocking) and record wall-time median (non-blocking)."""
     targets = load_performance_targets(targets_path)
@@ -204,12 +345,34 @@ def run_performance_gate(
         append_finding(record, audits_path=audits_path)
         emitted += 1
 
+    # --- Phase C: opt-in dispatch tripwires + ProbeRecord emission --------
+    record_dir = probe_record_dir if probe_record_dir is not None else DEFAULT_PROBE_RECORD_DIR
+    dispatch_violation_count, extra_emitted = _run_dispatch_probes(
+        targets,
+        audits_path=audits_path,
+        run_id=run_id,
+        probe_record_dir=record_dir,
+    )
+    emitted += extra_emitted
+
     baseline = load_baseline(path=baseline_path)
     passes_gate, should_update = evaluate_metric(
         baseline,
         METRIC_KEY,
         float(trace_violation_count),
     )
+    dispatch_ceilings_configured = any(spec.has_dispatch_ceilings for spec in targets.probes)
+    if dispatch_ceilings_configured:
+        # Opt-in ratchet: only evaluated when a probe actually configures
+        # ceilings -- otherwise the bootstrap-on-missing-key semantics would
+        # stamp a 0.0 entry into every repo's baseline uninvited.
+        dispatch_passes, dispatch_should_update = evaluate_metric(
+            baseline,
+            DISPATCH_METRIC_KEY,
+            float(dispatch_violation_count),
+        )
+        passes_gate = passes_gate and dispatch_passes
+        should_update = should_update or dispatch_should_update
     baseline_updated = False
     if passes_gate and should_update and write_baseline:
         tightened = update_metric(
@@ -231,6 +394,19 @@ def run_performance_gate(
                     wall_time_median_ms,
                     "best_ever",
                 )
+        if dispatch_ceilings_configured:
+            _, dispatch_tighten = evaluate_metric(
+                tightened,
+                DISPATCH_METRIC_KEY,
+                float(dispatch_violation_count),
+            )
+            if dispatch_tighten:
+                tightened = update_metric(
+                    tightened,
+                    DISPATCH_METRIC_KEY,
+                    float(dispatch_violation_count),
+                    "minimize",
+                )
         save_baseline(tightened, path=baseline_path)
         baseline_updated = True
 
@@ -240,4 +416,5 @@ def run_performance_gate(
         wall_time_median_ms=wall_time_median_ms,
         findings_emitted=emitted,
         baseline_updated=baseline_updated,
+        dispatch_violation_count=dispatch_violation_count,
     )

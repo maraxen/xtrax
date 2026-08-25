@@ -9,4 +9,7 @@ select = ["E", "F", "I", "UP"]
 "tests/**/*.py" = ["F722", "F821"]
 "tests/eda/test_render.py" = ["E402", "F841"]
 "tests/eda/test_render_errors.py" = ["E402"]
+# HLO-text fixture lines must stay unwrapped: scope_map_from_hlo_text's
+# op_name regexes match within a single line.
+"tests/profiling/test_trace_parse.py" = ["E501"]
 "port/reference/**/*.py" = ["UP047"]

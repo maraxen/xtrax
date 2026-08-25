@@ -345,3 +345,366 @@ def test_audit_performance_gate_cli_exits_zero(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr or result.stdout
     assert "PASS" in result.stdout
     assert WALL_TIME_METRIC_KEY in result.stdout
+
+
+# --- Phase C: profiler-backed dispatch tripwires + ProbeRecord emission -----
+
+
+def test_repo_targets_have_no_dispatch_config() -> None:
+    """No-behavior-change guard: the repo's own TOML stays pre-Phase-C."""
+    from xtrax.devtools.gates.performance import load_performance_targets
+
+    targets = load_performance_targets(TARGETS_PATH)
+    for spec in targets.probes:
+        assert spec.max_compilations is None
+        assert spec.max_jit_traces is None
+        assert spec.emit_probe_record is False
+
+
+def test_load_performance_targets_parses_dispatch_fields(tmp_path: Path) -> None:
+    from xtrax.devtools.gates.performance import load_performance_targets
+
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            f"""
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+            max_traces_default = 1
+
+            [[probes]]
+            qualname = "stable_kernel_fixture.kernel"
+            max_traces = 1
+            trace_probe = "{PROBE_STABLE}"
+            max_compilations = 2
+            max_jit_traces = 8
+            emit_probe_record = true
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    spec = load_performance_targets(targets_path).probes[0]
+    assert spec.max_compilations == 2
+    assert spec.max_jit_traces == 8
+    assert spec.emit_probe_record is True
+
+
+def test_load_performance_targets_rejects_bad_ceiling(tmp_path: Path) -> None:
+    from xtrax.devtools.gates.performance import load_performance_targets
+
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            f"""
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+            max_traces_default = 1
+
+            [[probes]]
+            qualname = "stable_kernel_fixture.kernel"
+            max_traces = 1
+            trace_probe = "{PROBE_STABLE}"
+            max_compilations = 0
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="max_compilations"):
+        load_performance_targets(targets_path)
+
+
+def _write_kernel_module(tmp_path: Path, name: str) -> None:
+    import sys
+
+    module_path = tmp_path / f"{name}.py"
+    module_path.write_text(
+        textwrap.dedent(
+            """
+            import jax.numpy as jnp
+
+            def kernel(x):
+                return x + 1
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    sys.path.insert(0, str(tmp_path))
+
+
+def test_dispatch_tripwire_fails_on_tight_ceiling(tmp_path: Path) -> None:
+    """Real traced run: any sane kernel emits >=1 jit-trace (D9), so a
+    ceiling of 1 is always exceeded -- deterministic fail-closed check.
+
+    Seeding DISPATCH_METRIC_KEY=0.0 mirrors the existing trace-count tests:
+    under the baseline ratchet's bootstrap-on-missing-key semantics
+    (evaluate_metric returns (True, True) for an untracked metric), blocking
+    starts once the committed baseline anchors the metric -- first-ever runs
+    bootstrap instead of failing.
+    """
+    from xtrax.devtools.gates.performance import (
+        DISPATCH_METRIC_KEY,
+        run_performance_gate,
+    )
+
+    _write_kernel_module(tmp_path, "dispatch_kernel_fixture")
+    audits_path = tmp_path / "audits.jsonl"
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            f"""
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+            max_traces_default = 1
+
+            [[probes]]
+            qualname = "dispatch_kernel_fixture.kernel"
+            max_traces = 1
+            trace_probe = "{PROBE_STABLE}"
+            max_jit_traces = 1
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    seed = AuditBaseline(
+        schema_version=BASELINE_SCHEMA_VERSION,
+        updated_at="2026-06-19T00:00:00+00:00",
+        metrics={
+            METRIC_KEY: MetricEntry(key=METRIC_KEY, value=0.0, comparator="minimize"),
+            DISPATCH_METRIC_KEY: MetricEntry(
+                key=DISPATCH_METRIC_KEY, value=0.0, comparator="minimize"
+            ),
+        },
+    )
+    baseline_path = tmp_path / "audit_baseline.json"
+    save_baseline(seed, path=baseline_path)
+
+    result = run_performance_gate(
+        targets_path=targets_path,
+        audits_path=audits_path,
+        baseline_path=baseline_path,
+        write_baseline=False,
+    )
+
+    assert result.passed is False
+    assert result.trace_violation_count == 0
+    assert result.dispatch_violation_count == 1
+    lines = audits_path.read_text(encoding="utf-8").strip().splitlines()
+    violations = [
+        json.loads(line)
+        for line in lines
+        if json.loads(line)["payload"].get("violation_kind") == "dispatch_count"
+    ]
+    assert len(violations) == 1
+    assert violations[0]["payload"]["violation_kind"] == "dispatch_count"
+    assert violations[0]["severity"] == "major"
+    assert violations[0]["payload"]["counter"] == "n_jit_traces"
+
+
+def test_dispatch_generous_ceiling_passes_and_emits_probe_record(
+    tmp_path: Path,
+) -> None:
+    from xtrax.devtools.gates.performance import (
+        DISPATCH_METRIC_KEY,
+        run_performance_gate,
+    )
+    from xtrax.profiling.record import ProbeRecord
+
+    _write_kernel_module(tmp_path, "generous_kernel_fixture")
+    audits_path = tmp_path / "audits.jsonl"
+    records_dir = tmp_path / "probe_records"
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            f"""
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+            max_traces_default = 1
+
+            [[probes]]
+            qualname = "generous_kernel_fixture.kernel"
+            max_traces = 1
+            trace_probe = "{PROBE_STABLE}"
+            max_compilations = 2
+            max_jit_traces = 64
+            emit_probe_record = true
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    baseline_path = tmp_path / "audit_baseline.json"
+    seed = AuditBaseline(
+        schema_version=BASELINE_SCHEMA_VERSION,
+        updated_at="2026-06-19T00:00:00+00:00",
+        metrics={
+            METRIC_KEY: MetricEntry(key=METRIC_KEY, value=0.0, comparator="minimize"),
+        },
+    )
+    save_baseline(seed, path=baseline_path)
+
+    result = run_performance_gate(
+        targets_path=targets_path,
+        audits_path=audits_path,
+        baseline_path=baseline_path,
+        write_baseline=True,
+        probe_record_dir=records_dir,
+    )
+
+    assert result.passed is True
+    assert result.dispatch_violation_count == 0
+
+    written = sorted(records_dir.glob("gate_*.json"))
+    assert len(written) == 1
+    record = ProbeRecord.read(written[0])
+    assert record.metrics["n_executions"] >= 1.0
+
+    # Opt-in ratchet bootstrapped its baseline entry on first passing use.
+    reloaded = load_baseline(path=baseline_path)
+    assert DISPATCH_METRIC_KEY in reloaded.metrics
+
+
+def test_dispatch_probe_crash_becomes_finding_not_gate_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review finding: a broken dispatch probe (bad qualname/import) must
+    surface as a major finding -- never crash the whole gate with a raw
+    traceback after the caller already did real work."""
+    import xtrax.devtools.gates.performance as perf_mod
+
+    def _boom(qualname: str, trace_probe: str):
+        raise RuntimeError(f"no module named {qualname!r}")
+
+    monkeypatch.setattr(perf_mod, "measure_dispatch_counts", _boom)
+
+    _write_kernel_module(tmp_path, "crashy_kernel_fixture")
+    audits_path = tmp_path / "audits.jsonl"
+    records_dir = tmp_path / "probe_records"
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            f"""
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+            max_traces_default = 1
+
+            [[probes]]
+            qualname = "crashy_kernel_fixture.kernel"
+            max_traces = 1
+            trace_probe = "{PROBE_STABLE}"
+            max_compilations = 2
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    baseline_path = tmp_path / "audit_baseline.json"
+    seed = AuditBaseline(
+        schema_version=BASELINE_SCHEMA_VERSION,
+        updated_at="2026-06-19T00:00:00+00:00",
+        metrics={
+            METRIC_KEY: MetricEntry(key=METRIC_KEY, value=0.0, comparator="minimize"),
+        },
+    )
+    save_baseline(seed, path=baseline_path)
+
+    result = run_performance_gate(
+        targets_path=targets_path,
+        audits_path=audits_path,
+        baseline_path=baseline_path,
+        write_baseline=True,
+        probe_record_dir=records_dir,
+    )
+
+    # Containment contract: the crash becomes a counted major finding
+    # (dispatch_probe_error) instead of an uncaught exception. Whether a
+    # dispatch finding flips overall pass/fail is existing gate policy
+    # (trace violations drive `passed`) -- unchanged here.
+    assert result.dispatch_violation_count == 1
+    assert result.findings_emitted >= 2
+    assert "dispatch_probe_error" in audits_path.read_text()
+
+
+def test_no_dispatch_config_leaves_dispatch_metric_absent(tmp_path: Path) -> None:
+    from xtrax.devtools.gates.performance import (
+        DISPATCH_METRIC_KEY,
+        run_performance_gate,
+    )
+
+    _write_kernel_module(tmp_path, "plain_kernel_fixture")
+    audits_path = tmp_path / "audits.jsonl"
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            f"""
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+            max_traces_default = 1
+
+            [[probes]]
+            qualname = "plain_kernel_fixture.kernel"
+            max_traces = 1
+            trace_probe = "{PROBE_STABLE}"
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    baseline_path = tmp_path / "audit_baseline.json"
+    seed = AuditBaseline(
+        schema_version=BASELINE_SCHEMA_VERSION,
+        updated_at="2026-06-19T00:00:00+00:00",
+        metrics={
+            METRIC_KEY: MetricEntry(key=METRIC_KEY, value=0.0, comparator="minimize"),
+        },
+    )
+    save_baseline(seed, path=baseline_path)
+
+    result = run_performance_gate(
+        targets_path=targets_path,
+        audits_path=audits_path,
+        baseline_path=baseline_path,
+        write_baseline=True,
+    )
+
+    assert result.passed is True
+    assert result.dispatch_violation_count == 0
+    reloaded = load_baseline(path=baseline_path)
+    assert DISPATCH_METRIC_KEY not in reloaded.metrics
+
+
+def test_boolean_toml_ceiling_rejected(tmp_path: Path) -> None:
+    """Review finding: TOML `max_compilations = true` must not become ceiling 1."""
+    import pytest as _pytest
+
+    from xtrax.devtools.gates.performance import load_performance_targets
+
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            """
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+
+            [[probes]]
+            qualname = "some.kernel"
+            max_traces = 1
+            max_compilations = true
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    with _pytest.raises(ValueError, match="must be a positive int"):
+        load_performance_targets(targets_path)

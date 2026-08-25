@@ -15,6 +15,7 @@ XTRAX_BEARTYPE_PACKAGES = [
     "xtrax.eda",
     "xtrax.engine",
     "xtrax.io",
+    "xtrax.profiling",
     "xtrax.run",
     "xtrax.safety",
     "xtrax.sparse",

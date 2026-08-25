@@ -1,0 +1,49 @@
+{
+  "attribution_method": {
+    "tiling_dedup_gather": "named_scope",
+    "tiling_safemap": "named_scope",
+    "tiling_vmap": "named_scope"
+  },
+  "config": {
+    "axis_note": "n_atoms == padded leading batch rows",
+    "dedup_k_bucket": "8",
+    "kernel": "sin_mul_rowsum_x3",
+    "n_cols": "32",
+    "n_rows": "256",
+    "n_trials": "20",
+    "safemap_batch": "8",
+    "strategies": "vmap+safemap+dedup_gather"
+  },
+  "contract_version": "3.0",
+  "device_kind": null,
+  "git_sha": "88b6d865dc15185eee3b17bfc404ab7b0212a07d",
+  "jax_version": "0.10.2",
+  "jaxlib_version": "0.10.2",
+  "metrics": {
+    "n_compilations": 0.0,
+    "n_executions": 20.0,
+    "n_jit_traces": 40.0,
+    "total_step_seconds": 0.10686936508864164
+  },
+  "n_atoms": 256,
+  "platform": "cpu",
+  "probe_id": "stage1_tiling_micro",
+  "scopes": {
+    "tiling_dedup_gather": [
+      0.0006726859999999999,
+      40
+    ],
+    "tiling_safemap": [
+      0.0021000279999999994,
+      40
+    ],
+    "tiling_vmap": [
+      0.0014564540000000003,
+      40
+    ]
+  },
+  "stage": 1,
+  "timestamp": "2026-08-24T23:02:57.558078+00:00",
+  "x64_enabled": false,
+  "xla_flags": ""
+}

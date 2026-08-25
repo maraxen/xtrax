@@ -1031,6 +1031,197 @@ class TestCandidateStaticGate:
 
 
 # ---------------------------------------------------------------------------
+# Phase C (scope doc 260824): opt-in provenance ProbeRecord emission
+# ---------------------------------------------------------------------------
+
+
+class TestProbeRecordEmission:
+    def test_probe_record_dir_opt_in_writes_structural_record(self, tmp_path: Path) -> None:
+        from xtrax.profiling.claims import ClaimClass, permitted_claims
+        from xtrax.profiling.record import ProbeRecord
+
+        records_dir = tmp_path / "probe_records"
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-probe-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+            probe_record_dir=records_dir,
+        )
+
+        assert result.accepted is True
+        written = sorted(records_dir.glob("pass_*.json"))
+        assert len(written) == 1
+        record = ProbeRecord.read(written[0])
+        assert record.stage == 0
+        assert record.metrics["wall_seconds"] > 0.0
+        assert record.config["campaign_id"] == "camp-probe-1"
+        assert record.config["derived_from"] == ""
+        assert record.config["handoff_content_sha256"] == _VALID_SHA256
+        # Host-side wall duration only: must never back a dispatch/ranking claim.
+        assert permitted_claims(record) == {ClaimClass.STRUCTURAL}
+
+    def test_no_probe_record_dir_emits_nothing(self, tmp_path: Path) -> None:
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-probe-2",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+        )
+
+        assert result.accepted is True
+
+    def test_gate_failure_leaves_record_with_outcome(self, tmp_path: Path) -> None:
+        """A COMPLETED but hard-blocked pass still records (forensics), with
+        the gate verdicts in the config. Exceptions leave no record at all."""
+        from xtrax.profiling.record import ProbeRecord
+
+        records_dir = tmp_path / "probe_records"
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-probe-3",
+            campaign_mode="confirmation",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _downgraded_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+            probe_record_dir=records_dir,
+        )
+
+        assert result.accepted is False
+        assert result.gate_outcome.hard_blocked is True
+        written = sorted(records_dir.glob("pass_*.json"))
+        assert len(written) == 1
+        record = ProbeRecord.read(written[0])
+        assert record.config["accepted"] == "false"
+        assert record.config["hard_blocked"] == "true"
+
+    def test_repeated_passes_accumulate_distinct_records(self, tmp_path: Path) -> None:
+        """Review finding: pass filenames carry a timestamp+nonce so a second
+        pass of one campaign never overwrites the first's forensics."""
+        common = dict(
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            probe_record_dir=tmp_path / "probe_records",
+        )
+        for i in range(2):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t"),
+                campaign_id="camp-probe-repeat",
+                **common,
+            )
+        written = sorted((tmp_path / "probe_records").glob("pass_*.json"))
+        assert len(written) == 2
+        from xtrax.profiling.record import ProbeRecord
+
+        assert len({ProbeRecord.read(f).timestamp for f in written}) == 2
+
+    def test_emission_failure_is_contained_pass_still_returns(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Review finding: a completed pass (dispatch + run + gates all done)
+        must never be discarded because provenance bookkeeping failed."""
+        import controller.main_loop as ml
+
+        def _boom(**kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(ml, "_emit_candidate_pass_probe_record", _boom)
+
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-probe-4",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+            probe_record_dir=tmp_path / "probe_records",
+        )
+
+        assert result.accepted is True
+        assert not list((tmp_path / "probe_records").glob("*.json"))
+        assert "camp-probe-4" in capsys.readouterr().err
+
+    def test_accepted_reflects_run_failure_not_only_gates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review finding: gates passing while the run itself reports
+        success=False must record accepted=false (no laundering)."""
+        import controller.main_loop as ml
+        from xtrax.profiling.record import ProbeRecord
+
+        real_record_run = ml.record_candidate_run
+
+        def _failing_run(*args, **kwargs):
+            res = real_record_run(*args, **kwargs)
+            return type(res)(script_path=res.script_path, exit_code=1, success=False)
+
+        monkeypatch.setattr(ml, "record_candidate_run", _failing_run)
+
+        records_dir = tmp_path / "probe_records"
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-probe-5",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+            probe_record_dir=records_dir,
+        )
+
+        written = sorted(records_dir.glob("pass_*.json"))
+        assert len(written) == 1
+        record = ProbeRecord.read(written[0])
+        assert record.config["accepted"] == "false"
+
+
 # GW-04 (backlog #3651): structure-tripwire, candidate-smoke, checkified-
 # execution gates wired pre-bathos (T2-13, T2-14, T2-15, AC-3/AC-4/AC-5).
 # ---------------------------------------------------------------------------

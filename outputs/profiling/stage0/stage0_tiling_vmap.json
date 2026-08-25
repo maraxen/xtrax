@@ -1,0 +1,35 @@
+{
+  "attribution_method": null,
+  "config": {
+    "axis_note": "n_atoms == padded leading batch rows",
+    "dedup_k_bucket": "8",
+    "kernel": "sin_mul_rowsum",
+    "n_cols": "32",
+    "n_rows": "256",
+    "safemap_batch": "8",
+    "strategy": "vmap"
+  },
+  "contract_version": "3.0",
+  "device_kind": null,
+  "git_sha": "88b6d865dc15185eee3b17bfc404ab7b0212a07d",
+  "jax_version": "0.10.2",
+  "jaxlib_version": "0.10.2",
+  "metrics": {
+    "bytes_accessed": 99328.0,
+    "bytes_accessed0{}": 65536.0,
+    "bytes_accessed1{}": 32772.0,
+    "bytes_accessedout{}": 33792.0,
+    "flops": 16128.0,
+    "transcendentals": 8192.0,
+    "utilization0{}": 2.0,
+    "utilization1{}": 2.0
+  },
+  "n_atoms": 256,
+  "platform": "cpu",
+  "probe_id": "stage0_tiling_vmap",
+  "scopes": null,
+  "stage": 0,
+  "timestamp": "2026-08-24T23:02:55.829487+00:00",
+  "x64_enabled": false,
+  "xla_flags": ""
+}

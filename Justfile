@@ -86,6 +86,11 @@ audit-performance-gate:
     uv run pytest tests/audit/test_performance_gate.py -v
     uv run python scripts/audit_performance_gate.py --no-write-baseline
 
+audit-profiling-contract:
+    uv run ruff check src/xtrax/profiling src/xtrax/devtools/gates/_dispatch_probe.py src/xtrax/devtools/gates/performance.py scripts/audit_profiling_contract.py tests/profiling tests/audit/test_performance_gate.py benchmarks/conftest.py
+    uv run pytest tests/profiling tests/audit/test_performance_gate.py -v
+    uv run python scripts/audit_profiling_contract.py
+
 audit-documentation-gate:
     uv run ruff check src/xtrax/devtools/gates/_interrogate.py src/xtrax/devtools/gates/documentation.py scripts/audit_documentation_gate.py tests/audit/test_documentation_gate.py
     uv run pytest tests/audit/test_documentation_gate.py -v
