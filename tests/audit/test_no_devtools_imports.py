@@ -26,17 +26,15 @@ def _imports_devtools(tree: ast.AST) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == FORBIDDEN_ROOT or alias.name.startswith(
-                    FORBIDDEN_ROOT + "."
-                ):
+                if alias.name == FORBIDDEN_ROOT or alias.name.startswith(FORBIDDEN_ROOT + "."):
                     hits.append(f"{node.lineno}: import {alias.name}")
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
             level = node.level
-            if level == 0 and (
-                mod == FORBIDDEN_ROOT or mod.startswith(FORBIDDEN_ROOT + ".")
-            ):
-                hits.append(f"{node.lineno}: from {mod} import {', '.join(a.name for a in node.names)}")
+            if level == 0 and (mod == FORBIDDEN_ROOT or mod.startswith(FORBIDDEN_ROOT + ".")):
+                hits.append(
+                    f"{node.lineno}: from {mod} import {', '.join(a.name for a in node.names)}"
+                )
     return hits
 
 
@@ -44,22 +42,23 @@ def test_shipped_tree_never_imports_devtools() -> None:
     offenders: list[str] = []
     for path in sorted(SRC.rglob("*.py")):
         rel = path.relative_to(ROOT).as_posix()
-        if any(rel.startswith(prefix) for prefix in OMITTED):
+        parts = rel.split("/")
+        # src/xtrax/{devtools,eda}/... are wheel-omitted and may import each other.
+        if len(parts) > 2 and parts[1] == "xtrax" and parts[2] in ("devtools", "eda"):
             continue
         tree = ast.parse(path.read_text(), filename=str(path))
         for hit in _imports_devtools(tree):
             offenders.append(f"{rel}: {hit}")
     assert not offenders, (
         "shipped modules import the unshipped xtrax.devtools tree "
-        "(ModuleNotFoundError for every wheel consumer): "
-        + "; ".join(offenders)
+        "(ModuleNotFoundError for every wheel consumer): " + "; ".join(offenders)
     )
 
 
 def test_guard_detects_the_original_violation() -> None:
     # The guard must catch the exact shape that shipped broken in the first
     # place (import + from-import forms).
-    probe = 'from xtrax.devtools.freshness import Attestation\n'
+    probe = "from xtrax.devtools.freshness import Attestation\n"
     assert _imports_devtools(ast.parse(probe))
     probe2 = "import xtrax.devtools.emit\n"
     assert _imports_devtools(ast.parse(probe2))
