@@ -385,3 +385,25 @@ tests/profiling/test_bench_records.py (incl. subprocess end-to-end).
 
 Remaining deferred: CI-data dispatch ceilings, GPU Stage-2 story, prolix-side
 dep bump, perturbation harness demo.
+
+### Fidelity audit of the port (2026-08-25)
+
+AST-level comparison of all five ported modules against prolix origin
+(scripts/profiling @ wt-20260807-132628), after normalizing the documented
+deltas (PROLIX_GIT_SHA->XTRAX_GIT_SHA, parents[2]->parents[3], slots=True,
+future-annotations removal, scripts.profiling->xtrax.profiling) and stripping
+docstrings: trace.py and __init__.py IDENTICAL; claims/record/report differ
+in 6 top-level defs, ALL mapping to recorded decisions:
+
+1. claims.assert_claim_supported: error-string wording ("see the prolix
+   spec") -- provenance attribution only.
+2. claims.paired_configs: list['ProbeRecord'] -> list[ProbeRecord] --
+   consequence of the future-annotations ban (quoted ref became direct name).
+3. record.ProbeRecord.metrics: dict[str, float] ->
+   dict[str, float|int|str] -- the beartype-compat widening (pinned).
+4. record._capture_timestamp + import: datetime.now(timezone.utc) ->
+   datetime.now(UTC) -- py3.13 idiom, timezone.utc IS UTC; the ONLY
+   divergence not pre-listed in a decision entry; cosmetic, zero behavior.
+5. report._DEFAULT_DISCOVERY_ROOT + discover_records fallback: the D6 fix.
+
+Conclusion: port is faithful; no undocumented semantic drift exists.
