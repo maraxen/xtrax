@@ -489,3 +489,20 @@ Both amendments are additive to §4.3; no prior decision changes.
   (`test_bathos_mcp_reachable_from_a_no_claude_node`) is environmental and unrelated to this
   sprint: it probes the external bathos MCP server, whose entry point fails on a missing
   `cisternal` dependency in ~/projects/bathos. This sprint modified no source files.
+
+### 10.7 Round 7 — remaining inference APIs, SafeMap runtime, fail-loud chain
+
+- **`synthesize_axes(abstract_inputs, overrides=)`**: with overrides produces KNOWN-role,
+  correctly-named AxisSpecs (batch/feat) — the exact inputs component C's callers will hold.
+  Zero-config `infer_bundle` confirmed UNKNOWN/fail-loud as documented.
+- **`emit_ir_schema()`**: zero-arg; emits a valid draft-2020-12 JSON-Schema document
+  (`$id: xtrax://composition-ir`). API note: takes no arguments (a BundleSchema arg raises
+  TypeError) — P1 planner note for any docs implying otherwise.
+- **`verify_against=` purity-guard analog ACCEPTED + DETECTED**: matching concrete inputs pass;
+  host-state flip between abstract and concrete passes yields typed `StructureMismatchError`.
+  This is the same detect-divergence-fail-loud pattern §4.2's spot-check generalizes — the
+  library precedent is real and behaves.
+- **SafeMap runtime via `axis_dispatch`**: exact vs vmap at n=12/b=4. Indivisible case confirms
+  the full deferred-failure chain: plan-time RuntimeWarning → dispatch-time typed ValueError
+  ("safe_map: n=10 is not divisible by batch_size=4") — G4's fail-loud convention verified
+  end-to-end across two layers.
