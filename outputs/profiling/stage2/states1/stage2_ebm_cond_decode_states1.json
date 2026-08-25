@@ -1,0 +1,35 @@
+{
+  "attribution_method": {},
+  "config": {
+    "axis_note": "n_atoms == states x residues x 4 backbone atoms",
+    "dispatch": "make_axis_dispatch_via_xtrax",
+    "kernel": "aminx.ConditionalDecode",
+    "n_timed": "50",
+    "n_warmup": "10",
+    "num_states": "1",
+    "seq_len": "208",
+    "strategy": "SafeMap"
+  },
+  "contract_version": "3.0",
+  "device_kind": "l40s",
+  "git_sha": "b84d8f7b216e9ca5e5388321d41607fb69b28426",
+  "jax_version": "0.10.2",
+  "jaxlib_version": "0.10.2",
+  "metrics": {
+    "n_compilations": 0.0,
+    "n_executions": 50.0,
+    "n_jit_traces": 100.0,
+    "total_step_seconds": 0.13889524806290865
+  },
+  "n_atoms": 832,
+  "platform": "gpu",
+  "probe_id": "stage2_ebm_cond_decode_states1",
+  "scopes": {
+    "ebm_conditional_decode": null,
+    "ebm_state_axis": null
+  },
+  "stage": 2,
+  "timestamp": "2026-08-25T20:27:48.805101+00:00",
+  "x64_enabled": false,
+  "xla_flags": ""
+}
