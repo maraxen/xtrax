@@ -166,7 +166,6 @@ def _blocks_with_labels(hlo_text: str, known_labels: frozenset[str]) -> dict[str
 
     votes: dict[str, list[str]] = {}
     stack: list[str] = []
-    pending_header = ""
     for raw_line in hlo_text.splitlines():
         line = raw_line.rstrip()
         if stack:
