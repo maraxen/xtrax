@@ -455,3 +455,19 @@ Both amendments are additive to §4.3; no prior decision changes.
   unique_indices=[0,1] (first-occurrence POSITIONS); naive value-reading would yield [3,9],
   executing without error but gathering wrong rows entirely ([54,54,54,54] vs
   [6,22,6,22] canonical results).
+
+### 10.5 Round 5 — gate loader, html format, repo test baseline
+
+- **Data-driven probe registration CONFIRMED against the real loader**: appending a
+  `[[probes]]` TOML entry (simulating the future memo trace-stability probe) and calling
+  `load_performance_targets` yields both probes — no code change, exactly as the spec's P1
+  performance-gate plan assumes (`audit/performance_targets.toml` + `performance.py:76`).
+- **html CLI format exercised**: `xtrax explain --fmt html --out …` exit 0, writes a real
+  55 KB self-contained HTML document (DOCTYPE + embedded SVG). All four documented emit
+  formats now observed live except png (guard verified separately).
+- **Repo acceptance baseline**: `pytest tests/tiling/test_dedup.py tests/tiling/test_plan.py
+  tests/inference -q` → **181 passed** in 10.7s on this working tree. The validation work did
+  not disturb existing behavior; the spec's integration claims rest on the same tree that
+  passes its own suites.
+- Minor API note: `load_performance_targets` requires a `pathlib.Path` (a bare str raises
+  AttributeError) — trivially fixed at implementation time; recorded for the P1 planner.
