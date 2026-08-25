@@ -90,8 +90,12 @@ class TestEndToEndTinyRuns:
     def test_stage0_onehot_writes_two_readable_records(self, tmp_path: Path) -> None:
         from xtrax.profiling.record import ProbeRecord
 
-        assert stage0_main(["--out-dir", str(tmp_path), "--rows", "16", "--classes", "4",
-                            "--cols", "4"]) == 0
+        assert (
+            stage0_main(
+                ["--out-dir", str(tmp_path), "--rows", "16", "--classes", "4", "--cols", "4"]
+            )
+            == 0
+        )
         paths = sorted(tmp_path.glob("stage0_onehot_*.json"))
         assert len(paths) == 2
         for path in paths:
