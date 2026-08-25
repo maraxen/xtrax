@@ -99,6 +99,7 @@ fires on every code path" guarantee; this module's job is to prove the happy-pat
 wired correctly end-to-end, not to also own what happens when a step fails.
 """
 
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -371,19 +372,34 @@ def run_one_candidate_pass(
 
     # 3.5. Optional provenance record (Phase C, scope doc D7): written only when
     # the caller opted in, AFTER all gates resolve so the artifact always
-    # carries their verdicts. Exceptions still leave no record (they propagate
-    # before this point).
+    # carries their verdicts. Emission failures are CONTAINED: a completed
+    # pass (dispatch + run + gates all done) must never be discarded because
+    # provenance bookkeeping failed -- the pass result stands, the missing
+    # record is reported loudly instead.
     if probe_record_dir is not None:
-        probe_record_dir.mkdir(parents=True, exist_ok=True)
-        _emit_candidate_pass_probe_record(
-            out_dir=probe_record_dir,
-            campaign_id=campaign_id,
-            derived_from=derived_from,
-            handoff_sha=handoff.content_sha256,
-            wall_seconds=perf_counter() - pass_started_at,
-            accepted=(stats_decision.honored and seed_decision.held),
-            hard_blocked=(stats_decision.hard_blocked or seed_decision.hard_blocked),
-        )
+        try:
+            probe_record_dir.mkdir(parents=True, exist_ok=True)
+            _emit_candidate_pass_probe_record(
+                out_dir=probe_record_dir,
+                campaign_id=campaign_id,
+                derived_from=derived_from,
+                handoff_sha=handoff.content_sha256,
+                wall_seconds=perf_counter() - pass_started_at,
+                accepted=(
+                    run_result.success
+                    and stats_decision.honored
+                    and seed_decision.held
+                ),
+                hard_blocked=(
+                    stats_decision.hard_blocked or seed_decision.hard_blocked
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 -- contained by design; see comment above
+            print(
+                f"WARNING: candidate-pass ProbeRecord emission failed for "
+                f"campaign {campaign_id!r}; pass result unaffected: {exc}",
+                file=sys.stderr,
+            )
 
     # 4. Composed result.
     return OneCandidatePassResult(

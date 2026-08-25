@@ -7,7 +7,11 @@ import jax.numpy as jnp
 import optax
 import pytest
 
-from xtrax.profiling.bench import build_bench_record_plan, record_from_plan
+from xtrax.profiling.bench import (
+    build_bench_record_plan,
+    check_probe_id_collision,
+    record_from_plan,
+)
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import ResumableState
 
@@ -86,6 +90,7 @@ def pytest_sessionfinish(session, exitstatus):
 
     written: list[str] = []
     skipped: list[tuple[str, str]] = []
+    claimed: dict[str, str] = {}
     for fixture in fixtures:
         fullname = str(getattr(fixture, "fullname", getattr(fixture, "name", "?")))
         try:
@@ -98,6 +103,14 @@ def pytest_sessionfinish(session, exitstatus):
                 extra_info=dict(getattr(fixture, "extra_info", None) or {}),
                 stats_dict=stats.as_dict(),
             )
+            collides_with = check_probe_id_collision(plan.probe_id, claimed)
+            if collides_with is not None:
+                raise RuntimeError(
+                    f"probe_id {plan.probe_id!r} collides with already-written "
+                    f"{collides_with!r} (node ids differing only in '_' runs "
+                    "normalize identically) -- refusing to silently overwrite"
+                )
+            claimed[plan.probe_id] = fullname
             record_from_plan(plan).write(Path(out_dir) / f"{plan.probe_id}.json")
             written.append(plan.probe_id)
         except Exception as exc:  # noqa: BLE001 -- reported per-bench below

@@ -66,13 +66,33 @@ def discover_records(
         base = (root or _DEFAULT_DISCOVERY_ROOT) / "outputs" / "profiling"
         files = sorted(base.glob("stage*/*.json"))
     records: list[ProbeRecord] = []
+    skipped: list[tuple[Path, str]] = []
     for path in files:
         if path.name in _SKIP_NAMES or path.name.endswith(_SKIP_SUFFIXES):
             continue
         try:
             records.append(ProbeRecord.read(path))
-        except Exception:
-            continue
+        except Exception as exc:
+            skipped.append((path, exc))
+    if skipped:
+        # Loud, not silent (review finding: a silently dropped record whose
+        # git_sha would have broken unanimity must never invisibly shrink the
+        # evidence set a report is computed over). Discovery stays resilient
+        # -- one corrupt file does not lose the rest -- but every skip is
+        # reported and the caller can see the evidence set was incomplete.
+        import sys
+
+        for path, exc in skipped:
+            print(
+                f"WARNING: skipping unreadable ProbeRecord {path}: {exc}",
+                file=sys.stderr,
+            )
+        print(
+            f"WARNING: report computed over {len(records)} records; "
+            f"{len(skipped)} file(s) were skipped as unreadable -- the "
+            "evidence set is INCOMPLETE",
+            file=sys.stderr,
+        )
     return records
 
 

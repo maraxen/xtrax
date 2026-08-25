@@ -49,14 +49,15 @@ def _capture_git_sha() -> str:
     sources.
 
     Cluster scratch dirs have no .git. Honor XTRAX_GIT_SHA, then a repo-root
-    `.git_sha` file (written at submit/push), then `git rev-parse`.
+    `.git_sha` file (written at submit/push), then `git rev-parse`. An empty
+    `.git_sha` file reads as "unknown", not as an empty provenance string.
     """
     env = (os.environ.get("XTRAX_GIT_SHA") or "").strip()
     if env:
         return env
     sha_file = _REPO_ROOT / ".git_sha"
     if sha_file.is_file():
-        stamped = sha_file.read_text().strip().split()[0]
+        stamped = sha_file.read_text().strip().split()[0] if sha_file.read_text().strip() else ""
         if stamped:
             return stamped
     try:
@@ -208,10 +209,12 @@ class ProbeRecord:
     contract_version: str = CONTRACT_VERSION
 
     def __post_init__(self) -> None:
-        if self.stage not in (0, 1, 2, 3):
+        if isinstance(self.stage, bool) or self.stage not in (0, 1, 2, 3):
             raise ClaimValidityError(
                 f"stage must be in {{0,1,2,3}}, got {self.stage!r}"
             )
+        if isinstance(self.n_atoms, bool) or self.n_atoms <= 0:
+            raise ClaimValidityError(f"n_atoms must be > 0, got {self.n_atoms}")
         if self.stage >= 2 and self.platform != "gpu":
             raise ClaimValidityError(
                 f"stage={self.stage} requires platform='gpu' (Stage-2+ "
@@ -222,13 +225,17 @@ class ProbeRecord:
             raise ClaimValidityError(
                 f"stage={self.stage} requires device_kind, got None"
             )
-        if self.n_atoms <= 0:
-            raise ClaimValidityError(f"n_atoms must be > 0, got {self.n_atoms}")
         coerced_metrics: dict[str, float] = {}
         for key, value in self.metrics.items():
+            if isinstance(value, bool):
+                raise ClaimValidityError(
+                    f"metrics[{key!r}]={value!r} is boolean -- JSON "
+                    "true/false would coerce to 1.0/0.0 and launder a flag "
+                    "into a citable metric"
+                )
             try:
                 coerced = float(value)
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, OverflowError) as exc:
                 raise ClaimValidityError(
                     f"metrics[{key!r}]={value!r} is not coercible to float -- "
                     "ProbeRecord.metrics must be float-valued"
@@ -241,10 +248,57 @@ class ProbeRecord:
             coerced_metrics[key] = coerced
         object.__setattr__(self, "metrics", coerced_metrics)
 
-        if self.scopes is not None and self.attribution_method is None:
-            raise ClaimValidityError(
-                "attribution_method is required whenever scopes is not None"
-            )
+        if self.scopes is not None:
+            present_labels: set[str] = set()
+            for label, value in self.scopes.items():
+                if value is None:
+                    continue
+                present_labels.add(label)
+                if isinstance(value, bool) or not isinstance(value, tuple) or len(value) != 2:
+                    raise ClaimValidityError(
+                        f"scopes[{label!r}]={value!r} must be None or an "
+                        "(exclusive_seconds, n_occurrences) pair"
+                    )
+                seconds, n_occ = value
+                seconds_ok = (
+                    not isinstance(seconds, bool)
+                    and isinstance(seconds, (int, float))
+                    and math.isfinite(float(seconds))
+                    and seconds >= 0
+                )
+                if not seconds_ok:
+                    raise ClaimValidityError(
+                        f"scopes[{label!r}] exclusive_seconds={seconds!r} must "
+                        "be a finite, non-negative number -- NaN/inf/negative "
+                        "scope time is not a citable measurement"
+                    )
+                if isinstance(n_occ, bool) or not isinstance(n_occ, int) or n_occ < 1:
+                    raise ClaimValidityError(
+                        f"scopes[{label!r}] n_occurrences={n_occ!r} must be an "
+                        "integer >= 1 for a label present in the trace"
+                    )
+            if self.attribution_method is None:
+                raise ClaimValidityError(
+                    "attribution_method is required whenever scopes is not None"
+                )
+            attributed = set(self.attribution_method)
+            unknown_keys = attributed - set(self.scopes)
+            missing_present = present_labels - attributed
+            if unknown_keys or missing_present:
+                raise ClaimValidityError(
+                    f"attribution_method/scopes disagree: attributions for "
+                    f"labels absent from scopes {sorted(unknown_keys)}, "
+                    f"present labels without attribution "
+                    f"{sorted(missing_present)} -- every MEASURED (non-None) "
+                    "label must state how it was attributed, and no "
+                    "attribution may name a label scopes does not have; {} "
+                    "means every known label was absent from the trace"
+                )
+        # NOTE (review triage): scopes=None alongside a non-empty
+        # attribution_method remains tolerated -- it is pinned behavior
+        # (test_attribution_method_round_trips) and harmless: the map is
+        # inert without a trace. Only scopes/attribution DISAGREEMENT above
+        # is rejected.
         if self.attribution_method is not None:
             bad = {
                 v
@@ -341,7 +395,13 @@ class ProbeRecord:
     def write(self, path: str | Path) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.to_json())
+        # Atomic publish: a crash/disk-full mid-write must never leave a
+        # truncated JSON that a later reader could mistake for a valid
+        # record (readers fail closed on malformed input, but the artifact
+        # loss itself is avoidable).
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(self.to_json())
+        os.replace(tmp, path)
 
     @classmethod
     def restamp_git_sha(cls, path: str | Path, sha: str) -> "ProbeRecord":

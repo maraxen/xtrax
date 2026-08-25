@@ -571,6 +571,69 @@ def test_dispatch_generous_ceiling_passes_and_emits_probe_record(
     assert DISPATCH_METRIC_KEY in reloaded.metrics
 
 
+def test_dispatch_probe_crash_becomes_finding_not_gate_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review finding: a broken dispatch probe (bad qualname/import) must
+    surface as a major finding -- never crash the whole gate with a raw
+    traceback after the caller already did real work."""
+    import xtrax.devtools.gates.performance as perf_mod
+
+    def _boom(qualname: str, trace_probe: str):
+        raise RuntimeError(f"no module named {qualname!r}")
+
+    monkeypatch.setattr(perf_mod, "measure_dispatch_counts", _boom)
+
+    _write_kernel_module(tmp_path, "crashy_kernel_fixture")
+    audits_path = tmp_path / "audits.jsonl"
+    records_dir = tmp_path / "probe_records"
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            f"""
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+            max_traces_default = 1
+
+            [[probes]]
+            qualname = "crashy_kernel_fixture.kernel"
+            max_traces = 1
+            trace_probe = "{PROBE_STABLE}"
+            max_compilations = 2
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    baseline_path = tmp_path / "audit_baseline.json"
+    seed = AuditBaseline(
+        schema_version=BASELINE_SCHEMA_VERSION,
+        updated_at="2026-06-19T00:00:00+00:00",
+        metrics={
+            METRIC_KEY: MetricEntry(key=METRIC_KEY, value=0.0, comparator="minimize"),
+        },
+    )
+    save_baseline(seed, path=baseline_path)
+
+    result = run_performance_gate(
+        targets_path=targets_path,
+        audits_path=audits_path,
+        baseline_path=baseline_path,
+        write_baseline=True,
+        probe_record_dir=records_dir,
+    )
+
+    # Containment contract: the crash becomes a counted major finding
+    # (dispatch_probe_error) instead of an uncaught exception. Whether a
+    # dispatch finding flips overall pass/fail is existing gate policy
+    # (trace violations drive `passed`) -- unchanged here.
+    assert result.dispatch_violation_count == 1
+    assert result.findings_emitted >= 2
+    assert "dispatch_probe_error" in audits_path.read_text()
+
+
 def test_no_dispatch_config_leaves_dispatch_metric_absent(tmp_path: Path) -> None:
     from xtrax.devtools.gates.performance import (
         DISPATCH_METRIC_KEY,

@@ -231,7 +231,25 @@ def _run_dispatch_probes(
     for spec in targets.probes:
         if not (spec.has_dispatch_ceilings or spec.emit_probe_record):
             continue
-        result = measure_dispatch_counts(spec.qualname, spec.trace_probe)
+        try:
+            result = measure_dispatch_counts(spec.qualname, spec.trace_probe)
+        except Exception as exc:  # noqa: BLE001 — a broken probe reports; it must not crash the gate
+            finding = emit_metric_finding(
+                dim=DIMENSION,
+                severity="major",
+                file_line=f"probe:{spec.qualname}",
+                evidence=(
+                    f"dispatch probe for {spec.qualname} failed to run: {exc}"
+                ),
+                rule_id="performance.dispatch_probe_error",
+                symbol_qualname=spec.qualname,
+                payload={"violation_kind": "probe_error"},
+                run_id=run_id,
+            )
+            append_finding(finding, audits_path=audits_path)
+            violations += 1
+            emitted += 1
+            continue
         if result.skipped:
             continue
         for counter, ceiling in (

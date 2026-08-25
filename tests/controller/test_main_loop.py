@@ -882,3 +882,80 @@ class TestProbeRecordEmission:
         record = ProbeRecord.read(written[0])
         assert record.config["accepted"] == "false"
         assert record.config["hard_blocked"] == "true"
+
+    def test_emission_failure_is_contained_pass_still_returns(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Review finding: a completed pass (dispatch + run + gates all done)
+        must never be discarded because provenance bookkeeping failed."""
+        import controller.main_loop as ml
+
+        def _boom(**kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(ml, "_emit_candidate_pass_probe_record", _boom)
+
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        result = run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-probe-4",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            probe_record_dir=tmp_path / "probe_records",
+        )
+
+        assert result.accepted is True
+        assert not list((tmp_path / "probe_records").glob("*.json"))
+        assert "camp-probe-4" in capsys.readouterr().err
+
+    def test_accepted_reflects_run_failure_not_only_gates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review finding: gates passing while the run itself reports
+        success=False must record accepted=false (no laundering)."""
+        import controller.main_loop as ml
+        from xtrax.profiling.record import ProbeRecord
+
+        real_record_run = ml.record_candidate_run
+
+        def _failing_run(*args, **kwargs):
+            res = real_record_run(*args, **kwargs)
+            return type(res)(
+                script_path=res.script_path, exit_code=1, success=False
+            )
+
+        monkeypatch.setattr(ml, "record_candidate_run", _failing_run)
+
+        records_dir = tmp_path / "probe_records"
+        transport = _RecordingTransport(_run_envelope())
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-probe-5",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            probe_record_dir=records_dir,
+        )
+
+        written = sorted(records_dir.glob("pass_*.json"))
+        assert len(written) == 1
+        record = ProbeRecord.read(written[0])
+        assert record.config["accepted"] == "false"

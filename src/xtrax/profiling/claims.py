@@ -57,7 +57,8 @@ class ClaimClass(enum.Enum):
 def _reject_unverifiable_git_sha(sources: list["ProbeRecord"], claim: ClaimClass) -> None:
     for r in sources:
         if (
-            r.git_sha == "unknown"
+            not r.git_sha.strip()
+            or r.git_sha == "unknown"
             or r.git_sha.endswith("-dirty")
             or r.git_sha.endswith("-unverified")
         ):
@@ -242,6 +243,15 @@ def assert_claim_supported(
     """
     sources = select_sources(records, claim)
 
+    if claim is ClaimClass.DISPATCH_COUNT:
+        sub_stage = sorted({r.stage for r in sources if r.stage < 1})
+        if sub_stage:
+            raise ClaimValidityError(
+                "DISPATCH_COUNT requires stage>=1 sources -- dispatch counts "
+                "come from a traced execution, which a stage-0 cost-analysis "
+                f"record never performed; got sources at stage(s) {sub_stage}"
+            )
+
     if claim is ClaimClass.TERM_RANKING:
         sub_stage = sorted({r.stage for r in sources if r.stage < 2})
         if sub_stage:
@@ -258,6 +268,12 @@ def assert_claim_supported(
                 "allow_no_target=True to explicitly claim no extrapolation"
             )
         if target_n_atoms is not None:
+            if target_n_atoms <= 0:
+                raise ClaimValidityError(
+                    f"END_TO_END target_n_atoms={target_n_atoms} is not a "
+                    "meaningful scale -- declare a positive atom count or use "
+                    "allow_no_target=True"
+                )
             min_n = min(r.n_atoms for r in sources)
             ratio = target_n_atoms / min_n
             if ratio > SCALE_EXTRAPOLATION_LIMIT:

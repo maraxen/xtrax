@@ -135,6 +135,16 @@ def parse_bench_extra_info(
             f"{DECLARATION_STAGE_KEY}={extra_info[DECLARATION_STAGE_KEY]!r} "
             "is not coercible to int"
         ) from exc
+    if isinstance(extra_info[DECLARATION_STAGE_KEY], bool):
+        raise ClaimValidityError(
+            f"{DECLARATION_STAGE_KEY} is boolean -- JSON true/false would "
+            "silently become stage 1/0"
+        )
+    if isinstance(extra_info[DECLARATION_N_ATOMS_KEY], bool):
+        raise ClaimValidityError(
+            f"{DECLARATION_N_ATOMS_KEY} is boolean -- JSON true/false would "
+            "silently become n_atoms 1/0"
+        )
     try:
         n_atoms = int(extra_info[DECLARATION_N_ATOMS_KEY])  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
@@ -181,6 +191,18 @@ def bench_metrics_from_stats(
     for name, value in stats_dict.items():
         if name in _NON_NUMERIC_STAT_FIELDS:
             continue
+        if isinstance(value, bool):
+            raise ClaimValidityError(
+                f"benchmark stat {name!r}={value!r} is boolean -- a flag is "
+                "not a citable timing metric"
+            )
+        try:
+            float(value)
+        except (TypeError, ValueError) as exc:
+            raise ClaimValidityError(
+                f"benchmark stat {name!r}={value!r} is neither numeric nor a "
+                "known non-numeric display field -- refusing to record"
+            ) from exc
         if name in _DURATION_STAT_FIELDS:
             metrics[f"{name}_ms"] = float(value) * 1000.0
         else:
@@ -232,6 +254,21 @@ def build_bench_record_plan(
         metrics=bench_metrics_from_stats(stats_dict),
         config=config,
     )
+
+
+def check_probe_id_collision(
+    probe_id: str, seen: dict[str, str]
+) -> str | None:
+    """Return the colliding fullname if probe_id was already claimed.
+
+    sanitize_bench_fullname collapses underscore runs, so distinct node ids
+    differing only in '_' runs (e.g. params "a_b" vs "a__b") normalize to
+    the SAME filename -- writing both would silently overwrite one record
+    with the other. The emission hook claims names through this helper and
+    treats a collision as skip-with-reason instead of an overwrite.
+    """
+    prior = seen.get(probe_id)
+    return prior
 
 
 def record_from_plan(plan: BenchRecordPlan) -> ProbeRecord:
