@@ -1,0 +1,244 @@
+[sprint]
+sprint_id = "260813_gw02-followup3-4216-smoke-lc12-fix"
+sprint_num = 4
+name = "GW-02 follow-up 3 (#4216): fix scripts/smoke_lc12_real_e2e.py for the accumulated required kwargs"
+description = "Updates the project's only real (non-mocked) end-to-end campaign-loop smoke test to supply real values for every required parameter run_campaign_loop/run_one_candidate_pass have accumulated across GW-02(#3649)/#4203/#4215: a synthetic-but-real closure manifest + score_fn, a real candidate callable for compile-time timing, a real per-campaign scratch git repo for the ratchet, an override for the T2-32 human-approval gate (since --i-understand-this-creates-real-bathos-state already IS the human approval this script requires), and non-empty output_paths. This item does NOT run the script against real bathos -- that stays a separate, explicitly-human-approved step after this sprint closes."
+context = """
+Backlog #4216, depends on #4203 (completed) and #4215 (completed, provides the bootstrap_commit_sha
+mechanism this script's always-fresh ratchet ref needs). Originally filed as a mechanical call-site
+patch; direct reading of the script revealed it needed real design work (no existing closure-manifest,
+candidate-callable, or git-ratchet infrastructure at all) -- corrected and re-scoped to a full design
+pass, matching #4203/#4215's own rigor.
+
+Locked design, 2 rounds of adversarial review (spec doc, read for full context before implementing):
+.praxia/docs/specs/260813_backlog-4216-xtrax-scripts-smoke-lc12-re.md (session 3649d03c) -- 7 design
+pieces, 13 AC bullets. Round 1 found 1 blocking gap (campaign_approval_fn/T2-32 human-approval gate
+entirely unaddressed -- the real run would fail at campaign_create before any of the designed machinery
+executes, since campaign names embed a fresh UUID every run and no static TOML entry could ever match)
+plus 5 minor findings, all patched. A focused re-verification confirmed the fix sound and found one
+more wording issue (also patched).
+
+Full 10-step implementation plan is at .praxia/loop_sprint_plan_4216.json in this worktree -- went
+through its own NEEDS_WORK->FAIL->PASS cycle: round 2 plan-audit found a SECOND genuine blocking gap
+the entire pipeline (brainstorm, defender, challenger x2) had missed -- output_paths, never passed to
+run_campaign_loop, unconditionally required by run_one_candidate_pass (controller/main_loop.py:618-620)
+or it raises ValueError on the very first candidate. Patched directly, re-audited PASS (5/5 all
+dimensions). fixer_prompts below are self-contained but the plan JSON + spec doc are the canonical
+source if any ambiguity arises.
+
+CRITICAL SCOPE BOUNDARY: neither track in this sprint may invoke
+--i-understand-this-creates-real-bathos-state or otherwise call this script's main()/touch the real
+~/.bth/catalog/bathos.db. All verification is via scoped, bathos-free unit tests (AC-10). The actual
+real-infrastructure run is a separate, explicitly-human-approved step after this sprint closes.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "a"
+is_research = false
+worktree = true
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "4216"
+phase_name = "Track A -- implementation: closure-manifest/score_fn, candidate callable, git ratchet, campaign-approval override, wiring, docstring (plan Steps 1-8)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+
+Implement the production-code changes for backlog #4216 in `scripts/smoke_lc12_real_e2e.py`. Read
+.praxia/docs/specs/260813_backlog-4216-xtrax-scripts-smoke-lc12-re.md in full before starting (7
+design pieces, 13 AC bullets -- several added/corrected across 2 adversarial review rounds, read
+every AC bullet). Read .praxia/loop_sprint_plan_4216.json's Steps 1-8 for the exact, detailed
+decomposition this prompt summarizes -- it has precise file:line anchors and has itself been through
+a NEEDS_WORK->FAIL->PASS plan-audit cycle catching 2 real blocking gaps, so follow it precisely rather
+than improvising.
+
+**CRITICAL SCOPE BOUNDARY: do NOT invoke `--i-understand-this-creates-real-bathos-state`, do NOT call
+this script's `main()`, and do NOT touch `~/.bth/catalog/bathos.db` at any point in this dispatch.**
+
+## Step 1 -- Imports + new module-level constants
+Add `import subprocess`; change the `collections.abc` import to include `Mapping`; add
+`from typing import Any`; add 3 new repo imports (`BathosFrozenContext`, `Attestation`,
+`ClosureManifest`/`build_closure_manifest`) matching the existing `# noqa: E402` pattern. Add new
+module-level constants: `_TIMING_PROBE_NAME = "smoke_timing_probe"`, `_TIMING_PROBE_SUFFIX`,
+`_TIMING_CONCRETE_INPUTS: list[Any] = [1.0, 2.0]`, `_HIGHER_IS_BETTER = {"metric_a": True, "metric_b": True}`.
+
+## Step 2 -- Closure-manifest / score_fn / frozen_context factory helpers
+Add `_build_smoke_closure_manifest(config)`, `_make_smoke_score_fn()` (a FACTORY, not a singleton --
+fresh closure over `counter = {"n": 0}` on every call, mirroring
+`tests/controller/test_loop_run.py::_make_monotonic_score_fn` exactly), and
+`_make_smoke_frozen_context(campaign_name, config)`. Docstrings must state the factory-per-call
+requirement explicitly.
+
+## Step 3 -- Extend `_candidate_source` with the fixed timing-probe suffix
+Append `_TIMING_PROBE_SUFFIX` to every candidate's generated source.
+
+## Step 4 -- Scratch-git-repo helpers
+Add `_run_git(repo, *args)`, `_make_scratch_git_repo(workspace_root) -> Path` (mirrors
+`tests/controller/test_loop_run.py::git_repo` fixture, returns ONLY the Path), and a companion
+`_head_sha(repo) -> str`.
+
+## Step 5 -- `_smoke_campaign_approval_fn` stub
+Add `_smoke_campaign_approval_fn(campaign_id, *, toml_path=None) -> Attestation` matching the real
+`campaign_approval_fn` signature exactly, unconditionally returning a valid `Attestation`, never
+reading `toml_path`. Docstring must explain WHY: `--i-understand-this-creates-real-bathos-state`
+already constitutes this script's human approval.
+
+## Step 6 -- Wire everything into both campaign functions (the critical step)
+In `_run_pass_campaign` and `_run_fail_campaign`, construct a scratch git repo, bootstrap sha,
+per-campaign `ratchet_ref_name` (reusing the existing `_RUN_SUFFIX`), and add ALL new kwargs to the
+`run_campaign_loop(...)` calls: `frozen_context`, `current_config`, `repo`, `ratchet_ref_name`,
+`callable_name`, `concrete_inputs`, `higher_is_better`, `candidate_target_path=Path("candidate.py")`,
+`bootstrap_commit_sha`, `campaign_approval_fn`, and **`output_paths=["dummy-output.txt"]` (or
+equivalent non-empty list) -- REQUIRED, `run_one_candidate_pass` unconditionally raises `ValueError`
+on a falsy `output_paths` (controller/main_loop.py:618-620), this is not optional.**
+
+**CRITICAL correctness notes (from plan-audit, do not deviate):**
+(a) Do NOT pass `commit_tree_sha` literally -- leave it unset so the real `compute_candidate_tree_sha`
+git plumbing genuinely executes.
+(b) Do NOT set `allow_fresh_start_despite_existing_lineage=True` -- the genuinely fresh scratch repo +
+unique ref means `read_best_so_far` correctly returns `None`, no conflict to override.
+(c) `_make_smoke_frozen_context(...)` must be called exactly ONCE inside each campaign function --
+never at module level, never shared between the two campaigns.
+(d) `output_paths` must be non-empty on BOTH calls -- verify with grep before finishing.
+
+## Step 7 -- AC-6 ratchet assertion
+In `_assert_pass_campaign_result`'s per-iteration loop, add a check that
+`iteration.ratchet_decision.improved` is `True`, raising `AssertionError` if not.
+`_assert_fail_campaign_result` gets ZERO changes -- verify this stays true.
+
+## Step 8 -- Module docstring updates
+Add new numbered subsection(s) documenting all 5 new pieces (closure manifest/score_fn, candidate
+callable, git ratchet, non-empty current_config, campaign_approval_fn override + why) immediately
+after the existing point 6 (which spans lines 103-111 -- NOT 112-132 as an earlier draft mistakenly
+cited), BEFORE the existing "## Coherence check" subsection at line 112. Also add: an AC-12 note that
+the fail campaign's rejected candidate still writes a real git commit/advances the ratchet ref
+(harmless in a scratch repo, but documented); an AC-13 note explaining the git-ratchet-coherence check
+is deliberately not added (achievable if restructured, out of scope for this item, noted as a future
+enhancement -- not "impossible"). The original 6 design points must remain textually unchanged.
+
+VERIFY before finishing: `uv run python -c "import ast; ast.parse(open('scripts/smoke_lc12_real_e2e.py').read())"` exits 0.
+`uv run python -c "import scripts.smoke_lc12_real_e2e"` exits 0. All grep-based checks from the plan
+JSON's Steps 1-8 success_criteria pass (especially: `output_paths=` appears exactly twice, both
+non-empty; `_make_smoke_frozen_context(` appears exactly twice, one per campaign function;
+`commit_tree_sha=` and `allow_fresh_start_despite_existing_lineage` appear zero times in either
+`run_campaign_loop(` call). Do NOT run pytest yet (no tests exist until Track B) -- just confirm the
+script imports and parses cleanly.
+
+Commit with a descriptive conventional-commit message (e.g. `feat(scripts): wire real closure-manifest/
+git-ratchet/campaign-approval machinery into smoke_lc12_real_e2e.py (#4216)`) once verified.
+"""
+reviewer_prompt = """
+VERIFY:
+1. All new imports/constants present (Step 1); script imports cleanly.
+2. `_build_smoke_closure_manifest`, `_make_smoke_score_fn` (a genuine per-call factory, not a
+   singleton -- check for `counter = {"n": 0}` INSIDE the function body, not at module level),
+   `_make_smoke_frozen_context` all present and correctly shaped.
+3. `_candidate_source` extended with `_TIMING_PROBE_SUFFIX`.
+4. `_run_git`, `_make_scratch_git_repo` (returns Path only), `_head_sha` (returns str) all present.
+5. `_smoke_campaign_approval_fn` matches the real `campaign_approval_fn` signature, never reads
+   `toml_path`, docstring explains why the override exists.
+6. Both `run_campaign_loop(...)` calls in `_run_pass_campaign`/`_run_fail_campaign` include ALL new
+   kwargs -- especially confirm `output_paths` is present and non-empty on BOTH calls (this was a
+   plan-audit-caught blocking gap, verify it directly, don't assume), `commit_tree_sha` is absent,
+   `allow_fresh_start_despite_existing_lineage` is absent, and `_make_smoke_frozen_context` is called
+   exactly once per campaign function (not shared/module-level).
+7. `_assert_pass_campaign_result` gains the `ratchet_decision.improved` check;
+   `_assert_fail_campaign_result` has ZERO changes.
+8. Module docstring updated with all 5 new pieces documented, inserted at the CORRECT location
+   (after line 111/point 6, before the "## Coherence check" subsection) -- confirm the original 6
+   points are textually unchanged.
+9. **Confirm NO invocation of `--i-understand-this-creates-real-bathos-state`, no call to `main()`,
+   no touch of `~/.bth/catalog/bathos.db` anywhere in this dispatch's work** (AC-10, non-negotiable).
+PASS iff all 9 hold. FAIL otherwise, naming which check failed and citing file:line.
+"""
+return_key = "4216_implementation"
+
+[[tracks]]
+id = "b"
+is_research = false
+worktree = true
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "4216"
+phase_name = "Track B -- test remediation + final verification: new bathos-free unit test file, lint/format (plan Steps 9-10)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+
+Depends on Track A landing first. Read .praxia/docs/specs/260813_backlog-4216-xtrax-scripts-smoke-lc12-re.md's
+full AC section, and .praxia/loop_sprint_plan_4216.json's Steps 9-10 for the exact decomposition.
+
+**CRITICAL SCOPE BOUNDARY: do NOT invoke `--i-understand-this-creates-real-bathos-state`, do NOT call
+this script's `main()`, and do NOT touch `~/.bth/catalog/bathos.db` anywhere in this dispatch. Every
+test must be real-bathos-free (AC-10).**
+
+## Step 9 -- New test file `tests/scripts/test_smoke_lc12_real_e2e.py`
+Follow the `tests/scripts/` convention already established by
+`tests/scripts/test_smoke_outlines_constrained_decode.py`. Add these test classes, all bathos-free:
+
+- `TestBuildSmokeClosureManifest` (AC-1): empty path tuples; same-config->same closure_hash;
+  different-config->different closure_hash.
+- `TestCandidateSourceExtended` (AC-2): `compile()` succeeds; `exec`'d in a scratch namespace defines
+  `smoke_timing_probe` as callable; ZERO stdout via `contextlib.redirect_stdout`.
+- `TestMeasureTwoPhaseTimingDependencyChain` (AC-3): `resolve_candidate_callable` succeeds against a
+  tempdir-written copy; `jax.jit(fn)(*[1.0, 2.0])` returns `3.0`; AND directly call
+  `measure_two_phase_timing(candidate_path, "smoke_timing_probe", concrete_inputs=[1.0, 2.0])`,
+  asserting a real `TwoPhaseTiming` with non-negative `compile_time_seconds`/`runtime_seconds`.
+- `TestMakeScratchGitRepo` (AC-4): real HEAD sha from a real tempdir git repo; `compute_candidate_tree_sha`
+  (real, never mocked) succeeds standalone against it.
+- `TestSmokeCampaignApprovalFn` (AC-11): valid `Attestation` returned; `toml_path` pointed at a
+  nonexistent file to prove it's never read.
+- `TestMakeSmokeScoreFnFreshness` (AC-5): two independent `_make_smoke_score_fn()` calls produce
+  independently-counting closures.
+- `TestAssertPassCampaignResultRatchetAssertion` (AC-6): duck-typed fake iteration objects --
+  all-`improved=True` passes silently, one `False` raises `AssertionError`.
+- `TestCampaignWiring` (Step 6 wiring, THE MOST IMPORTANT TEST): monkeypatch
+  `scripts.smoke_lc12_real_e2e.run_campaign_loop` to a recording stub (never the real function), call
+  `_run_pass_campaign`/`_run_fail_campaign` directly with a `tmp_path` workspace_root, assert the
+  captured kwargs include every new value correctly -- `frozen_context`, `current_config`, `repo`,
+  `ratchet_ref_name` (containing `_RUN_SUFFIX` + correct `-pass`/`-fail` suffix), `callable_name`,
+  `concrete_inputs`, `higher_is_better`, `candidate_target_path`, `bootstrap_commit_sha` (matching the
+  real repo's HEAD sha), `campaign_approval_fn is _smoke_campaign_approval_fn`, **`output_paths` is a
+  non-empty list (this is the plan-audit-caught blocking gap from Track A -- verify Track A actually
+  wired this correctly)**, and `commit_tree_sha`/`allow_fresh_start_despite_existing_lineage` absent.
+
+## Step 10 -- Final verification pass
+Run: `uv run ruff check scripts/smoke_lc12_real_e2e.py tests/scripts/test_smoke_lc12_real_e2e.py`
+(exit 0). `uv run ruff format --check` on the same 2 files (exit 0). `uv run pytest
+tests/scripts/test_smoke_lc12_real_e2e.py -v` (narrow scoped run, fully green, 0 failures). Confirm
+AC-5 (`_make_smoke_frozen_context(` grep shows exactly 2 call sites), AC-7 (`_assert_fail_campaign_result`
+has zero changed lines from pre-#4216), AC-9 (module docstring's original 6 points unchanged), AC-10
+(grep the full diff for `--i-understand-this-creates-real-bathos-state`/`main(` invocations outside the
+pre-existing `if __name__` guard -- zero new ones).
+
+VERIFY before finishing: full pytest output quoted (not just exit code). Commit with a descriptive
+conventional-commit message (e.g. `test(scripts): add bathos-free coverage for smoke_lc12_real_e2e.py's
+new closure-manifest/git-ratchet/campaign-approval machinery (#4216)`) once verified.
+"""
+reviewer_prompt = """
+VERIFY:
+1. All 8 test classes exist and pass, covering AC-1/2/3/4/5/6/11 plus the wiring-spy class.
+2. **The critical check: `TestCampaignWiring` asserts `output_paths` is a non-empty list** -- confirm
+   this directly by reading the test code (this is what closes the plan-audit-caught blocking gap).
+3. No test instantiates a real `PraxiaMcpTransport`/`BathosMcpTransport`, no test calls `main(`, no
+   test's `run_campaign_loop` call path is unmocked (AC-10) -- confirm by reading the test file, not
+   assuming.
+4. `uv run pytest tests/scripts/test_smoke_lc12_real_e2e.py -v` actually run, FULL output quoted in
+   the fixer's report, fully green.
+5. `ruff check`/`ruff format --check` clean on both touched files.
+6. AC-5/AC-7/AC-9/AC-10 all explicitly confirmed per Step 10's own checklist.
+7. `git diff --stat` confirms changes confined to `scripts/smoke_lc12_real_e2e.py` (Track A) and
+   `tests/scripts/test_smoke_lc12_real_e2e.py` (this track) -- nothing else touched, and critically,
+   no evidence anywhere in the diff or commit history of `~/.bth/catalog/bathos.db` having been
+   touched (AC-10, non-negotiable for this sprint).
+8. No test was weakened, skipped, or deleted to force a pass.
+PASS iff all 8 hold. FAIL otherwise, naming which check failed and citing the specific failing
+test(s)/file:line.
+"""
+return_key = "4216_test_remediation"
+
+[orchestration]
+sequential = ["4216_implementation", "4216_test_remediation"]
+concurrent = []

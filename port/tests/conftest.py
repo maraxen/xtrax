@@ -35,9 +35,7 @@ TIER_TIMEOUT_SECONDS = 120
 # failure message reports the real discrepancy as free text; this regex covers
 # both the legacy phrasing ("Max absolute difference: X") and the numpy>=2.x
 # phrasing ("Max absolute difference among violations: X").
-_MAX_ABS_DIFF_RE = re.compile(
-    r"Max absolute difference(?: among violations)?:\s*([0-9.eE+\-]+)"
-)
+_MAX_ABS_DIFF_RE = re.compile(r"Max absolute difference(?: among violations)?:\s*([0-9.eE+\-]+)")
 
 
 @dataclass(frozen=True)

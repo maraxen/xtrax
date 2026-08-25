@@ -158,6 +158,36 @@ def read_best_so_far(repo: Path, ref_name: str) -> str | None:
     return result.stdout.strip()
 
 
+def reset_worktree_to_best_so_far(repo: Path, ref_name: str) -> str:
+    """Reset `repo`'s worktree to the best-so-far commit named by `ref_name` (the reject-path
+    counterpart to `create_pending_commit`/`advance_best_so_far`, both accept-path-only).
+
+    Resolves the best SHA via `read_best_so_far`, then runs `git reset --hard <best_sha>`. Git's
+    own object-database/ref atomicity (see the module docstring) is what makes `read_best_so_far`
+    return a well-formed SHA regardless of when a caller invokes this -- this function does no
+    reconstruction of its own.
+
+    Raises:
+        RatchetCrashAtomicityError: `read_best_so_far(repo, ref_name)` returned `None` (no prior
+            best-so-far ref exists yet -- unreachable in normal operation, since a reject can
+            only happen once a real prior best already exists), or `git reset --hard` itself
+            failed.
+    """
+    repo = repo.resolve()
+    best_sha = read_best_so_far(repo, ref_name)
+    if best_sha is None:
+        msg = (
+            f"reset_worktree_to_best_so_far: no best-so-far ref {ref_name!r} exists in {repo} "
+            "-- cannot reset to a best-so-far commit that was never created"
+        )
+        raise RatchetCrashAtomicityError(msg)
+    result = _git_run(repo, "reset", "--hard", best_sha)
+    if result.returncode != 0:
+        msg = f"git reset --hard {best_sha} failed in {repo}: {result.stderr.strip()}"
+        raise RatchetCrashAtomicityError(msg)
+    return best_sha
+
+
 __all__ = [
     "CommitCreationError",
     "RatchetCrashAtomicityError",
@@ -165,4 +195,5 @@ __all__ = [
     "advance_best_so_far",
     "create_pending_commit",
     "read_best_so_far",
+    "reset_worktree_to_best_so_far",
 ]

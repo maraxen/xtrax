@@ -23,6 +23,7 @@ from controller.evaluate_adapter import (
     BathosFrozenContext,
     BathosSplitComputeEvaluator,
     RawArtifactsUnavailableError,
+    score_raw_artifacts,
 )
 from xtrax.loop.closure_lock import ClosureManifest, build_closure_manifest, guarded_evaluate
 from xtrax.loop.metrics_provenance import evaluate_with_provenance
@@ -63,16 +64,18 @@ class TestAC1Documentation:
         assert docstring is not None
         assert "raw artifacts" in docstring.lower()
         assert "SPLIT_COMPUTE" in docstring
-        assert (
-            "fitness" in docstring.lower()
-        ), "docstring must document what raw artifacts are scored against"
+        assert "fitness" in docstring.lower(), (
+            "docstring must document what raw artifacts are scored against"
+        )
 
     def test_ac1_bathoscandidate_docstring_documents_output_paths_constraint(self) -> None:
         """AC1: BathosCandidate.output_paths docstring must state that output_paths must
         contain only raw artifacts, never a pre-computed summary."""
-        docstring = BathosCandidate.__dataclass_fields__["output_paths"].metadata.get(
-            "__doc__"
-        ) or BathosCandidate.__doc__ or ""
+        docstring = (
+            BathosCandidate.__dataclass_fields__["output_paths"].metadata.get("__doc__")
+            or BathosCandidate.__doc__
+            or ""
+        )
         assert "raw artifacts" in docstring.lower() or "output_paths" in docstring.lower(), (
             "BathosCandidate docstring must document output_paths constraint "
             "(checked via class __doc__)"
@@ -145,6 +148,104 @@ class TestAC2RealFileReadsAndComputation:
         # Assert the result reflects genuine computation over real file contents
         # combined_length = len("hello world") + len("expected output") = 11 + 15 = 26
         assert result == {"combined_length": 26.0, "match_score": 1.0}
+
+
+# ---------------------------------------------------------------------------
+# score_raw_artifacts: standalone scoring function extracted from __call__'s scoring half
+# (#3649, GW-02 Track A)
+# ---------------------------------------------------------------------------
+
+
+class TestScoreRawArtifacts:
+    def test_score_raw_artifacts_matches_call_fitness_dict_shape_and_values(
+        self, tmp_path: Path
+    ) -> None:
+        """score_raw_artifacts(frozen_context, output_paths), called directly, returns the
+        SAME fitness dict shape/values that BathosSplitComputeEvaluator.__call__ previously
+        produced inline for identical inputs -- proves the extraction is behavior-preserving."""
+        raw_artifact = tmp_path / "artifact.txt"
+        raw_artifact.write_text("hello world", encoding="utf-8")
+
+        ground_truth = tmp_path / "ground_truth.txt"
+        ground_truth.write_text("expected output", encoding="utf-8")
+
+        def score_fn(
+            raw_artifact_paths: tuple[Path, ...], split_paths: tuple[Path, ...]
+        ) -> dict[str, float]:
+            artifact_text = raw_artifact_paths[0].read_text(encoding="utf-8")
+            ground_text = split_paths[0].read_text(encoding="utf-8")
+            combined_length = len(artifact_text) + len(ground_text)
+            return {"combined_length": float(combined_length), "match_score": 1.0}
+
+        locked = ClosureManifest(
+            evaluator_paths=(),
+            split_paths=(ground_truth,),
+            metric_def_paths=(),
+            pinned_deps_source=Path("uv.lock"),
+            config={},
+            closure_hash="fake-hash",
+        )
+
+        transport = _RecordingTransport(_ok_envelope(script_path="c.py", exit_code=0, success=True))
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        frozen_context = BathosFrozenContext(
+            locked=locked,
+            campaign_adapter=adapter,
+            campaign_id="camp-1",
+            score_fn=score_fn,
+        )
+
+        output_paths = (str(raw_artifact),)
+
+        # Calling score_raw_artifacts directly, with no dispatch involved.
+        direct_result = score_raw_artifacts(frozen_context, output_paths)
+
+        # combined_length = len("hello world") + len("expected output") = 11 + 15 = 26
+        assert direct_result == {"combined_length": 26.0, "match_score": 1.0}
+
+        # Same inputs threaded through __call__ (which now delegates to score_raw_artifacts
+        # after its own dispatch) must produce a byte-identical fitness dict.
+        candidate = BathosCandidate(script_path="c.py", output_paths=output_paths)
+        evaluator = BathosSplitComputeEvaluator()
+        call_result = evaluator(frozen_context, candidate)
+
+        assert call_result == direct_result
+
+    def test_score_raw_artifacts_raises_for_empty_output_paths(self) -> None:
+        """score_raw_artifacts raises RawArtifactsUnavailableError when given no output_paths,
+        without ever invoking score_fn."""
+        score_fn_calls: list[bool] = []
+
+        def score_fn(
+            _raw_artifact_paths: tuple[Path, ...], _split_paths: tuple[Path, ...]
+        ) -> dict[str, float]:
+            score_fn_calls.append(True)
+            return {"score": 1.0}
+
+        locked = ClosureManifest(
+            evaluator_paths=(),
+            split_paths=(),
+            metric_def_paths=(),
+            pinned_deps_source=Path("uv.lock"),
+            config={},
+            closure_hash="fake-hash",
+        )
+
+        transport = _RecordingTransport(_ok_envelope(script_path="c.py", exit_code=0, success=True))
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        frozen_context = BathosFrozenContext(
+            locked=locked,
+            campaign_adapter=adapter,
+            campaign_id="camp-1",
+            score_fn=score_fn,
+        )
+
+        with pytest.raises(RawArtifactsUnavailableError):
+            score_raw_artifacts(frozen_context, ())
+
+        assert score_fn_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +359,7 @@ class TestAC3AC4TransportRecording:
 
 
 class TestAC5EndToEndWithGuardedEvaluate:
-    def test_ac5_guarded_evaluate_succeeds_with_declared_split_path(
-        self, tmp_path: Path
-    ) -> None:
+    def test_ac5_guarded_evaluate_succeeds_with_declared_split_path(self, tmp_path: Path) -> None:
         """AC5: call guarded_evaluate with a real ClosureManifest built via
         build_closure_manifest, where the raw-artifact path is declared in split_paths.
         Assert this succeeds with no UnlistedReadError."""
@@ -476,9 +575,7 @@ class TestFailurePathDispatchFailure:
             return {"score": 1.0}
 
         # Return a failed envelope
-        failing_envelope = _ok_envelope(
-            script_path="c.py", exit_code=1, success=False
-        )
+        failing_envelope = _ok_envelope(script_path="c.py", exit_code=1, success=False)
         transport = _RecordingTransport(failing_envelope)
         adapter = BathosCampaignAdapter(transport=transport, token="test-token")
 
@@ -524,9 +621,7 @@ class TestFailurePathDispatchFailure:
             return {"score": 1.0}
 
         # Non-zero exit code + success=False
-        failing_envelope = _ok_envelope(
-            script_path="c.py", exit_code=127, success=False
-        )
+        failing_envelope = _ok_envelope(script_path="c.py", exit_code=127, success=False)
         transport = _RecordingTransport(failing_envelope)
         adapter = BathosCampaignAdapter(transport=transport, token="test-token")
 
@@ -557,3 +652,124 @@ class TestFailurePathDispatchFailure:
             evaluator(frozen_context, candidate)
 
         assert score_fn_calls == []
+
+
+# ---------------------------------------------------------------------------
+# #4164: production constructor + declaration-lists helper
+# ---------------------------------------------------------------------------
+
+
+def _dummy_lock_score_fn(
+    _raw_artifact_paths: tuple[Path, ...], _split_paths: tuple[Path, ...]
+) -> dict[str, float]:
+    return {"score": 1.0}
+
+
+def _lock_factory_kwargs(
+    evaluator: Path, split: Path, metric: Path, pinned: Path
+) -> dict[str, Any]:
+    transport = _RecordingTransport(_ok_envelope(script_path="c.py", exit_code=0, success=True))
+    adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+    return {
+        "evaluator_paths": (evaluator,),
+        "split_paths": (split,),
+        "metric_def_paths": (metric,),
+        "config": {"k": "v"},
+        "pinned_deps_source": pinned,
+        "campaign_adapter": adapter,
+        "campaign_id": "camp-1",
+        "score_fn": _dummy_lock_score_fn,
+    }
+
+
+def _write_declared_closure_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    evaluator = tmp_path / "evaluator.py"
+    evaluator.write_text("# evaluator v1\n", encoding="utf-8")
+    split = tmp_path / "split.txt"
+    split.write_text("split v1\n", encoding="utf-8")
+    metric = tmp_path / "metric.txt"
+    metric.write_text("metric v1\n", encoding="utf-8")
+    pinned = tmp_path / "uv.lock"
+    pinned.write_text("# pinned v1\n", encoding="utf-8")
+    return evaluator, split, metric, pinned
+
+
+class TestLockBathosFrozenContext:
+    def test_lock_bathos_frozen_context_hashes_declared_files(self, tmp_path: Path) -> None:
+        """#4164: lock_bathos_frozen_context hashes declared evaluator/split/metric files
+        via build_closure_manifest. Hash is deterministic; changing a declared file changes it.
+        Empty path tuples remain valid (existing tests/smoke) -- this test uses real files.
+        """
+        from controller.evaluate_adapter import lock_bathos_frozen_context
+
+        evaluator, split, metric, pinned = _write_declared_closure_files(tmp_path)
+        kwargs = _lock_factory_kwargs(evaluator, split, metric, pinned)
+
+        first = lock_bathos_frozen_context(**kwargs)
+        second = lock_bathos_frozen_context(**kwargs)
+        assert first.locked.closure_hash == second.locked.closure_hash
+
+        expected = build_closure_manifest(
+            evaluator_paths=(evaluator,),
+            split_paths=(split,),
+            metric_def_paths=(metric,),
+            config={"k": "v"},
+            pinned_deps_source=pinned,
+        )
+        assert first.locked.closure_hash == expected.closure_hash
+        assert first.campaign_id == "camp-1"
+        assert first.score_fn is _dummy_lock_score_fn
+
+        evaluator.write_text("# evaluator v2\n", encoding="utf-8")
+        after = lock_bathos_frozen_context(**kwargs)
+        assert after.locked.closure_hash != first.locked.closure_hash
+
+
+class TestClosureDeclarationLists:
+    def test_closure_declaration_lists_roundtrip_write_manifest_dict(self, tmp_path: Path) -> None:
+        """#4164: factory lock → closure_declaration_lists → write_manifest_dict produces
+        manifest["closure"] with those string paths. Tests MAY import write_manifest_dict;
+        controller production code must not.
+        """
+        from controller.evaluate_adapter import (
+            closure_declaration_lists,
+            lock_bathos_frozen_context,
+        )
+        from xtrax.cli.manifest import write_manifest_dict
+
+        evaluator, split, metric, pinned = _write_declared_closure_files(tmp_path)
+        frozen = lock_bathos_frozen_context(
+            **_lock_factory_kwargs(evaluator, split, metric, pinned)
+        )
+        evaluator_paths, split_paths, metric_def_paths = closure_declaration_lists(frozen.locked)
+
+        cfg_dict = dict(
+            schema_version=1,
+            model={"path": "tests.cli._run_fixtures:make_model", "kwargs": {}},
+            optimizer={"path": "xtrax.training.optim:adamw_with_schedule", "kwargs": {}},
+            loss={"path": "tests.cli._run_fixtures:make_loss", "kwargs": {}},
+            data={
+                "factory": "tests.cli._run_fixtures:make_dataset",
+                "kwargs": {},
+                "batch_size": 4,
+            },
+            seed=42,
+            num_epochs=3,
+        )
+        manifest = write_manifest_dict(
+            run_dir=str(tmp_path / "runs" / "roundtrip"),
+            cfg_dict=cfg_dict,
+            run_id="roundtrip",
+            config_hash_val="roundtrip",
+            evaluator_paths=evaluator_paths,
+            split_paths=split_paths,
+            metric_def_paths=metric_def_paths,
+        )
+        assert manifest["closure"] == {
+            "evaluator_paths": evaluator_paths,
+            "split_paths": split_paths,
+            "metric_def_paths": metric_def_paths,
+        }
+        assert evaluator_paths == [str(evaluator.resolve())]
+        assert split_paths == [str(split.resolve())]
+        assert metric_def_paths == [str(metric.resolve())]

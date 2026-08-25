@@ -23,3 +23,19 @@ attested_at = "2026-07-14T00:00:00Z"
 ttl_days = 365
 attested_by = "Marielle Russo"
 note = "Initial constitution sign-off, approved as-drafted via direct conversation. Governs gates (a)-(e); see the constitution document for full policy text. Renew before TTL expiry via a dated constitution revision + a fresh entry here."
+
+# T2-30 promotion approval for PR #96 (260824_default-sink-provenance-tracking).
+# Recorded by the jcode recovery session on Marielle's explicit conversational
+# approval ("I approve of the PR"), 2026-08-24 ~23:25 UTC. Per-promotion gate
+# per AC-23: this attestation covers exactly the commit below, consumed by
+# PR #96's promotion.
+[[gates]]
+id = "T2-30"
+ac = "AC-23"
+slug = "promotion_pr96_provenance_spec_impl"
+title = "Promotion approval: PR #96 provenance spec + ZarrStagingSink impl (gate c)"
+event_ref = "1b709e15462972d1d576553abc1e5f2333c3335b"
+attested_at = "2026-08-24T23:26:00Z"
+ttl_days = 7
+attested_by = "Marielle Russo"
+note = "Approved via direct conversation 2026-08-24; covers c3d5620 + 1b709e1 content. Jury-audited (3-juror panel): SPEC-SATISFIED, tests/run 104 green, CI ALL_GREEN."

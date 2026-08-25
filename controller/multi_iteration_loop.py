@@ -167,9 +167,12 @@ from typing import Any, Literal
 from controller.bathos_campaign_adapter import BathosCampaignAdapter
 from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
 from controller.dispatch import DispatchBackend
+from controller.evaluate_adapter import BathosFrozenContext
 from controller.lineage_interim import CandidateParentage
 from controller.main_loop import CampaignMode, OneCandidatePassResult, run_one_candidate_pass
+from xtrax.loop.candidate_smoke import assert_candidate_smoke
 from xtrax.loop.candidate_static import assert_candidate_static
+from xtrax.loop.checkified_execution import assert_checkified_execution
 from xtrax.loop.diversity_quota import (
     DiversityQuotaDecision,
     assert_diversity_quota,
@@ -183,6 +186,7 @@ from xtrax.loop.external_stop_watchdog import (
 )
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
+from xtrax.loop.structure_tripwire import assert_structure_tripwire
 
 _logger = logging.getLogger(__name__)
 
@@ -252,7 +256,17 @@ class MultiIterationLoopResult:
 
     @property
     def accepted_count(self) -> int:
-        """Count of iterations whose `OneCandidatePassResult.accepted` is `True`."""
+        """Count of iterations that were actually promotable per the ratchet (GW-02).
+
+        `OneCandidatePassResult.accepted` gained a stricter meaning once `run_one_candidate_pass`
+        wired in the real multi-metric ratchet decision (AC-10): it now additionally requires
+        `ratchet_decision.improved`, not just "the bathos run succeeded and neither gate hard-
+        blocked" (see `main_loop.py`'s own module docstring and `OneCandidatePassResult.accepted`
+        for the full rationale -- a candidate strictly worse on every metric than the current
+        best no longer reads `accepted=True` here). This property's own implementation is
+        unchanged by that -- it always intended "was actually promotable," it simply inherits the
+        stricter, now-correct definition of `accepted` for free.
+        """
         return sum(1 for result in self.iterations if result.accepted)
 
 
@@ -277,11 +291,27 @@ def run_multi_iteration_loop(
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
+    abstract_inputs: list[Any],
+    structure_tripwire_fn: Callable[..., None] = assert_structure_tripwire,
+    candidate_smoke_fn: Callable[..., None] = assert_candidate_smoke,
+    candidate_smoke_root: Path | None = None,
+    checkified_execution_fn: Callable[..., Any] = assert_checkified_execution,
     wall_clock_budget_seconds: float | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     diversity_window_size: int = 5,
     on_leap_path_required: Callable[[LeapPathEvent], None] = _default_leap_path_handler,
     start_watchdog_fn: Callable[[int, WatchdogCriteria], WatchdogHandle] = start_watchdog,
+    higher_is_better: Mapping[str, bool],
+    frozen_context: BathosFrozenContext,
+    current_config: Mapping[str, Any],
+    repo: Path,
+    ratchet_ref_name: str,
+    callable_name: str,
+    concrete_inputs: list[Any],
+    commit_tree_sha: str | None = None,
+    candidate_target_path: Path | None = None,
+    allow_fresh_start_despite_existing_lineage: bool = False,
+    bootstrap_commit_sha: str | None = None,
 ) -> MultiIterationLoopResult:
     """Run the actual multi-iteration "keep going" loop across candidates (AC-8b).
 
@@ -341,6 +371,34 @@ def run_multi_iteration_loop(
             always override this with a fake watchdog-starter returning a fake
             `WatchdogHandle`-shaped stub** -- see the module docstring's watchdog-wiring section
             for why the real one must never be reachable from a test.
+        higher_is_better: forwarded to `run_one_candidate_pass` on every iteration, but NOT
+            unconditionally -- suppressed to `None` on any call where this loop's own live
+            `best_fitness` state is still `None` (matching `run_one_candidate_pass`'s own
+            all-or-nothing guard on `best_fitness`/`higher_is_better`, `main_loop.py:461-467`),
+            and forwarded as the real, unmutated mapping once `best_fitness` becomes non-`None`.
+            Required (no default) -- GW-02's ratchet decision cannot run without a per-metric
+            comparison direction.
+        frozen_context: forwarded to `run_one_candidate_pass` unchanged on every iteration
+            (SPLIT_COMPUTE, #4133/#3657).
+        current_config: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+        repo: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+        ratchet_ref_name: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+        callable_name: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+        concrete_inputs: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+        commit_tree_sha: forwarded to `run_one_candidate_pass` unchanged on every iteration.
+            `None` (default) lets that function fall back to `commit_tree_sha_fn`.
+        candidate_target_path: forwarded to `run_one_candidate_pass` unchanged on every
+            iteration. `None` (default) is only valid there when `commit_tree_sha` is supplied
+            literally -- see that function's own fail-fast validation.
+        allow_fresh_start_despite_existing_lineage: forwarded to `run_one_candidate_pass`
+            unchanged on every iteration. `False` (default) -- see that function's own
+            lineage-conflict guard.
+        bootstrap_commit_sha: forwarded to BOTH `run_one_candidate_pass`'s `commit_parent_sha`
+            and `bootstrap_base_tree_sha` unconditionally on every call; inert except on a
+            genuinely fresh campaign's first accepted candidate (`read_best_so_far` returns
+            `None`); callers needing the two inner values to diverge must call
+            `run_one_candidate_pass` directly; not validated before use (garbage-in surfaces as
+            a real git-subprocess error, not a friendlier `ValueError`).
 
     Returns:
         A `MultiIterationLoopResult` bundling every completed iteration, the termination
@@ -367,6 +425,7 @@ def run_multi_iteration_loop(
     previous_source: str | None = None
     termination_reason: TerminationReason = "normal_completion"
     loop_start = time_fn()
+    best_fitness: Mapping[str, float] | None = None
 
     try:
         for candidate_index in range(max_candidates):
@@ -395,8 +454,30 @@ def run_multi_iteration_loop(
                 seed_trial_counts_fn=seed_trial_counts_fn,
                 candidate_static_fn=candidate_static_fn,
                 candidate_static_root=candidate_static_root,
+                abstract_inputs=abstract_inputs,
+                structure_tripwire_fn=structure_tripwire_fn,
+                candidate_smoke_fn=candidate_smoke_fn,
+                candidate_smoke_root=candidate_smoke_root,
+                checkified_execution_fn=checkified_execution_fn,
+                frozen_context=frozen_context,
+                current_config=current_config,
+                best_fitness=best_fitness,
+                higher_is_better=None if best_fitness is None else higher_is_better,
+                repo=repo,
+                ratchet_ref_name=ratchet_ref_name,
+                commit_tree_sha=commit_tree_sha,
+                candidate_target_path=candidate_target_path,
+                allow_fresh_start_despite_existing_lineage=(
+                    allow_fresh_start_despite_existing_lineage
+                ),
+                callable_name=callable_name,
+                concrete_inputs=concrete_inputs,
+                commit_parent_sha=bootstrap_commit_sha,
+                bootstrap_base_tree_sha=bootstrap_commit_sha,
             )
             iterations.append(result)
+            if result.accepted:
+                best_fitness = result.fitness_dict
 
             candidate_source = result.handoff.path.read_text(encoding="utf-8")
             if previous_source is not None:

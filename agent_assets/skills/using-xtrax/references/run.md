@@ -109,6 +109,7 @@ Declare how to save results:
 from xtrax.run import SinkSpec, make_sink
 
 spec = SinkSpec(
+    run_id="2026-08-24T14-00-demo",      # Required -- join key for sink provenance
     output_dir=Path("/path/to/outputs"),  # Directory for output files (None = no output)
     format="zarr",                         # "jsonl" | "h5" | "zarr" | "none" (default: "jsonl")
     flush_every=10,                        # Flush buffer every N stage calls (default: 1)
@@ -116,6 +117,17 @@ spec = SinkSpec(
 
 sink = make_sink(spec)  # ZarrStagingSink for "zarr", None for "none"
 ```
+
+Zarr sinks auto-capture static run provenance: git SHA/branch/dirty +
+`run_id` + UTC `created_at` on the store's root group, and a minimal
+`run_id`/`git_sha` pointer per drained key's group. Git capture never raises
+(outside a repo it records `git_sha="unknown"` and emits a `UserWarning`).
+Call `sink.finalize()` once at run end to consolidate store metadata; no
+`stage()`/`drain()` is legitimate afterwards. A second sink opened against
+the same `output_dir` must carry the same `run_id`, or construction raises.
+Optional `SinkSpec.extension_schema` (JSON-Schema-style dict) validates
+caller attrs at `stage()` time; core field names (`git_sha`, `git_branch`,
+`git_dirty`, `run_id`, `created_at`) are reserved.
 
 Verify: `src/xtrax/run/sink.py:14-39`
 

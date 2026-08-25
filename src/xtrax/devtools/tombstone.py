@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from xtrax.devtools.emit import AuditFinding
 
@@ -33,7 +33,7 @@ def _validate_disposition(disposition: str) -> Disposition:
     if disposition not in allowed:
         msg = f"disposition must be one of {sorted(allowed)}, got {disposition!r}"
         raise ValueError(msg)
-    return cast(Disposition, disposition)
+    return disposition
 
 
 def load_tombstones(path: Path = DEFAULT_TOMBSTONE_PATH) -> set[str]:

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Sink provenance tracking** (`xtrax.run`): `ZarrStagingSink` now auto-captures
+  static run provenance for downstream consumers. `SinkSpec` gains a required
+  `run_id` and an optional JSON-Schema-style `extension_schema`. The store's
+  root group receives the full record (`git_sha`, `git_branch`, `git_dirty`,
+  `run_id`, `created_at` as ISO-8601 UTC); each drained key's group gets a
+  minimal `run_id`/`git_sha` pointer. Git capture never raises (falls back to
+  `git_sha="unknown"` with a `UserWarning`). Core field names are reserved
+  against caller attrs; schema validation happens at `stage()` time. New
+  `finalize()` method consolidates store metadata exactly once (refusing to
+  run while staged payloads are undrained) and locks the sink; opening a
+  second sink on the same `output_dir` with a different
+  `run_id` now raises. (spec: #96, task 260824_default-sink-provenance-tracking)
+
+### Changed
+
+- **Breaking**: `SinkSpec.run_id` is now a required constructor argument.
+
+## [0.4.0a6] - 2026-08-20
+
+### Added
+
+- **`WhileCarry`** (`xtrax.tiling`): `lax.while_loop`-backed `AxisStrategy`
+  for carry-only loops (no input sequence, no per-step `ys`).
+  `CarrySpec(collect_outputs=False)` pre-demotes to `WhileCarry`;
+  `make_axis_dispatch` returns `WhileLoopIterator`. Not reverse-mode AD
+  safe. (#81 spec, #83 implementation)
+
 ## [0.4.0a5] - 2026-07-08
 
 ### Added

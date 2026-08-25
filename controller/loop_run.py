@@ -99,6 +99,35 @@ minted uniquely per real, approved campaign start (e.g. a fresh random/timestamp
 for a second, different campaign start silently rides the first approval. This module does not
 mint or validate uniqueness itself; that responsibility sits with the caller.
 
+## GW-05 addendum: capability-probe gate wired in before `campaign_create` (T2-27, AC-20)
+
+`capability_probe_gate.assert_capability_live` (T2-27, AC-20, already built and merged) was never
+wired into any production caller before this addendum. This gate machine-probes bathos for two
+independent liveness checks (`seed_live` and `stats_battery_live`) and enforces them for
+confirmatory/sequential campaigns while allowing exploration campaigns to proceed regardless
+(PM-4's explicit carve-out).
+
+Wired in as `capability_probe_fn` (default: the real `get_capability_probe_result`), called with
+`capability_probe_catalog_dir` immediately after `campaign_approval_fn` and strictly before
+`campaign_create`. See capability_probe_gate's module docstring for the two independent checks
+and the cross-repo integration seam (bathos.capability probe, not xtrax-side verification).
+
+A `CapabilityNotLiveError` fires before `campaign_create` -- no campaign is created, so nothing
+needs concluding, the same "nothing to conclude" treatment as approval failures above.
+
+**Deferred sub-gates (T2-01, T2-08):** This item wires capability_probe only. Two other T2-27
+candidate sub-gates remain unimplemented:
+
+- **admission (T2-01, AC-E1):** deliberately closed as already-satisfied. admit_candidate/
+  validate_graph operate on HostPrepGraph, structurally disjoint from controller's CandidateHandoff
+  (path, sha256) model (zero hits repo-wide). AC-E1's intent is already served by the live `xtrax
+  graph-validate` CLI verb as an upstream authoring-time gate.
+- **evaluator_completeness (T2-08, AC-11):** deliberately deferred (filed as a follow-up backlog
+  item). InvariantManifest/SyntheticGroundTruthCase have zero producers anywhere in the repo;
+  wiring a call site now would force fabricating inputs ad hoc, worse than leaving it open and
+  documented. This gap is tracked in the live backlog and requires its own future brainstorm/
+  adversarial-review pass (task_id: 260813_epic2181-gw-sprint-compose).
+
 ## What "a caught per-candidate failure" means here, vs. "an uncaught exception" -- grounded, not
 ## invented
 
@@ -198,7 +227,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -207,8 +236,13 @@ from controller.bathos_campaign_adapter import (
     CampaignConclusion,
     CampaignHandle,
 )
-from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
+from controller.bathos_library_wrappers import (
+    call_stats_battery_gate,
+    get_capability_probe_result,
+    get_seed_trial_counts,
+)
 from controller.dispatch import CandidateHandoffFailure, DispatchBackend
+from controller.evaluate_adapter import BathosFrozenContext
 from controller.lineage_interim import CandidateParentage
 from controller.main_loop import CampaignMode
 from controller.multi_iteration_loop import (
@@ -219,10 +253,18 @@ from controller.multi_iteration_loop import (
 )
 from xtrax.devtools.freshness import Attestation
 from xtrax.loop.campaign_approval_gate import DEFAULT_GATES_TOML, assert_campaign_approved
+from xtrax.loop.candidate_smoke import assert_candidate_smoke
 from xtrax.loop.candidate_static import assert_candidate_static
+from xtrax.loop.capability_probe_gate import (
+    CapabilityProbeResult,
+    assert_capability_live,
+)
+from xtrax.loop.checkified_execution import assert_checkified_execution
+from xtrax.loop.closure_lock import build_closure_manifest
 from xtrax.loop.external_stop_watchdog import WatchdogCriteria, WatchdogHandle, start_watchdog
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
+from xtrax.loop.structure_tripwire import assert_structure_tripwire
 
 _logger = logging.getLogger(__name__)
 
@@ -382,6 +424,11 @@ def run_campaign_loop(
     seed_trial_counts_fn: Callable[..., SeedTrialCounts] = get_seed_trial_counts,
     candidate_static_fn: Callable[..., None] = assert_candidate_static,
     candidate_static_root: Path | None = None,
+    abstract_inputs: list[Any],
+    structure_tripwire_fn: Callable[..., None] = assert_structure_tripwire,
+    candidate_smoke_fn: Callable[..., None] = assert_candidate_smoke,
+    candidate_smoke_root: Path | None = None,
+    checkified_execution_fn: Callable[..., Any] = assert_checkified_execution,
     wall_clock_budget_seconds: float | None = None,
     time_fn: Callable[[], float] = time.monotonic,
     diversity_window_size: int = 5,
@@ -391,6 +438,19 @@ def run_campaign_loop(
     on_loop_event: Callable[[LoopEvent], None] = _default_loop_event_handler,
     campaign_approval_fn: Callable[..., Attestation] = assert_campaign_approved,
     campaign_approval_toml_path: Path = DEFAULT_GATES_TOML,
+    capability_probe_fn: Callable[..., CapabilityProbeResult] = get_capability_probe_result,
+    capability_probe_catalog_dir: str = "",
+    higher_is_better: Mapping[str, bool],
+    frozen_context: BathosFrozenContext,
+    current_config: Mapping[str, Any],
+    repo: Path,
+    ratchet_ref_name: str,
+    callable_name: str,
+    concrete_inputs: list[Any],
+    commit_tree_sha: str | None = None,
+    candidate_target_path: Path | None = None,
+    allow_fresh_start_despite_existing_lineage: bool = False,
+    bootstrap_commit_sha: str | None = None,
 ) -> CampaignLoopResult:
     """Open one bathos campaign, run the multi-iteration loop, and guarantee it concludes.
 
@@ -458,6 +518,35 @@ def run_campaign_loop(
             docstring's GW-03 addendum.
         campaign_approval_toml_path: forwarded to `campaign_approval_fn` as `toml_path` (default:
             `campaign_approval_gate.DEFAULT_GATES_TOML`, i.e. `.praxia/loop_human_gates.toml`).
+        capability_probe_fn: injection seam -- the capability-probe gate (T2-27, AC-20; [GW-05])
+            checked immediately after campaign_approval_fn and strictly before `campaign_create`.
+            Defaults to the REAL `get_capability_probe_result`. **Tests of this function must
+            always override this** with a stub returning a fake `CapabilityProbeResult` -- never
+            let a test reach the real bathos.capability.probe_capabilities call.
+        capability_probe_catalog_dir: forwarded to `capability_probe_fn` as `catalog_dir`
+            (default: "" = use bathos default resolution).
+        higher_is_better: forwarded to `run_multi_iteration_loop` unchanged (that function, not
+            this one, applies the conditional suppression against its own loop-local
+            `best_fitness` state). Required (no default).
+        frozen_context: re-locked against `current_config` after approval/probe and before
+            `campaign_create`, then forwarded to `run_multi_iteration_loop` (SPLIT_COMPUTE,
+            #4133/#3657/#4164).
+        current_config: forwarded to `run_multi_iteration_loop` unchanged.
+        repo: forwarded to `run_multi_iteration_loop` unchanged.
+        ratchet_ref_name: forwarded to `run_multi_iteration_loop` unchanged.
+        callable_name: forwarded to `run_multi_iteration_loop` unchanged.
+        concrete_inputs: forwarded to `run_multi_iteration_loop` unchanged.
+        commit_tree_sha: forwarded to `run_multi_iteration_loop` unchanged. `None` (default).
+        candidate_target_path: forwarded to `run_multi_iteration_loop` unchanged. `None`
+            (default).
+        allow_fresh_start_despite_existing_lineage: forwarded to `run_multi_iteration_loop`
+            unchanged. `False` (default).
+        bootstrap_commit_sha: forwarded to `run_multi_iteration_loop` unchanged; that function
+            fans it out to BOTH `run_one_candidate_pass`'s `commit_parent_sha` and
+            `bootstrap_base_tree_sha` unconditionally on every call. Inert except on a genuinely
+            fresh campaign's first accepted candidate (`read_best_so_far` returns `None`);
+            callers needing the two inner values to diverge must call `run_one_candidate_pass`
+            directly. See `run_multi_iteration_loop`'s own docstring for the full rationale.
 
     Returns:
         A `CampaignLoopResult` on successful completion (the only path that returns instead of
@@ -492,6 +581,27 @@ def run_campaign_loop(
     # same "nothing to conclude" treatment as the max_candidates < 1 ValueError above.
     campaign_approval_fn(campaign_name, toml_path=campaign_approval_toml_path)
 
+    # Capability-probe gate (T2-27, AC-20; [GW-05]) -- checked immediately after campaign approval
+    # and strictly before campaign_create. Probe result carries seed_live and stats_battery_live
+    # booleans; assert_capability_live enforces them for confirmatory/sequential campaigns and
+    # allows exploration campaigns to proceed. See capability_probe_gate's module docstring and
+    # the module docstring's GW-05 addendum (added step 5 of the plan).
+    probe_result = capability_probe_fn(catalog_dir=capability_probe_catalog_dir)
+    assert_capability_live(probe_result, campaign_mode=campaign_mode)
+
+    # Campaign-start re-lock (#4164): hash declared paths + the config actually in effect
+    # for this campaign, after approval/probe and strictly before campaign_create.
+    frozen_context = replace(
+        frozen_context,
+        locked=build_closure_manifest(
+            evaluator_paths=frozen_context.locked.evaluator_paths,
+            split_paths=frozen_context.locked.split_paths,
+            metric_def_paths=frozen_context.locked.metric_def_paths,
+            config=current_config,
+            pinned_deps_source=frozen_context.locked.pinned_deps_source,
+        ),
+    )
+
     handle: CampaignHandle = campaign_adapter.campaign_create(
         campaign_name,
         mode=campaign_mode,
@@ -524,11 +634,27 @@ def run_campaign_loop(
             seed_trial_counts_fn=seed_trial_counts_fn,
             candidate_static_fn=candidate_static_fn,
             candidate_static_root=candidate_static_root,
+            abstract_inputs=abstract_inputs,
+            structure_tripwire_fn=structure_tripwire_fn,
+            candidate_smoke_fn=candidate_smoke_fn,
+            candidate_smoke_root=candidate_smoke_root,
+            checkified_execution_fn=checkified_execution_fn,
             wall_clock_budget_seconds=wall_clock_budget_seconds,
             time_fn=time_fn,
             diversity_window_size=diversity_window_size,
             on_leap_path_required=on_leap_path_required,
             start_watchdog_fn=start_watchdog_fn,
+            higher_is_better=higher_is_better,
+            frozen_context=frozen_context,
+            current_config=current_config,
+            repo=repo,
+            ratchet_ref_name=ratchet_ref_name,
+            commit_tree_sha=commit_tree_sha,
+            candidate_target_path=candidate_target_path,
+            allow_fresh_start_despite_existing_lineage=(allow_fresh_start_despite_existing_lineage),
+            callable_name=callable_name,
+            concrete_inputs=concrete_inputs,
+            bootstrap_commit_sha=bootstrap_commit_sha,
         )
     except _CAUGHT_PER_CANDIDATE_FAILURE_TYPES as exc:
         _conclude_best_effort(

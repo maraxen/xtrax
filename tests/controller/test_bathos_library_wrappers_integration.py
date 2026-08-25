@@ -11,7 +11,12 @@ actually invoked either wrapper function against real bathos behavior.
 
 import pytest
 
-from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
+from controller.bathos_library_wrappers import (
+    call_stats_battery_gate,
+    get_capability_probe_result,
+    get_seed_trial_counts,
+)
+from xtrax.loop.capability_probe_gate import CapabilityProbeResult
 from xtrax.loop.seed_gate import SeedTrialCounts
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
 
@@ -21,6 +26,7 @@ from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
 # down that tier's entire coverage run, not just this file).
 duckdb = pytest.importorskip("duckdb")
 pytest.importorskip("bathos.stats_gates")
+pytest.importorskip("bathos.capability")
 
 
 class TestCallStatsBatteryGateRealBathos:
@@ -94,3 +100,43 @@ class TestGetSeedTrialCountsRealBathos:
         counts = get_seed_trial_counts(db, "abc")
 
         assert counts.hypothesis_clause_id == ""
+
+
+class TestGetCapabilityProbeResultRealBathos:
+    """get_capability_probe_result against the real bathos.capability.probe_capabilities."""
+
+    def test_returns_capability_probe_result_with_real_values(self, tmp_path):
+        """Test against a fresh empty tmp catalog dir."""
+        result = get_capability_probe_result(catalog_dir=str(tmp_path))
+
+        assert isinstance(result, CapabilityProbeResult)
+        # AUDIT-REQUIRED (fixed): do NOT hardcode stats_battery_live is True -- scipy is not
+        # installed in this venv (controller extra is only bathos>=0.13.0a1, no [stats]).
+        # Assert the type instead of a specific value.
+        assert isinstance(result.seed_live, bool)
+        assert isinstance(result.stats_battery_live, bool)
+
+    def test_default_catalog_dir_returns_capability_probe_result(self, tmp_path):
+        """Test with default catalog_dir (empty string) using isolated temp directory.
+
+        This test verifies the function works when called without an explicit catalog_dir
+        by setting BTH_CATALOG_DIR env var to tmp_path, ensuring isolation from the real
+        ~/.bth catalog directory.
+        """
+        import os
+
+        # Set BTH_CATALOG_DIR to override the default catalog_dir resolution path
+        old_env = os.environ.get("BTH_CATALOG_DIR")
+        try:
+            os.environ["BTH_CATALOG_DIR"] = str(tmp_path)
+            result = get_capability_probe_result()
+
+            assert isinstance(result, CapabilityProbeResult)
+            assert isinstance(result.seed_live, bool)
+            assert isinstance(result.stats_battery_live, bool)
+        finally:
+            # Restore original environment
+            if old_env is None:
+                os.environ.pop("BTH_CATALOG_DIR", None)
+            else:
+                os.environ["BTH_CATALOG_DIR"] = old_env

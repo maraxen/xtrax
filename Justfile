@@ -224,6 +224,10 @@ audit-publish-oidc:
     uv run pytest tests/distribution/test_publish_oidc.py -v
     uv run python scripts/audit_publish_oidc.py
 
+audit-promotion-gate:
+    uv run ruff check scripts/audit_promotion_gate.py tests/audit/test_promotion_gate_ci.py
+    uv run pytest tests/audit/test_promotion_gate_ci.py -v
+
 audit-release-readiness:
     uv run ruff check scripts/audit_release_readiness.py tests/distribution/test_release_readiness.py
     uv run pytest tests/distribution/test_release_readiness.py -v

@@ -46,9 +46,7 @@ def test_detects_dummy_evaluation_class(tmp_path: Path) -> None:
 
 
 def test_detects_unittest_mock_import(tmp_path: Path) -> None:
-    (tmp_path / "offender.py").write_text(
-        "from unittest.mock import MagicMock\n", encoding="utf-8"
-    )
+    (tmp_path / "offender.py").write_text("from unittest.mock import MagicMock\n", encoding="utf-8")
     violations = scan(tmp_path, root=tmp_path, allowlist=frozenset(), patterns=FORBIDDEN_PATTERNS)
     assert len(violations) == 1
     assert violations[0].pattern_label == "unittest-mock-import"
