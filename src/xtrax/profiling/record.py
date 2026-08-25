@@ -210,9 +210,7 @@ class ProbeRecord:
 
     def __post_init__(self) -> None:
         if isinstance(self.stage, bool) or self.stage not in (0, 1, 2, 3):
-            raise ClaimValidityError(
-                f"stage must be in {{0,1,2,3}}, got {self.stage!r}"
-            )
+            raise ClaimValidityError(f"stage must be in {{0,1,2,3}}, got {self.stage!r}")
         if isinstance(self.n_atoms, bool) or self.n_atoms <= 0:
             raise ClaimValidityError(f"n_atoms must be > 0, got {self.n_atoms}")
         if self.stage >= 2 and self.platform != "gpu":
@@ -222,9 +220,7 @@ class ProbeRecord:
                 f"platform={self.platform!r}"
             )
         if self.stage >= 2 and self.device_kind is None:
-            raise ClaimValidityError(
-                f"stage={self.stage} requires device_kind, got None"
-            )
+            raise ClaimValidityError(f"stage={self.stage} requires device_kind, got None")
         coerced_metrics: dict[str, float] = {}
         for key, value in self.metrics.items():
             if isinstance(value, bool):
@@ -301,9 +297,7 @@ class ProbeRecord:
         # is rejected.
         if self.attribution_method is not None:
             bad = {
-                v
-                for v in self.attribution_method.values()
-                if v not in ("named_scope", "op_name")
+                v for v in self.attribution_method.values() if v not in ("named_scope", "op_name")
             }
             if bad:
                 raise ClaimValidityError(
@@ -336,13 +330,10 @@ class ProbeRecord:
         try:
             raw = json.loads(text)
         except json.JSONDecodeError as exc:
-            raise ClaimValidityError(
-                f"ProbeRecord JSON is not valid JSON: {exc}"
-            ) from exc
+            raise ClaimValidityError(f"ProbeRecord JSON is not valid JSON: {exc}") from exc
         if not isinstance(raw, dict):
             raise ClaimValidityError(
-                "ProbeRecord JSON must decode to an object, got "
-                f"{type(raw).__name__}"
+                f"ProbeRecord JSON must decode to an object, got {type(raw).__name__}"
             )
 
         fields = {f.name: f for f in dataclasses.fields(cls)}
@@ -369,9 +360,7 @@ class ProbeRecord:
 
         missing = field_names - set(raw.keys())
         hard_missing = sorted(
-            name
-            for name in missing
-            if fields[name].default_factory is not dataclasses.MISSING
+            name for name in missing if fields[name].default_factory is not dataclasses.MISSING
         )
         if hard_missing:
             raise ClaimValidityError(
@@ -430,7 +419,5 @@ def _decode_fields(d: dict[str, Any]) -> dict[str, Any]:
     """
     scopes = d.get("scopes")
     if scopes is not None:
-        d["scopes"] = {
-            k: (tuple(v) if v is not None else None) for k, v in scopes.items()
-        }
+        d["scopes"] = {k: (tuple(v) if v is not None else None) for k, v in scopes.items()}
     return d

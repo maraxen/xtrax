@@ -56,9 +56,7 @@ def _build_programs(rows: int, cols: int, safemap_batch: int, dedup_k_bucket: in
 
     return {
         "vmap": via_iterator(make_axis_dispatch(Vmap())),
-        "safemap": via_iterator(
-            make_axis_dispatch(SafeMap(batch_size=safemap_batch))
-        ),
+        "safemap": via_iterator(make_axis_dispatch(SafeMap(batch_size=safemap_batch))),
         "dedup_gather": lambda x: axis_dispatch(dedup, _core, x),
     }, xs
 
@@ -92,9 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dedup-k-bucket", type=int, default=8)
     args = parser.parse_args(argv)
 
-    programs, xs = _build_programs(
-        args.rows, args.cols, args.safemap_batch, args.dedup_k_bucket
-    )
+    programs, xs = _build_programs(args.rows, args.cols, args.safemap_batch, args.dedup_k_bucket)
     written: list[Path] = []
     for strategy, program in programs.items():
         # Cost analysis on the LOWERED program only -- never executed here.

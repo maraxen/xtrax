@@ -1052,9 +1052,9 @@ class TestProbeRecordEmission:
             candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
-            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
-                _passing_seed_counts()
-            ),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
             probe_record_dir=records_dir,
         )
 
@@ -1082,9 +1082,9 @@ class TestProbeRecordEmission:
             candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
-            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
-                _passing_seed_counts()
-            ),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
         )
 
         assert result.accepted is True
@@ -1106,9 +1106,9 @@ class TestProbeRecordEmission:
             candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kwargs: _downgraded_stats_verdict(),
-            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
-                _passing_seed_counts()
-            ),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
             probe_record_dir=records_dir,
         )
 
@@ -1146,9 +1146,9 @@ class TestProbeRecordEmission:
             candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
-            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
-                _passing_seed_counts()
-            ),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
             probe_record_dir=tmp_path / "probe_records",
         )
 
@@ -1168,9 +1168,7 @@ class TestProbeRecordEmission:
 
         def _failing_run(*args, **kwargs):
             res = real_record_run(*args, **kwargs)
-            return type(res)(
-                script_path=res.script_path, exit_code=1, success=False
-            )
+            return type(res)(script_path=res.script_path, exit_code=1, success=False)
 
         monkeypatch.setattr(ml, "record_candidate_run", _failing_run)
 
@@ -1186,9 +1184,9 @@ class TestProbeRecordEmission:
             candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
-            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
-                _passing_seed_counts()
-            ),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
             probe_record_dir=records_dir,
         )
 
@@ -1196,6 +1194,8 @@ class TestProbeRecordEmission:
         assert len(written) == 1
         record = ProbeRecord.read(written[0])
         assert record.config["accepted"] == "false"
+
+
 # GW-04 (backlog #3651): structure-tripwire, candidate-smoke, checkified-
 # execution gates wired pre-bathos (T2-13, T2-14, T2-15, AC-3/AC-4/AC-5).
 # ---------------------------------------------------------------------------

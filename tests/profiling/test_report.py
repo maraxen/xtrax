@@ -62,9 +62,7 @@ def test_report_over_stage0_stage1_and_stage2_fixtures_emits_ranking_table():
 def test_mixed_attribution_fixture_set_emits_banner():
     from xtrax.profiling.report import render_report
 
-    text = render_report(
-        _paths("stage2_named_scope.json", "stage2_op_name.json")
-    )
+    text = render_report(_paths("stage2_named_scope.json", "stage2_op_name.json"))
     assert (
         "> MIXED ATTRIBUTION: this ranking combines named_scope and op_name "
         "attribution; per-row method is in the attribution_method column."
@@ -89,9 +87,7 @@ def test_none_scope_renders_as_absent_not_zero():
             assert "absent" in line
 
 
-def test_default_discovery_root_is_repository_root_not_cwd(
-    monkeypatch, tmp_path
-):
+def test_default_discovery_root_is_repository_root_not_cwd(monkeypatch, tmp_path):
     """D6: discovery must not depend on the caller's working directory."""
     from xtrax.profiling import report as rep
 

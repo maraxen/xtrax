@@ -59,9 +59,7 @@ _DURATION_STAT_FIELDS = frozenset(
         "total",
     }
 )
-_COUNT_STAT_FIELDS = frozenset(
-    {"rounds", "iqr_outliers", "stddev_outliers", "ops"}
-)
+_COUNT_STAT_FIELDS = frozenset({"rounds", "iqr_outliers", "stddev_outliers", "ops"})
 # Display-only composite: pytest-benchmark's Stats.outliers is the STRING
 # "iqr;stddev" rendered in its terminal table, not a number. Both components
 # are already recorded above; the composite is neither coercible nor
@@ -132,13 +130,11 @@ def parse_bench_extra_info(
         stage = int(extra_info[DECLARATION_STAGE_KEY])  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
         raise ClaimValidityError(
-            f"{DECLARATION_STAGE_KEY}={extra_info[DECLARATION_STAGE_KEY]!r} "
-            "is not coercible to int"
+            f"{DECLARATION_STAGE_KEY}={extra_info[DECLARATION_STAGE_KEY]!r} is not coercible to int"
         ) from exc
     if isinstance(extra_info[DECLARATION_STAGE_KEY], bool):
         raise ClaimValidityError(
-            f"{DECLARATION_STAGE_KEY} is boolean -- JSON true/false would "
-            "silently become stage 1/0"
+            f"{DECLARATION_STAGE_KEY} is boolean -- JSON true/false would silently become stage 1/0"
         )
     if isinstance(extra_info[DECLARATION_N_ATOMS_KEY], bool):
         raise ClaimValidityError(
@@ -176,10 +172,7 @@ def bench_metrics_from_stats(
     benchmark run is not a citable metric.
     """
     unknown = sorted(
-        set(stats_dict)
-        - _DURATION_STAT_FIELDS
-        - _COUNT_STAT_FIELDS
-        - _NON_NUMERIC_STAT_FIELDS
+        set(stats_dict) - _DURATION_STAT_FIELDS - _COUNT_STAT_FIELDS - _NON_NUMERIC_STAT_FIELDS
     )
     if unknown:
         raise ClaimValidityError(
@@ -256,9 +249,7 @@ def build_bench_record_plan(
     )
 
 
-def check_probe_id_collision(
-    probe_id: str, seen: dict[str, str]
-) -> str | None:
+def check_probe_id_collision(probe_id: str, seen: dict[str, str]) -> str | None:
     """Return the colliding fullname if probe_id was already claimed.
 
     sanitize_bench_fullname collapses underscore runs, so distinct node ids

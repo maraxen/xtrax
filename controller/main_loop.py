@@ -107,10 +107,10 @@ fires on every code path" guarantee; this module's job is to prove the happy-pat
 wired correctly end-to-end, not to also own what happens when a step fails.
 """
 
-import sys
 import math
 import os
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -424,9 +424,7 @@ def _emit_candidate_pass_probe_record(
             "accepted": str(accepted).lower(),
             "hard_blocked": str(hard_blocked).lower(),
             "source": "controller.run_one_candidate_pass",
-            "axis_note": (
-                "provenance artifact; n_atoms placeholder by contract"
-            ),
+            "axis_note": ("provenance artifact; n_atoms placeholder by contract"),
         },
     )
     return path
@@ -970,14 +968,8 @@ def run_one_candidate_pass(
                 derived_from=derived_from,
                 handoff_sha=handoff.content_sha256,
                 wall_seconds=perf_counter() - pass_started_at,
-                accepted=(
-                    run_result.success
-                    and stats_decision.honored
-                    and seed_decision.held
-                ),
-                hard_blocked=(
-                    stats_decision.hard_blocked or seed_decision.hard_blocked
-                ),
+                accepted=(run_result.success and stats_decision.honored and seed_decision.held),
+                hard_blocked=(stats_decision.hard_blocked or seed_decision.hard_blocked),
             )
         except Exception as exc:  # noqa: BLE001 -- contained by design; see comment above
             print(

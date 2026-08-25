@@ -35,9 +35,7 @@ DEFAULT_TARGETS_PATH = Path("audit/performance_targets.toml")
 WALL_TIME_SAMPLES = 3
 # D6-style anchoring: records land under the REPOSITORY's outputs/, never the
 # caller's cwd.
-DEFAULT_PROBE_RECORD_DIR = (
-    Path(__file__).resolve().parents[4] / "outputs" / "profiling" / "gate"
-)
+DEFAULT_PROBE_RECORD_DIR = Path(__file__).resolve().parents[4] / "outputs" / "profiling" / "gate"
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,10 +199,7 @@ def _emit_dispatch_failure(
         dim=DIMENSION,
         severity="major",
         file_line=f"probe:{spec.qualname}",
-        evidence=(
-            f"{counter}={observed} exceeded max_{counter}={ceiling} "
-            f"for {spec.qualname}"
-        ),
+        evidence=(f"{counter}={observed} exceeded max_{counter}={ceiling} for {spec.qualname}"),
         rule_id="performance.dispatch_count",
         symbol_qualname=spec.qualname,
         payload={
@@ -238,9 +233,7 @@ def _run_dispatch_probes(
                 dim=DIMENSION,
                 severity="major",
                 file_line=f"probe:{spec.qualname}",
-                evidence=(
-                    f"dispatch probe for {spec.qualname} failed to run: {exc}"
-                ),
+                evidence=(f"dispatch probe for {spec.qualname} failed to run: {exc}"),
                 rule_id="performance.dispatch_probe_error",
                 symbol_qualname=spec.qualname,
                 payload={"violation_kind": "probe_error"},
@@ -282,9 +275,7 @@ def _run_dispatch_probes(
                 config={
                     "qualname": spec.qualname,
                     "source": "performance_gate",
-                    "axis_note": (
-                        "scale-free gate artifact; n_atoms placeholder by contract"
-                    ),
+                    "axis_note": ("scale-free gate artifact; n_atoms placeholder by contract"),
                 },
             )
     return violations, emitted
@@ -343,9 +334,7 @@ def run_performance_gate(
         emitted += 1
 
     # --- Phase C: opt-in dispatch tripwires + ProbeRecord emission --------
-    record_dir = (
-        probe_record_dir if probe_record_dir is not None else DEFAULT_PROBE_RECORD_DIR
-    )
+    record_dir = probe_record_dir if probe_record_dir is not None else DEFAULT_PROBE_RECORD_DIR
     dispatch_violation_count, extra_emitted = _run_dispatch_probes(
         targets,
         audits_path=audits_path,
@@ -360,9 +349,7 @@ def run_performance_gate(
         METRIC_KEY,
         float(trace_violation_count),
     )
-    dispatch_ceilings_configured = any(
-        spec.has_dispatch_ceilings for spec in targets.probes
-    )
+    dispatch_ceilings_configured = any(spec.has_dispatch_ceilings for spec in targets.probes)
     if dispatch_ceilings_configured:
         # Opt-in ratchet: only evaluated when a probe actually configures
         # ceilings -- otherwise the bootstrap-on-missing-key semantics would

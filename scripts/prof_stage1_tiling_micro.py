@@ -114,9 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trials", type=int, default=20)
     args = parser.parse_args(argv)
 
-    program, xs = _build_program(
-        args.rows, args.cols, args.safemap_batch, args.dedup_k_bucket
-    )
+    program, xs = _build_program(args.rows, args.cols, args.safemap_batch, args.dedup_k_bucket)
     # Compile + warm up OUTSIDE the timed/trace region (prolix stage-1 rule:
     # n_compilations inside the window must reflect steady-state dispatch).
     compiled = jax.jit(program).lower(xs, xs).compile()
@@ -205,8 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {exc}")
     else:
         raise SystemExit(
-            "TERM_RANKING over stage0/1 records did NOT raise -- claim gate "
-            "regression"
+            "TERM_RANKING over stage0/1 records did NOT raise -- claim gate regression"
         )
     return 0
 

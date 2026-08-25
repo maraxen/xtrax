@@ -88,9 +88,7 @@ def _reject_unverifiable_git_sha(sources: list["ProbeRecord"], claim: ClaimClass
 # required metric, never after records exist.
 REQUIRED_METRICS: dict[ClaimClass, frozenset[str]] = {
     ClaimClass.STRUCTURAL: frozenset(),
-    ClaimClass.DISPATCH_COUNT: frozenset(
-        {"n_executions", "n_compilations", "n_jit_traces"}
-    ),
+    ClaimClass.DISPATCH_COUNT: frozenset({"n_executions", "n_compilations", "n_jit_traces"}),
     ClaimClass.TERM_RANKING: frozenset({"total_step_seconds"}),
     ClaimClass.END_TO_END: frozenset({"total_step_seconds"}),
 }
@@ -110,9 +108,7 @@ def permitted_claims(record: "ProbeRecord") -> set[ClaimClass]:
     return claims
 
 
-def select_sources(
-    records: list["ProbeRecord"], claim: ClaimClass
-) -> list["ProbeRecord"]:
+def select_sources(records: list["ProbeRecord"], claim: ClaimClass) -> list["ProbeRecord"]:
     """Return the records that back `claim`: metric-keyed, then stage-maximal.
 
     Fail-closed: raises ClaimValidityError (never returns an empty list),
@@ -132,8 +128,7 @@ def select_sources(
         candidates = [
             r
             for r in candidates
-            if r.scopes is not None
-            and sum(1 for v in r.scopes.values() if v is not None) >= 2
+            if r.scopes is not None and sum(1 for v in r.scopes.values() if v is not None) >= 2
         ]
         if not candidates:
             raise ClaimValidityError(

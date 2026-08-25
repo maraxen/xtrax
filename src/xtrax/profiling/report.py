@@ -156,10 +156,7 @@ def _rows_from_sources(sources: list[ProbeRecord]) -> list[dict[str, str]]:
 def _markdown_table(rows: list[dict[str, str]]) -> str:
     header = "| " + " | ".join(_COLUMNS) + " |"
     sep = "| " + " | ".join("---" for _ in _COLUMNS) + " |"
-    body = [
-        "| " + " | ".join(row[c] for c in _COLUMNS) + " |"
-        for row in rows
-    ]
+    body = ["| " + " | ".join(row[c] for c in _COLUMNS) + " |" for row in rows]
     return "\n".join([header, sep, *body])
 
 
@@ -171,19 +168,14 @@ def render_report(paths: list[Path] | None = None, *, root: Path | None = None) 
     rows = _rows_from_sources(sources)
     methods = {row["attribution_method"] for row in rows if row["attribution_method"]}
     parts: list[str] = []
-    if methods == {"named_scope", "op_name"} or (
-        "named_scope" in methods and "op_name" in methods
-    ):
+    if methods == {"named_scope", "op_name"} or ("named_scope" in methods and "op_name" in methods):
         parts.append(_MIXED_BANNER)
         parts.append("")
     parts.append(_markdown_table(rows))
     git_sha = sources[0].git_sha
     xla_flags = sources[0].xla_flags
     parts.append("")
-    parts.append(
-        f"contract_version={CONTRACT_VERSION} git_sha={git_sha} "
-        f"xla_flags={xla_flags!r}"
-    )
+    parts.append(f"contract_version={CONTRACT_VERSION} git_sha={git_sha} xla_flags={xla_flags!r}")
     return "\n".join(parts) + "\n"
 
 

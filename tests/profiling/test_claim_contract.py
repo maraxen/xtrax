@@ -27,9 +27,7 @@ from xtrax.profiling.claims import (
 )
 from xtrax.profiling.record import ProbeRecord, _normalize_device_kind
 
-PROFILING_PKG_DIR = (
-    Path(__file__).resolve().parents[2] / "src" / "xtrax" / "profiling"
-)
+PROFILING_PKG_DIR = Path(__file__).resolve().parents[2] / "src" / "xtrax" / "profiling"
 
 
 def _record(
@@ -152,9 +150,7 @@ def test_non_positive_n_atoms_raises():
 
 
 def test_json_round_trip_preserves_scopes_tuple_vs_none():
-    rec = _term_ranking_record(
-        stage=2, scopes={"bonded": (0.1, 10), "pme_recip": None}
-    )
+    rec = _term_ranking_record(stage=2, scopes={"bonded": (0.1, 10), "pme_recip": None})
     restored = ProbeRecord.from_json(rec.to_json())
     assert restored.scopes["bonded"] == (0.1, 10)
     assert isinstance(restored.scopes["bonded"], tuple)
@@ -200,9 +196,7 @@ def test_scopes_none_raises_on_term_ranking_even_at_stage2():
 def test_differing_xla_flags_raises_on_term_ranking():
     records = [
         _term_ranking_record(stage=2, xla_flags="", probe_id="a"),
-        _term_ranking_record(
-            stage=2, xla_flags="--xla_gpu_shard_autotuning=false", probe_id="b"
-        ),
+        _term_ranking_record(stage=2, xla_flags="--xla_gpu_shard_autotuning=false", probe_id="b"),
     ]
     with pytest.raises(ClaimValidityError):
         assert_claim_supported(records, ClaimClass.TERM_RANKING)
@@ -228,9 +222,7 @@ def test_end_to_end_without_target_and_without_allow_no_target_raises():
 
 def test_end_to_end_allow_no_target_does_not_raise():
     records = [_end_to_end_record(n_atoms=5000)]
-    assert_claim_supported(
-        records, ClaimClass.END_TO_END, allow_no_target=True
-    )  # must not raise
+    assert_claim_supported(records, ClaimClass.END_TO_END, allow_no_target=True)  # must not raise
 
 
 def test_stage2_n_atoms_2000_raises_end_to_end_against_20k_target():
@@ -252,9 +244,7 @@ def test_end_to_end_min_reducer_flips_passing_claim_to_raising():
     """
     target = 20000
     passing = [_end_to_end_record(n_atoms=5000)]  # 20000/5000 = 4x, passes
-    assert_claim_supported(
-        passing, ClaimClass.END_TO_END, target_n_atoms=target
-    )  # must not raise
+    assert_claim_supported(passing, ClaimClass.END_TO_END, target_n_atoms=target)  # must not raise
 
     tightened = passing + [_end_to_end_record(n_atoms=1000, probe_id="smaller")]
     with pytest.raises(ClaimValidityError):
@@ -275,9 +265,7 @@ def test_select_sources_metric_vs_scope_empty_result_messages_differ():
     with pytest.raises(ClaimValidityError, match="required metrics"):
         select_sources([_record(stage=2, metrics={})], ClaimClass.TERM_RANKING)
 
-    has_metric_no_scopes = _record(
-        stage=2, metrics={"total_step_seconds": 1.0}, scopes=None
-    )
+    has_metric_no_scopes = _record(stage=2, metrics={"total_step_seconds": 1.0}, scopes=None)
     with pytest.raises(ClaimValidityError, match="attributed scopes"):
         select_sources([has_metric_no_scopes], ClaimClass.TERM_RANKING)
 
@@ -455,18 +443,13 @@ def test_normalize_device_kind_strips_vendor_and_lowercases():
 
 
 def test_normalize_device_kind_collapses_whitespace():
-    assert (
-        _normalize_device_kind("NVIDIA RTX PRO 6000 Blackwell")
-        == "rtx_pro_6000_blackwell"
-    )
+    assert _normalize_device_kind("NVIDIA RTX PRO 6000 Blackwell") == "rtx_pro_6000_blackwell"
 
 
 def test_normalize_device_kind_does_not_collide_gh200_with_h200():
     # A substring allow-list would collapse both to "h200"; the spec's
     # actual normalization (vendor-strip + lowercase) keeps them distinct.
-    assert _normalize_device_kind("NVIDIA H200") != _normalize_device_kind(
-        "NVIDIA GH200 480GB"
-    )
+    assert _normalize_device_kind("NVIDIA H200") != _normalize_device_kind("NVIDIA GH200 480GB")
 
 
 # --- git_sha: unverified dirty-check sentinel ----------------------------
@@ -572,9 +555,7 @@ def test_paired_configs_raises_on_source_missing_hold_fixed_key():
         _end_to_end_record(n_atoms=5000, config={"mode": "flash"}, probe_id="b"),
     ]
     with pytest.raises(ClaimValidityError):
-        paired_configs(
-            records, ClaimClass.END_TO_END, axis="mode", hold_fixed=("grid_spacing",)
-        )
+        paired_configs(records, ClaimClass.END_TO_END, axis="mode", hold_fixed=("grid_spacing",))
 
 
 def test_paired_configs_returns_no_pair_for_single_axis_value():

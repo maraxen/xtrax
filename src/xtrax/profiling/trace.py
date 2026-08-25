@@ -43,9 +43,7 @@ trusting dispatch counts from a newer JAX.
 import re
 from typing import Any
 
-_HEADER_RE = re.compile(
-    r"^(?:ENTRY\s+)?%([\w.\-]+)\s*\([^)]*\)\s*->\s*\S+\s*\{\s*$"
-)
+_HEADER_RE = re.compile(r"^(?:ENTRY\s+)?%([\w.\-]+)\s*\([^)]*\)\s*->\s*\S+\s*\{\s*$")
 _CLOSE_RE = re.compile(r"^\}\s*$")
 _INSTR_NAME_RE = re.compile(r"^\s*(ROOT\s+)?%([\w.\-]+)\s*=")
 _OP_NAME_RE = re.compile(r'op_name="([^"]*)"')
@@ -153,9 +151,7 @@ def _resolve_scope(
     return None
 
 
-def scope_map_from_hlo_text(
-    hlo_text: str, known_labels: frozenset[str]
-) -> dict[str, str | None]:
+def scope_map_from_hlo_text(hlo_text: str, known_labels: frozenset[str]) -> dict[str, str | None]:
     """Map every instruction name (in every computation) to its scope.
 
     Returns {instruction_name: label_or_None}. An instruction's ``name``
@@ -180,9 +176,7 @@ def scope_map_from_hlo_text(
             instr_name = m.group(2)
             if instr_name in result:
                 continue
-            result[instr_name] = _resolve_scope(
-                instr_name, lines, computations, known_labels
-            )
+            result[instr_name] = _resolve_scope(instr_name, lines, computations, known_labels)
     return result
 
 

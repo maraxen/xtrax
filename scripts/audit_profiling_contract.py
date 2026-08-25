@@ -44,9 +44,7 @@ def _check_leaf_rule(package_dir: Path) -> list[str]:
                 top = name.split(".")[0]
                 if top == "prolix":
                     failures.append(f"{path}: imports prolix ({name!r})")
-                elif top == "xtrax" and ".".join(name.split(".")[:2]) != (
-                    "xtrax.profiling"
-                ):
+                elif top == "xtrax" and ".".join(name.split(".")[:2]) != ("xtrax.profiling"):
                     failures.append(
                         f"{path}: sibling-xtrax import ({name!r}) breaks "
                         "the dependency-free leaf rule"
