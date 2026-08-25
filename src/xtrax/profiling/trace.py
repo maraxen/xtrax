@@ -160,7 +160,12 @@ def _blocks_with_labels(hlo_text: str, known_labels: frozenset[str]) -> dict[str
     line votes for its label in favor of the innermost open named block AND
     all enclosing ones (containment semantics); callers take the majority.
     """
-    header_re = re.compile(r"(?:^|\s)%?([A-Za-z_][\w.\-]*)\s*\([^{}]*)\s*\{\s*$")
+    # Line-anchored computation header: `%name(params) -> ret {` at end of
+    # line, no '=' anywhere before the '{' (instruction lines carry
+    # `name = ...` / `metadata={...}` and must never open a block).
+    header_re = re.compile(
+        r"^\s*(?:ENTRY\s+)?%?([A-Za-z_][\w.\-]*)\s*\([^()]*\)[^={}]*\{\s*$"
+    )
     opname_re = re.compile(r'op_name="([^"]*)"')
     close_re = re.compile(r"^}[\s,;]*$")
 
