@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +26,8 @@ from xtrax.profiling.bench import (
 )
 from xtrax.profiling.claims import ClaimValidityError
 from xtrax.profiling.record import ProbeRecord
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # All 16 pinned Stats.fields with plausible values (durations in seconds).
 FULL_STATS = {
@@ -179,19 +182,30 @@ def test_end_to_end_real_conftest_writes_declared_records(tmp_path):
     /[dedup]).
     """
     env = dict(os.environ)
+    # Coverage-inheritance scrub (review of CI tier1 failure): pytest-cov
+    # exports COV_CORE_* so spawned pytest processes auto-resume measuring
+    # with the PARENT'S source spec; the child's data then merges back
+    # un-omitted and pollutes the tier's aggregate with every unexecuted
+    # module. This test measures nothing itself -- the child must run bare.
+    for key in [k for k in env if k.startswith("COV_CORE") or k == "COVERAGE_PROCESS_START"]:
+        env.pop(key)
     env["XTRAX_BENCH_RECORD_DIR"] = str(tmp_path)
     proc = subprocess.run(
         [
             sys.executable,
             "-m",
             "pytest",
-            "benchmarks/bench_tiling.py",
+            str(_REPO_ROOT / "benchmarks" / "bench_tiling.py"),
             "--benchmark-only",
             "-q",
             "-p",
             "no:cacheprovider",
         ],
-        cwd=os.environ.get("XTRAX_REPO_ROOT", os.getcwd()),
+        # cwd=tmp_path: the child writes its own default .coverage into
+        # its cwd; pointing it at the repo root let an unfiltered,
+        # source-scanned child database merge into tier1 measurements
+        # (CI coverage-gate failure). Nothing here needs repo-root cwd.
+        cwd=str(tmp_path),
         env=env,
         capture_output=True,
         text=True,
