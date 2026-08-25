@@ -192,8 +192,8 @@ def test_cli_layer_never_constructs_sink_spec_literally() -> None:
     """
     cli_dir = Path(__file__).resolve().parents[2] / "src" / "xtrax" / "cli"
     offenders = [
-        p.name
-        for p in sorted(cli_dir.glob("*.py"))
+        str(p.relative_to(cli_dir))
+        for p in sorted(cli_dir.rglob("*.py"))
         if "SinkSpec(" in p.read_text(encoding="utf-8")
     ]
     assert offenders == [], (

@@ -92,6 +92,9 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
         run_id=run_id,
     )
     sink = make_sink(derive_sink_spec(driver_spec, output_dir=Path(run_dir) / "metrics.zarr"))
+    # derive_sink_spec pins format="zarr", so make_sink cannot return None here
+    # (None is reserved for format="none"). Narrow for the ty hard CI gate.
+    assert sink is not None, "derive_sink_spec pins format='zarr'; make_sink must yield a sink"
 
     # AC6: always-write the manifest BEFORE training, not after. The manifest is
     # the contract `resume` consumes; writing it only on success would leave a

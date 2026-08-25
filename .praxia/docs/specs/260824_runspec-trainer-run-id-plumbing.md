@@ -2,7 +2,7 @@
 title: RunSpec/Trainer -> SinkSpec.run_id plumbing mechanism
 task_id: 260824_runspec-trainer-run-id-plumbing
 date: 260824
-status: design-proposed
+status: adopted (first consumer landed via #457(1), 260825)
 resolves_tbd: 260824_default-sink-provenance-tracking ("Concrete mechanism for RunSpec/Trainer construction to plumb run_id")
 ---
 
@@ -162,8 +162,8 @@ already deferred.
 
 | Item | Owner | When |
 |------|-------|------|
-| Unify the CLI run path's manifest `run_id` echo with `derive_sink_spec` so CLI-driven runs and sink provenance share one id | xtrax maintainer | When the CLI run path first constructs a sink. |
-| Promote `derive_sink_spec` to the only documented path once first real consumer adopts | xtrax maintainer | First adoption review. |
+| ~~Unify the CLI run path's manifest `run_id` echo with `derive_sink_spec` so CLI-driven runs and sink provenance share one id~~ | DONE 260825 | CLI run verb now constructs its sink exclusively through `derive_sink_spec`; store joins manifest + checkpoints on the CLI config-hash id (#457(1)). |
+| Promote `derive_sink_spec` to the only documented path once first real consumer adopts | xtrax maintainer | First adoption LANDED (run CLI, #457(1)); run.md documents derive-first; promotion of seam to public top-level API remains tracked in backlog #4457 item (2). |
 
 ## INVEST Gate
 

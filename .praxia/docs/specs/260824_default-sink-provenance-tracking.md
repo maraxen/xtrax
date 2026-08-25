@@ -49,6 +49,7 @@ to guess at.
 | Consumer scope: downstream domain libraries (e.g. aminx) calling `ZarrStagingSink` directly | Selected | Matches where the actual write happens; CLI end-users already get `manifest.json` from a different entry point. |
 | Consumer scope: CLI end-users of `xtrax run` | Rejected | Different entry point, already served by the existing always-write manifest. |
 | Consumer scope: both, via one shared layer | Deferred | Reasonable follow-on once the sink-level mechanism lands and is proven; not needed to solve the identified gap now. |
+
 | Concern: static run provenance only | Selected | xtrax has zero existing telemetry concept (confirmed: no hits for the word in the codebase); scoping in a live-metrics stream would balloon this into an unrelated feature. |
 | Concern: static provenance + live telemetry | Rejected | Same reason — no existing telemetry substrate to build on; out of scope. |
 | Automaticity: auto-injected inside `ZarrStagingSink` | Selected | Only mechanism that satisfies "by default" — can't be skipped short of not using the sink at all. |
@@ -66,6 +67,13 @@ to guess at.
 | Schema shape: reserved namespaced attrs key (e.g. `_xtrax_provenance`) | Rejected | Implicit reserved-word contract nothing enforces against caller key choice. |
 | Schema shape: flat fields merged into attrs | Rejected | Silent collision risk against caller-staged keys with the same name. |
 | Schema shape: sink refuses colliding caller keys | Rejected (as originally scoped) → **partially re-adopted post-review** | Original rejection was about *caller-declared extension* keys; adversarial review (C5) found the *core* fields (git_sha/run_id/etc.) reintroduce the identical collision risk at the per-key-group attrs level once the core+extension design was selected. Resolution: core field names are reserved and collision raises (new AC), matching AC7's fail-loud posture — extension-field collision handling stays as originally decided (schema validation, not blanket refusal). |
+> **260825 addendum (#457(1))**: the "both, via one shared layer" deferral has
+> fired for the run CLI — `xtrax run` now derives its sink through
+> `derive_sink_spec` (see `260824_runspec-trainer-run-id-plumbing.md`, status:
+> adopted). The "CLI end-users | Rejected" row above is superseded for
+> persistence provenance: CLI runs additionally get a zarr provenance store at
+> `.xtrax/runs/<run_id>/metrics.zarr` alongside (not replacing) the manifest.
+
 | Schema shape: core required fields + caller-declared JSON-Schema-style extension, validated | Selected | Well-trodden pattern; satisfies "verified parsable and schema validatable" while keeping fields beyond the core flexible per consumer. |
 | Schema extension ownership: domain library registers once at import/setup | Rejected | Less flexible than per-`SinkSpec` declaration. |
 | Schema extension ownership: caller declares per `SinkSpec` instance | Selected | Different runs of the same library can declare different extensions. |
