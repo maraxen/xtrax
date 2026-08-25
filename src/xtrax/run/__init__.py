@@ -11,6 +11,7 @@ from xtrax.run.component_binding import (
     ComponentSidecarRefMissingError,
     component_sidecar_binding,
 )
+from xtrax.run.ident import new_run_id
 from xtrax.run.repro_floor import (
     ReproFloorResult,
     build_repro_floor_attestation_toml,
@@ -20,7 +21,7 @@ from xtrax.run.repro_floor import (
 )
 from xtrax.run.resolver import FeatureBatch, InputResolver, RuntimeBundle
 from xtrax.run.seed_emission import SeedAssignment, SeedEmissionInputError, seed_assignment
-from xtrax.run.sink import SinkSpec, make_sink
+from xtrax.run.sink import SinkSpec, derive_sink_spec, make_sink
 from xtrax.run.spec import RunSpec
 from xtrax.run.zarr_integrity import (
     canonical_json_bytes,
@@ -40,6 +41,8 @@ __all__ = [
     "RuntimeBundle",
     "FeatureBatch",
     "SinkSpec",
+    "derive_sink_spec",
+    "new_run_id",
     "make_sink",
     "ZarrStagingSink",
     "canonical_json_bytes",

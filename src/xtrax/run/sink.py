@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from xtrax.run.spec import RunSpec
     from xtrax.run.zarr_sink import ZarrStagingSink
+
+    _Format = Literal["jsonl", "h5", "zarr", "none"]
 
 
 @dataclass
@@ -43,3 +46,48 @@ def make_sink(spec: SinkSpec) -> ZarrStagingSink | None:
         return ZarrStagingSink(spec)
     msg = f"make_sink: format {spec.format!r} has no writer implementation yet"
     raise NotImplementedError(msg)
+
+
+def derive_sink_spec(
+    run_spec: RunSpec,
+    *,
+    run_id: str | None = None,
+    output_dir: Path | None,
+    format: _Format = "zarr",
+    flush_every: int = 1,
+    extension_schema: dict[str, Any] | None = None,
+) -> SinkSpec:
+    """Derive a :class:`SinkSpec` from a :class:`RunSpec` -- the canonical seam.
+
+    Drivers (and the future ``xtrax run`` CLI) call this instead of
+    hand-building ``SinkSpec``, so provenance run ids follow one precedence:
+
+    1. explicit ``run_id=`` override
+    2. ``run_spec.run_id``
+    3. a freshly generated id (:func:`xtrax.run.ident.new_run_id`)
+
+    Note on defaults: this helper pins ``format="zarr"`` (the provenance seam
+    it serves) while bare ``SinkSpec`` defaults to ``"jsonl"``. That divergence
+    is deliberate (spec 260824).
+
+    Args:
+        run_spec: The execution config carrying optional static ``run_id``.
+        run_id: Explicit override; wins over ``run_spec.run_id`` when given.
+        output_dir: Sink output directory (keyword-required).
+        format: Routing format; defaults to ``"zarr"``.
+        flush_every: Flush cadence in writes; forwarded verbatim.
+        extension_schema: Extension schema mapping; forwarded verbatim.
+
+    Returns:
+        A fully-resolved ``SinkSpec`` whose ``run_id`` is never empty --
+        falsy values are additionally rejected at sink construction (#96).
+    """
+    from xtrax.run.ident import new_run_id
+
+    return SinkSpec(
+        run_id=run_id or run_spec.run_id or new_run_id(),
+        output_dir=output_dir,
+        format=format,
+        flush_every=flush_every,
+        extension_schema=extension_schema,
+    )

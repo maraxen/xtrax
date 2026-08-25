@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
 
-from xtrax.run.sink import SinkSpec, make_sink
+from xtrax.run.sink import SinkSpec, derive_sink_spec, make_sink
 from xtrax.run.zarr_sink import ZarrStagingSink
 
 
@@ -32,3 +33,53 @@ def test_make_sink_zarr_format_returns_zarr_staging_sink(tmp_path: Path) -> None
 def test_make_sink_unimplemented_formats_raise(fmt: str, tmp_path: Path) -> None:
     with pytest.raises(NotImplementedError, match=fmt):
         make_sink(SinkSpec(run_id="r", output_dir=tmp_path, format=fmt))  # type: ignore[arg-type]
+
+
+class TestDeriveSinkSpec:
+    """derive_sink_spec: canonical seam for driver-side sink construction (#4397)."""
+
+    def make_run_spec(self, **kwargs):
+        from xtrax.run.spec import RunSpec
+
+        return RunSpec(seed=0, axes=[], carry_specs=[], boundaries=None, **kwargs)
+
+    def test_explicit_override_wins(self) -> None:
+        spec = self.make_run_spec(run_id="run-fromspec")
+        derived = derive_sink_spec(spec, run_id="run-override", output_dir=None)
+        assert derived.run_id == "run-override"
+
+    def test_falls_back_to_run_spec_run_id(self) -> None:
+        spec = self.make_run_spec(run_id="run-fromspec")
+        derived = derive_sink_spec(spec, output_dir=None)
+        assert derived.run_id == "run-fromspec"
+
+    def test_generates_when_no_source(self) -> None:
+        spec = self.make_run_spec()
+        derived = derive_sink_spec(spec, output_dir=None)
+        assert re.match(r"^run-[0-9a-f]{12}$", derived.run_id)
+
+    def test_kwargs_forwarded_verbatim(self, tmp_path: Path) -> None:
+        spec = self.make_run_spec()
+        schema = {"trial": "int64"}
+        derived = derive_sink_spec(
+            spec,
+            output_dir=tmp_path / "out.zarr",
+            format="jsonl",
+            flush_every=7,
+            extension_schema=schema,
+        )
+        assert derived.output_dir == tmp_path / "out.zarr"
+        assert derived.format == "jsonl"
+        assert derived.flush_every == 7
+        assert derived.extension_schema == schema
+
+    def test_default_format_is_zarr(self) -> None:
+        """Helper pins format='zarr' (deliberate divergence from bare SinkSpec)."""
+        spec = self.make_run_spec()
+        assert derive_sink_spec(spec, output_dir=None).format == "zarr"
+
+    def test_output_dir_required(self) -> None:
+        """output_dir is keyword-required: forces drivers to state intent."""
+        spec = self.make_run_spec()
+        with pytest.raises(TypeError):
+            derive_sink_spec(spec)  # type: ignore[call-arg]
