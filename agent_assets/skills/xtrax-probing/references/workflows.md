@@ -105,3 +105,15 @@ attribution method and pct-of-total.
 | `metrics[...] is not coercible / boolean / not finite` | non-float, bool, NaN/inf/overflow metric | fix the producer; metrics are citable floats only |
 | `benchmark stats contain field(s) [...] not in the pinned schema` | pytest-benchmark upgrade changed fields | diff Stats.fields, extend bench.py deliberately |
 | `collides with already-written` | two node ids normalize to one filename | rename params (avoid '_' vs '__' distinctions) |
+
+## GPU trace attribution (open tuning item, first L40S dogfood 2026-08-25)
+
+On real GPU runs of aminx's ConditionalDecode, executed trace events name
+executor-level thunks (post-fusion), NOT HLO instructions -- so instruction-
+keyed scope maps match nothing and records degrade to DISPATCH_COUNT+
+STRUCTURAL grade even with healthy traces and correct Compiled.as_text()
+HLO dumps. CPU traces join fine; the gap is GPU-executor event naming.
+Candidate directions: sub-scope granularity below fusion boundaries,
+non-fused wrapper ops around measured regions, or an executor-thunk ->
+HLO-instruction mapping from the XLA runtime. Until then, treat GPU records
+as dispatch/structural evidence only.

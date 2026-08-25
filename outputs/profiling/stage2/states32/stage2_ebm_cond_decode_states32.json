@@ -12,14 +12,14 @@
   },
   "contract_version": "3.0",
   "device_kind": "l40s",
-  "git_sha": "b84d8f7b216e9ca5e5388321d41607fb69b28426",
+  "git_sha": "c01e4d93f8a87e87ae735da59439725903514345",
   "jax_version": "0.10.2",
   "jaxlib_version": "0.10.2",
   "metrics": {
     "n_compilations": 0.0,
     "n_executions": 50.0,
     "n_jit_traces": 100.0,
-    "total_step_seconds": 0.31358753284439445
+    "total_step_seconds": 0.3138219320680946
   },
   "n_atoms": 26624,
   "platform": "gpu",
@@ -29,7 +29,7 @@
     "ebm_state_axis": null
   },
   "stage": 2,
-  "timestamp": "2026-08-25T20:28:09.242002+00:00",
+  "timestamp": "2026-08-25T22:05:32.954270+00:00",
   "x64_enabled": false,
   "xla_flags": ""
 }
