@@ -442,3 +442,16 @@ Both amendments are additive to §4.3; no prior decision changes.
   axes/strategy_counts/dedup_stats keys) that parses cleanly. Two usability observations for the
   backlog: shapes parser rejects `<float32>` (docs say `<dtype>`; only f32/f64/i32/bool aliases
   accepted) and its error message quotes the angle-bracket form it does not accept.
+
+### 10.4 Round 4 — F3b refinement + remaining seam checks
+
+- **F3b (sharpening of F3)**: JAX device-side gathers SILENTLY CLAMP out-of-range indices
+  (demonstrated: `xs[jnp.asarray([9])]` on N=4 returns row 3, no exception). Consequence: an
+  invalid `unique_indices` entry never errors at runtime — it silently reads a wrong-but-real
+  row. Since `DedupSpec` has no N field and cannot bounds-check positions itself, the
+  synthesizer's exact-stage self-assertion MUST include `unique_indices.max() < N` (and
+  `min >= 0`) alongside `len(index_map) == N`. Added to P2 AC list.
+- **F3 discriminator verified**: rows [9,3,9,3] → corrected convention yields
+  unique_indices=[0,1] (first-occurrence POSITIONS); naive value-reading would yield [3,9],
+  executing without error but gathering wrong rows entirely ([54,54,54,54] vs
+  [6,22,6,22] canonical results).
