@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from xtrax.findings import append_finding, emit_metric_finding
 from xtrax.tombstone import (
     TombstoneEntry,
     append_tombstone,
@@ -12,7 +13,6 @@ from xtrax.tombstone import (
     is_tombstoned,
     load_tombstones,
 )
-from xtrax.findings import append_finding, emit_metric_finding
 
 GOLDEN_RUN_ID = "00000000-0000-4000-8000-000000000001"
 
