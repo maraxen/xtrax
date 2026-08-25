@@ -36,7 +36,10 @@ pip install "xtrax[io]"
 
 Requires Python 3.13 or later. The `xtrax run` CLI persists a provenance
 store (`.xtrax/runs/<run_id>/metrics.zarr`) for every invocation by default
-and fails loud before training if the `[io]` extra is missing.
+and fails loud before training if the `[io]` extra is missing. Add `.xtrax/`
+to your project's `.gitignore`: run artifacts (manifests, checkpoints,
+stores) should never dirty your tree — sink git-provenance capture reads
+`git status`, and an un-ignored run dir would flip `git_dirty=True`.
 
 ## Quick Start
 

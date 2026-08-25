@@ -1,7 +1,7 @@
 # xtrax Release Readiness Report
 
 - **Epic:** #1451 xtrax distribution readiness (N0-N10)
-- **Generated:** 2026-08-25T20:41:08.550750+00:00
+- **Generated:** 2026-08-25T21:00:58.422225+00:00
 - **Verdict:** `BLOCKED_AUTOMATED`
 - **Package version:** `0.4.0a6`
 
@@ -9,7 +9,6 @@
 - .github/workflows/publish.yml missing marker: 'publish-testpypi'
 - .github/workflows/publish.yml missing marker: 'test.pypi.org/legacy'
 - automated check failed: ruff_format
-- automated check failed: ty_check
 - automated check failed: coverage_tier1
 - automated check failed: coverage_tier2
 - automated check failed: audit_contracts
@@ -49,24 +48,10 @@
 - **ruff_lint** (ci_lint): PASS
 - **ruff_format** (ci_lint): FAIL
   ```
-  Would reformat: tests/cli/test_run_provenance_store.py
+  Would reformat: tests/cli/test_run_from_config.py
 1 file would be reformatted, 483 files already formatted
   ```
-- **ty_check** (ci_lint): FAIL
-  ```
-      |
-
-error[unresolved-attribute]: Attribute `finalize` is not defined on `None` in union `ZarrStagingSink | None`
-   --> src/xtrax/cli/run.py:120:5
-    |
-120 |     sink.finalize()
-    |     ^^^^^^^^^^^^^
-    |
-
-Found 3 diagnostics
-
-Installed 4 packages in 41ms
-  ```
+- **ty_check** (ci_lint): PASS
 - **coverage_tier1** (coverage): FAIL
   ```
   skipped in --quick mode

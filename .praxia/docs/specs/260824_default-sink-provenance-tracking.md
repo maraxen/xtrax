@@ -67,13 +67,6 @@ to guess at.
 | Schema shape: reserved namespaced attrs key (e.g. `_xtrax_provenance`) | Rejected | Implicit reserved-word contract nothing enforces against caller key choice. |
 | Schema shape: flat fields merged into attrs | Rejected | Silent collision risk against caller-staged keys with the same name. |
 | Schema shape: sink refuses colliding caller keys | Rejected (as originally scoped) → **partially re-adopted post-review** | Original rejection was about *caller-declared extension* keys; adversarial review (C5) found the *core* fields (git_sha/run_id/etc.) reintroduce the identical collision risk at the per-key-group attrs level once the core+extension design was selected. Resolution: core field names are reserved and collision raises (new AC), matching AC7's fail-loud posture — extension-field collision handling stays as originally decided (schema validation, not blanket refusal). |
-> **260825 addendum (#457(1))**: the "both, via one shared layer" deferral has
-> fired for the run CLI — `xtrax run` now derives its sink through
-> `derive_sink_spec` (see `260824_runspec-trainer-run-id-plumbing.md`, status:
-> adopted). The "CLI end-users | Rejected" row above is superseded for
-> persistence provenance: CLI runs additionally get a zarr provenance store at
-> `.xtrax/runs/<run_id>/metrics.zarr` alongside (not replacing) the manifest.
-
 | Schema shape: core required fields + caller-declared JSON-Schema-style extension, validated | Selected | Well-trodden pattern; satisfies "verified parsable and schema validatable" while keeping fields beyond the core flexible per consumer. |
 | Schema extension ownership: domain library registers once at import/setup | Rejected | Less flexible than per-`SinkSpec` declaration. |
 | Schema extension ownership: caller declares per `SinkSpec` instance | Selected | Different runs of the same library can declare different extensions. |
@@ -86,6 +79,13 @@ to guess at.
 | AC2 warning mechanism: unspecified vs. `warnings.warn` | `warnings.warn(msg, UserWarning, stacklevel=2)` selected (post-review, closes C7) | Neither the codebase (`zarr_sink.py`/`zarr_integrity.py` have zero precedent) nor the cited bathos file actually warns in this exact scenario (bathos's `_legacy_git_shellout`/`capture_git_state` silently return `None`/`_UNKNOWN`) — needed an explicit choice rather than inheriting one from the model. |
 | Run-completion signal for AC8/consolidation: none vs. new `finalize()`/context-manager method | New `finalize()` method selected (post-review, closes C14 and, by construction, C16) | `ZarrStagingSink` has no lifecycle method today (`__init__`/`stage`/`take`/`drain`/`__len__` only) — "per completed run" presupposes an event the class can't currently observe. Placing the once-only `consolidate_metadata()` call inside `finalize()` also makes post-consolidation staleness (C16) structurally impossible, since no further `drain()` is legitimate after it. |
 | Multi-run reuse of the same `output_dir`: silent overwrite vs. guard | Guard (raise on `run_id` mismatch at init) selected (post-review, closes C11) | `ZarrStagingSink` already opens with `mode='a'`, so multi-run reuse of one directory is real, pre-existing, supported behavior — a silent root-attrs overwrite would leave the store internally inconsistent (root claims run B, earlier per-key pointers still reference run A) with no way to detect it after the fact. |
+
+> **260825 addendum (#457(1))**: the "both, via one shared layer" deferral has
+> fired for the run CLI — `xtrax run` now derives its sink through
+> `derive_sink_spec` (see `260824_runspec-trainer-run-id-plumbing.md`, status:
+> adopted). The "CLI end-users | Rejected" row above is superseded for
+> persistence provenance: CLI runs additionally get a zarr provenance store at
+> `.xtrax/runs/<run_id>/metrics.zarr` alongside (not replacing) the manifest.
 
 ## Assumptions
 
