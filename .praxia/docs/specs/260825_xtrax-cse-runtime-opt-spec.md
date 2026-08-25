@@ -364,3 +364,26 @@ component-C output contract was exercised through xtrax's real public interfaces
   specs on axis 'batch' (k=30 then k=5) silently plan with k=5. `merge_dedup_specs` /
   `DedupSpecCollisionError` address a demonstrated defect, and the backlog migration of plan()
   onto the helper is justified by observed behavior.
+
+### 10.1 Integration-boundary round 2 (component B foundation + CLI + full pipeline)
+
+- **§4.2.2 leaf-digest over the real primitive**: `update_array_digest` composes cleanly with
+  the weak_type/dtype extension slot; digest deterministic across equal arrays; digest length
+  contract holds. **Empirical caveat for implementers**: on JAX 0.10.2, `weak_type` reads
+  `False` on every surface probed (`jnp.float32(1.)`, python-scalar broadcast,
+  `asarray(np.float32)`); weak types evidently do not survive to public array attributes in
+  common construction paths on this version. The key-slot design remains correct (slot present,
+  folds `False`), but the AC asserting weak-type discrimination must be written against a
+  traced-aval path or downgraded — flagged as an implementation-planning note, not a spec defect.
+- **CLI emit() boundary**: json machine contract holds when a new top-level `cse_report` key is
+  added beside `_meta`; the text router tolerates non-stats payloads without crashing; the
+  png-without-out CLIError footgun guard is live. The v4.1 OQ1 decision (`--report cse`) is
+  compatible with all three observed behaviors.
+- **Full user-facing pipeline (the acceptance path)**: `@axis_config` →
+  `infer_bundle` (roles KNOWN) → exact-stage-style DedupSpec →
+  `BatchPlanner(dedup_specs=[spec]).plan()` → decisions `[DedupGather(k=30,k_bucket=32),
+  SafeMap]` → `emit(..., fmt="json")` produces valid machine-contract JSON containing the real
+  DedupGather count. **PASS** end-to-end on public interfaces only.
+- **Bonus observation**: planner emitted a RuntimeWarning that cardinality 10000 is not
+  divisible by batch_size 128 ("will raise ValueError at make_axis_dispatch time") for the
+  non-dedup axis — the fail-loud convention is observable in practice, corroborating G4.
