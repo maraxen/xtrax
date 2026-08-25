@@ -111,7 +111,9 @@ def load_performance_targets(path: Path) -> PerformanceTargets:
             raw = entry.get(name)
             if raw is None:
                 return None
-            if not isinstance(raw, int) or raw < 1:
+            if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+                # bool rejection: TOML `max_compilations = true` would
+                # otherwise silently become ceiling 1 (review finding).
                 msg = f"probe {name} must be a positive int for {qualname!r}, got {raw!r}"
                 raise ValueError(msg)
             return raw
@@ -244,6 +246,16 @@ def _run_dispatch_probes(
             emitted += 1
             continue
         if result.skipped:
+            if spec.emit_probe_record:
+                # Loud, not silent (review finding): an opt-in record that
+                # cannot be emitted must be visible to the operator.
+                import sys
+
+                print(
+                    f"WARNING: dispatch probe for {spec.qualname!r} was "
+                    "skipped, so its opt-in ProbeRecord was NOT emitted",
+                    file=sys.stderr,
+                )
             continue
         for counter, ceiling in (
             ("compilations", spec.max_compilations),

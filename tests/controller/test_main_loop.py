@@ -1120,6 +1120,32 @@ class TestProbeRecordEmission:
         assert record.config["accepted"] == "false"
         assert record.config["hard_blocked"] == "true"
 
+    def test_repeated_passes_accumulate_distinct_records(self, tmp_path: Path) -> None:
+        """Review finding: pass filenames carry a timestamp+nonce so a second
+        pass of one campaign never overwrites the first's forensics."""
+        common = dict(
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(),
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
+            probe_record_dir=tmp_path / "probe_records",
+        )
+        for i in range(2):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t"),
+                campaign_id="camp-probe-repeat",
+                **common,
+            )
+        written = sorted((tmp_path / "probe_records").glob("pass_*.json"))
+        assert len(written) == 2
+        from xtrax.profiling.record import ProbeRecord
+
+        assert len({ProbeRecord.read(f).timestamp for f in written}) == 2
+
     def test_emission_failure_is_contained_pass_still_returns(
         self,
         tmp_path: Path,

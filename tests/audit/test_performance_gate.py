@@ -681,3 +681,30 @@ def test_no_dispatch_config_leaves_dispatch_metric_absent(tmp_path: Path) -> Non
     assert result.dispatch_violation_count == 0
     reloaded = load_baseline(path=baseline_path)
     assert DISPATCH_METRIC_KEY not in reloaded.metrics
+
+
+def test_boolean_toml_ceiling_rejected(tmp_path: Path) -> None:
+    """Review finding: TOML `max_compilations = true` must not become ceiling 1."""
+    import pytest as _pytest
+
+    from xtrax.devtools.gates.performance import load_performance_targets
+
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            """
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+
+            [[probes]]
+            qualname = "some.kernel"
+            max_traces = 1
+            max_compilations = true
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    with _pytest.raises(ValueError, match="must be a positive int"):
+        load_performance_targets(targets_path)

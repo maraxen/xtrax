@@ -112,8 +112,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal
@@ -409,7 +411,12 @@ def _emit_candidate_pass_probe_record(
     if derived_from:
         slug = f"{slug}__{derived_from}"
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in slug)[-80:]
-    path = out_dir / f"pass_{safe}.json"
+    # Per-pass uniqueness (review finding): repeated passes of one campaign
+    # are distinct forensic events -- a second pass must never overwrite the
+    # first's record, and truncated long slugs must not collide either.
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    nonce = uuid.uuid4().hex[:6]
+    path = out_dir / f"pass_{safe}_{stamp}_{nonce}.json"
     emit_probe_record(
         path=path,
         probe_id=f"candidate_pass_{safe}",
