@@ -1,0 +1,40 @@
+{
+  "attribution_method": null,
+  "config": {
+    "axis_note": "n_atoms == scanned steps == callbacks fired per exec",
+    "kernel": "identity_scan_plus_int_append_sink",
+    "mechanism_note": "executor.py: ordered tap/sink in a Scan costs N serialized device<->host round trips",
+    "n_steps": "64",
+    "n_trials": "20",
+    "variants": "none+unordered+ordered"
+  },
+  "contract_version": "3.0",
+  "device_kind": null,
+  "git_sha": "20bdc62d3d8f07b2f32606247bcb102dce27630a",
+  "jax_version": "0.10.2",
+  "jaxlib_version": "0.10.2",
+  "metrics": {
+    "none_n_compilations": 0.0,
+    "none_n_executions": 3.0,
+    "none_n_jit_traces": 6.0,
+    "none_seconds": 0.000213623046875,
+    "ordered_n_compilations": 0.0,
+    "ordered_n_executions": 195.0,
+    "ordered_n_jit_traces": 390.0,
+    "ordered_over_none_ratio": 1040.845588684082,
+    "ordered_over_unordered_ratio": 0.7158468914889276,
+    "ordered_seconds": 0.22234860598109663,
+    "unordered_n_compilations": 0.0,
+    "unordered_n_executions": 195.0,
+    "unordered_n_jit_traces": 390.0,
+    "unordered_seconds": 0.31060916604474187
+  },
+  "n_atoms": 64,
+  "platform": "cpu",
+  "probe_id": "stage1_host_boundary",
+  "scopes": null,
+  "stage": 1,
+  "timestamp": "2026-08-25T20:12:04.366403+00:00",
+  "x64_enabled": false,
+  "xla_flags": ""
+}

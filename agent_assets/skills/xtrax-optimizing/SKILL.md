@@ -1,6 +1,6 @@
 ---
 name: xtrax-optimizing
-description: This skill should be used when the user asks to "optimize a JAX function", "make this faster", "why is my scan/vmap slow", "reduce host sync or device round trips", "should this be computed on-the-fly instead of precomputed", "prefetch batches", "donate buffers", "compare encoding strategies", "benchmark before and after a perf change", or mentions optimization tiers, tap/sink cost accounting, data-movement tuning, composition-level rewrites, ProbeRecord-gated keep/revert decisions, prof_stage0_onehot_cost, or prof_stage1_onehot_micro. Covers the three-tier taxonomy separating host-boundary mechanics, data movement, and program composition changes, plus the preregister-and-probe measurement protocol every optimization claim must pass.
+description: This skill should be used when the user asks to "optimize a JAX function", "make this faster", "why is my scan/vmap slow", "reduce host sync or device round trips", "should this be computed on-the-fly instead of precomputed", "prefetch batches", "donate buffers", "compare encoding strategies", "benchmark before and after a perf change", or mentions optimization tiers, tap/sink cost accounting, data-movement tuning, composition-level rewrites, ProbeRecord-gated keep/revert decisions, prof_stage0_onehot_cost, prof_stage1_onehot_micro, prof_stage1_host_boundary, or prof_stage1_feed_overlap. Covers the three-tier taxonomy separating host-boundary mechanics, data movement, and program composition changes, plus the preregister-and-probe measurement protocol every optimization claim must pass.
 xtrax_version: 0.4.0a5
 triggers:
   - optimize / speed up / why slow (JAX programs)
@@ -10,6 +10,7 @@ triggers:
   - donate_argnums / remat / strategy swap
   - Tier-1 / Tier-2 / Tier-3 optimization
   - prof_stage0_onehot_cost / prof_stage1_onehot_micro
+  - prof_stage1_host_boundary / prof_stage1_feed_overlap
 ---
 
 # xtrax-optimizing
@@ -91,24 +92,36 @@ Preregistration -> baseline -> single-tier candidate -> paired probe ->
 claim-gated keep/revert. Full procedure, probe recipes per tier, and the
 keep/revert decision rule: see `references/measurement-protocol.md`.
 
-Tier-3 deep dive incl. the one-hot exemplar: `references/tier3-composition.md`.
+Tier exemplars, each shipped WITH its measured driver:
+
+- Tier-1: `scripts/prof_stage1_host_boundary.py` -- ordered vs unordered vs
+  no sink under Scan; correctness gate before timing.
+- Tier-2: `scripts/prof_stage1_feed_overlap.py` -- sequential vs
+  `async_indexed_stream` overlapped feeding; regime guard in-record.
+- Tier-3: `prof_stage0_onehot_cost.py` + `prof_stage1_onehot_micro.py` --
+  materialized vs on-the-fly one-hot with parity gating.
 
 ## Status / Roadmap
 
-- P1 (shipped): taxonomy, measurement protocol, stage-0/stage-1 one-hot probe
-  pair.
-- P2 (planned): Tier-1 host-boundary driver (ordered-vs-unordered tap cost in
-  a Scan) and Tier-2 feed-overlap driver; their reference pages will be added
-  WITH the drivers, citing only verified results.
-- P3 (planned): cross-link triggers from `using-xtrax` (JIT boundary rules)
-  and `xtrax-probing` (driver registry); performance-gate rubric entries if
-  the drivers earn permanent tripwires.
+- P1 (shipped): taxonomy, measurement protocol, Tier-3 one-hot probe pair.
+- P2 (shipped): Tier-1 host-boundary driver + Tier-2 feed-overlap driver,
+  each with a reference page written from its verified first results
+  (including negative results -- see tier2's 0.70x finding).
+- P3 (shipped): cross-references from `using-xtrax` and `xtrax-probing`.
+- Open (needs user/GPU): Stage-2 GPU re-runs of all three probes for
+  rankable TERM_RANKING pairs; performance-gate rubric entries if any driver
+  earns a permanent tripwire; possible `xtrax.perf` package if shared driver
+  scaffolding justifies it.
 
 ## Additional Resources
 
-Load as needed -- do not read both up front:
+Load as needed -- do not read all up front:
 
 - **`references/measurement-protocol.md`** -- preregistration format,
   paired-probe recipes per tier, claim-class mapping, keep/revert procedure.
-- **`references/tier3-composition.md`** -- composition-change playbook:
-  strategy swaps, on-the-fly encoding, donate/remat, parity gating.
+- **`references/tier1-host-boundary.md`** -- callback cost accounting,
+  ordering rules, batching-the-payload pattern (measured).
+- **`references/tier2-data-movement.md`** -- prefetch/regime checks,
+  bucketing, dtype placement (measured, incl. a negative result).
+- **`references/tier3-composition.md`** -- strategy swaps, on-the-fly
+  encoding, donate/remat, parity gating.

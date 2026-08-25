@@ -20,6 +20,11 @@ XTRAX_GIT_SHA=$(git rev-parse HEAD) \
     uv run python scripts/prof_stage0_onehot_cost.py
 XTRAX_GIT_SHA=$(git rev-parse HEAD) \
     uv run python scripts/prof_stage1_onehot_micro.py
+# Tier-1 host boundary + Tier-2 feed overlap (P2 of the same scope):
+XTRAX_GIT_SHA=$(git rev-parse HEAD) \
+    uv run python scripts/prof_stage1_host_boundary.py
+XTRAX_GIT_SHA=$(git rev-parse HEAD) \
+    uv run python scripts/prof_stage1_feed_overlap.py
 ```
 
 Current contents are Stage 0/1 (CPU-only jaxlib on this machine): they
