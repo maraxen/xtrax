@@ -387,3 +387,34 @@ component-C output contract was exercised through xtrax's real public interfaces
 - **Bonus observation**: planner emitted a RuntimeWarning that cardinality 10000 is not
   divisible by batch_size 128 ("will raise ValueError at make_axis_dispatch time") for the
   non-dedup axis — the fail-loud convention is observable in practice, corroborating G4.
+
+### 10.2 Runtime numerical validation + two REQUIRED spec amendments (F3, F4)
+
+DedupGather was executed end-to-end through the real runtime (`axis_dispatch`) on semantically
+coherent inputs (duplicated rows carry identical payloads):
+
+- **k=1 and k=N degenerate cases**: exact. N=1000/k=12: exact.
+- **N=10000/k=30**: numerically equal to `allclose(rtol=1e-6)` but NOT bitwise (max |diff|
+  1.9e-6) — vmap-per-row and gather-per-canonical exercise different XLA fusion layouts.
+  Consequence: the spec's own `verify_dedup_spec` hook MUST compare numerically
+  (`allclose` with policy rtol/atol), never bitwise — consistent with §4.2.5's spot-check
+  rationale; now demonstrated for component C too.
+
+**F3 (REQUIRED amendment, construction contract)**: `unique_indices` MUST be the ASCENDING
+FIRST-OCCURRENCE POSITIONS of distinct rows, with slot j of `index_map` defined as "the row at
+first-occurrence position positions[j]". The docstring's "indices of unique elements" is
+ambiguous between value-identities and positions; both satisfy every existing invariant check,
+and the wrong reading produces silently WRONG results (demonstrated max error ≈2e5, caught by
+nothing). The synthesizer's exact stage builds this convention by construction; a unit AC pinning
+it is added to P2: given rows [v0,v1,v0,v1], unique_indices == [0,1] (positions), not [0,1]
+(values) — distinguished when first occurrence order differs from sorted-value order.
+
+**F4 (REQUIRED amendment, padding aliasing)**: `to_dedup_gather()` edge-pads `unique_indices`
+by REPEATING the last real index. A padded slot k..k_bucket-1 therefore computes a DUPLICATE of
+the last canonical row's result. This is safe only because no `index_map` entry selects padded
+slots — an invariant the synthesizer must state and preserve (self-assertion already covers
+index_map range), but any future custom `gather_fn` or index arithmetic that touches slots ≥ k
+silently reads aliased data. Recorded as a documented invariant with a P2 test asserting
+padded-slot results are never selected.
+
+Both amendments are additive to §4.3; no prior decision changes.
