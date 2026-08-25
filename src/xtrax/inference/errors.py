@@ -14,6 +14,7 @@ from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
 __all__ = [
     "AmbiguousAxisError",
     "AxisRole",
+    "CseTraceError",
     "StructureMismatchError",
     "XtraxInferenceError",
 ]
@@ -36,6 +37,17 @@ class StructureMismatchError(XtraxInferenceError):
     Example:
         If eval_shape produces a tree with different branches than the actual
         concrete execution, this error is raised to signal the structural mismatch.
+    """
+
+    pass
+
+
+class CseTraceError(XtraxInferenceError):
+    """Raised when analyze_cse cannot trace the target function.
+
+    Wraps tracing failures (unsupported control flow, wrong argument count,
+    non-traceable operations) so callers can distinguish analysis failures
+    from computation failures.
     """
 
     pass

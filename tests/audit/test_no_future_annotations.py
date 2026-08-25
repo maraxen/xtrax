@@ -50,6 +50,7 @@ LEGACY_ALLOWLIST = {
     "src/xtrax/inference/abstract.py",
     "src/xtrax/inference/api.py",
     "src/xtrax/inference/axes.py",
+    "src/xtrax/inference/cse.py",
     "src/xtrax/inference/config.py",
     "src/xtrax/inference/errors.py",
     "src/xtrax/inference/schema.py",
