@@ -107,3 +107,8 @@ Load as needed -- do not read both up front:
 - **`references/workflows.md`** -- step-by-step workflows (drivers, bench
   declarations, gate/controller wiring), plus the ClaimValidityError
   catalogue: message -> cause -> fix.
+
+Acting on a measurement -- deciding what to optimize and what evidence each
+class of change owes -- is the `xtrax-optimizing` skill's job (three-tier
+taxonomy + preregister-and-probe protocol; its drivers emit the records this
+skill governs).

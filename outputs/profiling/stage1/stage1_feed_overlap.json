@@ -1,0 +1,34 @@
+{
+  "attribution_method": null,
+  "config": {
+    "axis_note": "n_atoms == batches fed per measured pass",
+    "buffer_size": "4",
+    "feed_sleep_ms": "1.0",
+    "n_batches": "32",
+    "n_cols": "64",
+    "n_rows": "256",
+    "n_trials_best_of": "3",
+    "pipeline": "slow_producer_to_jitted_step",
+    "regime_note": "check isolated_step_seconds vs feed cost before citing: host-loop-dominated regimes do not evidence transfer hiding"
+  },
+  "contract_version": "3.0",
+  "device_kind": null,
+  "git_sha": "20bdc62d3d8f07b2f32606247bcb102dce27630a",
+  "jax_version": "0.10.2",
+  "jaxlib_version": "0.10.2",
+  "metrics": {
+    "feed_seconds_lower_bound": 0.032,
+    "isolated_step_seconds": 0.0008407460991293192,
+    "overlapped_seconds": 0.07618133910000324,
+    "sequential_seconds": 0.053481898037716746,
+    "speedup_ratio": 0.7020341027021205
+  },
+  "n_atoms": 32,
+  "platform": "cpu",
+  "probe_id": "stage1_feed_overlap",
+  "scopes": null,
+  "stage": 1,
+  "timestamp": "2026-08-25T20:12:34.285861+00:00",
+  "x64_enabled": false,
+  "xla_flags": ""
+}
