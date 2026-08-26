@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import os
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from xtrax.inference.errors import XtraxInferenceError
 from xtrax.inference.memo import (
     MemoImpurityError,
     MemoKeyUnsupportedLeafError,
@@ -99,8 +96,8 @@ class TestCaching:
         fn, calls = _tracer_aware_spy()
         f = memoize_jaxpr(fn)
         x = jnp.ones((4,), jnp.float32)
-        a = f(x)
-        b = f(x)
+        f(x)
+        f(x)
         s = f.memo_get_stats()
         assert calls["concrete"] == 1 and s["hits"] == 2 - 1 or True
         # Strict:
@@ -113,8 +110,10 @@ class TestCaching:
         fa = memoize_jaxpr(fn_a, policy=MemoPolicy(salt="a"))
         fb = memoize_jaxpr(fn_b, policy=MemoPolicy(salt="b"))
         x = jnp.ones((4,), jnp.float32)
-        fa(x); fa(x)
-        fb(x); fb(x)
+        fa(x)
+        fa(x)
+        fb(x)
+        fb(x)
         assert calls_a["concrete"] == 1 and calls_b["concrete"] == 1
         assert fa.memo_get_stats()["hits"] == 1
         assert fb.memo_get_stats()["hits"] == 1
@@ -124,7 +123,8 @@ class TestCaching:
         fn_a, calls_a = _tracer_aware_spy()
         f1 = memoize_jaxpr(fn_a, policy=MemoPolicy(_stamp_override="stamp-1"))
         x = jnp.ones((4,), jnp.float32)
-        f1(x); f1(x)
+        f1(x)
+        f1(x)
         assert calls_a["concrete"] == 1
 
         # Same underlying behavior but different injected stamp: separate wrapper
