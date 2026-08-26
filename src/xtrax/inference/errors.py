@@ -15,6 +15,9 @@ __all__ = [
     "AmbiguousAxisError",
     "AxisRole",
     "CseTraceError",
+    "DedupSpecCollisionError",
+    "DedupSynthesisCollisionError",
+    "DedupSynthesisUnsupportedError",
     "MemoImpurityError",
     "MemoKeyUnsupportedLeafError",
     "MemoMultiDeviceError",
@@ -68,6 +71,35 @@ class CseTraceError(XtraxInferenceError):
     Wraps tracing failures (unsupported control flow, wrong argument count,
     non-traceable operations) so callers can distinguish analysis failures
     from computation failures.
+    """
+
+    pass
+
+
+class DedupSynthesisUnsupportedError(XtraxInferenceError):
+    """Raised when synthesize_dedup_spec encounters unsupported input structure.
+
+    E.g., heterogeneous axes (different element widths) in v1.
+    """
+
+    pass
+
+
+class DedupSynthesisCollisionError(XtraxInferenceError):
+    """Raised when existing_specs already declares the target axis_name.
+
+    Caller-declared intent always wins; collision indicates conflicting
+    dedup specifications for the same axis.
+    """
+
+    pass
+
+
+class DedupSpecCollisionError(XtraxInferenceError):
+    """Raised by merge_dedup_specs when multiple specs target the same axis_name.
+
+    Generic merge-helper error (used when caller-vs-synthesized or caller-vs-caller
+    specs collide during merge operations).
     """
 
     pass
