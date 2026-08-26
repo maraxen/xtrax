@@ -68,6 +68,7 @@ LEGACY_ALLOWLIST = {
     "src/xtrax/tiling/carry.py",
     "src/xtrax/tiling/carry_shape.py",
     "src/xtrax/tiling/dedup.py",
+    "src/xtrax/tiling/dedup_synthesis.py",
     "src/xtrax/tiling/dispatch.py",
     "src/xtrax/tiling/iterator.py",
     "src/xtrax/tiling/plan.py",
