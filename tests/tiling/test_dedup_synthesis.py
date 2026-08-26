@@ -42,10 +42,13 @@ class TestSampleStage:
         # N=1000, duplication below threshold (10%)
         N = 1000
         # Create rows where each row appears 1-2 times (sparse duplication)
-        batch = np.concatenate([
-            np.arange(900, dtype=np.float32).reshape(-1, 1),  # 900 unique rows
-            np.arange(100, dtype=np.float32).reshape(-1, 1),  # 100 repeats of first rows
-        ], axis=0)[:N]
+        batch = np.concatenate(
+            [
+                np.arange(900, dtype=np.float32).reshape(-1, 1),  # 900 unique rows
+                np.arange(100, dtype=np.float32).reshape(-1, 1),  # 100 repeats of first rows
+            ],
+            axis=0,
+        )[:N]
         result = synthesize_dedup_spec([batch], threshold=0.5, max_unique_k=200)
 
         assert result.spec is None
@@ -105,8 +108,9 @@ class TestAC7SynthesizedSpec:
         """AC7 with multiple batch leaves (concatenated for analysis)."""
         N = 5000
         n_unique = 25
-        leaf1 = np.tile(np.arange(n_unique, dtype=np.float32).reshape(-1, 1),
-                        (N // n_unique + 1, 1))[:N]
+        leaf1 = np.tile(
+            np.arange(n_unique, dtype=np.float32).reshape(-1, 1), (N // n_unique + 1, 1)
+        )[:N]
         leaf2 = leaf1 * 2.0  # Correlated but not identical
 
         result = synthesize_dedup_spec([leaf1, leaf2], threshold=0.5)
@@ -148,9 +152,7 @@ class TestAC10KOverLimit:
         # Pad to N=500 rows using first row repeated
         batch = np.vstack([batch, np.tile(batch[0:1], (500 - n_unique, 1))])
 
-        result = synthesize_dedup_spec(
-            [batch], threshold=0.01, max_unique_k=256
-        )
+        result = synthesize_dedup_spec([batch], threshold=0.01, max_unique_k=256)
 
         assert result.stage == "k_over_limit"
         assert result.spec is None
@@ -183,8 +185,7 @@ class TestAC11CollisionPolicy:
     def test_ac11_collision_with_existing_spec(self):
         """AC11: existing_specs declares 'batch' → collision error."""
         N = 100
-        batch = np.tile(np.array([1.0, 2.0], dtype=np.float32).reshape(-1, 1),
-                        (N // 2 + 1, 1))[:N]
+        batch = np.tile(np.array([1.0, 2.0], dtype=np.float32).reshape(-1, 1), (N // 2 + 1, 1))[:N]
 
         # Pre-declare a spec for 'batch' axis
         existing_spec = DedupSpec(
@@ -202,8 +203,7 @@ class TestAC11CollisionPolicy:
     def test_ac11_caller_spec_untouched(self):
         """AC11: collision does not modify caller's spec."""
         N = 100
-        batch = np.tile(np.array([1.0, 2.0], dtype=np.float32).reshape(-1, 1),
-                        (N // 2 + 1, 1))[:N]
+        batch = np.tile(np.array([1.0, 2.0], dtype=np.float32).reshape(-1, 1), (N // 2 + 1, 1))[:N]
 
         existing_spec = DedupSpec(
             axis_name="batch",
@@ -222,8 +222,7 @@ class TestAC11CollisionPolicy:
     def test_ac11_non_colliding_existing_specs(self):
         """AC11: non-colliding existing_specs (different axis_name) must NOT raise."""
         N = 100
-        batch = np.tile(np.array([1.0, 2.0], dtype=np.float32).reshape(-1, 1),
-                        (N // 2 + 1, 1))[:N]
+        batch = np.tile(np.array([1.0, 2.0], dtype=np.float32).reshape(-1, 1), (N // 2 + 1, 1))[:N]
 
         # Pre-declare a spec for a different axis (not "batch")
         other_spec = DedupSpec(
@@ -235,8 +234,7 @@ class TestAC11CollisionPolicy:
         existing_specs = {"other_axis": other_spec}
 
         # Should NOT raise; synthesis should proceed normally
-        result = synthesize_dedup_spec([batch], existing_specs=existing_specs,
-                                       threshold=0.5)
+        result = synthesize_dedup_spec([batch], existing_specs=existing_specs, threshold=0.5)
 
         assert result.spec is not None
         assert result.stage == "synthesized"
@@ -290,24 +288,30 @@ class TestMergeDedupSpecs:
     def test_merge_multiple_mappings(self):
         """merge_dedup_specs: three+ mappings without collision."""
         specs = [
-            {"batch": DedupSpec(
-                axis_name="batch",
-                unique_indices=np.array([0, 1]),
-                index_map=np.array([0, 1, 0]),
-                k=2,
-            )},
-            {"feat": DedupSpec(
-                axis_name="feat",
-                unique_indices=np.array([0]),
-                index_map=np.array([0]),
-                k=1,
-            )},
-            {"seq": DedupSpec(
-                axis_name="seq",
-                unique_indices=np.array([0, 1, 2]),
-                index_map=np.array([0, 1, 2]),
-                k=3,
-            )},
+            {
+                "batch": DedupSpec(
+                    axis_name="batch",
+                    unique_indices=np.array([0, 1]),
+                    index_map=np.array([0, 1, 0]),
+                    k=2,
+                )
+            },
+            {
+                "feat": DedupSpec(
+                    axis_name="feat",
+                    unique_indices=np.array([0]),
+                    index_map=np.array([0]),
+                    k=1,
+                )
+            },
+            {
+                "seq": DedupSpec(
+                    axis_name="seq",
+                    unique_indices=np.array([0, 1, 2]),
+                    index_map=np.array([0, 1, 2]),
+                    k=3,
+                )
+            },
         ]
 
         result = merge_dedup_specs(*specs)
@@ -473,7 +477,7 @@ class TestJaxArrayNoMaterialization:
 
         # Create a ragged Python list (heterogeneous shapes)
         ragged_list = [
-            [1.0, 2.0],       # length 2
+            [1.0, 2.0],  # length 2
             [3.0, 4.0, 5.0],  # length 3 — ragged
         ]
 

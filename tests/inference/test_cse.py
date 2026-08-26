@@ -47,6 +47,7 @@ class TestAnalyzeCse:
 
     def test_literal_value_canonicalization(self):
         """Distinct Literal objects with equal values merge (OBJ-R2-01)."""
+
         # Two muls with distinct-but-equal scalar literals via different consts.
         def fn(x):
             a = x * jnp.asarray(2.0, jnp.float32)

@@ -308,14 +308,10 @@ def _stack_batch_leaves(batch_leaves: Sequence[Any], axis: int) -> jax.Array:
     first = leaves_list[0]
 
     if axis < 0 or axis >= first.ndim:
-        raise ValueError(
-            f"axis={axis} out of range for array with ndim={first.ndim}"
-        )
+        raise ValueError(f"axis={axis} out of range for array with ndim={first.ndim}")
 
     # Move axis to position 0 for analysis.
-    leaves_moved = [
-        jnp.moveaxis(leaf, axis, 0) for leaf in leaves_list
-    ]
+    leaves_moved = [jnp.moveaxis(leaf, axis, 0) for leaf in leaves_list]
     N = leaves_moved[0].shape[0]
 
     if N == 0:
@@ -325,8 +321,7 @@ def _stack_batch_leaves(batch_leaves: Sequence[Any], axis: int) -> jax.Array:
     for i, leaf in enumerate(leaves_moved):
         if leaf.shape[0] != N:
             raise ValueError(
-                f"batch_leaves[{i}] has batch dimension {leaf.shape[0]} "
-                f"but expected {N}"
+                f"batch_leaves[{i}] has batch dimension {leaf.shape[0]} but expected {N}"
             )
 
     # Concatenate along feature dimension (after axis 0).
@@ -360,9 +355,7 @@ def _sample_stage(
     return sampled_ratio, n_unique_sampled, transfer_bytes
 
 
-def _exact_stage(
-    stacked: jax.Array, axis: int, N: int
-) -> tuple[np.ndarray, np.ndarray, int, int]:
+def _exact_stage(stacked: jax.Array, axis: int, N: int) -> tuple[np.ndarray, np.ndarray, int, int]:
     """Exact-stage: compute unique_indices and index_map for all N rows.
 
     Returns: (unique_indices, index_map, k, transfer_bytes).
@@ -375,9 +368,7 @@ def _exact_stage(
     # Compute unique rows by identity (row equality).
     # unique_indices = ascending FIRST-OCCURRENCE POSITIONS (F3).
     # index_map[i] selects which canonical row position i uses.
-    unique_rows, index_map_raw = np.unique(
-        all_rows, axis=0, return_inverse=True
-    )
+    unique_rows, index_map_raw = np.unique(all_rows, axis=0, return_inverse=True)
     # Defensive reshape: numpy 2.5.1's return_inverse+axis semantics return flat (N,).
     # Confirmed empirically; reshape below handles any future numpy versions gracefully.
     index_map_raw = np.asarray(index_map_raw).reshape(-1)

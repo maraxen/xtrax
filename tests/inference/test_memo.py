@@ -56,6 +56,7 @@ class TestAdmission:
         def make_impure():
             def impure(x):
                 return jax.random.uniform(jax.random.key(0), (4,))
+
             return impure
 
         wrapped = memoize_jaxpr(make_impure())
@@ -73,8 +74,10 @@ class TestAdmission:
         import xtrax.inference.memo as m
 
         def fake_local_devices():
-            return [type("D", (), {"id": 0, "device_kind": "cpu"})(),
-                    type("D", (), {"id": 1, "device_kind": "cpu"})()]
+            return [
+                type("D", (), {"id": 0, "device_kind": "cpu"})(),
+                type("D", (), {"id": 1, "device_kind": "cpu"})(),
+            ]
 
         monkeypatch.setattr(m.jax, "local_devices", fake_local_devices)
         with pytest.raises(MemoMultiDeviceError):

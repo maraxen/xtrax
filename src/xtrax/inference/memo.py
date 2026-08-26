@@ -259,9 +259,7 @@ class _MemoCore:
         self.stats = MemoStats()
         self.program_digest: str | None = None
         self.stamp: str = (
-            policy._stamp_override
-            if policy._stamp_override is not None
-            else _environment_stamp()
+            policy._stamp_override if policy._stamp_override is not None else _environment_stamp()
         )
         self.screen_latched_error: MemoImpurityError | None = None
         self.calls_since_wrap = 0
@@ -319,9 +317,7 @@ class _MemoCore:
 
         with self.lock:
             if self.stats.spot_check_mismatches > 0:
-                raise MemoStalenessError(
-                    "spot_check_mismatches > 0: poisoned until .memo_reset()"
-                )
+                raise MemoStalenessError("spot_check_mismatches > 0: poisoned until .memo_reset()")
         t0 = time.perf_counter()
         try:
             self._ensure_program(args)
@@ -409,9 +405,7 @@ class _MemoCore:
     def _maybe_spot_check_unlocked(self, key: str) -> None:
         with self.lock:
             if self.stats.spot_check_mismatches > 0:
-                raise MemoStalenessError(
-                    "spot_check_mismatches > 0: poisoned until .memo_reset()"
-                )
+                raise MemoStalenessError("spot_check_mismatches > 0: poisoned until .memo_reset()")
             entry = self.cache.get(key)
             if entry is None:
                 return

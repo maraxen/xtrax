@@ -166,16 +166,12 @@ def _run_explain_cse(fn, abstract_inputs, args) -> None:
                 "previous analysis are NOT reflected. Use a fresh callable."
             )
         for c in cr["duplicates"]:
-            print(
-                f"  {c['primitive']} x{c['eqn_count']} "
-                f"(est. wasted {c['est_wasted_bytes']} B)"
-            )
+            print(f"  {c['primitive']} x{c['eqn_count']} (est. wasted {c['est_wasted_bytes']} B)")
         if not cr["duplicates"]:
             print("  No duplicate subexpressions detected.")
         print()
         print(cr["note"])
     else:
         raise CLIError(
-            f"fmt={args.fmt!r} is not supported for --report cse "
-            f'(supported: "json", "text")'
+            f'fmt={args.fmt!r} is not supported for --report cse (supported: "json", "text")'
         )

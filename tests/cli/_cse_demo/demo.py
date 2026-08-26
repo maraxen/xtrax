@@ -1,4 +1,5 @@
 """Demo functions for CSE CLI tests."""
+
 import jax.numpy as jnp
 
 from xtrax.inference import AxisOverride, axis_config
