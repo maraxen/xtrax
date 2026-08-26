@@ -30,8 +30,8 @@ import threading
 import unicodedata
 import warnings
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import jax
@@ -112,7 +112,7 @@ def _environment_stamp() -> str:
     )
 
 
-def _leaf_digest(leaf: Any, sink: "hashlib._Hash") -> None:
+def _leaf_digest(leaf: Any, sink: hashlib._Hash) -> None:
     """Fold one pytree leaf into the digest stream (spec §4.2.2 item 3)."""
     if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
         # House primitive core (zarr_integrity.update_array_digest recipe):
@@ -360,7 +360,6 @@ class _MemoCore:
 
         op_start = time.perf_counter()
         raw_out = self.fn(*args, **kwargs)
-        flat = jax.tree_util.tree_leaves(raw_out)
         if self.policy.block_on_miss:
             jax.block_until_ready(raw_out)
         ready = self.policy.block_on_miss
@@ -408,7 +407,6 @@ class _MemoCore:
             )
 
     def _maybe_spot_check_unlocked(self, key: str) -> None:
-        k = self.policy.spot_check_every
         with self.lock:
             if self.stats.spot_check_mismatches > 0:
                 raise MemoStalenessError(
@@ -419,10 +417,10 @@ class _MemoCore:
                 return
             cached_value = entry.value
         # Recompute OUTSIDE the lock via UNWRAPPED fn (fresh closure read).
-        args_repr = None  # spot-check uses the SAME key => same inputs; we must
-        # recompute from stored args. We deliberately store nothing beyond the
-        # value, so spot-check replays only when the wrapper was given inputs;
-        # therefore we stash the latest args on the core at call time.
+        # Spot-check uses the SAME key => same inputs; we must recompute from
+        # stored args. We deliberately store nothing beyond the value, so
+        # spot-check replays only when the wrapper was given inputs; therefore
+        # we stash the latest args on the core at call time.
         if self._last_args is None:
             return
         fresh = self.fn(*self._last_args)

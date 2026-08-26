@@ -126,7 +126,6 @@ def _run_explain_cse(fn, abstract_inputs, args) -> None:
     (no render semantics).
     """
     import json
-    import sys
 
     from xtrax.inference import analyze_cse
 
