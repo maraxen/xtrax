@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class ProbeOutcome:
-    """Result of one reachability probe. Not `xtrax.devtools.freshness.ProbeResult` -- that
+    """Result of one reachability probe. Not `xtrax.run.freshness.ProbeResult` -- that
     type's semantics are "did this probe invalidate an attestation" (TTL-attestation-specific);
     this is a standalone recording of reachability, no attestation involved.
     """

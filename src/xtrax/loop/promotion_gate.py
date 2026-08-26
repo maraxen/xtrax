@@ -8,7 +8,7 @@ not a standing grant -- passing review once does not pre-approve a later promoti
 
 This module enforces the per-promotion check: given a candidate commit SHA, verify that an
 explicit approval entry exists in the TOML gates file, and that its attestation is still fresh
-(per `xtrax.devtools.freshness.Attestation`/`evaluate_freshness` semantics).
+(per `xtrax.run.freshness.Attestation`/`evaluate_freshness` semantics).
 
 TOML schema: `[[gates]]` entries for `id="T2-30"` carry an `event_ref` field holding the
 candidate commit SHA. No other gate type uses `event_ref` -- it is T2-30-specific, matching the
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from xtrax.devtools.freshness import Attestation, evaluate_freshness
+from xtrax.run.freshness import Attestation, evaluate_freshness
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_GATES_TOML = ROOT / ".praxia" / "loop_human_gates.toml"
@@ -50,7 +50,7 @@ class GateEntry:
     """A single [[gates]] entry from the TOML file, cast to structured form.
 
     `event_ref` is the candidate commit SHA for T2-30 entries; optional for other gate types.
-    The other fields mirror `xtrax.devtools.freshness.Attestation` plus gate metadata.
+    The other fields mirror `xtrax.run.freshness.Attestation` plus gate metadata.
     """
 
     id: str

@@ -1,12 +1,12 @@
-"""Contract tests for xtrax.devtools.tombstone ledger (#1580)."""
+"""Contract tests for xtrax.tombstone ledger (#1580)."""
 
 import json
 from pathlib import Path
 
 import pytest
 
-from xtrax.devtools.emit import append_finding, emit_metric_finding
-from xtrax.devtools.tombstone import (
+from xtrax.findings import append_finding, emit_metric_finding
+from xtrax.tombstone import (
     TombstoneEntry,
     append_tombstone,
     filter_tombstoned,

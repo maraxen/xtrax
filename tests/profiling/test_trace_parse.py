@@ -151,3 +151,115 @@ ENTRY %main.1 (x: f32[]) -> f32[] {
     known = frozenset({"outer", "inner"})
     scope_map = scope_map_from_hlo_text(hlo_text, known)
     assert scope_map["op"] == "inner"
+
+
+def _fusion_hlo() -> str:
+    """Synthetic fused-model HLO: ENTRY calls a kLoop fusion whose body's
+    instructions carry op_name paths under the ebm_state_axis scope -- the
+    exact shape real aminx/ConditionalDecode traces take after XLA fusion."""
+    return """
+ENTRY %main (p0: f32[8]) -> f32[] {
+  %x = f32[8] parameter(0)
+  %f = f32[8] fusion(f32[8] %x), kind=kLoop, calls=%fused_computation
+  ROOT %r = f32[] reduce(f32[8] %f, f32[], directions={f}), to_apply=%sum
+}
+
+%fused_computation (param: f32[8]) -> f32[8] {
+  %sin = f32[8] sin(f32[8] %param), metadata={op_name="jit(_decode)/ebm_state_axis/sin"}
+  %mul = f32[8] multiply(f32[8] %sin, f32[8] %sin), metadata={op_name="jit(_decode)/ebm_conditional_decode/mul"}
+  ROOT %out = f32[8] negate(f32[8] %mul), metadata={op_name="jit(_decode)/ebm_conditional_decode/negate"}
+}
+"""
+
+
+def test_fusion_computation_names_resolve_to_scope_labels():
+    hlo = _fusion_hlo()
+    sm = scope_map_from_hlo_text(hlo, frozenset({"ebm_state_axis", "ebm_conditional_decode"}))
+    # The executed trace event names the FUSED computation, not its inner
+    # instructions -- it must resolve like its dominant scope.
+    assert sm.get("fused_computation") == "ebm_conditional_decode"
+    # Inner instructions still resolve individually.
+    assert sm.get("sin") == "ebm_state_axis"
+
+
+def test_parse_scopes_attributes_fused_events():
+    import time
+
+    hlo = _fusion_hlo()
+    sm = scope_map_from_hlo_text(hlo, frozenset({"ebm_state_axis", "ebm_conditional_decode"}))
+    events = [
+        {
+            "name": "fused_computation",
+            "ph": "X",
+            "dur": 250,
+            "args": {"hlo_op": "fused_computation"},
+        }
+    ]
+    before = time.perf_counter()
+    scopes = parse_scopes(events, sm)
+    build_s = time.perf_counter() - before
+    assert set(scopes) == {"ebm_conditional_decode"}
+    seconds, n_occ = scopes["ebm_conditional_decode"]
+    assert n_occ == 1
+    assert abs(seconds - 0.00025) < build_s + 1e-6
+
+
+# --- _blocks_with_labels: direct coverage (jury findings 2026-08-25) ---
+# The original commit shipped a regex that failed to compile, silently
+# swallowed by the caller's except; every test below exercises the
+# brace-stack path directly so it can never regress to dead code.
+
+
+def test_blocks_with_labels_inline_nested_containment():
+    from xtrax.profiling.trace import _blocks_with_labels
+
+    hlo = (
+        "ENTRY %main (Arg_0.1: f32[8]) -> f32[8] {\n"
+        "  %while_body (pred: pred[], arg: f32[8]) -> pred[] {\n"
+        '    %add = f32[8]{0} add(%arg, %arg), metadata={op_name="jit(settle)/settle/add"}\n'
+        "  }\n"
+        "  %fused_computation (p: f32[8]) -> f32[8] {\n"
+        '    %mul = f32[8]{0} multiply(%p, %p), metadata={op_name="jit(pme)/pme/conv"}\n'
+        "  }\n"
+        "}\n"
+    )
+    votes = _blocks_with_labels(hlo, frozenset({"settle", "pme"}))
+    # Exact vote lists: containment means main sees both; while_body only
+    # its own op; fused_computation only pme. This also kills the
+    # stack[-1:] mutant (main would lose the settle vote) and any
+    # instruction-line desync of the block stack.
+    assert votes == {
+        "main": ["settle", "pme"],
+        "while_body": ["settle"],
+        "fused_computation": ["pme"],
+    }
+
+
+def test_blocks_with_labels_unknown_labels_vote_nothing():
+    from xtrax.profiling.trace import _blocks_with_labels
+
+    hlo = (
+        "%blk (p: f32[8]) -> f32[8] {\n"
+        '  %sin = f32[8]{0} sin(%p), metadata={op_name="jit(unknown_scope)/sin"}\n'
+        "}\n"
+    )
+    assert _blocks_with_labels(hlo, frozenset({"known"})) == {}
+
+
+def test_blocks_with_labels_return_type_with_layout_braces():
+    from xtrax.profiling.trace import _blocks_with_labels
+
+    hlo = (
+        "%comp (Arg_0.1: f32[8]) -> f32[8] {\n"
+        '  %op = f32[8]{0:L} custom-call(%Arg_0.1), metadata={op_name="jit(f)/inner/op"}\n'
+        "}\n"
+    )
+    votes = _blocks_with_labels(hlo, frozenset({"inner"}))
+    assert votes == {"comp": ["inner"]}
+
+
+def test_blocks_with_labels_empty_and_close_only_input():
+    from xtrax.profiling.trace import _blocks_with_labels
+
+    assert _blocks_with_labels("", frozenset({"x"})) == {}
+    assert _blocks_with_labels("}\n}\n", frozenset({"x"})) == {}

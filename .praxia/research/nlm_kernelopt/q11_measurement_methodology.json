@@ -1,0 +1,318 @@
+{
+  "answer": "When reviewing literature for GPU kernel and accelerator optimizations, several papers stand out for their highly rigorous, diagnostic, and transparent benchmarking methodologies. Rather than relying on simple end-to-end \"speedup\" numbers under ambiguous conditions, these papers employ robust experimental controls, paired expert baselines, variance-reduction strategies, and micro-to-macro ablations that are excellent models for performance evaluation.\n\nThe most imitable methodologies fall into three core categories:\n\n---\n\n### 1. Environmental Controls and Variance Handling\nGPU execution is highly sensitive to dynamic frequency scaling, thermal throttling, and cache state. The following papers introduce exceptional controls to handle this variance:\n\n*   **Explicit Clock Locking (FlashAttention-3 & MARLIN)**:\n    *   **FlashAttention-3** controls for GPU frequency fluctuations (boost clock vs. base clock variance) by explicitly locking the H100 GPU clock speed to a fixed **1830 MHz** across all runs [1]. Runtimes are reported as the average of **100 runs** [1].\n    *   **MARLIN** conducts sweeps under a **locked base GPU clock** [2-4]. They demonstrate that when clock speeds are capped, prior kernels' relative speedups degrade significantly due to timing dependencies, while MARLIN maintains stable performance near the mathematical limits [2, 3].\n    *   *Takeaway*: Always report the physical clock frequency and lock the GPU clocks during profiling to avoid thermal noise.\n*   **Active Cache Flushing (Ansor)**:\n    *   For CPU profiling, **Ansor** mitigates cache state noise (where subsequent runs appear artificially fast because data remains in L3 cache) by **explicitly flushing caches** between runs [5]. This enables highly accurate measurements with fewer trial repetitions [5].\n    *   *Takeaway*: Do not rely on warm-cache loops alone; programmatically flush cache lines if evaluating cold-start execution.\n*   **Noisy Search-Space Statistics (Ansor & FlashAttention)**:\n    *   In auto-tuning sweeps, **Ansor** combats random runtime noise by plotting the **median of 5 complete runs** for each tuning curve [6] and using **error bars to denote the standard deviation** of normalized throughput across varying operator shapes [7].\n    *   **FlashAttention** tracks end-to-end training runs over **10 complete runs** on 8x A100 GPUs and reports variance as **mean ± standard deviation** (e.g., Nvidia MLPerf training baseline of \\\\(20.0 \\pm 1.5\\\\) minutes vs. FlashAttention’s \\\\(17.4 \\pm 1.4\\\\) minutes) [8-10]. They also plot full validation perplexity curves to prove that their lower-precision optimizations do not introduce numerical divergence [11, 12].\n\n---\n\n### 2. Paired Baselines and Realistic Sweeps\nA common flaw in acceleration papers is comparing custom CUDA to weak, unoptimized baselines. These studies set a high bar by pairing their work with top-tier equivalents:\n\n*   **Saturated Problem Boundaries (MARLIN & Triton)**:\n    *   **MARLIN** and **Triton** plot their achieved TFLOP/s directly alongside **Roofline ceilings** representing the absolute physical bandwidth boundaries of the hardware [13, 14]. MARLIN pairs its benchmarks not just against standard PyTorch (calling optimized CUTLASS), but also against four heavily optimized, specialized open-source kernels: AWQ, bitsandbytes, ExLlamaV2, and an \"Ideal\" weight-loading roofline [15, 16].\n    *   *Takeaway*: Compare against the strongest specialized open-source competitors, and visually map your kernel to the physical hardware boundaries to prove how close you are to optimality.\n*   **Industrial/Months-of-Effort Production Pipelines (Halide)**:\n    *   **Halide** avoids comparing its compiled code to \"clean\" standard C++ [17]. Instead, it evaluates its autotuned pipelines against **Adobe production code** optimized over months using OpenMP, heterogeneous CPU+GPU execution, and hand-written assembly routines from Intel Performance Primitives (IPP) [17-19].\n    *   *Takeaway*: If a vendor or production library exists, benchmark your compiler or custom kernel directly against its most aggressive, production-ready implementation.\n*   **Granular Domain Swe Sweeps (ADEPT)**:\n    *   **ADEPT** evaluates its local alignment engine against CPU SIMD libraries (SSW, SeqAn) and specialized GPU alignment engines (GASAL2, NVBIO) [20]. Rather than testing one sequence length, they sweep across three distinct DNA datasets and three Protein datasets of widely varying query lengths to show exactly where the hardware bottleneck shifts from instruction overhead to compute density [21-23].\n    *   *Takeaway*: Run multi-dimensional sweeps of input dimensions (such as sequence lengths, batch sizes, or channel widths) to expose where your optimizations succeed or hit hardware walls.\n\n---\n\n### 3. Rigorous Ablation and Trade-Off Architectures\nThe best performance papers perform deep surgery on their own systems to isolate the exact source of their speedups:\n\n*   **Framework-to-Kernel Trade-off Dissection (vLLM / PagedAttention)**:\n    *   **vLLM** provides an extraordinarily honest ablation study [24]. It microbenchmarks the **Attention Kernel alone** vs. the **End-to-End serving engine** [24]. It openly reports that introducing block table indirection, extra branches, and variable-length padding checks makes its raw PagedAttention GPU kernel **20–26% slower** than FasterTransformer’s highly optimized contiguous attention kernel [24]. However, it immediately pairs this with an end-to-end ablation showing that because PagedAttention eliminates physical memory fragmentation, it enables massive batch sizes that yield a **2–4x overall throughput speedup** [24-26].\n    *   They also perform detailed sweeps to evaluate the exact crossover points of recovery mechanisms (**Recomputation vs. Swapping**) across varying block sizes [27].\n*   **Hardware and Threading-Level Ablation Tables (FlashAttention-3)**:\n    *   **FlashAttention-3** isolates its dual optimizations in a clean ablation matrix (Table 2) [28]. It compares its peak FP16 forward performance (661 TFLOPS) directly against configurations with **No GEMM-Softmax Pipelining** (582 TFLOPS) and **No Warp-Specialization** (570 TFLOPS), showing the precise contribution of each architectural feature [28, 29].\n*   **Generalizability Testing (Halide)**:\n    *   To prove that their autotuned schedules are robust, **Halide** implements a \"Cross-Testing\" matrix (Figure 8) [30]. They autotune a schedule on a tiny image resolution (0.3 MP) and run it on a massive resolution (30 MP) [30]. They then report the exact **\"slowdown factor\"** compared to a schedule autotuned directly on the target resolution to verify that the schedule generalizes without overfitting to input sizes [30].\n\n---\n\n### Summary of Worth-Imitating Practices\n\n| Paper | Best Practice to Imitate | Grounding Source |\n| :--- | :--- | :--- |\n| **FlashAttention-3** | Lock physical clocks; use FP64 reference RMSE on outlier distributions. | [1, 31] |\n| **Ansor** | Flush cache lines; use GBDT cost model to screen candidate spaces before hardware loops. | [5, 32] |\n| **MARLIN** | Sweep batch sizes from \\\\(2^0\\\\) to \\\\(2^{16}\\\\) against locked clocks to isolate thermal throttling. | [2, 13] |\n| **vLLM** | Disclose and quantify raw kernel-level overheads against framework-level batching gains. | [24] |\n| **Halide** | Cross-test compiled code across different target resolutions to evaluate generalizability. | [30] |\n| **ADEPT** | Evaluate your library's speedup both in isolated unit tests and integrated inside real, multi-node pipeline workloads. | [33, 34] |\n\n📊 If you are preparing to run benchmarks for your own custom CUDA or compiled kernels, we can write a Python helper script to orchestrate locked clock frequencies, manage warm-up iterations, and output clean latency and bandwidth distributions. Would you like to design that benchmarking harness?",
+  "question": "Which papers report measured speedups with methodology details worth imitating (paired baselines, variance handling, ablations)?",
+  "conversation_id": "66228072-8454-4d68-ab54-1e0f585fc80a",
+  "sources_used": [
+    "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+    "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "07f3c182-d851-4cc1-93fc-337815479048",
+    "5365100b-bffb-4e76-8d2f-b07d5896286d"
+  ],
+  "citations": {
+    "1": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "2": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "3": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "4": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "5": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "6": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "7": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "8": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+    "9": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+    "10": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+    "11": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+    "12": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+    "13": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "14": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "15": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "16": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "17": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "18": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "19": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "20": "07f3c182-d851-4cc1-93fc-337815479048",
+    "21": "07f3c182-d851-4cc1-93fc-337815479048",
+    "22": "07f3c182-d851-4cc1-93fc-337815479048",
+    "23": "07f3c182-d851-4cc1-93fc-337815479048",
+    "24": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "25": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "26": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "27": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+    "28": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "29": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "30": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "31": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "32": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "33": "07f3c182-d851-4cc1-93fc-337815479048",
+    "34": "07f3c182-d851-4cc1-93fc-337815479048"
+  },
+  "references": [
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 1,
+      "cited_text": "• CUDA 12.3 • cuDNN 9.1.1.17 • CUTLASS 3.5 • FLASHATTENTION 2.5.8 • Triton nightly 3.0.0.post20240424212437 • PyTorch 2.3.0 To reduce variability, we fix the GPU clock speed to 1830MHz (clock speed used to calculate the 989 TFLOPS FP16 theoretical max throughput). We repeat the benchmarks 100 times and take the average timing. C.2 FP8 Attention Full Results We use following sequence lengths: 512, 1024, 2048, 4224, 8448, 16896. When sequence length ≥ 4k, we make it also divisible by 132 (number of SMs in H100 SXM5) to avoid wave quantization."
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 2,
+      "cited_text": "Speedup over FP16 PyTorch (Calling CUTLASS) 2 MARLIN (group=128) Performance on Layer Shapes of Popular Models Batch Size 16 NVIDIA A10 NVIDIA GeForce RTX 3090 NVIDIA RTX A6000 NVIDIA A100 LLAMA-7B LLAMA-138 LLAMA-33B LLAMA-658 Falcon-180B Figure 9: MARLIN performance across real layer shapes of popular models. Next, we also study what performance can be sustained over longer periods of time, at locked base GPU clock, as this is a probable scenario in a production setting. Interestingly, we find that reduced clock speeds significantly harm the relative speedups of prior kernels, but have no effect on MARLIN's virtually optimal performance (relative to the lower clock setting). This can be observed in Figure 10."
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 3,
+      "cited_text": "Speedup over FP16 PyTorch (Calling CUTLASS) on Different Batch Sizes 16bitx4bit (group=128) mul with 72kx18k Matrix on NVIDIA A10-LOCKED BASE CLOCK Speedup over FP16 PyTorch (Calling CUTLASS) on Different Batch Sizes 16bitx4bit (group=128) mul with 72kx18k Matrix on NVIDIA A10 Batch Size AWQ bitsandbytes Speedup Ideal Dense Ideal Sparse MARLIN Sparse-MARLIN torch-nightly ExLlamaV2 AWQ bitsandbytes 16 32 64 128 Batch Size Figure 10: Sustained performance of MARLIN compared with other popular open-source kernels."
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 4,
+      "cited_text": "MARLIN Roofline Analysis with Batch Size 20-216 on NVIDIA A10 125 Max Performance (Boost Clock) 160 Figure 12: Peak performance of MARLIN and Sparse- MARLIN versus other popular open-source kernels. Speedup over FP16 PyTorch (Calling CUTLASS) on Different Batch Sizes 16bitx4bit (group=128) mul with 72kx18k Matrix on NVIDIA A10-LOCKED BASE CLOCK Performance (TFLOP/s) 10 20 Thermal Throttling Max Performance (Base Clock) Compute-Bound Weight Matrix Shape Speedup Ideal Dense Ideal Sparse MARLIN Sparse-MARLIN"
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 5,
+      "cited_text": "Table 3 shows the search time required for Ansor to match the performance of AutoTVM on the Intel CPU network benchmark (\\$7.3). We list the search time in two metrics: number of measurements and wall-clock time. \"Number of measurements\" is a metric agnostic to the implementation of measurement and the overhead of search algorithm, while \"Wall-clock time\" takes these factors into account. As shown in the table, Ansor can match the performance of AutoTVM with an order of magnitude less search time. In Table 3a the saving in search time comes from the task scheduler, effi- cient fine-tuning, and comprehensive coverage of effective optimizations. In Table 3b, Ansor shows more time-saving in wall-clock time. This is because Ansor does not introduce much search overhead and has a better implementation of the measurement (on the Intel CPU, Ansor can get accurate mea- surement results with fewer repetitions by explicitly flushing the cache for some tensors). On other backends, Ansor can match the performance of AutoTVM with a similar saving in search time."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 6,
+      "cited_text": "Ablation study. We run four variants of Ansor on a convo- lution operator and report the performance curve. We pick the last convolution operator in ResNet-50 with batch $size=16$ as the test case, because its search space is sufficiently large to evaluate the search algorithms. Other operators share a sim- ilar pattern. In Figure 7, each curve is the median of 5 runs. \"Ansor (ours)\" uses all our introduced techniques. \"Beam Search\" means we prune incomplete programs with the cost ConvLayer @ C Batch size $=16$"
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 7,
+      "cited_text": "Normalization. Figure 6 shows the normalized perfor- mance. For each test case, we normalize the throughputs to the best performing framework. We then plot the geometric mean of the four shapes of each operator. The geometric mean is also normalized to the best performing framework, so the best framework has a normalized performance of 1 in the figure. The error bar denotes the standard deviation of the normalized throughput of four shapes of each operator. Results. As shown in the Figure 6, Ansor performs the best or equally the best in all operator and batch size set- tings. Ansor outperforms existing search frameworks by 1.1-22.5x. The performance improvements of Ansor come from both its large search space and effective exploration strat- egy. For most operators, we found the best program generated by Ansor is outside the search space of existing search frame- works because Ansor is able to explore more optimization combinations. For example, the significant speedup on NRM is because Ansor can parallelize reduction loops, while other frameworks do not. The large speedup on T2D is because Ansor can use correct tile structures and unrolling strategies to let the code generator simplify the multiplication of zeros in strided transposed convolution. In contrast, other frameworks fail to capture many effective optimizations in their search space, making them unable to find the programs that Ansor does. For example, the unfolding rules in Halide do not split the reduction loop in GMM and do not split reduction loops in C2D when padding is computed outside of reduction loops. The templates in AutoTVM have limited tile structures, as they cannot cover the structure of \"Generated Sketch 1\" in Figure 5. The template in FlexTensor does not change the computation location of padding. The template in FlexTensor fails to run for reduction operators like NRM."
+    },
+    {
+      "source_id": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+      "citation_number": 8,
+      "cited_text": "4.1 Faster Models with FLASH ATTENTION BERT. FLASH ATTENTION yields the fastest single-node BERT training speed that we know of. We train a BERT-large [22] model with FLASHATTENTION on Wikipedia. Table 1 compares our training time to the implementation from Nvidia that set the training speed record for MLPerf 1.1 [58]. Our implementation is 15% faster. Table 1: Training time of BERT-large, starting from the same initialization provided by the MLPerf benchmark, to reach the target accuracy of 72.0% on masked language modeling. Averaged over 10 runs on 8xA100 GPUs."
+    },
+    {
+      "source_id": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+      "citation_number": 9,
+      "cited_text": "<cited_table> GPT-2. FLASH ATTENTION yields faster training times for GPT-2 [67] on the large OpenWebtext dataset [32] than the widely used HuggingFace [87] and Megatron-LM [77] implementations. Table 2 shows up to 3x end- to-end speedup compared to Huggingface and 1.7x speedup compared to Megatron-LM. FLASHATTENTION 7 achieves the same perplexity as the other two implementations, as we do not change the model definition. Appendix E includes plots of the validation perplexity throughout training, confirming that FLASHATTENTION is as numerically stable as the baselines and produces the same training / validation curves. Table 2: GPT-2 small and medium using FLASHATTENTION achieve up to 3x speed up compared to Huggingface implementation and up to 1.7 compared to Megatron-LM. Training time reported on 8xA100s GPUs.",
+      "cited_table": {
+        "num_columns": 2,
+        "rows": [
+          [
+            "BERT Implementation",
+            "Training time (minutes)"
+          ],
+          [
+            "Nvidia MLPerf 1.1 [58]",
+            "$20.0\\pm1.5$"
+          ],
+          [
+            "FLASH ATTENTION (ours)",
+            "$17.4\\pm1.4$"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+      "citation_number": 10,
+      "cited_text": "We compare our results with the reported training speed from Nvidia that was submitted to MLPerf 1.1 (Table 1). We use the same train / validation data split provided by MLPerf 1.1 reference implementation. In particular, we evaluate on the same 10000 validation examples as the baseline from Nvidia. We train the model on 8xA100-80GB GPUs. Each training run takes between 16 and 19 minutes, and we average the results of 10 runs. E.2 GPT-2 We use the standard implementations of GPT-2 [67] from Huggingface transformers library and from Nvidia's Megatron-LM repo. We follow the training recipe of the Megatron-LM repo."
+    },
+    {
+      "source_id": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+      "citation_number": 11,
+      "cited_text": "We train the model on 8xA100-40GB GPUs, and we measure the wall-clock training time. Training GPT-2 small takes between 2.7-9.5 days, and training GPT-2 medium takes between 6.9-21.0 days (Table 2). In Fig. 4, we plot of the validation perplexity throughout training of GPT-2 small/medium, using either HuggingFace implementation or our FLASHATTENTION implementation. We see that FLASHATTENTION be- haves the same as the baseline implementation and the validation perplexity curves of the two implementations almost lie on top of each other."
+    },
+    {
+      "source_id": "9d4ae950-ff4c-450d-bcfa-ac186481094d",
+      "citation_number": 12,
+      "cited_text": "Long Document Classification. For MIMIC-III and ECtHR, we follow the hyperparameters of Dai et al. [13]. 26 Val perplexity 30 25 GPT-2-small Hugging Face GPT-2-small FlashAttention GPT-2-medium Hugging Face GPT-2-medium FlashAttention 20 15 10 100k 200k Training steps 300k Figure 4: Validation perplexity of GPT-2 small/medium using two implementations. We confirm that FLASH ATTENTION yields the same validation curves as the baseline implementation from HuggingFace. E.3 LRA details We follow the hyperparameters from the Long-range arena paper [80], the Long-range arena repo (https: //github.com/google-research/long-range-arena), and the Nyströmformer reproduction [90]. To be generous to the baseline methods, if we are unable to reproduce the performance of any baseline for any of the five tasks, we report the better performance from Tay et al. [80] or Xiong et al. [90] for that baseline on that task."
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 13,
+      "cited_text": "torch-nightly ExLlamaV2 AWO ⚫bitsandbytes Memory-Bound 10 108.8 208.3 1000 Arithmetic Intensity [FLOP/Byte] 4096 x 4096 $8192\\times8192$ 16384 x 16384 32768 x 32768 10000 Figure 11: Roofline analysis for the MARLIN kernel, across four different matrix shapes. Roofline Analysis. To gain a deeper understanding of the computational efficiency of MARLIN, we perform a roofline analysis, which is a widely accepted methodology for evalu- ating performance potential. Figure 11 shows the roofline analysis of the matrix multiplication operation performed on the MARLIN kernel on an NVIDIA A10 GPU. Several typi- cal weight matrix sizes (212, 213, 214, 215) are tested during the analysis. The markers on curves are the profiling results with different input batch sizes $(2^{0},2^{1},...,2^{16})$."
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 14,
+      "cited_text": "Performance (TFLOP/S) 10°- 10-1 101 : • Arithmetic Intensity (TFLOP/GB) Roofline Model cuBLAS 10.0 Triton Auto-TVM Tensor Comprehensions PlaidML 102 Figure 1. Performance of various implementations of $C=AB^{T}$ vs. Roofline [46] Model (NVIDIA GeForce GTX1070), where $A\\in\\mathbb{R}^{1760\\times1760}$ and $B\\in\\mathbb{R}^{N\\times1760}$ as N modulates arithmetic intensity. MAPL '19, June 22, 2019, Phoenix, AZ, USA These issues have often been addressed by the use of micro-kernels [11, 21] - i.e., hand-written tile-level intrin- sics - but this solution requires a lot of manual labor and lacks portability. And while several high-level programming abstractions for tiling have recently been proposed [23, 41], underlying compiler backends still lack support for tile-level operations and optimizations. To this end we present Tri- ton (Figure 2), an open-source¹ intermediate language and compiler for specifying and compiling tile programs into efficient GPU code."
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 15,
+      "cited_text": "1 Speedup MARLIN: Mixed-Precision Auto-Regressive Parallel Inference on Large Language Models Speedup over FP16 PyTorch (Calling CUTLASS) on Different Batch Sizes 16bitx4bit (group=128) mul with 72kx18k Matrix on NVIDIA A10 Ideal MARLIN torch-nightly ExLlamaV2 Batch Size AWQ bitsandbytes 64 128 Figure 1: Illustration of MARLIN peak performance while increasing batch size, for a single large linear LLM layer, compared with other popular open-source kernels, showing that we can achieve near-optimal performance in this sce- nario."
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 16,
+      "cited_text": "5. Experimental Results 5.1. Kernel Benchmarks In our first set of experiments, we examine the efficiency of MARLIN relative to an ideal kernel, and compare its perfor- mance with other popular 4-bit inference kernels, notably the well-optimized PyTorch kernel (Paszke et al., 2019), the AWQ kernel (Lin et al., 2023), the open-source ExLlamaV2 kernel (ExLlama V2, 2024; Chavan et al., 2024), and the bits-and-bytes kernel (Dettmers et al., 2022), on a large ma- trix that can be ideally partitioned on a target GPU. For this, we choose the NVIDIA A10 GPU, which is popular for inference workloads. This allows all kernels to reach close to their best possible performance. All kernels are executed at 4-bit and groupsize 128. (However, scale formats are not 100% identical, due to small differences between the"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 17,
+      "cited_text": "The reference implementation is 262 lines of C++, developed at Adobe, and carefully parallelized with OpenMP, and offloading most intensive kernels to tuned assembly routines from Intel Per- formance Primitives [14, 20]. It has very similar performance to a version deployed in their products, which took several months to develop, including 2-3 weeks dedicated to optimization. It is 10x faster than an algorithmically identical reference version written by the authors in pure C++, without IPP or OpenMP. The Halide version was written in one day, in 52 lines of code. It compiles to an implementation which is 1.7x faster than the highly optimized ex- pert implementation (roughly 20x faster than the clean C++ without IPP and OpenMP). The resulting schedule is enormously complex, mixing different fusion, tiling, vectorization, and multithreading strategies throughout the expansive 99 stage graph. In C, it would correspond to hundreds of loops over more than 10,000 lines of code."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 18,
+      "cited_text": "We present a systematic model of the tradeoff space fundamen- tal to stencil pipelines, a schedule representation which describes concrete points in this space for each stage in an image processing pipeline, and an optimizing compiler for the Halide image process- ing language that synthesizes high performance implementations from a Halide algorithm and a schedule. Combining this compiler with stochastic search over the space of schedules enables terse, composable programs to achieve state-of-the-art performance on a wide range of real image processing pipelines, and across different hardware architectures, including multicores with SIMD, and hetero- geneous CPU+GPU execution. From simple Halide programs writ- ten in a few hours, we demonstrate performance up to 5x faster than hand-tuned C, intrinsics, and CUDA implementations optimized by experts over weeks or months, for image processing applications beyond the reach of past automatic compilers."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 19,
+      "cited_text": "The end result is a system which enables terse, composable programs to achieve state-of-the-art performance on a wide range of real image processing pipelines, and across different hardware architectures, including multicores with SIMD, and heterogeneous CPU+GPU execution. From simple Halide programs written in a few hours, we demonstrate performance up to 5x faster than hand- tuned C, intrinsics, and CUDA implementations written by experts over weeks or months, for image processing applications beyond the reach of past automatic compilers."
+    },
+    {
+      "source_id": "07f3c182-d851-4cc1-93fc-337815479048",
+      "citation_number": 20,
+      "cited_text": "ADEPT's driver makes it easier for the developers to integrate ADEPT in high per- formance bioinformatics software pipelines by reducing the complexities of dealing with multiple GPUs, and requiring just one call to the driver function. Effectively, making ADEPT a drop-in replacement for existing CPU libraries, whereas existing GPU libraries require significant amount of work in order for them to be included in an existing software pipeline. Results We evaluate the performance of ADEPT against two of the popular CPU libraries which can perform both Protein and DNA alignments. Among existing GPU implementations we chose GASAL2 for comparison because it is the fastest known GPU library for per- forming DNA pairwise alignments [16]. The only known GPU alignment library that can perform pairwise protein alignments is NVBIO [34], so we compared ADEPT against the protein alignment tool of NVBIO. The libraries we are evaluating ADEPT against include:"
+    },
+    {
+      "source_id": "07f3c182-d851-4cc1-93fc-337815479048",
+      "citation_number": 21,
+      "cited_text": "Experimental data To evaluate the performance of ADEPT against existing methods we identified use cases in genomics and proteomics that require performing large numbers of pairwise align- ments. For each of these use-cases we obtained real world datasets, which were then processed to form three curated sets of Query and Reference sequences. Below we discuss in detail the data generation process for DNA and Protein evaluation datasets. DNA Data For the alignment of DNA sequences, we used a set of 29 million FASTQ reads, of lengths from 150 to 300, from the SYNTH64 dataset [36] as the query sequences. For the refer- ence sequence set, we used a collection of 283842 contigs assembled from the reads, using the MetaHipMer [19] assembler. The sequences in the resulting query and reference sets were then binned based on the length of the query sequence to obtain three different datasets i.e. DNA-1, DNA-2 and DNA-3. Details of these datasets are available in Table 1."
+    },
+    {
+      "source_id": "07f3c182-d851-4cc1-93fc-337815479048",
+      "citation_number": 22,
+      "cited_text": "Performance on DNA alignments We first compared the total GCUPS for all algorithms for DNA alignment datasets. As discussed before, this was done by turning off the reverse scoring feature and only using one socket of a Haswell Node (16 CPU cores) for CPU libraries and one V100 GPU for GPU libraries. It can be observed in Fig. 8 that for shorter queries (DNA-1), the GASAL2 library out-performs all the algorithms, but for the remaining datasets where query lengths are longer, ADEPT starts performing better because of its intra-sequence parallelization strategy. This is because, as the size of the query increases, the number of elements that can be computed in parallel also increases, and this results in ADEPT"
+    },
+    {
+      "source_id": "07f3c182-d851-4cc1-93fc-337815479048",
+      "citation_number": 23,
+      "cited_text": "Performance on protein alignments We repeated the same experiments for Protein datasets; for these experiments we do not include GASAL2 library because it does not support protein alignments. Figure 12 shows that for single GPU ADEPT out-performs NVBIO by about 8x for the Protein-1 dataset and consistently performs better than NVBIO for the remaining datasets. With CPU Libraries utilizing 16 CPU cores, ADEPT out performs them for the Protein-1 and Protein-2 dataset but for the Protein-3 dataset the SSW-Library catches up. This is because the SSW-Library uses a heuristic based approach and performs less work over- all, so with increasing sequence lengths we see an improvement in the performance of the CPU Libraries. However, the true potential of the GPU accelerated approach is observed when performing node-to-node analysis, as typically an HPC cluster has more GPUs per"
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 24,
+      "cited_text": "(a) Latency of attention kernels. (b) End-to-end latency with dif- ferent block sizes. Figure 18. Ablation experiments. handle the long prompts, as PagedAttention resolves the problem of memory fragmentation and reservation. 7 Ablation Studies In this section, we study various aspects of vLLM and evalu- ate the design choices we make with ablation experiments. 7.1 Kernel Microbenchmark The dynamic block mapping in PagedAttention affects the performance of the GPU operations involving the stored KV cache, i.e., block read/writes and attention. Compared to the existing systems, our GPU kernels (§5) involve extra over- heads of accessing the block table, executing extra branches, and handling variable sequence lengths. As shown in Fig. 18a, this leads to 20-26% higher attention kernel latency, com- pared to the highly-optimized FasterTransformer implemen- tation. We believe the overhead is small as it only affects the attention operator but not the other operators in the model, such as Linear. Despite the overhead, PagedAttention makes vLLM significantly outperform FasterTransformer in end-to-end performance (§6)."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 25,
+      "cited_text": "arXiv:2309.06180v1 [cs.LG] 12 Sep 2023 Efficient Memory Management for Large Language Model Serving with PagedAttention Woosuk Kwon¹* Zhuohan $Li^{1,*}$ Siyuan Zhuang¹ Ying Sheng 1,2 Lianmin Zheng¹ Cody Hao $Yu^{3}$ Abstract Joseph E. Gonzalez¹ Hao Zhang4 Ion Stoica¹ 1UC Berkeley 2Stanford University Independent Researcher 4UC San Diego High throughput serving of large language models (LLMs) requires batching sufficiently many requests at a time. How- ever, existing systems struggle because the key-value cache (KV cache) memory for each request is huge and grows and shrinks dynamically. When managed inefficiently, this memory can be significantly wasted by fragmentation and redundant duplication, limiting the batch size. To address this problem, we propose PagedAttention, an attention al- gorithm inspired by the classical virtual memory and pag- ing techniques in operating systems. On top of it, we build VLLM, an LLM serving system that achieves (1) near-zero waste in KV cache memory and (2) flexible sharing of KV cache within and across requests to further reduce mem- ory usage. Our evaluations show that vLLM improves the throughput of popular LLMs by 2-4x with the same level of latency compared to the state-of-the-art systems, such as FasterTransformer and Orca. The improvement is more pronounced with longer sequences, larger models, and more complex decoding algorithms. vLLM's source code is publicly available at https://github.com/vllm-project/vllm."
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 26,
+      "cited_text": "In this work, we build vLLM, a high-throughput distributed LLM serving engine on top of PagedAttention that achieves near-zero waste in KV cache memory. vLLM uses block-level memory management and preemptive request scheduling that are co-designed with PagedAttention. vLLM supports popular LLMs such as GPT [5], OPT [62], and LLAMA [52] with varying sizes, including the ones exceeding the memory capacity of a single GPU. Our evaluations on various models and workloads show that vLLM improves the LLM serving throughput by 2-4 compared to the state-of-the-art sys- tems [31, 60], without affecting the model accuracy at all. The improvements are more pronounced with longer sequences, larger models, and more complex decoding algorithms (§4.3). In summary, we make the following contributions: • We identify the challenges in memory allocation in serving"
+    },
+    {
+      "source_id": "5365100b-bffb-4e76-8d2f-b07d5896286d",
+      "citation_number": 27,
+      "cited_text": "12 Time (ms) 140- 20- Recompute Swap in Swap out Swap in + out 8 16 32 64 128 256 Block size (a) Microbenchmark Normalized latency (s/token) 1.0 0.5 0.0 i Recompute Swap 8 16 32 64 128 256 Block size (b) End-to-end performance Figure 19. (a) Overhead of recomputation and swapping for different block sizes. (b) Performance when serving OPT-13B with the ShareGPT traces at the same request rate. 7.3 Comparing Recomputation and Swapping VLLM supports both recomputation and swapping as its re- covery mechanisms. To understand the tradeoffs between the two methods, we evaluate their end-to-end performance and microbenchmark their overheads, as presented in Fig. 19. Our results reveal that swapping incurs excessive overhead with small block sizes. This is because small block sizes often result in numerous small data transfers between CPU and GPU, which limits the effective PCIe bandwidth. In contrast, the overhead of recomputation remains constant across dif- ferent block sizes, as recomputation does not utilize the KV blocks. Thus, recomputation is more efficient when the block size is small, while swapping is more efficient when the block size is large, though recomputation overhead is never higher than 20% of swapping's latency. For medium block sizes from 16 to 64, the two methods exhibit comparable end-to-end performance."
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 28,
+      "cited_text": "1024 960 856 521 520 425449 400- 295804329 768 703 663 628 59 512 1k 4k 2k Sequence length 8k 16k 512 1k (a) Forward, without causal mask, head dim 256 4k 2k Sequence length 8k 16k (b) Forward, with causal mask, head dim 256 Figure 7: Attention forward speed (FP8) on H100 GPU Table 2: Pipelining ablation measurements distribution: <cited_table>",
+      "cited_table": {
+        "num_columns": 3,
+        "rows": [
+          [
+            "Configuration",
+            "Time",
+            "TFLOPs/s"
+          ],
+          [
+            "FLASHATTENTION-3",
+            "3.538 ms",
+            "661"
+          ],
+          [
+            "No GEMM-Softmax Pipelining, Warp-Specialization",
+            "4.021 ms",
+            "582"
+          ],
+          [
+            "GEMM-Softmax Pipelining, No Warp-Specialization",
+            "4.105 ms",
+            "570"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 29,
+      "cited_text": "We also measure the runtime for FP8 for the forward pass under similar settings. We report the results for headdim 256 in Fig. 7 and give the full results in Appendix C.2. 4.2 Ablation Study: 2-Stage Pipelining Experiments We ablate both the 2-stage WGMMA-softmax pipelining and warp-specialization for non-causal FP16 FLASHATTENTION- 3 with fixed parameters  batch, seqlen, nheads, hdim} = {4, 8448, 16, 128}. The result in Table 2 confirms that our algorithmic improvements (asynchrony with warp-specialization and overlapping between GEMM and softmax) lead to significant speedup, from 570 to 661 TFLOPS."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 30,
+      "cited_text": "<cited_table> Figure 8. Cross-testing of autotuned schedules across resolutions. Each program is autotuned on a source image size. The resulting schedule is tested on a target image size giving a \"cross-tested time.\" This is compared to the result of running the autotuner directly on the target resolution. We report the ratio of the cross-tested time to the autotuned-on-target time as the \"slowdown.\" Note that schedules generalize better from low resolutions to high resolutions. In theory the slow-down should always be at least one, but due to the stochastic nature of the search some schedules were slower when autotuned on the target.",
+      "cited_table": {
+        "num_columns": 6,
+        "rows": [
+          [
+            "",
+            "Source size",
+            "Target size (MP)",
+            "Cross- tested time (ms)",
+            "Autotuned on target",
+            "Slowdown"
+          ],
+          [
+            "Blur",
+            "0.3",
+            "30",
+            "13",
+            "11",
+            "1.2x"
+          ],
+          [
+            "Bilateral grid",
+            "0.3",
+            "2",
+            "35",
+            "36",
+            "0.97×"
+          ],
+          [
+            "Interpolate",
+            "0.3",
+            "2",
+            "31",
+            "32",
+            "0.97×"
+          ],
+          [
+            "Blur",
+            "30",
+            "0.3",
+            "1.1",
+            "0.07",
+            "16x"
+          ],
+          [
+            "Bilateral grid",
+            "2 2",
+            "0.3 0.3",
+            "9.6 9.7",
+            "6.7 5.2",
+            "1.4x 1.9x"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 31,
+      "cited_text": "N(0, 1) + N(0, 100) Bernoulli(0.001). That is, each entry is normally distributed with zero mean and standard deviation 1, but for 0.1% of entries we add an independent term that's normally distributed with standard deviation 10. We then measure the root mean squared error (RMSE) in Table 3. In FP16, both FLASHATTENTION-2 and FLASHATTENTION-3 achieves 1.7x lower RMSE compared to the standard implementation since intermediate results (softmax) are kept in FP32. The baseline attention in FP8 uses per-tensor scaling, with matmul accumulator in FP32 and intermediate softmax results kept in FP16. Thanks to block quantization and incoherent processing, FLASH ATTENTION-3 in FP8 is 2.6× more accurate than this baseline."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 32,
+      "cited_text": "Section 4 Sketch Generation One subgraph Program Sampler Random Annotation A batch of initial programs Performance Tuner Learned Cost Model A batch of optimized programs Section 5 Evolutionary Search Measurer Intel CPU ARM CPU NVIDIA GPU Execution time of programs (training data for future iterations) Figure 4: System Overview. The gray arrows show the flow of extracting subgraphs from deep learning models and gen- erating optimized programs for them. The green arrows mean the measurer returns profiling data to update the status of all components in the system."
+    },
+    {
+      "source_id": "07f3c182-d851-4cc1-93fc-337815479048",
+      "citation_number": 33,
+      "cited_text": "GCUPS = Total Cells Forward Scoring Time (6) In the second experiment, we turn on the reverse scoring phase for all the algo- rithms (algorithms which do not support a reverse scoring phase were omitted from this experiment) and evaluate the total execution time for obtaining the score, start and end positions of the optimal alignment. Finally, we repeat the above experiments by running all of the algorithms on complete CPU and GPU nodes of the Cori Supercomputer [39] to evaluate the ability of these imple- mentations to support multiple numbers of GPUs, as is expected by high-performance bioinformatics pipelines."
+    },
+    {
+      "source_id": "07f3c182-d851-4cc1-93fc-337815479048",
+      "citation_number": 34,
+      "cited_text": "Figure 19 shows the performance comparison between MetaHipMer and ADEPT integrated MetaHipMer. The Smith-Waterman portion improves by 2.9x which gives the alignment phase a performance boost of 36% and an overall pipeline performance improvement of 10% was observed for a single node run. Use-case: protein similarity graph construction PASTIS [38] is a distributed-memory software for performing large-scale protein sim- ilarity search. Its goal is to facilitate the fast construction of huge protein similarity graphs, which are then usually utilized in a clustering phase to discover similar pro- teins. It encodes protein sequence information within distributed sparse matrices and relies on sparse matrix operations to discover candidate protein sequence pairs for fur- ther alignment. The main components of PASTIS are illustrated in Fig. 20. The alignment of candidate protein sequence pairs is performed after discovering overlapping protein sequence pairs and it constitutes one of the most computationally expensive components. In PASTIS, the alignments performed by a process are independent from the alignments performed by other processes, i.e., they are performed locally by each individual process. Hence, although ADEPT-SW does not support distributed memory parallelism, PASTIS can still make use of it as the alignment component is local to each process."
+    }
+  ]
+}

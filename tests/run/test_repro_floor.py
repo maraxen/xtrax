@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import zarr
 
-from xtrax.devtools.freshness import evaluate_freshness
+from xtrax.run.freshness import evaluate_freshness
 from xtrax.run.repro_floor import (
     ReproFloorResult,
     build_repro_floor_attestation_toml,

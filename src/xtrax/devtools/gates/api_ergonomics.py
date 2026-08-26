@@ -13,7 +13,7 @@ from xtrax.devtools.baseline import (
     save_baseline,
     update_metric,
 )
-from xtrax.devtools.emit import append_finding, emit_metric_finding
+from xtrax.findings import append_finding, emit_metric_finding
 
 METRIC_KEY = "api_ergonomics.param_sprawl_violation_count"
 DIMENSION = "api_ergonomics"

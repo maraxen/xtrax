@@ -1,0 +1,482 @@
+{
+  "answer": "To optimize hardware execution without managing low-level assembly (SASS) or manual instruction scheduling, compiler frameworks like **Triton**, **Halide**, and **Ansor** provide higher levels of abstraction over raw CUDA. \n\n---\n\n### 1. Triton vs. Halide: Abstractions Over Raw CUDA\n\nBoth Triton and Halide simplify kernel authoring by abstracting away CUDA's thread-level execution model, but they do so through different programming paradigms:\n\n#### A. Triton (Tillet et al.)\n*   **Programming Model**: Triton is centered around the concept of a **tile**—statically shaped, multi-dimensional sub-arrays [1]. Instead of CUDA’s SPMD model where programmers write code for an individual scalar thread [2], Triton programmers write code that operates directly on **parametric tile variables** [1].\n*   **What it Automates vs. Exposes**:\n    *   *Automates*: Triton automates **memory coalescing, shared memory allocation, and synchronization** [3-5]. It completely hides low-level CUDA concurrency primitives like thread-block synchronization (`__syncthreads()`) and direct register/shared-memory layouts [2].\n    *   *Exposes*: It exposes **parametric tile shapes** (via the `tunable` keyword) [6, 7] and block-level operations (e.g., block-level `dot` matrix multiplications, transpositions, and predicated memory masking) [3, 6]. \n*   **Separation of Algorithm from Schedule**: Triton does **not** enforce a strict separation between algorithm and schedule [8]. Instead, the algorithm is defined inline in a tiled format, and the execution schedule is *implicitly* optimized by parameterizing the block-level sizes (e.g., `TM`, `TN`, `TK`) [6]. The compiler JIT then auto-tunes these parameters to fit the target hardware memory hierarchy [8, 9].\n\n#### B. Halide (Ragan-Kelley et al.)\n*   **Programming Model**: Halide utilizes a **purely functional programming model** designed specifically for image processing pipelines [10]. Instead of writing imperative loop nests, array values are represented as mathematical functions mapped over coordinate spaces [11, 12].\n*   **What it Automates vs. Exposes**:\n    *   *Automates*: Halide automatically infers **loop bounds, internal array allocations, and boundary guard bands** using symbolic interval analysis [13-15].\n    *   *Exposes*: It exposes **scheduling choices** to the user [10]. Developers can schedule dimensions to be computed, stored, vectorized, parallelized, or unrolled [16, 17].\n*   **Separation of Algorithm from Schedule**: Halide enforces **complete, native separation** of the algorithm (what to compute) from the schedule (how to compute it) [10, 18]. The exact same mathematical representation of a pipeline can be compiled to CPU vector code (e.g., AVX/NEON) or structured graphs of CUDA GPU kernels simply by changing a few lines of scheduling code—leaving the underlying mathematical algorithm untouched [13, 19, 20].\n\n---\n\n### 2. Ansor’s Autotuning Search Relative to Hand-Written Kernels and TVM\n\n**Ansor (Zheng et al.)** is an automated tensor program generation framework that eliminates the need for manually written templates by combining sketch-based program sampling with evolutionary search [21, 22].\n\n#### A. How Ansor’s Search Space Works\n1.  **Hierarchical Search Space**: Ansor decouples the program space into high-level structural **sketches** and low-level **annotations** [23, 24]. It automatically generates sketches by parsing mathematical operator graphs and applying rules like multi-level tiling, inlining, or reduction factorization [25, 26]. Billions of low-level decisions (tiling sizes, loop configurations) are left as annotations [24, 27].\n2.  **Evolutionary Sampling**: To optimize the annotations, Ansor uses evolutionary search [28]. It performs **out-of-order program rewrites** using mutation and node-level crossovers (combining rewriting histories between DAG nodes) [29-31]. This bypasses the early pruning errors of sequential, beam-search-based compilers like the Halide auto-scheduler [32, 33].\n3.  **Learned Cost Model**: Ansor evaluates complete programs by training a **gradient boosting decision tree** [34, 35]. The model predicts statement-level throughput in seconds [35, 36], allowing the evolutionary algorithm to screen tens of thousands of candidate programs before hardware measurements are required [34].\n\n#### B. Performance Positioning\nAnsor matches or exceeds the performance of both expert hand-written libraries and template-guided compilers, while significantly reducing tuning time:\n\n```\n                  ┌──────────────────────────────────────────────┐\n                  │                 Ansor (Ours)                 │\n                  │   Up to 3.8x (CPU) / 1.7x (GPU) over standard│\n                  │   libraries; 1.1x to 22.5x over AutoTVM.     │\n                  └──────┬────────────────────────┬──────────────┘\n                         │                        │\n                         ▼                        ▼\n        ┌──────────────────────────────────┐    ┌──────────────────────────────────┐\n        │       Hand-Written Libraries     │    │    Template-Guided (AutoTVM)     │\n        │ • MKL-DNN & cuDNN                │    │ • TVM, FlexTensor                │\n        │ • Highly optimized for standard  │    │ • Throttled by rigid manual     │\n        │   shapes, but lag on custom/     │    │   templates that cannot compose  │\n        │   uncommon operator fusion.      │    │   multi-operator schedules.      │\n        └──────────────────────────────────┘    └──────────────────────────────────┘\n```\n\n*   **Relative to Hand-Written/Vendor Libraries (PyTorch, cuDNN, TensorRT)**: \n    *   While vendor libraries excel on standard operator shapes (like standard ResNet convolutions), they often lag on uncommon shapes, small batch sizes, and complex fusions [37].\n    *   Ansor outperforms these static libraries on end-to-end network latency by up to **3.8× on Intel CPUs, 2.6× on ARM CPUs, and 1.7× on NVIDIA GPUs** [22, 37, 38].\n*   **Relative to Template-Based Autotuners (AutoTVM, FlexTensor)**:\n    *   *Search Coverage*: AutoTVM relies on rigid, manually written templates for each operator, limiting the search space [39]. Ansor automatically discovers optimized structures (such as parallelized reduction loops or multi-level tiling layouts) that are completely outside the templates of TVM or FlexTensor [40].\n    *   *reported Speedups*: On single operators, Ansor achieves **1.1× to 22.5× speedup** over AutoTVM and FlexTensor [40]. On end-to-end neural networks (like BERT, DCGAN, and MobileNet), Ansor beats AutoTVM's manual templates with up to a **21.8× speedup** [37].\n    *   *Search Efficiency*: Using a gradient-descent-based **task scheduler** to prioritize bottleneck subgraphs [22, 41, 42], Ansor matches AutoTVM’s optimal performance while requiring **an order of magnitude less search time** [43] (saving up to **10× to 45× in wall-clock time** [44]).\n\n---\n\n📊 We can write a Python script to model and visualize the performance/compilation speed tradeoffs of these compilers for your specific tensor workloads. Would you like to map that out?",
+  "question": "What do Triton (Tillet et al.) and Halide (Ragan-Kelley et al.) offer over raw CUDA for kernel authoring — programming model, what they automate vs expose, separation of algorithm from schedule? And where does Ansor's autotuning search (hierarchical search space, evolutionary sampling, learned cost model) sit relative to hand-written kernels and template-based autotuners like AutoTVM in reported performance?",
+  "conversation_id": "66228072-8454-4d68-ab54-1e0f585fc80a",
+  "sources_used": [
+    "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "bebb11b3-51b4-49a1-8d51-9471b2fec422"
+  ],
+  "citations": {
+    "1": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "2": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "3": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "4": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "5": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "6": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "7": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "8": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "9": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+    "10": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "11": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "12": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "13": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "14": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "15": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "16": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "17": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "18": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "19": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "20": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+    "21": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "22": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "23": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "24": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "25": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "26": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "27": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "28": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "29": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "30": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "31": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "32": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "33": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "34": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "35": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "36": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "37": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "38": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "39": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "40": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "41": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "42": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "43": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+    "44": "bebb11b3-51b4-49a1-8d51-9471b2fec422"
+  },
+  "references": [
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 1,
+      "cited_text": "We present Triton, a language and compiler centered around the concept of tile, i.e., statically shaped multi-dimensional sub-arrays. Our approach revolves around (1) a C-based lan- guage and an LLVM-based intermediate representation (IR) for expressing tensor programs in terms of operations on parametric tile variables and (2) a set of novel tile-level opti- mization passes for compiling these programs into efficient GPU code. We demonstrate how Triton can be used to build portable implementations of matrix multiplication and con- volution kernels on par with hand-tuned vendor libraries (cuBLAS / cuDNN), or for efficiently implementing recent research ideas such as shift convolutions."
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 2,
+      "cited_text": "3.3 Programming Model The execution of CUDA [33] code on GPUs is supported by an SPMD [4] programming model in which each kernel is associated with an identifiable thread-block in a so-called launch grid. The Triton programming model is similar, but each kernel is single-threaded - though automatically par- allelized and associated with a set of global ranges that varies from instance to instance (see Figure 3). This approach leads to simpler kernels in which CUDA-like concurrency primitives (shared memory synchronization, inter-thread communication, etc.) are inexistent."
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 3,
+      "cited_text": "Predication: Basic control-flow within tile operations (Section 4.3) is achieved through the use of predicated state- ments via the 'e' prefix. 3.2 Semantics 3.2.1 Tile semantics The existence of built-in tile types and operations (i.e., tile semantics) in Triton-C offers two main benefits. First, it sim- plifies the structure of tensor programs by hiding important performance details pertaining to intra-tile memory coalesc- ing [12], cache management [32] and specialized hardware utilization [27]. Second, it opens the door for compilers to perform these optimizations automatically, as discussed in Section 5."
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 4,
+      "cited_text": "t=1 Philippe Tillet, H. T. Kung, and David Cox I/O granularity Micro- Tile DRAM Loaded but not used (a) (b) DRAM Figure 6. Uncoalesced (a) and coalesced (b) DRAM accesses. Different threads are shown in different colors. 5.2.3 Shared Memory Allocation Tile-level operations that have high arithmetic intensity (e.g., dot) can benefit from temporarily storing their operands in fast shared memory. The purpose of the Shared Memory Allocation pass is to determine when and where a tile should be stashed to this space. This can be done, as illustrated in Figure 7, by first calculating the live range of each variable of interest, and then using the linear-time storage allocation algorithm proposed in [15]."
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 5,
+      "cited_text": "Because Triton-IR programs are single-threaded and auto- matically parallelized, our compiler backend is able to order threads internally within each micro-tile so as to avoid un- coalesced memory accesses when possible. This strategy reduces the number of memory transactions necessary to load a tile column (see Figure 6). Reads from and write to shared memory are asynchro- nous in our machine model. The goal of the Shared Memory Synchronization pass automatically inserts barriers in the generated GPU source code so as to preserve program cor- rectness. This is done by detecting read-after-writes (RAW) and write-after-read(WAR) hazards using forward data-flow analysis with the following data-flow equations:"
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 6,
+      "cited_text": "Triton-C Interface to existing DSLs (Not addressed in this paper) Triton-IR Philippe Tillet, H. T. Kung, and David Cox Listing 1. $C=A\\times B^{T}$ in Triton-C. Keywords specific to Triton are shown in purple. <cited_table>",
+      "cited_table": {
+        "num_columns": 1,
+        "rows": [
+          [
+            "// Tile shapes are parametric and can be optimized"
+          ],
+          [
+            "// by compilation backends"
+          ],
+          [
+            "128}"
+          ],
+          [
+            "128}"
+          ],
+          [
+            "const tunable int $TK=\\{8,16\\}$"
+          ],
+          [
+            "// 1D tile of indices"
+          ],
+          [
+            ""
+          ],
+          [
+            "int rn [TN]"
+          ],
+          [
+            "float pb [TN, TK] brn [:, newaxis] + rk K:"
+          ],
+          [
+            ""
+          ],
+          [
+            "bool check_k [TK $J=rk<k;$"
+          ],
+          [
+            "// load tile operands"
+          ],
+          [
+            "float A[TM, TK] check_a $?*pa:0$;"
+          ],
+          [
+            "// accumulate"
+          ],
+          [
+            "// update pointers"
+          ],
+          [
+            "$\\overline{pb}=\\overline{pb}+TK*N;$"
+          ],
+          [
+            "}"
+          ],
+          [
+            "// write-back accumulators"
+          ],
+          [
+            "float"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 7,
+      "cited_text": "3.1 Syntax The syntax of Triton-C is based on that of ANSI C (and more specifically CUDA-C), but was modified and extended (see Listing 3) to accomodate the semantics and program- ming model described in the two next subsections. These changes fall into the following categories: Tile declarations: We added special syntax for declar- ing multi-dimensional arrays (e.g., int tile[16, 16]) so as to emphasize their semantical difference with nested arrays found in ANSI C (e.g., int tile [16] [16]). Tile shapes must be constant but can also be made parametric with the tunable keyword. One-dimensional integer tiles may be initialized using ellipses (e.g., int range[8] = 0"
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 8,
+      "cited_text": "• Loop synthesizers have been used by Halide [37] and TVM [10] to transform tensor computations into loop nests that can be manually optimized using user- defined (though possibly parametric [11]) schedules. By contrast, Triton relies on the addition of tile-level opera- tions and optimizations into traditional compilation pipelines. This approach provides (1) more flexibility than XLA and Glow; (2) support for non-affine tensor indices contrary to TC and Diesel; and (3) automatic inference of possible exe- cution schedule that would otherwise have to be specified manually to Halide or TVM. The benefits of Triton come at the cost of increased programming efforts - see Listing 2 for implementations of matrix multiplication in these DSLs."
+    },
+    {
+      "source_id": "8c69fe39-31f7-4553-99cc-9bb2500cfacc",
+      "citation_number": 9,
+      "cited_text": "• Triton-IR (Section 4): An LLVM-based Intermediate Representation (IR) that provides an environment suit- able for tile-level program analysis, transformation and optimization. Listing 5 shows the Triton-IR code for a Rectified Linear Unit (ReLU) function. Here Triton-IR programs are constructed directly from Triton-C dur- ing parsing, but automatic generation from embedded DSLs or higher-level DNN compilers (e.g., TVM) could also be explored in the future. • Triton-JIT (Section 5): A Just-In-Time (JIT) compiler and code generation backend for compiling Triton-IR programs into efficient LLVM bitcode. This includes (1) a set of tile-level, machine-independent passes aimed at simplifying input compute kernels independently of"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 10,
+      "cited_text": "1.2 Contributions Halide is an open-source domain-specific language for the complex image processing pipelines found in modern computational pho- tography and vision applications [26]. In this paper, we present the optimizing compiler for this language. We introduce: ⚫ a systematic model of the tradeoffs between locality, parallelism, and redundant recomputation in stencil pipelines; ⚫ a scheduling representation that spans this space of choices; • a DSL compiler based on this representation that combines Halide programs and schedule descriptions to synthesize points anywhere in this space, using a design where the choices for how to execute a program are separated not just from the definition of what to compute, but are pulled all the way outside the black box of the compiler;"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 11,
+      "cited_text": "In Halide, values that would be mutable arrays in an impera- tive language are instead functions from coordinates to values. It represents images as pure functions defined over an infinite inte- ger domain, where the value of a function at a point represents the color of the corresponding pixel. Pipelines are specified as chains of functions. Functions may either be simple expressions in their arguments, or reductions over a bounded domain. The expressions that define functions are side-effect free, and are much like those in any simple functional language, including:"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 12,
+      "cited_text": "This representation is simpler than most functional languages. It does not include higher-order functions, dynamic recursion, or additional data structures like lists. Functions simply map from integer coordinates to a scalar result. Constrained versions of more advanced features such as higher-order functions are added as syntactic sugar, but do not change the underlying representation. This representation is sufficient to describe a wide range of image processing algorithms, and these constraints enable flexible analysis and transformation of algorithms during compilation. Critically, this representation is naturally data parallel within the domain of each function. Also, since functions are defined over an infinite domain, boundary conditions can be handled safely and efficiently by computing arbitrary guard bands of extra values as needed. Guard bands are a common pattern in image processing code, both for performance concerns like alignment, and for safety. Wherever specific boundary conditions matter to the meaning of an algorithm, the function may define its own."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 13,
+      "cited_text": "Given a schedule, our compiler automatically synthesizes high quality parallel vector code for x86 and ARM CPUs with SSE/AVX and NEON, and graphs of CUDA kernels interwoven with host management code for hybrid GPU execution. It automatically infers all internal allocations and a complete loop nest using simple but general interval analysis [18]. Directly mapping data parallel dimensions to SIMD execution, including careful treatment of strided access patterns, enables high quality vector code generation, without requiring any general-purpose loop auto-vectorization."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 14,
+      "cited_text": "For reduction functions, the dimensions of the reduction domain may only be reordered or parallelized if the reduction update is associative. Free variable dimensions may be scheduled in any order, just as with pure functions. Our model considers only axis-aligned bounding regions, not general polytopes-a practical simplification for image processing and many other applications. But this also allows the regions to be defined and analyzed using simple interval analysis. Since our model of scheduling relies on later compiler inference to determine the bounds of evaluation and storage for each function and loop, it is essential that bounds analysis be capable of analyzing every expression and construct in the Halide language. Interval analysis is simpler than modern tools like polyhedral analysis, but it can effectively analyze through a wider range of expressions, which is essential for this design."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 15,
+      "cited_text": "Figure 5. Our compiler is driven by an autotuner, which stochastically searches the space of valid schedules to find a high performance implementation of the given Halide program. The core of the compiler lowers a functional representation of an imaging pipeline to imperative code using a schedule. It does this by first constructing a loop nest producing the final stage of the pipeline (in this case out), and then recursively injecting the storage and computation of earlier stages of the pipeline at the loop levels specified by the schedule. The locations and sizes of regions computed are symbolic at this point. They are resolved by the subsequent bound inference pass, which injects interval arithmetic computations in a preamble at each loop level that set the region produced of each stage to be at least as large as the region consumed by subsequent stages. Next, sliding window optimization and storage folding remove redundant computation and excess storage where the storage granularity is above the compute granularity. A simple flattening transform converts multidimensional coordinates in the infinite domain of each function into simple one-dimensional indices relative to the base of the corresponding buffer. Vectorization and unrolling passes replace loops of constant with k scheduled as vectorized or unrolled with the corresponding k-wide vector code or k copies of the loop body. Finally, backend code generation emits machine code for the scheduled pipeline via LLVM."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 16,
+      "cited_text": "• Each dimension can be traversed sequentially or in parallel. • Constant-size dimensions can be unrolled or vectorized. • Dimensions can be reordered (e.g. from column- to row-major). • Finally, dimensions can be split by a factor, creating two new dimensions: an outer dimension, over the old range divided by the factor, and an inner dimension, which iterates within the factor. After splitting, references to the original index become outer  factor + inner. Splitting recursively opens up further choices, and enables many common patterns like tiling when combined with other transforma- tions. Vectorization and unrolling are modeled by first splitting a dimension by the vector width or unrolling factor, and then schedul- ing the new inner dimension as vectorized or unrolled. Because Halide's model of functions is data parallel by construction, dimen- sions can be interleaved in any order, and any dimension may be scheduled serial, parallel, or vectorized."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 17,
+      "cited_text": "The Call Schedule In addition to the order of evaluation within the domain of each function, the schedule also specifies the granularity of interleaving the computation of a function with the storage and computation of each function on which it depends. We call these choices the call schedule. We specify a unique call schedule for each function in the entire call graph of a Halide pipeline. Each function's call schedule is defined as the points in the loop nest of its callers where it is stored and computed (Fig. 4, top). For example, the three extremes from the previous section can be viewed along these axes:"
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 18,
+      "cited_text": "We address this challenge by raising the level of abstraction, and decoupling the algorithm definition from its execution strategy, to improve portability and composability, while automating the search for optimized mappings of the resulting pipelines to parallel ma- chines and complex memory hierarchies. Effective abstraction and automatic optimization enable radically simpler programs to achieve higher performance than hand-tuned expert implementations, while running across a wide range of architectures."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 19,
+      "cited_text": "The end result is not individual GPU kernels, but large graphs of hybrid CPU/GPU execution, described by the same scheduling model which drives the CPU backends. A small change in the schedule can transform a graph of dozens of GPU kernels and vectorized CPU loop nests, tied together by complex memory management and synchronization, into an entirely different graph of kernels and loops which produce the same result, expressively modeling an enormous space of possible fusion and other choices in mapping a given pipeline to a heterogeneous machine."
+    },
+    {
+      "source_id": "57c99885-0f27-4dd4-b88d-9258326c2ef3",
+      "citation_number": 20,
+      "cited_text": "The same program compiles with a different automatically generated schedule to a hybrid CPU/GPU program with 58 unique GPU kernels, each representing a differently tiled and partially fused subset of the overall graph, and with the lookup table and several smaller levels of the pyramids scheduled as vector code on the CPU. The generated program has more distinct CUDA kernels than the Halide algorithm describing it has lines of code. It runs 7.5× faster than the hand-tuned Adobe implementation, and is more than 4x faster than the best parallel vector implementation on the CPU. This"
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 21,
+      "cited_text": "arXiv:2006.06762v5 [cs.LG] 15 Oct 2023 ARTIFACT EVALUATED usenix ARTIFACT EVALUATED ARTIFACT EVALUATED usenix AVAILABLE FUNCTIONAL REPRODUCED Ansor: Generating High-Performance Tensor Programs for Deep Learning Lianmin Zheng ¹, Chengfan Jia 2, Minmin Sun 2, Zhao Wu 2, Cody Hao $Yu^{3}$, Ameer Haj-Ali 1, Yida Wang 3, Jun Yang 2, Danyang Zhuo 1,4, Koushik Sen ¹, Joseph E. Gonzalez 1, Ion Stoica 1 1 UC Berkeley, 2Alibaba Group, 3Amazon Web Services, 4 Duke University Abstract High-performance tensor programs are crucial to guarantee efficient execution of deep neural networks. However, obtain- ing performant tensor programs for different operators on various hardware platforms is notoriously challenging. Cur- rently, deep learning systems rely on vendor-provided kernel libraries or various search strategies to get performant tensor programs. These approaches either require significant engi- neering effort to develop platform-specific optimization code or fall short of finding high-performance programs due to restricted search space and ineffective exploration strategy."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 22,
+      "cited_text": "We present Ansor, a tensor program generation framework for deep learning applications. Compared with existing search strategies, Ansor explores many more optimization combina- tions by sampling programs from a hierarchical representation of the search space. Ansor then fine-tunes the sampled pro- grams with evolutionary search and a learned cost model to identify the best programs. Ansor can find high-performance programs that are outside the search space of existing state-of- the-art approaches. In addition, Ansor utilizes a task scheduler to simultaneously optimize multiple subgraphs in deep neural networks. We show that Ansor improves the execution perfor- mance of deep neural networks relative to the state-of-the-art on the Intel CPU, ARM CPU, and NVIDIA GPU by up to 3.8x, 2.6x, and 1.7x, respectively."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 23,
+      "cited_text": "To this end, we design and implement Ansor, a framework for automated tensor program generation. Ansor utilizes a hierarchical representation to cover a large search space. This representation decouples high-level structures and low-level details, enabling flexible enumeration of high-level structures and efficient sampling of low-level details. The space is con- structed automatically for a given computation definition. Ansor then samples complete programs from the search space and fine-tunes these programs with evolutionary search and a learned cost model. To optimize the performance of DNNs with multiple subgraphs, Ansor dynamically prioritizes sub- graphs of the DNNs that are more likely to improve the end- to-end performance."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 24,
+      "cited_text": "Program sampler. One key challenge Ansor has to ad- dress is generating a large search space for a given computa- tional graph. To cover diverse tensor programs with various high-level structures and low-level details, Ansor utilizes a hierarchical representation of the search space with two lev- els: sketch and annotation (§4). Ansor defines the high-level structures of programs as sketches and leaves billions of low- level choices (e.g., tile size, parallel, unroll annotations) as annotations. This representation allows Ansor to enumerate high-level structures flexibly and sample low-level details ef- ficiently. Ansor includes a program sampler that randomly samples programs from the space to provide comprehensive coverage of the search space."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 25,
+      "cited_text": "To sample programs that can cover a large search space, we define a hierarchical search space with two levels: sketch and annotation. We define the high-level structures of programs as sketches and leave billions of low-level choices (e.g., tile <cited_table>",
+      "cited_table": {
+        "num_columns": 4,
+        "rows": [
+          [
+            "No",
+            "Rule Name",
+            "Condition",
+            "Application"
+          ],
+          [
+            "1",
+            "Skip",
+            "-IsStrictInlinable(S, i)",
+            "$S^{\\prime}=S;i^{\\prime}=i-1$"
+          ],
+          [
+            "2",
+            "Always Inline",
+            "IsStrictInlinable(S, i)",
+            "$S^{\\prime}=Inline(S,i);i^{\\prime}=i-1$"
+          ],
+          [
+            "3",
+            "Multi-level Tiling",
+            "HasDataReuse(S, i)",
+            "$S^{\\prime}=$ MultiLevelTiling(S, i); i' = i-1"
+          ],
+          [
+            "4",
+            "Multi-level Tiling with Fusion",
+            "HasDataReuse (S, i) HasFusibleConsumer (S,i)",
+            "$S^{\\prime}=$ FuseConsumer (MultiLevelTiling (S, i), i) $;i^{\\prime}=i-1$"
+          ],
+          [
+            "5",
+            "Add Cache Stage",
+            "HasDataReuse(S, i) -HasFusibleConsumer(S, i)",
+            "$S^{\\prime}=$ AddCacheWrite(S, i); i = i'"
+          ],
+          [
+            "6",
+            "Reduction Factorization",
+            "HasMore ReductionParallel(S, i)",
+            "$`^{\\prime}=AddRfactor(S,i);i^{\\prime}=i-1$"
+          ],
+          [
+            "",
+            "User Defined Rule",
+            "",
+            ""
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 26,
+      "cited_text": "Table 1: Derivation rules used to generate sketches. The condition runs on the current state $\\sigma=(S,i)$. The application derives the next state $\\sigma^{\\prime}=(S^{\\prime},i^{\\prime})$ from the current state σ. Note that some function (e.g., AddRfactor, FuseConsumer) can return multiple possible values of $S^{\\prime}$. In this case we collect all possible $S^{\\prime}$ and return multiple next states $\\sigma^{\\prime}$ for a single input state σ. size, parallel, unroll annotations) as annotations. At the top level, we generate sketches by recursively applying a few derivation rules. At the bottom level, we randomly annotate these sketches to get complete programs. This representation summarizes a few basic structures from billions of low-level choices, enabling the flexible enumeration of high-level struc- tures and efficient sampling of low-level details."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 27,
+      "cited_text": "4.2 Random Annotation The sketches generated by the previous subsection are incom- plete programs because they only have tile structures without specific tile sizes and loop annotations, such as parallel, unroll, and vectorization. In this subsection, we annotate sketches to make them complete programs for fine-tuning and evaluation. Given a list of generated sketches, we randomly pick one sketch, randomly fill out tile sizes, parallelize some outer loops, vectorize some inner loops, and unroll a few inner loops. We also randomly change the computation location of some nodes in the program to make a slight tweak to the tile structure. All \"random\" in this subsection means a uniform distribution over all valid values. If some special algorithms require custom annotations to be effective (e.g., special unrolling), we allow users to give simple hints in the computation definition to adjust the annotation policy. Finally, since changing the layout of constant tensors can be done in compilation time and brings no runtime overhead, we rewrite the layouts of the constant tensors according to the multi-level tile structure to make them as cache-friendly as possible. This optimization is effective because the weight tensors of convo- lution or dense layers are constants for inference applications. Examples of random sampling are shown in Figure 5. The sampled program might have fewer loops than the sketch because the loops with length one are simplified."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 28,
+      "cited_text": "Performance tuner. The performance of randomly sam- pled programs is not necessarily good. The next challenge is to fine-tune them. Ansor employs evolutionary search and a learned cost model to perform fine-tuning iteratively (§5). At each iteration, Ansor uses re-sampled new programs as well as good programs from previous iterations as the ini- tial population to start the evolutionary search. Evolutionary search fine-tunes programs by mutation and crossover which perform out-of-order rewrite and address the limitation of sequential construction. Querying the learned cost model is orders of magnitude faster than actual measurement, so we can evaluate thousands of programs in seconds."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 29,
+      "cited_text": "faster than the actual measurement. It allows us to compare tens of thousands of programs in the search space in seconds, and pick the promising ones to do actual measurements. 5.1 Evolutionary Search Evolutionary search [54] is a generic meta-heuristic algorithm inspired by biological evolution. By iteratively mutating high- quality programs, we can generate new programs with poten- tially higher quality. The evolution starts from the sampled initial generation. To generate the next generation, we first se- lect some programs from the current generation according to certain probabilities. The probability of selecting a program is proportional to its fitness predicted by the learned cost model (§5.2), meaning that the program with a higher performance score has a higher probability to be selected. For the selected programs, we randomly apply one of the evolution operations to generate a new program. Basically, for decisions we made during sampling (§4.2), we design corresponding evolution"
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 30,
+      "cited_text": "Node-based crossover. Crossover is an operation to gener- ate new offspring by combining the genes from two or more parents. The genes of a program in Ansor are its rewriting steps. Every program generated by Ansor is rewritten from its initial naive implementation. Ansor preserves a complete rewriting history for each program during sketch generation and random annotation. We can treat rewriting steps as the genes of a program because they describe how this program is formed from the initial naive one. Based on this, we can generate a new program by combining the rewriting steps of two existing programs. However, arbitrarily combining rewriting steps from two programs might break the depen- dencies in steps and create an invalid program. As a result, the granularity of crossover operation in Ansor is based on nodes in the DAG, because the rewriting steps across different nodes usually have less dependency. Ansor randomly selects one parent for each node and merges the rewriting steps of selected nodes. When there are dependencies between nodes, Ansor tries to analyze and adjust the steps with simple heuris- tics. Ansor further verifies the merged programs to guarantee the functional correctness. The verification is simple because Ansor only uses a small set of loop transformation rewrit- ing steps, and the underlying code generator can check the correctness by dependency analysis."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 31,
+      "cited_text": "Unlike the search algorithms in TVM and FlexTensor that can only work in a fixed grid-like parameter space, the evolu- tionary operations in Ansor are specifically designed for ten- sor programs. They can be applied to general tensor programs and can handle a search space with complicated dependency. Unlike the unfolding rules in Halide auto-scheduler, these op- erations can perform out-of-order modifications to programs, addressing the sequential limitations. 5.2 Learned Cost Model A cost model is necessary for estimating the performance of programs quickly during the search. We adopt a learned cost model similar to related works [2, 12] with newly designed program features. A system based on learned cost models has great portability because a single model design can be reused for different hardware backends by feeding in different training data."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 32,
+      "cited_text": "during the search. Sequential construction based search. This approach de- fines the search space by decomposing the program construc- tion into a fixed sequence of decisions. The compiler then uses an algorithm such as beam search [34] to search for good decisions (e.g., Halide auto-scheduler [2]). In this approach, the compiler constructs a tensor program by sequentially un- folding all nodes in the computational graph. For each node, the compiler makes a few decisions on how to transform it into low-level tensor programs (i.e., deciding computation location, storage location, tile size, etc.). When all nodes are unfolded, a complete tensor program is constructed. This ap- proach uses a set of general unfolding rules for every node, so it can search automatically without requiring manual tem- plates. Because the number of possible choices of each de- cision is large, to make the sequential process feasible, this approach keeps only top-k candidate programs after every de- cision. The compiler estimates and compares the performance of candidate programs with a learned cost model to select the top-k candidates; while other candidates are pruned. During the search, the candidate programs are incomplete because only part of the computational graph is unfolded or only some of the decisions are made. Figure 2b shows this process."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 33,
+      "cited_text": "Pairwise Accuracy 1.0- 0.9- 0.8- 0.7- 0.6- 0.5- 0.0 Top-K Recall 1.0 0.8 0.6 0.4 0.2 0.0 0.2 0.4 0.6 0.8 1.0 0.0 0.2 0.4 0.6 0.8 1.0 (b) Fraction of Programs (a) Fraction of Programs Figure 3: Pairwise comparison accuracy and top-k recall curve on random partial programs. In both subfigures, higher values are better. score of top-k programs ¹ $(k=10)$. As shown in Figure 3, the two curves start from 50% and 0% respectively, meaning that random guess with zero information gives 50% pairwise comparison accuracy and 0% top-k recall. The two curves increase quickly as the programs become complete, which means the cost model performs very well for complete pro- grams but fails to accurately predict the final performance of incomplete programs. (2) The fixed order of sequential deci- sions limits the design of the search space. For example, some optimization needs to add new nodes to the computational graph (e.g., adding cache nodes, using rfactor [46]). The number of decisions for different programs becomes different. It is hard to align the incomplete programs for a fair compari- son. (3) Sequential construction based search is not scalable. Enlarging the search space needs to add more sequential con- struction steps, which, however, leads to a worse accumulated error."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 34,
+      "cited_text": "The evolutionary search uses randomly sampled programs as well as high-quality programs from the previous mea- surement as the initial population and applies mutation and crossover to generate the next generation. The learned cost model is used to predict the fitness of each program, which is the throughput of one program in our case. We run evolution for a fixed number of generations and pick the best programs found during the search. We leverage a learned cost model be- cause the cost model can give relatively accurate estimations of the fitness of programs while being orders of magnitudes"
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 35,
+      "cited_text": "We use weighted squared error as the loss function. Be- cause we mostly care about identifying the well-performing programs from the search space, we put more weight on the programs that run faster. Specifically, the loss func- tion of the model f on a program P with throughput y is $loss(f,P,y)=w_{p}(\\Sigma_{s\\in S(P)}f(s)-y)^{2}=y(\\Sigma_{s\\in S(P)}f(s)-y)^{2}$ where $S(P)$ is the set of innermost non-loop statements in P. We directly use the throughput y as weight. We train a gradient boosting decision tree [9] as the underlying model f. A single model is trained for all tensor programs coming from all DAGs, and we normalize the throughput of all pro- grams coming from the same DAG to be in the range of [0, 1]. When optimizing a DNN, the number of measured programs are typically less than 30,000. Training a gradient boosting decision tree is very fast on such a small data sets, so we train a new model every time instead of doing incremental updates."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 36,
+      "cited_text": "Since our target programs are mainly data parallel tensor programs, which are made by multiple interleaved loop nests with several assignment statements as the innermost state- ments, we train the cost model to predict the score of one in- nermost non-loop statement in a loop nest. For a full program, we make predictions for each innermost non-loop statement and add the predictions up as the score. We build the feature vector for an innermost non-loop statement by extracting fea- tures in the context of a full program. The extracted features include arithmetic features and memory access features. A detailed list of extracted features is in Appendix B."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 37,
+      "cited_text": "Results. Figure 9 shows the results on the Intel CPU, NVIDIA GPU and ARM $CPU^{2}$ Overall, Ansor performs the 23D-ResNet and DCGAN are not yet supported by TensorFlow Lite on the ARM CPU. Figure 10: Network performance auto-tuning curve. The y- axis is the speedup relative to AutoTVM. best or equally the best in all cases. Compared with search- based AutoTVM, Ansor matches or outperforms it in all cases with 1.0-21.8× speedup. Compared with the best alterna- tive, Ansor improves the execution performance of DNNs on the Intel CPU, ARM CPU, and NVIDIA GPU by up to 3.8x, 2.6x, and 1.7x, respectively. The reason for the significant speedup on DCGAN is that DCGAN mainly consists of trans- posed 2D convolution (T2D), which can be well optimized by Ansor, as shown and explained in the single operator bench- mark (\\$7.1). AutoTVM performs very well for ResNet-50 on the Intel CPU thanks to its highly-optimized templates for 2D convolution and global layout search [32]. Ansor does not run a global layout search but does rewrite the layout of weight tensors as described in §4.2. Ansor uses more levels of tiling so it packs weight tensors into more levels. The lay- out rewrite brings about 40% improvement to ResNet-50 in Ansor. Compared with vendor-specific static libraries, Ansor has more advantages on uncommon shapes and small batch sizes, because it is not easy to manually optimize for these cases."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 38,
+      "cited_text": "We evaluate Ansor on both standard deep learning bench- marks and emerging new workloads against manual libraries and state-of-the-art search-based frameworks. Experiment re- sults show that Ansor improves the execution performance of DNNs on the Intel CPU, ARM CPU, and NVIDIA GPU by up to 3.8x, 2.6x, and 1.7x, respectively. For most com- putation definitions, the best program found by Ansor is out- side the search space of existing search-based approaches. The results also show that, compared with existing search- based approaches, Ansor searches more efficiently, generating higher-performance programs in a shorter time, despite its larger search space. Ansor can match the performance of a state-of-the-art framework with an order of magnitude less search time. Besides, Ansor enables automatic extension to new operators by only requiring their mathematical definitions without manual templates."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 39,
+      "cited_text": "Template-guided search. In template-guided search, the search space is defined by manual templates. As shown in Fig- ure 2a, the compiler (e.g., TVM) requires the user to manually write a template for a computation definition. The template defines the structure of the tensor programs with some tunable parameters (e.g., tile size and unrolling factor). The compiler then searches for the best values of these parameters for a spe- cific input shape configuration and a specific hardware target. This approach has achieved good performance on common deep learning operators. However, developing templates re- quires substantial effort. For example, the code repository of TVM already contains more than 15K lines of code for these templates. This number continues to grow as new operators and new hardware platforms emerge. Besides, constructing a quality template requires expertise in both tensor operators and hardware. It takes non-trivial research effort [32,55,58] to develop quality templates. Despite the complexity of tem- plate design, manual templates only cover limited program structures because manually enumerating all optimization choices for all operators is prohibitive. This approach typi- cally requires defining one template for each operator. Flex- Tensor [58] proposes a general template to cover multiple operators, but its template is still designed for single operator granularity, which fails to include optimizations involving multiple operators (e.g., operator fusion). The search space of optimizing a computational graph with multiple operators should contain different ways to compose the operators. A template-based approach fails to achieve this because it can- not break down their fixed templates and re-compose them"
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 40,
+      "cited_text": "Normalization. Figure 6 shows the normalized perfor- mance. For each test case, we normalize the throughputs to the best performing framework. We then plot the geometric mean of the four shapes of each operator. The geometric mean is also normalized to the best performing framework, so the best framework has a normalized performance of 1 in the figure. The error bar denotes the standard deviation of the normalized throughput of four shapes of each operator. Results. As shown in the Figure 6, Ansor performs the best or equally the best in all operator and batch size set- tings. Ansor outperforms existing search frameworks by 1.1-22.5x. The performance improvements of Ansor come from both its large search space and effective exploration strat- egy. For most operators, we found the best program generated by Ansor is outside the search space of existing search frame- works because Ansor is able to explore more optimization combinations. For example, the significant speedup on NRM is because Ansor can parallelize reduction loops, while other frameworks do not. The large speedup on T2D is because Ansor can use correct tile structures and unrolling strategies to let the code generator simplify the multiplication of zeros in strided transposed convolution. In contrast, other frameworks fail to capture many effective optimizations in their search space, making them unable to find the programs that Ansor does. For example, the unfolding rules in Halide do not split the reduction loop in GMM and do not split reduction loops in C2D when padding is computed outside of reduction loops. The templates in AutoTVM have limited tile structures, as they cannot cover the structure of \"Generated Sketch 1\" in Figure 5. The template in FlexTensor does not change the computation location of padding. The template in FlexTensor fails to run for reduction operators like NRM."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 41,
+      "cited_text": "We define a task as a process performed to generate high- performance programs for a subgraph. It means that optimiz- ing a single DNN requires finishing dozens of tasks (e.g., 29 tasks for ResNet-50). Ansor's task scheduler allocates time resources to tasks in an iterative manner. At each iteration, Ansor selects a task, generates a batch of promising programs for the subgraph, and measures the program on hardware. We define such an iteration as one unit of time resources. When we allocate one unit of time resources to a task, the task ob- tains an opportunity to generate and measure new programs, which also means the chance to find better programs. We next present the formulation of the scheduling problem and our solution."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 42,
+      "cited_text": "To run the algorithm, Ansor starts from $t=0$ and warms up with a round of round-robin to get an initial allocation vector $t=(1,1,...,1)$. After the warm-up, at each iteration, we compute the gradient of each task and pick argmax; $|\\frac{\\partial f}{\\partial t_{i}}|$. Then we allocate the resource unit to task i and update the allocation vector $t_{i}=t_{i}+1$ The optimization process continues until we run out of the time budget. To encourage exploration, we adopt a  -greedy strategy [47], which preserves a probability of e to randomly select a task."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 43,
+      "cited_text": "Table 3 shows the search time required for Ansor to match the performance of AutoTVM on the Intel CPU network benchmark (\\$7.3). We list the search time in two metrics: number of measurements and wall-clock time. \"Number of measurements\" is a metric agnostic to the implementation of measurement and the overhead of search algorithm, while \"Wall-clock time\" takes these factors into account. As shown in the table, Ansor can match the performance of AutoTVM with an order of magnitude less search time. In Table 3a the saving in search time comes from the task scheduler, effi- cient fine-tuning, and comprehensive coverage of effective optimizations. In Table 3b, Ansor shows more time-saving in wall-clock time. This is because Ansor does not introduce much search overhead and has a better implementation of the measurement (on the Intel CPU, Ansor can get accurate mea- surement results with fewer repetitions by explicitly flushing the cache for some tensors). On other backends, Ansor can match the performance of AutoTVM with a similar saving in search time."
+    },
+    {
+      "source_id": "bebb11b3-51b4-49a1-8d51-9471b2fec422",
+      "citation_number": 44,
+      "cited_text": "ploys the task scheduler to prioritize performance bottlenecks (e.g., subgraphs contain $3\\times3$ convolution), so it performs the best in both search efficiency and the final achieved perfor- mance. <cited_table>",
+      "cited_table": {
+        "num_columns": 5,
+        "rows": [
+          [
+            "",
+            "AutoTVM",
+            "",
+            "Ansor",
+            "Time-saving"
+          ],
+          [
+            "ResNet-50",
+            "21,220",
+            "",
+            "6,403",
+            "3.3 ×"
+          ],
+          [
+            "Mobilenet-V2",
+            "31,272",
+            "",
+            "1,892",
+            "16.5 x"
+          ],
+          [
+            "3D-ResNet",
+            "5,158",
+            "",
+            "1,927",
+            "2.7 ×"
+          ],
+          [
+            "DCGAN",
+            "3,003",
+            "",
+            "298",
+            "10.1 x"
+          ],
+          [
+            "BERT",
+            "6,220",
+            "",
+            "496",
+            "12.5 x"
+          ],
+          [
+            "",
+            "(a) The number of",
+            "",
+            "measurements.",
+            ""
+          ],
+          [
+            "",
+            "AutoTVM",
+            "",
+            "Ansor",
+            "Time-saving"
+          ],
+          [
+            "ResNet-50",
+            "39,250 58,468 7,594",
+            "",
+            "4,540 660 2,296",
+            "8.6 x $88.6\\times$ 3.3 x"
+          ],
+          [
+            "DCGAN",
+            "4,914",
+            "",
+            "420",
+            "11.7 x"
+          ],
+          [
+            "BERT",
+            "12,007",
+            "",
+            "266",
+            "45.1 x"
+          ],
+          [
+            "",
+            "(b) Wall-clock time (seconds)",
+            "",
+            "",
+            ""
+          ]
+        ]
+      }
+    }
+  ]
+}

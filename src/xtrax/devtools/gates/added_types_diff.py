@@ -11,8 +11,8 @@ from typing import Literal
 
 import libcst as cst
 
-from xtrax.devtools.emit import append_finding, emit_metric_finding
 from xtrax.devtools.gates.type_hardening import DIMENSION, inspect_public_callable
+from xtrax.findings import append_finding, emit_metric_finding
 
 DEFAULT_TARGET = Path("src/xtrax")
 DiffStatus = Literal["pass", "fail", "skip"]

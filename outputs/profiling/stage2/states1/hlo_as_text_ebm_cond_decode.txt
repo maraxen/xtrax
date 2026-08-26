@@ -1,0 +1,129 @@
+HloModule jit__decode, is_scheduled=true, entry_computation_layout={(u32[2]{0})->(s32[], f32[208,21]{1,0})}, allow_spmd_sharding_propagation_to_parameters={true}, allow_spmd_sharding_propagation_to_output={true,true}, frontend_attributes={fingerprint_before_lhs="ba472f7b832dc316c9c07b3d374be182"}
+
+FileNames
+1 "/orcd/pool/008/so3_shared/marielle/projects/aminx/scripts/profiling/dogfood_stage2_dispatch.py"
+2 "/orcd/scratch/orcd/011/maarxaru/venvs/aminx/lib/python3.14/site-packages/equinox/_jit.py"
+3 "/orcd/pool/008/so3_shared/marielle/projects/aminx/src/aminx/inference/decode/conditional.py"
+4 "/orcd/pool/008/so3_shared/marielle/projects/aminx/src/aminx/inference/decode/_base.py"
+5 "/orcd/pool/008/so3_shared/marielle/projects/aminx/src/aminx/inference/logits.py"
+
+FunctionNames
+1 "<module>"
+2 "main"
+3 "run_case"
+4 "_JitWrapper.__call__"
+5 "_call"
+6 "_filter_jit_cache.<locals>.fun_wrapped"
+7 "run_case.<locals>._decode"
+8 "ConditionalDecode.__call__"
+9 "_ConditionalDecodeBase._apply_tie_group_fuse"
+10 "_ConditionalDecodeBase._apply_tie_group_fuse.<locals>.<lambda>"
+11 "TieGroupProductOfExperts.__call__"
+12 "_ConditionalDecodeBase._apply_logit_transform"
+13 "ArithmeticMeanLogits.__call__"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=337 end_line=337 column=21 end_column=27}
+2 {file_name_id=1 function_name_id=2 line=311 end_line=318 column=12 end_column=13}
+3 {file_name_id=1 function_name_id=3 line=196 end_line=196 column=8 end_column=18}
+4 {file_name_id=2 function_name_id=4 line=209 end_line=209 column=19 end_column=51}
+5 {file_name_id=2 function_name_id=5 line=263 end_line=265 column=37 end_column=17}
+6 {file_name_id=2 function_name_id=6 line=55 end_line=55 column=14 end_column=34}
+7 {file_name_id=1 function_name_id=7 line=191 end_line=191 column=23 end_column=98}
+8 {file_name_id=3 function_name_id=8 line=157 end_line=157 column=11 end_column=85}
+9 {file_name_id=4 function_name_id=9 line=162 end_line=162 column=17 end_column=44}
+10 {file_name_id=4 function_name_id=9 line=165 end_line=167 column=12 end_column=5}
+11 {file_name_id=4 function_name_id=10 line=165 end_line=165 column=41 end_column=86}
+12 {file_name_id=5 function_name_id=11 line=435 end_line=435 column=11 end_column=68}
+13 {file_name_id=5 function_name_id=11 line=435 end_line=435 column=19 end_column=59}
+14 {file_name_id=4 function_name_id=9 line=161 end_line=161 column=17 end_column=65}
+15 {file_name_id=4 function_name_id=9 line=171 end_line=171 column=11 end_column=53}
+16 {file_name_id=4 function_name_id=9 line=170 end_line=170 column=14 end_column=28}
+17 {file_name_id=3 function_name_id=8 line=154 end_line=156 column=19 end_column=5}
+18 {file_name_id=4 function_name_id=12 line=126 end_line=126 column=11 end_column=55}
+19 {file_name_id=5 function_name_id=13 line=101 end_line=101 column=13 end_column=42}
+20 {file_name_id=5 function_name_id=11 line=434 end_line=434 column=16 end_column=51}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+2 {file_location_id=2 parent_frame_id=2}
+3 {file_location_id=3 parent_frame_id=3}
+4 {file_location_id=4 parent_frame_id=4}
+5 {file_location_id=5 parent_frame_id=5}
+6 {file_location_id=6 parent_frame_id=6}
+7 {file_location_id=7 parent_frame_id=7}
+8 {file_location_id=8 parent_frame_id=8}
+9 {file_location_id=9 parent_frame_id=9}
+10 {file_location_id=10 parent_frame_id=9}
+11 {file_location_id=11 parent_frame_id=11}
+12 {file_location_id=12 parent_frame_id=12}
+13 {file_location_id=13 parent_frame_id=12}
+14 {file_location_id=14 parent_frame_id=9}
+15 {file_location_id=15 parent_frame_id=9}
+16 {file_location_id=16 parent_frame_id=9}
+17 {file_location_id=17 parent_frame_id=8}
+18 {file_location_id=18 parent_frame_id=18}
+19 {file_location_id=19 parent_frame_id=19}
+20 {file_location_id=20 parent_frame_id=12}
+
+
+%region_16.34 (reduce_sum.90: f32[], reduce_sum.91: f32[]) -> f32[] {
+  %reduce_sum.90 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.91 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.92.0 = f32[] add(%reduce_sum.90, %reduce_sum.91), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=12}
+}
+
+%fused_reduce (param_0.9: f32[21,208]) -> f32[208,21] {
+  %iota.11.5 = s32[208,208]{1,0} iota(), iota_dimension=0, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/eq" stack_frame_id=14}
+  %iota.12.5 = s32[208,208]{1,0} iota(), iota_dimension=1, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/eq" stack_frame_id=14}
+  %eq.13.5 = pred[208,208]{1,0} compare(%iota.11.5, %iota.12.5), direction=EQ, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/eq" stack_frame_id=14}
+  %broadcast.511.1 = pred[208,21,208]{2,1,0} broadcast(%eq.13.5), dimensions={0,2}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(_where))/broadcast_in_dim" stack_frame_id=13}
+  %param_0.9 = f32[21,208]{1,0} parameter(0)
+  %broadcast.512.1 = f32[208,21,208]{2,1,0} broadcast(%param_0.9), dimensions={1,2}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(_where))/broadcast_in_dim" stack_frame_id=13}
+  %constant_293_1 = f32[] constant(0)
+  %broadcast.513.1 = f32[208,21,208]{2,1,0} broadcast(%constant_293_1), dimensions={}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(_where))/broadcast_in_dim" stack_frame_id=13}
+  %select.2 = f32[208,21,208]{2,1,0} select(%broadcast.511.1, %broadcast.512.1, %broadcast.513.1), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(_where))/select_n" stack_frame_id=13}
+  ROOT %reduce_sum.103.1 = f32[208,21]{1,0} reduce(%select.2, %constant_293_1), dimensions={2}, to_apply=%region_16.34, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=12}
+}
+
+%region_13.29 (reduce_sum.75: s32[], reduce_sum.76: s32[]) -> s32[] {
+  %reduce_sum.75 = s32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.76 = s32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.77.0 = s32[] add(%reduce_sum.75, %reduce_sum.76), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/reduce_sum" stack_frame_id=9}
+}
+
+%fused_reduce.1 () -> s32[208] {
+  %iota.11.3 = s32[208,208]{1,0} iota(), iota_dimension=0, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/eq" stack_frame_id=14}
+  %iota.12.3 = s32[208,208]{1,0} iota(), iota_dimension=1, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/eq" stack_frame_id=14}
+  %eq.13.3 = pred[208,208]{1,0} compare(%iota.11.3, %iota.12.3), direction=EQ, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/eq" stack_frame_id=14}
+  %convert_element_type.3.1 = s32[208,208]{1,0} convert(%eq.13.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/convert_element_type" stack_frame_id=9}
+  %constant_317_1 = s32[] constant(0)
+  ROOT %reduce_sum.102.1 = s32[208]{0} reduce(%convert_element_type.3.1, %constant_317_1), dimensions={1}, to_apply=%region_13.29, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/reduce_sum" stack_frame_id=9}
+}
+
+%fused_select (param_0.6: f32[208,21], param_1.8: f32[208,21], param_2.7: s32[208]) -> f32[208,21] {
+  %param_2.7 = s32[208]{0} parameter(2)
+  %constant_228_1 = s32[] constant(1)
+  %gt.4.3 = s32[208]{0} broadcast(%constant_228_1), dimensions={}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/gt" stack_frame_id=16}
+  %gt.5.3 = pred[208]{0} compare(%param_2.7, %gt.4.3), direction=GT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/gt" stack_frame_id=16}
+  %broadcast_in_dim.131.1 = pred[208,21]{1,0} broadcast(%gt.5.3), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/jit(_where)/broadcast_in_dim" stack_frame_id=15}
+  %param_0.6 = f32[208,21]{1,0} parameter(0)
+  %param_1.8 = f32[208,21]{1,0} parameter(1)
+  ROOT %select_n.65.1 = f32[208,21]{1,0} select(%broadcast_in_dim.131.1, %param_0.6, %param_1.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/jit(_where)/select_n" stack_frame_id=15}
+}
+
+ENTRY %main.36 (dynamic_nodonate__first___0_.1: u32[2]) -> (s32[], f32[208,21]) {
+  %dynamic_nodonate__first___0_.1 = u32[2]{0} parameter(0), metadata={op_name="dynamic_nodonate[\'first\'][0]"}
+  %constant_1337_0 = f32[21,208]{1,0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(log_softmax))/sub" stack_frame_id=20}
+  %input_reduce_fusion = f32[208,21]{1,0} fusion(%constant_1337_0), kind=kInput, calls=%fused_reduce, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=12}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %input_reduce_fusion.1 = s32[208]{0} fusion(), kind=kCustom, calls=%fused_reduce.1, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/reduce_sum" stack_frame_id=9}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_warps":"2","output_tiles":[{"sizes":["2"]}],"waves_per_eu":0},"kind":"__triton"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_1331_0 = f32[208,21]{1,0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/add" stack_frame_id=19}
+  %loop_select_fusion = f32[208,21]{1,0} fusion(%input_reduce_fusion, %constant_1331_0, %input_reduce_fusion.1), kind=kLoop, calls=%fused_select, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/jit(_where)/select_n" stack_frame_id=15}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %constant_317_0 = s32[] constant(0)
+  %tuple.26 = (s32[], f32[208,21]{1,0}) tuple(%constant_317_0, %loop_select_fusion)
+  %get-tuple-element.26 = s32[] get-tuple-element(%tuple.26), index=0
+  %get-tuple-element.27 = f32[208,21]{1,0} get-tuple-element(%tuple.26), index=1
+  %copy.1 = s32[] copy(%get-tuple-element.26)
+  ROOT %tuple.27 = (s32[], f32[208,21]{1,0}) tuple(%copy.1, %get-tuple-element.27)
+}
+

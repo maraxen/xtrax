@@ -1,0 +1,366 @@
+{
+  "answer": "The **NVIDIA CUDA C++ Best Practices Guide** and the **Hopper Architecture Whitepaper** outline a fundamental shift in how GPU compute and memory subsystems must be navigated. They demonstrate that optimizing modern kernels requires moving beyond simple thread occupancy toward deep synchronization, hardware-accelerated memory pipelines, and structural scheduling optimizations.\n\n---\n\n### 1. Occupancy vs. Other Bottlenecks\n\n**Occupancy** is defined as the ratio of active warps per Streaming Multiprocessor (SM) to the maximum possible active warps supported by the hardware [1, 2]. Historically, developers prioritized achieving 100% occupancy to hide execution latencies. However, both sources establish that occupancy is often a secondary concern compared to other physical bottlenecks:\n\n*   **The Latency-Hiding Myth**: While low occupancy severely degrades performance by failing to hide global memory latency [1], **higher occupancy does not always translate to better performance** [1, 3]. If a kernel exhibits a high degree of **Instruction-Level Parallelism (ILP)**, the hardware thread scheduler can fully cover latency using independent instructions within a smaller number of active warps [3, 4].\n*   **The Register Spilling Trade-off**: Register file memory is a limited physical commodity shared among all concurrent threads [5]. Forcing higher occupancy restricts the number of registers allocated per thread [5, 6]. This can cause the compiler to spill variables to **local memory**, which resides off-chip in global DRAM, introducing severe latency penalties that negate any benefit of having more active threads [3, 7, 8]. Developers use `__launch_bounds__` or `-maxrregcount` compiler flags to tune this delicate threshold [5, 9-11].\n*   **Hopper's Paradigm Shift (Hardware-Accelerated Overlap)**: The Hopper architecture whitepaper establishes that raw warp occupancy is less critical than **asynchronous execution and minimizing synchronization points** [12]. By offloading memory management to dedicated hardware (the Tensor Memory Accelerator, or TMA), only a fraction of an SM's threads are needed to saturate HBM bandwidth [13]. The remaining threads can be dedicated purely to Tensor Core computation, decoupling memory latency hiding from thread occupancy [13].\n\n---\n\n### 2. Asynchronous Memory Copy (`memcpy_async` and TMA)\n\nThe mechanism for moving data from off-chip global memory (HBM/DRAM) to on-chip shared memory (SRAM) underwent a major architectural evolution to save SM internal bandwidth:\n\n*   **The Traditional Bottleneck**: Historically, moving data required a synchronous transfer where data was read from global memory into a thread’s register file, and then written from the register to shared memory [14]. This consumed register capacity, increased register pressure (limiting occupancy), and occupied instruction execution ports [15, 16].\n*   **Ampere's `cp.async`**: Introduced hardware-accelerated asynchronous global-to-shared memory copies [15, 17-19]. This mechanism copies data **directly to shared memory, bypassing the register file entirely** [15, 16]. It reduces register pressure, improves occupancy, and allows threads to immediately start executing independent arithmetic instructions while the memory transfer runs concurrently in the background [16, 18]. \n*   **Hopper's Tensor Memory Accelerator (TMA)**: Hopper replaces thread-driven asynchronous copies with a dedicated physical TMA hardware engine [20-22]. \n    *   *Single-Threaded Execution*: Unlike prior architectures where every thread in a warp had to compute its own source and destination addresses, TMA uses a **single-threaded launch model** [23, 24]. One thread in a warp constructs a **Copy Descriptor (Tensor Map)** specifying multi-dimensional (1D to 5D) tensor shapes, strides, and sub-block coordinates [23, 25-27]. \n    *   *Hardware Address Generation*: The TMA hardware automatically handles all address generation, layout striding, out-of-boundary padding, and physical data movement in the background [20, 24, 27]. This completely frees the SM’s execution threads to perform general-purpose computation or Tensor Core math [13, 24].\n    *   *Synchronization*: TMA transfers are coordinated using hardware-accelerated **Asynchronous Transaction Barriers (`mbarrier`)** [20, 21, 23]. The TMA engine increments the barrier’s expected transaction count upon starting and decrements it upon completion [28]. Threads wait or sleep on the barrier, conserving power and SM scheduler resources [12, 23].\n\n---\n\n### 3. Warp Primitives and Independent Thread Scheduling\n\nPrior to the Volta architecture, GPUs executed warps in a lockstep Single Instruction, Multiple Data (SIMT) fashion [29]. The introduction of **Independent Thread Scheduling (ITS)** in Volta (and inherited by Turing, Ampere, and Hopper) changed the execution model and the rules for warp-level programming:\n\n*   **Independent Thread Scheduling (ITS)**: Under ITS, the GPU maintains instruction execution state—including a separate program counter and call stack—for **every individual thread** in a warp [29, 30]. Threads can branch and yield independently at a sub-warp granularity [29, 30]. While this prevents deadlocks during fine-grained locking, it means threads are no longer guaranteed to execute in lockstep [29, 31, 32].\n*   **The Synchronizing Primitives (`_sync`)**: Because warp-synchronicity is no longer guaranteed by the hardware, programmers **must not** use legacy warp intrinsics (like `__shfl`, `__any`, `__all`, and `__ballot`), which are deprecated or entirely removed on Compute Capability 7.x and higher [33-35]. Instead, they must utilize their synchronizing counterparts with the **`_sync` suffix** (e.g., `__shfl_sync`, `__any_sync`, `__all_sync`, `__ballot_sync`) [33-35]. \n*   **Active Masks and Reconvergence**: The `_sync` primitives require an explicit **member mask** (typically `0xffffffff` for a full warp) specifying exactly which lanes must participate in the reduction, shuffle, or vote [35]. Because threads can diverge arbitrarily, developers use **`__activemask()`** to query which threads are currently active on the execution path [32, 36]. To guarantee that threads have physically reconverged and that shared data is safe to read after a warp-level memory exchange, programmers must explicitly insert the **`__syncwarp()`** barrier [32, 37].\n\n---\n\n### 4. When Kernel Fusion Helps\n\nEvery time a separate kernel is launched, it must read its inputs from global memory (HBM) and write its outputs back to global memory, which has orders of magnitude lower bandwidth and higher latency than on-chip caches or shared memory [38-40]. **Kernel fusion** addresses this memory bandwidth bottleneck:\n\n*   **Combining Memory Passes**: Kernel fusion merges multiple consecutive operations (for example, a matrix multiplication, a bias addition, and an activation function) into a single, unified kernel launch. Instead of materializing intermediate tensors to global memory, the fused kernel keeps these intermediate values resident in fast, on-chip **registers or shared memory** [39, 41, 42].\n*   **Reducing Launch and Computational Overheads**: Beyond eliminating redundant global memory traffic, fusion reduces the overhead of launching multiple grids [39, 43]. It also avoids repeating block-level coordinate calculations (such as boundary checks and coordinate offsets) that would otherwise execute independently in each separate kernel [43].\n*   **Hopper's Thread Block Clusters (Inter-Block Fusion)**: Hopper extends the ability to fuse operations beyond a single thread block using **Thread Block Clusters** [13, 21]. Traditionally, thread blocks could not communicate or exchange data without terminating the kernel and launching a subsequent step to read from global memory [39]. \n    *   With Clusters, blocks are guaranteed to be co-scheduled concurrently on SMs within the same Graphics Processing Cluster (GPC) [21, 44]. \n    *   They can directly read, write, and execute atomic operations on each other's shared memory using the high-speed, hardware-accelerated **SM-to-SM network (Distributed Shared Memory, or DSMEM)** [21, 44, 45]. This allows developers to fuse multi-block algorithms (such as large-scale FFTs or histograms) entirely on-chip, bypassing global HBM transfers entirely [21, 46].\n\n---\n\n📊 We can write a Python script using JAX to profile your specific kernel configurations and estimate their occupancy limits, register usage, and memory intensity. Let me know if you would like to run that model!",
+  "question": "What do the CUDA Best Practices Guide and Hopper whitepaper say about occupancy vs other bottlenecks, async memcpy, warp primitives, and when kernel fusion helps?",
+  "conversation_id": "66228072-8454-4d68-ab54-1e0f585fc80a",
+  "sources_used": [
+    "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "3ed43e6e-5c92-4a55-81a6-4e5cb6653690"
+  ],
+  "citations": {
+    "1": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "2": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "3": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "4": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "5": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "6": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "7": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "8": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "9": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "10": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "11": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "12": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "13": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "14": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "15": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+    "16": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "17": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "18": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "19": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "20": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "21": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "22": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "23": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "24": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "25": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+    "26": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "27": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "28": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "29": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "30": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "31": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "32": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "33": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "34": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "35": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "36": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "37": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "38": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "39": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "40": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "41": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+    "42": "6a6bb659-a218-45fa-851c-4e92699bd849",
+    "43": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+    "44": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "45": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+    "46": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67"
+  },
+  "references": [
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 1,
+      "cited_text": "Occupancy is the ratio of the number of active warps per multiprocessor to the maximum number of possible active warps. (To determine the latter number, see the deviceQuery CUDA Sample or refer to Compute Capabilities.) Another way to view occupancy is the percentage of the hardware's ability to process warps that is actively in use. Higher occupancy does not always equate to higher performance-there is a point above which addi- tional occupancy does not improve performance. However, low occupancy always interferes with the ability to hide memory latency, resulting in performance degradation."
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 2,
+      "cited_text": "www.nvidia.com Kernel Profiling Guide v2021.2.1 | 3 2.2. Sections and Rules Table 1 Available Sections Metric Collection <cited_table>",
+      "cited_table": {
+        "num_columns": 2,
+        "rows": [
+          [
+            "Identifier and Filename",
+            "Description"
+          ],
+          [
+            "ComputeWorkloadAnalysis",
+            "Detailed analysis of the compute resources of the streaming"
+          ],
+          [
+            "InstructionStats (Instruction",
+            "Statistics of the executed low-level assembly instructions (SASS)."
+          ],
+          [
+            "LaunchStats (Launch Statistics)",
+            "Summary of the configuration used to launch the kernel. The launch"
+          ],
+          [
+            "MemoryWorkloadAnalysis",
+            "Detailed analysis of the memory resources of the GPU. Memory can"
+          ],
+          [
+            "Nvlink (Nvlink)",
+            "High-level summary of NVLink utilization. It shows the total received"
+          ],
+          [
+            "Occupancy (Occupancy)",
+            "Occupancy is the ratio of the number of active warps per"
+          ],
+          [
+            "SchedulerStats (Scheduler Statistics)",
+            "Summary of the activity of the schedulers issuing instructions. Each"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 3,
+      "cited_text": "11.3. Thread and Block Heuristics 57 CUDA C++ Best Practices Guide, Release 13.3 When choosing the block size, it is important to remember that multiple concurrent blocks can reside on a multiprocessor, so occupancy is not determined by block size alone. In particular, a larger block size does not imply a higher occupancy. As mentioned in Occupancy, higher occupancy does not always equate to better performance. For example, improving occupancy from 66 percent to 100 percent generally does not translate to a similar increase in performance. A lower occupancy kernel will have more registers available per thread than a higher occupancy kernel, which may result in less register spilling to local memory; in particular, with a high degree of exposed instruction-level parallelism (ILP) it is, in some cases, possible to fully cover latency with a low occupancy."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 4,
+      "cited_text": "As described in Hardware Multithreading, a GPU multiprocessor primarily relies on thread-level par- allelism to maximize utilization of its functional units. Utilization is therefore directly linked to the number of resident warps. At every instruction issue time, a warp scheduler selects an instruction that is ready to execute. This instruction can be another independent instruction of the same warp, exploiting instruction-level parallelism, or more commonly an instruction of another warp, exploiting thread-level parallelism. If a ready to execute instruction is selected it is issued to the active threads of the warp. The number of clock cycles it takes for a warp to be ready to execute its next instruc- tion is called the latency, and full utilization is achieved when all warp schedulers always have some instruction to issue for some warp at every clock cycle during that latency period, or in other words, when latency is completely \"hidden\". The number of instructions required to hide a latency of L clock cycles depends on the respective throughputs of these instructions (see the CUDA C++ Best Prac- tices Guide for the throughputs of various arithmetic instructions). If we assume instructions with maximum throughput, it is equal to:"
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 5,
+      "cited_text": "55 CUDA C++ Best Practices Guide, Release 13.3 11.1.1. Calculating Occupancy One of several factors that determine occupancy is register availability. Register storage enables threads to keep local variables nearby for low-latency access. However, the set of registers (known as the register file) is a limited commodity that all threads resident on a multiprocessor must share. Registers are allocated to an entire block all at once. So, if each thread block uses many registers, the number of thread blocks that can be resident on a multiprocessor is reduced, thereby lower- ing the occupancy of the multiprocessor. The maximum number of registers per thread can be set manually at compilation time per-file using the maxrregcount option or per-kernel using the __launch_bounds__ qualifier (see Register Pressure)."
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 6,
+      "cited_text": "For purposes of calculating occupancy, the number of registers used by each thread is one of the key factors. For example, on devices of CUDA Compute Capability 7.0 each multiprocessor has 65,536 32- bit registers and can have a maximum of 2048 simultaneous threads resident (64 warps x 32 threads per warp). This means that in one of these devices, for a multiprocessor to have 100% occupancy, each thread can use at most 32 registers. However, this approach of determining how register count affects occupancy does not take into account the register allocation granularity. For example, on a device of compute capability 7.0, a kernel with 128-thread blocks using 37 registers per thread results in an occupancy of 75% with 12 active 128-thread blocks per multi-processor, whereas a kernel with 320-thread blocks using the same 37 registers per thread results in an occupancy of 63% because only four 320-thread blocks can reside on a multiprocessor. Furthermore, register allocations are rounded up to the nearest 256 registers per warp."
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 7,
+      "cited_text": "► The async-copy does not require the copy_count parameter to be a multiple of 4, to maximize performance through compiler optimizations. ► Overall, best performance is achieved when using asynchronous copies with an element of size 8 or 16 bytes. 10.2.4. Local Memory Local memory is so named because its scope is local to the thread, not because of its physical location. In fact, local memory is off-chip. Hence, access to local memory is as expensive as access to global memory. In other words, the term local in the name does not imply faster access."
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 8,
+      "cited_text": "Memory Global memory is a 49-bit virtual address space that is mapped to physical memory on the device, pinned system memory, or peer memory. Global memory is visible to all threads in the GPU. Global memory is accessed through the SM L1 and GPU L2. Local memory is private storage for an executing thread and is not visible outside of that thread. It is intended for thread-local data like thread stacks and register spills. Local memory addresses are translated to global virtual addresses by the the AGU unit. Local memory has the same latency as global memory. One difference between global and local memory is that local memory is arranged such that consecutive 32-bit words are accessed by consecutive thread IDs. Accesses are therefore fully coalesced as long as all threads in a warp access the same relative address (e.g., same index in an array variable, same member in a structure variable, etc.)."
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 9,
+      "cited_text": "10.2.7.1 Register Pressure Register pressure occurs when there are not enough registers available for a given task. Even though each multiprocessor contains thousands of 32-bit registers (see Features and Technical Specifications of the CUDA C++ Programming Guide), these are partitioned among concurrent threads. To prevent the compiler from allocating too many registers, use the -maxrregcount=N compiler command-line option or the launch bounds kernel definition qualifier (see Execution Configuration of the CUDA C++ Programming Guide) to control the maximum number of registers to allocated per thread."
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 10,
+      "cited_text": "19. Recommendations and Best Practices Chapter 20. nvcc Compiler Switches 20.1. nvcc The NVIDIA nvcc compiler driver converts. cu files into C++ for the host system and CUDA assembly or binary instructions for the device. It supports a number of command-line parameters, of which the following are especially useful for optimization and related best practices: ► -maxrregcount=N specifies the maximum number of registers kernels can use at a per-file level. See Register Pressure. (See also the__launch_bounds__ qualifier discussed in Execution Con- figuration of the CUDA C++ Programming Guide to control the number of registers used on a per-kernel basis.)"
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 11,
+      "cited_text": "10.37. Execution Configuration 273 CUDA C++ Programming Guide, Release 13.3 10.38. Launch Bounds As discussed in detail in Multiprocessor Level, the fewer registers a kernel uses, the more threads and thread blocks are likely to reside on a multiprocessor, which can improve performance. Therefore, the compiler uses heuristics to minimize register usage while keeping register spilling (see Device Memory Accesses) and instruction count to a minimum. An application can optionally aid these heuristics by providing additional information to the compiler in the form of launch bounds that are specified using the __launch_bounds__() qualifier in the definition of a__global__ function:"
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 12,
+      "cited_text": "Waiter spins in SMEM Waiter sleeps until all threads arrive Direct copy to SMEM Copy Asynchronous mem copy unit (called TMA) Programmatic overlap of data movement, computation, and synchronization. Asynchronous concurrency and minimizing synchronization points are keys to performance. Figure 17. Asynchronous Execution Concurrency and Enhancements in Hopper Tensor Memory Accelerator (TMA) To help feed the powerful new H100 Tensor Cores, data fetch efficiency is improved with a new Tensor Memory Accelerator (TMA) that can transfer large blocks of data and multi-dimensional tensors from global memory to shared memory and vice-versa."
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 13,
+      "cited_text": "Only a small number of CUDA threads are now required to manage the full memory bandwidth of H100 using the new Tensor Memory Accelerator, while most other CUDA threads can be focused on general-purpose computations, such as pre-processing and post-processing data for the new generation of Tensor Cores. H100 grows the CUDA thread group hierarchy with a new level called the Thread Block Cluster. A Cluster is a group of Thread Blocks that are guaranteed to be concurrently scheduled, and enable efficient cooperation and data sharing for threads across multiple SMs. A Cluster also cooperatively drives asynchronous units like the Tensor Memory Accelerator and the Tensor Cores more efficiently."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 14,
+      "cited_text": "10.27. Asynchronous Data Copies 227 CUDA C++ Programming Guide, Release 13.3 ► Single-Stage Asynchronous Data Copies using cuda::pipeline shows memcpy with single stage pipeline. ► Multi-Stage Asynchronous Data Copies using cuda::pipeline shows memcpy with multi stage pipeline. 10.27.3. Without memcpy_async Without memcpy_async, the copy phase of the copy and compute pattern is expressed as shared [local_idx] = global[global_idx]. This global to shared memory copy is expanded to a read from global memory into a register, followed by a write to shared memory from the register."
+    },
+    {
+      "source_id": "96ae5bec-26ab-4abd-8fcf-5d93bab881d9",
+      "citation_number": 15,
+      "cited_text": "2.1.1. MODERN TENSOR CORE UNITS Ampere's new asynchronous copy saves SM internal band- width by avoiding intermediate RF access. There are two variants of this instruction, \"access\" that saves data into L1 for subsequent accesses and reuse (Figure 2), and \"bypass\", which also skips L1 cache (Figure 23). 2.2. Mixed-Precision Inference on LLMS Tensor Core Units (TCUs) Sparse TCUs RF RF GMEM Load SMEM SMEM SPTC 01234567 0312 SMEM Store SMEM Load With 24 0356 RF Async-Copy 个 (Access L1) 1 Without Async-Copy"
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 16,
+      "cited_text": "The synchronous version for the kernel loads an element from global memory to an intermediate regis- ter and then stores the intermediate register value to shared memory. In the asynchronous version of the kernel, instructions to load from global memory and store directly into shared memory are issued as soon as __pipeline_memcpy_async() function is called. The__pipeline_wait_prior(0) will wait until all the instructions in the pipe object have been executed. Using asynchronous copies does not use any intermediate register. Not using intermediate registers can help reduce register pressure and can increase kernel occupancy. Data copied from global memory to shared memory using asyn- chronous copy instructions can be cached in the L1 cache or the L1 cache can be optionally bypassed. If individual CUDA threads are copying elements of 16 bytes, the L1 cache can be bypassed. This difference is illustrated in Figure 13."
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 17,
+      "cited_text": "► To eliminate (or reduce) redundant loads from global memory ► To avoid wasted bandwidth 10.2.3.4 Asynchronous Copy from Global Memory to Shared Memory CUDA 11.0 introduces an async-copy feature that can be used within device code to explicitly manage the asynchronous copying of data from global memory to shared memory. This feature enables CUDA kernels to overlap copying data from global to shared memory with computation. It also avoids an intermediary register file access traditionally present between the global memory read and the shared memory write."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 18,
+      "cited_text": "CUDA C++ Programming Guide, Release 13.3 10.27. Asynchronous Data Copies CUDA 11 introduces Asynchronous Data operations with memcpy_async API to allow device code to explicitly manage the asynchronous copying of data. The memcpy_async feature enables CUDA ker- nels to overlap computation with data movement. 10.27.1. memcpy_async API The memcpy_async APIs are provided in the cuda/barrier, cuda/pipeline, and cooperative_groups/memcpy_async.h header files. The cuda:: memcpy_async APIs work with cuda:: barrier and cuda:: pipeline synchroniza- tion primitives, while the cooperative_groups:: memcpy_async synchronizes using coopera- tive_groups::wait."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 19,
+      "cited_text": "11.6.2. Data Transfer 11.6.2.1 memcpy_async memcpy_async is a group-wide collective memcpy that utilizes hardware accelerated support for non- blocking memory transactions from global to shared memory. Given a set of threads named in the group, memcpy_async will move specified amount of bytes or elements of the input type through a single pipeline stage. Additionally for achieving best performance when using the memcpy_async API, an alignment of 16 bytes for both shared memory and global memory is required. It is important to note that while this is a memcpy in the general case, it is only asynchronous if the source is global memory and the destination is shared memory and both can be addressed with 16, 8, or 4 byte align- ments. Asynchronously copied data should only be read following a call to wait or wait_prior which signals that the corresponding stage has completed moving data to shared memory."
+    },
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 20,
+      "cited_text": "• New asynchronous execution features include the (TMA) and an asynchronous transaction barrier. SM New wgmma instructions. Graphics Processing Cluster SM SM Register File 16384 * 32bit DPX instructions INT32 * 16 FP32 * 32 FP64 * 16 4th Gen TC LD/ST * 8 SFU Async shared- shared copy L2 Cache TMA Shared Mem TMA Shared Mem SM to SM Network TMA Shared Mem 1 Tensor Memory Accelerator 256 KB L1 / Shared Memory L2 Cache Global Memory Async global-shared copy Copy Descriptor Base address Tensor height & width Padding Region to copy Size"
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 21,
+      "cited_text": "New DPX Instructions accelerate Dynamic Programming algorithms by up to 7x over the A100 GPU. Two examples include the Smith-Waterman algorithm for genomics processing, and the Floyd-Warshall algorithm used to find optimal routes for a fleet of robots through a dynamic warehouse environment. 3x faster IEEE FP64 and FP32 processing rates chip-to-chip compared to A100, due to 2x faster clock-for-clock performance per SM, plus additional SM counts and higher clocks of H100. New Thread Block Cluster feature allows programmatic control of locality at a granularity larger than a single Thread Block on a single SM. This extends the CUDA programming model by adding another level to the programming hierarchy to now include Threads, Thread Blocks, Thread Block Clusters, and Grids. Clusters enable multiple Thread Blocks running concurrently across multiple SMs to synchronize and collaboratively fetch and exchange data. New Asynchronous Execution features include a new Tensor Memory Accelerator (TMA) unit that can transfer large blocks of data very efficiently between global memory and shared memory. TMA also supports asynchronous copies between Thread Blocks in a Cluster. There is also a new Asynchronous Transaction Barrier for doing atomic data movement and synchronization."
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 22,
+      "cited_text": "Table 1: Thread-Memory hierarchy for the NVIDIA Hopper H100 SXM5 GPU. <cited_table> Asynchrony and warp-specialization: GPUs are throughput processors that rely on concurrency and asynchrony to hide memory and execution latencies. For async memory copy between GMEM and SMEM, Hopper has the Tensor Memory Accelerator (TMA) as a dedicated hardware unit [38, §7.29]. Furthermore, unlike prior architectures such as Ampere, the Tensor Core of Hopper, exposed via the warpgroup-wide WGMMA instruction [40, §9.7.14], is also asynchronous and can source its inputs directly from shared memory.",
+      "cited_table": {
+        "num_columns": 4,
+        "rows": [
+          [
+            "Hardware Level",
+            "Parallel Agent",
+            "Data Locale",
+            "Capacity @ Bandwidth"
+          ],
+          [
+            "Chip",
+            "Grid",
+            "GMEM",
+            "80 GiB @ 3.35 TB/s"
+          ],
+          [
+            "GPC",
+            "Threadblock Clusters",
+            "L2",
+            "50 MiB @ 12 TB/s"
+          ],
+          [
+            "SM",
+            "Threadblock (CTA)",
+            "SMEM",
+            "228 KiB per SM, 31TB/s per GPU"
+          ],
+          [
+            "Thread",
+            "Thread",
+            "RMEM",
+            "256 KiB per SM"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 23,
+      "cited_text": "32 NVIDIA H100 Tensor Core GPU Architecture Tensor height base addr block height NVIDIA H100 GPU Architecture In-Depth Region to copy block width padding 2D Tensor in Mem Tensor width Tensor stride Figure 18. TMA Address Generation via Copy Descriptor The TMA operation is asynchronous and leverages the shared memory-based asynchronous barriers introduced in A100. Additionally, the TMA programming model is single-threaded, where a single thread in a warp is elected to issue an asynchronous TMA operation (cuda::memcpy async) to copy a tensor, and subsequently multiple threads can wait on a cuda::barrier for completion of the data transfer. To further improve performance, the H100 SM adds hardware to accelerate these asynchronous barrier wait operations."
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 24,
+      "cited_text": "A key advantage of TMA is it frees the threads to execute other independent work. On A100, in the left part of Figure 19, asynchronous memory copies were executed using a special LoadGlobalStoreShared instruction, so the threads were responsible for generating all addresses and looping across the whole copy region. On Hopper, TMA takes care of everything. A single thread creates a copy descriptor before launching the TMA, and from then on address generation and data movement are handled in hardware. TMA provides a much simpler programming model because it takes over the task of computing stride, offset, and boundary calculations when copying segments of a tensor."
+    },
+    {
+      "source_id": "4aef3fe9-15e9-468e-a450-6c8665032dc5",
+      "citation_number": 25,
+      "cited_text": "5.2 Throughput We test the throughput of TMA, as its performance in various scenarios can directly impact our program's efficiency. In this subsection, we load 4GB of data from global memory into shared memory using TMA. We evaluate one-dimensional loads, 1D Tensor, 2D Tensor, and 3D Tensor operations. We focused on the impact of transfer size per TMA instruction and the number of launched CTAs on throughput. For non-tensor (one-dimensional) transfers, TMA instructions can be issued without creating a tensor map. However, for 1D, 2D, and 3D tensor copies, a Copy Descriptor (Tensor Map) as shown in Fig. 1 is required, specifying different dimensions."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 26,
+      "cited_text": "Naming. Tensor memory accelerator (TMA) is a broad term used to refer to the features described in this section. For the purpose of forward-compatibility and to reduce discrepancies with the PTX ISA, the text in this section refers to TMA operations as either bulk-asynchronous copies or bulk tensor asynchronous copies, depending on the specific type of copy used. The term \"bulk\" is used to contrast these operations with the asynchronous memory operations described in the previous sections. Dimensions. TMA supports copying both one-dimensional and multi-dimensional arrays (up to 5- dimensional). The programming model for bulk-asynchronous copies of one-dimensional contigu- ous arrays is different from the programming model for bulk tensor asynchronous copies of multi- dimensional arrays. To perform a bulk tensor asynchronous copy of a multi-dimensional array, the hardware requires a tensor map. This object describes the layout of the multi-dimensional array in global and shared memory. A tensor map is typically created on the host using the cuTensorMapEn- code API and then transferred from host to device as a const kernel parameter annotated with __grid_constant__. The tensor map is transferred from host to device as a const kernel parameter annotated with__grid_constant__, and can be used on the device to copy a tile of data between shared and global memory. In contrast, performing a bulk-asynchronous copy of a contiguous one- dimensional array does not require a tensor map: it can be performed on-device with a pointer and size parameter."
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 27,
+      "cited_text": "TMA operations are launched using a copy descriptor which specifies data transfers using tensor dimensions and block coordinates instead of per-element addressing (see Figure 18 below). Large blocks of data (up to the shared memory capacity) can be specified and loaded from global memory into shared memory or stored from shared memory back to global memory. TMA significantly reduces addressing overhead and improves efficiency with support for different tensor layouts (1D-5D tensors), different memory access modes, reductions, and other features."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 28,
+      "cited_text": "TMA read. The bulk-asynchronous copy instruction directs the hardware to copy a large chunk of data into shared memory, and to update the transaction count of the shared memory barrier after completing the read. In general, issuing as few bulk copies with as big a size as possible results in the best performance. Because the copy can be performed asynchronously by the hardware, it is not necessary to split the copy into smaller chunks. The thread that initiates the bulk-asynchronous copy operation arrives at the barrier using mbarrier. expect_tx. This is automatically performed by cuda:: memcpy_async. This tells the barrier that the thread has arrived and also how many bytes (tx / transactions) are expected to arrive. Only a single thread has to update the expected transaction count. If multiple threads update the transaction count, the expected transaction will be the sum of the updates. The barrier will only flip once all threads have arrived and all bytes have arrived. Once the barrier has flipped, the bytes are safe to read from shared memory, both by the threads as well as by subsequent bulk-asynchronous copies. More information about barrier transaction accounting can be found in the PTX ISA."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 29,
+      "cited_text": "Prior to NVIDIA Volta, warps used a single program counter shared amongst all 32 threads in the warp together with an active mask specifying the active threads of the warp. As a result, threads from the same warp in divergent regions or different states of execution cannot signal each other or exchange data, and algorithms requiring fine-grained sharing of data guarded by locks or mutexes can easily lead to deadlock, depending on which warp the contending threads come from. Starting with the NVIDIA Volta architecture, Independent Thread Scheduling allows full concurrency between threads, regardless of warp. With Independent Thread Scheduling, the GPU maintains ex- ecution state per thread, including a program counter and call stack, and can yield execution at a per-thread granularity, either to make better use of execution resources or to allow one thread to wait for data to be produced by another. A schedule optimizer determines how to group active threads from the same warp together into SIMT units. This retains the high throughput of SIMT execution as in prior NVIDIA GPUs, but with much more flexibility: threads can now diverge and reconverge at sub-warp granularity."
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 30,
+      "cited_text": "The SM implements an execution model called Single Instruction Multiple Threads (SIMT), which allows individual threads to have unique control flow while still executing as part of a warp. The Turing SM inherits the Volta SM's independent thread scheduling model. The SM maintains execution state per thread, including a program counter (PC) and call stack. The independent thread scheduling allows the GPU to yield execution of any thread, either to make better use of execution resources or to allow a thread to wait for data produced by another thread possibly in the same warp. Collecting the Source Counters section allows you to inspect instruction execution and predication details on the Source Page, along with Sampling information."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 31,
+      "cited_text": "28 2 FP64 cores for double-precision arithmetic operations for devices of compute capabilities 7.5 20.6. Compute Capability 7.x 495 CUDA C++ Programming Guide, Release 13.3 20.6.2. Independent Thread Scheduling The NVIDIA Volta GPU Architecture introduces Independent Thread Scheduling among threads in a warp, enabling intra-warp synchronization patterns previously unavailable and simplifying code changes when porting CPU code. However, this can lead to a rather different set of threads participat- ing in the executed code than intended if the developer made assumptions about warp-synchronicity of previous hardware architectures."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 32,
+      "cited_text": "for (int $i=$ warplane; i warplane < dataLen; i += warpSize) { unsigned active = __ ballot_sync(0xFFFFFFFF, i < dataLen); if (i  dataLen) { unsigned bitPack = __ballot_sync(active, data[i] > threshold); if (warpLane $==0$) { output[i/32] = bitPack; } } } Discovery Pattern demonstrates a valid use case for __activemask(). 1. If applications have warp-synchronous codes, they will need to insert the new__syncwarp() warp-wide barrier synchronization instruction between any steps where data is exchanged be- tween threads via global or shared memory. Assumptions that code is executed in lockstep or that reads/writes from separate threads are visible across a warp without synchronization are invalid."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 33,
+      "cited_text": "10.19. Warp Vote Functions int __all_sync (unsigned mask, int predicate); int __any_sync (unsigned mask, int predicate); unsigned __ballot_sync(unsigned mask, int predicate); unsigned_activemask(); Deprecation notice: __any, __all, and __ballot have been deprecated in CUDA 9.0 for all devices. Removal notice: When targeting devices with compute capability 7.x or higher, __any, __all, and __ballot are no longer available and their sync variants should be used instead. The warp vote functions allow the threads of a given warp to perform a reduction-and-broadcast op- eration. These functions take as input an integer predicate from each thread in the warp and com- pare those values with zero. The results of the comparisons are combined (reduced) across the active threads of the warp in one of the following ways, broadcasting a single return value to each partici- pating thread:"
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 34,
+      "cited_text": "These intrinsics do not imply a memory barrier. They do not guarantee any memory ordering. 206 10. C++ Language Extensions CUDA C++ Programming Guide, Release 13.3 10.22. Warp Shuffle Functions __shfl_sync, __shfl_up_sync, __shfl_down_sync, and __shfl_xor_sync exchange a variable between threads within a warp. Supported by devices of compute capability 5.0 or higher. Deprecation Notice: __shf1, __shfl_up, __shfl_down, and __shfl_xor have been deprecated in CUDA 9.0 for all devices. Removal Notice: When targeting devices with compute capability 7.x or higher, __shf1, __shfl_up, __shfl_down, and __shfl_xor are no longer available and their sync variants should be used instead."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 35,
+      "cited_text": "Below are code patterns of concern and suggested corrective actions for Volta-safe code. 1. For applications using warp intrinsics (__shfl*, __any, __all, __ballot), it is necessary that developers port their code to the new, safe, synchronizing counterpart, with the *_sync suffix. The new warp intrinsics take in a mask of threads that explicitly define which lanes (threads of a warp) must participate in the warp intrinsic. See Warp Vote Functions and Warp Shuffle Functions for details. Since the intrinsics are available with CUDA 9.0+, (if necessary) code can be executed conditionally with the following preprocessor macro:"
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 36,
+      "cited_text": "if (tid % warpSize < 16) { float swapped = __shfl_xor_sync(0xffffffff, val, 16); } else { } float swapped = __shfl_xor_sync(0xffffffff, val, 16); The replacement for __ballot (1) is__activemask(). Note that threads within a warp can diverge even within a single code path. As a result, __activemask() and __ ballot (1) may return only a subset of the threads on the current code path. The following invalid code example sets bit i of output to 1 when data[i] is greater than threshold. __activemask() is used in an attempt to enable cases where dataLen is not a multiple of 32."
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 37,
+      "cited_text": "Starting with the Volta architecture, Independent Thread Scheduling allows a warp to remain diverged outside of the data-dependent conditional block. An explicit__syncwarp() can be used to guarantee that the warp has reconverged for subsequent instructions. 13.2. Branch Predication Note: Low Priority: Make it easy for the compiler to use branch predication in lieu of loops or control statements. Sometimes, the compiler may unroll loops or optimize out if or switch statements by using branch predication instead. In these cases, no warp can ever diverge. The programmer can also control loop unrolling using"
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 38,
+      "cited_text": "28 9. Performance Metrics Chapter 10. Memory Optimizations Memory optimizations are the most important area for performance. The goal is to maximize the use of the hardware by maximizing bandwidth. Bandwidth is best served by using as much fast memory and as little slow-access memory as possible. This chapter discusses the various kinds of memory on the host and device and how best to set up data items to use the memory effectively. 10.1. Data Transfer Between Host and Device The peak theoretical bandwidth between the device memory and the GPU is much higher (898 GB/s on the NVIDIA Tesla V100, for example) than the peak theoretical bandwidth between host memory and device memory (16 GB/s on the PCIe x16 Gen3). Hence, for best overall application performance, it is important to minimize data transfer between the host and the device, even if that means running kernels on the GPU that do not demonstrate any speedup compared with running them on the host CPU."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 39,
+      "cited_text": "For the parallel workloads, at points in the algorithm where parallelism is broken because some threads need to synchronize in order to share data with each other, there are two cases: Either these threads belong to the same block, in which case they should use__syncthreads() and share data through shared memory within the same kernel invocation, or they belong to different blocks, in which case they must share data through global memory using two separate kernel invocations, one for writing to and one for reading from global memory. The second case is much less optimal since it adds the overhead of extra kernel invocations and global memory traffic. Its occurrence should therefore be minimized by mapping the algorithm to the CUDA programming model in such a way that the compu- tations that require inter-thread communication are performed within a single thread block as much as possible."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 40,
+      "cited_text": "8.3. Maximize Memory Throughput The first step in maximizing overall memory throughput for the application is to minimize data trans- fers with low bandwidth. That means minimizing data transfers between the host and the device, as detailed in Data Transfer between Host and Device, since these have much lower bandwidth than data transfers between global memory and the device. That also means minimizing data transfers between global memory and the device by maximizing use of on-chip memory: shared memory and caches (i.e., L1 cache and L2 cache available on devices of compute capability 2.x and higher, texture cache and constant cache available on all devices)."
+    },
+    {
+      "source_id": "c6acfa61-5c4b-46b8-bc8a-7b03bee07db1",
+      "citation_number": 41,
+      "cited_text": "43 CUDA C++ Best Practices Guide, Release 13.3 10.2.3.2 Shared Memory in Matrix Multiplication $(C=AB)$ Shared memory enables cooperation between threads in a block. When multiple threads in a block use the same data from global memory, shared memory can be used to access the data from global memory only once. Shared memory can also be used to avoid uncoalesced memory accesses by loading and storing data in a coalesced pattern from global memory and then reordering it in shared memory. Aside from memory bank conflicts, there is no penalty for non-sequential or unaligned accesses by a warp in shared memory."
+    },
+    {
+      "source_id": "6a6bb659-a218-45fa-851c-4e92699bd849",
+      "citation_number": 42,
+      "cited_text": "Shared memory is located on chip, so it has much higher bandwidth and much lower latency than either local or global memory. Shared memory can be shared across a compute CTA. Compute CTAs attempting to share data across threads via shared www.nvidia.com Kernel Profiling Guide v2021.2.1 13 Metrics Guide memory must use synchronization operations (such as_syncthreads()) between stores and loads to ensure data written by any one thread is visible to other threads in the CTA. Similarly, threads that need to share data via global memory must use a more heavyweight global memory barrier."
+    },
+    {
+      "source_id": "31f4cc99-8827-49ae-a246-27633a9a4f34",
+      "citation_number": 43,
+      "cited_text": "Key advantage of this approach: ► Reduced thread block overheads. 309 CUDA C++ Programming Guide, Release 13.3 This approach not only reduces amortized thread block launch latency but also minimizes the computational overhead associated with shared operations across all thread blocks. These over- heads can be significantly higher than launch latency overheads. For example, in convolution kernels, a prologue for calculating convolution coefficients - inde- pendent of the thread block index - can be computed fewer times due to the fixed number of thread blocks, thus reducing redundant computations."
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 44,
+      "cited_text": "The Clusters in H100 run concurrently across SMs within a GPC. A GPC is a group of SMs in the hardware hierarchy that are always physically close together. Clusters have hardware- accelerated barriers and new memory access collaboration capabilities discussed in the following sections. A dedicated SM-to-SM network for SMs in a GPC provides fast data sharing between threads in a Cluster. In CUDA, Thread Blocks in a Grid can optionally be grouped at kernel launch into Clusters as shown in Figure 14, and cluster capabilities can be leveraged from the CUDA cooperative groups API."
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 45,
+      "cited_text": "A100 Thread Block Thread Block SMEM Global MEM SMEM Thread Block H100 Cluster Thread Block SMEM SM to SM Network SMEM Figure 15. Thread Block to Thread Block data exchange (A100 vs H100 with Clusters) At the CUDA level, all the DSMEM segments from all Thread Blocks in the Cluster are mapped into the generic address space of each thread, such that all of DSMEM can be referenced directly with simple pointers. CUDA users can leverage the cooperative_groups API to construct generic pointers to any Thread Block in the cluster. DSMEM transfers can also be expressed as asynchronous copy operations synchronized with shared memory-based barriers for tracking completion."
+    },
+    {
+      "source_id": "ba7760bd-2f62-4e3d-98ad-84ae8d1c9b67",
+      "citation_number": 46,
+      "cited_text": "Figure 16 below shows the performance advantage of using Clusters on different algorithms. Clusters improve the performance by allowing the programmer to directly control a larger portion NVIDIA H100 Tensor Core GPU Architecture 30 Relative Perf NVIDIA H100 GPU Architecture In-Depth of the GPU than just a single SM. Clusters allow cooperative execution with a larger number of threads, with access to a larger pool of shared memory than is possible with just a single Thread Block. Cluster Performance"
+    }
+  ]
+}

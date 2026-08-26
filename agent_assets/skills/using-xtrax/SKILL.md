@@ -124,6 +124,9 @@ Three distinct regions exist:
   # signature checks run at MODULE IMPORT time and raise IoCallbackSignatureError
   # on drift, so an upstream jax move is a loud one-file fix, not a runtime traceback.
   ```
+  Cost discipline for these crossings (ordered vs unordered, per-step round-trip
+  tax, measured numbers): see the `xtrax-optimizing` skill,
+  `references/tier1-host-boundary.md`.
 
 Choose JIT decorator based on your model:
 - **`eqx.filter_jit`** (preferred): JAX arrays are traced, static fields are held constant. Ideal for models with callable static fields (like `AxisBoundary`).

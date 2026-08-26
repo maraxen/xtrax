@@ -9,7 +9,7 @@ optimization target) and (2) pass a synthetic-ground-truth sanity check (the one
 `tests.stages.test_evaluate.TestOneHotSanityCheck` already worked through for T1-07, generalized
 here into a reusable primitive rather than left as a test-only illustration).
 
-"Reviewed" reuses `xtrax.devtools.freshness.Attestation`/`evaluate_freshness` rather than inventing
+"Reviewed" reuses `xtrax.run.freshness.Attestation`/`evaluate_freshness` rather than inventing
 a second review/TTL mechanism -- a manifest is "reviewed" iff its attestation is still fresh.
 
 Registration-site scope: `SealedEvaluatorRegistry.seal()` (T1-07, `xtrax.stages.evaluate`) is left
@@ -28,7 +28,7 @@ checks a manifest that's handed to it.
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from xtrax.devtools.freshness import Attestation, evaluate_freshness
+from xtrax.run.freshness import Attestation, evaluate_freshness
 from xtrax.stages.evaluate import Candidate, EvaluateFn, FrozenContext
 
 

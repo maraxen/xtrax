@@ -62,8 +62,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from xtrax.devtools.freshness import Attestation, evaluate_freshness
 from xtrax.loop.closure_lock import ClosureManifest
+from xtrax.run.freshness import Attestation, evaluate_freshness
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_GATES_TOML = ROOT / ".praxia" / "loop_human_gates.toml"
@@ -132,7 +132,7 @@ def assert_evaluator_change_approved(
 
     Scans `toml_path` for `[[gates]]` entries where `id == "T2-29"` and
     `event_ref == new_locked.closure_hash`. Of any matches, the most recent (by `attested_at`) is
-    evaluated for freshness via `xtrax.devtools.freshness.evaluate_freshness`.
+    evaluated for freshness via `xtrax.run.freshness.evaluate_freshness`.
 
     Raises:
         NoMatchingApprovalError: no entry matches this exact `event_ref` (including: the TOML

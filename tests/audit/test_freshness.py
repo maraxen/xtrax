@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from xtrax.devtools.freshness import (
+from xtrax.run.freshness import (
     SKIP_PROBE_ENV_VAR,
     SKIP_TTL_ENV_VAR,
     Attestation,

@@ -1,0 +1,238 @@
+{
+  "answer": "Reduced-precision formats—such as **FP16, BF16, and FP8**—accelerate deep learning by reducing memory footprint, lowering off-chip memory bandwidth pressure, and enabling high-throughput tensor core pipelines [1-3]. However, migrating from 32-bit floating-point (FP32) arithmetic requires deliberate algorithmic strategies to preserve numerical stability and model accuracy. \n\nThe core tenets of mixed-precision execution, established in the foundational papers by Micikevicius et al., outline when reduced precision is safe and how scaling and quantization granularities must be configured.\n\n---\n\n### 1. When is Reduced Precision Safe?\n\nThe safety of reduced precision depends on the target numerical format, the specific deep learning workload, and whether the model is in training or inference:\n\n#### FP16 Training Guidance\nDuring training, raw FP16 has a narrow dynamic range (exponents of \\\\([-14, 15]\\\\)), making it highly susceptible to underflow and rounding errors [4, 5]. Under the **Mixed Precision Training** guidelines, utilizing FP16 is safe provided three guardrails are implemented:\n1.  **FP32 Master Copy of Weights**: Weights are updated and maintained in FP32, but rounded to FP16 for the forward and backward passes [6, 7]. This is critical for two reasons:\n    *   **Underflow**: Weight updates (learning rate \\\\(\\times\\\\) gradient) can fall below \\\\(2^{-24}\\\\) (the minimum representable normal value in FP16), flushing to zero [8].\n    *   **Swamping (Alignment Shift)**: If the ratio of the weight value to its update exceeds \\\\(2048\\\\), adding them in FP16 right-shifts the update's mantissa out of the 10-bit fractional representation, rendering the update ineffective [9]. Maintaining the master copy in FP32 bypasses this swamping effect [9].\n2.  **Accumulation in FP32**: Mathematical operations like vector dot-products and convolutions perform multi-input multiplication in FP16 but accumulate partial products into an FP32 accumulator before writing the final result back to memory in FP16 [6, 10].\n3.  **High-Precision Reductions**: Highly sensitive layers—such as Batch Normalization statistics accumulation and Softmax denominators—should execute their internal reductions in FP32 to prevent division by zero or NaN propagation, even if they read and write FP16 tensors to conserve memory bandwidth [11].\n\n#### FP8 Training and Inference Guidance\nThe introduction of 8-bit floating-point formats split the representation into two distinct, specialized encodings [1, 12]:\n*   **E4M3 (1 sign bit, 4 exponent bits, 3 mantissa bits)**: Reclaims most special bit patterns (limiting NaNs and omitting infinities) to maximize the precision of the mantissa [1, 13]. **Recommended strictly for weights and activations** during both the forward and backward passes [12].\n*   **E5M2 (1 sign bit, 5 exponent bits, 2 mantissa bits)**: Closely mirrors IEEE-754 half-precision conventions but with fewer mantissa bits [13]. It trades precision for a much wider dynamic range, making it **highly recommended for gradients** [12].\n\nTo maintain stability in FP8 training, low-precision operations must be restricted to high-computational density layers (such as GEMMs and convolutions) [14]. Outputs from these GEMM layers should remain in higher precision (FP16 or FP32) to be consumed by non-GEMM operators like normalizations, non-linearities, or residual additions [14].\n\n---\n\n### 2. Scaling Strategies\n\nBecause the dynamic ranges of FP16 and FP8 are significantly narrower than FP32, hardware requires scaling techniques to shift the values into the representable ranges.\n\n#### Loss-Scaling (FP16)\nActivation gradients typically cluster near very small fractional values [5]. Without scaling, these gradients fall below the representable FP16 denormalized range and flush to zero, leading to divergence [5, 15].\n*   **Mechanism**: The loss value computed in the forward pass is multiplied by a scaling factor \\\\(S\\\\) prior to backpropagation [16]. Through the chain rule, this scales all upstream gradients by \\\\(S\\\\), shifting them into the representable range [16].\n*   **Unscaling**: Gradients are unscaled by multiplying by \\\\(1/S\\\\) immediately after the backward pass—but *before* gradient clipping or weight updates—ensuring optimizer hyperparameters do not require retuning [16].\n*   **Constant vs. Dynamic**: A constant scaling factor (ranging from 8 to 32,768) can be used, or a dynamic heuristic can automatically double \\\\(S\\\\) periodically and halve it when an overflow (Infinities/NaNs) is detected in the gradients [17, 18].\n\n#### Tensor Scaling (FP8)\nFP8's extremely narrow range demands aggressive per-tensor scaling factors rather than simple global loss scaling [19, 20].\n*   **Mechanism**: High-precision tensors (FP16/FP32) are multiplied by a dynamic scaling factor before casting to FP8:\n    \\\\[\\text{FP8 Tensor} = \\text{cast}\\left(\\frac{\\text{FP16 Tensor}}{\\text{scale}}\\right)\\\\]\n    The scaling factor is selected such that the maximum absolute value in the tensor maps closely to the maximum representable format value (e.g., \\\\(448\\\\) for E4M3) [19]. After compute, the outputs are unscaled by multiplying by the inverse scale [19].\n*   **Overflow Handling (The No-Skip Rule)**: In FP16, detecting an overflow triggers skipping the weight update and reducing the scale [17]. **This is not viable for FP8** [19]. Because the dynamic range of FP8 is so narrow, overflows are highly frequent; skipping updates on overflow would halt training [19]. Instead, values that overflow in FP8 are safely **saturated** to the maximum representable value of the target format [19, 21].\n\n---\n\n### 3. Granularity Strategies\n\nSelecting the spatial scope of a scaling factor represents a direct trade-off between numerical accuracy and hardware computation overhead:\n\n```\nQuantization Granularity & Error Preservation\n┌──────────────────────┬───────────────────────┐\n│     Granularity      │     Accuracy Loss     │\n├──────────────────────┼───────────────────────┤\n│ Per-Tensor           │ High (Outliers Masked)│\n│ Per-Channel          │ Medium (Balanced)     │\n│ Block-Level          │ Low (Fine-grained)    │\n└──────────────────────┴───────────────────────┘\n```\n\n*   **Per-Tensor Scaling**: A single scaling factor is computed for an entire matrix [20]. While computationally cheap, this is insufficient for networks with complex topologies [20]. For example, when quantizing residual connections to FP8, a single static scale fails to prevent accuracy loss [20, 22].\n*   **Per-Channel Scaling**: Common for post-training quantization (PTQ) [22, 23]. Weights are scaled per-channel, while activations are scaled per-tensor [23]. This recovers baseline accuracy across standard benchmarks (like BERT and GPT-3) where flat per-tensor casting otherwise leads to divergence [23].\n*   **Block Quantization**: Utilized in advanced kernels like **FlashAttention-3** [24]. The input tensors (such as \\\\(Q, K, V\\\\)) are split into tiles (e.g., of size \\\\(B_r \\times d\\\\) or \\\\(B_c \\times d\\\\)), and each block is scaled and quantized separately [24]. Because attention naturally executes on blocks, the local row-scaling can be fused directly into preceding memory-bound kernels (like rotary embeddings) at zero computational cost, substantially reducing quantization error on activations [24].\n*   **Incoherent Processing (Hadamard Pre-filtering)**: Modern LLMs exhibit severe activation \"outliers\" (abnormally large values in specific channels) that exceed standard FP8 ranges [25]. To mitigate this without fine-grained scaling, inputs are multiplied by a random diagonal matrix of \\\\(\\pm 1\\\\) and a structured **Hadamard matrix** [26]. Because the Hadamard transform is orthogonal, it distributes the energy of the outliers evenly across the channel dimension without altering the final attention product, allowing safe quantization to 8-bit layouts [26].\n\n---\n\n📊 We can write a Python simulation using JAX to dynamically track the exponent distribution of your model's gradients and determine the ideal constant or dynamic loss-scaling factor before you deploy a full mixed-precision training run. Would you like to design that profiling tool?",
+  "question": "What mixed-precision guidance exists (FP8 formats paper, Micikevicius mixed precision): when is reduced precision safe, what scaling/granularity strategies exist?",
+  "conversation_id": "66228072-8454-4d68-ab54-1e0f585fc80a",
+  "sources_used": [
+    "c761f479-862c-450a-a47d-3154c314f260",
+    "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+    "3ed43e6e-5c92-4a55-81a6-4e5cb6653690"
+  ],
+  "citations": {
+    "1": "c761f479-862c-450a-a47d-3154c314f260",
+    "2": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "3": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+    "4": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "5": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "6": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "7": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "8": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "9": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "10": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "11": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "12": "c761f479-862c-450a-a47d-3154c314f260",
+    "13": "c761f479-862c-450a-a47d-3154c314f260",
+    "14": "c761f479-862c-450a-a47d-3154c314f260",
+    "15": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "16": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "17": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "18": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+    "19": "c761f479-862c-450a-a47d-3154c314f260",
+    "20": "c761f479-862c-450a-a47d-3154c314f260",
+    "21": "c761f479-862c-450a-a47d-3154c314f260",
+    "22": "c761f479-862c-450a-a47d-3154c314f260",
+    "23": "c761f479-862c-450a-a47d-3154c314f260",
+    "24": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "25": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+    "26": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690"
+  },
+  "references": [
+    {
+      "source_id": "c761f479-862c-450a-a47d-3154c314f260",
+      "citation_number": 1,
+      "cited_text": "ABSTRACT FP8 is a natural progression for accelerating deep learning training inference beyond the 16-bit formats common in modern processors. In this paper we propose an 8-bit floating point (FP8) binary interchange format consisting of two encodings - E4M3 (4-bit exponent and 3-bit mantissa) and E5M2 (5-bit exponent and 2-bit mantissa). While E5M2 follows IEEE 754 conventions for representatio of special values, E4M3's dynamic range is extended by not representing infinities and having only one mantissa bit-pattern for NaNs. We demonstrate the efficacy of the FP8 format on a variety of image and language tasks, effectively matching the result quality achieved by 16-bit training sessions. Our study covers the main modern neural network architectures - CNNs, RNNs, and Transformer-based models, leaving all the hyperparameters unchanged from the 16-bit baseline training sessions. Our training experiments include large, up to 175B parameter, language models. We also examine FP8 post-training-quantization of language models trained using 16-bit formats that resisted fixed point int8 quantization."
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 2,
+      "cited_text": "Larger models usually require more compute and memory resources to train. These requirements can be lowered by using reduced precision representation and arithmetic. Performance (speed) of any program, including neural network training and inference, is limited by one of three factors: arithmetic bandwidth, memory bandwidth, or latency. Reduced precision addresses two of these limiters. Memory bandwidth pressure is lowered by using fewer bits to to store the same number of values. Arithmetic time can also be lowered on processors that offer higher throughput for reduced precision math. For example, half-precision math throughput in recent GPUs is 2x to 8x higher than for single-precision. In addition to speed improvements, reduced precision formats also reduce the amount of memory required for training."
+    },
+    {
+      "source_id": "cb57ee01-8d88-48ed-b72b-41c4c881ea28",
+      "citation_number": 3,
+      "cited_text": "The reduced precision is not only explored in research, but has been used in recent commercial platforms for DNN processing. For instance, Google's Tensor Processing Unit (TPU) which was announced in May 2016, was designed for 8-bit integer arithmetic [123]. Similarly, Nvidia's PASCAL GPU, which was announced in April 2016, also has 8-bit integer instructions for deep learning inference [124]. In general purpose platforms such as CPUs and GPUs, the main benefit of using 8-bit computation is an increase in throughput, as four 8-bit operations rather than one 32-bit operation can be performed for a given clock cycle."
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 4,
+      "cited_text": "Modern deep learning training systems use single-precision (FP32) format. In this paper, we address the training with reduced precision while maintaining model accuracy. Specifically, we train vari- *Equal contribution Now at Google Brain eriche@google.com 1 Published as a conference paper at ICLR 2018 ous neural networks using IEEE half-precision format (FP16). Since FP16 format has a narrower dynamic range than FP32, we introduce three techniques to prevent model accuracy loss: maintain- ing a master copy of weights in FP32, loss-scaling that minimizes gradient values becoming zeros, and FP16 arithmetic with accumulation in FP32. Using these techniques we demonstrate that a wide variety of network architectures and applications can be trained to match the accuracy FP32 training. Experimental results include convolutional and recurrent network architectures, trained for classification, regression, and generative tasks. Applications include image classification, image generation, object detection, language modeling, machine translation, and speech recognition. The proposed methodology requires no changes to models or training hyper-parameters."
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 5,
+      "cited_text": "3.2 Loss SCALING FP16 exponent bias centers the range of normalized value exponents to [-14, 15] while gradient values in practice tend to be dominated by small magnitudes (negative exponents). For example, consider Figure 3 showing the histogram of activation gradient values, collected across all layers during FP32 training of Multibox SSD detector network (Liu et al., 2015a). Note that much of the FP16 representable range was left unused, while many values were below the minimum repre- sentable range and became zeros. Scaling up the gradients will shift them to occupy more of the representable range and preserve values that are otherwise lost to zeros. This particular network diverges when gradients are not scaled, but scaling them by a factor of 8 (increasing the exponents by 3) is sufficient to match the accuracy achieved with FP32 training. This suggests that activation"
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 6,
+      "cited_text": "arXiv:1710.03740v3 [cs.AI] 15 Feb 2018 Published as a conference paper at ICLR 2018 MIXED PRECISION TRAINING Sharan Narang*, Gregory Diamos, Erich Elsen Baidu Research {sharan, gdiamos}@baidu.com Paulius Micikevicius*, Jonah Alben, David Garcia, Boris Ginsburg, Michael Houston, Oleksii Kuchaiev, Ganesh Venkatesh, Hao Wu NVIDIA {pauliusm, alben, dagarcia, bginsburg, mhouston, okuchaiev, gavenkatesh, skyw}@nvidia.com ABSTRACT Increasing the size of a neural network typically improves accuracy but also in- creases the memory and compute requirements for training the model. We intro- duce methodology for training deep neural networks using half-precision float- ing point numbers, without losing model accuracy or having to modify hyper- parameters. This nearly halves memory requirements and, on recent GPUs, speeds up arithmetic. Weights, activations, and gradients are stored in IEEE half- precision format. Since this format has a narrower range than single-precision we propose three techniques for preventing the loss of critical information. Firstly, we recommend maintaining a single-precision copy of weights that accumulates the gradients after each optimizer step (this copy is rounded to half-precision for the forward- and back-propagation). Secondly, we propose loss-scaling to pre- serve gradient values with small magnitudes. Thirdly, we use half-precision arith- metic that accumulates into single-precision outputs, which are converted to half- precision before storing to memory. We demonstrate that the proposed methodol- ogy works across a wide variety of tasks and modern large scale (exceeding 100 million parameters) model architectures, trained on large datasets."
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 7,
+      "cited_text": "3 IMPLEMENTATION We introduce the key techniques for training with FP16 while still matching the model accuracy of FP32 training session: single-precision master weights and updates, loss-scaling, and accumulating FP16 products into FP32. Results of training with these techniques are presented in Section 4. 3.1 FP32 MASTER COPY OF WEIGHTS In mixed precision training, weights, activations and gradients are stored as FP16. In order to match the accuracy of the FP32 networks, an FP32 master copy of weights is maintained and updated with the weight gradient during the optimizer step. In each iteration an FP16 copy of the master weights is"
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 8,
+      "cited_text": "While the need for FP32 master weights is not universal, there are two possible reasons why a number of networks require it. One explanation is that updates (weight gradients multiplied by the learning rate) become too small to be represented in FP16 - any value whose magnitude is smaller than $2^{-24}$ becomes zero in FP16. We can see in Figure 2b that approximately 5% of weight gradient values have exponents smaller than -24. These small valued gradients would become zero in the optimizer when multiplied with the learning rate and adversely affect the model accuracy. Using a single-precision copy for the updates allows us to overcome this problem and recover the accuracy."
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 9,
+      "cited_text": "Another explanation is that the ratio of the weight value to the weight update is very large. In this case, even though the weight update is representable in FP16, it could still become zero when addition operation right-shifts it to align the binary point with the weight. This can happen when the magnitude of a normalized weight value is at least 2048 times larger that of the weight update. Since FP16 has 10 bits of mantissa, the implicit bit must be right-shifted by 11 or more positions to potentially create a zero (in some cases rounding can recover the value). In cases where the ratio is larger than 2048, the implicit bit would be right-shifted by 12 or more positions. This will cause the weight update to become a zero which cannot be recovered. An even larger ratio will result in this effect for de-normalized numbers. Again, this effect can be counteracted by computing the update in FP32."
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 10,
+      "cited_text": "3.3 ARITHMETIC PRECISION By and large neural network arithmetic falls into three categories: vector dot-products, reductions, and point-wise operations. These categories benefit from different treatment when it comes to re- duced precision arithmetic. To maintain model accuracy, we found that some networks require that FP16 vector dot-product accumulates the partial products into an FP32 value, which is converted to FP16 before writing to memory. Without this accumulation in FP32, some FP16 models did not match the accuracy of the baseline models. Whereas previous GPUs supported only FP16 multiply- add operation, NVIDIA Volta GPUs introduce Tensor Cores that multiply FP16 input matrices and accumulate products into either FP16 or FP32 outputs (NVIDIA, 2017)."
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 11,
+      "cited_text": "Large reductions (sums across elements of a vector) should be carried out in FP32. Such reductions mostly come up in batch-normalization layers when accumulating statistics and softmax layers. Both of the layer types in our implementations still read and write FP16 tensors from memory, performing the arithmetic in FP32. This did not slow down the training process since these layers are memory-bandwidth limited and not sensitive to arithmetic speed. Point-wise operations, such as non-linearities and element-wise matrix products, are memory- bandwidth limited. Since arithmetic precision does not impact the speed of these operations, either FP16 or FP32 math can be used."
+    },
+    {
+      "source_id": "c761f479-862c-450a-a47d-3154c314f260",
+      "citation_number": 12,
+      "cited_text": "2 3 FP8 Binary Interchange Format FP8 consists of two encodings - E4M3 and E5M2, where the name explicitly states the number of exponent (E) and mantissa (M) bits. We use the common term \"mantissa\" as a synonym for IEEE 754 standard's trailing significand field (i.e. bits not including the implied leading 1 bit for normal floating point numbers). The recommended use of FP8 encodings is E4M3 for weight and activation tensors, and E5M2 for gradient tensors. While some networks can train with just the E4M3 or the E5M2 type, there are networks that require both types (or must maintain many fewer tensors in FP8). This is consistent with findings in [20, 16], where inference and forward pass of training use a variant of E4M3, gradients in the backward pass of training use a variant of E5M2."
+    },
+    {
+      "source_id": "c761f479-862c-450a-a47d-3154c314f260",
+      "citation_number": 13,
+      "cited_text": "Design of these FP8 format followed the principle of staying consistent with IEEE-754 conventions, deviating only if a significant benefit is expected for DL application accuracy. Consequently, the E5M2 format follows the IEEE 754 conventions for exponent and special values and can be viewed as IEEE half precision with fewer mantissa bits (similar to how bfloat16 and TF32 can be viewed as IEEE single precision with fewer bits). This allows for straightforward conversion between E5M2 and IEEE FP16 formats. By contrast, the dynamic range of E4M3 is extended by reclaiming most of the bit patterns used for special values because in this case the greater range achieved is much more useful than supporting multiple encodings for the special values."
+    },
+    {
+      "source_id": "c761f479-862c-450a-a47d-3154c314f260",
+      "citation_number": 14,
+      "cited_text": "4.1 Training In the FP8 training experiments we retain the same model architectures, weight initializations, and optimizer hyper- parameters as are used for higher-precision baseline training sessions. Baselines were trained in either FP16 or bfloat16, which have been shown to match the results of single-precision training sessions [14, 9]. In this study we focused on the input tensors for math-intensive operations - convolutions and matrix multiplies, to which we'll refer as GEMM- operations as they involve dot-product computations. Thus, unless otherwise specified, we clip to FP8-representable values the activation, weight, and activation gradient tensors that are inputs to GEMMs. Output tensors were left in higher precision as they typically are consumed by non-GEMM operations, such as a non-linearities or normalizations, and in a number of cases get fused with the preceding GEMM operation. Moving more tensors to FP8 is the subject of future study."
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 15,
+      "cited_text": "Table 2: Detection network average mean precision. <cited_table> As can be seen in table 2, SSD detector failed to train in FP16 without loss-scaling. By losing small gradient values to zeros, as described in Section 3.2, poor weights are learned and training diverges. As described in Section 3.2, loss-scaling factor of 8 recovers the relevant gradient values and mixed-precision training matches FP32 mAP.",
+      "cited_table": {
+        "num_columns": 3,
+        "rows": [
+          [
+            "Model",
+            "Baseline",
+            "MP with loss-scale"
+          ],
+          [
+            "Faster R-CNN",
+            "69.1%",
+            "69.7%"
+          ],
+          [
+            "Multibox SSD",
+            "76.9%",
+            "77.1%"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 16,
+      "cited_text": "One efficient way to shift the gradient values into FP16-representable range is to scale the loss value computed in the forward pass, prior to starting back-propagation. By chain rule back-propagation ensures that all the gradient values are scaled by the same amount. This requires no extra operations during back-propagation and keeps the relevant gradient values from becoming zeros. Weight gradi- ents must be unscaled before weight update to maintain the update magnitudes as in FP32 training. It is simplest to perform this unscaling right after the backward pass but before gradient clipping or any other gradient-related computations, ensuring that no hyper-parameters (such as gradient clipping threshold, weight decay, etc.) have to be adjusted."
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 17,
+      "cited_text": "There are several options to choose the loss scaling factor. The simplest one is to pick a con- stant scaling factor. We trained a variety of networks with scaling factors ranging from 8 to 32K (many networks did not require a scaling factor). A constant scaling factor can be chosen empir- 4 Published as a conference paper at ICLR 2018 ically or, if gradient statistics are available, directly by choosing a factor so that its product with the maximum absolute gradient value is below 65,504 (the maximum value representable in FP16). There is no downside to choosing a large scaling factor as long as it does not cause overflow during back-propagation - overflows will result in infinities and NaNs in the weight gradients which will irreversibly damage the weights after an update. Note that overflows can be efficiently detected by inspecting the computed weight gradients, for example, when weight gradient values are unscaled. One option is to skip the weight update when an overflow is detected and simply move on to the next iteration."
+    },
+    {
+      "source_id": "31b6314f-ec3c-4287-b1f1-3abad51e58f9",
+      "citation_number": 18,
+      "cited_text": "We would also like to extend this work to include generative models like text-to-speech systems and deep reinforcement learning applications. Furthermore, automating loss-scaling factor selection would further simplify training with mixed precision. Loss-scaling factor could be dynamically increased or decreased by inspecting the weight gradients for overflow, skipping weight updates when an overflow is detected. 9 Published as a conference paper at ICLR 2018 REFERENCES D. Amodei, R. Anubhai, E. Battenberg, C. Case, J. Casper, B. Catanzaro, J. Chen, M. Chrzanowski, A. Coates, G. Diamos, et al. Deep speech 2: End-to-end speech recognition in english and mandarin. In Proceedings of The 33rd International Conference on Machine Learning, pages 173-182, 2016."
+    },
+    {
+      "source_id": "c761f479-862c-450a-a47d-3154c314f260",
+      "citation_number": 19,
+      "cited_text": "Higher precision values need to be multiplied with a scaling factor prior to their casting to FP8 in order to move them into a range that better overlaps with the representable range of a corresponding FP8 format. This is very similar to the purpose loss-scaling serves in mixed-precision training with FP16, where gradients are moved into FP16-representable range [14],[13](slides 13-16). However, some networks require per-tensor scaling factors as FP8 dynamic range is not sufficient to cover the union of all tensors' important values (see Section 3.2). Details of the heuristics to select the scaling factors are beyond the scope of this paper, but the general idea is to choose a scaling factor such that the maximum magnitude in the tensor becomes close to the maximum representable magnitude in the corresponding format. Values that overflow are then saturated to the maximum representable value. Weight update skipping (and reduction of the scaling factor) on overflows, as used by FP16 automatic mixed precision training [13], is not a good choice for FP8 as overflows are much more likely due to the narrower dynamic range, resulting in too many skipped updates. Values in higher precision get unscaled by multiplying with the inverse of the scaling factor, either after conversion from FP8 or after arithmetic instructions for a linear operation have produced a higher-precision output. In both cases only a minimal amount of additional arithmetic is required. For matrix multiplications, unscaling is applied once per dot-product, thus amortized by many multiply-accumulates with FP8 inputs. Less arithmetic intensive operations (such as nonlinearities, normalizations, or weight updates by optimizers) are typically memory-bandwidth limited and not sensitive to one additional arithmetic instruction per value."
+    },
+    {
+      "source_id": "c761f479-862c-450a-a47d-3154c314f260",
+      "citation_number": 20,
+      "cited_text": "Table 5: Post training quantization of models trained in 16-bit floating point. For F1 metrics higher is better, for perplexity lower is better. Best 8-bit result is bolded. <cited_table> 4.3 Per-tensor scaling factors While training and inference for a number of networks can be successfully carried out in FP8 with the same scaling factor for all the tensors of the same type (in other words, choosing a single exponent bias could be possible), there are cases where per-tensor scaling factors are needed to maintain accuracy. This need becomes more pronounced when we store more of the tensors in FP8, not just inputs for GEMM operations. Figure 2 shows the FP8 inference perplexity (measured on wikitext103 dataset), when using post-training-quantization of a bfloat16-trained network. No calibration was done, weight and activation tensors were cast from bfloat16 to E4M3 type with the corresponding exponent bias. As we can see, when casting to FP8 only the inputs to GEMM operations (both weighted GEMMs as wells as two attention batched matrix multiplies that involve only activations), several exponent bias choices in the [7, 10] range lead to results matching the bfloat16 baseline. However, if we also quantize to FP8 the residual connections (input tensors for the",
+      "cited_table": {
+        "num_columns": 5,
+        "rows": [
+          [
+            "Model",
+            "Dataset (metric)",
+            "16-bit FP",
+            "int8",
+            "E4M3"
+          ],
+          [
+            "BERT Base",
+            "SQUAD v1.1 (F1)",
+            "88.19",
+            "76.89",
+            "88.09"
+          ],
+          [
+            "BERT Large",
+            "SQUAD v1.1 (F1)",
+            "90.87",
+            "89.65",
+            "90.94"
+          ],
+          [
+            "GPT3 126M",
+            "wikitext103 (perplexity)",
+            "19.01",
+            "28.37",
+            "19.43"
+          ],
+          [
+            "GPT3 1.3B",
+            "wikitext103 (perplexity)",
+            "10.19",
+            "12.74",
+            "10.29"
+          ],
+          [
+            "GPT3 6.7B",
+            "wikitext103 (perplexity)",
+            "8.51",
+            "10.29",
+            "8.41"
+          ]
+        ]
+      }
+    },
+    {
+      "source_id": "c761f479-862c-450a-a47d-3154c314f260",
+      "citation_number": 21,
+      "cited_text": "While the mechanics of type conversion are orthogonal to the binary format, we briefly touch on some aspects for completeness of DL uses. Converting a special value from a wider precision to FP8 results in the corresponding special value in FP8. For conversions to E4M3 this means that both infinities and NaNs in the wider type (for example, single precision) turn into NaNs in FP8. This handling of special values is needed when using mixed precision training that involves both FP8 and FP16 types, since automatic mixed precision [13] run-time adjustment of loss-scaling relies on causing and detecting overflows. In addition, non-saturating mode of conversion can be provided for usecases that may require a strict handling of overflows. Rounding mode (round to nearest even, stochastic, etc.) choice is orthogonal to the interchange format is left up to the implementation, software and possibly hardware, for maximum flexibility."
+    },
+    {
+      "source_id": "c761f479-862c-450a-a47d-3154c314f260",
+      "citation_number": 22,
+      "cited_text": "6 Add operations, which further reduces pressure on both storage and memory bandwidth) then no single exponent bias value leads to sufficient accuracy - even exponent bias of 7 results in perplexity of 12.59 which is significantly higher (worse) than 10.19 for the bfloat16 baseline. However, if instead we calibrate the tensors to have their own scaling factors (following the convention of int8 quantization to use per-channel and per-tensor scaling factors for weights and activations, respectively [23]) we achieve 10.29 and 10.44 perplexities for GEMM-only and GEMM+residuals FP8 inference."
+    },
+    {
+      "source_id": "c761f479-862c-450a-a47d-3154c314f260",
+      "citation_number": 23,
+      "cited_text": "We evaluate FP8 post-training quantization of models trained in 16-bit floating point. Table 5 lists inference accuracies for FP16-trained models quantized to either int8 or E4M3 for inference. Both quantizations use per-channel scaling factors for weights, per-tensor scaling factors for activations, as is common for int8 fixed-point. All input tensors to matrix-multiply operations (including attention batched matrix multiplies) were quantized. Max-calibration (choosing the scaling factor so that the maximum magnitude in a tensor is represented) is used for weights, activation tensors are calibrated using the best calibration chosen from max, percentile, and MSE methods. BERT language model evaluation on Stanford Question Answering Dataset shows that FP8 PTQ maintains accuracy while int8 PTQ leads to a significant loss of model accuracy. We also tried casting the tensors to FP8 without applying a scaling factor, which resulted in a significant accuracy loss, increasing the perplexity to 11.0. Evaluation of GPT models on wikitext103 dataset shows that while FP8 PTQ is much better at retaining model accuracy compared to int8."
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 24,
+      "cited_text": "1. Block quantization: we keep one scalar per block, so that for each of Q, K, V we split the tensor into blocks of size $B_{r}\\times d$ or $B_{c}\\times d$ and quantize them separately. This quantization can be fused with an operation right before attention (e.g., rotary embedding) with no additional slow down (since rotary embedding is memory-bandwidth bound). As the FLASHATTENTION-3 algorithm naturally operates on blocks, we can scale each block of S to account for this block quantization at no computation cost."
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 25,
+      "cited_text": "{d0 d1 d4 d5 d2 d3 d6 d7}, and this register permutation is then replicated over every 8 bytes. In terms of the logical shape of the P tile, this manuever permutes its columns (e.g., columns 0189 now become the first four columns). For WGMMA to then compute the correct output tile, we can correspondingly arrange for the in-kernel transpose to write out a matching row permutation of the V tile.9 Accuracy: block quantization and incoherent processing. With FP8 (e4m3) format, one only uses 3 bits to store the mantissa and 4 bits for the exponent. This results in higher numerical error than FP16/BF16. Moreover, large models typically have outlier values [20, 54] that are much larger in magnitude than most other values, making quantization difficult. One typically use per-tensor scaling [37] by keeping one scalar per tensor (e.g., one for Q, for K, and for V). To reduce the numerical error of attention in FP8, we employ two techniques:"
+    },
+    {
+      "source_id": "3ed43e6e-5c92-4a55-81a6-4e5cb6653690",
+      "citation_number": 26,
+      "cited_text": "9This additional freedom afforded by doing the in-kernel transpose eliminates having to use shuffle instructions to change register ownership across threads, which we previously described in [7]. 8 2. Incoherent processing: to even out outliers, we multiply Q and K with a random orthogonal matrix M before quantizing to FP8. Since M is orthogonal, $MM^{\\top}=I$ and so $(QM)(KM)^{\\top}=QK^{\\top}$, i.e., multiplying both Q and K with M does not change the attention output. This serves to \"spread out\" the outliers since each entry of QM or KM is a random sum of entries of Q or K, thus reducing quantization error. In practice, we follow Chee et al. [9] and Tseng et al. [58] and choose M to be the product of random diagonal matrices of ±1 and a Hadamard matrix, which can be multiplied in $O(d~log~d)$ instead of $O(d^{2}),$ and can also be fused with the rotary embedding at no extra computation cost."
+    }
+  ]
+}

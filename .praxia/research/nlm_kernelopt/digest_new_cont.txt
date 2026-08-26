@@ -1,0 +1,61 @@
+
+===== Q09-cont (q09_jax11_primitives.json) =====
+g everything, the `policy` argument on `jax.checkpoint` lets users define exactly what gets saved `[15]`. Developers can label intermediate variables in their model using `jax.ad_checkpoint.checkpoint_name()` `[16, 17]`. They then apply policy constructors from `jax.checkpoint_policies` `[16]:`
+    *   `save_only_these_names(*names)`: Keeps named values on-device and recomputes everything else `[16]`.
+    *   `save_any_names_but_these(*names)`: Saves all named intermediates except those specified `[16]`.
+    *   `save_and_offload_only_these_names(...)`: Instead of choosing between storing on-device or recomputing, this policy **offloads** specified residuals from device (GPU/TPU) memory to pinned host (CPU) memory after the forward pass, and fetches them back when needed in the backward pass `[18, 19]`. This trades PCIe transfer bandwidth for device memory footprint `[18, 20]`.
+*   **`custom_remat`**: For extreme control, `jax.custom_remat(f, f_fwd, f_rem, f_bwd)` allows kernel or library authors to override the remat behavior of a function entirely `[21, 22]`. Authors define custom forward passes (deciding what to keep based on the ambient policy), custom rematerialization passes, and custom backward rules `[22]`. For example, a custom `jnp.sin` can be configured to always save its cosine derivative to avoid recomputing sines or cosines entirely `[23]`.
+*   **Recursive Checkpointing**: For deep sequential architectures, recursive application of `jax.checkpoint` allows memory consumption to scale logarithmically with depth (\\(\mathcal{O}(\log_2 D)\\)) instead of linearly (\\(\mathcal{O}(D)\\)) `[24, 25]`.
+*   **Scan Integration**: While XLA's automatic compiler-level remat pass works well for simple graphs, it struggles across structured control-flow loops `[26, 27]`. Manually applying `jax.checkpoint` to the loop body function passed to `jax.lax.scan` is a standard technique to prevent extreme memory bloat `[27, 28]`.
+
+---
+
+### 3. `shard_map` (Manual SPMD Multi-Device Parallelism)
+While `pjit` compiles programs from a "global view" and relies on the compiler to automatically insert collectives `[29-31]`, **`shard_map`** acts as a single-program multiple-data (SPMD) multi-device parallelism API `[31, 32]`. It lets programmers bypass compiler automatic partitioning, dropping into a "manual collectives" mode inside `jax.jit` to write hand-optimized parallel partitions `[31, 33]`.
+
+Its behavior differs fundamentally from other mapping transforms:
+*   **Rank-Preserving Semantics**: Unlike `vmap` (which is rank-reducing and adds/removes batch dimensions) `[34, 35]`, `shard_map` is **rank-preserving** `[34, 36]`. Logically, it slices ("unconcentates") inputs into block shards along target mesh axes, executes the mapped function on individual devices, and concatenates the resulting output blocks back together `[36, 37]`.
+*   **Tiling & Un-tiling (Implicit Resharding)**:
+    *   *Tiling*: If a mesh axis is not mentioned in an input PartitionSpec (`in_specs`), `shard_map` logically tiles/replicates the input array across that mesh axis, making a copy available to all participating devices `[38-40]`.
+    *   *Un-tiling*: If a mesh axis name is omitted
+
+===== Q11-cont (q11_measurement_methodology.json) =====
+on** plot their achieved TFLOP/s directly alongside **Roofline ceilings** representing the absolute physical bandwidth boundaries of the hardware [13, 14]. MARLIN pairs its benchmarks not just against standard PyTorch (calling optimized CUTLASS), but also against four heavily optimized, specialized open-source kernels: AWQ, bitsandbytes, ExLlamaV2, and an "Ideal" weight-loading roofline [15, 16].
+    *   *Takeaway*: Compare against the strongest specialized open-source competitors, and visually map your kernel to the physical hardware boundaries to prove how close you are to optimality.
+*   **Industrial/Months-of-Effort Production Pipelines (Halide)**:
+    *   **Halide** avoids comparing its compiled code to "clean" standard C++ [17]. Instead, it evaluates its autotuned pipelines against **Adobe production code** optimized over months using OpenMP, heterogeneous CPU+GPU execution, and hand-written assembly routines from Intel Performance Primitives (IPP) [17-19].
+    *   *Takeaway*: If a vendor or production library exists, benchmark your compiler or custom kernel directly against its most aggressive, production-ready implementation.
+*   **Granular Domain Swe Sweeps (ADEPT)**:
+    *   **ADEPT** evaluates its local alignment engine against CPU SIMD libraries (SSW, SeqAn) and specialized GPU alignment engines (GASAL2, NVBIO) [20]. Rather than testing one sequence length, they sweep across three distinct DNA datasets and three Protein datasets of widely varying query lengths to show exactly where the hardware bottleneck shifts from instruction overhead to compute density [21-23].
+    *   *Takeaway*: Run multi-dimensional sweeps of input dimensions (such as sequence lengths, batch sizes, or channel widths) to expose where your optimizations succeed or hit hardware walls.
+
+---
+
+### 3. Rigorous Ablation and Trade-Off Architectures
+The best performance papers perform deep surgery on their own systems to isolate the exact source of their speedups:
+
+*   **Framework-to-Kernel Trade-off Dissection (vLLM / PagedAttention)**:
+    *   **vLLM** provides an extraordinarily honest ablation study [24]. It microbenchmarks the **Attention Kernel alone** vs. the **End-to-End serving engine** [24]. It openly reports that introducing block table indirection, extra branches, and variable-length padding checks makes its raw PagedAttention GPU kernel **20–26% slower** than FasterTransformer’s highly optimized contiguous attention kernel [24]. However, it immediately pairs this with an end-to-end ablation showing that because PagedAttention eliminates physical memory fragmentation, it enables massive batch sizes that yield a **2–4x overall throughput speedup** [24-26].
+    *   They also perform detailed sweeps to evaluate the exact crossover points of recovery mechanisms (**Recomputation vs. Swapping**) across varying block sizes [27].
+*   **Hardware and Threading-Level Ablation Tables (FlashAttention-3)**:
+    *   **FlashAttention-3** isolates its dual optimizations in a clean ablation matrix (Table 2) [28]. It compares its peak FP16 forward performance (661 TFLOPS) directly against configurations with **No GEMM-Softmax Pipelining** (582 TFLOPS) and **No Warp-Speciali
+
+===== Q12-cont (q12_contradictions.json) =====
+2, 13]`. It relies on a decentralized, modular technology stack where the JAX core is narrowly-scoped and composable program transformations (like `vmap` and `grad`) operate globally on array types `[14-16]`. 
+
+#### The Resulting Friction Points
+*   **Triton’s Rejection of Separation**: Triton explicitly rejects the strict Halide-style division of algorithm and schedule `[17]`. Instead, Triton embeds block-level parametric tiling (using tunable variables like `TM`, `TN`, `TK`) directly *inside* the single-threaded tiled kernel code `[3, 18]`. It trades away strict algorithm-schedule separation to provide programmers with a more familiar, imperative, CUDA-like model where execution schedules are inferred automatically from tile-level operations `[17, 19]`.
+*   **The "Opaque Kernel" Problem in JAX**: Because JAX values functional modularity, it suffers from a performance cliff when developers must write custom low-level GPU kernels `[20, 21]`. While expert "escape hatches" like Pallas are necessary to achieve bare-metal performance, a Pallas kernel is structurally **opaque to the XLA compiler** `[20, 22]`. As a result, XLA can no longer perform automatic inter-operator fusions, global memory planning, or asynchronous scheduling across the boundaries of custom-written blocks `[22]`.
+*   **Compiler Optimization Failures**: When compiler automation attempts to manage memory-time trade-offs dynamically, it often fails. JAX developers frequently find that XLA’s automatic rematerialization pass makes poor choices, forcing experts to disable the automatic pass and manually coordinate memory checkpointing via name-based `jax.checkpoint` policies to avoid OOM crashes `[23]`.
+
+---
+
+### Tension 2: Autotuning vs. Hand-Tuning (Microarchitectural Specialization)
+
+The second structural tension lies in *how* optimal performance is achieved: should we rely on **stochastic search engines (autotuners)** to find optimal schedules, or must we rely on **expert hand-tuning** to manually exploit highly volatile, undocumented hardware quirks?
+
+#### The Autotuner Perspective: Humans Cannot Navigate the Search Space
+Autotuning frameworks argue that modern processors are too complex for humans to schedule optimally:
+*   **Combinatorial Explosion**: Halide establishes that even moderately complex image processing pipelines have search spaces with a lower bound of \\(10^{720}\\) unique scheduling configurations `[24]`. Human programmers cannot hope to navigate this multi-dimensional space of tiling, unrolling, and storage granularities `[24]`.
+*   **Counter-Intuitive Solutions**: Halide’s autotuner frequently discovers scheduling configurations that are completely counter-intuitive to human experts—such as *sacrificing* raw thread-level parallelism to minimize thread synchronization overheads, or introducing redundant computation to improve SRAM data locality `[25, 26]`. This allows simple, short programs to run up to **5x faster** than human-optimized equivalents that took weeks to build `[9, 27]`.
+*   **Bypassing Template Limits (Ansor)**: Traditional autotuners (like AutoTVM) are throttled because they rely on rigid, manually written code templates `[28, 29]`. Ansor solv

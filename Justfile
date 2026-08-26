@@ -54,7 +54,7 @@ audit-routing-contract:
     uv run pytest tests/audit/test_routing_toml.py tests/audit/test_routing_engine.py -v
 
 audit-tombstone-contract:
-    uv run ruff check src/xtrax/devtools/tombstone.py tests/audit/test_tombstone_ledger.py src/xtrax/devtools/emit.py
+    uv run ruff check src/xtrax/tombstone.py tests/audit/test_tombstone_ledger.py src/xtrax/findings.py
     uv run pytest tests/audit/test_tombstone_ledger.py tests/audit/test_emit_contract.py -v
 
 audit-rubrics-contract:

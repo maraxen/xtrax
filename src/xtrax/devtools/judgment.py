@@ -7,7 +7,6 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from xtrax.devtools.emit import Severity, append_finding, emit_judgment_finding
 from xtrax.devtools.routing import DEFAULT_ROUTING_PATH, resolve_destination
 from xtrax.devtools.rubrics import (
     DEFAULT_RUBRICS_DIR,
@@ -15,6 +14,7 @@ from xtrax.devtools.rubrics import (
     load_all_rubrics,
     load_rubric,
 )
+from xtrax.findings import Severity, append_finding, emit_judgment_finding
 
 DEFAULT_DISPATCH_PATH = Path("audit/judgment_dispatch.toml")
 

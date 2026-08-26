@@ -16,7 +16,7 @@ from xtrax.devtools.baseline import (
     save_baseline,
     update_metric,
 )
-from xtrax.devtools.emit import SchemaVersionMismatchError
+from xtrax.findings import SchemaVersionMismatchError
 
 SEED_BASELINE = AuditBaseline(
     schema_version=BASELINE_SCHEMA_VERSION,

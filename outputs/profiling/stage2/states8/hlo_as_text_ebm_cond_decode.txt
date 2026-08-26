@@ -1,0 +1,1528 @@
+HloModule jit__decode, is_scheduled=true, entry_computation_layout={(u32[2]{0})->(s32[], f32[208,21]{1,0})}, allow_spmd_sharding_propagation_to_parameters={true}, allow_spmd_sharding_propagation_to_output={true,true}, frontend_attributes={fingerprint_before_lhs="c3d3dbb565a37fc644ee32dc2b5f5302"}
+
+FileNames
+1 "/orcd/pool/008/so3_shared/marielle/projects/aminx/scripts/profiling/dogfood_stage2_dispatch.py"
+2 "/orcd/scratch/orcd/011/maarxaru/venvs/aminx/lib/python3.14/site-packages/equinox/_jit.py"
+3 "/orcd/pool/008/so3_shared/marielle/projects/aminx/src/aminx/inference/decode/conditional.py"
+4 "/orcd/scratch/orcd/011/maarxaru/venvs/aminx/lib/python3.14/site-packages/xtrax/tiling/iterator.py"
+5 "/orcd/scratch/orcd/011/maarxaru/venvs/aminx/lib/python3.14/site-packages/xtrax/transforms/map.py"
+6 "/orcd/pool/008/so3_shared/marielle/projects/aminx/src/aminx/inference/decode/_kernel.py"
+7 "/orcd/scratch/orcd/011/maarxaru/venvs/aminx/lib/python3.14/site-packages/equinox/_module/_prebuilt.py"
+8 "/orcd/pool/008/so3_shared/marielle/projects/aminx/src/aminx/model/decoder.py"
+9 "/orcd/pool/008/so3_shared/marielle/projects/aminx/src/aminx/inference/decode/_base.py"
+10 "/orcd/pool/008/so3_shared/marielle/projects/aminx/src/aminx/inference/logits.py"
+11 "/orcd/scratch/orcd/011/maarxaru/venvs/aminx/lib/python3.14/site-packages/equinox/nn/_mlp.py"
+12 "/orcd/scratch/orcd/011/maarxaru/venvs/aminx/lib/python3.14/site-packages/equinox/nn/_linear.py"
+13 "/orcd/scratch/orcd/011/maarxaru/venvs/aminx/lib/python3.14/site-packages/equinox/nn/_normalisation.py"
+14 "/orcd/scratch/orcd/011/maarxaru/venvs/aminx/lib/python3.14/site-packages/equinox/_vmap_pmap.py"
+15 "/orcd/pool/008/so3_shared/marielle/projects/aminx/src/aminx/utils/concatenate.py"
+
+FunctionNames
+1 "<module>"
+2 "main"
+3 "run_case"
+4 "_JitWrapper.__call__"
+5 "_call"
+6 "_filter_jit_cache.<locals>.fun_wrapped"
+7 "run_case.<locals>._decode"
+8 "ConditionalDecode.__call__"
+9 "SafeMapIterator.__call__"
+10 "safe_map"
+11 "ConditionalDecode.__call__.<locals>.per_state_fn"
+12 "_decode_one_step"
+13 "BoundMethod.__call__"
+14 "Decoder.call_conditional"
+15 "DecoderLayer.__call__"
+16 "_ConditionalDecodeBase._apply_logit_transform"
+17 "ArithmeticMeanLogits.__call__"
+18 "_ConditionalDecodeBase._apply_tie_group_fuse"
+19 "pack_conditional_decoder_static_edges"
+20 "MLP.__call__"
+21 "Linear.__call__"
+22 "_project_logits"
+23 "LayerNorm.__call__"
+24 "_realign_states_to_reference"
+25 "_VmapWrapper.__call__"
+26 "_VmapWrapper.__call__.<locals>._fun_wrapper"
+27 "<lambda>"
+28 "conditional_decoder_layer_edge_features"
+29 "concatenate_neighbor_nodes"
+30 "_ConditionalDecodeBase._apply_tie_group_fuse.<locals>.<lambda>"
+31 "TieGroupProductOfExperts.__call__"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=337 end_line=337 column=21 end_column=27}
+2 {file_name_id=1 function_name_id=2 line=311 end_line=318 column=12 end_column=13}
+3 {file_name_id=1 function_name_id=3 line=196 end_line=196 column=8 end_column=18}
+4 {file_name_id=2 function_name_id=4 line=209 end_line=209 column=19 end_column=51}
+5 {file_name_id=2 function_name_id=5 line=263 end_line=265 column=37 end_column=17}
+6 {file_name_id=2 function_name_id=6 line=55 end_line=55 column=14 end_column=34}
+7 {file_name_id=1 function_name_id=7 line=191 end_line=191 column=23 end_column=98}
+8 {file_name_id=3 function_name_id=8 line=147 end_line=147 column=14 end_column=76}
+9 {file_name_id=4 function_name_id=9 line=151 end_line=151 column=15 end_column=53}
+10 {file_name_id=5 function_name_id=10 line=30 end_line=30 column=15 end_column=31}
+11 {file_name_id=3 function_name_id=11 line=131 end_line=142 column=13 end_column=7}
+12 {file_name_id=6 function_name_id=12 line=73 end_line=83 column=9 end_column=3}
+13 {file_name_id=7 function_name_id=13 line=46 end_line=46 column=15 end_column=60}
+14 {file_name_id=8 function_name_id=14 line=731 end_line=737 column=27 end_column=7}
+15 {file_name_id=8 function_name_id=15 line=340 end_line=340 column=29 end_column=53}
+16 {file_name_id=3 function_name_id=8 line=154 end_line=156 column=19 end_column=5}
+17 {file_name_id=9 function_name_id=16 line=126 end_line=126 column=11 end_column=55}
+18 {file_name_id=10 function_name_id=17 line=95 end_line=95 column=17 end_column=49}
+19 {file_name_id=3 function_name_id=8 line=157 end_line=157 column=11 end_column=85}
+20 {file_name_id=9 function_name_id=18 line=162 end_line=162 column=17 end_column=44}
+21 {file_name_id=8 function_name_id=14 line=709 end_line=717 column=6 end_column=7}
+22 {file_name_id=8 function_name_id=19 line=124 end_line=124 column=22 end_column=54}
+23 {file_name_id=8 function_name_id=15 line=331 end_line=331 column=14 end_column=61}
+24 {file_name_id=11 function_name_id=20 line=191 end_line=191 column=20 end_column=28}
+25 {file_name_id=12 function_name_id=21 line=97 end_line=97 column=12 end_column=27}
+26 {file_name_id=11 function_name_id=20 line=193 end_line=193 column=16 end_column=34}
+27 {file_name_id=8 function_name_id=15 line=348 end_line=348 column=14 end_column=39}
+28 {file_name_id=3 function_name_id=8 line=150 end_line=150 column=19 end_column=55}
+29 {file_name_id=6 function_name_id=22 line=110 end_line=110 column=9 end_column=71}
+30 {file_name_id=8 function_name_id=15 line=350 end_line=350 column=10 end_column=35}
+31 {file_name_id=13 function_name_id=23 line=150 end_line=150 column=19 end_column=44}
+32 {file_name_id=13 function_name_id=23 line=151 end_line=151 column=19 end_column=45}
+33 {file_name_id=13 function_name_id=23 line=152 end_line=152 column=28 end_column=47}
+34 {file_name_id=13 function_name_id=23 line=152 end_line=152 column=14 end_column=48}
+35 {file_name_id=13 function_name_id=23 line=153 end_line=153 column=14 end_column=30}
+36 {file_name_id=13 function_name_id=23 line=153 end_line=153 column=15 end_column=23}
+37 {file_name_id=13 function_name_id=23 line=149 end_line=149 column=15 end_column=41}
+38 {file_name_id=8 function_name_id=15 line=349 end_line=349 column=10 end_column=72}
+39 {file_name_id=12 function_name_id=21 line=99 end_line=99 column=16 end_column=29}
+40 {file_name_id=8 function_name_id=15 line=345 end_line=345 column=10 end_column=35}
+41 {file_name_id=8 function_name_id=15 line=344 end_line=344 column=10 end_column=93}
+42 {file_name_id=10 function_name_id=17 line=92 end_line=92 column=22 end_column=48}
+43 {file_name_id=9 function_name_id=16 line=123 end_line=123 column=15 end_column=71}
+44 {file_name_id=6 function_name_id=24 line=249 end_line=249 column=13 end_column=73}
+45 {file_name_id=10 function_name_id=17 line=84 end_line=84 column=12 end_column=58}
+46 {file_name_id=11 function_name_id=20 line=192 end_line=192 column=20 end_column=60}
+47 {file_name_id=14 function_name_id=25 line=169 end_line=176 column=42 end_column=27}
+48 {file_name_id=14 function_name_id=26 line=154 end_line=154 column=19 end_column=36}
+49 {file_name_id=11 function_name_id=27 line=25 end_line=25 column=40 end_column=44}
+50 {file_name_id=8 function_name_id=15 line=328 end_line=328 column=16 end_column=80}
+51 {file_name_id=8 function_name_id=14 line=722 end_line=728 column=28 end_column=7}
+52 {file_name_id=8 function_name_id=28 line=189 end_line=189 column=9 end_column=76}
+53 {file_name_id=8 function_name_id=28 line=189 end_line=189 column=10 end_column=28}
+54 {file_name_id=8 function_name_id=28 line=184 end_line=188 column=21 end_column=3}
+55 {file_name_id=15 function_name_id=29 line=28 end_line=28 column=9 end_column=69}
+56 {file_name_id=15 function_name_id=29 line=27 end_line=27 column=22 end_column=53}
+57 {file_name_id=8 function_name_id=19 line=138 end_line=142 column=27 end_column=3}
+58 {file_name_id=8 function_name_id=15 line=322 end_line=325 column=27 end_column=5}
+59 {file_name_id=10 function_name_id=17 line=101 end_line=101 column=13 end_column=42}
+60 {file_name_id=10 function_name_id=17 line=101 end_line=101 column=26 end_column=42}
+61 {file_name_id=10 function_name_id=17 line=97 end_line=97 column=14 end_column=47}
+62 {file_name_id=10 function_name_id=17 line=97 end_line=97 column=22 end_column=38}
+63 {file_name_id=10 function_name_id=17 line=96 end_line=96 column=14 end_column=53}
+64 {file_name_id=9 function_name_id=18 line=171 end_line=171 column=11 end_column=53}
+65 {file_name_id=9 function_name_id=18 line=170 end_line=170 column=14 end_column=28}
+66 {file_name_id=9 function_name_id=18 line=165 end_line=167 column=12 end_column=5}
+67 {file_name_id=9 function_name_id=30 line=165 end_line=165 column=41 end_column=86}
+68 {file_name_id=10 function_name_id=31 line=435 end_line=435 column=11 end_column=68}
+69 {file_name_id=10 function_name_id=31 line=435 end_line=435 column=19 end_column=59}
+70 {file_name_id=10 function_name_id=31 line=434 end_line=434 column=16 end_column=51}
+71 {file_name_id=9 function_name_id=18 line=161 end_line=161 column=17 end_column=65}
+72 {file_name_id=3 function_name_id=8 line=113 end_line=116 column=19 end_column=5}
+73 {file_name_id=8 function_name_id=19 line=147 end_line=147 column=30 end_column=48}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+2 {file_location_id=2 parent_frame_id=2}
+3 {file_location_id=3 parent_frame_id=3}
+4 {file_location_id=4 parent_frame_id=4}
+5 {file_location_id=5 parent_frame_id=5}
+6 {file_location_id=6 parent_frame_id=6}
+7 {file_location_id=7 parent_frame_id=7}
+8 {file_location_id=8 parent_frame_id=8}
+9 {file_location_id=9 parent_frame_id=9}
+10 {file_location_id=10 parent_frame_id=10}
+11 {file_location_id=11 parent_frame_id=11}
+12 {file_location_id=12 parent_frame_id=12}
+13 {file_location_id=13 parent_frame_id=13}
+14 {file_location_id=14 parent_frame_id=14}
+15 {file_location_id=15 parent_frame_id=15}
+16 {file_location_id=16 parent_frame_id=8}
+17 {file_location_id=17 parent_frame_id=17}
+18 {file_location_id=18 parent_frame_id=18}
+19 {file_location_id=19 parent_frame_id=8}
+20 {file_location_id=20 parent_frame_id=20}
+21 {file_location_id=21 parent_frame_id=14}
+22 {file_location_id=22 parent_frame_id=22}
+23 {file_location_id=23 parent_frame_id=15}
+24 {file_location_id=24 parent_frame_id=24}
+25 {file_location_id=25 parent_frame_id=25}
+26 {file_location_id=26 parent_frame_id=24}
+27 {file_location_id=25 parent_frame_id=27}
+28 {file_location_id=27 parent_frame_id=15}
+29 {file_location_id=24 parent_frame_id=29}
+30 {file_location_id=25 parent_frame_id=30}
+31 {file_location_id=26 parent_frame_id=29}
+32 {file_location_id=25 parent_frame_id=32}
+33 {file_location_id=28 parent_frame_id=8}
+34 {file_location_id=29 parent_frame_id=34}
+35 {file_location_id=25 parent_frame_id=35}
+36 {file_location_id=30 parent_frame_id=15}
+37 {file_location_id=31 parent_frame_id=37}
+38 {file_location_id=32 parent_frame_id=37}
+39 {file_location_id=33 parent_frame_id=37}
+40 {file_location_id=34 parent_frame_id=37}
+41 {file_location_id=35 parent_frame_id=37}
+42 {file_location_id=36 parent_frame_id=37}
+43 {file_location_id=37 parent_frame_id=37}
+44 {file_location_id=38 parent_frame_id=15}
+45 {file_location_id=39 parent_frame_id=32}
+46 {file_location_id=40 parent_frame_id=15}
+47 {file_location_id=31 parent_frame_id=47}
+48 {file_location_id=32 parent_frame_id=47}
+49 {file_location_id=33 parent_frame_id=47}
+50 {file_location_id=34 parent_frame_id=47}
+51 {file_location_id=35 parent_frame_id=47}
+52 {file_location_id=36 parent_frame_id=47}
+53 {file_location_id=37 parent_frame_id=47}
+54 {file_location_id=41 parent_frame_id=15}
+55 {file_location_id=42 parent_frame_id=18}
+56 {file_location_id=43 parent_frame_id=17}
+57 {file_location_id=44 parent_frame_id=57}
+58 {file_location_id=39 parent_frame_id=35}
+59 {file_location_id=45 parent_frame_id=18}
+60 {file_location_id=46 parent_frame_id=29}
+61 {file_location_id=47 parent_frame_id=61}
+62 {file_location_id=48 parent_frame_id=62}
+63 {file_location_id=49 parent_frame_id=63}
+64 {file_location_id=39 parent_frame_id=30}
+65 {file_location_id=39 parent_frame_id=27}
+66 {file_location_id=46 parent_frame_id=24}
+67 {file_location_id=47 parent_frame_id=67}
+68 {file_location_id=48 parent_frame_id=68}
+69 {file_location_id=49 parent_frame_id=69}
+70 {file_location_id=39 parent_frame_id=25}
+71 {file_location_id=50 parent_frame_id=15}
+72 {file_location_id=51 parent_frame_id=14}
+73 {file_location_id=52 parent_frame_id=73}
+74 {file_location_id=53 parent_frame_id=73}
+75 {file_location_id=54 parent_frame_id=73}
+76 {file_location_id=55 parent_frame_id=76}
+77 {file_location_id=56 parent_frame_id=76}
+78 {file_location_id=57 parent_frame_id=22}
+79 {file_location_id=56 parent_frame_id=79}
+80 {file_location_id=58 parent_frame_id=15}
+81 {file_location_id=59 parent_frame_id=18}
+82 {file_location_id=60 parent_frame_id=18}
+83 {file_location_id=61 parent_frame_id=18}
+84 {file_location_id=62 parent_frame_id=18}
+85 {file_location_id=63 parent_frame_id=18}
+86 {file_location_id=64 parent_frame_id=20}
+87 {file_location_id=65 parent_frame_id=20}
+88 {file_location_id=66 parent_frame_id=20}
+89 {file_location_id=67 parent_frame_id=89}
+90 {file_location_id=68 parent_frame_id=90}
+91 {file_location_id=69 parent_frame_id=90}
+92 {file_location_id=70 parent_frame_id=90}
+93 {file_location_id=71 parent_frame_id=20}
+94 {file_location_id=72 parent_frame_id=8}
+95 {file_location_id=73 parent_frame_id=22}
+
+
+%gemm_fusion_dot_computation (parameter_0: f32[1664,21], parameter_1: f32[21,64]) -> f32[1664,64] {
+  %parameter_0 = f32[1664,21]{1,0} parameter(0)
+  %parameter_1 = f32[21,64]{1,0} parameter(1)
+  ROOT %dot.12 = f32[1664,64]{1,0} dot(%parameter_0, %parameter_1), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/dot_general" stack_frame_id=22}, backend_config={"sizes":["32"]}
+}
+
+%gemm_fusion_dot.1_computation (parameter_0.1: f32[64,256], parameter_1.1: f32[256,8320]) -> f32[64,8320] {
+  %parameter_0.1 = f32[64,256]{1,0} parameter(0)
+  %parameter_1.1 = f32[256,8320]{0,1} parameter(1)
+  ROOT %dot.13 = f32[64,8320]{1,0} dot(%parameter_0.1, %parameter_1.1), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" stack_frame_id=25}, backend_config={"sizes":["32"]}
+}
+
+%gemm_fusion_dot.2_computation (parameter_0.2: f32[64,64], parameter_1.2: f32[64,8320]) -> f32[64,8320] {
+  %parameter_0.2 = f32[64,64]{1,0} parameter(0)
+  %parameter_1.2 = f32[64,8320]{1,0} parameter(1)
+  ROOT %dot.14 = f32[64,8320]{1,0} dot(%parameter_0.2, %parameter_1.2), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" stack_frame_id=25}, backend_config={"sizes":["16"]}
+}
+
+%gemm_fusion_dot.3_computation (parameter_0.3: f32[64,64], parameter_1.3: f32[64,8320]) -> f32[64,8320] {
+  %parameter_0.3 = f32[64,64]{1,0} parameter(0)
+  %parameter_1.3 = f32[64,8320]{1,0} parameter(1)
+  ROOT %dot.15 = f32[64,8320]{1,0} dot(%parameter_0.3, %parameter_1.3), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" stack_frame_id=27}, backend_config={"sizes":["16"]}
+}
+
+%gemm_fusion_dot.4_computation (parameter_0.4: f32[256,64], parameter_1.4: f32[64,1664]) -> f32[256,1664] {
+  %parameter_0.4 = f32[256,64]{1,0} parameter(0)
+  %parameter_1.4 = f32[64,1664]{0,1} parameter(1)
+  ROOT %dot.16 = f32[256,1664]{1,0} dot(%parameter_0.4, %parameter_1.4), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" stack_frame_id=30}, backend_config={"sizes":["32"]}
+}
+
+%gemm_fusion_dot.5_computation (parameter_0.5: f32[64,256], parameter_1.5: f32[256,1664]) -> f32[64,1664] {
+  %parameter_0.5 = f32[64,256]{1,0} parameter(0)
+  %parameter_1.5 = f32[256,1664]{1,0} parameter(1)
+  ROOT %dot.17 = f32[64,1664]{0,1} dot(%parameter_0.5, %parameter_1.5), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" stack_frame_id=32}, backend_config={"sizes":["64"]}
+}
+
+%gemm_fusion_dot.6_computation (parameter_0.6: f32[64,256], parameter_1.6: f32[256,8320]) -> f32[64,8320] {
+  %parameter_0.6 = f32[64,256]{1,0} parameter(0)
+  %parameter_1.6 = f32[256,8320]{0,1} parameter(1)
+  ROOT %dot.18 = f32[64,8320]{1,0} dot(%parameter_0.6, %parameter_1.6), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" stack_frame_id=25}, backend_config={"sizes":["32"]}
+}
+
+%gemm_fusion_dot.7_computation (parameter_0.7: f32[64,64], parameter_1.7: f32[64,8320]) -> f32[64,8320] {
+  %parameter_0.7 = f32[64,64]{1,0} parameter(0)
+  %parameter_1.7 = f32[64,8320]{1,0} parameter(1)
+  ROOT %dot.19 = f32[64,8320]{1,0} dot(%parameter_0.7, %parameter_1.7), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" stack_frame_id=25}, backend_config={"sizes":["16"]}
+}
+
+%gemm_fusion_dot.8_computation (parameter_0.8: f32[64,64], parameter_1.8: f32[64,8320]) -> f32[64,8320] {
+  %parameter_0.8 = f32[64,64]{1,0} parameter(0)
+  %parameter_1.8 = f32[64,8320]{1,0} parameter(1)
+  ROOT %dot.20 = f32[64,8320]{1,0} dot(%parameter_0.8, %parameter_1.8), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" stack_frame_id=27}, backend_config={"sizes":["16"]}
+}
+
+%gemm_fusion_dot.9_computation (parameter_0.9: f32[256,64], parameter_1.9: f32[64,1664]) -> f32[256,1664] {
+  %parameter_0.9 = f32[256,64]{1,0} parameter(0)
+  %parameter_1.9 = f32[64,1664]{0,1} parameter(1)
+  ROOT %dot.21 = f32[256,1664]{1,0} dot(%parameter_0.9, %parameter_1.9), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" stack_frame_id=30}, backend_config={"sizes":["32"]}
+}
+
+%gemm_fusion_dot.10_computation (parameter_0.10: f32[64,256], parameter_1.10: f32[256,1664]) -> f32[64,1664] {
+  %parameter_0.10 = f32[64,256]{1,0} parameter(0)
+  %parameter_1.10 = f32[256,1664]{1,0} parameter(1)
+  ROOT %dot.22 = f32[64,1664]{0,1} dot(%parameter_0.10, %parameter_1.10), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" stack_frame_id=32}, backend_config={"sizes":["64"]}
+}
+
+%gemm_fusion_dot.11_computation (parameter_0.11: f32[21,64], parameter_1.11: f32[64,1664]) -> f32[21,1664] {
+  %parameter_1.11 = f32[64,1664]{0,1} parameter(1)
+  %parameter_0.11 = f32[21,64]{1,0} parameter(0)
+  %dot.24 = f32[1664,21]{0,1} dot(%parameter_1.11, %parameter_0.11), lhs_contracting_dims={0}, rhs_contracting_dims={1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.Linear))/dot_general" stack_frame_id=35}, backend_config={"sizes":["64"]}
+  ROOT %bitcast.1059 = f32[21,1664]{1,0} bitcast(%dot.24), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.Linear))/dot_general" stack_frame_id=35}
+}
+
+%region_1.6.clone.4 (reduce_sum.80: f32[], reduce_sum.81: f32[]) -> f32[] {
+  %reduce_sum.80 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.81 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.85.0 = f32[] add(%reduce_sum.80, %reduce_sum.81), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%region_1.6.clone (reduce_sum.59: f32[], reduce_sum.60: f32[]) -> f32[] {
+  %reduce_sum.59 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.60 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.64.0 = f32[] add(%reduce_sum.59, %reduce_sum.60), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%triton_softmax_computation.12 (param_0.1184: f32[8,208,64], param_1.1604: f32[64], param_2.1260: f32[64,1664]) -> f32[8,208,64] {
+  %param_0.1184 = f32[8,208,64]{2,1,0} parameter(0)
+  %param_2.1260 = f32[64,1664]{0,1} parameter(2)
+  %bitcast.1056.5 = f32[1664,64]{1,0} bitcast(%param_2.1260), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" stack_frame_id=32}
+  %param_1.1604 = f32[64]{0} parameter(1)
+  %broadcast.567.3 = f32[1664,64]{1,0} broadcast(%param_1.1604), dimensions={1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=45}
+  %add.1566.5 = f32[1664,64]{1,0} add(%bitcast.1056.5, %broadcast.567.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=45}
+  %bitcast.919.3 = f32[8,208,64]{2,1,0} bitcast(%add.1566.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=45}
+  %add.325.3 = f32[8,208,64]{2,1,0} add(%param_0.1184, %bitcast.919.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/add" stack_frame_id=44}
+  %constant_779 = f32[] constant(0)
+  %reduce_sum.146 = f32[8,208]{1,0} reduce(%add.325.3, %constant_779), dimensions={2}, to_apply=%region_1.6.clone, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/reduce_sum" stack_frame_id=43}
+  %constant_780 = f32[] constant(0.015625)
+  %broadcast.907 = f32[8,208]{1,0} broadcast(%constant_780), dimensions={}
+  %multiply.218 = f32[8,208]{1,0} multiply(%reduce_sum.146, %broadcast.907), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/div" stack_frame_id=43}
+  %sub.141 = f32[8,208,64]{2,1,0} broadcast(%multiply.218), dimensions={0,1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/sub" stack_frame_id=42}
+  %sub.140 = f32[8,208,64]{2,1,0} subtract(%add.325.3, %sub.141), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/sub" stack_frame_id=42}
+  %square.12 = f32[8,208,64]{2,1,0} multiply(%sub.140, %sub.140), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/square" stack_frame_id=37}
+  %reduce_sum.131 = f32[8,208]{1,0} reduce(%square.12, %constant_779), dimensions={2}, to_apply=%region_1.6.clone.4, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/reduce_sum" stack_frame_id=37}
+  %multiply.199 = f32[8,208]{1,0} multiply(%reduce_sum.131, %broadcast.907), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/div" stack_frame_id=37}
+  %broadcast.877 = f32[8,208]{1,0} broadcast(%constant_779), dimensions={}
+  %max.64 = f32[8,208]{1,0} maximum(%multiply.199, %broadcast.877), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/max" stack_frame_id=38}
+  %constant_781 = f32[] constant(1e-05)
+  %broadcast.878 = f32[8,208]{1,0} broadcast(%constant_781), dimensions={}
+  %add.1571 = f32[8,208]{1,0} add(%max.64, %broadcast.878), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/add" stack_frame_id=39}
+  %rsqrt.12 = f32[8,208]{1,0} rsqrt(%add.1571), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/rsqrt" stack_frame_id=40}
+  %mul.124 = f32[8,208,64]{2,1,0} broadcast(%rsqrt.12), dimensions={0,1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" stack_frame_id=41}
+  ROOT %mul.125 = f32[8,208,64]{2,1,0} multiply(%sub.140, %mul.124), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" stack_frame_id=41}
+}
+
+%region_1.6.clone.3 (reduce_sum.74: f32[], reduce_sum.78: f32[]) -> f32[] {
+  %reduce_sum.74 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.78 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.79.0 = f32[] add(%reduce_sum.74, %reduce_sum.78), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%region_1.6 (reduce_sum.3: f32[], reduce_sum.4: f32[]) -> f32[] {
+  %reduce_sum.3 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.4 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.5.0 = f32[] add(%reduce_sum.3, %reduce_sum.4), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%triton_softmax_computation.14 (param_0.1180: f32[8,208,64], param_1.1698: f32[64,8,208]) -> f32[8,208,64] {
+  %param_0.1180 = f32[8,208,64]{2,1,0} parameter(0)
+  %param_1.1698 = f32[64,8,208]{2,1,0} parameter(1)
+  %transpose.183.1 = f32[8,208,64]{2,1,0} transpose(%param_1.1698), dimensions={1,2,0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+  %constant_653_1 = f32[] constant(0.0333333351)
+  %broadcast.533.14 = f32[8,208,64]{2,1,0} broadcast(%constant_653_1), dimensions={}
+  %multiply.160.7 = f32[8,208,64]{2,1,0} multiply(%transpose.183.1, %broadcast.533.14), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/div" stack_frame_id=15}
+  %add.315.5 = f32[8,208,64]{2,1,0} add(%param_0.1180, %multiply.160.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/add" stack_frame_id=54}
+  %constant_784 = f32[] constant(0)
+  %reduce_sum.142 = f32[8,208]{1,0} reduce(%add.315.5, %constant_784), dimensions={2}, to_apply=%region_1.6, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/reduce_sum" stack_frame_id=53}
+  %constant_785 = f32[] constant(0.015625)
+  %broadcast.901 = f32[8,208]{1,0} broadcast(%constant_785), dimensions={}
+  %multiply.214 = f32[8,208]{1,0} multiply(%reduce_sum.142, %broadcast.901), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/div" stack_frame_id=53}
+  %sub.137 = f32[8,208,64]{2,1,0} broadcast(%multiply.214), dimensions={0,1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/sub" stack_frame_id=52}
+  %sub.136 = f32[8,208,64]{2,1,0} subtract(%add.315.5, %sub.137), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/sub" stack_frame_id=52}
+  %square.13 = f32[8,208,64]{2,1,0} multiply(%sub.136, %sub.136), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/square" stack_frame_id=47}
+  %reduce_sum.133 = f32[8,208]{1,0} reduce(%square.13, %constant_784), dimensions={2}, to_apply=%region_1.6.clone.3, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/reduce_sum" stack_frame_id=47}
+  %multiply.201 = f32[8,208]{1,0} multiply(%reduce_sum.133, %broadcast.901), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/div" stack_frame_id=47}
+  %broadcast.881 = f32[8,208]{1,0} broadcast(%constant_784), dimensions={}
+  %max.65 = f32[8,208]{1,0} maximum(%multiply.201, %broadcast.881), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/max" stack_frame_id=48}
+  %constant_786 = f32[] constant(1e-05)
+  %broadcast.882 = f32[8,208]{1,0} broadcast(%constant_786), dimensions={}
+  %add.1572 = f32[8,208]{1,0} add(%max.65, %broadcast.882), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/add" stack_frame_id=49}
+  %rsqrt.13 = f32[8,208]{1,0} rsqrt(%add.1572), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/rsqrt" stack_frame_id=50}
+  %mul.126 = f32[8,208,64]{2,1,0} broadcast(%rsqrt.13), dimensions={0,1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" stack_frame_id=51}
+  ROOT %mul.127 = f32[8,208,64]{2,1,0} multiply(%sub.136, %mul.126), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" stack_frame_id=51}
+}
+
+%region_1.6.clone.11 (reduce_sum.118: f32[], reduce_sum.119: f32[]) -> f32[] {
+  %reduce_sum.118 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.119 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.120.0 = f32[] add(%reduce_sum.118, %reduce_sum.119), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%region_1.6.clone.10 (reduce_sum.115: f32[], reduce_sum.116: f32[]) -> f32[] {
+  %reduce_sum.115 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.116 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.117.0 = f32[] add(%reduce_sum.115, %reduce_sum.116), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%triton_softmax_computation.16 (param_0.1186: f32[8,208,64], param_1.1610: f32[64], param_2.1265: f32[64,1664]) -> f32[8,208,64] {
+  %param_0.1186 = f32[8,208,64]{2,1,0} parameter(0)
+  %param_2.1265 = f32[64,1664]{0,1} parameter(2)
+  %bitcast.1049.5 = f32[1664,64]{1,0} bitcast(%param_2.1265), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" stack_frame_id=32}
+  %param_1.1610 = f32[64]{0} parameter(1)
+  %broadcast.564.3 = f32[1664,64]{1,0} broadcast(%param_1.1610), dimensions={1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=45}
+  %add.1501.5 = f32[1664,64]{1,0} add(%bitcast.1049.5, %broadcast.564.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=45}
+  %bitcast.448.3 = f32[8,208,64]{2,1,0} bitcast(%add.1501.5)
+  %add.1502.3 = f32[8,208,64]{2,1,0} add(%param_0.1186, %bitcast.448.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/add" stack_frame_id=44}
+  %constant_789 = f32[] constant(0)
+  %reduce_sum.144 = f32[8,208]{1,0} reduce(%add.1502.3, %constant_789), dimensions={2}, to_apply=%region_1.6.clone.10, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/reduce_sum" stack_frame_id=43}
+  %constant_790 = f32[] constant(0.015625)
+  %broadcast.905 = f32[8,208]{1,0} broadcast(%constant_790), dimensions={}
+  %multiply.216 = f32[8,208]{1,0} multiply(%reduce_sum.144, %broadcast.905), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/div" stack_frame_id=43}
+  %broadcast.904 = f32[8,208,64]{2,1,0} broadcast(%multiply.216), dimensions={0,1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/sub" stack_frame_id=42}
+  %subtract.25 = f32[8,208,64]{2,1,0} subtract(%add.1502.3, %broadcast.904), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/sub" stack_frame_id=42}
+  %multiply.203 = f32[8,208,64]{2,1,0} multiply(%subtract.25, %subtract.25), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/square" stack_frame_id=37}
+  %reduce_sum.135 = f32[8,208]{1,0} reduce(%multiply.203, %constant_789), dimensions={2}, to_apply=%region_1.6.clone.11, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/reduce_sum" stack_frame_id=37}
+  %multiply.204 = f32[8,208]{1,0} multiply(%reduce_sum.135, %broadcast.905), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/div" stack_frame_id=37}
+  %broadcast.885 = f32[8,208]{1,0} broadcast(%constant_789), dimensions={}
+  %max.66 = f32[8,208]{1,0} maximum(%multiply.204, %broadcast.885), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/max" stack_frame_id=38}
+  %constant_791 = f32[] constant(1e-05)
+  %broadcast.886 = f32[8,208]{1,0} broadcast(%constant_791), dimensions={}
+  %add.1573 = f32[8,208]{1,0} add(%max.66, %broadcast.886), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/add" stack_frame_id=39}
+  %rsqrt.14 = f32[8,208]{1,0} rsqrt(%add.1573), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/rsqrt" stack_frame_id=40}
+  %broadcast.887 = f32[8,208,64]{2,1,0} broadcast(%rsqrt.14), dimensions={0,1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" stack_frame_id=41}
+  ROOT %multiply.205 = f32[8,208,64]{2,1,0} multiply(%subtract.25, %broadcast.887), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" stack_frame_id=41}
+}
+
+%region_1.6.clone.9 (reduce_sum.112: f32[], reduce_sum.113: f32[]) -> f32[] {
+  %reduce_sum.112 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.113 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.114.0 = f32[] add(%reduce_sum.112, %reduce_sum.113), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%region_1.6.clone.8 (reduce_sum.109: f32[], reduce_sum.110: f32[]) -> f32[] {
+  %reduce_sum.109 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.110 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.111.0 = f32[] add(%reduce_sum.109, %reduce_sum.110), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%triton_softmax_computation.18 (param_0.1177: f32[8,208,64], param_1.1699: f32[64,8,208]) -> f32[8,208,64] {
+  %param_1.1699 = f32[64,8,208]{2,1,0} parameter(1)
+  %transpose.182.1 = f32[8,208,64]{2,1,0} transpose(%param_1.1699), dimensions={1,2,0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+  %constant_653_2 = f32[] constant(0.0333333351)
+  %broadcast.533.12 = f32[8,208,64]{2,1,0} broadcast(%constant_653_2), dimensions={}
+  %multiply.77.7 = f32[8,208,64]{2,1,0} multiply(%transpose.182.1, %broadcast.533.12), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/div" stack_frame_id=15}
+  %param_0.1177 = f32[8,208,64]{2,1,0} parameter(0)
+  %add.1479.5 = f32[8,208,64]{2,1,0} add(%multiply.77.7, %param_0.1177), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/add;jit(_decode)"}
+  %constant_794 = f32[] constant(0)
+  %reduce_sum.140 = f32[8,208]{1,0} reduce(%add.1479.5, %constant_794), dimensions={2}, to_apply=%region_1.6.clone.8, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/reduce_sum" stack_frame_id=53}
+  %constant_795 = f32[] constant(0.015625)
+  %broadcast.899 = f32[8,208]{1,0} broadcast(%constant_795), dimensions={}
+  %multiply.212 = f32[8,208]{1,0} multiply(%reduce_sum.140, %broadcast.899), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/div" stack_frame_id=53}
+  %broadcast.898 = f32[8,208,64]{2,1,0} broadcast(%multiply.212), dimensions={0,1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/sub" stack_frame_id=52}
+  %subtract.23 = f32[8,208,64]{2,1,0} subtract(%add.1479.5, %broadcast.898), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/sub" stack_frame_id=52}
+  %multiply.207 = f32[8,208,64]{2,1,0} multiply(%subtract.23, %subtract.23), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/square" stack_frame_id=47}
+  %reduce_sum.137 = f32[8,208]{1,0} reduce(%multiply.207, %constant_794), dimensions={2}, to_apply=%region_1.6.clone.9, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/reduce_sum" stack_frame_id=47}
+  %multiply.208 = f32[8,208]{1,0} multiply(%reduce_sum.137, %broadcast.899), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/jit(_var)/div" stack_frame_id=47}
+  %broadcast.891 = f32[8,208]{1,0} broadcast(%constant_794), dimensions={}
+  %max.67 = f32[8,208]{1,0} maximum(%multiply.208, %broadcast.891), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/max" stack_frame_id=48}
+  %constant_796 = f32[] constant(1e-05)
+  %broadcast.892 = f32[8,208]{1,0} broadcast(%constant_796), dimensions={}
+  %add.1574 = f32[8,208]{1,0} add(%max.67, %broadcast.892), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/add" stack_frame_id=49}
+  %rsqrt.15 = f32[8,208]{1,0} rsqrt(%add.1574), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/rsqrt" stack_frame_id=50}
+  %broadcast.893 = f32[8,208,64]{2,1,0} broadcast(%rsqrt.15), dimensions={0,1}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" stack_frame_id=51}
+  ROOT %multiply.209 = f32[8,208,64]{2,1,0} multiply(%subtract.23, %broadcast.893), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" stack_frame_id=51}
+}
+
+%region_10.26 (reduce_max.3: f32[], reduce_max.4: f32[]) -> f32[] {
+  %reduce_max.3 = f32[] parameter(0), metadata={op_name="reduce_max"}
+  %reduce_max.4 = f32[] parameter(1), metadata={op_name="reduce_max"}
+  ROOT %reduce_max.5.0 = f32[] maximum(%reduce_max.3, %reduce_max.4), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/reduce_max" stack_frame_id=18}
+}
+
+%fused_reduce (param_0.1240: s32[1664,2], param_1.1700: f32[21,1664], param_2.1337: f32[21]) -> f32[208,21] {
+  %param_1.1700 = f32[21,1664]{1,0} parameter(1)
+  %param_2.1337 = f32[21]{0} parameter(2)
+  %broadcast.487.7 = f32[21,1664]{1,0} broadcast(%param_2.1337), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.Linear))/add" stack_frame_id=58}
+  %add.1435.7 = f32[21,1664]{1,0} add(%param_1.1700, %broadcast.487.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.Linear))/add" stack_frame_id=58}
+  %bitcast.1134.7 = f32[8,208,21]{1,0,2} bitcast(%add.1435.7)
+  %param_0.1240 = s32[1664,2]{1,0} parameter(0)
+  %gather.21.7 = f32[1664,1,1,21]{3,2,1,0} gather(%bitcast.1134.7, %param_0.1240), offset_dims={1,2,3}, collapsed_slice_dims={}, start_index_map={0,1}, index_vector_dim=1, slice_sizes={1,1,21}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/jit(take_along_axis)/gather" stack_frame_id=57}
+  %constant_754_1 = f32[] constant(-2.07944155), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/log" stack_frame_id=59}
+  %broadcast.469.5 = f32[1664,1,1,21]{3,2,1,0} broadcast(%constant_754_1), dimensions={}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/add" stack_frame_id=55}
+  %add.1420.5 = f32[1664,1,1,21]{3,2,1,0} add(%gather.21.7, %broadcast.469.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/add" stack_frame_id=55}
+  %bitcast.32.1 = f32[8,208,21]{2,1,0} bitcast(%add.1420.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/add" stack_frame_id=55}
+  %constant_314_1 = f32[] constant(-inf)
+  ROOT %reduce_max.15.1 = f32[208,21]{1,0} reduce(%bitcast.32.1, %constant_314_1), dimensions={0}, to_apply=%region_10.26, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/reduce_max" stack_frame_id=18}
+}
+
+%fused_multiply (param_0.1234: f32[256,1664], param_1.1692: f32[256]) -> f32[256,8,208] {
+  %param_0.1234 = f32[256,1664]{1,0} parameter(0)
+  %param_1.1692 = f32[256]{0} parameter(1)
+  %broadcast.485.5 = f32[256,1664]{1,0} broadcast(%param_1.1692), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=64}
+  %add.1433.5 = f32[256,1664]{1,0} add(%param_0.1234, %broadcast.485.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=64}
+  %constant_252_2 = f32[] constant(0.5)
+  %broadcast.492.4 = f32[256,1664]{1,0} broadcast(%constant_252_2), dimensions={}
+  %mul.111.3 = f32[256,1664]{1,0} multiply(%add.1433.5, %broadcast.492.4), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}
+  %bitcast.26.1 = f32[256,8,208]{2,1,0} bitcast(%mul.111.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}
+  %neg.17.17 = f32[256,1664]{1,0} negate(%add.1433.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/neg" stack_frame_id=63}
+  %constant_251_6 = f32[] constant(0.707106769)
+  %broadcast.500.30 = f32[256,1664]{1,0} broadcast(%constant_251_6), dimensions={}
+  %mul.118.17 = f32[256,1664]{1,0} multiply(%neg.17.17, %broadcast.500.30), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}
+  %bitcast.27.36 = f32[256,8,208]{2,1,0} bitcast(%mul.118.17), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}
+  %abs.5.11 = f32[256,8,208]{2,1,0} abs(%bitcast.27.36), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_313_2 = f32[] constant(1)
+  %broadcast.536.22 = f32[256,8,208]{2,1,0} broadcast(%constant_313_2), dimensions={}
+  %compare.20.3 = pred[256,8,208]{2,1,0} compare(%abs.5.11, %broadcast.536.22), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.161.13 = f32[256,8,208]{2,1,0} multiply(%bitcast.27.36, %bitcast.27.36), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_292_2 = f32[] constant(7.85386146e-05)
+  %broadcast.537.58 = f32[256,8,208]{2,1,0} broadcast(%constant_292_2), dimensions={}
+  %multiply.162.29 = f32[256,8,208]{2,1,0} multiply(%multiply.161.13, %broadcast.537.58), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_291_2 = f32[] constant(-0.000801019371)
+  %broadcast.538.54 = f32[256,8,208]{2,1,0} broadcast(%constant_291_2), dimensions={}
+  %add.1545.27 = f32[256,8,208]{2,1,0} add(%multiply.162.29, %broadcast.538.54), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.163.25 = f32[256,8,208]{2,1,0} multiply(%add.1545.27, %multiply.161.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_290_2 = f32[] constant(0.00518832775)
+  %broadcast.539.46 = f32[256,8,208]{2,1,0} broadcast(%constant_290_2), dimensions={}
+  %add.1546.23 = f32[256,8,208]{2,1,0} add(%multiply.163.25, %broadcast.539.46), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.164.21 = f32[256,8,208]{2,1,0} multiply(%add.1546.23, %multiply.161.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_289_2 = f32[] constant(-0.0268538129)
+  %broadcast.540.38 = f32[256,8,208]{2,1,0} broadcast(%constant_289_2), dimensions={}
+  %add.1547.19 = f32[256,8,208]{2,1,0} add(%multiply.164.21, %broadcast.540.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.165.17 = f32[256,8,208]{2,1,0} multiply(%add.1547.19, %multiply.161.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_288_2 = f32[] constant(0.112835854)
+  %broadcast.541.30 = f32[256,8,208]{2,1,0} broadcast(%constant_288_2), dimensions={}
+  %add.1548.15 = f32[256,8,208]{2,1,0} add(%multiply.165.17, %broadcast.541.30), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.166.13 = f32[256,8,208]{2,1,0} multiply(%add.1548.15, %multiply.161.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_287_2 = f32[] constant(-0.37612626)
+  %broadcast.542.22 = f32[256,8,208]{2,1,0} broadcast(%constant_287_2), dimensions={}
+  %add.1549.11 = f32[256,8,208]{2,1,0} add(%multiply.166.13, %broadcast.542.22), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.167.9 = f32[256,8,208]{2,1,0} multiply(%add.1549.11, %multiply.161.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_286_2 = f32[] constant(1.12837911)
+  %broadcast.543.14 = f32[256,8,208]{2,1,0} broadcast(%constant_286_2), dimensions={}
+  %add.1550.7 = f32[256,8,208]{2,1,0} add(%multiply.167.9, %broadcast.543.14), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.168.5 = f32[256,8,208]{2,1,0} multiply(%bitcast.27.36, %add.1550.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %subtract.12.3 = f32[256,8,208]{2,1,0} subtract(%broadcast.536.22, %multiply.168.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_293_4 = f32[] constant(0)
+  %broadcast.544.10 = f32[256,8,208]{2,1,0} broadcast(%constant_293_4), dimensions={}
+  %compare.21.3 = pred[256,8,208]{2,1,0} compare(%bitcast.27.36, %broadcast.544.10), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_312_1 = f32[] constant(2)
+  %broadcast.649.14 = f32[256,8,208]{2,1,0} broadcast(%constant_312_1), dimensions={}
+  %negate.9.7 = f32[256,8,208]{2,1,0} negate(%multiply.161.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_294_2 = f32[] constant(-88.7228394)
+  %broadcast.546.4 = f32[256,8,208]{2,1,0} broadcast(%constant_294_2), dimensions={}
+  %compare.22.3 = pred[256,8,208]{2,1,0} compare(%negate.9.7, %broadcast.546.4), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %exponential.5.1 = f32[256,8,208]{2,1,0} exponential(%negate.9.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %divide.10.3 = f32[256,8,208]{2,1,0} divide(%broadcast.536.22, %abs.5.11), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.169.1 = f32[256,8,208]{2,1,0} multiply(%exponential.5.1, %divide.10.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %compare.23.3 = pred[256,8,208]{2,1,0} compare(%abs.5.11, %broadcast.649.14), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %divide.11.3 = f32[256,8,208]{2,1,0} divide(%broadcast.536.22, %multiply.161.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_311_2 = f32[] constant(0.0232682)
+  %broadcast.547.76 = f32[256,8,208]{2,1,0} broadcast(%constant_311_2), dimensions={}
+  %multiply.170.39 = f32[256,8,208]{2,1,0} multiply(%divide.11.3, %broadcast.547.76), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_310_2 = f32[] constant(-0.138703942)
+  %broadcast.548.72 = f32[256,8,208]{2,1,0} broadcast(%constant_310_2), dimensions={}
+  %add.1551.37 = f32[256,8,208]{2,1,0} add(%multiply.170.39, %broadcast.548.72), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.171.35 = f32[256,8,208]{2,1,0} multiply(%add.1551.37, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_309_2 = f32[] constant(0.368742466)
+  %broadcast.549.64 = f32[256,8,208]{2,1,0} broadcast(%constant_309_2), dimensions={}
+  %add.1552.33 = f32[256,8,208]{2,1,0} add(%multiply.171.35, %broadcast.549.64), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.172.31 = f32[256,8,208]{2,1,0} multiply(%add.1552.33, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_308_2 = f32[] constant(-0.582473278)
+  %broadcast.550.56 = f32[256,8,208]{2,1,0} broadcast(%constant_308_2), dimensions={}
+  %add.1553.29 = f32[256,8,208]{2,1,0} add(%multiply.172.31, %broadcast.550.56), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.173.27 = f32[256,8,208]{2,1,0} multiply(%add.1553.29, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_307_2 = f32[] constant(0.621000469)
+  %broadcast.551.48 = f32[256,8,208]{2,1,0} broadcast(%constant_307_2), dimensions={}
+  %add.1554.25 = f32[256,8,208]{2,1,0} add(%multiply.173.27, %broadcast.551.48), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.174.23 = f32[256,8,208]{2,1,0} multiply(%add.1554.25, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_306_2 = f32[] constant(-0.494451523)
+  %broadcast.552.40 = f32[256,8,208]{2,1,0} broadcast(%constant_306_2), dimensions={}
+  %add.1555.21 = f32[256,8,208]{2,1,0} add(%multiply.174.23, %broadcast.552.40), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.175.19 = f32[256,8,208]{2,1,0} multiply(%add.1555.21, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_305_2 = f32[] constant(0.340488)
+  %broadcast.553.32 = f32[256,8,208]{2,1,0} broadcast(%constant_305_2), dimensions={}
+  %add.1556.17 = f32[256,8,208]{2,1,0} add(%multiply.175.19, %broadcast.553.32), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.176.15 = f32[256,8,208]{2,1,0} multiply(%add.1556.17, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_304_2 = f32[] constant(-0.274112701)
+  %broadcast.554.24 = f32[256,8,208]{2,1,0} broadcast(%constant_304_2), dimensions={}
+  %add.1557.13 = f32[256,8,208]{2,1,0} add(%multiply.176.15, %broadcast.554.24), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.177.11 = f32[256,8,208]{2,1,0} multiply(%add.1557.13, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_303_2 = f32[] constant(0.563825965)
+  %broadcast.555.16 = f32[256,8,208]{2,1,0} broadcast(%constant_303_2), dimensions={}
+  %add.1558.9 = f32[256,8,208]{2,1,0} add(%multiply.177.11, %broadcast.555.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_302_2 = f32[] constant(-10.477664)
+  %broadcast.556.60 = f32[256,8,208]{2,1,0} broadcast(%constant_302_2), dimensions={}
+  %multiply.178.31 = f32[256,8,208]{2,1,0} multiply(%divide.11.3, %broadcast.556.60), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_301_2 = f32[] constant(12.9772)
+  %broadcast.557.56 = f32[256,8,208]{2,1,0} broadcast(%constant_301_2), dimensions={}
+  %add.1559.29 = f32[256,8,208]{2,1,0} add(%multiply.178.31, %broadcast.557.56), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.179.27 = f32[256,8,208]{2,1,0} multiply(%add.1559.29, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_300_2 = f32[] constant(-7.49551868)
+  %broadcast.558.48 = f32[256,8,208]{2,1,0} broadcast(%constant_300_2), dimensions={}
+  %add.1560.25 = f32[256,8,208]{2,1,0} add(%multiply.179.27, %broadcast.558.48), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.180.23 = f32[256,8,208]{2,1,0} multiply(%add.1560.25, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_299_2 = f32[] constant(2.92101908)
+  %broadcast.559.40 = f32[256,8,208]{2,1,0} broadcast(%constant_299_2), dimensions={}
+  %add.1561.21 = f32[256,8,208]{2,1,0} add(%multiply.180.23, %broadcast.559.40), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.181.19 = f32[256,8,208]{2,1,0} multiply(%add.1561.21, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_298_2 = f32[] constant(-1.01526523)
+  %broadcast.560.32 = f32[256,8,208]{2,1,0} broadcast(%constant_298_2), dimensions={}
+  %add.1562.17 = f32[256,8,208]{2,1,0} add(%multiply.181.19, %broadcast.560.32), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.182.15 = f32[256,8,208]{2,1,0} multiply(%add.1562.17, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_297_2 = f32[] constant(0.42184633)
+  %broadcast.561.24 = f32[256,8,208]{2,1,0} broadcast(%constant_297_2), dimensions={}
+  %add.1563.13 = f32[256,8,208]{2,1,0} add(%multiply.182.15, %broadcast.561.24), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.183.11 = f32[256,8,208]{2,1,0} multiply(%add.1563.13, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_296_2 = f32[] constant(-0.282076746)
+  %broadcast.562.16 = f32[256,8,208]{2,1,0} broadcast(%constant_296_2), dimensions={}
+  %add.1564.9 = f32[256,8,208]{2,1,0} add(%multiply.183.11, %broadcast.562.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.184.7 = f32[256,8,208]{2,1,0} multiply(%add.1564.9, %divide.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_295_2 = f32[] constant(0.564189494)
+  %broadcast.563.8 = f32[256,8,208]{2,1,0} broadcast(%constant_295_2), dimensions={}
+  %add.1565.5 = f32[256,8,208]{2,1,0} add(%multiply.184.7, %broadcast.563.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %select.20.7 = f32[256,8,208]{2,1,0} select(%compare.23.3, %add.1558.9, %add.1565.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.185.5 = f32[256,8,208]{2,1,0} multiply(%multiply.169.1, %select.20.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %select.21.3 = f32[256,8,208]{2,1,0} select(%compare.22.3, %broadcast.544.10, %multiply.185.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %subtract.13.7 = f32[256,8,208]{2,1,0} subtract(%broadcast.649.14, %select.21.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %select.22.5 = f32[256,8,208]{2,1,0} select(%compare.21.3, %subtract.13.7, %select.21.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %select.23.3 = f32[256,8,208]{2,1,0} select(%compare.20.3, %subtract.12.3, %select.22.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  ROOT %multiply.186.1 = f32[256,8,208]{2,1,0} multiply(%bitcast.26.1, %select.23.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}
+}
+
+%region_1.6.clone.7 (reduce_sum.106: f32[], reduce_sum.107: f32[]) -> f32[] {
+  %reduce_sum.106 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.107 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.108.0 = f32[] add(%reduce_sum.106, %reduce_sum.107), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%fused_reduce.1 (param_0.1226: f32[64,8320], param_1.1678: f32[64]) -> f32[64,8,208] {
+  %param_0.1226 = f32[64,8320]{1,0} parameter(0)
+  %param_1.1678 = f32[64]{0} parameter(1)
+  %broadcast.484.3 = f32[64,8320]{1,0} broadcast(%param_1.1678), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=65}
+  %add.1432.3 = f32[64,8320]{1,0} add(%param_0.1226, %broadcast.484.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=65}
+  %bitcast.24.1 = f32[64,8,208,5]{3,2,1,0} bitcast(%add.1432.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=65}
+  %constant_293_7 = f32[] constant(0)
+  ROOT %reduce.7.1 = f32[64,8,208]{2,1,0} reduce(%bitcast.24.1, %constant_293_7), dimensions={3}, to_apply=%region_1.6.clone.7, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%fused_multiply.1 (param_0.1233: f32[64,8320], param_1.1691: f32[64]) -> f32[64,8,208,5] {
+  %param_0.1233 = f32[64,8320]{1,0} parameter(0)
+  %param_1.1691 = f32[64]{0} parameter(1)
+  %broadcast.483.5 = f32[64,8320]{1,0} broadcast(%param_1.1691), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %add.1431.5 = f32[64,8320]{1,0} add(%param_0.1233, %broadcast.483.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %constant_252_1 = f32[] constant(0.5)
+  %broadcast.488.6 = f32[64,8320]{1,0} broadcast(%constant_252_1), dimensions={}
+  %mul.110.3 = f32[64,8320]{1,0} multiply(%add.1431.5, %broadcast.488.6), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %bitcast.21.1 = f32[64,8,208,5]{3,2,1,0} bitcast(%mul.110.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %neg.16.19 = f32[64,8320]{1,0} negate(%add.1431.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/neg" stack_frame_id=69}
+  %constant_251_2 = f32[] constant(0.707106769)
+  %broadcast.497.70 = f32[64,8320]{1,0} broadcast(%constant_251_2), dimensions={}
+  %mul.117.19 = f32[64,8320]{1,0} multiply(%neg.16.19, %broadcast.497.70), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %bitcast.22.38 = f32[64,8,208,5]{3,2,1,0} bitcast(%mul.117.19), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %abs.4.11 = f32[64,8,208,5]{3,2,1,0} abs(%bitcast.22.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_313_1 = f32[] constant(1)
+  %broadcast.505.42 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_313_1), dimensions={}
+  %compare.16.3 = pred[64,8,208,5]{3,2,1,0} compare(%abs.4.11, %broadcast.505.42), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.134.13 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.22.38, %bitcast.22.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_292_1 = f32[] constant(7.85386146e-05)
+  %broadcast.506.110 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_292_1), dimensions={}
+  %multiply.135.29 = f32[64,8,208,5]{3,2,1,0} multiply(%multiply.134.13, %broadcast.506.110), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_291_1 = f32[] constant(-0.000801019371)
+  %broadcast.507.102 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_291_1), dimensions={}
+  %add.1524.27 = f32[64,8,208,5]{3,2,1,0} add(%multiply.135.29, %broadcast.507.102), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.136.25 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1524.27, %multiply.134.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_290_1 = f32[] constant(0.00518832775)
+  %broadcast.508.86 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_290_1), dimensions={}
+  %add.1525.23 = f32[64,8,208,5]{3,2,1,0} add(%multiply.136.25, %broadcast.508.86), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.137.21 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1525.23, %multiply.134.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_289_1 = f32[] constant(-0.0268538129)
+  %broadcast.509.70 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_289_1), dimensions={}
+  %add.1526.19 = f32[64,8,208,5]{3,2,1,0} add(%multiply.137.21, %broadcast.509.70), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.138.17 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1526.19, %multiply.134.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_288_1 = f32[] constant(0.112835854)
+  %broadcast.510.54 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_288_1), dimensions={}
+  %add.1527.15 = f32[64,8,208,5]{3,2,1,0} add(%multiply.138.17, %broadcast.510.54), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.139.13 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1527.15, %multiply.134.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_287_1 = f32[] constant(-0.37612626)
+  %broadcast.511.38 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_287_1), dimensions={}
+  %add.1528.11 = f32[64,8,208,5]{3,2,1,0} add(%multiply.139.13, %broadcast.511.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.140.9 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1528.11, %multiply.134.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_286_1 = f32[] constant(1.12837911)
+  %broadcast.512.22 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_286_1), dimensions={}
+  %add.1529.7 = f32[64,8,208,5]{3,2,1,0} add(%multiply.140.9, %broadcast.512.22), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.141.5 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.22.38, %add.1529.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %subtract.10.3 = f32[64,8,208,5]{3,2,1,0} subtract(%broadcast.505.42, %multiply.141.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_293_1 = f32[] constant(0)
+  %broadcast.513.24 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_293_1), dimensions={}
+  %compare.17.3 = pred[64,8,208,5]{3,2,1,0} compare(%bitcast.22.38, %broadcast.513.24), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_312_4 = f32[] constant(2)
+  %broadcast.573.26 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_312_4), dimensions={}
+  %negate.8.7 = f32[64,8,208,5]{3,2,1,0} negate(%multiply.134.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_294_1 = f32[] constant(-88.7228394)
+  %broadcast.515.6 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_294_1), dimensions={}
+  %compare.18.3 = pred[64,8,208,5]{3,2,1,0} compare(%negate.8.7, %broadcast.515.6), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %exponential.4.7 = f32[64,8,208,5]{3,2,1,0} exponential(%negate.8.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %divide.8.3 = f32[64,8,208,5]{3,2,1,0} divide(%broadcast.505.42, %abs.4.11), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.142.7 = f32[64,8,208,5]{3,2,1,0} multiply(%exponential.4.7, %divide.8.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %compare.19.3 = pred[64,8,208,5]{3,2,1,0} compare(%abs.4.11, %broadcast.573.26), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %divide.9.3 = f32[64,8,208,5]{3,2,1,0} divide(%broadcast.505.42, %multiply.134.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_311_1 = f32[] constant(0.0232682)
+  %broadcast.516.40 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_311_1), dimensions={}
+  %multiply.143.37 = f32[64,8,208,5]{3,2,1,0} multiply(%divide.9.3, %broadcast.516.40), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_310_1 = f32[] constant(-0.138703942)
+  %broadcast.517.38 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_310_1), dimensions={}
+  %add.1530.35 = f32[64,8,208,5]{3,2,1,0} add(%multiply.143.37, %broadcast.517.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.144.33 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1530.35, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_309_1 = f32[] constant(0.368742466)
+  %broadcast.518.34 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_309_1), dimensions={}
+  %add.1531.31 = f32[64,8,208,5]{3,2,1,0} add(%multiply.144.33, %broadcast.518.34), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.145.29 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1531.31, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_308_1 = f32[] constant(-0.582473278)
+  %broadcast.519.30 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_308_1), dimensions={}
+  %add.1532.27 = f32[64,8,208,5]{3,2,1,0} add(%multiply.145.29, %broadcast.519.30), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.146.25 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1532.27, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_307_1 = f32[] constant(0.621000469)
+  %broadcast.520.26 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_307_1), dimensions={}
+  %add.1533.23 = f32[64,8,208,5]{3,2,1,0} add(%multiply.146.25, %broadcast.520.26), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.147.21 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1533.23, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_306_1 = f32[] constant(-0.494451523)
+  %broadcast.521.22 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_306_1), dimensions={}
+  %add.1534.19 = f32[64,8,208,5]{3,2,1,0} add(%multiply.147.21, %broadcast.521.22), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.148.17 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1534.19, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_305_1 = f32[] constant(0.340488)
+  %broadcast.522.18 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_305_1), dimensions={}
+  %add.1535.15 = f32[64,8,208,5]{3,2,1,0} add(%multiply.148.17, %broadcast.522.18), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.149.13 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1535.15, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_304_1 = f32[] constant(-0.274112701)
+  %broadcast.523.14 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_304_1), dimensions={}
+  %add.1536.11 = f32[64,8,208,5]{3,2,1,0} add(%multiply.149.13, %broadcast.523.14), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.150.9 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1536.11, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_303_1 = f32[] constant(0.563825965)
+  %broadcast.524.10 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_303_1), dimensions={}
+  %add.1537.7 = f32[64,8,208,5]{3,2,1,0} add(%multiply.150.9, %broadcast.524.10), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_302_1 = f32[] constant(-10.477664)
+  %broadcast.525.8 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_302_1), dimensions={}
+  %multiply.151.5 = f32[64,8,208,5]{3,2,1,0} multiply(%divide.9.3, %broadcast.525.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_301_1 = f32[] constant(12.9772)
+  %broadcast.526.8 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_301_1), dimensions={}
+  %add.1538.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.151.5, %broadcast.526.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.152.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1538.5, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_300_1 = f32[] constant(-7.49551868)
+  %broadcast.527.8 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_300_1), dimensions={}
+  %add.1539.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.152.3, %broadcast.527.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.153.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1539.5, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_299_1 = f32[] constant(2.92101908)
+  %broadcast.528.8 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_299_1), dimensions={}
+  %add.1540.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.153.3, %broadcast.528.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.154.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1540.5, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_298_1 = f32[] constant(-1.01526523)
+  %broadcast.529.8 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_298_1), dimensions={}
+  %add.1541.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.154.3, %broadcast.529.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.155.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1541.5, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_297_1 = f32[] constant(0.42184633)
+  %broadcast.530.8 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_297_1), dimensions={}
+  %add.1542.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.155.3, %broadcast.530.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.156.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1542.5, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_296_1 = f32[] constant(-0.282076746)
+  %broadcast.531.8 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_296_1), dimensions={}
+  %add.1543.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.156.3, %broadcast.531.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.157.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1543.5, %divide.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_295_1 = f32[] constant(0.564189494)
+  %broadcast.532.8 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_295_1), dimensions={}
+  %add.1544.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.157.3, %broadcast.532.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.16.5 = f32[64,8,208,5]{3,2,1,0} select(%compare.19.3, %add.1537.7, %add.1544.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.158.5 = f32[64,8,208,5]{3,2,1,0} multiply(%multiply.142.7, %select.16.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.17.3 = f32[64,8,208,5]{3,2,1,0} select(%compare.18.3, %broadcast.513.24, %multiply.158.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %subtract.11.7 = f32[64,8,208,5]{3,2,1,0} subtract(%broadcast.573.26, %select.17.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.18.5 = f32[64,8,208,5]{3,2,1,0} select(%compare.17.3, %subtract.11.7, %select.17.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.19.3 = f32[64,8,208,5]{3,2,1,0} select(%compare.16.3, %subtract.10.3, %select.18.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  ROOT %multiply.159.1 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.21.1, %select.19.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+}
+
+%fused_multiply.2 (param_0.1237: f32[64,8320], param_1.1695: f32[64]) -> f32[64,8,208,5] {
+  %param_0.1237 = f32[64,8320]{1,0} parameter(0)
+  %param_1.1695 = f32[64]{0} parameter(1)
+  %broadcast.482.5 = f32[64,8320]{1,0} broadcast(%param_1.1695), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %add.1430.5 = f32[64,8320]{1,0} add(%param_0.1237, %broadcast.482.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %constant_252_5 = f32[] constant(0.5)
+  %broadcast.488.8 = f32[64,8320]{1,0} broadcast(%constant_252_5), dimensions={}
+  %mul.109.3 = f32[64,8320]{1,0} multiply(%add.1430.5, %broadcast.488.8), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %bitcast.18.1 = f32[64,8,208,5]{3,2,1,0} bitcast(%mul.109.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %neg.15.19 = f32[64,8320]{1,0} negate(%add.1430.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/neg" stack_frame_id=69}
+  %constant_251_4 = f32[] constant(0.707106769)
+  %broadcast.497.72 = f32[64,8320]{1,0} broadcast(%constant_251_4), dimensions={}
+  %mul.116.19 = f32[64,8320]{1,0} multiply(%neg.15.19, %broadcast.497.72), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %bitcast.19.38 = f32[64,8,208,5]{3,2,1,0} bitcast(%mul.116.19), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %abs.3.11 = f32[64,8,208,5]{3,2,1,0} abs(%bitcast.19.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_313_5 = f32[] constant(1)
+  %broadcast.505.44 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_313_5), dimensions={}
+  %compare.12.3 = pred[64,8,208,5]{3,2,1,0} compare(%abs.3.11, %broadcast.505.44), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.108.13 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.19.38, %bitcast.19.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_292_5 = f32[] constant(7.85386146e-05)
+  %broadcast.506.112 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_292_5), dimensions={}
+  %multiply.109.29 = f32[64,8,208,5]{3,2,1,0} multiply(%multiply.108.13, %broadcast.506.112), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_291_5 = f32[] constant(-0.000801019371)
+  %broadcast.507.104 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_291_5), dimensions={}
+  %add.1503.27 = f32[64,8,208,5]{3,2,1,0} add(%multiply.109.29, %broadcast.507.104), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.110.25 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1503.27, %multiply.108.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_290_5 = f32[] constant(0.00518832775)
+  %broadcast.508.88 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_290_5), dimensions={}
+  %add.1504.23 = f32[64,8,208,5]{3,2,1,0} add(%multiply.110.25, %broadcast.508.88), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.111.21 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1504.23, %multiply.108.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_289_5 = f32[] constant(-0.0268538129)
+  %broadcast.509.72 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_289_5), dimensions={}
+  %add.1505.19 = f32[64,8,208,5]{3,2,1,0} add(%multiply.111.21, %broadcast.509.72), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.112.17 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1505.19, %multiply.108.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_288_5 = f32[] constant(0.112835854)
+  %broadcast.510.56 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_288_5), dimensions={}
+  %add.1506.15 = f32[64,8,208,5]{3,2,1,0} add(%multiply.112.17, %broadcast.510.56), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.113.13 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1506.15, %multiply.108.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_287_5 = f32[] constant(-0.37612626)
+  %broadcast.511.40 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_287_5), dimensions={}
+  %add.1507.11 = f32[64,8,208,5]{3,2,1,0} add(%multiply.113.13, %broadcast.511.40), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.114.9 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1507.11, %multiply.108.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_286_5 = f32[] constant(1.12837911)
+  %broadcast.512.24 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_286_5), dimensions={}
+  %add.1508.7 = f32[64,8,208,5]{3,2,1,0} add(%multiply.114.9, %broadcast.512.24), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.115.5 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.19.38, %add.1508.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %subtract.8.3 = f32[64,8,208,5]{3,2,1,0} subtract(%broadcast.505.44, %multiply.115.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_293_5 = f32[] constant(0)
+  %broadcast.513.22 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_293_5), dimensions={}
+  %compare.13.3 = pred[64,8,208,5]{3,2,1,0} compare(%bitcast.19.38, %broadcast.513.22), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_312_2 = f32[] constant(2)
+  %broadcast.573.28 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_312_2), dimensions={}
+  %negate.7.7 = f32[64,8,208,5]{3,2,1,0} negate(%multiply.108.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_294_5 = f32[] constant(-88.7228394)
+  %broadcast.515.8 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_294_5), dimensions={}
+  %compare.14.3 = pred[64,8,208,5]{3,2,1,0} compare(%negate.7.7, %broadcast.515.8), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %exponential.3.7 = f32[64,8,208,5]{3,2,1,0} exponential(%negate.7.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %divide.6.3 = f32[64,8,208,5]{3,2,1,0} divide(%broadcast.505.44, %abs.3.11), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.116.7 = f32[64,8,208,5]{3,2,1,0} multiply(%exponential.3.7, %divide.6.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %compare.15.3 = pred[64,8,208,5]{3,2,1,0} compare(%abs.3.11, %broadcast.573.28), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %divide.7.3 = f32[64,8,208,5]{3,2,1,0} divide(%broadcast.505.44, %multiply.108.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_311_5 = f32[] constant(0.0232682)
+  %broadcast.516.76 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_311_5), dimensions={}
+  %multiply.117.37 = f32[64,8,208,5]{3,2,1,0} multiply(%divide.7.3, %broadcast.516.76), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_310_5 = f32[] constant(-0.138703942)
+  %broadcast.517.72 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_310_5), dimensions={}
+  %add.1509.35 = f32[64,8,208,5]{3,2,1,0} add(%multiply.117.37, %broadcast.517.72), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.118.33 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1509.35, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_309_5 = f32[] constant(0.368742466)
+  %broadcast.518.64 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_309_5), dimensions={}
+  %add.1510.31 = f32[64,8,208,5]{3,2,1,0} add(%multiply.118.33, %broadcast.518.64), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.119.29 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1510.31, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_308_5 = f32[] constant(-0.582473278)
+  %broadcast.519.56 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_308_5), dimensions={}
+  %add.1511.27 = f32[64,8,208,5]{3,2,1,0} add(%multiply.119.29, %broadcast.519.56), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.120.25 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1511.27, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_307_5 = f32[] constant(0.621000469)
+  %broadcast.520.48 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_307_5), dimensions={}
+  %add.1512.23 = f32[64,8,208,5]{3,2,1,0} add(%multiply.120.25, %broadcast.520.48), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.121.21 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1512.23, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_306_5 = f32[] constant(-0.494451523)
+  %broadcast.521.40 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_306_5), dimensions={}
+  %add.1513.19 = f32[64,8,208,5]{3,2,1,0} add(%multiply.121.21, %broadcast.521.40), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.122.17 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1513.19, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_305_5 = f32[] constant(0.340488)
+  %broadcast.522.32 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_305_5), dimensions={}
+  %add.1514.15 = f32[64,8,208,5]{3,2,1,0} add(%multiply.122.17, %broadcast.522.32), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.123.13 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1514.15, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_304_5 = f32[] constant(-0.274112701)
+  %broadcast.523.24 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_304_5), dimensions={}
+  %add.1515.11 = f32[64,8,208,5]{3,2,1,0} add(%multiply.123.13, %broadcast.523.24), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.124.9 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1515.11, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_303_5 = f32[] constant(0.563825965)
+  %broadcast.524.16 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_303_5), dimensions={}
+  %add.1516.7 = f32[64,8,208,5]{3,2,1,0} add(%multiply.124.9, %broadcast.524.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_302_5 = f32[] constant(-10.477664)
+  %broadcast.525.12 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_302_5), dimensions={}
+  %multiply.125.5 = f32[64,8,208,5]{3,2,1,0} multiply(%divide.7.3, %broadcast.525.12), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_301_5 = f32[] constant(12.9772)
+  %broadcast.526.12 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_301_5), dimensions={}
+  %add.1517.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.125.5, %broadcast.526.12), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.126.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1517.5, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_300_5 = f32[] constant(-7.49551868)
+  %broadcast.527.12 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_300_5), dimensions={}
+  %add.1518.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.126.3, %broadcast.527.12), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.127.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1518.5, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_299_5 = f32[] constant(2.92101908)
+  %broadcast.528.12 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_299_5), dimensions={}
+  %add.1519.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.127.3, %broadcast.528.12), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.128.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1519.5, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_298_5 = f32[] constant(-1.01526523)
+  %broadcast.529.12 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_298_5), dimensions={}
+  %add.1520.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.128.3, %broadcast.529.12), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.129.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1520.5, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_297_5 = f32[] constant(0.42184633)
+  %broadcast.530.12 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_297_5), dimensions={}
+  %add.1521.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.129.3, %broadcast.530.12), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.130.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1521.5, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_296_5 = f32[] constant(-0.282076746)
+  %broadcast.531.12 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_296_5), dimensions={}
+  %add.1522.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.130.3, %broadcast.531.12), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.131.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1522.5, %divide.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_295_5 = f32[] constant(0.564189494)
+  %broadcast.532.12 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_295_5), dimensions={}
+  %add.1523.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.131.3, %broadcast.532.12), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.12.5 = f32[64,8,208,5]{3,2,1,0} select(%compare.15.3, %add.1516.7, %add.1523.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.132.5 = f32[64,8,208,5]{3,2,1,0} multiply(%multiply.116.7, %select.12.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.13.3 = f32[64,8,208,5]{3,2,1,0} select(%compare.14.3, %broadcast.513.22, %multiply.132.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %subtract.9.7 = f32[64,8,208,5]{3,2,1,0} subtract(%broadcast.573.28, %select.13.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.14.5 = f32[64,8,208,5]{3,2,1,0} select(%compare.13.3, %subtract.9.7, %select.13.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.15.3 = f32[64,8,208,5]{3,2,1,0} select(%compare.12.3, %subtract.8.3, %select.14.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  ROOT %multiply.133.1 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.18.1, %select.15.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+}
+
+%fused_multiply.3 (param_0.1238: f32[256,1664], param_1.1696: f32[256]) -> f32[256,8,208] {
+  %param_0.1238 = f32[256,1664]{1,0} parameter(0)
+  %param_1.1696 = f32[256]{0} parameter(1)
+  %broadcast.478.5 = f32[256,1664]{1,0} broadcast(%param_1.1696), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=64}
+  %add.1428.5 = f32[256,1664]{1,0} add(%param_0.1238, %broadcast.478.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=64}
+  %constant_252_6 = f32[] constant(0.5)
+  %broadcast.492.6 = f32[256,1664]{1,0} broadcast(%constant_252_6), dimensions={}
+  %mul.108.3 = f32[256,1664]{1,0} multiply(%add.1428.5, %broadcast.492.6), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}
+  %bitcast.12.1 = f32[256,8,208]{2,1,0} bitcast(%mul.108.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}
+  %neg.14.17 = f32[256,1664]{1,0} negate(%add.1428.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/neg" stack_frame_id=63}
+  %constant_251_5 = f32[] constant(0.707106769)
+  %broadcast.500.36 = f32[256,1664]{1,0} broadcast(%constant_251_5), dimensions={}
+  %mul.115.17 = f32[256,1664]{1,0} multiply(%neg.14.17, %broadcast.500.36), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}
+  %bitcast.13.36 = f32[256,8,208]{2,1,0} bitcast(%mul.115.17), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}
+  %abs.2.11 = f32[256,8,208]{2,1,0} abs(%bitcast.13.36), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_313_4 = f32[] constant(1)
+  %broadcast.536.24 = f32[256,8,208]{2,1,0} broadcast(%constant_313_4), dimensions={}
+  %compare.8.3 = pred[256,8,208]{2,1,0} compare(%abs.2.11, %broadcast.536.24), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.80.13 = f32[256,8,208]{2,1,0} multiply(%bitcast.13.36, %bitcast.13.36), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_292_6 = f32[] constant(7.85386146e-05)
+  %broadcast.537.54 = f32[256,8,208]{2,1,0} broadcast(%constant_292_6), dimensions={}
+  %multiply.81.29 = f32[256,8,208]{2,1,0} multiply(%multiply.80.13, %broadcast.537.54), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_291_6 = f32[] constant(-0.000801019371)
+  %broadcast.538.50 = f32[256,8,208]{2,1,0} broadcast(%constant_291_6), dimensions={}
+  %add.1480.27 = f32[256,8,208]{2,1,0} add(%multiply.81.29, %broadcast.538.50), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.82.25 = f32[256,8,208]{2,1,0} multiply(%add.1480.27, %multiply.80.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_290_6 = f32[] constant(0.00518832775)
+  %broadcast.539.42 = f32[256,8,208]{2,1,0} broadcast(%constant_290_6), dimensions={}
+  %add.1481.23 = f32[256,8,208]{2,1,0} add(%multiply.82.25, %broadcast.539.42), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.83.21 = f32[256,8,208]{2,1,0} multiply(%add.1481.23, %multiply.80.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_289_6 = f32[] constant(-0.0268538129)
+  %broadcast.540.34 = f32[256,8,208]{2,1,0} broadcast(%constant_289_6), dimensions={}
+  %add.1482.19 = f32[256,8,208]{2,1,0} add(%multiply.83.21, %broadcast.540.34), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.84.17 = f32[256,8,208]{2,1,0} multiply(%add.1482.19, %multiply.80.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_288_6 = f32[] constant(0.112835854)
+  %broadcast.541.26 = f32[256,8,208]{2,1,0} broadcast(%constant_288_6), dimensions={}
+  %add.1483.15 = f32[256,8,208]{2,1,0} add(%multiply.84.17, %broadcast.541.26), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.85.13 = f32[256,8,208]{2,1,0} multiply(%add.1483.15, %multiply.80.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_287_6 = f32[] constant(-0.37612626)
+  %broadcast.542.18 = f32[256,8,208]{2,1,0} broadcast(%constant_287_6), dimensions={}
+  %add.1484.11 = f32[256,8,208]{2,1,0} add(%multiply.85.13, %broadcast.542.18), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.86.9 = f32[256,8,208]{2,1,0} multiply(%add.1484.11, %multiply.80.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_286_6 = f32[] constant(1.12837911)
+  %broadcast.543.10 = f32[256,8,208]{2,1,0} broadcast(%constant_286_6), dimensions={}
+  %add.1485.7 = f32[256,8,208]{2,1,0} add(%multiply.86.9, %broadcast.543.10), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.87.5 = f32[256,8,208]{2,1,0} multiply(%bitcast.13.36, %add.1485.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %subtract.5.3 = f32[256,8,208]{2,1,0} subtract(%broadcast.536.24, %multiply.87.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_293_8 = f32[] constant(0)
+  %broadcast.544.12 = f32[256,8,208]{2,1,0} broadcast(%constant_293_8), dimensions={}
+  %compare.9.3 = pred[256,8,208]{2,1,0} compare(%bitcast.13.36, %broadcast.544.12), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_312_6 = f32[] constant(2)
+  %broadcast.649.16 = f32[256,8,208]{2,1,0} broadcast(%constant_312_6), dimensions={}
+  %negate.6.7 = f32[256,8,208]{2,1,0} negate(%multiply.80.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_294_6 = f32[] constant(-88.7228394)
+  %broadcast.546.6 = f32[256,8,208]{2,1,0} broadcast(%constant_294_6), dimensions={}
+  %compare.10.3 = pred[256,8,208]{2,1,0} compare(%negate.6.7, %broadcast.546.6), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %exponential.2.1 = f32[256,8,208]{2,1,0} exponential(%negate.6.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %divide.4.3 = f32[256,8,208]{2,1,0} divide(%broadcast.536.24, %abs.2.11), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.88.1 = f32[256,8,208]{2,1,0} multiply(%exponential.2.1, %divide.4.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %compare.11.3 = pred[256,8,208]{2,1,0} compare(%abs.2.11, %broadcast.649.16), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %divide.5.3 = f32[256,8,208]{2,1,0} divide(%broadcast.536.24, %multiply.80.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_311_6 = f32[] constant(0.0232682)
+  %broadcast.547.78 = f32[256,8,208]{2,1,0} broadcast(%constant_311_6), dimensions={}
+  %multiply.89.39 = f32[256,8,208]{2,1,0} multiply(%divide.5.3, %broadcast.547.78), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_310_6 = f32[] constant(-0.138703942)
+  %broadcast.548.74 = f32[256,8,208]{2,1,0} broadcast(%constant_310_6), dimensions={}
+  %add.1486.37 = f32[256,8,208]{2,1,0} add(%multiply.89.39, %broadcast.548.74), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.90.35 = f32[256,8,208]{2,1,0} multiply(%add.1486.37, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_309_6 = f32[] constant(0.368742466)
+  %broadcast.549.66 = f32[256,8,208]{2,1,0} broadcast(%constant_309_6), dimensions={}
+  %add.1487.33 = f32[256,8,208]{2,1,0} add(%multiply.90.35, %broadcast.549.66), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.91.31 = f32[256,8,208]{2,1,0} multiply(%add.1487.33, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_308_6 = f32[] constant(-0.582473278)
+  %broadcast.550.58 = f32[256,8,208]{2,1,0} broadcast(%constant_308_6), dimensions={}
+  %add.1488.29 = f32[256,8,208]{2,1,0} add(%multiply.91.31, %broadcast.550.58), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.92.27 = f32[256,8,208]{2,1,0} multiply(%add.1488.29, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_307_6 = f32[] constant(0.621000469)
+  %broadcast.551.50 = f32[256,8,208]{2,1,0} broadcast(%constant_307_6), dimensions={}
+  %add.1489.25 = f32[256,8,208]{2,1,0} add(%multiply.92.27, %broadcast.551.50), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.93.23 = f32[256,8,208]{2,1,0} multiply(%add.1489.25, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_306_6 = f32[] constant(-0.494451523)
+  %broadcast.552.42 = f32[256,8,208]{2,1,0} broadcast(%constant_306_6), dimensions={}
+  %add.1490.21 = f32[256,8,208]{2,1,0} add(%multiply.93.23, %broadcast.552.42), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.94.19 = f32[256,8,208]{2,1,0} multiply(%add.1490.21, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_305_6 = f32[] constant(0.340488)
+  %broadcast.553.34 = f32[256,8,208]{2,1,0} broadcast(%constant_305_6), dimensions={}
+  %add.1491.17 = f32[256,8,208]{2,1,0} add(%multiply.94.19, %broadcast.553.34), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.95.15 = f32[256,8,208]{2,1,0} multiply(%add.1491.17, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_304_6 = f32[] constant(-0.274112701)
+  %broadcast.554.26 = f32[256,8,208]{2,1,0} broadcast(%constant_304_6), dimensions={}
+  %add.1492.13 = f32[256,8,208]{2,1,0} add(%multiply.95.15, %broadcast.554.26), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.96.11 = f32[256,8,208]{2,1,0} multiply(%add.1492.13, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_303_6 = f32[] constant(0.563825965)
+  %broadcast.555.18 = f32[256,8,208]{2,1,0} broadcast(%constant_303_6), dimensions={}
+  %add.1493.9 = f32[256,8,208]{2,1,0} add(%multiply.96.11, %broadcast.555.18), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_302_6 = f32[] constant(-10.477664)
+  %broadcast.556.62 = f32[256,8,208]{2,1,0} broadcast(%constant_302_6), dimensions={}
+  %multiply.97.31 = f32[256,8,208]{2,1,0} multiply(%divide.5.3, %broadcast.556.62), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_301_6 = f32[] constant(12.9772)
+  %broadcast.557.58 = f32[256,8,208]{2,1,0} broadcast(%constant_301_6), dimensions={}
+  %add.1494.29 = f32[256,8,208]{2,1,0} add(%multiply.97.31, %broadcast.557.58), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.98.27 = f32[256,8,208]{2,1,0} multiply(%add.1494.29, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_300_6 = f32[] constant(-7.49551868)
+  %broadcast.558.50 = f32[256,8,208]{2,1,0} broadcast(%constant_300_6), dimensions={}
+  %add.1495.25 = f32[256,8,208]{2,1,0} add(%multiply.98.27, %broadcast.558.50), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.99.23 = f32[256,8,208]{2,1,0} multiply(%add.1495.25, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_299_6 = f32[] constant(2.92101908)
+  %broadcast.559.42 = f32[256,8,208]{2,1,0} broadcast(%constant_299_6), dimensions={}
+  %add.1496.21 = f32[256,8,208]{2,1,0} add(%multiply.99.23, %broadcast.559.42), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.100.19 = f32[256,8,208]{2,1,0} multiply(%add.1496.21, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_298_6 = f32[] constant(-1.01526523)
+  %broadcast.560.34 = f32[256,8,208]{2,1,0} broadcast(%constant_298_6), dimensions={}
+  %add.1497.17 = f32[256,8,208]{2,1,0} add(%multiply.100.19, %broadcast.560.34), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.101.15 = f32[256,8,208]{2,1,0} multiply(%add.1497.17, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_297_6 = f32[] constant(0.42184633)
+  %broadcast.561.26 = f32[256,8,208]{2,1,0} broadcast(%constant_297_6), dimensions={}
+  %add.1498.13 = f32[256,8,208]{2,1,0} add(%multiply.101.15, %broadcast.561.26), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.102.11 = f32[256,8,208]{2,1,0} multiply(%add.1498.13, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_296_6 = f32[] constant(-0.282076746)
+  %broadcast.562.18 = f32[256,8,208]{2,1,0} broadcast(%constant_296_6), dimensions={}
+  %add.1499.9 = f32[256,8,208]{2,1,0} add(%multiply.102.11, %broadcast.562.18), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.103.7 = f32[256,8,208]{2,1,0} multiply(%add.1499.9, %divide.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %constant_295_6 = f32[] constant(0.564189494)
+  %broadcast.563.10 = f32[256,8,208]{2,1,0} broadcast(%constant_295_6), dimensions={}
+  %add.1500.5 = f32[256,8,208]{2,1,0} add(%multiply.103.7, %broadcast.563.10), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %select.8.7 = f32[256,8,208]{2,1,0} select(%compare.11.3, %add.1493.9, %add.1500.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %multiply.104.5 = f32[256,8,208]{2,1,0} multiply(%multiply.88.1, %select.8.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %select.9.3 = f32[256,8,208]{2,1,0} select(%compare.10.3, %broadcast.544.12, %multiply.104.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %subtract.6.7 = f32[256,8,208]{2,1,0} subtract(%broadcast.649.16, %select.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %select.10.5 = f32[256,8,208]{2,1,0} select(%compare.9.3, %subtract.6.7, %select.9.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  %select.11.3 = f32[256,8,208]{2,1,0} select(%compare.8.3, %subtract.5.3, %select.10.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/erfc" stack_frame_id=63}
+  ROOT %multiply.105.1 = f32[256,8,208]{2,1,0} multiply(%bitcast.12.1, %select.11.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}
+}
+
+%region_1.6.clone.6 (reduce_sum.93: f32[], reduce_sum.104: f32[]) -> f32[] {
+  %reduce_sum.104 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  %reduce_sum.93 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.105.0 = f32[] add(%reduce_sum.93, %reduce_sum.104), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%fused_reduce.2 (param_0.1225: f32[64,8320], param_1.1676: f32[64]) -> f32[64,8,208] {
+  %param_0.1225 = f32[64,8320]{1,0} parameter(0)
+  %param_1.1676 = f32[64]{0} parameter(1)
+  %broadcast.475.3 = f32[64,8320]{1,0} broadcast(%param_1.1676), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=65}
+  %add.1427.3 = f32[64,8320]{1,0} add(%param_0.1225, %broadcast.475.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=65}
+  %bitcast.10.1 = f32[64,8,208,5]{3,2,1,0} bitcast(%add.1427.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=65}
+  %constant_293_2 = f32[] constant(0)
+  ROOT %reduce.6.1 = f32[64,8,208]{2,1,0} reduce(%bitcast.10.1, %constant_293_2), dimensions={3}, to_apply=%region_1.6.clone.6, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%fused_multiply.4 (param_0.1236: f32[64,8320], param_1.1694: f32[64]) -> f32[64,8,208,5] {
+  %param_0.1236 = f32[64,8320]{1,0} parameter(0)
+  %param_1.1694 = f32[64]{0} parameter(1)
+  %broadcast.474.5 = f32[64,8320]{1,0} broadcast(%param_1.1694), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %add.1426.5 = f32[64,8320]{1,0} add(%param_0.1236, %broadcast.474.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %constant_252_4 = f32[] constant(0.5)
+  %broadcast.488.10 = f32[64,8320]{1,0} broadcast(%constant_252_4), dimensions={}
+  %mul.107.3 = f32[64,8320]{1,0} multiply(%add.1426.5, %broadcast.488.10), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %bitcast.7.1 = f32[64,8,208,5]{3,2,1,0} bitcast(%mul.107.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %neg.13.19 = f32[64,8320]{1,0} negate(%add.1426.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/neg" stack_frame_id=69}
+  %constant_251_1 = f32[] constant(0.707106769)
+  %broadcast.497.74 = f32[64,8320]{1,0} broadcast(%constant_251_1), dimensions={}
+  %mul.114.19 = f32[64,8320]{1,0} multiply(%neg.13.19, %broadcast.497.74), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %bitcast.8.38 = f32[64,8,208,5]{3,2,1,0} bitcast(%mul.114.19), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %abs.1.11 = f32[64,8,208,5]{3,2,1,0} abs(%bitcast.8.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_313_3 = f32[] constant(1)
+  %broadcast.505.46 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_313_3), dimensions={}
+  %compare.4.3 = pred[64,8,208,5]{3,2,1,0} compare(%abs.1.11, %broadcast.505.46), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.51.13 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.8.38, %bitcast.8.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_292_4 = f32[] constant(7.85386146e-05)
+  %broadcast.506.114 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_292_4), dimensions={}
+  %multiply.52.29 = f32[64,8,208,5]{3,2,1,0} multiply(%multiply.51.13, %broadcast.506.114), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_291_4 = f32[] constant(-0.000801019371)
+  %broadcast.507.106 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_291_4), dimensions={}
+  %add.1458.27 = f32[64,8,208,5]{3,2,1,0} add(%multiply.52.29, %broadcast.507.106), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.53.25 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1458.27, %multiply.51.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_290_4 = f32[] constant(0.00518832775)
+  %broadcast.508.90 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_290_4), dimensions={}
+  %add.1459.23 = f32[64,8,208,5]{3,2,1,0} add(%multiply.53.25, %broadcast.508.90), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.54.21 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1459.23, %multiply.51.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_289_4 = f32[] constant(-0.0268538129)
+  %broadcast.509.74 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_289_4), dimensions={}
+  %add.1460.19 = f32[64,8,208,5]{3,2,1,0} add(%multiply.54.21, %broadcast.509.74), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.55.17 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1460.19, %multiply.51.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_288_4 = f32[] constant(0.112835854)
+  %broadcast.510.58 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_288_4), dimensions={}
+  %add.1461.15 = f32[64,8,208,5]{3,2,1,0} add(%multiply.55.17, %broadcast.510.58), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.56.13 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1461.15, %multiply.51.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_287_4 = f32[] constant(-0.37612626)
+  %broadcast.511.42 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_287_4), dimensions={}
+  %add.1462.11 = f32[64,8,208,5]{3,2,1,0} add(%multiply.56.13, %broadcast.511.42), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.57.9 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1462.11, %multiply.51.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_286_4 = f32[] constant(1.12837911)
+  %broadcast.512.26 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_286_4), dimensions={}
+  %add.1463.7 = f32[64,8,208,5]{3,2,1,0} add(%multiply.57.9, %broadcast.512.26), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.58.5 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.8.38, %add.1463.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %subtract.2.3 = f32[64,8,208,5]{3,2,1,0} subtract(%broadcast.505.46, %multiply.58.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_293_10 = f32[] constant(0)
+  %broadcast.513.20 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_293_10), dimensions={}
+  %compare.5.3 = pred[64,8,208,5]{3,2,1,0} compare(%bitcast.8.38, %broadcast.513.20), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_312_5 = f32[] constant(2)
+  %broadcast.573.30 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_312_5), dimensions={}
+  %negate.5.7 = f32[64,8,208,5]{3,2,1,0} negate(%multiply.51.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_294_4 = f32[] constant(-88.7228394)
+  %broadcast.515.10 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_294_4), dimensions={}
+  %compare.6.3 = pred[64,8,208,5]{3,2,1,0} compare(%negate.5.7, %broadcast.515.10), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %exponential.1.7 = f32[64,8,208,5]{3,2,1,0} exponential(%negate.5.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %divide.2.3 = f32[64,8,208,5]{3,2,1,0} divide(%broadcast.505.46, %abs.1.11), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.59.7 = f32[64,8,208,5]{3,2,1,0} multiply(%exponential.1.7, %divide.2.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %compare.7.3 = pred[64,8,208,5]{3,2,1,0} compare(%abs.1.11, %broadcast.573.30), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %divide.3.3 = f32[64,8,208,5]{3,2,1,0} divide(%broadcast.505.46, %multiply.51.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_311_4 = f32[] constant(0.0232682)
+  %broadcast.516.112 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_311_4), dimensions={}
+  %multiply.60.37 = f32[64,8,208,5]{3,2,1,0} multiply(%divide.3.3, %broadcast.516.112), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_310_4 = f32[] constant(-0.138703942)
+  %broadcast.517.106 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_310_4), dimensions={}
+  %add.1464.35 = f32[64,8,208,5]{3,2,1,0} add(%multiply.60.37, %broadcast.517.106), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.61.33 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1464.35, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_309_4 = f32[] constant(0.368742466)
+  %broadcast.518.94 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_309_4), dimensions={}
+  %add.1465.31 = f32[64,8,208,5]{3,2,1,0} add(%multiply.61.33, %broadcast.518.94), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.62.29 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1465.31, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_308_4 = f32[] constant(-0.582473278)
+  %broadcast.519.82 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_308_4), dimensions={}
+  %add.1466.27 = f32[64,8,208,5]{3,2,1,0} add(%multiply.62.29, %broadcast.519.82), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.63.25 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1466.27, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_307_4 = f32[] constant(0.621000469)
+  %broadcast.520.70 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_307_4), dimensions={}
+  %add.1467.23 = f32[64,8,208,5]{3,2,1,0} add(%multiply.63.25, %broadcast.520.70), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.64.21 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1467.23, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_306_4 = f32[] constant(-0.494451523)
+  %broadcast.521.58 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_306_4), dimensions={}
+  %add.1468.19 = f32[64,8,208,5]{3,2,1,0} add(%multiply.64.21, %broadcast.521.58), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.65.17 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1468.19, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_305_4 = f32[] constant(0.340488)
+  %broadcast.522.46 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_305_4), dimensions={}
+  %add.1469.15 = f32[64,8,208,5]{3,2,1,0} add(%multiply.65.17, %broadcast.522.46), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.66.13 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1469.15, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_304_4 = f32[] constant(-0.274112701)
+  %broadcast.523.34 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_304_4), dimensions={}
+  %add.1470.11 = f32[64,8,208,5]{3,2,1,0} add(%multiply.66.13, %broadcast.523.34), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.67.9 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1470.11, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_303_4 = f32[] constant(0.563825965)
+  %broadcast.524.22 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_303_4), dimensions={}
+  %add.1471.7 = f32[64,8,208,5]{3,2,1,0} add(%multiply.67.9, %broadcast.524.22), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_302_4 = f32[] constant(-10.477664)
+  %broadcast.525.16 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_302_4), dimensions={}
+  %multiply.68.5 = f32[64,8,208,5]{3,2,1,0} multiply(%divide.3.3, %broadcast.525.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_301_4 = f32[] constant(12.9772)
+  %broadcast.526.16 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_301_4), dimensions={}
+  %add.1472.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.68.5, %broadcast.526.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.69.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1472.5, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_300_4 = f32[] constant(-7.49551868)
+  %broadcast.527.16 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_300_4), dimensions={}
+  %add.1473.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.69.3, %broadcast.527.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.70.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1473.5, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_299_4 = f32[] constant(2.92101908)
+  %broadcast.528.16 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_299_4), dimensions={}
+  %add.1474.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.70.3, %broadcast.528.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.71.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1474.5, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_298_4 = f32[] constant(-1.01526523)
+  %broadcast.529.16 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_298_4), dimensions={}
+  %add.1475.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.71.3, %broadcast.529.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.72.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1475.5, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_297_4 = f32[] constant(0.42184633)
+  %broadcast.530.16 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_297_4), dimensions={}
+  %add.1476.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.72.3, %broadcast.530.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.73.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1476.5, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_296_4 = f32[] constant(-0.282076746)
+  %broadcast.531.16 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_296_4), dimensions={}
+  %add.1477.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.73.3, %broadcast.531.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.74.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1477.5, %divide.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_295_4 = f32[] constant(0.564189494)
+  %broadcast.532.16 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_295_4), dimensions={}
+  %add.1478.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.74.3, %broadcast.532.16), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.4.5 = f32[64,8,208,5]{3,2,1,0} select(%compare.7.3, %add.1471.7, %add.1478.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.75.5 = f32[64,8,208,5]{3,2,1,0} multiply(%multiply.59.7, %select.4.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.5.3 = f32[64,8,208,5]{3,2,1,0} select(%compare.6.3, %broadcast.513.20, %multiply.75.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %subtract.3.7 = f32[64,8,208,5]{3,2,1,0} subtract(%broadcast.573.30, %select.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.6.5 = f32[64,8,208,5]{3,2,1,0} select(%compare.5.3, %subtract.3.7, %select.5.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.7.3 = f32[64,8,208,5]{3,2,1,0} select(%compare.4.3, %subtract.2.3, %select.6.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  ROOT %multiply.76.1 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.7.1, %select.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+}
+
+%fused_multiply.5 (param_0.1235: f32[64,8320], param_1.1693: f32[64]) -> f32[64,8,208,5] {
+  %param_0.1235 = f32[64,8320]{1,0} parameter(0)
+  %param_1.1693 = f32[64]{0} parameter(1)
+  %broadcast.471.5 = f32[64,8320]{1,0} broadcast(%param_1.1693), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %add.1425.5 = f32[64,8320]{1,0} add(%param_0.1235, %broadcast.471.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %constant_252_3 = f32[] constant(0.5)
+  %broadcast.488.12 = f32[64,8320]{1,0} broadcast(%constant_252_3), dimensions={}
+  %mul.106.3 = f32[64,8320]{1,0} multiply(%add.1425.5, %broadcast.488.12), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %bitcast.4.1 = f32[64,8,208,5]{3,2,1,0} bitcast(%mul.106.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %neg.12.19 = f32[64,8320]{1,0} negate(%add.1425.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/neg" stack_frame_id=69}
+  %constant_251_3 = f32[] constant(0.707106769)
+  %broadcast.497.76 = f32[64,8320]{1,0} broadcast(%constant_251_3), dimensions={}
+  %mul.113.19 = f32[64,8320]{1,0} multiply(%neg.12.19, %broadcast.497.76), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %bitcast.5.38 = f32[64,8,208,5]{3,2,1,0} bitcast(%mul.113.19), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+  %abs.17 = f32[64,8,208,5]{3,2,1,0} abs(%bitcast.5.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_313_6 = f32[] constant(1)
+  %broadcast.505.48 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_313_6), dimensions={}
+  %compare.27 = pred[64,8,208,5]{3,2,1,0} compare(%abs.17, %broadcast.505.48), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.25.13 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.5.38, %bitcast.5.38), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_292_3 = f32[] constant(7.85386146e-05)
+  %broadcast.506.116 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_292_3), dimensions={}
+  %multiply.26.29 = f32[64,8,208,5]{3,2,1,0} multiply(%multiply.25.13, %broadcast.506.116), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_291_3 = f32[] constant(-0.000801019371)
+  %broadcast.507.108 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_291_3), dimensions={}
+  %add.1437.27 = f32[64,8,208,5]{3,2,1,0} add(%multiply.26.29, %broadcast.507.108), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.27.25 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1437.27, %multiply.25.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_290_3 = f32[] constant(0.00518832775)
+  %broadcast.508.92 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_290_3), dimensions={}
+  %add.1438.23 = f32[64,8,208,5]{3,2,1,0} add(%multiply.27.25, %broadcast.508.92), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.28.21 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1438.23, %multiply.25.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_289_3 = f32[] constant(-0.0268538129)
+  %broadcast.509.76 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_289_3), dimensions={}
+  %add.1439.19 = f32[64,8,208,5]{3,2,1,0} add(%multiply.28.21, %broadcast.509.76), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.29.17 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1439.19, %multiply.25.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_288_3 = f32[] constant(0.112835854)
+  %broadcast.510.60 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_288_3), dimensions={}
+  %add.1440.15 = f32[64,8,208,5]{3,2,1,0} add(%multiply.29.17, %broadcast.510.60), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.30.13 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1440.15, %multiply.25.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_287_3 = f32[] constant(-0.37612626)
+  %broadcast.511.44 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_287_3), dimensions={}
+  %add.1441.11 = f32[64,8,208,5]{3,2,1,0} add(%multiply.30.13, %broadcast.511.44), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.31.9 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1441.11, %multiply.25.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_286_3 = f32[] constant(1.12837911)
+  %broadcast.512.28 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_286_3), dimensions={}
+  %add.1442.7 = f32[64,8,208,5]{3,2,1,0} add(%multiply.31.9, %broadcast.512.28), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.32.5 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.5.38, %add.1442.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %subtract.21 = f32[64,8,208,5]{3,2,1,0} subtract(%broadcast.505.48, %multiply.32.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_293_9 = f32[] constant(0)
+  %broadcast.513.18 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_293_9), dimensions={}
+  %compare.1.3 = pred[64,8,208,5]{3,2,1,0} compare(%bitcast.5.38, %broadcast.513.18), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_312_3 = f32[] constant(2)
+  %broadcast.573.32 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_312_3), dimensions={}
+  %negate.4.7 = f32[64,8,208,5]{3,2,1,0} negate(%multiply.25.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_294_3 = f32[] constant(-88.7228394)
+  %broadcast.515.12 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_294_3), dimensions={}
+  %compare.2.3 = pred[64,8,208,5]{3,2,1,0} compare(%negate.4.7, %broadcast.515.12), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %exponential.13 = f32[64,8,208,5]{3,2,1,0} exponential(%negate.4.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %divide.15 = f32[64,8,208,5]{3,2,1,0} divide(%broadcast.505.48, %abs.17), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.33.7 = f32[64,8,208,5]{3,2,1,0} multiply(%exponential.13, %divide.15), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %compare.3.3 = pred[64,8,208,5]{3,2,1,0} compare(%abs.17, %broadcast.573.32), direction=LT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %divide.1.3 = f32[64,8,208,5]{3,2,1,0} divide(%broadcast.505.48, %multiply.25.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_311_3 = f32[] constant(0.0232682)
+  %broadcast.516.148 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_311_3), dimensions={}
+  %multiply.34.37 = f32[64,8,208,5]{3,2,1,0} multiply(%divide.1.3, %broadcast.516.148), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_310_3 = f32[] constant(-0.138703942)
+  %broadcast.517.140 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_310_3), dimensions={}
+  %add.1443.35 = f32[64,8,208,5]{3,2,1,0} add(%multiply.34.37, %broadcast.517.140), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.35.33 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1443.35, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_309_3 = f32[] constant(0.368742466)
+  %broadcast.518.124 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_309_3), dimensions={}
+  %add.1444.31 = f32[64,8,208,5]{3,2,1,0} add(%multiply.35.33, %broadcast.518.124), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.36.29 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1444.31, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_308_3 = f32[] constant(-0.582473278)
+  %broadcast.519.108 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_308_3), dimensions={}
+  %add.1445.27 = f32[64,8,208,5]{3,2,1,0} add(%multiply.36.29, %broadcast.519.108), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.37.25 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1445.27, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_307_3 = f32[] constant(0.621000469)
+  %broadcast.520.92 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_307_3), dimensions={}
+  %add.1446.23 = f32[64,8,208,5]{3,2,1,0} add(%multiply.37.25, %broadcast.520.92), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.38.21 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1446.23, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_306_3 = f32[] constant(-0.494451523)
+  %broadcast.521.76 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_306_3), dimensions={}
+  %add.1447.19 = f32[64,8,208,5]{3,2,1,0} add(%multiply.38.21, %broadcast.521.76), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.39.17 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1447.19, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_305_3 = f32[] constant(0.340488)
+  %broadcast.522.60 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_305_3), dimensions={}
+  %add.1448.15 = f32[64,8,208,5]{3,2,1,0} add(%multiply.39.17, %broadcast.522.60), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.40.13 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1448.15, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_304_3 = f32[] constant(-0.274112701)
+  %broadcast.523.44 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_304_3), dimensions={}
+  %add.1449.11 = f32[64,8,208,5]{3,2,1,0} add(%multiply.40.13, %broadcast.523.44), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.41.9 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1449.11, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_303_3 = f32[] constant(0.563825965)
+  %broadcast.524.28 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_303_3), dimensions={}
+  %add.1450.7 = f32[64,8,208,5]{3,2,1,0} add(%multiply.41.9, %broadcast.524.28), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_302_3 = f32[] constant(-10.477664)
+  %broadcast.525.20 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_302_3), dimensions={}
+  %multiply.42.5 = f32[64,8,208,5]{3,2,1,0} multiply(%divide.1.3, %broadcast.525.20), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_301_3 = f32[] constant(12.9772)
+  %broadcast.526.20 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_301_3), dimensions={}
+  %add.1451.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.42.5, %broadcast.526.20), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.43.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1451.5, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_300_3 = f32[] constant(-7.49551868)
+  %broadcast.527.20 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_300_3), dimensions={}
+  %add.1452.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.43.3, %broadcast.527.20), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.44.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1452.5, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_299_3 = f32[] constant(2.92101908)
+  %broadcast.528.20 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_299_3), dimensions={}
+  %add.1453.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.44.3, %broadcast.528.20), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.45.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1453.5, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_298_3 = f32[] constant(-1.01526523)
+  %broadcast.529.20 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_298_3), dimensions={}
+  %add.1454.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.45.3, %broadcast.529.20), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.46.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1454.5, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_297_3 = f32[] constant(0.42184633)
+  %broadcast.530.20 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_297_3), dimensions={}
+  %add.1455.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.46.3, %broadcast.530.20), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.47.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1455.5, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_296_3 = f32[] constant(-0.282076746)
+  %broadcast.531.20 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_296_3), dimensions={}
+  %add.1456.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.47.3, %broadcast.531.20), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.48.3 = f32[64,8,208,5]{3,2,1,0} multiply(%add.1456.5, %divide.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %constant_295_3 = f32[] constant(0.564189494)
+  %broadcast.532.20 = f32[64,8,208,5]{3,2,1,0} broadcast(%constant_295_3), dimensions={}
+  %add.1457.5 = f32[64,8,208,5]{3,2,1,0} add(%multiply.48.3, %broadcast.532.20), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.30 = f32[64,8,208,5]{3,2,1,0} select(%compare.3.3, %add.1450.7, %add.1457.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %multiply.49.5 = f32[64,8,208,5]{3,2,1,0} multiply(%multiply.33.7, %select.30), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.1.3 = f32[64,8,208,5]{3,2,1,0} select(%compare.2.3, %broadcast.513.18, %multiply.49.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %subtract.1.7 = f32[64,8,208,5]{3,2,1,0} subtract(%broadcast.573.32, %select.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.2.5 = f32[64,8,208,5]{3,2,1,0} select(%compare.1.3, %subtract.1.7, %select.1.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  %select.3.3 = f32[64,8,208,5]{3,2,1,0} select(%compare.27, %subtract.21, %select.2.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/erfc" stack_frame_id=69}
+  ROOT %multiply.50.1 = f32[64,8,208,5]{3,2,1,0} multiply(%bitcast.4.1, %select.3.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}
+}
+
+%fused_concatenate (param_0.342: f32[8,208,5,192], param_1.512: f32[8,208,5,64], param_2.51: f32[8,208,5], param_3.15: s32[8320,2], param_4.9: f32[1664,64], param_5.12: f32[8,208,64]) -> f32[8,208,5,256] {
+  %param_5.12 = f32[8,208,64]{2,1,0} parameter(5)
+  %broadcast.402.1 = f32[8,208,5,64]{3,2,1,0} broadcast(%param_5.12), dimensions={0,1,3}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/tile" stack_frame_id=80}
+  %param_2.51 = f32[8,208,5]{2,1,0} parameter(2)
+  %mul.60.4 = f32[8,208,5,192]{3,2,1,0} broadcast(%param_2.51), dimensions={0,1,2}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/mul" stack_frame_id=74}
+  %param_1.512 = f32[8,208,5,64]{3,2,1,0} parameter(1)
+  %param_4.9 = f32[1664,64]{1,0} parameter(4)
+  %bitcast.1042.5 = f32[8,208,64]{2,1,0} bitcast(%param_4.9), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/dot_general" stack_frame_id=22}
+  %param_3.15 = s32[8320,2]{1,0} parameter(3)
+  %gather.16.5 = f32[8320,1,1,64]{3,2,1,0} gather(%bitcast.1042.5, %param_3.15), offset_dims={1,2,3}, collapsed_slice_dims={}, start_index_map={0,1}, index_vector_dim=1, slice_sizes={1,1,64}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/gather" stack_frame_id=79}
+  %bitcast.2.8 = f32[8,208,5,64]{3,2,1,0} bitcast(%gather.16.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/gather" stack_frame_id=79}
+  %gather.20.1 = f32[8320,1,1,64]{3,2,1,0} gather(%param_5.12, %param_3.15), offset_dims={1,2,3}, collapsed_slice_dims={}, start_index_map={0,1}, index_vector_dim=1, slice_sizes={1,1,64}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/gather" stack_frame_id=77}
+  %bitcast.16.5 = f32[8,208,5,64]{3,2,1,0} bitcast(%gather.20.1), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/gather" stack_frame_id=77}
+  %concatenate.10.5 = f32[8,208,5,192]{3,2,1,0} concatenate(%param_1.512, %bitcast.2.8, %bitcast.16.5), dimensions={3}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/concatenate" stack_frame_id=76}
+  %mul.82.3 = f32[8,208,5,192]{3,2,1,0} multiply(%mul.60.4, %concatenate.10.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/mul" stack_frame_id=74}
+  %param_0.342 = f32[8,208,5,192]{3,2,1,0} parameter(0)
+  %add.302.1 = f32[8,208,5,192]{3,2,1,0} add(%mul.82.3, %param_0.342), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/add" stack_frame_id=73}
+  ROOT %concatenate.11.1 = f32[8,208,5,256]{3,2,1,0} concatenate(%broadcast.402.1, %add.302.1), dimensions={3}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/concatenate" stack_frame_id=71}
+}
+
+%fused_concatenate.1 (param_0.367: f32[8,208,5,192], param_1.545: f32[8,208,5,64], param_2.68: f32[8,208,5,64], param_3.24: f32[8,208,5], param_4.22: s32[8320,2], param_5.13: f32[1664,64], param_6.5: f32[8,208,64]) -> f32[8,208,5,256] {
+  %param_6.5 = f32[8,208,64]{2,1,0} parameter(6)
+  %broadcast.387.1 = f32[8,208,5,64]{3,2,1,0} broadcast(%param_6.5), dimensions={0,1,3}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/tile" stack_frame_id=80}
+  %param_3.24 = f32[8,208,5]{2,1,0} parameter(3)
+  %mul.60.6 = f32[8,208,5,192]{3,2,1,0} broadcast(%param_3.24), dimensions={0,1,2}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/mul" stack_frame_id=74}
+  %param_1.545 = f32[8,208,5,64]{3,2,1,0} parameter(1)
+  %param_5.13 = f32[1664,64]{1,0} parameter(5)
+  %bitcast.1042.3 = f32[8,208,64]{2,1,0} bitcast(%param_5.13), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/dot_general" stack_frame_id=22}
+  %param_4.22 = s32[8320,2]{1,0} parameter(4)
+  %gather.16.3 = f32[8320,1,1,64]{3,2,1,0} gather(%bitcast.1042.3, %param_4.22), offset_dims={1,2,3}, collapsed_slice_dims={}, start_index_map={0,1}, index_vector_dim=1, slice_sizes={1,1,64}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/gather" stack_frame_id=79}
+  %bitcast.2.10 = f32[8,208,5,64]{3,2,1,0} bitcast(%gather.16.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/gather" stack_frame_id=79}
+  %param_2.68 = f32[8,208,5,64]{3,2,1,0} parameter(2)
+  %concatenate.8.5 = f32[8,208,5,192]{3,2,1,0} concatenate(%param_1.545, %bitcast.2.10, %param_2.68), dimensions={3}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/concatenate" stack_frame_id=76}
+  %mul.61.3 = f32[8,208,5,192]{3,2,1,0} multiply(%mul.60.6, %concatenate.8.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/mul" stack_frame_id=74}
+  %param_0.367 = f32[8,208,5,192]{3,2,1,0} parameter(0)
+  %add.278.1 = f32[8,208,5,192]{3,2,1,0} add(%mul.61.3, %param_0.367), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/add" stack_frame_id=73}
+  ROOT %concatenate.9.1 = f32[8,208,5,256]{3,2,1,0} concatenate(%broadcast.387.1, %add.278.1), dimensions={3}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/concatenate" stack_frame_id=71}
+}
+
+%region_1.6.clone.1 (reduce_sum.65: f32[], reduce_sum.66: f32[]) -> f32[] {
+  %reduce_sum.65 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.66 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.67.0 = f32[] add(%reduce_sum.65, %reduce_sum.66), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%fused_add (param_0.1210: f32[208,21], param_1.1701: s32[1664,2], param_2.1338: f32[21,1664], param_3.1244: f32[21]) -> f32[208,21] {
+  %param_0.1210 = f32[208,21]{1,0} parameter(0)
+  %param_2.1338 = f32[21,1664]{1,0} parameter(2)
+  %param_3.1244 = f32[21]{0} parameter(3)
+  %broadcast.487.11 = f32[21,1664]{1,0} broadcast(%param_3.1244), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.Linear))/add" stack_frame_id=58}
+  %add.1435.11 = f32[21,1664]{1,0} add(%param_2.1338, %broadcast.487.11), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.Linear))/add" stack_frame_id=58}
+  %bitcast.1134.11 = f32[8,208,21]{1,0,2} bitcast(%add.1435.11)
+  %param_1.1701 = s32[1664,2]{1,0} parameter(1)
+  %gather.21.11 = f32[1664,1,1,21]{3,2,1,0} gather(%bitcast.1134.11, %param_1.1701), offset_dims={1,2,3}, collapsed_slice_dims={}, start_index_map={0,1}, index_vector_dim=1, slice_sizes={1,1,21}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/jit(take_along_axis)/gather" stack_frame_id=57}
+  %constant_754_2 = f32[] constant(-2.07944155), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/log" stack_frame_id=59}
+  %broadcast.469.9 = f32[1664,1,1,21]{3,2,1,0} broadcast(%constant_754_2), dimensions={}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/add" stack_frame_id=55}
+  %add.1420.9 = f32[1664,1,1,21]{3,2,1,0} add(%gather.21.11, %broadcast.469.9), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/add" stack_frame_id=55}
+  %bitcast.32.10 = f32[8,208,21]{2,1,0} bitcast(%add.1420.9), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/add" stack_frame_id=55}
+  %sub.76.7 = f32[8,208,21]{2,1,0} broadcast(%param_0.1210), dimensions={1,2}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/sub" stack_frame_id=85}
+  %sub.77.9 = f32[8,208,21]{2,1,0} subtract(%bitcast.32.10, %sub.76.7), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/sub" stack_frame_id=85}
+  %exp.3.7 = f32[8,208,21]{2,1,0} exponential(%sub.77.9), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/exp" stack_frame_id=84}
+  %constant_293_6 = f32[] constant(0)
+  %reduce_sum.100.5 = f32[208,21]{1,0} reduce(%exp.3.7, %constant_293_6), dimensions={0}, to_apply=%region_1.6.clone.1, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/reduce_sum" stack_frame_id=83}
+  %log.7.3 = f32[208,21]{1,0} log(%reduce_sum.100.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/log" stack_frame_id=82}
+  ROOT %add.335.1 = f32[208,21]{1,0} add(%param_0.1210, %log.7.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/add" stack_frame_id=81}
+}
+
+%region_1.6.clone.2 (reduce_sum.71: f32[], reduce_sum.72: f32[]) -> f32[] {
+  %reduce_sum.71 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.72 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.73.0 = f32[] add(%reduce_sum.71, %reduce_sum.72), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%region_1.6.clone.5 (reduce_sum.87: f32[], reduce_sum.88: f32[]) -> f32[] {
+  %reduce_sum.87 = f32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.88 = f32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.89.0 = f32[] add(%reduce_sum.87, %reduce_sum.88), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=15}
+}
+
+%region_10.26.clone (reduce_max.1: f32[], reduce_max.2: f32[]) -> f32[] {
+  %reduce_max.1 = f32[] parameter(0), metadata={op_name="reduce_max"}
+  %reduce_max.2 = f32[] parameter(1), metadata={op_name="reduce_max"}
+  ROOT %reduce_max.6.0 = f32[] maximum(%reduce_max.1, %reduce_max.2), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/reduce_max" stack_frame_id=18}
+}
+
+%region_13.29 (reduce_sum.75: s32[], reduce_sum.76: s32[]) -> s32[] {
+  %reduce_sum.75 = s32[] parameter(0), metadata={op_name="reduce_sum"}
+  %reduce_sum.76 = s32[] parameter(1), metadata={op_name="reduce_sum"}
+  ROOT %reduce_sum.77.0 = s32[] add(%reduce_sum.75, %reduce_sum.76), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/reduce_sum" stack_frame_id=20}
+}
+
+%fused_computation.389 (param_0.1223: f32[208,21]) -> f32[208,21] {
+  %iota.12.9 = s32[208,208]{1,0} iota(), iota_dimension=0, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/eq" stack_frame_id=93}
+  %iota.13.9 = s32[208,208]{1,0} iota(), iota_dimension=1, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/eq" stack_frame_id=93}
+  %eq.13.9 = pred[208,208]{1,0} compare(%iota.12.9, %iota.13.9), direction=EQ, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/eq" stack_frame_id=93}
+  %convert_element_type.3.3 = s32[208,208]{1,0} convert(%eq.13.9), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/convert_element_type" stack_frame_id=20}
+  %constant_317_1 = s32[] constant(0)
+  %reduce_sum.102.3 = s32[208]{0} reduce(%convert_element_type.3.3, %constant_317_1), dimensions={1}, to_apply=%region_13.29, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/reduce_sum" stack_frame_id=20}
+  %constant_227_1 = s32[] constant(1)
+  %gt.4.3 = s32[208]{0} broadcast(%constant_227_1), dimensions={}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/gt" stack_frame_id=87}
+  %gt.5.3 = pred[208]{0} compare(%reduce_sum.102.3, %gt.4.3), direction=GT, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/gt" stack_frame_id=87}
+  %broadcast_in_dim.134.1 = pred[208,21]{1,0} broadcast(%gt.5.3), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/jit(_where)/broadcast_in_dim" stack_frame_id=86}
+  %broadcast.504.3 = pred[208,21,208]{2,1,0} broadcast(%eq.13.9), dimensions={0,2}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(_where))/broadcast_in_dim" stack_frame_id=91}
+  %param_0.1223 = f32[208,21]{1,0} parameter(0)
+  %constant_1293 = f32[] constant(-inf)
+  %reduce_max.21 = f32[208]{0} reduce(%param_0.1223, %constant_1293), dimensions={1}, to_apply=%region_10.26.clone, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(log_softmax))/reduce_max" stack_frame_id=92}
+  %sub.169 = f32[208,21]{1,0} broadcast(%reduce_max.21), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(log_softmax))/sub" stack_frame_id=92}
+  %sub.168 = f32[208,21]{1,0} subtract(%param_0.1223, %sub.169), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(log_softmax))/sub" stack_frame_id=92}
+  %exp.10 = f32[208,21]{1,0} exponential(%sub.168), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(log_softmax))/exp" stack_frame_id=92}
+  %constant_1292 = f32[] constant(0)
+  %reduce_sum.152 = f32[208]{0} reduce(%exp.10, %constant_1292), dimensions={1}, to_apply=%region_1.6.clone.5, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(log_softmax))/reduce_sum" stack_frame_id=92}
+  %log.14 = f32[208]{0} log(%reduce_sum.152), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(log_softmax))/log" stack_frame_id=92}
+  %sub.167 = f32[208,21]{1,0} broadcast(%log.14), dimensions={0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(log_softmax))/sub" stack_frame_id=92}
+  %sub.166 = f32[208,21]{1,0} subtract(%sub.168, %sub.167), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(log_softmax))/sub" stack_frame_id=92}
+  %transpose.181.5 = f32[21,208]{1,0} transpose(%sub.166), dimensions={1,0}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(log_softmax))/sub" stack_frame_id=92}
+  %broadcast.568.3 = f32[208,21,208]{2,1,0} broadcast(%transpose.181.5), dimensions={1,2}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(_where))/broadcast_in_dim" stack_frame_id=91}
+  %broadcast.569.3 = f32[208,21,208]{2,1,0} broadcast(%constant_1292), dimensions={}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(_where))/broadcast_in_dim" stack_frame_id=91}
+  %select.24.3 = f32[208,21,208]{2,1,0} select(%broadcast.504.3, %broadcast.568.3, %broadcast.569.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(jit(_where))/select_n" stack_frame_id=91}
+  %reduce_sum.103.3 = f32[208,21]{1,0} reduce(%select.24.3, %constant_1292), dimensions={2}, to_apply=%region_1.6.clone.2, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" stack_frame_id=90}
+  ROOT %select_n.65.1 = f32[208,21]{1,0} select(%broadcast_in_dim.134.1, %reduce_sum.103.3, %param_0.1223), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/jit(_where)/select_n" stack_frame_id=86}
+}
+
+%wrapped_broadcast_computation (param_0.1241: f32[208,21]) -> f32[8,208,21] {
+  %param_0.1241 = f32[208,21]{1,0} parameter(0)
+  ROOT %broadcast_in_dim.75.1 = f32[8,208,21]{2,1,0} broadcast(%param_0.1241), dimensions={1,2}, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/broadcast_in_dim" stack_frame_id=94}
+}
+
+ENTRY %main.36 (dynamic_nodonate__first___0_.1: u32[2]) -> (s32[], f32[208,21]) {
+  %dynamic_nodonate__first___0_.1 = u32[2]{0} parameter(0), metadata={op_name="dynamic_nodonate[\'first\'][0]"}
+  %constant_691_0 = f32[208,21]{1,0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/broadcast_in_dim" stack_frame_id=94}
+  %wrapped_broadcast = f32[8,208,21]{2,1,0} fusion(%constant_691_0), kind=kLoop, calls=%wrapped_broadcast_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/broadcast_in_dim" stack_frame_id=94}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1043.0 = f32[1664,21]{1,0} bitcast(%wrapped_broadcast), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/dot_general" stack_frame_id=22}
+  %constant_318_0 = f32[21,64]{1,0} constant({...})
+  %gemm_fusion_dot = f32[1664,64]{1,0} fusion(%bitcast.1043.0, %constant_318_0), kind=kCustom, calls=%gemm_fusion_dot_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/dot_general" stack_frame_id=22}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_warps":"2","output_tiles":[{"sizes":["16","8"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_320_0 = f32[8,208,5,64]{3,2,1,0} constant({...})
+  %constant_321_0 = f32[8,208,64]{2,1,0} constant({...})
+  %constant_690_0 = f32[8,208,5]{2,1,0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/mul" stack_frame_id=74}
+  %constant_693_0 = s32[8320,2]{1,0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/gather" stack_frame_id=79}
+  %constant_697_0 = f32[8,208,5,64]{3,2,1,0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/gather" stack_frame_id=77}
+  %constant_709_0 = f32[8,208,5,192]{3,2,1,0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/mul" stack_frame_id=95}
+  %input_concatenate_fusion.1 = f32[8,208,5,256]{3,2,1,0} fusion(%constant_709_0, %constant_320_0, %constant_697_0, %constant_690_0, %constant_693_0, /*index=5*/%gemm_fusion_dot, %constant_321_0), kind=kInput, calls=%fused_concatenate.1, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/concatenate" stack_frame_id=71}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1120.0 = f32[256,8320]{0,1} bitcast(%input_concatenate_fusion.1)
+  %constant_323_0 = f32[64,256]{1,0} constant({...})
+  %gemm_fusion_dot.1 = f32[64,8320]{1,0} fusion(%constant_323_0, %bitcast.1120.0), kind=kCustom, calls=%gemm_fusion_dot.1_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" deduplicated_name="gemm_fusion_dot.1" stack_frame_id=25}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":3,"num_warps":"4","output_tiles":[{"sizes":["64","64"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_710_0 = f32[64]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %loop_multiply_fusion.5 = f32[64,8,208,5]{3,2,1,0} fusion(%gemm_fusion_dot.1, %constant_710_0), kind=kLoop, calls=%fused_multiply.5, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1045.0 = f32[64,8320]{1,0} bitcast(%loop_multiply_fusion.5), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" stack_frame_id=25}
+  %constant_324_0 = f32[64,64]{1,0} constant({...})
+  %gemm_fusion_dot.2 = f32[64,8320]{1,0} fusion(%constant_324_0, %bitcast.1045.0), kind=kCustom, calls=%gemm_fusion_dot.2_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" deduplicated_name="gemm_fusion_dot.2" stack_frame_id=25}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":3,"num_warps":"2","output_tiles":[{"sizes":["64","64"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_711_0 = f32[64]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %loop_multiply_fusion.4 = f32[64,8,208,5]{3,2,1,0} fusion(%gemm_fusion_dot.2, %constant_711_0), kind=kLoop, calls=%fused_multiply.4, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1046.0 = f32[64,8320]{1,0} bitcast(%loop_multiply_fusion.4), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" stack_frame_id=27}
+  %constant_325_0 = f32[64,64]{1,0} constant({...})
+  %gemm_fusion_dot.3 = f32[64,8320]{1,0} fusion(%constant_325_0, %bitcast.1046.0), kind=kCustom, calls=%gemm_fusion_dot.3_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" deduplicated_name="gemm_fusion_dot.2" stack_frame_id=27}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":3,"num_warps":"2","output_tiles":[{"sizes":["64","64"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_712_0 = f32[64]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=65}
+  %loop_reduce_fusion.2 = f32[64,8,208]{2,1,0} fusion(%gemm_fusion_dot.3, %constant_712_0), kind=kLoop, calls=%fused_reduce.2, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" deduplicated_name="loop_reduce_fusion.1" stack_frame_id=15}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %triton_softmax.18 = f32[8,208,64]{2,1,0} fusion(%constant_321_0, %loop_reduce_fusion.2), kind=kCustom, calls=%triton_softmax_computation.18, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" stack_frame_id=51}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_warps":"2","output_tiles":[{"sizes":["1","16","64"]}],"waves_per_eu":0},"kind":"__triton"},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1122.0 = f32[64,1664]{0,1} bitcast(%triton_softmax.18)
+  %constant_327_0 = f32[256,64]{1,0} constant({...})
+  %gemm_fusion_dot.4 = f32[256,1664]{1,0} fusion(%constant_327_0, %bitcast.1122.0), kind=kCustom, calls=%gemm_fusion_dot.4_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" deduplicated_name="gemm_fusion_dot.4" stack_frame_id=30}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_warps":"4","output_tiles":[{"sizes":["64","64"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_716_0 = f32[256]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=64}
+  %loop_multiply_fusion.3 = f32[256,8,208]{2,1,0} fusion(%gemm_fusion_dot.4, %constant_716_0), kind=kLoop, calls=%fused_multiply.3, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1050.0 = f32[256,1664]{1,0} bitcast(%loop_multiply_fusion.3), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" stack_frame_id=32}
+  %constant_328_0 = f32[64,256]{1,0} constant({...})
+  %gemm_fusion_dot.5 = f32[64,1664]{0,1} fusion(%constant_328_0, %bitcast.1050.0), kind=kCustom, calls=%gemm_fusion_dot.5_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" deduplicated_name="gemm_fusion_dot.5" stack_frame_id=32}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":4,"num_warps":"4","output_tiles":[{"sizes":["64","16"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_717_0 = f32[64]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=45}
+  %triton_softmax.16 = f32[8,208,64]{2,1,0} fusion(%triton_softmax.18, %constant_717_0, %gemm_fusion_dot.5), kind=kCustom, calls=%triton_softmax_computation.16, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" deduplicated_name="triton_softmax.12" stack_frame_id=41}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_warps":"2","output_tiles":[{"sizes":["1","8","64"]}],"waves_per_eu":0},"kind":"__triton"},"operation_queue_id":"0","reification_cost":[]}
+  %input_concatenate_fusion = f32[8,208,5,256]{3,2,1,0} fusion(%constant_709_0, %constant_320_0, %constant_690_0, %constant_693_0, %gemm_fusion_dot, /*index=5*/%triton_softmax.16), kind=kInput, calls=%fused_concatenate, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/concatenate" stack_frame_id=71}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1126.0 = f32[256,8320]{0,1} bitcast(%input_concatenate_fusion)
+  %constant_329_0 = f32[64,256]{1,0} constant({...})
+  %gemm_fusion_dot.6 = f32[64,8320]{1,0} fusion(%constant_329_0, %bitcast.1126.0), kind=kCustom, calls=%gemm_fusion_dot.6_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" deduplicated_name="gemm_fusion_dot.1" stack_frame_id=25}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":3,"num_warps":"4","output_tiles":[{"sizes":["64","64"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_725_0 = f32[64]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %loop_multiply_fusion.2 = f32[64,8,208,5]{3,2,1,0} fusion(%gemm_fusion_dot.6, %constant_725_0), kind=kLoop, calls=%fused_multiply.2, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1052.0 = f32[64,8320]{1,0} bitcast(%loop_multiply_fusion.2), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" stack_frame_id=25}
+  %constant_330_0 = f32[64,64]{1,0} constant({...})
+  %gemm_fusion_dot.7 = f32[64,8320]{1,0} fusion(%constant_330_0, %bitcast.1052.0), kind=kCustom, calls=%gemm_fusion_dot.7_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" deduplicated_name="gemm_fusion_dot.2" stack_frame_id=25}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":3,"num_warps":"2","output_tiles":[{"sizes":["64","64"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_726_0 = f32[64]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=70}
+  %loop_multiply_fusion.1 = f32[64,8,208,5]{3,2,1,0} fusion(%gemm_fusion_dot.7, %constant_726_0), kind=kLoop, calls=%fused_multiply.1, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/vmap()/mul" stack_frame_id=69}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1053.0 = f32[64,8320]{1,0} bitcast(%loop_multiply_fusion.1), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" stack_frame_id=27}
+  %constant_331_0 = f32[64,64]{1,0} constant({...})
+  %gemm_fusion_dot.8 = f32[64,8320]{1,0} fusion(%constant_331_0, %bitcast.1053.0), kind=kCustom, calls=%gemm_fusion_dot.8_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/dot_general" deduplicated_name="gemm_fusion_dot.2" stack_frame_id=27}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":3,"num_warps":"2","output_tiles":[{"sizes":["64","64"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_727_0 = f32[64]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(vmap(eqx.nn.MLP)))/eqx.nn.Linear/add" stack_frame_id=65}
+  %loop_reduce_fusion.1 = f32[64,8,208]{2,1,0} fusion(%gemm_fusion_dot.8, %constant_727_0), kind=kLoop, calls=%fused_reduce.1, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap()/reduce_sum" deduplicated_name="loop_reduce_fusion.1" stack_frame_id=15}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %triton_softmax.14 = f32[8,208,64]{2,1,0} fusion(%triton_softmax.16, %loop_reduce_fusion.1), kind=kCustom, calls=%triton_softmax_computation.14, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" stack_frame_id=51}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_warps":"2","output_tiles":[{"sizes":["1","16","64"]}],"waves_per_eu":0},"kind":"__triton"},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1128.0 = f32[64,1664]{0,1} bitcast(%triton_softmax.14)
+  %constant_332_0 = f32[256,64]{1,0} constant({...})
+  %gemm_fusion_dot.9 = f32[256,1664]{1,0} fusion(%constant_332_0, %bitcast.1128.0), kind=kCustom, calls=%gemm_fusion_dot.9_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" deduplicated_name="gemm_fusion_dot.4" stack_frame_id=30}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_warps":"4","output_tiles":[{"sizes":["64","64"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_731_0 = f32[256]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=64}
+  %loop_multiply_fusion = f32[256,8,208]{2,1,0} fusion(%gemm_fusion_dot.9, %constant_731_0), kind=kLoop, calls=%fused_multiply, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/vmap()/mul" stack_frame_id=63}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1057.0 = f32[256,1664]{1,0} bitcast(%loop_multiply_fusion), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" stack_frame_id=32}
+  %constant_333_0 = f32[64,256]{1,0} constant({...})
+  %gemm_fusion_dot.10 = f32[64,1664]{0,1} fusion(%constant_333_0, %bitcast.1057.0), kind=kCustom, calls=%gemm_fusion_dot.10_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/dot_general" deduplicated_name="gemm_fusion_dot.5" stack_frame_id=32}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":4,"num_warps":"4","output_tiles":[{"sizes":["64","16"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_732_0 = f32[64]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.MLP))/eqx.nn.Linear/add" stack_frame_id=45}
+  %triton_softmax.12 = f32[8,208,64]{2,1,0} fusion(%triton_softmax.14, %constant_732_0, %gemm_fusion_dot.10), kind=kCustom, calls=%triton_softmax_computation.12, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.LayerNorm))/mul" deduplicated_name="triton_softmax.12" stack_frame_id=41}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_warps":"2","output_tiles":[{"sizes":["1","8","64"]}],"waves_per_eu":0},"kind":"__triton"},"operation_queue_id":"0","reification_cost":[]}
+  %bitcast.1132.0 = f32[64,1664]{0,1} bitcast(%triton_softmax.12)
+  %constant_334_0 = f32[21,64]{1,0} constant({...})
+  %gemm_fusion_dot.11 = f32[21,1664]{1,0} fusion(%constant_334_0, %bitcast.1132.0), kind=kCustom, calls=%gemm_fusion_dot.11_computation, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.Linear))/dot_general" stack_frame_id=35}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_warps":"2","output_tiles":[{"sizes":["8","16"]}],"waves_per_eu":0},"kind":"__triton_nested_gemm_fusion"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_736_0 = f32[21]{0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/vmap(vmap(eqx.nn.Linear))/add" stack_frame_id=58}
+  %constant_738_0 = s32[1664,2]{1,0} constant({...}), metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/jit(take_along_axis)/gather" stack_frame_id=57}
+  %loop_reduce_fusion = f32[208,21]{1,0} fusion(%constant_738_0, %gemm_fusion_dot.11, %constant_736_0), kind=kLoop, calls=%fused_reduce, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/reduce_max" stack_frame_id=18}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %loop_add_fusion = f32[208,21]{1,0} fusion(%loop_reduce_fusion, %constant_738_0, %gemm_fusion_dot.11, %constant_736_0), kind=kLoop, calls=%fused_add, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/add" stack_frame_id=81}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"native_emitter_backend_config":{"type":"NATIVE_EMITTER_TYPE_INVALID","unroll_factor":0},"operation_queue_id":"0","reification_cost":[]}
+  %fusion.421 = f32[208,21]{1,0} fusion(%loop_add_fusion), kind=kCustom, calls=%fused_computation.389, metadata={op_name="jit(_decode)/ebm_conditional_decode/ebm_state_axis/jit(_where)/select_n" stack_frame_id=86}, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_warps":"8","output_tiles":[{"sizes":["16","2"]}],"waves_per_eu":0},"kind":"__triton"},"operation_queue_id":"0","reification_cost":[]}
+  %constant_317_0 = s32[] constant(0)
+  %tuple.26 = (s32[], f32[208,21]{1,0}) tuple(%constant_317_0, %fusion.421)
+  %get-tuple-element.26 = s32[] get-tuple-element(%tuple.26), index=0
+  %get-tuple-element.27 = f32[208,21]{1,0} get-tuple-element(%tuple.26), index=1
+  %copy.4 = s32[] copy(%get-tuple-element.26)
+  ROOT %tuple.27 = (s32[], f32[208,21]{1,0}) tuple(%copy.4, %get-tuple-element.27)
+}
+
