@@ -8,7 +8,7 @@ plan, and emits the result in the requested format.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from xtrax.cli.emit import emit
 from xtrax.cli.errors import CLIError
@@ -131,7 +131,7 @@ def _run_explain_cse(fn, abstract_inputs, args) -> None:
 
     report = analyze_cse(fn, abstract_inputs)
 
-    def dup_dict(c):
+    def dup_dict(c) -> dict[str, Any]:
         return {
             "primitive": c.primitive,
             "eqn_count": c.eqn_count,
@@ -140,7 +140,7 @@ def _run_explain_cse(fn, abstract_inputs, args) -> None:
             "est_wasted_bytes": c.est_wasted_bytes,
         }
 
-    payload = {
+    payload: dict[str, Any] = {
         "_meta": {"schema_version": 1},
         "cse_report": {
             "schema_version": 1,
@@ -155,7 +155,7 @@ def _run_explain_cse(fn, abstract_inputs, args) -> None:
     if args.fmt == "json":
         print(json.dumps(payload))
     elif args.fmt == "text":
-        cr = payload["cse_report"]
+        cr: dict[str, Any] = payload["cse_report"]
         print("CSE Report")
         print("=" * 40)
         print(f"Total eqns: {cr['total_eqns']}")

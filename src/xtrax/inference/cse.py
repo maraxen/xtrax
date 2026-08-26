@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from weakref import WeakKeyDictionary
 
 import jax
+import numpy as np
 
 from xtrax.inference.errors import CseTraceError
 
@@ -223,7 +224,8 @@ def analyze_cse(
             size = 1
             for dim in getattr(aval, "shape", ()):
                 size *= int(dim)
-            nbytes += size * getattr(aval, "dtype", __import__("numpy").float32).itemsize
+            dtype = getattr(aval, "dtype", np.dtype(np.float32))
+            nbytes += size * np.dtype(dtype).itemsize
         duplicates.append(
             CseDuplicateClass(
                 primitive=eq0.primitive.name,

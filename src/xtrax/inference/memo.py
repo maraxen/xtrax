@@ -32,7 +32,7 @@ import warnings
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, cast, overload
 
 import jax
 import numpy as np
@@ -284,6 +284,9 @@ class _MemoCore:
             self.program_digest = _program_digest(closed)
 
     def build_key(self, args: tuple, kwargs: dict) -> str:
+        assert self.program_digest is not None, (
+            "build_key requires _ensure_program to have run first"
+        )
         h = hashlib.sha256()
         h.update(self.program_digest.encode())
         h.update(repr(_structure_token(args, kwargs)).encode())
@@ -478,7 +481,33 @@ def _maybe_copy(out: Any, copy_on_return: bool) -> Any:
     return jax.tree_util.tree_map(lambda x: x.copy(), out)
 
 
-def memoize_jaxpr(fn: Callable | None = None, *, policy: MemoPolicy | None = None) -> Callable:
+class MemoizedCallable(Protocol):
+    """Interface exposed by the callable `memoize_jaxpr` returns.
+
+    `wrap()` attaches these as instance attributes on a plain function object
+    (not a class), so ty cannot infer them from `wrapped`'s own definition;
+    `wrap()` casts its return value to this Protocol to declare the real
+    contract instead of suppressing the resulting attribute errors.
+    """
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+    def memo_get_stats(self) -> dict[str, Any]: ...
+    def memo_reset(self) -> None: ...
+    def memo_rewrap(self) -> None: ...
+
+    _memo_core: _MemoCore
+    _memo_stats_holder: dict[str, Any]
+
+
+@overload
+def memoize_jaxpr(fn: Callable, *, policy: MemoPolicy | None = None) -> MemoizedCallable: ...
+@overload
+def memoize_jaxpr(
+    fn: None = None, *, policy: MemoPolicy | None = None
+) -> Callable[[Callable], MemoizedCallable]: ...
+def memoize_jaxpr(
+    fn: Callable | None = None, *, policy: MemoPolicy | None = None
+) -> MemoizedCallable | Callable[[Callable], MemoizedCallable]:
     """Decorator/wrapper adding a content-keyed value cache (opt-in attestation).
 
     Usage:
@@ -487,13 +516,17 @@ def memoize_jaxpr(fn: Callable | None = None, *, policy: MemoPolicy | None = Non
 
         wrapped = memoize_jaxpr(score, policy=MemoPolicy(max_entries=64))
 
-    The wrapped callable exposes ``.memo_stats`` (dict), ``.memo_reset()``
+    Bare usage (`fn` given directly) returns the memoized callable. Called
+    with only `policy=` (no `fn`), it returns a decorator — the
+    `@memoize_jaxpr(policy=...)` form.
+
+    The wrapped callable exposes ``.memo_get_stats()`` (dict), ``.memo_reset()``
     (clears poisoned spot-check counter) and ``.memo_rewrap()`` (clears a
     latched impurity error).
     """
     pol = policy if policy is not None else MemoPolicy()
 
-    def wrap(f: Callable) -> Callable:
+    def wrap(f: Callable) -> MemoizedCallable:
         import inspect
 
         core = _MemoCore(f, pol)
@@ -515,13 +548,16 @@ def memoize_jaxpr(fn: Callable | None = None, *, policy: MemoPolicy | None = Non
         def get_stats() -> dict[str, Any]:
             return dict(core.stats.as_dict())
 
-        wrapped.memo_stats = property(lambda _: get_stats())  # type: ignore[attr-defined]
-        wrapped.memo_get_stats = get_stats  # type: ignore[attr-defined]
-        wrapped.memo_reset = core.reset  # type: ignore[attr-defined]
-        wrapped.memo_rewrap = core.rewrap  # type: ignore[attr-defined]
-        wrapped._memo_core = core  # type: ignore[attr-defined]
-        wrapped._memo_stats_holder = stats_holder  # type: ignore[attr-defined]
-        return wrapped
+        # Attribute assignment below is genuinely dynamic (monkey-patching a
+        # plain function object); `Any` is the honest type for the write site.
+        # The `cast` on return declares the actual static contract to callers.
+        dynamic: Any = wrapped
+        dynamic.memo_get_stats = get_stats
+        dynamic.memo_reset = core.reset
+        dynamic.memo_rewrap = core.rewrap
+        dynamic._memo_core = core
+        dynamic._memo_stats_holder = stats_holder
+        return cast(MemoizedCallable, wrapped)
 
     if fn is not None:
         return wrap(fn)
