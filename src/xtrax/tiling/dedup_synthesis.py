@@ -267,9 +267,26 @@ def _stack_batch_leaves(batch_leaves: Sequence[Any], axis: int) -> jax.Array:
 
     # Check for heterogeneous/ragged leaves (spec §4.3, OBJ-R1-10).
     # A leaf is heterogeneous if it cannot be represented as a single rectangular
-    # numeric array. numpy 2.5+ raises ValueError for inhomogeneous shapes;
-    # we also check for object dtype (which arises from heterogeneous data).
+    # numeric array. Only genuinely untyped inputs (raw Python list/tuple) require
+    # conversion to detect raggedness. jax.Array and np.ndarray are always dense/
+    # rectangular with real numeric dtype by construction, so no check/conversion needed.
     for i, leaf in enumerate(leaves_list):
+        if isinstance(leaf, jax.Array):
+            # jax.Array is always dense/rectangular with a real numeric dtype;
+            # ragged/object-dtype data cannot be represented as a jax.Array,
+            # so no check is needed and no device->host transfer should occur here.
+            continue
+        if isinstance(leaf, np.ndarray):
+            # Already a real ndarray -- checking .dtype is metadata-only, no data copy.
+            if leaf.dtype == np.object_:
+                raise DedupSynthesisUnsupportedError(
+                    f"batch_leaves[{i}] is heterogeneous/ragged (dtype=object): "
+                    "spec §4.3 v1 does not support heterogeneous batch axes; "
+                    "all leaves must be proper rectangular numpy/jax arrays"
+                )
+            continue
+        # Only genuinely untyped inputs (e.g. raw Python list/tuple) need conversion
+        # to detect raggedness -- these are already host-side, so np.asarray here is cheap.
         try:
             leaf_arr = np.asarray(leaf)
         except ValueError as e:

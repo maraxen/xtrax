@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from unittest import mock
+
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -414,6 +417,69 @@ class TestEdgeCases:
         with pytest.raises((AttributeError, TypeError)):
             # Frozen dataclass prevents mutation.
             result.stage = "synthesized"  # type: ignore
+
+
+class TestJaxArrayNoMaterialization:
+    """Regression test: verify no premature device->host transfer for jax.Array leaves.
+
+    This test ensures the fix for the ragged-detection loop regression (260825 audit).
+    Prior implementation called np.asarray() on every leaf unconditionally, forcing
+    full device->host transfer for jax.Array inputs even when deduplication wasn't
+    needed (below_threshold fast path). This test verifies the new implementation
+    skips the materialization check entirely for already-typed arrays (jax.Array and np.ndarray).
+    """
+
+    def test_jax_array_ragged_check_skipped(self):
+        """Verify _stack_batch_leaves successfully processes jax.Array without ragged-check call.
+
+        Before the fix, the ragged-detection loop called np.asarray on every leaf,
+        which for jax.Array forces synchronous device→host transfer (expensive).
+        After the fix, the loop checks isinstance(leaf, jax.Array) and skips the
+        conversion entirely. This test verifies the code path works without attempting
+        materialization.
+        """
+        from xtrax.tiling.dedup_synthesis import _stack_batch_leaves
+
+        # Create a jax.Array leaf
+        N = 100
+        batch = jnp.arange(N * 3, dtype=jnp.float32).reshape(N, 3)
+
+        original_asarray = np.asarray
+
+        def strict_asarray(a, *args, **kwargs):
+            # Raise if called on a jax.Array (which indicates materialization attempt)
+            if isinstance(a, jax.Array):
+                raise AssertionError(
+                    f"np.asarray was called on a jax.Array "
+                    f"(shape {a.shape}); this forces device->host transfer and should be skipped"
+                )
+            return original_asarray(a, *args, **kwargs)
+
+        # Patch np.asarray to ensure it never materializes a jax.Array in the ragged-check
+        with mock.patch("xtrax.tiling.dedup_synthesis.np.asarray", side_effect=strict_asarray):
+            # Should succeed without raising from strict_asarray on the jax.Array
+            result = _stack_batch_leaves([batch], axis=0)
+
+        # Verify result is correct
+        assert result.shape[0] == N
+
+    def test_ragged_list_still_detected(self):
+        """Ragged Python list input: np.asarray IS called to detect heterogeneity.
+
+        Ensures that the fix to skip ragged-checks for typed arrays doesn't break
+        detection of actual ragged/heterogeneous Python list inputs.
+        """
+        from xtrax.tiling.dedup_synthesis import _stack_batch_leaves
+
+        # Create a ragged Python list (heterogeneous shapes)
+        ragged_list = [
+            [1.0, 2.0],       # length 2
+            [3.0, 4.0, 5.0],  # length 3 — ragged
+        ]
+
+        # For ragged input, np.asarray MUST be called to detect the heterogeneity
+        with pytest.raises(DedupSynthesisUnsupportedError, match="heterogeneous"):
+            _stack_batch_leaves([ragged_list], axis=0)
 
 
 class TestResultMetadata:
