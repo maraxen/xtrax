@@ -131,7 +131,7 @@ def _run_explain_cse(fn, abstract_inputs, args) -> None:
 
     report = analyze_cse(fn, abstract_inputs)
 
-    def dup_dict(c) -> dict[str, Any]:
+    def _dup_dict(c) -> dict[str, Any]:
         return {
             "primitive": c.primitive,
             "eqn_count": c.eqn_count,
@@ -147,7 +147,7 @@ def _run_explain_cse(fn, abstract_inputs, args) -> None:
             "total_eqns": report.total_eqns,
             "duplicate_eqns": report.duplicate_eqns,
             "trace_cache_hit": report.trace_cache_hit,
-            "duplicates": [dup_dict(c) for c in report.duplicates],
+            "duplicates": [_dup_dict(c) for c in report.duplicates],
             "note": report.note,
         },
     }

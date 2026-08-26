@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 from weakref import WeakKeyDictionary
 
 import jax
@@ -89,10 +90,8 @@ def _literal_key(lit) -> tuple[str, bytes]:
     return (str(val.dtype), np_ascontiguous_tobytes(val))
 
 
-def np_ascontiguous_tobytes(val) -> bytes:
+def np_ascontiguous_tobytes(val: Any) -> bytes:
     """Contiguous C-order bytes for any array-like literal value."""
-    import numpy as np
-
     return np.ascontiguousarray(np.asarray(val)).tobytes(order="C")
 
 
@@ -152,26 +151,26 @@ def analyze_cse(
     # Union-find over eqn indices.
     parent = list(range(n))
 
-    def find(x: int) -> int:
+    def _find(x: int) -> int:
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
         if ra != rb:
             parent[max(ra, rb)] = min(ra, rb)
 
-    def fingerprint_round() -> dict[tuple, list[int]]:
+    def _fingerprint_round() -> dict[tuple, list[int]]:
         """One fixpoint round: hash eqns under current representative map."""
         var_token: dict[int, tuple] = {}
         for i, eq in enumerate(eqns):
-            tok = ("eq", find(i))
+            tok = ("eq", _find(i))
             for ov in eq.outvars:
                 var_token[id(ov)] = tok
 
-        def op_token(v) -> tuple:
+        def _op_token(v) -> tuple:
             if type(v).__name__ == "Literal":
                 return ("lit", _literal_key(v))
             return var_token.get(id(v), ("free", id(v)))
@@ -181,7 +180,7 @@ def analyze_cse(
             fp = (
                 eq.primitive.name,
                 _params_repr(eq.params),
-                tuple(op_token(v) for v in eq.invars),
+                tuple(_op_token(v) for v in eq.invars),
             )
             fps.setdefault(fp, []).append(i)
         return fps
@@ -189,16 +188,16 @@ def analyze_cse(
     # Fixpoint loop: merge, rewrite representatives, repeat until stable.
     prev_canonical = None
     while True:
-        fps = fingerprint_round()
+        fps = _fingerprint_round()
         changed = False
         for members in fps.values():
             if len(members) > 1:
                 anchor = members[0]
                 for other in members[1:]:
-                    if find(anchor) != find(other):
-                        union(anchor, other)
+                    if _find(anchor) != _find(other):
+                        _union(anchor, other)
                         changed = True
-        canonical = tuple(find(i) for i in range(n))
+        canonical = tuple(_find(i) for i in range(n))
         if not changed or canonical == prev_canonical:
             break
         prev_canonical = canonical
@@ -206,7 +205,7 @@ def analyze_cse(
     # Collect final equivalence classes.
     classes: dict[int, list[int]] = {}
     for i in range(n):
-        classes.setdefault(find(i), []).append(i)
+        classes.setdefault(_find(i), []).append(i)
 
     duplicates: list[CseDuplicateClass] = []
     for members in classes.values():

@@ -191,7 +191,7 @@ def _screen_jaxpr(closed) -> None:
     """Raise MemoImpurityError on detectably impure primitives."""
     banned = _STATEFUL_PRIMITIVES | _CALLBACK_PRIMITIVES | _RANDOM_PRIMITIVES
 
-    def walk(eqns, depth: int = 0) -> None:
+    def _walk(eqns, depth: int = 0) -> None:
         if depth > 8:  # bounded recursion guard
             return
         for eqn in eqns:
@@ -201,10 +201,10 @@ def _screen_jaxpr(closed) -> None:
             for param_val in eqn.params.values():
                 sub_eqns = getattr(param_val, "eqns", None)
                 if sub_eqns:
-                    walk(sub_eqns, depth + 1)
+                    _walk(sub_eqns, depth + 1)
 
     offenders: list[str] = []
-    walk(closed.jaxpr.eqns)
+    _walk(closed.jaxpr.eqns)
     if offenders:
         raise MemoImpurityError(
             f"Function rejected by purity screen: stateful/callback/random "
@@ -526,7 +526,7 @@ def memoize_jaxpr(
     """
     pol = policy if policy is not None else MemoPolicy()
 
-    def wrap(f: Callable) -> MemoizedCallable:
+    def _wrap(f: Callable) -> MemoizedCallable:
         import inspect
 
         core = _MemoCore(f, pol)
@@ -539,29 +539,29 @@ def memoize_jaxpr(
                 raise MemoImpurityError(str(exc)) from exc
 
         @functools_wraps(f)
-        def wrapped(*args: Any, **kwargs: Any) -> Any:
+        def _wrapped(*args: Any, **kwargs: Any) -> Any:
             core._last_args = args
             result = core.call(*args, **kwargs)
             stats_holder["snapshot"] = dict(core.stats.as_dict())
             return result
 
-        def get_stats() -> dict[str, Any]:
+        def _get_stats() -> dict[str, Any]:
             return dict(core.stats.as_dict())
 
         # Attribute assignment below is genuinely dynamic (monkey-patching a
         # plain function object); `Any` is the honest type for the write site.
         # The `cast` on return declares the actual static contract to callers.
-        dynamic: Any = wrapped
-        dynamic.memo_get_stats = get_stats
+        dynamic: Any = _wrapped
+        dynamic.memo_get_stats = _get_stats
         dynamic.memo_reset = core.reset
         dynamic.memo_rewrap = core.rewrap
         dynamic._memo_core = core
         dynamic._memo_stats_holder = stats_holder
-        return cast(MemoizedCallable, wrapped)
+        return cast(MemoizedCallable, _wrapped)
 
     if fn is not None:
-        return wrap(fn)
-    return wrap
+        return _wrap(fn)
+    return _wrap
 
 
 def functools_wraps(f: Callable) -> Callable[[Callable], Callable]:
