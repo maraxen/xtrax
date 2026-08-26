@@ -1225,7 +1225,9 @@ class TestProbeRecordEmission:
 
         def _failing_run(*args, **kwargs):
             res = real_record_run(*args, **kwargs)
-            return type(res)(script_path=res.script_path, exit_code=1, success=False)
+            return type(res)(
+                script_path=res.script_path, exit_code=1, success=False, run_id=res.run_id
+            )
 
         monkeypatch.setattr(ml, "record_candidate_run", _failing_run)
 
