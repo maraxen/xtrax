@@ -114,10 +114,7 @@ def synthesize_dedup_spec(
         sampled coverage). Profitable envelope (OBJ-R1-16): contiguous-row axes,
         high duplication ratio, k ≤ ~256, N ≫ k.
     """
-    from xtrax.inference.errors import (
-        DedupSynthesisCollisionError,
-        DedupSynthesisUnsupportedError,
-    )
+    from xtrax.inference.errors import DedupSynthesisCollisionError
 
     if not batch_leaves:
         raise ValueError("batch_leaves cannot be empty")
@@ -139,7 +136,7 @@ def synthesize_dedup_spec(
         raise ValueError(f"batch axis {axis} has length 0")
 
     # Stage 1: Sample-gate
-    sampled_ratio, sampled_n_unique, sample_transfer_bytes = _sample_stage(
+    sampled_ratio, _, sample_transfer_bytes = _sample_stage(
         stacked, axis=axis, max_sample_rows=max_sample_rows, N=N
     )
 
@@ -178,7 +175,15 @@ def synthesize_dedup_spec(
             k_bucket_bytes=0,
         )
 
-    # Construct DedupSpec (spec will self-assert len(index_map) == N, and bounds checks)
+    # Self-assert len(index_map) == N (synthesizer responsibility, spec §4.3).
+    # DedupSpec.__post_init__ verifies k and index_map range [0, k), but not length.
+    if len(index_map) != N:
+        raise ValueError(
+            f"index_map length {len(index_map)} != N ({N}); "
+            "synthesizer must produce exactly one index_map entry per row"
+        )
+
+    # Construct DedupSpec (spec will self-assert k == len(unique_indices), bounds checks)
     spec = DedupSpec(
         axis_name=axis_name,
         unique_indices=unique_indices,
@@ -247,12 +252,42 @@ def merge_dedup_specs(
 
 
 def _stack_batch_leaves(batch_leaves: Sequence[Any], axis: int) -> jax.Array:
-    """Stack batch_leaves along axis and validate shape consistency."""
+    """Stack batch_leaves along axis and validate shape consistency.
+
+    Raises DedupSynthesisUnsupportedError if any leaf is heterogeneous/ragged
+    (spec §4.3: v1 requires all batch leaves to be proper rectangular arrays).
+    """
+    from xtrax.inference.errors import DedupSynthesisUnsupportedError
+
     if not batch_leaves:
         raise ValueError("batch_leaves is empty")
 
-    # Normalize to list and move axis to front for easier processing.
+    # Normalize to list and check for heterogeneous/ragged leaves early.
     leaves_list = list(batch_leaves)
+
+    # Check for heterogeneous/ragged leaves (spec §4.3, OBJ-R1-10).
+    # A leaf is heterogeneous if it cannot be represented as a single rectangular
+    # numeric array. numpy 2.5+ raises ValueError for inhomogeneous shapes;
+    # we also check for object dtype (which arises from heterogeneous data).
+    for i, leaf in enumerate(leaves_list):
+        try:
+            leaf_arr = np.asarray(leaf)
+        except ValueError as e:
+            # numpy 2.5+ raises ValueError for inhomogeneous/ragged arrays
+            if "inhomogeneous" in str(e):
+                raise DedupSynthesisUnsupportedError(
+                    f"batch_leaves[{i}] is heterogeneous/ragged: "
+                    "spec §4.3 v1 does not support heterogeneous batch axes; "
+                    "all leaves must be proper rectangular numpy/jax arrays"
+                ) from e
+            raise
+        if leaf_arr.dtype == np.object_:
+            raise DedupSynthesisUnsupportedError(
+                f"batch_leaves[{i}] is heterogeneous/ragged (dtype=object): "
+                "spec §4.3 v1 does not support heterogeneous batch axes; "
+                "all leaves must be proper rectangular numpy/jax arrays"
+            )
+
     first = leaves_list[0]
 
     if axis < 0 or axis >= first.ndim:
@@ -278,7 +313,7 @@ def _stack_batch_leaves(batch_leaves: Sequence[Any], axis: int) -> jax.Array:
             )
 
     # Concatenate along feature dimension (after axis 0).
-    return jnp.concatenate([l.reshape(N, -1) for l in leaves_moved], axis=1)
+    return jnp.concatenate([leaf.reshape(N, -1) for leaf in leaves_moved], axis=1)
 
 
 def _sample_stage(
@@ -326,6 +361,9 @@ def _exact_stage(
     unique_rows, index_map_raw = np.unique(
         all_rows, axis=0, return_inverse=True
     )
+    # Defensive reshape: numpy 2.5.1's return_inverse+axis semantics return flat (N,).
+    # Confirmed empirically; reshape below handles any future numpy versions gracefully.
+    index_map_raw = np.asarray(index_map_raw).reshape(-1)
     n_unique = len(unique_rows)
 
     # Convert to first-occurrence positions.

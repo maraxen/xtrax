@@ -38,7 +38,6 @@ class TestSampleStage:
         """Sample-stage under threshold → stage='below_threshold', zero O(N)."""
         # N=1000, duplication below threshold (10%)
         N = 1000
-        n_unique = 900
         # Create rows where each row appears 1-2 times (sparse duplication)
         batch = np.concatenate([
             np.arange(900, dtype=np.float32).reshape(-1, 1),  # 900 unique rows
@@ -217,6 +216,31 @@ class TestAC11CollisionPolicy:
         # Verify caller's spec is unchanged
         assert existing_specs["batch"] is existing_spec
 
+    def test_ac11_non_colliding_existing_specs(self):
+        """AC11: non-colliding existing_specs (different axis_name) must NOT raise."""
+        N = 100
+        batch = np.tile(np.array([1.0, 2.0], dtype=np.float32).reshape(-1, 1),
+                        (N // 2 + 1, 1))[:N]
+
+        # Pre-declare a spec for a different axis (not "batch")
+        other_spec = DedupSpec(
+            axis_name="other_axis",
+            unique_indices=np.array([0]),
+            index_map=np.array([0] * N),
+            k=1,
+        )
+        existing_specs = {"other_axis": other_spec}
+
+        # Should NOT raise; synthesis should proceed normally
+        result = synthesize_dedup_spec([batch], existing_specs=existing_specs,
+                                       threshold=0.5)
+
+        assert result.spec is not None
+        assert result.stage == "synthesized"
+        assert result.spec.axis_name == "batch"
+        # other_axis spec should remain unchanged
+        assert existing_specs["other_axis"] is other_spec
+
 
 class TestMergeDedupSpecs:
     """Tests for merge_dedup_specs helper."""
@@ -305,6 +329,34 @@ class TestMergeDedupSpecs:
         assert result["batch"] is spec1
 
 
+class TestF3FirstOccurrenceOrder:
+    """F3 discriminator: first-occurrence-position order vs sorted-value order."""
+
+    def test_f3_discriminator_first_occurrence_order(self):
+        """F3: unique_indices must be in first-occurrence order, not sorted-value order.
+
+        Spec's own example: rows [9, 3, 9, 3] must produce unique_indices=[0, 1]
+        (first occurrence of 9 at position 0, first occurrence of 3 at position 1),
+        NOT [1, 0] or any value-sorted ordering.
+        """
+        # Create a batch with values [9, 3, 9, 3] as 1-column array
+        batch = np.array([[9.0], [3.0], [9.0], [3.0]], dtype=np.float32)
+
+        result = synthesize_dedup_spec([batch], threshold=0.01)
+
+        assert result.spec is not None
+        assert result.stage == "synthesized"
+
+        spec = result.spec
+        # unique_indices should be [0, 1] (first occurrences in order)
+        np.testing.assert_array_equal(spec.unique_indices, np.array([0, 1]))
+
+        # index_map should map each position to its canonical index:
+        # row 0 (value 9) → canonical 0, row 1 (value 3) → canonical 1,
+        # row 2 (value 9, dup of row 0) → canonical 0, row 3 (value 3, dup of row 1) → canonical 1
+        np.testing.assert_array_equal(spec.index_map, np.array([0, 1, 0, 1]))
+
+
 class TestEdgeCases:
     """Edge cases and error conditions."""
 
@@ -332,6 +384,23 @@ class TestEdgeCases:
         batch = np.arange(100, dtype=np.float32).reshape(-1, 1)
         with pytest.raises(ValueError, match="out of range"):
             synthesize_dedup_spec([batch], axis=5)
+
+    def test_heterogeneous_ragged_batch_axis(self):
+        """Heterogeneous/ragged batch axis → DedupSynthesisUnsupportedError (spec §4.3).
+
+        A Python list with sub-arrays/tuples of inconsistent shapes (ragged) converts to
+        dtype=object under np.asarray; v1 does not support such heterogeneous axes.
+        """
+        # Create a batch_leaf that is a Python list of lists with inconsistent shapes.
+        # When converted with np.asarray, this produces dtype=object.
+        batch_leaf_ragged = [
+            [1.0, 2.0],  # length 2
+            [3.0, 4.0, 5.0],  # length 3 — ragged!
+            [6.0, 7.0],  # length 2
+        ]
+
+        with pytest.raises(DedupSynthesisUnsupportedError, match="heterogeneous"):
+            synthesize_dedup_spec([batch_leaf_ragged])
 
     def test_result_frozen(self):
         """DedupSynthesisResult should be frozen (immutable)."""
