@@ -8,14 +8,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from xtrax.inference.errors import (
-    DedupSpecCollisionError,
-    DedupSynthesisCollisionError,
-    DedupSynthesisUnsupportedError,
-)
 from xtrax.tiling.dedup import DedupSpec
 from xtrax.tiling.dedup_synthesis import (
+    DedupSpecCollisionError,
+    DedupSynthesisCollisionError,
     DedupSynthesisResult,
+    DedupSynthesisUnsupportedError,
     merge_dedup_specs,
     synthesize_dedup_spec,
 )

@@ -32,10 +32,36 @@ import numpy as np
 from xtrax.tiling.dedup import DedupSpec
 
 __all__ = [
+    "DedupSpecCollisionError",
+    "DedupSynthesisCollisionError",
     "DedupSynthesisResult",
+    "DedupSynthesisUnsupportedError",
     "merge_dedup_specs",
     "synthesize_dedup_spec",
 ]
+
+
+class DedupSynthesisUnsupportedError(Exception):
+    """Raised when synthesize_dedup_spec encounters unsupported input structure.
+
+    E.g., heterogeneous axes (different element widths) in v1.
+    """
+
+
+class DedupSynthesisCollisionError(Exception):
+    """Raised when existing_specs already declares the target axis_name.
+
+    Caller-declared intent always wins; collision indicates conflicting
+    dedup specifications for the same axis.
+    """
+
+
+class DedupSpecCollisionError(Exception):
+    """Raised by merge_dedup_specs when multiple specs target the same axis_name.
+
+    Generic merge-helper error (used when caller-vs-synthesized or caller-vs-caller
+    specs collide during merge operations).
+    """
 
 
 @dataclass(frozen=True)
@@ -114,8 +140,6 @@ def synthesize_dedup_spec(
         sampled coverage). Profitable envelope (OBJ-R1-16): contiguous-row axes,
         high duplication ratio, k ≤ ~256, N ≫ k.
     """
-    from xtrax.inference.errors import DedupSynthesisCollisionError
-
     if not batch_leaves:
         raise ValueError("batch_leaves cannot be empty")
 
@@ -226,8 +250,6 @@ def merge_dedup_specs(
     Raises:
         DedupSpecCollisionError: If any axis_name appears in more than one mapping.
     """
-    from xtrax.inference.errors import DedupSpecCollisionError
-
     seen_axes = {}
     result = {}
 
@@ -257,8 +279,6 @@ def _stack_batch_leaves(batch_leaves: Sequence[Any], axis: int) -> jax.Array:
     Raises DedupSynthesisUnsupportedError if any leaf is heterogeneous/ragged
     (spec §4.3: v1 requires all batch leaves to be proper rectangular arrays).
     """
-    from xtrax.inference.errors import DedupSynthesisUnsupportedError
-
     if not batch_leaves:
         raise ValueError("batch_leaves is empty")
 
