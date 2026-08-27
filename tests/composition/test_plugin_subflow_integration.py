@@ -178,8 +178,8 @@ def real_install(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     # stale later PATH entry cannot win. Do not hardcode a machine-local path.
     praxia_bin = os.environ.get("PRAXIA_BIN") or shutil.which("praxia")
     if praxia_bin:
-        env["PATH"] = str(Path(praxia_bin).expanduser().resolve().parent) + os.pathsep + env.get(
-            "PATH", ""
+        env["PATH"] = (
+            str(Path(praxia_bin).expanduser().resolve().parent) + os.pathsep + env.get("PATH", "")
         )
     result = subprocess.run(
         ["praxia", "plugin", "install", str(FIXTURE_DIR)],
