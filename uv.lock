@@ -3899,6 +3899,8 @@ dev = [
     { name = "import-linter" },
     { name = "pytest-benchmark" },
     { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "ty" },
     { name = "tyro" },
 ]
 docs = [
@@ -3957,6 +3959,8 @@ dev = [
     { name = "import-linter", specifier = ">=2.1" },
     { name = "pytest-benchmark", specifier = ">=5.2.3" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "ruff", specifier = ">=0.15.22" },
+    { name = "ty", specifier = ">=0.0.60" },
     { name = "tyro", specifier = ">=0.9,<2" },
 ]
 docs = [
