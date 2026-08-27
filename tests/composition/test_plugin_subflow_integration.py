@@ -213,6 +213,13 @@ def test_child_resolves_via_post_install_prefixed_name(
 
 
 @pytest.mark.skipif(shutil.which("praxia") is None, reason="praxia CLI not installed")
+@pytest.mark.xfail(
+    reason=(
+        "blocked on upstream praxia bug #4582 (plugin install does not rewrite "
+        "bare sub_flow refs to prefixed name); tracked as xtrax debt #4583"
+    ),
+    strict=True,
+)
 def test_parent_dispatches_child_via_prefixed_subflow_ref(
     real_install: dict[str, Any],
 ) -> None:
