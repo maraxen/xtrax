@@ -7,8 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a7] - 2026-08-27
+
 ### Added
 
+- **CSE runtime-optimization layer** (`xtrax.inference`, `xtrax.tiling`): `analyze_cse`
+  detects structurally duplicate jaxpr equations via a union-find fixpoint pass
+  (opcode + params + operand identity, matching XLA's `hlo_cse.cc` equivalence rule),
+  exposed via a new `xtrax explain --report cse` CLI path. Dedup-spec synthesis
+  (`xtrax.tiling.dedup_synthesis`) adds two-stage sample-then-exact duplicate
+  detection for tiling batches, avoiding an O(N) device-to-host transfer unless
+  sampled duplication justifies the exact pass. `xtrax.inference.memo` gains a
+  `MemoizedCallable` Protocol and a dual-signature `@overload` for `memoize_jaxpr`.
+  Jury-audited over two review rounds. (spec: `.praxia/docs/specs/260825_xtrax-cse-runtime-opt-spec.md`)
+- **`xtrax.profiling` core module + `xtrax-probing` skill**: `ProbeRecord` schema
+  with a fail-closed claim-validity contract (an unsupported claim raises at
+  construction, never silently passes) upstreamed from prolix's measurement
+  tooling, plus HLO-as-text + real Perfetto runtime-trace parsing (`trace.py`),
+  a pytest-benchmark-to-`ProbeRecord` bridge (`bench.py`), and report generation.
+  New `xtrax-probing` skill documents the contract, stage-0/1/2 probe drivers,
+  and gate/controller integration.
+- **`RunSpec.run_id` + `derive_sink_spec` seam** (`xtrax.run`): `RunSpec` gains
+  an optional `run_id` (defaults to `None`) and a `new_run_id()` helper; the new
+  `derive_sink_spec` seam threads run identity from `RunSpec` through to sink
+  construction. The `xtrax run` CLI verb now persists this provenance
+  automatically via the same seam.
+- First real GPU stage-2 `ProbeRecord`s captured against real hardware (aminx
+  L40S dogfood) — validates the stage-0/1/2 taxonomy end-to-end for the first
+  time; coverage is currently single-GPU/single-vendor, broader multi-hardware
+  campaign automation is tracked separately.
 - **`xtrax-optimizing` skill + Tier-gated probe drivers** (`agent_assets/skills/xtrax-optimizing`,
   `scripts/prof_stage{0,1}_*.py`): three-tier taxonomy separating host-boundary
   mechanics (ordered/unordered Tap/Sink cost), data movement

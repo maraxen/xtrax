@@ -1,7 +1,7 @@
 ---
 name: xtrax-optimizing
 description: This skill should be used when the user asks to "optimize a JAX function", "make this faster", "why is my scan/vmap slow", "reduce host sync or device round trips", "should this be computed on-the-fly instead of precomputed", "prefetch batches", "donate buffers", "compare encoding strategies", "benchmark before and after a perf change", or mentions optimization tiers, tap/sink cost accounting, data-movement tuning, composition-level rewrites, ProbeRecord-gated keep/revert decisions, prof_stage0_onehot_cost, prof_stage1_onehot_micro, prof_stage1_host_boundary, or prof_stage1_feed_overlap. Covers the three-tier taxonomy separating host-boundary mechanics, data movement, and program composition changes, plus the preregister-and-probe measurement protocol every optimization claim must pass.
-xtrax_version: 0.4.0a5
+xtrax_version: 0.4.0a7
 triggers:
   - optimize / speed up / why slow (JAX programs)
   - tap / sink / io_callback round-trip cost
