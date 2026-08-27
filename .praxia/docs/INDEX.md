@@ -1,4 +1,4 @@
-# xtrax Internal Docs
+# preserve-wt Internal Docs
 
 ## Daily
 
@@ -14,7 +14,19 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [260825_hmw-give-xtrax-a-runtime-compute-reuse-c](specs/260825_hmw-give-xtrax-a-runtime-compute-reuse-c.md)
+- [260825_jax-optimizing-skill-scope](specs/260825_jax-optimizing-skill-scope.md)
+- [260825_xtrax-cse-runtime-opt-spec](specs/260825_xtrax-cse-runtime-opt-spec.md)
+- [260824_default-sink-provenance-tracking](specs/260824_default-sink-provenance-tracking.md) — Default provenance tracking at ZarrStagingSink for downstream consumers
+- [260824_runspec-trainer-run-id-plumbing](specs/260824_runspec-trainer-run-id-plumbing.md) — RunSpec/Trainer -> SinkSpec.run_id plumbing mechanism
+- [260824_upstream-profiling-probe-tooling-from-prolix](specs/260824_upstream-profiling-probe-tooling-from-prolix.md)
+- [260813_backlog-4216-xtrax-scripts-smoke-lc12-re](specs/260813_backlog-4216-xtrax-scripts-smoke-lc12-re.md)
+- [260812_backlog-4203-xtrax-corrected-re-run-of-s](specs/260812_backlog-4203-xtrax-corrected-re-run-of-s.md)
+- [260812_backlog-4203-xtrax-revise-round-1-2-corr-3](specs/260812_backlog-4203-xtrax-revise-round-1-2-corr-3.md)
+- [260812_backlog-4203-xtrax-round3-human-authorized](specs/260812_backlog-4203-xtrax-round3-human-authorized.md)
 - [260808_hmw-gw-02-wire-multi-metric-ratchet-deci](specs/260808_hmw-gw-02-wire-multi-metric-ratchet-deci.md)
+- [260807_evaluator-integration-decision](specs/260807_evaluator-integration-decision.md) — Resolve
+- [260719_xr-while-carry](specs/260719_xr-while-carry.md) — WhileCarry — a lax.while_loop-backed AxisStrategy
 - [260716_loop-controller-epic-architecture-resolved](specs/260716_loop-controller-epic-architecture-resolved.md) — loop-controller epic architecture spec (contemplex cc8f100b, resolved via research → brainstorm → 2 independent adversarial critic passes, revised): resolves all 3 remaining open questions from the kickoff doc (candidate hand-off via a generic praxia-side write_staged_file MCP tool + DispatchBackend's CandidateHandoff contract; bathos sequencing incl. direct-library-import for unwired stats-battery/seed-floor gaps, MCP-only for lineage edges; same-repo controller/ placement); 13-item AC-labeled decomposition (AC-1 through AC-10, incl. AC-1b bathos-independence gate and AC-8b multi-iteration wiring added during adversarial review after the brainstorm silently dropped the epic's own multi-iteration/budget/Leap-Path phase)
 - [260715_entry-points-based-xtrax-cli-verb-regist](specs/260715_entry-points-based-xtrax-cli-verb-regist.md) — xtrax CLI verb registration spec (contemplex 683e225f, INVEST PASS): Faction C+B combined — document {**REGISTRY, **their_verbs} composition as a sanctioned pattern (REGISTRY promoted to xtrax.cli.__all__) + integration test; explicitly DEFERS the entry_points plugin hook (demand signal was ~zero — plegadx never asked for dispatch through xtrax's own binary); 7 ACs; revisit trigger tracked on idea-004
 - [260715_generic-fail-loud-toml-to-dataclass-conf](specs/260715_generic-fail-loud-toml-to-dataclass-conf.md) — xtrax.config primitive spec (contemplex b93ead41, INVEST PASS): Faction A thin composable validators (load_toml_document/require_sections/require_field/check_schema_version) in a new top-level xtrax.config module, TrainConfig refactored onto it byte-compatible; 8 ACs, gated on demonstrated adoption by a real downstream consumer (plegadx) before/alongside merge
@@ -47,6 +59,11 @@
 ## Audits
 
 ## Research
+- [260825_cse-recon](research/260825_cse-recon.md)
+- [260825_jax-cse-ecosystem](research/260825_jax-cse-ecosystem.md)
+- [260825_spec-challenger-r1](research/260825_spec-challenger-r1.md)
+- [260825_spec-challenger-r2](research/260825_spec-challenger-r2.md)
+- [260825_spec-challenger-r3](research/260825_spec-challenger-r3.md)
 - [260716_praxia-mcp-invocation-probe](research/260716_praxia-mcp-invocation-probe.md) — loop-controller epic kickoff open question resolved: a plain Python subprocess (no MCP SDK, no Claude Code harness) can spawn `praxia-mcp`, complete the initialize handshake, and get `rig_run`'s genuine wire-level schema — matches the client-side schema seen via `ToolSearch` exactly; concrete invocation recipe recorded for the future `PraxiaDispatchBackend`
 - [260715_gear-autosota-full-read](research/260715_gear-autosota-full-read.md) — T2-03/P4 unblocker: full read (not title-only) of GEAR (arXiv 2605.13874, a ratchet + bounded-elite-frontier/UCB-selection hybrid, NOT classic island-migration) and AutoSOTA (arXiv 2604.05550, identified via search, single-path best-first with a Leap-Path anti-stagnation bifurcation); both systems' live evaluator calls are single-candidate→scalar-dict, matching xtrax's frozen `evaluate()` seam — config-flip-later assumption HOLDS; recommends T2-33 scope "migration hooks" as GEAR-style frontier bookkeeping rather than literal island migration
 - [260711_t3-07-mcp-reachability-probe](research/260711_t3-07-mcp-reachability-probe.md) — T3-07/AC-V2 resolved: bathos MCP is reachable from a NO-CLAUDE node (hand-rolled JSON-RPC-over-stdio handshake against `bth-mcp` succeeds) — 15c extends to strict nodes, AC-P5/T3-13 not required; also flags a cross-repo bathos manifest `command=["bth","serve"]` mismatch (no such subcommand exists)
@@ -55,7 +72,8 @@
 - [260702_roadmap-research-synthesis](research/260702_roadmap-research-synthesis.md) — roadmap-cycle research synthesis (task 260702_research-roadmap-dags): 6 adversarially-verified themes → #2181 autoresearch ratchet-loop architecture + gate catalog + bathos capability map, #2174 minimal composition substrate child item (D1–D4, AC1–AC6), neuro-symbolic placement (grounding node in #2174, entry criterion for #2181), praxia plugin contract + rig-run dispatch gaps, cross-cutting gate-design template; brainstorm fork list + dropped-claims appendix
 
 ## Decisions
-- [260811_4117-closure-declaration-persistence-layering](decisions/260811_4117-closure-declaration-persistence-layering.md) — #4117 scoping: closure-declaration persistence stays xtrax.cli-only (optional plain-string params, no closure_lock import); the still-missing build_closure_manifest production caller is controller/-side, filed separately as #4164
+- [260813_3653-gw06-remaining-gate-wiring-decisions](decisions/260813_3653-gw06-remaining-gate-wiring-decisions.md) — [GW-06] Remaining human-approval gate wiring decisions (T2-29, T2-30, T2-31)
+- [260811_4117-closure-declaration-persistence-layering](decisions/260811_4117-closure-declaration-persistence-layering.md) — Resolves the open design question in backlog
 - [260716_t2-33-island-upgrade-delta-scope](decisions/260716_t2-33-island-upgrade-delta-scope.md) — T2-33 (P4-gated island/population-search) scoped as a documented delta only, no code: formalizes T2-03's GEAR+AutoSOTA read into a spec (evaluate() seam unchanged; GEAR-style bounded elite frontier + UCB parent selection extends T2-17/T2-18 rather than literal island migration; bathos B2-03 already covers multi-parent lineage); implementation blocked on a T2-31 scope-expansion approval that does not yet exist
 - [260714_2181-autoresearch-loop-constitution](decisions/260714_2181-autoresearch-loop-constitution.md) — AC-21/T2-28 constitution: governs #2181's five human-approval gates (constitution amendment, evaluator-change, promotion-to-main, scope/allowlist expansion, kill-switch/campaign approval); restates the non-negotiable safety invariants (no autonomous merge to main, sealed evaluator monopoly, external unrevokable kill-switch, metrics provenance, info barrier); attestation bound to T3-05's freshness primitive, 365-day TTL
 
@@ -82,7 +100,7 @@
 ## Misc
 
 ## Superpowers
-> Skill outputs live in `.praxia/docs/superpowers/plans/` and `.praxia/docs/superpowers/specs/`.
+> Skill outputs live in `.praxia/docs/superpowers/plans/` and `.praxia/docs/superpowers/specs/.
 - [plans](superpowers/plans/) — brainstorming + writing-plans outputs
 - [specs](superpowers/specs/) — specification outputs
 
