@@ -78,6 +78,14 @@ from xtrax.loop.candidate_static import CandidateStaticGateError
 from xtrax.loop.checkified_execution import CheckifiedExecutionError
 from xtrax.loop.closure_lock import ClosureHashMismatchError, ClosureManifest, UnlistedReadError
 from xtrax.loop.compile_time_clock import TwoPhaseTiming
+from xtrax.loop.info_barrier_lint import (
+    DEFAULT_DELTA_POLICY,
+    SANCTIONED_FIELDS,
+    InfoBarrierViolationError,
+    SanctionedEnvelope,
+    build_sanctioned_envelope,
+    lint_agent_envelope,
+)
 from xtrax.loop.metrics_provenance import (
     MetricsProvenanceRecord,
     UnprovenancedMetricsError,
@@ -153,6 +161,7 @@ def _new_step_kwargs(**overrides: Any) -> dict[str, Any]:
         "candidate_smoke_root": None,
         "checkified_execution_fn": _passing_checkified_execution_fn,
         "metrics_provenance_dir": _METRICS_PROVENANCE_DIR,
+        "iteration": 1,
     }
     defaults.update(overrides)
     return defaults
@@ -931,6 +940,11 @@ class TestOneCandidatePassResultAccepted:
                 fitness=dict(_PASSING_FITNESS),
                 evaluator_closure_hash=_FROZEN_CONTEXT.locked.closure_hash,
                 run_id=_PROV_RUN_ID,
+            ),
+            sanctioned_envelope=SanctionedEnvelope(
+                status="ok",
+                run_id=_PROV_RUN_ID,
+                iteration=1,
             ),
         )
 
@@ -2901,4 +2915,148 @@ class TestMetricsProvenance3075:
 
         assert list(tmp_path.glob("*.toml")) == [], (
             "empty run_id must fail before any metrics-provenance TOML is written"
+        )
+
+
+class TestInfoBarrier3077:
+    """Backlog #3077: production caller of already-shipped build_sanctioned_envelope.
+
+    After the #3075 provenance wrap and before ratchet commit. Isolated class: new kwargs
+    (`iteration`, `build_sanctioned_envelope_fn`) are passed explicitly per test, not added
+    to `_new_step_kwargs` defaults, so existing tests stay green during first-stage RED.
+    """
+
+    # Envelope reads score_key="score"; ratchet requires >=2 shared metric keys (Cohen's d).
+    _RATCHET_PAD_KEY = "aux"
+    _RATCHET_PAD_VALUE = 0.0
+
+    @staticmethod
+    def _score_guarded_evaluate_fn(*args: Any, **kwargs: Any) -> dict[str, float]:
+        return {
+            "score": 1.5,
+            TestInfoBarrier3077._RATCHET_PAD_KEY: TestInfoBarrier3077._RATCHET_PAD_VALUE,
+        }
+
+    def _run_pass(
+        self, tmp_path: Path, *, iteration: int, **pass_kwargs: Any
+    ) -> OneCandidatePassResult:
+        best_fitness = pass_kwargs.get("best_fitness")
+        if best_fitness is not None:
+            pass_kwargs["best_fitness"] = {
+                **dict(best_fitness),
+                self._RATCHET_PAD_KEY: self._RATCHET_PAD_VALUE,
+            }
+            higher_is_better = dict(pass_kwargs.get("higher_is_better") or {})
+            higher_is_better.setdefault(self._RATCHET_PAD_KEY, True)
+            pass_kwargs["higher_is_better"] = higher_is_better
+        adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+        return run_one_candidate_pass(
+            _mock_dispatch_backend(),
+            adapter,
+            campaign_id="camp-1",
+            campaign_mode="exploration",
+            candidate_static_fn=_passing_candidate_static_fn,
+            stats_battery_kwargs={},
+            stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+            seed_trial_counts_fn=lambda db, script_sha256, hypothesis_clause_id="": (
+                _passing_seed_counts()
+            ),
+            output_paths=["artifact.json"],
+            **_new_step_kwargs(
+                metrics_provenance_dir=tmp_path,
+                guarded_evaluate_fn=self._score_guarded_evaluate_fn,
+                iteration=iteration,
+                **pass_kwargs,
+            ),
+        )
+
+    def test_happy_path_iteration_1_has_trend_without_delta(self, tmp_path: Path) -> None:
+        result = self._run_pass(
+            tmp_path,
+            iteration=1,
+            best_fitness={"score": 1.0},
+            higher_is_better={"score": True},
+        )
+
+        envelope = result.sanctioned_envelope
+        assert isinstance(envelope, SanctionedEnvelope)
+        payload = envelope.to_json_dict()
+        assert set(payload) <= SANCTIONED_FIELDS
+        assert envelope.run_id == result.provenance_record.run_id == _PROV_RUN_ID
+        assert envelope.iteration == 1
+        assert envelope.fitness_trend == "improved"
+        assert envelope.fitness_delta is None
+        assert "fitness_delta" not in payload
+
+        expected = build_sanctioned_envelope(
+            result.provenance_record,
+            iteration=1,
+            previous_score=1.0,
+            score_key="score",
+            delta_policy=DEFAULT_DELTA_POLICY,
+        )
+        assert envelope == expected
+
+    def test_iteration_3_reveals_rounded_fitness_delta(self, tmp_path: Path) -> None:
+        result = self._run_pass(
+            tmp_path,
+            iteration=3,
+            best_fitness={"score": 1.0},
+            higher_is_better={"score": True},
+        )
+
+        envelope = result.sanctioned_envelope
+        assert envelope.iteration == 3
+        assert envelope.fitness_trend == "improved"
+        assert envelope.fitness_delta == round(0.5, DEFAULT_DELTA_POLICY.precision)
+        assert envelope.fitness_delta == pytest.approx(0.5)
+        payload = envelope.to_json_dict()
+        assert set(payload) <= SANCTIONED_FIELDS
+        assert "fitness_delta" in payload
+
+        expected = build_sanctioned_envelope(
+            result.provenance_record,
+            iteration=3,
+            previous_score=1.0,
+            score_key="score",
+            delta_policy=DEFAULT_DELTA_POLICY,
+        )
+        assert envelope == expected
+
+    def test_dirty_envelope_halts_before_ratchet_commit_and_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        commit_calls: list[Any] = []
+
+        def spy_commit(*_args: Any, **_kwargs: Any) -> str:
+            commit_calls.append((_args, _kwargs))
+            return "pending-sha"
+
+        monkeypatch.setattr(main_loop_module, "create_pending_commit", spy_commit)
+
+        construction_calls: list[Any] = []
+        original_init = OneCandidatePassResult.__init__
+
+        def spy_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            construction_calls.append((args, kwargs))
+            original_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(OneCandidatePassResult, "__init__", spy_init)
+
+        def dirty_build_sanctioned_envelope_fn(*_args: Any, **_kwargs: Any) -> SanctionedEnvelope:
+            lint_agent_envelope({"status": "ok", "stdout": "leaked"})
+            msg = "lint_agent_envelope must raise on stdout; dirty envelope must not return"
+            raise InfoBarrierViolationError(msg)
+
+        with pytest.raises(InfoBarrierViolationError):
+            self._run_pass(
+                tmp_path,
+                iteration=1,
+                build_sanctioned_envelope_fn=dirty_build_sanctioned_envelope_fn,
+            )
+
+        assert commit_calls == [], "create_pending_commit must not run after info-barrier HALT"
+        assert construction_calls == [], (
+            "no OneCandidatePassResult -- partial or otherwise -- may be constructed "
+            "when build_sanctioned_envelope_fn raises"
         )

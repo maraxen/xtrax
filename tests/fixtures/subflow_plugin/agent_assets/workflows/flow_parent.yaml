@@ -29,7 +29,7 @@ nodes:
       shape used by agent_assets/workflows/recon_contract.yaml.
   - kind: sub_flow
     id: dispatch_child
-    template: xtrax_port_repair
+    template: port_repair
 
 edges:
   - from: seed
