@@ -50,6 +50,25 @@ dev = [
 eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 cli = [ "tyro>=0.9,<2", "flatbuffers>=2",]
 io = [ "zarr>=3.0",]
+# NOTE: there is deliberately no `provenance = ["cisternal"]` extra yet.
+#
+# xtrax.telemetry uses cisternal.provenance (durable per-run git refs, dirty-tree
+# worktree snapshots) when it is importable, via a guarded import in
+# src/xtrax/telemetry/record.py, and degrades to git shellouts otherwise --
+# recording provenance_source="builtin" so the difference is never invisible.
+# That upgrade path needs no dependency declaration to work.
+#
+# Declaring the extra anyway was tried and reverted (2026-08-28). cisternal pins
+# `fastmcp==4.0.0a2`, an exact PRE-RELEASE, as a hard runtime dependency. uv
+# resolves every extra when building the lock, so merely declaring an optional
+# cisternal extra makes xtrax unresolvable without `--prerelease=allow` -- for
+# all users, including those who never ask for provenance. An optional extra
+# that breaks the default install is not optional.
+#
+# Users who want durable provenance today install cisternal themselves. Add the
+# extra once cisternal moves fastmcp/cyclopts behind its own extras;
+# cisternal.provenance is pure stdlib, so nothing about that module requires
+# them.
 authoring-smoke = [ "outlines>=1.0", "transformers>=4.40", "torch>=2.0",]
 controller = [ "bathos>=0.13.0a1",]
 
@@ -123,6 +142,7 @@ source_modules = [
   "xtrax.sparse",
   "xtrax.inference",
   "xtrax.loop",
+  "xtrax.telemetry",
 ]
 forbidden_modules = ["xtrax.eda"]
 
@@ -159,6 +179,7 @@ source_modules = [
   "xtrax.findings",
   "xtrax.jaxlint_runner",
   "xtrax.tombstone",
+  "xtrax.telemetry",
 ]
 forbidden_modules = ["xtrax.devtools"]
 

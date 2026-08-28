@@ -46,6 +46,16 @@ tier1_exports = [
     "safe_reciprocal",
     "TransformFn",
     "RollingFn",
+    # Telemetry: the enforced run ledger (provenance + captured IR).
+    "RunLedger",
+    "RunLedgerRecord",
+    "RunProvenance",
+    "LedgerUnavailableError",
+    "TelemetryCallback",
+    "capture_ir",
+    "compact_ledger",
+    "iter_rows",
+    "find_run",
 ]
 
 smoke_exports = [

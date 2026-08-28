@@ -423,3 +423,25 @@ def _decode_fields(d: dict[str, Any]) -> dict[str, Any]:
     if scopes is not None:
         d["scopes"] = {k: (tuple(v) if v is not None else None) for k, v in scopes.items()}
     return d
+
+
+# --- Public provenance-capture seam -----------------------------------------
+#
+# The underscored functions above are ProbeRecord's own default_factories. They
+# are re-exported here under public names so a sibling package (xtrax.telemetry)
+# can reuse the *same* capture logic instead of growing a second, drifting copy
+# of it -- the GH200-vs-H200 normalisation trap in _normalize_device_kind is
+# exactly the kind of hard-won detail a reimplementation loses.
+#
+# Aliases, not renames: tests/profiling/test_capture_git_sha.py and
+# tests/profiling/test_claim_contract.py address the underscored names directly,
+# and this package's leaf contract makes it the one place these may live.
+
+capture_git_sha = _capture_git_sha
+capture_timestamp = _capture_timestamp
+capture_x64_enabled = _capture_x64_enabled
+capture_jax_version = _capture_jax_version
+capture_jaxlib_version = _capture_jaxlib_version
+capture_xla_flags = _capture_xla_flags
+capture_device_kind = _capture_device_kind
+normalize_device_kind = _normalize_device_kind
