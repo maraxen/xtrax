@@ -146,6 +146,7 @@ class Engine(eqx.Module):
 
         # Open the run ledger (fail-closed) unless the caller supplied one.
         ledger, owns_ledger = _resolve_ledger(ledger, run_id, KIND_TRAIN, context)
+        in_flight: BaseException | None = None
         telemetry = TelemetryCallback(ledger)
         # Local, not the static field: the telemetry callback is appended per
         # call so an Engine constructed with callbacks=() is still instrumented.
@@ -204,6 +205,7 @@ class Engine(eqx.Module):
         except BaseException as exc:
             # A crashed run is when the record matters most; mark it before the
             # finally block writes the row, then let the exception propagate.
+            in_flight = exc
             if owns_ledger:
                 ledger.set_status(STATUS_FAILED, f"run raised {type(exc).__name__}: {exc}")
             raise
@@ -211,8 +213,10 @@ class Engine(eqx.Module):
             # Fire on_train_end hook (always, even on exception)
             for cb in callbacks:
                 cb.on_train_end(state)
-            if owns_ledger and not ledger.closed:
-                ledger.close()
+            # close_if_open, not close: a full disk while writing the row must not
+            # replace the training exception that is already propagating.
+            if owns_ledger:
+                ledger.close_if_open(in_flight)
 
         return state
 
@@ -252,6 +256,7 @@ class Engine(eqx.Module):
             Aggregated metrics dict[str, Array] with all keys averaged across batches
         """
         ledger, owns_ledger = _resolve_ledger(ledger, run_id, KIND_EVAL, context)
+        in_flight: BaseException | None = None
         telemetry = TelemetryCallback(ledger)
         validation_callbacks = (*self.validation_callbacks, telemetry)
 
@@ -297,6 +302,7 @@ class Engine(eqx.Module):
                 )
 
         except BaseException as exc:
+            in_flight = exc
             if owns_ledger:
                 ledger.set_status(STATUS_FAILED, f"eval raised {type(exc).__name__}: {exc}")
             raise
@@ -304,8 +310,8 @@ class Engine(eqx.Module):
             # Fire on_train_end hook on validation_callbacks
             for cb in validation_callbacks:
                 cb.on_train_end(state)
-            if owns_ledger and not ledger.closed:
-                ledger.close()
+            if owns_ledger:
+                ledger.close_if_open(in_flight)
 
         return aggregated
 

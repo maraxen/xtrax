@@ -80,15 +80,33 @@ def blobs_dir(root: "Path | str" = DEFAULT_LEDGER_ROOT) -> Path:
 
 
 def _active_segment(root: Path) -> Path:
-    """Highest-numbered segment under the size cap, or the next one."""
+    """Highest-numbered segment under the size cap, or the next one.
+
+    Only numerically-named segments are candidates for *writing*, and ordering
+    is by that number rather than lexicographic. A stray file -- a manual copy,
+    ``00001.bak.jsonl``, an editor's backup -- would otherwise sort last and
+    make ``int(stem)`` raise, and under fail-closed semantics an uncaught
+    ValueError here aborts the run rather than merely misfiling a row.
+
+    Such a file is still *read* by ``iter_rows`` (its rows are data, and
+    silently ignoring them would lose history); it simply never becomes the
+    append target.
+    """
     seg_dir = _segments_dir(root)
-    existing = sorted(p for p in seg_dir.glob("*.jsonl") if p.is_file())
-    if existing:
-        newest = existing[-1]
-        if newest.stat().st_size < MAX_SEGMENT_BYTES:
-            return newest
-        return seg_dir / f"{int(newest.stem) + 1:05d}.jsonl"
-    return seg_dir / "00001.jsonl"
+    numbered: list[tuple[int, Path]] = []
+    for path in seg_dir.glob("*.jsonl"):
+        if not path.is_file():
+            continue
+        try:
+            numbered.append((int(path.stem), path))
+        except ValueError:
+            continue
+    if not numbered:
+        return seg_dir / "00001.jsonl"
+    index, newest = max(numbered)
+    if newest.stat().st_size < MAX_SEGMENT_BYTES:
+        return newest
+    return seg_dir / f"{index + 1:05d}.jsonl"
 
 
 def _append_line(path: Path, line: str) -> None:
@@ -273,13 +291,48 @@ class RunLedger:
         )
 
     def close(self) -> RunLedgerRecord:
-        """Write this run's single row. Idempotent within a process."""
+        """Write this run's single row.
+
+        NOT idempotent: a second call raises. Exactly one row per run is the
+        invariant compaction's dedup and ``find_run``'s last-wins rule both rest
+        on, so a silent second write would be worse than a loud refusal. Callers
+        managing the lifetime by hand should use :meth:`close_if_open`, which
+        handles the already-closed case and contains I/O failures.
+        """
         if self._closed:
             raise LedgerRecordError(f"ledger for run_id={self.run_id!r} is already closed")
         record = self.build_record()
         _append_line(_active_segment(self.root), record.to_json_line())
         self._closed = True
         return record
+
+    def close_if_open(self, in_flight_exc: "BaseException | None" = None) -> None:
+        """Close unless already closed, containing I/O failures appropriately.
+
+        The single place that decides what a failed *write of the record* means,
+        so ``__exit__`` and a hand-rolled try/finally cannot drift apart on it:
+
+        - No exception in flight: the failure is the only thing that went wrong,
+          so it is raised as ``LedgerUnavailableError``.
+        - An exception already propagating: that one is the more informative of
+          the two and must not be masked by bookkeeping. The loss is downgraded
+          to a warning, which still makes it visible rather than silent.
+        """
+        if self._closed:
+            return
+        try:
+            self.close()
+        except OSError as close_exc:
+            if in_flight_exc is None:
+                raise LedgerUnavailableError(
+                    f"could not write the ledger row for run_id={self.run_id!r}: {close_exc}"
+                ) from close_exc
+            warnings.warn(
+                f"xtrax: failed to write the ledger row for run_id={self.run_id!r} "
+                f"while handling {type(in_flight_exc).__name__}: {close_exc}",
+                UserWarning,
+                stacklevel=2,
+            )
 
     def __enter__(self) -> "RunLedger":
         return self
@@ -301,22 +354,7 @@ class RunLedger:
         # provably non-None to a type checker inside this branch.
         if exc is not None:
             self.set_status(STATUS_FAILED, f"run raised {type(exc).__name__}: {exc}")
-        if not self._closed:
-            try:
-                self.close()
-            except OSError as close_exc:
-                if exc is None:
-                    raise LedgerUnavailableError(
-                        f"could not write the ledger row for run_id={self.run_id!r}: {close_exc}"
-                    ) from close_exc
-                # An in-flight exception is the more informative one; do not mask
-                # it with a bookkeeping failure, but do make the loss visible.
-                warnings.warn(
-                    f"xtrax: failed to write the ledger row for run_id="
-                    f"{self.run_id!r} while handling {type(exc).__name__}: {close_exc}",
-                    UserWarning,
-                    stacklevel=2,
-                )
+        self.close_if_open(exc)
         return False
 
 
