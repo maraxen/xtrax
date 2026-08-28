@@ -1,9 +1,8 @@
-# preserve-wt Internal Docs
+# xtrax Internal Docs
 
 ## Daily
 
 ## Handoffs
-- [260807_apply-confirmed-disposition-for-s4-closure-declaration-schema-not-one-write](handoffs/260807_apply-confirmed-disposition-for-s4-closure-declaration-schema-not-one-write.md) — User-confirmed plan: amend #4093 and file a new backlog row for the real xtrax-side scope of S4, blocked on plugin:praxia:core MCP not connecting from the affigit corpus session
 - [260623_e1-e2-composition-layer](handoffs/260623_e1-e2-composition-layer.md) — session handoff: E1-MVP (xtrax.inference) + #2561 hardening + E2-MVP (xtrax.cli plan/explain/export) all merged to main (341 tests); deferred run/sweep/resume verbs + push pending
 
 ## Plans
@@ -96,6 +95,7 @@
 - [260702_03-dag-plugin-workflows](roadmaps/research-epics/260702_03-dag-plugin-workflows.md) — T3 backlog DAG: 5 phase-1 xtrax + 3 gating probes + 6 praxia cross-repo edges; strict-mode registry double-gated
 
 ## Archive
+- [handoffs_migrated_260828_001](archive/handoffs_migrated_260828_001.md)
 
 ## Misc
 
