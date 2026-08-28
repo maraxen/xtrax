@@ -30,6 +30,12 @@ compaction in environments that have neither. It must never import ``bathos``
 """
 
 from xtrax.telemetry.callback import TelemetryCallback
+from xtrax.telemetry.claims import (
+    UnrecordedRunError,
+    assert_run_citable,
+    filter_citable,
+    run_is_citable,
+)
 from xtrax.telemetry.compact import (
     COMPACTION_THRESHOLD,
     CompactResult,
@@ -114,16 +120,20 @@ __all__ = [
     "RunProvenance",
     "SchemaVersionMismatchError",
     "TelemetryCallback",
+    "UnrecordedRunError",
+    "assert_run_citable",
     "blobs_dir",
     "capture_ir",
     "compact_ledger",
     "degraded_reason",
     "digest_of",
+    "filter_citable",
     "find_run",
     "iter_rows",
     "migration_chain_is_complete",
     "resolve_capture_mode",
     "resolve_root",
+    "run_is_citable",
     "should_compact",
     "telemetry_opted_out",
     "upgrade_row",
