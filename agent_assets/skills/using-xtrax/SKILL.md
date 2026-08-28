@@ -1,7 +1,7 @@
 ---
 name: using-xtrax
 description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), loading your own TOML config via the domain-agnostic `xtrax.config` primitives, composing xtrax's own CLI verbs (`REGISTRY`) into your own CLI, or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep + unreleased graph-validate/graph-plan/graph-author), the xtrax.config TOML primitives, EDA, sparsification, and the signature-inference layer (xtrax.inference). xtrax v0.4.0a5 + main.
-xtrax_version: 0.4.0a5
+xtrax_version: 0.4.0a7
 triggers:
   - writing JAX pipeline with xtrax
   - building domain library on xtrax
