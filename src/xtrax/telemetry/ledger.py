@@ -170,12 +170,14 @@ class RunLedger:
         provenance: RunProvenance,
         status: str,
         status_reason: "str | None",
+        context: "dict[str, str] | None" = None,
     ) -> None:
         self.run_id = run_id
         self.kind = kind
         self.root = root
         self.derived_from = derived_from
         self.provenance = provenance
+        self.context: dict[str, str] = dict(context or {})
         self._status = status
         self._status_reason = status_reason
         self._ir: list[IRRef] = []
@@ -190,6 +192,7 @@ class RunLedger:
         root: "Path | str | None" = None,
         derived_from: "str | None" = None,
         cwd: "Path | None" = None,
+        context: "dict[str, str] | None" = None,
     ) -> "RunLedger":
         """Open a ledger entry, failing closed if it cannot be written.
 
@@ -215,6 +218,7 @@ class RunLedger:
             root=resolved,
             derived_from=derived_from,
             provenance=provenance,
+            context=context,
             status=STATUS_OPTED_OUT if opted_out else STATUS_COMPLETE,
             status_reason=(
                 "XTRAX_TELEMETRY_OPTOUT was set for this run" if opted_out else None
@@ -265,6 +269,7 @@ class RunLedger:
             derived_from=self.derived_from,
             telemetry_status=self._status,
             status_reason=self._status_reason,
+            context=dict(self.context),
             ir=tuple(self._ir),
             provenance=self.provenance,
         )

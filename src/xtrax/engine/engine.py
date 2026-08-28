@@ -30,7 +30,12 @@ from xtrax.training.trainer import Trainer
 from xtrax.training.types import Callback, LossFunction, ResumableState
 
 
-def _resolve_ledger(ledger: Any, run_id: str | None, kind: str) -> tuple[RunLedger, bool]:
+def _resolve_ledger(
+    ledger: Any,
+    run_id: str | None,
+    kind: str,
+    context: dict[str, str] | None = None,
+) -> tuple[RunLedger, bool]:
     """Return ``(ledger, owns_it)``, opening one fail-closed if none was given.
 
     Ownership matters: a caller-supplied ledger spans more than this call (a
@@ -44,7 +49,7 @@ def _resolve_ledger(ledger: Any, run_id: str | None, kind: str) -> tuple[RunLedg
         return ledger, False
     from xtrax.run.ident import new_run_id
 
-    return RunLedger.open(run_id or new_run_id(), kind=kind), True
+    return RunLedger.open(run_id or new_run_id(), kind=kind, context=context), True
 
 
 @runtime_checkable
@@ -90,6 +95,7 @@ class Engine(eqx.Module):
         *,
         ledger: Any = None,
         run_id: str | None = None,
+        context: dict[str, str] | None = None,
     ) -> ResumableState:
         """Execute multi-epoch training with callback hooks.
 
@@ -139,7 +145,7 @@ class Engine(eqx.Module):
         callback_handler = BoundedCallbackHandler(max_concurrent=4)
 
         # Open the run ledger (fail-closed) unless the caller supplied one.
-        ledger, owns_ledger = _resolve_ledger(ledger, run_id, KIND_TRAIN)
+        ledger, owns_ledger = _resolve_ledger(ledger, run_id, KIND_TRAIN, context)
         telemetry = TelemetryCallback(ledger)
         # Local, not the static field: the telemetry callback is appended per
         # call so an Engine constructed with callbacks=() is still instrumented.
@@ -218,6 +224,7 @@ class Engine(eqx.Module):
         *,
         ledger: Any = None,
         run_id: str | None = None,
+        context: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Evaluate model on a dataset (no training step).
 
@@ -244,7 +251,7 @@ class Engine(eqx.Module):
         Returns:
             Aggregated metrics dict[str, Array] with all keys averaged across batches
         """
-        ledger, owns_ledger = _resolve_ledger(ledger, run_id, KIND_EVAL)
+        ledger, owns_ledger = _resolve_ledger(ledger, run_id, KIND_EVAL, context)
         telemetry = TelemetryCallback(ledger)
         validation_callbacks = (*self.validation_callbacks, telemetry)
 
@@ -312,6 +319,7 @@ class Engine(eqx.Module):
         *,
         ledger: Any = None,
         run_id: str | None = None,
+        context: dict[str, str] | None = None,
     ) -> ResumableState:
         """Synchronous wrapper around fit() using asyncio.run().
 
@@ -337,5 +345,6 @@ class Engine(eqx.Module):
                 resume=resume,
                 ledger=ledger,
                 run_id=run_id,
+                context=context,
             )
         )

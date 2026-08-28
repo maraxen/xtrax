@@ -413,6 +413,13 @@ class RunLedgerRecord:
     telemetry_status: str = STATUS_COMPLETE
     status_reason: "str | None" = None
     ir: "tuple[IRRef, ...]" = ()
+    # Caller-supplied, string-valued identity for this run: a config hash, the
+    # import path of an exported function, a sweep id. Mirrors
+    # ProbeRecord.config, and kept deliberately separate from provenance (which
+    # is captured, never supplied) and from metrics (which this schema does not
+    # carry at all). String-valued so a number can never be mistaken here for a
+    # measurement that something might later cite.
+    context: "dict[str, str]" = dataclasses.field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
     ts: str = dataclasses.field(default_factory=capture_timestamp)
     provenance: RunProvenance = dataclasses.field(default_factory=RunProvenance.capture)
@@ -444,7 +451,19 @@ class RunLedgerRecord:
                 f"telemetry_status={self.telemetry_status!r} requires a status_reason; "
                 "a non-complete row that does not say why is not auditable"
             )
+        bad_context = sorted(
+            key
+            for key, value in self.context.items()
+            if not isinstance(key, str) or not isinstance(value, str)
+        )
+        if bad_context:
+            raise LedgerRecordError(
+                f"context entries {bad_context} are not str->str -- context carries "
+                "identity, not measurements; a number stored here could later be "
+                "mistaken for a citable metric"
+            )
         object.__setattr__(self, "ir", tuple(self.ir))
+        object.__setattr__(self, "context", dict(self.context))
 
     @property
     def is_citable(self) -> bool:
@@ -466,6 +485,7 @@ class RunLedgerRecord:
             "ts": self.ts,
             "telemetry_status": self.telemetry_status,
             "status_reason": self.status_reason,
+            "context": dict(self.context),
             "provenance": self.provenance.to_dict(),
             "ir": [dataclasses.asdict(ref) for ref in self.ir],
         }
@@ -511,6 +531,7 @@ class RunLedgerRecord:
             "ts",
             "telemetry_status",
             "status_reason",
+            "context",
             "provenance",
             "ir",
         }
@@ -537,6 +558,7 @@ class RunLedgerRecord:
             derived_from=raw.get("derived_from"),
             telemetry_status=raw.get("telemetry_status", STATUS_COMPLETE),
             status_reason=raw.get("status_reason"),
+            context=dict(raw.get("context") or {}),
             ir=ir,
             schema_version=version,
             ts=raw["ts"],

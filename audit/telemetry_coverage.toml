@@ -1,0 +1,36 @@
+# Telemetry coverage contract (enforced by scripts/audit_telemetry_coverage.py).
+#
+# Every CLI verb must declare what it does about the run ledger. The point is not
+# that every verb records -- some legitimately do not -- but that the answer is
+# an explicit, reviewed decision rather than an oversight. A new verb added
+# without an entry here fails CI.
+#
+# Dispositions:
+#   records        Executes or lowers user code and MUST produce a ledger row.
+#   analysis_only  Reads or plans without executing user code; no row expected.
+#   ledger_admin   Operates on the ledger itself; recording its own run would be
+#                  circular.
+
+[verbs]
+run = "records"
+resume = "records"
+export = "records"
+sweep = "records"
+
+# plan/explain compute a batching plan from a spec. They neither execute nor
+# lower user code, so there is no computation to attest to.
+plan = "analysis_only"
+explain = "analysis_only"
+
+# graph-* verbs validate, plan, and author composition graphs statically.
+graph-validate = "analysis_only"
+graph-plan = "analysis_only"
+graph-author = "analysis_only"
+
+# Compaction and inspection of the ledger itself.
+ledger = "ledger_admin"
+
+# Functions in xtrax.engine that execute user code and must therefore open (or
+# accept) a ledger. Each name must call _resolve_ledger in its own body.
+[engine]
+enforcing_methods = ["fit", "eval"]

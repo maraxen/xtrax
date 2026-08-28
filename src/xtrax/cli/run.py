@@ -102,11 +102,28 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
     write_manifest(run_dir, cfg, run_id=run_id, config_hash_val=hash_val)
 
     engine = Engine(trainer=Trainer(loss_fn, optimizer), callbacks=())
+    # Pass the CLI's config-hash run_id through to the ledger. Engine opens one
+    # regardless (telemetry is enforced there, not here), but without this it
+    # would mint its own id and the ledger row would not join to manifest.json,
+    # the checkpoint dir, or the zarr provenance record -- all of which key on
+    # this same id.
     final_state = engine.fit_sync(
         state,
         data,
         num_epochs=cfg.num_epochs,
         checkpoint_dir=checkpoint_dir,
+        run_id=run_id,
+        context={
+            "config_hash": str(hash_val),
+            "seed": str(cfg.seed),
+            "num_epochs": str(cfg.num_epochs),
+            "model": type(model).__name__,
+            "optimizer": type(optimizer).__name__,
+            "loss": type(loss_fn).__name__,
+            "data": type(data).__name__,
+            "checkpoint_dir": checkpoint_dir,
+            "manifest": f"{run_dir}/manifest.json",
+        },
     )
 
     # Post-fit record: echo the manifest's identity fields + resolved component
