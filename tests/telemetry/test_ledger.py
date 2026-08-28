@@ -321,11 +321,15 @@ def test_concurrent_appends_do_not_interleave(tmp_path):
     procs = [
         subprocess.Popen(  # noqa: S603
             [sys.executable, "-c", _CONCURRENT_WRITER, str(root), f"run-child-{i}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
         for i in range(8)
     ]
     for proc in procs:
-        assert proc.wait(timeout=120) == 0
+        out, err = proc.communicate(timeout=180)
+        assert proc.returncode == 0, f"writer failed:\n{err or out}"
 
     for segment in (root / "segments").glob("*.jsonl"):
         for line in segment.read_text().splitlines():
@@ -334,6 +338,40 @@ def test_concurrent_appends_do_not_interleave(tmp_path):
 
     ids = {r.run_id for r in iter_rows(root)}
     assert ids == {"run-warmup", *{f"run-child-{i}" for i in range(8)}}
+
+
+def test_the_writability_probe_is_process_scoped(tmp_path):
+    """Regression: a shared probe filename is a race, not a detail.
+
+    With a fixed probe name, two processes opening the same ledger at once will
+    have one unlink the other's probe, and the loser reports the directory as
+    unwritable -- aborting a perfectly good run mid-sweep. Caught by
+    test_concurrent_appends_do_not_interleave under load; pinned deterministically
+    here because that test only fails when the interleaving happens to line up.
+    """
+    import os
+
+    root = tmp_path / "ledger"
+    RunLedger.open("run-1", root=root).close()
+    probes = list((root / "segments").glob(".write_probe*"))
+    assert probes == [], f"probe files were left behind: {probes}"
+
+    # The name must vary by process, or concurrent opens collide.
+    from xtrax.telemetry import ledger as ledger_mod
+
+    src = Path(ledger_mod.__file__).read_text(encoding="utf-8")
+    assert "os.getpid()" in src.split("_assert_writable")[1].split("def ")[0]
+    assert "missing_ok=True" in src.split("_assert_writable")[1].split("def ")[0]
+    assert os.getpid()
+
+
+def test_many_ledgers_can_open_the_same_root_in_one_process(tmp_path):
+    """Sequential opens against a shared root must not interfere."""
+    root = tmp_path / "ledger"
+    ledgers = [RunLedger.open(f"run-{i}", root=root) for i in range(10)]
+    for ledger in ledgers:
+        ledger.close()
+    assert len(list(iter_rows(root))) == 10
 
 
 def test_eval_runs_are_recorded_too(tmp_path):

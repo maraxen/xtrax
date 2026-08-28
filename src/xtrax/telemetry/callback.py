@@ -20,9 +20,10 @@ one blob per signature instead of one per step.
 import time
 from typing import Any
 
-from xtrax.telemetry.ir import degraded_reason
+from xtrax.telemetry.ir import capture_ir, degraded_reason
 from xtrax.telemetry.ledger import RunLedger
 from xtrax.telemetry.record import STATUS_DEGRADED, IRRef
+from xtrax.telemetry.store import BlobStore
 
 
 class TelemetryCallback:
@@ -60,10 +61,29 @@ class TelemetryCallback:
         """
         if self._captured or self._ir_capture is None:
             return
+        self._record(self._ir_capture())
+
+    def capture_ir_for(self, fn: Any, *args: Any) -> None:  # noqa: ANN401
+        """Capture ``fn``'s IR at ``args`` on first call; a no-op thereafter.
+
+        The direct form used by ``Engine``, which -- unlike a callback -- has the
+        step function and a real batch in hand. Same once-only guard as
+        :meth:`capture_ir_once`, and for the same reason: the first call *is* the
+        compile, so capturing there lands at the boundary with the true shape
+        signature, and every later call would re-trace for a blob that already
+        exists.
+        """
+        if self._captured:
+            return
+        if self.ledger.opted_out:
+            self._captured = True
+            return
+        self._record(capture_ir(fn, *args, store=BlobStore(self.ledger.blob_root)))
+
+    def _record(self, refs: "tuple[IRRef, ...]") -> None:
         self._captured = True
         if self.ledger.opted_out:
             return
-        refs: tuple[IRRef, ...] = self._ir_capture()
         self.ledger.record_ir(refs)
         reason = degraded_reason(refs)
         if reason is not None:

@@ -117,12 +117,19 @@ def _assert_writable(root: Path) -> None:
 
     A run that trains for six hours and only then finds it cannot record itself
     has already lost the thing we were trying to keep.
+
+    The probe filename carries this process's pid, and the unlink tolerates an
+    already-absent file. A shared, fixed probe name is a genuine race: under a
+    parallel sweep, several processes open the same ledger at once, and one
+    would delete another's probe out from under it -- turning a perfectly
+    writable directory into a spurious LedgerUnavailableError that aborts a run.
+    Found by tests/telemetry/test_ledger.py::test_concurrent_appends_do_not_interleave.
     """
     try:
         _segments_dir(root).mkdir(parents=True, exist_ok=True)
-        probe = _segments_dir(root) / ".write_probe"
+        probe = _segments_dir(root) / f".write_probe.{os.getpid()}"
         probe.write_text("", encoding="utf-8")
-        probe.unlink()
+        probe.unlink(missing_ok=True)
     except OSError as exc:
         raise LedgerUnavailableError(
             f"the xtrax run ledger at {root} is not writable ({exc}). Telemetry is "
@@ -217,6 +224,16 @@ class RunLedger:
     @property
     def opted_out(self) -> bool:
         return self._status == STATUS_OPTED_OUT
+
+    @property
+    def closed(self) -> bool:
+        """Whether the row has been written.
+
+        Public so a caller managing the ledger's lifetime by hand (``Engine``,
+        which owns a try/finally rather than a ``with``) can avoid a double
+        close without reaching into private state.
+        """
+        return self._closed
 
     @property
     def blob_root(self) -> Path:

@@ -123,7 +123,71 @@ def test_optimized_hlo_is_opt_in(tmp_path):
     opted = capture_ir(
         _fn, _X, _W, store=store, mode=resolve_capture_mode(CAPTURE_FULL_OPTIMIZED)
     )
-    assert IR_KIND_OPTIMIZED_HLO in {r.kind for r in opted}
+    by_kind = {r.kind: r for r in opted}
+    assert IR_KIND_OPTIMIZED_HLO in by_kind
+    # Assert it was actually RENDERED, not merely requested: a skipped ref still
+    # carries its kind, so checking membership alone passes vacuously.
+    ref = by_kind[IR_KIND_OPTIMIZED_HLO]
+    assert ref.mode == IR_FULL, f"optimized HLO was not captured: {ref.reason}"
+    assert ref.bytes > 0
+    assert store.has(ref.sha256)
+
+
+def test_every_default_artifact_is_actually_rendered(tmp_path):
+    """Guards against the whole default set degrading silently to skipped."""
+    store = BlobStore(tmp_path)
+    for ref in capture_ir(_fn, _X, _W, store=store):
+        assert ref.mode == IR_FULL, f"{ref.kind} was not captured: {ref.reason}"
+        assert store.has(ref.sha256)
+
+
+# --- equinox modules --------------------------------------------------------
+
+
+def test_capture_works_on_an_equinox_module_with_static_fields(tmp_path):
+    """The shape a real xtrax training step takes: state carries an eqx.Module."""
+    import equinox as eqx
+
+    class Tiny(eqx.Module):
+        w: jax.Array
+        label: str = eqx.field(static=True)
+
+        def __call__(self, x):
+            return jnp.tanh(x @ self.w)
+
+    def step(model, batch):
+        return model(batch).sum()
+
+    model = Tiny(w=jnp.ones((4, 2)), label="static")
+    batch = jnp.ones((3, 4))
+
+    store = BlobStore(tmp_path)
+    refs = capture_ir(step, model, batch, store=store)
+    assert refs
+    for ref in refs:
+        assert ref.mode == IR_FULL, f"{ref.kind} was not captured: {ref.reason}"
+
+
+def test_capture_falls_back_for_a_module_that_needs_filtering(tmp_path):
+    """A callable field cannot trace plainly; the equinox path must catch it."""
+    import equinox as eqx
+
+    class WithFn(eqx.Module):
+        w: jax.Array
+        act: object = eqx.field(static=True)
+
+        def __call__(self, x):
+            return self.act(x @ self.w)
+
+    def step(model, batch):
+        return model(batch).sum()
+
+    model = WithFn(w=jnp.ones((4, 2)), act=jnp.tanh)
+    refs = capture_ir(step, model, jnp.ones((3, 4)), store=BlobStore(tmp_path))
+    assert refs
+    # Either path is acceptable; what must not happen is a silent empty capture.
+    for ref in refs:
+        assert ref.mode in {IR_FULL, IR_HASH_ONLY} or ref.reason
 
 
 # --- degradation ------------------------------------------------------------

@@ -80,35 +80,65 @@ def resolve_capture_mode(value: "str | None" = None) -> IRCaptureMode:
     return IRCaptureMode(raw)
 
 
+def _require_text(text: "str | None", what: str) -> str:
+    """Reject a None render rather than storing the literal string "None".
+
+    ``mlir_module()`` and ``as_text()`` are both typed Optional. A None that
+    slipped through would be stored as a four-byte blob that looks like a
+    successful capture -- strictly worse than a skipped artifact, which at least
+    says why.
+    """
+    if text is None:
+        raise ValueError(f"{what} produced no text")
+    return str(text)
+
+
 def _render_jaxpr(fn: Any, args: "tuple[Any, ...]") -> str:  # noqa: ANN401
     import jax
 
-    return str(jax.make_jaxpr(fn)(*args))
+    try:
+        return str(jax.make_jaxpr(fn)(*args))
+    except Exception:  # noqa: BLE001 - fall through to the equinox-aware path
+        import equinox as eqx
+
+        # An eqx.Module whose fields are all traceable flattens fine under plain
+        # make_jaxpr (static fields ride along as pytree aux data). This path is
+        # for the modules where that is not true -- a callable field, or a bool
+        # that must stay static for control flow -- which is precisely what
+        # eqx.filter_* exists to handle.
+        return str(eqx.filter_make_jaxpr(fn)(*args)[0])
 
 
 def _render_stablehlo(fn: Any, args: "tuple[Any, ...]") -> str:  # noqa: ANN401
     import jax
 
-    # Same call shape as xtrax.cli.export.run_export, deliberately: one way to
-    # lower to StableHLO in this codebase, not two that can drift.
-    # str() because mlir_module() is typed Optional; a None here would otherwise
-    # become the literal "None" blob, which is worse than a skipped artifact.
-    module = jax.export.export(jax.jit(fn))(*args).mlir_module()
-    if module is None:
-        raise ValueError("jax.export produced no MLIR module")
-    return str(module)
+    try:
+        # Same call shape as xtrax.cli.export.run_export, deliberately: one way
+        # to lower to StableHLO in this codebase, not two that can drift.
+        return _require_text(
+            jax.export.export(jax.jit(fn))(*args).mlir_module(), "jax.export"
+        )
+    except Exception:  # noqa: BLE001 - fall through to lowering directly
+        import equinox as eqx
+
+        # jax.export refuses some functions it can still lower, and it cannot
+        # take an eqx.filter_jit wrapper at all. .lower().as_text() yields the
+        # same pre-optimization StableHLO for both.
+        lowered = eqx.filter_jit(fn).lower(*args)
+        return _require_text(lowered.as_text(), "filter_jit lowering")
 
 
 def _render_optimized_hlo(fn: Any, args: "tuple[Any, ...]") -> str:  # noqa: ANN401
     import jax
 
-    # .compile() genuinely invokes XLA, so this is the expensive renderer and
-    # the reason optimized HLO is opt-in. The idiom matches tiling/estimators.py
-    # and profiling/trace.py.
-    text = jax.jit(fn).lower(*args).compile().as_text()
-    if text is None:
-        raise ValueError("XLA produced no optimized HLO text")
-    return str(text)
+    # .compile() genuinely invokes XLA, so this is the expensive renderer and the
+    # reason optimized HLO is opt-in. The idiom matches tiling/estimators.py and
+    # profiling/trace.py. Note there is no equinox fallback: equinox's Compiled
+    # wrapper exposes no as_text(), so a function that only lowers under
+    # filter_jit degrades to a skipped artifact with that reason recorded.
+    return _require_text(
+        jax.jit(fn).lower(*args).compile().as_text(), "XLA compilation"
+    )
 
 
 _RENDERERS = {
