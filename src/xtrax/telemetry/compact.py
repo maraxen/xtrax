@@ -217,9 +217,7 @@ def verify_ledger(root: "Path | str | None" = None) -> "list[str]":
             if ref.mode != "full":
                 continue
             if not store.has(ref.sha256):
-                problems.append(
-                    f"run {row.run_id}: {ref.kind} blob {ref.sha256[:12]} is missing"
-                )
+                problems.append(f"run {row.run_id}: {ref.kind} blob {ref.sha256[:12]} is missing")
             elif not store.verify(ref.sha256):
                 problems.append(
                     f"run {row.run_id}: {ref.kind} blob {ref.sha256[:12]} fails its digest"

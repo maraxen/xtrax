@@ -103,9 +103,7 @@ def test_filter_citable_splits_and_explains(root):
         with RunLedger.open("run-bad", root=root):
             raise RuntimeError("nope")
 
-    citable, rejected = filter_citable(
-        ["run-ok-1", "run-bad", "run-ok-2", "run-missing"], root
-    )
+    citable, rejected = filter_citable(["run-ok-1", "run-bad", "run-ok-2", "run-missing"], root)
     assert citable == ["run-ok-1", "run-ok-2"]
     assert set(rejected) == {"run-bad", "run-missing"}
     # Every rejection carries a reason: silently dropping runs would reintroduce

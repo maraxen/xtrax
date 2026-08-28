@@ -134,9 +134,7 @@ def check_verbs_declared(contract: dict, registry_path: Path = REGISTRY_PATH) ->
 
     keys = _registry_keys(registry_path)
     if not keys:
-        problems.append(
-            f"{_rel(registry_path)}: could not read REGISTRY keys statically"
-        )
+        problems.append(f"{_rel(registry_path)}: could not read REGISTRY keys statically")
         return problems
 
     for verb in keys:

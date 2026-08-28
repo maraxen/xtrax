@@ -46,9 +46,7 @@ CAPTURE_FULL = "full"
 CAPTURE_FULL_OPTIMIZED = "full+optimized"
 CAPTURE_HASH = "hash"
 CAPTURE_NONE = "none"
-_VALID_CAPTURE_MODES = frozenset(
-    {CAPTURE_FULL, CAPTURE_FULL_OPTIMIZED, CAPTURE_HASH, CAPTURE_NONE}
-)
+_VALID_CAPTURE_MODES = frozenset({CAPTURE_FULL, CAPTURE_FULL_OPTIMIZED, CAPTURE_HASH, CAPTURE_NONE})
 
 _DEFAULT_KINDS = (IR_KIND_JAXPR, IR_KIND_STABLEHLO)
 
@@ -115,9 +113,7 @@ def _render_stablehlo(fn: Any, args: "tuple[Any, ...]") -> str:  # noqa: ANN401
     try:
         # Same call shape as xtrax.cli.export.run_export, deliberately: one way
         # to lower to StableHLO in this codebase, not two that can drift.
-        return _require_text(
-            jax.export.export(jax.jit(fn))(*args).mlir_module(), "jax.export"
-        )
+        return _require_text(jax.export.export(jax.jit(fn))(*args).mlir_module(), "jax.export")
     except Exception:  # noqa: BLE001 - fall through to lowering directly
         import equinox as eqx
 
@@ -136,9 +132,7 @@ def _render_optimized_hlo(fn: Any, args: "tuple[Any, ...]") -> str:  # noqa: ANN
     # profiling/trace.py. Note there is no equinox fallback: equinox's Compiled
     # wrapper exposes no as_text(), so a function that only lowers under
     # filter_jit degrades to a skipped artifact with that reason recorded.
-    return _require_text(
-        jax.jit(fn).lower(*args).compile().as_text(), "XLA compilation"
-    )
+    return _require_text(jax.jit(fn).lower(*args).compile().as_text(), "XLA compilation")
 
 
 _RENDERERS = {

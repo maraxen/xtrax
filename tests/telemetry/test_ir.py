@@ -120,9 +120,7 @@ def test_optimized_hlo_is_opt_in(tmp_path):
     default_kinds = {r.kind for r in capture_ir(_fn, _X, _W, store=store)}
     assert IR_KIND_OPTIMIZED_HLO not in default_kinds
 
-    opted = capture_ir(
-        _fn, _X, _W, store=store, mode=resolve_capture_mode(CAPTURE_FULL_OPTIMIZED)
-    )
+    opted = capture_ir(_fn, _X, _W, store=store, mode=resolve_capture_mode(CAPTURE_FULL_OPTIMIZED))
     by_kind = {r.kind: r for r in opted}
     assert IR_KIND_OPTIMIZED_HLO in by_kind
     # Assert it was actually RENDERED, not merely requested: a skipped ref still

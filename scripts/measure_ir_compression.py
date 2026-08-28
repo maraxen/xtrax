@@ -73,8 +73,7 @@ def main(argv: "list[str] | None" = None) -> int:
     fn, inputs = _build_fn(args.size, args.layers)
     captured = _capture(fn, inputs)
     print(
-        f"\nIR compression, batch={args.size}, layers={args.layers} "
-        "(gzip/lzma are stdlib-only)\n"
+        f"\nIR compression, batch={args.size}, layers={args.layers} (gzip/lzma are stdlib-only)\n"
     )
     total_raw = 0
     total_gz = 0

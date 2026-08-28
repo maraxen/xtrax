@@ -145,13 +145,26 @@ def test_user_callbacks_still_fire_alongside_telemetry(_isolated_ledger):
     seen: list[str] = []
 
     class Tracking:
-        def on_train_start(self, state): seen.append("train_start")
-        def on_train_end(self, state): seen.append("train_end")
-        def on_resume(self, state): seen.append("resume")
-        def on_epoch_start(self, state, epoch): seen.append("epoch_start")
-        def on_epoch_end(self, state, epoch): seen.append("epoch_end")
-        def on_step_start(self, state): seen.append("step_start")
-        def on_step_end(self, state, metrics): seen.append("step_end")
+        def on_train_start(self, state):
+            seen.append("train_start")
+
+        def on_train_end(self, state):
+            seen.append("train_end")
+
+        def on_resume(self, state):
+            seen.append("resume")
+
+        def on_epoch_start(self, state, epoch):
+            seen.append("epoch_start")
+
+        def on_epoch_end(self, state, epoch):
+            seen.append("epoch_end")
+
+        def on_step_start(self, state):
+            seen.append("step_start")
+
+        def on_step_end(self, state, metrics):
+            seen.append("step_end")
 
     _engine(callbacks=(Tracking(),)).fit_sync(_state(), DummyDataModule(), num_epochs=1)
     assert "train_start" in seen
@@ -261,9 +274,7 @@ def test_a_caller_supplied_ledger_is_not_closed_by_the_engine(_isolated_ledger):
 
 
 def test_an_explicit_run_id_is_used(_isolated_ledger):
-    _engine().fit_sync(
-        _state(), DummyDataModule(), num_epochs=1, run_id="run-explicit-0001"
-    )
+    _engine().fit_sync(_state(), DummyDataModule(), num_epochs=1, run_id="run-explicit-0001")
     assert next(iter(iter_rows(_isolated_ledger))).run_id == "run-explicit-0001"
 
 

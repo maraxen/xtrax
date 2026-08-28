@@ -220,9 +220,7 @@ class RunLedger:
             provenance=provenance,
             context=context,
             status=STATUS_OPTED_OUT if opted_out else STATUS_COMPLETE,
-            status_reason=(
-                "XTRAX_TELEMETRY_OPTOUT was set for this run" if opted_out else None
-            ),
+            status_reason=("XTRAX_TELEMETRY_OPTOUT was set for this run" if opted_out else None),
         )
 
     @property
@@ -309,8 +307,7 @@ class RunLedger:
             except OSError as close_exc:
                 if exc is None:
                     raise LedgerUnavailableError(
-                        f"could not write the ledger row for run_id={self.run_id!r}: "
-                        f"{close_exc}"
+                        f"could not write the ledger row for run_id={self.run_id!r}: {close_exc}"
                     ) from close_exc
                 # An in-flight exception is the more informative one; do not mask
                 # it with a bookkeeping failure, but do make the loss visible.
