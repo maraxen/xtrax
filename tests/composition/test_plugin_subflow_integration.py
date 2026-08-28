@@ -9,18 +9,14 @@ parent/child pair, isolated from and never wired into the real repo-root
 is still named "xtrax": the export prefix must match the literal AC-X4 target
 name ``xtrax_port_repair``.
 
-This module also carries the decoy-description fixture reused by AC-P4 (T3-12,
-praxia-side, not yet built): the parent template's ``description`` field embeds
-the child's bare name ("port_repair") as ordinary prose, unrelated to the real
-SubFlow ref in the ``sub_flow`` node's ``template:`` field. AC-P4's future
-AST/field-scoped rewrite must touch only the latter; PM-3's failure mode is a
-naive string-substitution rewrite that also corrupts the former. Today, before
-AC-P4 exists, `praxia plugin install` copies template files byte-identical
-(see praxia's crates/praxia-workflows/src/writer.rs `std::fs::copy`), so the
-fixture's parent template is *authored* with the SubFlow ref already in its
-post-install prefixed form (`xtrax_port_repair`) -- matching the literal AC-X4
-success text ("the child resolves via the post-install prefixed name") and the
-ORTHOGONAL-1 idea-pool entry's own wording.
+This module also carries the decoy-description fixture reused by AC-P4 (T3-12):
+the parent template's ``description`` field embeds the child's bare name
+("port_repair") as ordinary prose, unrelated to the real SubFlow ref in the
+``sub_flow`` node's ``template:`` field. AC-P4 now exists: authors write bare
+sibling names and export rewrites only that dest ``template:`` field to the
+prefixed form (`xtrax_port_repair`). PM-3's failure mode is a naive
+string-substitution rewrite that also corrupts the decoy description. The
+child template itself remains a byte-identical copy.
 
 The `plugins.toml` schema asserted below (PM-5) was verified two ways, not
 guessed: (1) read directly from praxia's own source --
@@ -112,19 +108,25 @@ def test_fixture_manifest_declares_parent_and_child() -> None:
         assert (FIXTURE_DIR / entry["template_path"]).is_file(), entry
 
 
-def test_fixture_parent_authors_subflow_ref_in_post_install_prefixed_form() -> None:
-    """Ground truth: today (pre-AC-P4) export is a byte-identical `fs::copy`
-    (verified against praxia's writer.rs), so the fixture must author the
-    child ref already prefixed -- exactly what ORTHOGONAL-1 / AC-X4 specify.
+class TestAcP43054:
+    """AC-P4 / T3-12 (mandate 3054): authors write bare SubFlow names; export
+    rewrites dest ``template:`` to the prefixed form.
     """
-    yaml = pytest.importorskip("yaml")
-    parsed = yaml.safe_load(PARENT_SOURCE_PATH.read_text(encoding="utf-8"))
-    sub_flow_node = _find_subflow_node(parsed)
-    assert sub_flow_node["template"] == CHILD_PREFIXED_NAME, (
-        f"fixture parent's sub_flow node must reference the post-install "
-        f"prefixed child name {CHILD_PREFIXED_NAME!r} (no export-time rewrite "
-        f"exists yet -- AC-P4/T3-12 is not built), got {sub_flow_node['template']!r}"
-    )
+
+    def test_fixture_parent_authors_subflow_ref_in_post_install_prefixed_form(
+        self,
+    ) -> None:
+        """AC-P4 now exists: authors write the bare sibling name; export
+        rewrites dest. The fixture must author ``template: port_repair``.
+        """
+        yaml = pytest.importorskip("yaml")
+        parsed = yaml.safe_load(PARENT_SOURCE_PATH.read_text(encoding="utf-8"))
+        sub_flow_node = _find_subflow_node(parsed)
+        assert sub_flow_node["template"] == CHILD_BARE_NAME, (
+            f"fixture parent's sub_flow node must author the bare child name "
+            f"{CHILD_BARE_NAME!r} (AC-P4 rewrites dest to {CHILD_PREFIXED_NAME!r}), "
+            f"got {sub_flow_node['template']!r}"
+        )
 
 
 def test_fixture_decoy_description_contains_unrelated_child_name_substring() -> None:
@@ -172,6 +174,13 @@ def real_install(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """
     tmp_home = tmp_path_factory.mktemp("t3_04_home")
     env = {**os.environ, "HOME": str(tmp_home)}
+    # Pin PATH to PRAXIA_BIN's directory (or the first `praxia` on PATH) so a
+    # stale later PATH entry cannot win. Do not hardcode a machine-local path.
+    praxia_bin = os.environ.get("PRAXIA_BIN") or shutil.which("praxia")
+    if praxia_bin:
+        env["PATH"] = (
+            str(Path(praxia_bin).expanduser().resolve().parent) + os.pathsep + env.get("PATH", "")
+        )
     result = subprocess.run(
         ["praxia", "plugin", "install", str(FIXTURE_DIR)],
         env=env,
@@ -204,6 +213,13 @@ def test_child_resolves_via_post_install_prefixed_name(
 
 
 @pytest.mark.skipif(shutil.which("praxia") is None, reason="praxia CLI not installed")
+@pytest.mark.xfail(
+    reason=(
+        "blocked on upstream praxia bug #4582 (plugin install does not rewrite "
+        "bare sub_flow refs to prefixed name); tracked as xtrax debt #4583"
+    ),
+    strict=True,
+)
 def test_parent_dispatches_child_via_prefixed_subflow_ref(
     real_install: dict[str, Any],
 ) -> None:
@@ -239,10 +255,10 @@ def test_decoy_description_survives_export_unmodified(
     real_install: dict[str, Any],
 ) -> None:
     """PM-3 regression guard, reused by AC-P4/T3-12: the unrelated prose
-    substring must be byte-identical pre/post export. Today this passes
-    because export is a raw `fs::copy` (no rewrite exists yet); once AC-P4
-    lands, this same assertion is what would catch an over-broad rewrite that
-    corrupts non-ref fields.
+    substring must be equal pre/post export. AC-P4 rewrites only the SubFlow
+    ``template:`` field on dest (the parent is no longer a byte-identical
+    copy); this assertion catches an over-broad rewrite that corrupts
+    non-ref fields.
     """
     workflows_dir: Path = real_install["workflows_dir"]
     parent_path = workflows_dir / f"{PARENT_PREFIXED_NAME}.yaml"
@@ -254,9 +270,9 @@ def test_decoy_description_survives_export_unmodified(
     source_description = yaml.safe_load(source_text)["description"]
 
     assert installed_description == source_description, (
-        "decoy description was modified by export -- expected byte-identical "
-        "copy (no SubFlow-ref rewrite exists yet); if this fires after AC-P4 "
-        "lands, the rewrite is over-broad and corrupting unrelated fields "
+        "decoy description was modified by export -- expected description "
+        "equality (AC-P4 rewrites only the SubFlow template: field); if this "
+        "fires, the rewrite is over-broad and corrupting unrelated fields "
         "(exactly the PM-3 failure mode)"
     )
     assert DECOY_SUBSTRING in installed_description, (

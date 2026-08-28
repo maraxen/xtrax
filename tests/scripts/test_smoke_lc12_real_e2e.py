@@ -47,6 +47,7 @@ from scripts.smoke_lc12_real_e2e import (
     _smoke_campaign_approval_fn,
 )
 from xtrax.loop.compile_time_clock import TwoPhaseTiming, measure_two_phase_timing
+from xtrax.loop.evaluator_completeness import InvariantManifest, SyntheticGroundTruthCase
 from xtrax.loop.schema_gate import resolve_candidate_callable
 from xtrax.run.freshness import Attestation
 
@@ -315,6 +316,16 @@ class TestCampaignWiring:
         assert "commit_tree_sha" not in kwargs
         assert "allow_fresh_start_despite_existing_lineage" not in kwargs
 
+        # #3076 required completeness kwargs (fresh empty-invariant + trivial one-hot).
+        assert isinstance(kwargs["invariant_manifest"], InvariantManifest)
+        assert kwargs["invariant_manifest"].invariants == ()
+        sanity_case = kwargs["completeness_sanity_case"]
+        assert isinstance(sanity_case, SyntheticGroundTruthCase)
+        assert sanity_case.known_best in sanity_case.candidates
+        assert len(sanity_case.candidates) >= 2
+        assert "completeness_evaluator" not in kwargs
+        assert "completeness_fn" not in kwargs
+
     def test_run_fail_campaign_wiring(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -359,6 +370,15 @@ class TestCampaignWiring:
 
         assert "commit_tree_sha" not in kwargs
         assert "allow_fresh_start_despite_existing_lineage" not in kwargs
+
+        assert isinstance(kwargs["invariant_manifest"], InvariantManifest)
+        assert kwargs["invariant_manifest"].invariants == ()
+        sanity_case = kwargs["completeness_sanity_case"]
+        assert isinstance(sanity_case, SyntheticGroundTruthCase)
+        assert sanity_case.known_best in sanity_case.candidates
+        assert len(sanity_case.candidates) >= 2
+        assert "completeness_evaluator" not in kwargs
+        assert "completeness_fn" not in kwargs
 
     def test_frozen_context_factory_called_fresh_per_campaign(self) -> None:
         """AC-5, wiring-level: `_make_smoke_frozen_context` builds an independent score_fn

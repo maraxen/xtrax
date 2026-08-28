@@ -87,6 +87,94 @@ class TestAC1Documentation:
 
 
 # ---------------------------------------------------------------------------
+# #4139: leftover overclaims in evaluate_adapter module + class docstrings
+# ---------------------------------------------------------------------------
+
+
+def _evaluate_adapter_module_and_class_docs() -> tuple[str, str]:
+    """Return (module __doc__, BathosSplitComputeEvaluator __doc__), never None."""
+    import controller.evaluate_adapter
+
+    module_doc = controller.evaluate_adapter.__doc__
+    class_doc = BathosSplitComputeEvaluator.__doc__
+    assert module_doc is not None, "controller.evaluate_adapter must have a module docstring"
+    assert class_doc is not None, "BathosSplitComputeEvaluator must have a class docstring"
+    return module_doc, class_doc
+
+
+class TestDocstring4139:
+    """#4139: module + BathosSplitComputeEvaluator class docstrings must drop leftover
+    overclaims and name the production scoring path (score_raw_artifacts via guarded_evaluate).
+    """
+
+    def test_module_docstring_omits_stats_battery_kwargs(self) -> None:
+        """Circularity framed as this module's fitness dict feeding stats_battery_kwargs is
+        false: that mapping stays caller-supplied. Phrase must be absent from the module doc."""
+        module_doc, _ = _evaluate_adapter_module_and_class_docs()
+        assert "stats_battery_kwargs" not in module_doc, (
+            "module docstring must not claim this module's fitness dict is what "
+            "stats_battery_kwargs needs (caller-supplied; not produced here)"
+        )
+
+    def test_module_docstring_omits_wired_in_a_follow_on_item(self) -> None:
+        """score_raw_artifacts is already wired via guarded_evaluate in
+        run_one_candidate_pass; the module docstring must not claim a follow-on item."""
+        module_doc, _ = _evaluate_adapter_module_and_class_docs()
+        assert "wired in a follow-on item" not in module_doc, (
+            "module docstring must not say score_raw_artifacts is "
+            "'wired in a follow-on item' — it is already wired"
+        )
+
+    def test_class_docstring_omits_sole_call_site(self) -> None:
+        """Production fitness is score_raw_artifacts via guarded_evaluate. Calling
+        BathosSplitComputeEvaluator.__call__ from the pass would double-dispatch (#4137)."""
+        _, class_doc = _evaluate_adapter_module_and_class_docs()
+        assert "sole call site" not in class_doc.lower(), (
+            "BathosSplitComputeEvaluator class docstring must not claim it is the "
+            "'sole call site' through which a candidate's fitness is obtained"
+        )
+
+    def test_module_or_class_docstring_names_score_raw_artifacts(self) -> None:
+        module_doc, class_doc = _evaluate_adapter_module_and_class_docs()
+        combined = f"{module_doc}\n{class_doc}"
+        assert "score_raw_artifacts" in combined, (
+            "module and/or BathosSplitComputeEvaluator docstring must name "
+            "score_raw_artifacts as the production scoring path"
+        )
+
+    def test_module_or_class_docstring_names_guarded_evaluate(self) -> None:
+        module_doc, class_doc = _evaluate_adapter_module_and_class_docs()
+        combined = f"{module_doc}\n{class_doc}"
+        assert "guarded_evaluate" in combined, (
+            "module and/or BathosSplitComputeEvaluator docstring must name "
+            "guarded_evaluate (production path is guarded_evaluate(..., "
+            "score_raw_artifacts, ...))"
+        )
+
+    def test_module_or_class_docstring_names_4137_or_double_dispatch(self) -> None:
+        module_doc, class_doc = _evaluate_adapter_module_and_class_docs()
+        combined = f"{module_doc}\n{class_doc}"
+        has_ticket = "#4137" in combined
+        has_double_dispatch = (
+            "double-dispatch" in combined.lower() or "double dispatch" in combined.lower()
+        )
+        assert has_ticket or has_double_dispatch, (
+            "module and/or BathosSplitComputeEvaluator docstring must mention "
+            "#4137 or double-dispatch (calling __call__ from the pass would "
+            "double-dispatch)"
+        )
+
+    def test_module_docstring_keeps_ac1_grep_strings(self) -> None:
+        """GREEN must not drop TestAC1Documentation's module-docstring greps."""
+        module_doc, _ = _evaluate_adapter_module_and_class_docs()
+        assert "raw artifacts" in module_doc.lower()
+        assert "SPLIT_COMPUTE" in module_doc
+        assert "fitness" in module_doc.lower(), (
+            "docstring must document what raw artifacts are scored against"
+        )
+
+
+# ---------------------------------------------------------------------------
 # AC2: real temp files, real file reads, real fitness computation
 # ---------------------------------------------------------------------------
 
@@ -359,9 +447,11 @@ class TestAC3AC4TransportRecording:
 
 
 class TestAC5EndToEndWithGuardedEvaluate:
-    def test_ac5_guarded_evaluate_succeeds_with_declared_split_path(self, tmp_path: Path) -> None:
+    def test_ac5_guarded_evaluate_succeeds_with_declared_metric_def_path(
+        self, tmp_path: Path
+    ) -> None:
         """AC5: call guarded_evaluate with a real ClosureManifest built via
-        build_closure_manifest, where the raw-artifact path is declared in split_paths.
+        build_closure_manifest, where the raw-artifact path is declared in metric_def_paths.
         Assert this succeeds with no UnlistedReadError."""
         # Real files on disk
         evaluator_file = tmp_path / "evaluator.py"
@@ -497,7 +587,7 @@ class TestAC5EndToEndWithGuardedEvaluate:
 # ---------------------------------------------------------------------------
 
 
-class TestAC6ProvenianceIntegration:
+class TestAC6ProvenanceIntegration:
     def test_ac6_evaluate_with_provenance_sets_closure_hash(self, tmp_path: Path) -> None:
         """AC6: call evaluate_with_provenance with BathosSplitComputeEvaluator and assert
         the returned MetricsProvenanceRecord.evaluator_closure_hash == locked.closure_hash."""
@@ -620,8 +710,9 @@ class TestFailurePathDispatchFailure:
             score_fn_calls.append(True)
             return {"score": 1.0}
 
-        # Non-zero exit code + success=False
-        failing_envelope = _ok_envelope(script_path="c.py", exit_code=127, success=False)
+        # Non-zero exit code + success=True (bathos ok: True via _ok_envelope).
+        # __call__ must still HALT; today's gate only checks success, so this is RED until fixer.
+        failing_envelope = _ok_envelope(script_path="c.py", exit_code=127, success=True)
         transport = _RecordingTransport(failing_envelope)
         adapter = BathosCampaignAdapter(transport=transport, token="test-token")
 
@@ -652,6 +743,151 @@ class TestFailurePathDispatchFailure:
             evaluator(frozen_context, candidate)
 
         assert score_fn_calls == []
+
+
+# ---------------------------------------------------------------------------
+# #4136: evaluator __call__ edges — success=True + exit_code!=0 must HALT
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluatorEdges4136:
+    """#4136: BathosSplitComputeEvaluator.__call__ must refuse to score when dispatch
+    reports success=True but exit_code != 0, and must still raise on empty output_paths
+    after a successful (exit_code=0) dispatch. Happy path (success=True, exit_code=0,
+    non-empty output_paths) still scores.
+    """
+
+    def test_call_success_true_nonzero_exit_code_raises_and_does_not_score(self) -> None:
+        """__call__ with success=True, exit_code=127 (ok: True via _ok_envelope) must raise
+        RawArtifactsUnavailableError, never call score_fn, and make exactly one transport
+        `run` call. RED today: __call__ only checks `if not run_result.success`."""
+        score_fn_calls: list[bool] = []
+
+        def score_fn(
+            _raw_artifact_paths: tuple[Path, ...], _split_paths: tuple[Path, ...]
+        ) -> dict[str, float]:
+            score_fn_calls.append(True)
+            return {"score": 1.0}
+
+        envelope = _ok_envelope(script_path="c.py", exit_code=127, success=True)
+        transport = _RecordingTransport(envelope)
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        locked = ClosureManifest(
+            evaluator_paths=(),
+            split_paths=(),
+            metric_def_paths=(),
+            pinned_deps_source=Path("uv.lock"),
+            config={},
+            closure_hash="fake-hash",
+        )
+
+        frozen_context = BathosFrozenContext(
+            locked=locked,
+            campaign_adapter=adapter,
+            campaign_id="camp-1",
+            score_fn=score_fn,
+        )
+
+        candidate = BathosCandidate(
+            script_path="missing.py",
+            output_paths=("output.txt",),
+        )
+
+        evaluator = BathosSplitComputeEvaluator()
+
+        with pytest.raises(RawArtifactsUnavailableError):
+            evaluator(frozen_context, candidate)
+
+        assert score_fn_calls == []
+        assert len(transport.calls) == 1
+        tool_name, _arguments = transport.calls[0]
+        assert tool_name == "run"
+
+    def test_call_success_true_empty_output_paths_raises_and_does_not_score(self) -> None:
+        """__call__ with success=True, exit_code=0, and candidate.output_paths=() must raise
+        RawArtifactsUnavailableError (score_raw_artifacts already does this) and never call
+        score_fn."""
+        score_fn_calls: list[bool] = []
+
+        def score_fn(
+            _raw_artifact_paths: tuple[Path, ...], _split_paths: tuple[Path, ...]
+        ) -> dict[str, float]:
+            score_fn_calls.append(True)
+            return {"score": 1.0}
+
+        envelope = _ok_envelope(script_path="c.py", exit_code=0, success=True)
+        transport = _RecordingTransport(envelope)
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        locked = ClosureManifest(
+            evaluator_paths=(),
+            split_paths=(),
+            metric_def_paths=(),
+            pinned_deps_source=Path("uv.lock"),
+            config={},
+            closure_hash="fake-hash",
+        )
+
+        frozen_context = BathosFrozenContext(
+            locked=locked,
+            campaign_adapter=adapter,
+            campaign_id="camp-1",
+            score_fn=score_fn,
+        )
+
+        candidate = BathosCandidate(
+            script_path="script.py",
+            output_paths=(),
+        )
+
+        evaluator = BathosSplitComputeEvaluator()
+
+        with pytest.raises(RawArtifactsUnavailableError):
+            evaluator(frozen_context, candidate)
+
+        assert score_fn_calls == []
+
+    def test_call_success_true_zero_exit_code_still_scores(self, tmp_path: Path) -> None:
+        """Happy __call__: success=True, exit_code=0, non-empty output_paths still scores
+        and returns the fitness dict from score_fn."""
+        raw_artifact = tmp_path / "artifact.txt"
+        raw_artifact.write_text("edge-4136", encoding="utf-8")
+
+        def score_fn(
+            _raw_artifact_paths: tuple[Path, ...], _split_paths: tuple[Path, ...]
+        ) -> dict[str, float]:
+            return {"score": 7.0}
+
+        envelope = _ok_envelope(script_path="c.py", exit_code=0, success=True)
+        transport = _RecordingTransport(envelope)
+        adapter = BathosCampaignAdapter(transport=transport, token="test-token")
+
+        locked = ClosureManifest(
+            evaluator_paths=(),
+            split_paths=(),
+            metric_def_paths=(),
+            pinned_deps_source=Path("uv.lock"),
+            config={},
+            closure_hash="fake-hash",
+        )
+
+        frozen_context = BathosFrozenContext(
+            locked=locked,
+            campaign_adapter=adapter,
+            campaign_id="camp-1",
+            score_fn=score_fn,
+        )
+
+        candidate = BathosCandidate(
+            script_path="script.py",
+            output_paths=(str(raw_artifact),),
+        )
+
+        evaluator = BathosSplitComputeEvaluator()
+        result = evaluator(frozen_context, candidate)
+
+        assert result == {"score": 7.0}
 
 
 # ---------------------------------------------------------------------------

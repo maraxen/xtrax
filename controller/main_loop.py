@@ -144,6 +144,17 @@ from xtrax.loop.compile_time_clock import (
     assert_no_compile_time_regression,
     measure_two_phase_timing,
 )
+from xtrax.loop.info_barrier_lint import (
+    DEFAULT_DELTA_POLICY,
+    DeltaExposurePolicy,
+    SanctionedEnvelope,
+    build_sanctioned_envelope,
+)
+from xtrax.loop.metrics_provenance import (
+    MetricsProvenanceRecord,
+    verify_metrics_provenance,
+    write_metrics_provenance_attestation,
+)
 from xtrax.loop.multi_metric_ratchet import RatchetDecision, compute_ratchet_decision
 from xtrax.loop.ratchet_crash_atomicity import (
     advance_best_so_far,
@@ -252,6 +263,14 @@ class OneCandidatePassResult:
             call before any `OneCandidatePassResult` -- partial or otherwise -- is constructed,
             so `fitness_dict` is never observed in a half-populated state (mirrors
             `ratchet_decision`'s own no-partial-construction guarantee above).
+        provenance_record: the `MetricsProvenanceRecord` wrapping `fitness_dict` after
+            `verify_metrics_provenance` + attestation write succeed (backlog #3075). Never
+            constructed as a partial result -- empty `run_id` and provenance-verify failures
+            abort before this dataclass is built (and before any ratchet commit).
+        sanctioned_envelope: the agent-facing `SanctionedEnvelope` built after the #3075
+            provenance wrap and before ratchet commit (backlog #3077). `InfoBarrierViolationError`
+            from the builder aborts before this dataclass is constructed (and before any
+            ratchet commit).
     """
 
     handoff: CandidateHandoff
@@ -260,6 +279,8 @@ class OneCandidatePassResult:
     gate_outcome: GateOutcome
     ratchet_decision: RatchetDecision
     fitness_dict: dict[str, float]
+    provenance_record: MetricsProvenanceRecord
+    sanctioned_envelope: SanctionedEnvelope
 
     @property
     def accepted(self) -> bool:
@@ -469,6 +490,12 @@ def run_one_candidate_pass(
     current_config: Mapping[str, Any],
     candidate_touched_paths: frozenset[Path] = frozenset(),
     guarded_evaluate_fn: Callable[..., dict[str, float]] = guarded_evaluate,
+    metrics_provenance_dir: Path,
+    verify_metrics_provenance_fn: Callable[..., None] = verify_metrics_provenance,
+    iteration: int,
+    build_sanctioned_envelope_fn: Callable[..., SanctionedEnvelope] = build_sanctioned_envelope,
+    info_barrier_score_key: str = "score",
+    delta_policy: DeltaExposurePolicy = DEFAULT_DELTA_POLICY,
     best_fitness: Mapping[str, float] | None = None,
     higher_is_better: Mapping[str, bool] | None = None,
     repo: Path,
@@ -592,6 +619,25 @@ def run_one_candidate_pass(
             seam. `ClosureHashMismatchError`/`EvaluatorClosureDriftError`/`UnlistedReadError`
             propagate unmodified (see the module docstring: this is a non-recoverable HALT
             signal, not a candidate-rejection result).
+        metrics_provenance_dir: directory that receives `write_metrics_provenance_attestation`
+            output as `{run_id}.toml` (backlog #3075). Required -- callers (including tests)
+            supply an isolated path; this function does not default to cwd.
+        verify_metrics_provenance_fn: injection seam for tests -- defaults to the real
+            `xtrax.loop.metrics_provenance.verify_metrics_provenance`. Called after wrapping
+            the already-scored `fitness_dict`; `UnprovenancedMetricsError` propagates uncaught
+            (HALT before ratchet commit and before `OneCandidatePassResult` construction).
+        iteration: 1-based candidate index for the agent-facing envelope (backlog #3077).
+            Required -- `run_multi_iteration_loop` passes `candidate_index + 1`.
+        build_sanctioned_envelope_fn: injection seam for tests -- defaults to the real
+            `xtrax.loop.info_barrier_lint.build_sanctioned_envelope`. Called after the #3075
+            provenance wrap and before ratchet commit. `InfoBarrierViolationError` propagates
+            uncaught (HALT before ratchet commit and before `OneCandidatePassResult`
+            construction).
+        info_barrier_score_key: fitness-dict key used to read the current/previous score for
+            the envelope (default `"score"`). If missing from `record.fitness`,
+            `previous_score` is `None`.
+        delta_policy: forwarded to `build_sanctioned_envelope_fn` (default
+            `DEFAULT_DELTA_POLICY`).
         best_fitness: the current best-so-far candidate's fitness dict, or `None` for the first
             candidate in a campaign (no prior best to ratchet against). Must be supplied
             together with `higher_is_better` (both `None` or both set) -- a `ValueError` is
@@ -711,6 +757,8 @@ def run_one_candidate_pass(
         CompileTimeRegressionError: this candidate's compile time exceeded `k_threshold *
             rolling_median(compile_time_history)` (AC-27) -- raised independently of, and never
             altering, the ratchet accept/reject outcome above.
+        InfoBarrierViolationError: the sanctioned envelope failed lint (AC-9, backlog #3077) --
+            non-recoverable HALT, propagates unmodified, before ratchet commit.
         StatsBatteryGateInputError: `campaign_mode` is not a recognized `CampaignMode` (raised
             by `assess_stats_battery_verdict`).
         SeedGateInputError: `campaign_mode` is not recognized, or the seed/trial counts are
@@ -816,6 +864,35 @@ def run_one_candidate_pass(
         tuple(output_paths),
         current_config=current_config,
         candidate_touched_paths=candidate_touched_paths,
+    )
+
+    # 2.55. Metrics provenance (#3075) -- wrap already-scored fitness_dict; do not re-evaluate.
+    # Empty run_id and UnprovenancedMetricsError HALT before ratchet commit and before
+    # OneCandidatePassResult is constructed.
+    if not run_result.run_id:
+        msg = "run_id must be non-empty to attest metrics provenance"
+        raise ValueError(msg)
+    record = MetricsProvenanceRecord(
+        fitness=fitness_dict,
+        evaluator_closure_hash=frozen_context.locked.closure_hash,
+        run_id=run_result.run_id,
+    )
+    verify_metrics_provenance_fn(record, locked=frozen_context.locked)
+    write_metrics_provenance_attestation(
+        record, metrics_provenance_dir / f"{run_result.run_id}.toml"
+    )
+
+    # 2.56. Info barrier (#3077) -- lint the agent-facing envelope after the scored fitness
+    # attestation and before ratchet commit. InfoBarrierViolationError HALTs uncaught.
+    previous_score = None
+    if best_fitness is not None and info_barrier_score_key in record.fitness:
+        previous_score = best_fitness.get(info_barrier_score_key)
+    envelope = build_sanctioned_envelope_fn(
+        record,
+        iteration=iteration,
+        previous_score=previous_score,
+        score_key=info_barrier_score_key,
+        delta_policy=delta_policy,
     )
 
     # 2.6. Multi-metric ratchet decision (S2.1b, AC-10). best_fitness/higher_is_better must both
@@ -997,6 +1074,8 @@ def run_one_candidate_pass(
         ),
         ratchet_decision=ratchet_decision,
         fitness_dict=fitness_dict,
+        provenance_record=record,
+        sanctioned_envelope=envelope,
     )
 
 

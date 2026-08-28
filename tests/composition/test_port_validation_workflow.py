@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -56,22 +54,86 @@ def test_dw_mapping_points_at_port_validation_js() -> None:
     assert 'port_validation = "port-validation"' in text
 
 
-@pytest.mark.skipif(shutil.which("praxia") is None, reason="praxia CLI not installed")
-def test_port_validation_yaml_emits_without_error() -> None:
-    env = {**dict(**__import__("os").environ), "PRAXIA_WORKFLOWS_DIR": str(YAML_PATH.parent)}
-    result = subprocess.run(
-        ["praxia", "dw", "emit", "port_validation", "--stdout"],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
+def test_claude_pcw_artifact_still_named() -> None:
+    """Claude-PCW JS + dw_mapping still name the port_validation artifact."""
+    assert JS_PATH.is_file()
+    mapping = MAPPING_PATH.read_text(encoding="utf-8")
+    assert 'port_validation = "port-validation"' in mapping
+
+
+# --- TestAcV33062 (backlog #4375 / T3-08 AC-V3) --------------------------------
+
+
+def _acv33062_load_yaml() -> dict:
+    """Same parse path as test_port_validation_yaml_exists_and_parses."""
+    yaml = pytest.importorskip("yaml")
+    return yaml.safe_load(YAML_PATH.read_text(encoding="utf-8"))
+
+
+def _acv33062_js_meta_titles() -> list[str]:
+    """Same meta-title extract as test_port_validation_js_exists_with_seven_phases."""
+    js = JS_PATH.read_text(encoding="utf-8")
+    meta_block = js.split("export const meta")[1].split("};")[0]
+    return re.findall(r'title:\s*"([^"]+)"', meta_block)
+
+
+class TestAcV33062:
+    """AC-V3: YAML↔JS 1:1 titles, no strict tool_profile, no dw-emit in this module."""
+
+    YAML_ID_TO_JS_TITLE = (
+        ("p0_oracle", "P0-ORACLE"),
+        ("p1_spec", "P1-SPEC"),
+        ("p1_5_topo", "P1.5-TOPO"),
+        ("p2_static", "P2-STATIC"),
+        ("p3_parity", "P3-PARITY"),
+        ("p4_emit", "P4-EMIT"),
+        ("p5_route", "P5-ROUTE"),
     )
-    if "unrecognized subcommand 'dw'" in result.stderr:
-        pytest.skip(
-            "praxia's `dw` CLI surface (run/emit/compose-sprint) was removed upstream "
-            "260708; this smoke test needs re-wiring to whatever now emits "
-            "port_validation for Claude-PCW dispatch (debt #570)"
+
+    def test_yaml_role_step_ids_map_1to1_to_js_meta_titles(self) -> None:
+        data = _acv33062_load_yaml()
+        role_steps = [n for n in data["nodes"] if n.get("kind") == "role_step"]
+        yaml_ids = [n["id"] for n in role_steps]
+        js_titles = _acv33062_js_meta_titles()
+        expected_ids = [pair[0] for pair in self.YAML_ID_TO_JS_TITLE]
+        expected_titles = [pair[1] for pair in self.YAML_ID_TO_JS_TITLE]
+        assert yaml_ids == expected_ids
+        assert js_titles == expected_titles
+        assert list(zip(yaml_ids, js_titles, strict=True)) == list(self.YAML_ID_TO_JS_TITLE)
+
+    def test_no_yaml_node_has_tool_profile_or_action_mode_strict(self) -> None:
+        data = _acv33062_load_yaml()
+        for node in data["nodes"]:
+            assert "tool_profile" not in node, (
+                f"TestAcV33062: node {node.get('id')!r} must not set tool_profile"
+            )
+            action_mode = node.get("action_mode")
+            assert action_mode != "strict", (
+                f"TestAcV33062: node {node.get('id')!r} must not set action_mode: strict "
+                f"(absent or non-strict is OK; got {action_mode!r})"
+            )
+
+    def test_module_source_does_not_invoke_or_skip_dw(self) -> None:
+        """Needles built at runtime so this method does not contain the banned text."""
+        source = Path(__file__).read_text(encoding="utf-8")
+        # Needles assembled so this method's own source does not contain them.
+        dw_emit_needle = "dw" + " emit"
+        argv_needle = '"dw", ' + '"emit"'
+        unrecognized_needle = "unrecognized subcommand " + "'dw'"
+        skip_call = "pytest" + ".skip"
+
+        assert dw_emit_needle not in source, (
+            "TestAcV33062: module must not invoke dw-emit (contiguous form)"
         )
-    assert result.returncode == 0, result.stderr
-    assert "export const meta" in result.stdout
+        assert argv_needle not in source, (
+            "TestAcV33062: module must not invoke dw-emit (argv list form)"
+        )
+        assert unrecognized_needle not in source, (
+            "TestAcV33062: module must not special-case missing dw CLI; "
+            "remaining dw-emit must FAIL not skip"
+        )
+        dw_gone_skip = skip_call in source and unrecognized_needle in source
+        assert not dw_gone_skip, (
+            "TestAcV33062: skip() must not be used for dw-gone "
+            "(test_port_validation_yaml_emits_without_error still does; fixer replaces it)"
+        )

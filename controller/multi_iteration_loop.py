@@ -303,6 +303,7 @@ def run_multi_iteration_loop(
     start_watchdog_fn: Callable[[int, WatchdogCriteria], WatchdogHandle] = start_watchdog,
     higher_is_better: Mapping[str, bool],
     frozen_context: BathosFrozenContext,
+    metrics_provenance_dir: Path,
     current_config: Mapping[str, Any],
     repo: Path,
     ratchet_ref_name: str,
@@ -380,6 +381,8 @@ def run_multi_iteration_loop(
             comparison direction.
         frozen_context: forwarded to `run_one_candidate_pass` unchanged on every iteration
             (SPLIT_COMPUTE, #4133/#3657).
+        metrics_provenance_dir: forwarded to `run_one_candidate_pass` unchanged on every
+            iteration (backlog #3075 metrics-provenance attestation directory).
         current_config: forwarded to `run_one_candidate_pass` unchanged on every iteration.
         repo: forwarded to `run_one_candidate_pass` unchanged on every iteration.
         ratchet_ref_name: forwarded to `run_one_candidate_pass` unchanged on every iteration.
@@ -461,6 +464,7 @@ def run_multi_iteration_loop(
                 checkified_execution_fn=checkified_execution_fn,
                 frozen_context=frozen_context,
                 current_config=current_config,
+                metrics_provenance_dir=metrics_provenance_dir,
                 best_fitness=best_fitness,
                 higher_is_better=None if best_fitness is None else higher_is_better,
                 repo=repo,
@@ -474,6 +478,7 @@ def run_multi_iteration_loop(
                 concrete_inputs=concrete_inputs,
                 commit_parent_sha=bootstrap_commit_sha,
                 bootstrap_base_tree_sha=bootstrap_commit_sha,
+                iteration=candidate_index + 1,
             )
             iterations.append(result)
             if result.accepted:

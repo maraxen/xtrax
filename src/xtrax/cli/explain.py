@@ -8,7 +8,7 @@ plan, and emits the result in the requested format.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from xtrax.cli.emit import emit
 from xtrax.cli.errors import CLIError
@@ -45,6 +45,7 @@ class ExplainArgs:
 
     fn: str
     shapes: str = ""
+    report: Literal["plan", "cse"] = field(default="plan")
     fmt: Literal["json", "text", "html", "png"] = field(default="json")
     out: str | None = field(default=None)
 
@@ -88,6 +89,10 @@ def run_explain(args: ExplainArgs) -> None:
     # Step 3: Build ordered abstract inputs list (positional order matches fn args).
     abstract_inputs = list(parsed.values())
 
+    if args.report == "cse":
+        _run_explain_cse(fn, abstract_inputs, args)
+        return
+
     # Step 4: Infer bundle (schema + axis specs).
     schema, axes = infer_bundle(fn, abstract_inputs)
 
@@ -111,3 +116,62 @@ def run_explain(args: ExplainArgs) -> None:
 
 
 __all__ = ["ExplainArgs", "run_explain"]
+
+
+def _run_explain_cse(fn, abstract_inputs, args) -> None:
+    """CSE-report branch of the explain verb (spec 260825 §4.1).
+
+    Emits a cse_report envelope (own schema_version beside the standard
+    _meta key). json/text supported; html/png unsupported for CSE reports
+    (no render semantics).
+    """
+    import json
+
+    from xtrax.inference import analyze_cse
+
+    report = analyze_cse(fn, abstract_inputs)
+
+    def _dup_dict(c) -> dict[str, Any]:
+        return {
+            "primitive": c.primitive,
+            "eqn_count": c.eqn_count,
+            "params_fingerprint": c.params_fingerprint,
+            "invar_shapes": [list(s) for s in c.invar_shapes],
+            "est_wasted_bytes": c.est_wasted_bytes,
+        }
+
+    payload: dict[str, Any] = {
+        "_meta": {"schema_version": 1},
+        "cse_report": {
+            "schema_version": 1,
+            "total_eqns": report.total_eqns,
+            "duplicate_eqns": report.duplicate_eqns,
+            "trace_cache_hit": report.trace_cache_hit,
+            "duplicates": [_dup_dict(c) for c in report.duplicates],
+            "note": report.note,
+        },
+    }
+
+    if args.fmt == "json":
+        print(json.dumps(payload))
+    elif args.fmt == "text":
+        cr: dict[str, Any] = payload["cse_report"]
+        print("CSE Report")
+        print("=" * 40)
+        print(f"Total eqns: {cr['total_eqns']}")
+        print(f"Duplicate eqns: {cr['duplicate_eqns']}")
+        if cr["trace_cache_hit"]:
+            print(
+                "NOTE: trace was served from cache; closure mutations after a "
+                "previous analysis are NOT reflected. Use a fresh callable."
+            )
+        for c in cr["duplicates"]:
+            print(f"  {c['primitive']} x{c['eqn_count']} (est. wasted {c['est_wasted_bytes']} B)")
+        if not cr["duplicates"]:
+            print("  No duplicate subexpressions detected.")
+        print()
+        print(cr["note"])
+    else:
+        raise CLIError(
+            f'fmt={args.fmt!r} is not supported for --report cse (supported: "json", "text")'
+        )
