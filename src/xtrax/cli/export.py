@@ -59,6 +59,37 @@ class ExportArgs:
     serialized: bool = field(default=False)
 
 
+def _record_export(fn: object, abstract: list, args: ExportArgs) -> None:
+    """Write a kind="export" ledger row for this lowering.
+
+    Never raises. An export is a developer-facing utility that must keep working
+    even where a ledger cannot be written -- a read-only checkout, a scratch
+    dir -- so unlike ``Engine.fit`` this path is fail-open. The asymmetry is
+    deliberate: fit refuses to start because an unrecorded *execution* is
+    unrecoverable, whereas an export can simply be run again.
+    """
+    from xtrax.run.ident import new_run_id
+    from xtrax.telemetry.ir import capture_ir
+    from xtrax.telemetry.ledger import LedgerUnavailableError, RunLedger
+    from xtrax.telemetry.record import KIND_EXPORT
+    from xtrax.telemetry.store import BlobStore
+
+    context = {
+        "fn": str(args.fn),
+        "shapes": str(args.shapes),
+        "serialized": str(bool(args.serialized)),
+        "out": str(args.out) if args.out is not None else "<stdout>",
+    }
+    try:
+        with RunLedger.open(new_run_id(), kind=KIND_EXPORT, context=context) as ledger:
+            if ledger.opted_out:
+                return
+            refs = capture_ir(fn, *abstract, store=BlobStore(ledger.blob_root))
+            ledger.record_ir(refs)
+    except (LedgerUnavailableError, OSError) as exc:
+        print(f"warning: could not record export telemetry ({exc})", file=sys.stderr)
+
+
 def run_export(args: ExportArgs) -> None:
     """Execute the export verb: trace to StableHLO and emit in the requested format.
 
@@ -114,6 +145,16 @@ def run_export(args: ExportArgs) -> None:
     # jax.jit wraps the fn; export() takes abstract inputs (ShapeDtypeStruct).
     # This is pure tracing — no xtrax inference machinery, no AmbiguousAxisError.
     exp = jax.export.export(jax.jit(fn))(*abstract)
+
+    # Step 4b: Record the export in the run ledger.
+    #
+    # An export produces exactly the artifact a retrospective audit wants, and
+    # until now discarded every trace of where it came from -- no run_id, no
+    # manifest, no provenance. Recording it here means a StableHLO file found on
+    # disk months later can be tied back to the commit, environment, and inputs
+    # that produced it. kind="export" marks that nothing was executed, only
+    # lowered.
+    _record_export(fn, abstract, args)
 
     # Step 5: Emit in the requested format.
     if args.serialized:

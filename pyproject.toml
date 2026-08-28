@@ -22,6 +22,8 @@ dev = [
  "import-linter>=2.1",
  "pytest-benchmark>=5.2.3",
  "pytest-cov>=7.1.0",
+ "ruff>=0.15.22",
+ "ty>=0.0.60",
  "tyro>=0.9,<2",
 ]
 docs = [ "sphinx>=7", "furo", "sphinx-autodoc-typehints", "myst-parser",]
@@ -48,6 +50,25 @@ dev = [
 eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 cli = [ "tyro>=0.9,<2", "flatbuffers>=2",]
 io = [ "zarr>=3.0",]
+# NOTE: there is deliberately no `provenance = ["cisternal"]` extra yet.
+#
+# xtrax.telemetry uses cisternal.provenance (durable per-run git refs, dirty-tree
+# worktree snapshots) when it is importable, via a guarded import in
+# src/xtrax/telemetry/record.py, and degrades to git shellouts otherwise --
+# recording provenance_source="builtin" so the difference is never invisible.
+# That upgrade path needs no dependency declaration to work.
+#
+# Declaring the extra anyway was tried and reverted (2026-08-28). cisternal pins
+# `fastmcp==4.0.0a2`, an exact PRE-RELEASE, as a hard runtime dependency. uv
+# resolves every extra when building the lock, so merely declaring an optional
+# cisternal extra makes xtrax unresolvable without `--prerelease=allow` -- for
+# all users, including those who never ask for provenance. An optional extra
+# that breaks the default install is not optional.
+#
+# Users who want durable provenance today install cisternal themselves. Add the
+# extra once cisternal moves fastmcp/cyclopts behind its own extras;
+# cisternal.provenance is pure stdlib, so nothing about that module requires
+# them.
 authoring-smoke = [ "outlines>=1.0", "transformers>=4.40", "torch>=2.0",]
 controller = [ "bathos>=0.13.0a1",]
 
@@ -85,7 +106,7 @@ skip_covered = false
 precision = 1
 
 [tool.ruff.lint]
-select = [ "E", "F", "I", "UP",]
+select = [ "E", "F", "I", "UP", "S110"] # includes S110 (try-except-pass), added 260827
 
 [tool.ruff.lint.per-file-ignores]
 # jaxtyping shape strings use forward refs and undefined names in annotations
@@ -121,6 +142,7 @@ source_modules = [
   "xtrax.sparse",
   "xtrax.inference",
   "xtrax.loop",
+  "xtrax.telemetry",
 ]
 forbidden_modules = ["xtrax.eda"]
 
@@ -157,6 +179,7 @@ source_modules = [
   "xtrax.findings",
   "xtrax.jaxlint_runner",
   "xtrax.tombstone",
+  "xtrax.telemetry",
 ]
 forbidden_modules = ["xtrax.devtools"]
 
@@ -177,3 +200,9 @@ exclude = [ "src/xtrax/devtools",]
 [tool.hatch.build.targets.wheel.force-include]
 "src/xtrax/py.typed" = "xtrax/py.typed"
 "src/xtrax/composition/node_metadata_schema.toml" = "xtrax/composition/node_metadata_schema.toml"
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.src]
+include = ["src/**/*.py"]

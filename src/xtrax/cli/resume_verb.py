@@ -8,6 +8,8 @@ from xtrax.cli.errors import ResumeError
 from xtrax.cli.manifest import read_manifest, write_manifest_dict
 from xtrax.cli.resolve import resolve_components
 from xtrax.engine.engine import Engine
+from xtrax.telemetry.ledger import RunLedger
+from xtrax.telemetry.record import KIND_TRAIN
 from xtrax.training import init_state
 from xtrax.training.trainer import Trainer
 
@@ -91,12 +93,28 @@ def run_resume(args: ResumeArgs) -> None:
         metric_def_paths=closure.get("metric_def_paths"),
     )
 
-    # Run training
+    # Run training.
+    #
+    # derived_from records the parent run in the ledger, so a resumed run's
+    # lineage is a queryable edge rather than something a reader has to infer
+    # from manifest.json. It is the same single-parent id the manifest already
+    # stores as `resumed_from`, matching controller/lineage_interim.py's
+    # single-parent contract rather than introducing a second lineage model.
+    #
+    # This path previously built no sink and recorded no provenance at all --
+    # a resumed run was invisible. Engine now opens a ledger for it like any
+    # other run; the ledger is opened here only to carry derived_from.
     engine = Engine(trainer=Trainer(resolved.loss_fn, resolved.optimizer), callbacks=())
-    engine.fit_sync(
-        loaded_state,
-        resolved.dataset,
-        num_epochs=args.epochs,
-        checkpoint_dir=new_checkpoint_dir,
-        resume=True,
-    )
+    with RunLedger.open(
+        new_run_id,
+        kind=KIND_TRAIN,
+        derived_from=manifest["run_id"],
+    ) as ledger:
+        engine.fit_sync(
+            loaded_state,
+            resolved.dataset,
+            num_epochs=args.epochs,
+            checkpoint_dir=new_checkpoint_dir,
+            resume=True,
+            ledger=ledger,
+        )

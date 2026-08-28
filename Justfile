@@ -53,6 +53,11 @@ audit-routing-contract:
     uv run ruff check src/xtrax/devtools/routing.py tests/audit/test_routing_toml.py tests/audit/test_routing_engine.py
     uv run pytest tests/audit/test_routing_toml.py tests/audit/test_routing_engine.py -v
 
+audit-telemetry-coverage:
+    uv run python scripts/audit_telemetry_coverage.py
+    uv run ruff check src/xtrax/telemetry/ scripts/audit_telemetry_coverage.py
+    uv run pytest tests/audit/test_telemetry_coverage_gate.py tests/telemetry/ -q
+
 audit-tombstone-contract:
     uv run ruff check src/xtrax/tombstone.py tests/audit/test_tombstone_ledger.py src/xtrax/findings.py
     uv run pytest tests/audit/test_tombstone_ledger.py tests/audit/test_emit_contract.py -v
@@ -246,7 +251,7 @@ audit-coverage-tier2:
     uv run python scripts/audit_coverage_dag.py --tier tier2_eda --enforce tier2_eda
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-added-types-diff
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-added-types-diff
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry

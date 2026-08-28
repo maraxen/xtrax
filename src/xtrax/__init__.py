@@ -50,6 +50,16 @@ __all__ = [
     # Stages
     "TransformFn",
     "RollingFn",
+    # Telemetry (run ledger: provenance + captured IR)
+    "RunLedger",
+    "RunLedgerRecord",
+    "RunProvenance",
+    "LedgerUnavailableError",
+    "TelemetryCallback",
+    "capture_ir",
+    "compact_ledger",
+    "iter_rows",
+    "find_run",
 ]
 
 _LAZY = {
@@ -103,6 +113,16 @@ _LAZY = {
     # Stages subpackage
     "TransformFn": "xtrax.stages",
     "RollingFn": "xtrax.stages",
+    # Telemetry subpackage (run ledger: provenance + captured IR)
+    "RunLedger": "xtrax.telemetry",
+    "RunLedgerRecord": "xtrax.telemetry",
+    "RunProvenance": "xtrax.telemetry",
+    "LedgerUnavailableError": "xtrax.telemetry",
+    "TelemetryCallback": "xtrax.telemetry",
+    "capture_ir": "xtrax.telemetry",
+    "compact_ledger": "xtrax.telemetry",
+    "iter_rows": "xtrax.telemetry",
+    "find_run": "xtrax.telemetry",
 }
 
 

@@ -145,6 +145,7 @@ def run_sweep(args: SweepArgs) -> None:
 
         except Exception as e:
             print(f"Sweep run {run_id} failed with error: {e}", file=sys.stderr)
+            _record_sweep_failure(run_id, sweep_id, overrides, e)
             traceback.clear_frames(e.__traceback__)
 
             # Run dummy computation on all devices to flush queues
@@ -158,6 +159,45 @@ def run_sweep(args: SweepArgs) -> None:
 
             gc.collect()
             jax.clear_caches()
+
+
+def _record_sweep_failure(
+    run_id: str,
+    sweep_id: str,
+    overrides: dict,
+    exc: BaseException,
+) -> None:
+    """Record a sweep run that died before Engine could open its own ledger.
+
+    A failure inside ``fit_sync`` is already written by the Engine's ledger, so
+    this only fills the earlier window -- a config that fails to resolve, a
+    dataset that will not construct -- where the run would otherwise leave no
+    trace at all beyond a line on stderr. ``find_run`` is what keeps the two from
+    double-writing.
+
+    Fail-open: a sweep must continue to its next configuration even if this
+    bookkeeping cannot be written.
+    """
+    from xtrax.telemetry.ledger import RunLedger, find_run
+    from xtrax.telemetry.record import KIND_TRAIN, STATUS_FAILED
+
+    try:
+        if find_run(run_id) is not None:
+            return
+        with RunLedger.open(
+            run_id,
+            kind=KIND_TRAIN,
+            context={"sweep_id": sweep_id, "overrides": str(overrides)},
+        ) as ledger:
+            ledger.set_status(
+                STATUS_FAILED,
+                f"sweep run failed before training began: {type(exc).__name__}: {exc}",
+            )
+    except Exception as ledger_exc:  # noqa: BLE001 - never break the sweep loop
+        print(
+            f"warning: could not record sweep failure for {run_id}: {ledger_exc}",
+            file=sys.stderr,
+        )
 
 
 __all__ = ["SweepArgs", "run_sweep"]
