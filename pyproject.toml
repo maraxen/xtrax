@@ -28,6 +28,15 @@ dev = [
 ]
 docs = [ "sphinx>=7", "furo", "sphinx-autodoc-typehints", "myst-parser",]
 eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
+# Feasibility spike only (scripts/iree_export_spike, task 260831_iree-wasm-webgpu-export).
+# A dependency-group, NOT a [project.optional-dependencies] extra, so nothing here
+# reaches the published wheel's metadata. Promote to an extra only if the spike graduates.
+export-spike = [
+ "iree-base-compiler>=3.11",
+ "iree-base-runtime>=3.11",
+ "huggingface-hub>=0.24",
+ "safetensors>=0.4",
+]
 
 [project.optional-dependencies]
 dev = [
