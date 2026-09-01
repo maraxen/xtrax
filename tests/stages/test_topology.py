@@ -4,16 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pytest
 
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.stages.topology import (
+    MaterializeFuseConflictError,
+    MaterializeWithoutSinkError,
+    MultipleMaterializeAxesError,
     PlanTopologyError,
     axis_boundaries_by_name,
     validate_plan_topology,
 )
 from xtrax.tiling.plan import AxisDecision, AxisSpec
-from xtrax.tiling.strategy import SafeMap, Scan, Vmap
+from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Scan, Vmap, WhileCarry
 
 
 def _vmap_decision(name: str, *, heterogeneous: bool = False) -> AxisDecision:
@@ -36,6 +40,48 @@ def _scan_decision(name: str, *, heterogeneous: bool = False) -> AxisDecision:
         reasoning="test",
         strategy=Scan(init=None, transition=lambda c, x: (c, x), ordered_sinks=True),
     )
+
+
+def _dedup_decision(name: str) -> AxisDecision:
+    spec = AxisSpec(name=name, cardinality=8, default_batch_size=0)
+    return AxisDecision(
+        spec=spec,
+        batch_size=0,
+        reasoning="test",
+        strategy=DedupGather(
+            unique_indices=np.array([0, 1, 2, 3], dtype=np.int32),
+            index_map=np.array([0, 1, 2, 3, 0, 1, 2, 3], dtype=np.int32),
+            k=4,
+            k_bucket=4,
+            dedup_fn=lambda xs, idx: xs[idx],
+            gather_fn=lambda ys, idx: ys[idx],
+        ),
+    )
+
+
+def _bucket_decision(name: str) -> AxisDecision:
+    spec = AxisSpec(name=name, cardinality=8, default_batch_size=0)
+    return AxisDecision(
+        spec=spec, batch_size=0, reasoning="test", strategy=Bucket(boundaries=(4, 8))
+    )
+
+
+def _whilecarry_decision(name: str) -> AxisDecision:
+    spec = AxisSpec(name=name, cardinality=8, default_batch_size=0)
+    return AxisDecision(spec=spec, batch_size=0, reasoning="test", strategy=WhileCarry())
+
+
+@dataclass(frozen=True)
+class _ForeignBoundary:
+    """A boundary object from a parallel BatchPlanner that predates `materialize`.
+
+    topology.py's docstring promises structural compatibility with such objects,
+    so Rule 3 must read `materialize` via getattr rather than attribute access.
+    """
+
+    fuse: object | None
+    tap: object | None
+    sink: object | None
 
 
 class _OrderedTap:
@@ -219,3 +265,128 @@ class TestAxisBoundariesByName:
 
         with pytest.raises(PlanTopologyError, match="ordered.*Vmap"):
             validate_plan_topology(decisions, axis_boundaries)
+
+
+class TestExportSafeIsOptIn:
+    """export_safe defaults False, so no existing caller's behavior changed."""
+
+    def test_sink_passes_without_export_safe(self):
+        decisions = [_safemap_decision("batch")]
+        boundaries = {"batch": AxisBoundary(sink=_UnorderedSink())}
+        validate_plan_topology(decisions, boundaries)  # must not raise
+
+    def test_bucket_strategy_passes_without_export_safe(self):
+        decisions = [_bucket_decision("batch")]
+        validate_plan_topology(decisions, axis_boundaries={})  # must not raise
+
+
+class TestExportSafeRule3:
+    """Rule 3 is kind-based: a tap always rejects, a sink only if undeclared."""
+
+    def test_rejects_tap_even_when_materialize_is_set(self):
+        # A Tap is T -> T and feeds downstream; materialize never applies to it.
+        decisions = [_safemap_decision("batch")]
+        boundaries = {"batch": AxisBoundary(tap=_OrderedTap(), materialize=True)}
+        with pytest.raises(PlanTopologyError, match="has a Tap"):
+            validate_plan_topology(decisions, boundaries, export_safe=True)
+
+    def test_rejects_undeclared_sink(self):
+        """AC-17b regression check: an undeclared sink rejects exactly as before."""
+        decisions = [_safemap_decision("batch")]
+        boundaries = {"batch": AxisBoundary(sink=_UnorderedSink())}
+        with pytest.raises(PlanTopologyError, match="has a Sink"):
+            validate_plan_topology(decisions, boundaries, export_safe=True)
+
+    def test_rejects_undeclared_ordered_sink(self):
+        """AC-17b, second half: materialize=False is the pre-existing behavior."""
+        decisions = [_safemap_decision("batch")]
+        boundaries = {"batch": AxisBoundary(sink=_OrderedSink(), materialize=False)}
+        with pytest.raises(PlanTopologyError, match="has a Sink"):
+            validate_plan_topology(decisions, boundaries, export_safe=True)
+
+    def test_accepts_declared_materializing_sink(self):
+        """AC-17: the one new passing case this pass introduces."""
+        decisions = [_safemap_decision("batch")]
+        boundaries = {"batch": AxisBoundary(sink=_OrderedSink(), materialize=True)}
+        validate_plan_topology(decisions, boundaries, export_safe=True)  # must not raise
+
+    def test_rejects_materialize_with_fuse(self):
+        decisions = [_safemap_decision("batch")]
+        boundaries = {
+            "batch": AxisBoundary(sink=_OrderedSink(), fuse=lambda ys: ys, materialize=True)
+        }
+        with pytest.raises(MaterializeFuseConflictError, match="also"):
+            validate_plan_topology(decisions, boundaries, export_safe=True)
+
+    def test_rejects_materialize_without_sink(self):
+        decisions = [_safemap_decision("batch")]
+        boundaries = {"batch": AxisBoundary(materialize=True)}
+        with pytest.raises(MaterializeWithoutSinkError, match="no sink"):
+            validate_plan_topology(decisions, boundaries, export_safe=True)
+
+    def test_fuse_only_boundary_passes(self):
+        decisions = [_safemap_decision("batch")]
+        boundaries = {"batch": AxisBoundary(fuse=lambda ys: ys)}
+        validate_plan_topology(decisions, boundaries, export_safe=True)  # must not raise
+
+    def test_foreign_boundary_without_materialize_attribute_is_not_an_error(self):
+        """AC-17f: topology.py promises structural compatibility with foreign plans.
+
+        A boundary object from another library predating this field must read as
+        materialize=False, not raise AttributeError.
+        """
+        decisions = [_safemap_decision("batch")]
+        boundaries = {"batch": _ForeignBoundary(fuse=None, tap=None, sink=None)}
+        validate_plan_topology(decisions, boundaries, export_safe=True)  # must not raise
+
+    def test_foreign_boundary_with_sink_still_rejects(self):
+        decisions = [_safemap_decision("batch")]
+        boundaries = {"batch": _ForeignBoundary(fuse=None, tap=None, sink=_UnorderedSink())}
+        with pytest.raises(PlanTopologyError, match="has a Sink"):
+            validate_plan_topology(decisions, boundaries, export_safe=True)
+
+
+class TestExportSafeMultipleMaterializeAxes:
+    """AC-17h: the whole-plan tier, separate from the per-axis checks."""
+
+    def test_rejects_two_materializing_axes(self):
+        decisions = [_safemap_decision("outer"), _scan_decision("inner")]
+        boundaries = {
+            "outer": AxisBoundary(sink=_OrderedSink(), materialize=True),
+            "inner": AxisBoundary(sink=_OrderedSink(), materialize=True),
+        }
+        with pytest.raises(MultipleMaterializeAxesError, match="'outer'.*'inner'"):
+            validate_plan_topology(decisions, boundaries, export_safe=True)
+
+    def test_accepts_exactly_one_materializing_axis_among_several(self):
+        decisions = [_safemap_decision("outer"), _scan_decision("inner")]
+        boundaries = {
+            "outer": AxisBoundary(sink=_OrderedSink(), materialize=True),
+            "inner": AxisBoundary(fuse=lambda ys: ys),
+        }
+        validate_plan_topology(decisions, boundaries, export_safe=True)  # must not raise
+
+
+class TestExportSafeRule4:
+    """Rule 4 allow-lists the strategies the composer can fold into a callable."""
+
+    @pytest.mark.parametrize("factory", [_vmap_decision, _safemap_decision, _scan_decision])
+    def test_accepts_allowed_strategies(self, factory):
+        validate_plan_topology([factory("batch")], axis_boundaries={}, export_safe=True)
+
+    def test_accepts_dedup_gather(self):
+        """Blocker 7: DedupGather is routed, not rejected."""
+        decisions = [_dedup_decision("batch")]
+        validate_plan_topology(decisions, axis_boundaries={}, export_safe=True)
+
+    def test_rejects_bucket(self):
+        with pytest.raises(PlanTopologyError, match="Bucket is host-tier"):
+            validate_plan_topology([_bucket_decision("batch")], {}, export_safe=True)
+
+    def test_rejects_while_carry(self):
+        with pytest.raises(PlanTopologyError, match="unbounded trip count"):
+            validate_plan_topology([_whilecarry_decision("batch")], {}, export_safe=True)
+
+    def test_names_the_offending_strategy(self):
+        with pytest.raises(PlanTopologyError, match="'Bucket'"):
+            validate_plan_topology([_bucket_decision("batch")], {}, export_safe=True)

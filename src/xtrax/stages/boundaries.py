@@ -96,6 +96,37 @@ class AxisBoundary(eqx.Module):
     fuse: Fuse | BoundaryCallable | None = eqx.field(static=True, default=None)
     tap: Tap | BoundaryCallable | None = eqx.field(static=True, default=None)
     sink: Sink | BoundaryCallable | None = eqx.field(static=True, default=None)
+    materialize: bool = eqx.field(static=True, default=False)
+    """Declare `sink` as a *materializing* sink, so it can cross an export boundary.
+
+    Only xtrax.export reads this. An eager run fires `sink` exactly as before,
+    whatever it is set to.
+
+    The executor's per-step return value already equals what `sink` receives:
+    execute_scan_axis calls `boundary.sink(y)` and returns `_apply_fuse(ys, ...)`,
+    where `ys` stacks those same `y`. So when a caller declares the sink
+    materializing, xtrax.export.pipeline strips the call before tracing rather
+    than rejecting the plan, and reads the values off the exported output
+    instead. topology.py Rule 3 rejects an *undeclared* sink exactly as before.
+
+    Never applies to `tap`: a Tap is `T -> T` and participates in dataflow, so it
+    is not droppable on any target.
+
+    This is a precondition on `sink`, not a proof about it. The slot accepts any
+    callable, and the `T -> None` contract is enforced by convention alone.
+    Stripping guarantees only that the call is absent from the exported trace; it
+    says nothing about a side effect a non-conforming sink would have performed.
+
+    Materializing costs memory: it allocates the full stacked array where an
+    io_callback sink would have streamed each step and discarded it. Hence
+    opt-in, defaulting to False.
+
+    Two caveats from this field being `static=True`, i.e. treedef aux_data rather
+    than a pytree leaf. An `AxisBoundary` pickled before this field existed has no
+    entry for it, and whether such a pickle loads correctly is untested. And any
+    `jax.jit` cache keyed on the old three-field treedef invalidates once this
+    field exists — one recompile, expected and harmless.
+    """
 
 
 __all__ = ["AxisBoundary", "Fuse", "Sink", "Tap"]
