@@ -5,8 +5,6 @@ omits every ``*/__init__.py``; putting it there would make the package's
 coverage gate measure nothing.
 """
 
-from __future__ import annotations
-
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass

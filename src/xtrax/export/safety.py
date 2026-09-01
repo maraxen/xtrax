@@ -11,8 +11,6 @@ accept. They are collected rather than raised one at a time so a caller fixing
 a model sees every offending leaf at once.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any

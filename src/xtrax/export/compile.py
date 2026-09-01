@@ -14,8 +14,6 @@ only the base install; a missing toolchain surfaces as a CompileError naming the
 extra to install, at the point of use.
 """
 
-from __future__ import annotations
-
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,7 +61,7 @@ class CompileResult:
 def _require_compiler() -> Any:
     """Import iree.compiler.tools, or raise CompileError naming the extra."""
     try:
-        from iree.compiler import tools as iree_tools
+        from iree.compiler import tools as iree_tools  # ty: ignore[unresolved-import]
     except ImportError as exc:
         msg = f"iree-base-compiler is not installed: {_MISSING_EXTRA}"
         raise CompileError(msg) from exc
@@ -86,7 +84,9 @@ def _downgrade_to_portable(mlir_text: str) -> bytes:
         CompileError: If IREE's stablehlo bindings are unavailable.
     """
     try:
-        from iree.compiler.dialects import stablehlo as iree_stablehlo
+        from iree.compiler.dialects import (  # ty: ignore[unresolved-import]
+            stablehlo as iree_stablehlo,
+        )
     except ImportError as exc:
         msg = (
             "IREE rejected the StableHLO and its Python stablehlo bindings are "
@@ -187,7 +187,7 @@ def run_native_vmfb(vmfb_path: Path, *args: Any, function: str = "main") -> Any:
             point.
     """
     try:
-        import iree.runtime as ireert
+        import iree.runtime as ireert  # ty: ignore[unresolved-import]
     except ImportError as exc:
         msg = f"iree-base-runtime is not installed: {_MISSING_EXTRA}"
         raise CompileError(msg) from exc
@@ -201,9 +201,6 @@ def run_native_vmfb(vmfb_path: Path, *args: Any, function: str = "main") -> Any:
     try:
         entry = loaded[function]
     except (KeyError, AttributeError) as exc:
-        msg = (
-            f"vmfb {vmfb_path.name} (module {vm_module.name!r}) has no entry "
-            f"point {function!r}."
-        )
+        msg = f"vmfb {vmfb_path.name} (module {vm_module.name!r}) has no entry point {function!r}."
         raise CompileError(msg) from exc
     return entry(*args)

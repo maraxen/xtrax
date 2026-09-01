@@ -14,8 +14,6 @@ whatever boundaries dict it is handed. Sink-stripping lives one layer up, in
 the real, un-stripped sink.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -80,6 +78,14 @@ def compose_single_axis(
         ComposerError: For a Scan axis with no initial carry available.
     """
     strategy = getattr(decision, "strategy", None)
+    if strategy is None:
+        msg = (
+            f"axis decision {getattr(getattr(decision, 'spec', None), 'name', '?')!r} has "
+            f"no strategy, so there is nothing to compose. Supported strategies are "
+            f"{_SUPPORTED}."
+        )
+        raise UnsupportedStrategyError(msg)
+
     strategy_name = type(strategy).__name__
 
     if strategy_name in ("Vmap", "SafeMap"):

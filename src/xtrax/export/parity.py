@@ -12,8 +12,6 @@ boundary, or a mis-shaped carry. Hence ``verify_native_parity`` takes the
 expected value as an argument and never re-derives it.
 """
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,8 +51,7 @@ class ParityResult:
         verdict = "PASS" if self.passed else "FAIL"
         if self.shape_expected != self.shape_actual:
             return (
-                f"{verdict}: shape mismatch expected {self.shape_expected}, "
-                f"got {self.shape_actual}"
+                f"{verdict}: shape mismatch expected {self.shape_expected}, got {self.shape_actual}"
             )
         return (
             f"{verdict}: max|diff| = {self.max_abs_diff:.3e} "

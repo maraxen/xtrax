@@ -12,8 +12,6 @@ device must never be constructed with extra features enabled to get around
 that -- doing so produces a passing check that establishes nothing.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 __all__ = ["SpirvValidationResult"]

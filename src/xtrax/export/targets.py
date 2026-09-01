@@ -14,8 +14,6 @@ Nothing here imports IREE. Target selection is plain data, available with only
 the base install; the toolchain is touched lazily by ``xtrax.export.compile``.
 """
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
