@@ -3,31 +3,31 @@
 
 [schedule]
 schema_version = 1
-version = "0.1.0"
+version = "0.1.1"
 active_wave_id = "wave_baseline"
 
 [[waves]]
 id = "wave_baseline"
 status = "active"
-select = ["E", "F", "I", "UP"]
-notes = "Current baseline: pycodestyle, pyflakes, isort, pyupgrade."
+select = ["E", "F", "I", "UP", "S110"]
+notes = "Current baseline: pycodestyle, pyflakes, isort, pyupgrade, plus S110 (try-except-pass)."
 
 [[waves]]
 id = "wave_doc"
 status = "pending"
-select = ["E", "F", "I", "UP", "D", "D402"]
+select = ["E", "F", "I", "UP", "S110", "D", "D402"]
 notes = "pydocstyle + D402 first-line capital enforcement."
 ties_to_dimension = "documentation"
 
 [[waves]]
 id = "wave_complexity"
 status = "pending"
-select = ["E", "F", "I", "UP", "C901", "PLR0912", "PLR0915"]
+select = ["E", "F", "I", "UP", "S110", "C901", "PLR0912", "PLR0915"]
 notes = "McCabe complexity + pylint too-many-* limits."
 ties_to_dimension = "structure_complexity"
 
 [[waves]]
 id = "wave_bugbear"
 status = "pending"
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "S110", "B"]
 notes = "flake8-bugbear opinionated bug patterns."
