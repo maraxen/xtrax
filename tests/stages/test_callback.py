@@ -38,8 +38,11 @@ class TestCheckJaxVersion:
             _check_jax_version("0.9.0", PINNED_JAX_RANGE)
 
     def test_at_or_above_upper_bound_raises(self):
+        # Derived from the constant rather than hardcoded: this test previously pinned
+        # "0.11.0" and silently became a no-op assertion the moment the range widened.
+        at_upper_bound = ".".join(str(part) for part in PINNED_JAX_RANGE[1])
         with pytest.raises(IoCallbackSignatureError, match="outside the pinned range"):
-            _check_jax_version("0.11.0", PINNED_JAX_RANGE)
+            _check_jax_version(at_upper_bound, PINNED_JAX_RANGE)
 
     def test_real_installed_jax_is_within_pinned_range(self):
         """Guards the actual environment, not just fixtures (matches audit_substrate_lock's
