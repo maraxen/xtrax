@@ -1245,6 +1245,40 @@ wheels = [
 ]
 
 [[package]]
+name = "iree-base-compiler"
+version = "3.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "sympy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4c/1f/ae45ccb7edef9eead14eacb0e8b472ce3d72ee3863a0f9eb6c916e09e6e3/iree_base_compiler-3.11.0-cp312-abi3-macosx_13_0_universal2.whl", hash = "sha256:2e9fc888b9044662a14eeba01b6302d75a6118f68874699dcf8f9c7e991a4ee2", size = 71963066, upload-time = "2026-03-19T23:20:15.961Z" },
+    { url = "https://files.pythonhosted.org/packages/24/a3/67dda13e131479d17a5f8c63c0e43bd6674ddc5ff84d49f77b9155a917f8/iree_base_compiler-3.11.0-cp312-abi3-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1aea934fdc2ebe1dd64e5f2063a96de675a35f0b4856f9ddb76b2df58dfefb87", size = 82753538, upload-time = "2026-03-19T23:20:20.781Z" },
+    { url = "https://files.pythonhosted.org/packages/47/9c/f7cd82016c869ceb37b787b628608b68225c9e7bc46e0de9f18a9932ef3c/iree_base_compiler-3.11.0-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:99fc3369375405485f11da541a75ef2b153d529fa3712c1d9771c98a35e2669e", size = 83137835, upload-time = "2026-03-19T23:20:26.161Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/9f/f8c8cd7ed546a59266e2e76847f4795549d1451b6be1e3c4bea62192f2e4/iree_base_compiler-3.11.0-cp312-abi3-win_amd64.whl", hash = "sha256:67b3656c473d6dd3059b9ad9676190591f11b77c6e2f785d55e79730be677be7", size = 57917646, upload-time = "2026-03-19T23:20:30.796Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/65/a3de9aef2cdc64fcde2fb13f1e3f56d874973dafecb0aa5751e52c60b05b/iree_base_compiler-3.11.0-cp313-cp313t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3c99a4484d3e56ae9e83bc2d079e5f3d8329cd7836568b60c39cf9ff8847dd6c", size = 82806062, upload-time = "2026-03-19T23:20:35.266Z" },
+    { url = "https://files.pythonhosted.org/packages/86/1c/0d0fabfeff79b1f0b53b190dea6f5e65546f74d821693ebe200ffd195ca6/iree_base_compiler-3.11.0-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5be5421f6a447f04188a571d7e7668430b2fe1ec413fb2a3ab997fb7e4e46671", size = 83171193, upload-time = "2026-03-19T23:20:40.594Z" },
+]
+
+[[package]]
+name = "iree-base-runtime"
+version = "3.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ml-dtypes" },
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/9f/123ed3bc84f3a390ac7594a5219a70ae2ae35ac0b58ed54c0c0711c6d881/iree_base_runtime-3.11.0-cp312-abi3-macosx_13_0_universal2.whl", hash = "sha256:5f30d5666b6d007a781d9f7b6094664c64e3c30a379d1c1011b8ee299422c61e", size = 4101155, upload-time = "2026-03-19T23:20:54.707Z" },
+    { url = "https://files.pythonhosted.org/packages/10/21/4e7907106c2ebef71f607ed9b6250b6337c4fedec3a230d84b1912d04e70/iree_base_runtime-3.11.0-cp312-abi3-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:7b428bebe14ba5f16f838c6651c3d3ed8ff36c1933c0ec212c2dc8d212a0e919", size = 8432745, upload-time = "2026-03-19T23:20:56.369Z" },
+    { url = "https://files.pythonhosted.org/packages/20/dc/c1db63d258ff5e484f1c739aa5cafd9ad9fcc7e8ffd914869937b6fc28ca/iree_base_runtime-3.11.0-cp312-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:b3ff2b214780871d5677994b82332f9d1bae365a2e115c928464bd15ab5a5098", size = 8308112, upload-time = "2026-03-19T23:20:58.799Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/f4/1269abdde6e65b25e6468c6eef9e8c90c402cb951fcb5bb44969c97851de/iree_base_runtime-3.11.0-cp312-abi3-win_amd64.whl", hash = "sha256:796f999394bb573b69edf47d45d7d221554704f30363f9d5553d170ea2f58054", size = 6528550, upload-time = "2026-03-19T23:21:00.981Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/0f/9a6c9d0987c0aad5186c81df2555e997f60505b876f523fd4bb3ef983da5/iree_base_runtime-3.11.0-cp313-cp313t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:bca18e87a606dbfa09585a5a5b86f9fa46b10b1ccbf1dec6fc0a7fdd73b0c85f", size = 8448426, upload-time = "2026-03-19T23:21:02.558Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/03/3f7714c7fc09632bd79667f7b4a5cd401ee504cf8209a49c949e10fac4ae/iree_base_runtime-3.11.0-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:57c2b92a283e9d84c84f377aeea4549b7f1d3db3b5d93ca3ea984730b24e99bb", size = 8319903, upload-time = "2026-03-19T23:21:04.876Z" },
+]
+
+[[package]]
 name = "jaraco-classes"
 version = "3.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3893,6 +3927,12 @@ eda = [
     { name = "pandas" },
     { name = "seaborn" },
 ]
+export = [
+    { name = "huggingface-hub" },
+    { name = "iree-base-compiler" },
+    { name = "iree-base-runtime" },
+    { name = "safetensors" },
+]
 io = [
     { name = "zarr" },
 ]
@@ -3928,8 +3968,11 @@ requires-dist = [
     { name = "equinox", specifier = ">=0.11.0" },
     { name = "flatbuffers", marker = "extra == 'cli'", specifier = ">=2" },
     { name = "grain", specifier = ">=0.2.0" },
+    { name = "huggingface-hub", marker = "extra == 'export'", specifier = ">=0.24,<2" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.1" },
     { name = "interrogate", marker = "extra == 'dev'", specifier = ">=1.7.0" },
+    { name = "iree-base-compiler", marker = "extra == 'export'", specifier = ">=3.11,<4" },
+    { name = "iree-base-runtime", marker = "extra == 'export'", specifier = ">=3.11,<4" },
     { name = "jax", specifier = ">=0.10.2,<0.12" },
     { name = "jaxlib", specifier = ">=0.10.2,<0.12" },
     { name = "jaxlint", marker = "extra == 'dev'", specifier = ">=0.1.0a1" },
@@ -3948,6 +3991,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
+    { name = "safetensors", marker = "extra == 'export'", specifier = ">=0.4" },
     { name = "seaborn", marker = "extra == 'eda'", specifier = ">=0.13" },
     { name = "torch", marker = "extra == 'authoring-smoke'", specifier = ">=2.0" },
     { name = "transformers", marker = "extra == 'authoring-smoke'", specifier = ">=4.40" },
@@ -3955,7 +3999,7 @@ requires-dist = [
     { name = "tyro", marker = "extra == 'cli'", specifier = ">=0.9,<2" },
     { name = "zarr", marker = "extra == 'io'", specifier = ">=3.0" },
 ]
-provides-extras = ["authoring-smoke", "cli", "controller", "dev", "eda", "io"]
+provides-extras = ["authoring-smoke", "cli", "controller", "dev", "eda", "export", "io"]
 
 [package.metadata.requires-dev]
 dev = [
