@@ -3,6 +3,7 @@
 ## Daily
 
 ## Handoffs
+- [260807_apply-confirmed-disposition-for-s4-closure-declaration-schema-not-one-write](handoffs/260807_apply-confirmed-disposition-for-s4-closure-declaration-schema-not-one-write.md) — User-confirmed plan: amend #4093 and file a new backlog row for the real xtrax-side scope of S4, blocked on plugin:praxia:core MCP not connecting from the affigit corpus session
 - [260623_e1-e2-composition-layer](handoffs/260623_e1-e2-composition-layer.md) — session handoff: E1-MVP (xtrax.inference) + #2561 hardening + E2-MVP (xtrax.cli plan/explain/export) all merged to main (341 tests); deferred run/sweep/resume verbs + push pending
 
 ## Plans
@@ -13,6 +14,7 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [260901_xtrax-export-webgpu](specs/260901_xtrax-export-webgpu.md) — Spec for src/xtrax/export/ — native/wasm32/vulkan-spirv/metal-spirv targets, wgpu/naga WebGPU-validity gate, three-PR rollout
 - [260825_hmw-give-xtrax-a-runtime-compute-reuse-c](specs/260825_hmw-give-xtrax-a-runtime-compute-reuse-c.md)
 - [260825_jax-optimizing-skill-scope](specs/260825_jax-optimizing-skill-scope.md)
 - [260825_xtrax-cse-runtime-opt-spec](specs/260825_xtrax-cse-runtime-opt-spec.md)
@@ -56,8 +58,10 @@
 ## Actuation Surfaces
 
 ## Audits
+- [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [260901_webgpu-export-measurement-pass](research/260901_webgpu-export-measurement-pass.md) — Empirical de-risking of the xtrax.export spec before implementation — pins resolve, but AC-8's WebGPU-validity gate is falsified by IREE's push-constant ABI
 - [260825_cse-recon](research/260825_cse-recon.md)
 - [260825_jax-cse-ecosystem](research/260825_jax-cse-ecosystem.md)
 - [260825_spec-challenger-r1](research/260825_spec-challenger-r1.md)
