@@ -144,8 +144,18 @@ def compile_for_target(
             portable = _downgrade_to_portable(mlir_text)
             binary = tools.compile_str(portable, input_type="stablehlo", extra_args=args)
             downgraded = True
-        except CompileError:
-            raise
+        except CompileError as downgrade_exc:
+            # The downgrade itself was unavailable. Report why the compile failed
+            # too -- that diagnostic is the one the caller needs, and re-raising
+            # bare would discard it.
+            msg = (
+                f"iree-compile failed for target {target.name!r} "
+                f"(backend {target.iree_backend!r}), and the StableHLO could not "
+                f"be downgraded to retry.\n"
+                f"  direct:    {first_exc}\n"
+                f"  downgrade: {downgrade_exc}"
+            )
+            raise CompileError(msg) from first_exc
         except Exception as retry_exc:
             msg = (
                 f"iree-compile failed for target {target.name!r} "

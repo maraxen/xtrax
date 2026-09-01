@@ -9,17 +9,29 @@ import pytest
 
 from xtrax.export import compile as compile_mod
 from xtrax.export.compile import CompileError
+from xtrax.export.parity import ParityResult
 from xtrax.export.pipeline import (
     ExportResult,
     _boundaries_for_export,
     _StrippedSink,
+    _verified_for,
     export_pipeline,
 )
-from xtrax.export.targets import NATIVE, WASM32, VerificationLevel
+from xtrax.export.spirv import SpirvValidationResult
+from xtrax.export.targets import NATIVE, WASM32, Target, VerificationLevel
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.stages.topology import PlanTopologyError
 
 from .conftest import FakeCompilerTools
+
+# PR1 registers no VALIDATED target; this stands in for one so the guard that
+# refuses them can be exercised.
+VALIDATED_TARGET = Target(
+    name="spirv-probe",
+    iree_backend="vulkan-spirv",
+    verification_level=VerificationLevel.VALIDATED,
+    supported_dtypes=frozenset({"f32", "i32", "bool"}),
+)
 
 
 class _Sink:
@@ -53,6 +65,79 @@ class TestArgumentGuards:
     def test_codegen_only_target_needs_neither(self, model, plan, abstract_inputs, fake_compiler):
         results = export_pipeline(model, plan, abstract_inputs, None, targets=(WASM32,))
         assert set(results) == {"wasm32"}
+
+    def test_validated_target_is_refused_rather_than_silently_unverified(
+        self, model, plan, abstract_inputs, fake_compiler
+    ):
+        """SPIR-V validation is not wired in, so `verified` could only be False.
+
+        Emitting a result that reports False while nothing was actually checked
+        is the failure mode this package exists to avoid, so refuse instead.
+        """
+        with pytest.raises(NotImplementedError, match="not wired into export_pipeline"):
+            export_pipeline(model, plan, abstract_inputs, None, targets=(VALIDATED_TARGET,))
+
+    def test_the_validated_guard_names_the_offending_target(
+        self, model, plan, abstract_inputs, fake_compiler
+    ):
+        with pytest.raises(NotImplementedError, match="spirv-probe"):
+            export_pipeline(model, plan, abstract_inputs, None, targets=(VALIDATED_TARGET,))
+
+    def test_the_validated_guard_fires_before_any_compile(
+        self, model, plan, abstract_inputs, fake_compiler
+    ):
+        with pytest.raises(NotImplementedError):
+            export_pipeline(model, plan, abstract_inputs, None, targets=(WASM32, VALIDATED_TARGET))
+        assert fake_compiler.calls == [], "the guard must run before the compiler"
+
+
+class TestVerifiedFor:
+    """`_verified_for` is the per-level contract; VALIDATED lands with PR2."""
+
+    def test_executed_mirrors_parity(self):
+        passing = ParityResult(
+            passed=True,
+            max_abs_diff=0.0,
+            atol=1e-5,
+            rtol=1e-5,
+            shape_expected=(2,),
+            shape_actual=(2,),
+        )
+        assert _verified_for(VerificationLevel.EXECUTED, passing, None) is True
+
+    def test_executed_is_false_without_a_parity_result(self):
+        assert _verified_for(VerificationLevel.EXECUTED, None, None) is False
+
+    def test_validated_mirrors_the_shader_validation(self):
+        valid = SpirvValidationResult(
+            valid=True, adapter_type="CPU", backend="Vulkan", device_name="llvmpipe", error=None
+        )
+        assert _verified_for(VerificationLevel.VALIDATED, None, valid) is True
+
+    def test_validated_is_false_when_the_shader_was_rejected(self):
+        invalid = SpirvValidationResult(
+            valid=False,
+            adapter_type="CPU",
+            backend="Vulkan",
+            device_name="llvmpipe",
+            error="push constants are not a WebGPU capability",
+        )
+        assert _verified_for(VerificationLevel.VALIDATED, None, invalid) is False
+
+    def test_validated_is_false_without_a_validation_result(self):
+        assert _verified_for(VerificationLevel.VALIDATED, None, None) is False
+
+    def test_codegen_only_is_false_even_with_a_passing_parity(self):
+        """Nothing beyond compilation was established, whatever else is present."""
+        passing = ParityResult(
+            passed=True,
+            max_abs_diff=0.0,
+            atol=1e-5,
+            rtol=1e-5,
+            shape_expected=(2,),
+            shape_actual=(2,),
+        )
+        assert _verified_for(VerificationLevel.CODEGEN_ONLY, passing, None) is False
 
 
 class TestVerificationSemantics:

@@ -202,6 +202,20 @@ def export_pipeline(
         )
         raise ValueError(msg)
 
+    # SPIR-V extraction and shader validation are not wired in yet, so a
+    # VALIDATED target could only ever report verified=False -- a green-looking
+    # result establishing nothing. Refuse it rather than emit that.
+    validated = [t for t in targets if t.verification_level is VerificationLevel.VALIDATED]
+    if validated:
+        names = ", ".join(t.name for t in validated)
+        msg = (
+            f"target(s) {names} are VALIDATED, but SPIR-V extraction and shader "
+            f"validation are not wired into export_pipeline yet, so `verified` "
+            f"could only ever report False. Use a CODEGEN_ONLY target, or wait "
+            f"for the SPIR-V targets."
+        )
+        raise NotImplementedError(msg)
+
     decisions = list(plan.decisions)
     results: dict[str, ExportResult] = {}
 

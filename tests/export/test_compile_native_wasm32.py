@@ -105,6 +105,49 @@ class TestPortableArtifactDowngrade:
         assert "direct:" in message
         assert "portable:" in message
 
+    def test_downgrade_unavailable_still_reports_the_original_compiler_error(
+        self, monkeypatch, tmp_path
+    ):
+        """The compile diagnostic is the one the caller needs; don't discard it.
+
+        When the bindings needed to downgrade are missing, the downgrade raises
+        CompileError. Re-raising that bare would leave the caller knowing only
+        that the retry was unavailable, never why the compile failed.
+        """
+        tools = FakeCompilerTools(calls=[], fail_first=True)
+        monkeypatch.setattr(compile_mod, "_require_compiler", lambda: tools)
+
+        def _no_bindings(_text):
+            msg = "stablehlo bindings are unavailable"
+            raise CompileError(msg)
+
+        monkeypatch.setattr(compile_mod, "_downgrade_to_portable", _no_bindings)
+
+        with pytest.raises(CompileError) as excinfo:
+            compile_for_target(MLIR, NATIVE, out_path=tmp_path / "a.vmfb")
+
+        message = str(excinfo.value)
+        assert "rejected the current-version StableHLO" in message, (
+            "the original compiler diagnostic must survive"
+        )
+        assert "stablehlo bindings are unavailable" in message
+        assert "native" in message
+
+    def test_downgrade_unavailable_chains_the_original_failure(self, monkeypatch, tmp_path):
+        tools = FakeCompilerTools(calls=[], fail_first=True)
+        monkeypatch.setattr(compile_mod, "_require_compiler", lambda: tools)
+
+        def _no_bindings(_text):
+            msg = "stablehlo bindings are unavailable"
+            raise CompileError(msg)
+
+        monkeypatch.setattr(compile_mod, "_downgrade_to_portable", _no_bindings)
+
+        with pytest.raises(CompileError) as excinfo:
+            compile_for_target(MLIR, NATIVE, out_path=tmp_path / "a.vmfb")
+
+        assert "rejected the current-version StableHLO" in str(excinfo.value.__cause__)
+
     def test_names_the_target_and_backend_on_failure(self, monkeypatch, tmp_path):
         class _AlwaysFails(FakeCompilerTools):
             def compile_str(self, source, *, input_type, extra_args):
