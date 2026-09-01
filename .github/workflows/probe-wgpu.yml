@@ -1,0 +1,59 @@
+# THROWAWAY measurement workflow — probe branch only, never merged to main.
+# Answers the two unmeasured questions behind the xtrax.export spec's AC-7/AC-8.
+name: probe-wgpu
+
+on:
+  push:
+    branches: [probe/webgpu-ci-adapter]
+
+jobs:
+  # Q1a: bare ubuntu-latest — is there any adapter without an ICD installed?
+  no-icd:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.13 .venv
+      - run: uv pip install --python .venv/bin/python "wgpu>=0.32,<0.33"
+      - name: probe (no Vulkan ICD)
+        run: .venv/bin/python scripts/probe_wgpu_ci.py
+
+  # Q1b: same, after installing the Vulkan ICD the spec's Task 8 prescribes.
+  with-icd:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Vulkan ICD (spec Task 8)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.13 .venv
+      - run: uv pip install --python .venv/bin/python "wgpu>=0.32,<0.33"
+      - name: probe (with Vulkan ICD)
+        run: .venv/bin/python scripts/probe_wgpu_ci.py
+
+  # Q2: the real AC-8 gate — does IREE SPIR-V from a composed xtrax pipeline
+  # pass naga on a feature-free (browser-shaped) device in CI?
+  full-gate:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      PROBE_MODE: full
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Vulkan ICD
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.13 .venv
+      - name: install xtrax + export toolchain
+        run: |
+          uv pip install --python .venv/bin/python -e . \
+            "iree-base-compiler>=3.11,<4" "iree-base-runtime>=3.11,<4" \
+            "wgpu>=0.32,<0.33" huggingface_hub safetensors
+      - name: probe (full AC-8 gate)
+        run: .venv/bin/python scripts/probe_wgpu_ci.py
