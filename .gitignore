@@ -25,3 +25,7 @@ outputs/profiling/**/_traces/
 
 # xtrax runtime run artifacts (manifests, checkpoints, provenance stores)
 .xtrax/
+
+# Scratch: spike source materialised for read-only subagents (regenerable; see
+# .praxia/docs/audits/260901_xtrax-export-webgpu-adversarial-findings.md)
+.praxia/spike_snapshot/
