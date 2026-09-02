@@ -85,19 +85,36 @@ release tag until the full distribution audit passes** (`just audit-deterministi
 
 ### Human prerequisites (before first publish)
 
-Configure Trusted Publishers on both indexes (backlog **#1454**):
+Configure the Trusted Publisher (backlog **#1454**):
 
-1. [TestPyPI](https://test.pypi.org/manage/account/publishing/) — project `xtrax`,
-   workflow `.github/workflows/publish.yml`, environment `testpypi`
-2. [PyPI](https://pypi.org/manage/account/publishing/) — same workflow, environment `pypi`
+1. [PyPI](https://pypi.org/manage/account/publishing/) — project `xtrax`,
+   workflow `.github/workflows/publish.yml`, environment `pypi`
+
+Publishing goes straight to PyPI. A TestPyPI staging stage was removed on
+2026-07-02, so a tag push is the first and only publish — there is no dry run
+ahead of it.
 
 ### Release checklist
 
-1. Ensure `just audit-deterministic`, `just audit-coverage-tier1`, and
+1. Bump the version in **both** `src/xtrax/__init__.py` and `CITATION.cff`, and
+   close the `[Unreleased]` changelog section. `audit-project-hygiene` fails if
+   the two version sites disagree
+2. Ensure `just audit-deterministic`, `just audit-coverage-tier1`, and
    `just audit-publish-oidc` pass locally
-2. Confirm TestPyPI and PyPI Trusted Publisher settings are configured (#1454)
-3. Tag the commit: `git tag v0.3.x` (match `src/xtrax/__init__.py`)
-4. Push the tag: `git push origin v0.3.x`
+3. Run `just audit-release-readiness`. For a version that is not yet published
+   it reports `BLOCKED_AUTOMATED` with **exactly one** blocker — the n9 probe
+   invalidating on `git tag 'vX' not found locally`, or on PyPI having no such
+   release. That is the gate working as designed: it checks that the version,
+   the tag and the PyPI release agree, which cannot be true before you publish.
+   What matters is that nothing *else* is listed
+4. Confirm the PyPI Trusted Publisher is configured (#1454)
+5. Tag the commit: `git tag v0.4.0aN` (match `src/xtrax/__init__.py`)
+6. Push the tag: `git push origin v0.4.0aN`. This publishes to PyPI
+   immediately — there is no staging index and no dry run
+7. Once the publish workflow succeeds, re-run `just audit-release-readiness`.
+   With the tag pushed and the release live, the probe stops invalidating and
+   the verdict becomes `READY`. A tag pushed while other blockers are open
+   still publishes, because nothing enforces the gate for you
 5. GitHub Actions publishes to **TestPyPI** first, then **PyPI** via OIDC
 
 `workflow_dispatch` on the publish workflow runs build + wheel smoke only; upload

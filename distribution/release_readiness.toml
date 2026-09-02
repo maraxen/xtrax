@@ -200,9 +200,11 @@ required_ci_markers = [
   "audit-coverage-tier2",
   "--doctest-modules src/xtrax/io/",
 ]
+# 'publish-testpypi' and 'test.pypi.org/legacy' were dropped 2026-09-02. Commit
+# df26da1 removed the TestPyPI job on 2026-07-02 ("publishing to PyPI only by
+# decision") and this list went on asserting it, holding the gate at
+# BLOCKED_AUTOMATED for two months against a staging index that no longer exists.
 required_publish_markers = [
-  "publish-testpypi",
   "publish-pypi",
   "id-token: write",
-  "test.pypi.org/legacy",
 ]

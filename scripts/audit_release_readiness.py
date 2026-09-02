@@ -518,7 +518,7 @@ def render_markdown_report(payload: dict[str, Any]) -> str:
             "## Release policy",
             "",
             "- Do **not** push release tags until this report is `READY`.",
-            "- Complete human gate #1454 (PyPI + TestPyPI Trusted Publisher) first.",
+            "- Complete human gate #1454 (PyPI Trusted Publisher) first.",
             "- Re-run: `just audit-release-readiness`",
             "",
         ]

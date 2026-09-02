@@ -233,9 +233,19 @@ audit-promotion-gate:
     uv run ruff check scripts/audit_promotion_gate.py tests/audit/test_promotion_gate_ci.py
     uv run pytest tests/audit/test_promotion_gate_ci.py -v
 
-audit-release-readiness:
+# Hermetic half: the gate's config and its tests agree with the real workflows.
+# Wired into audit-deterministic, like every other tests/distribution gate, so
+# marker drift is caught on the commit that causes it. The full gate below is
+# run by hand at release time and went unrun from 2026-07-02 to 2026-09-02,
+# during which it was red the whole time and nothing said so.
+audit-release-readiness-contract:
     uv run ruff check scripts/audit_release_readiness.py tests/distribution/test_release_readiness.py
     uv run pytest tests/distribution/test_release_readiness.py -v
+
+# Full gate: adds the live probes (uv sync of prerequisite groups, PyPI and git
+# tag freshness), so it needs a network and is too slow for the per-commit
+# chain. Run it before cutting a release -- it is the thing that says READY.
+audit-release-readiness: audit-release-readiness-contract
     uv run python scripts/audit_release_readiness.py
 
 audit-coverage-dag:
@@ -251,7 +261,7 @@ audit-coverage-tier2:
     uv run python scripts/audit_coverage_dag.py --tier tier2_eda --enforce tier2_eda
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-added-types-diff
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-release-readiness-contract audit-added-types-diff
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry
