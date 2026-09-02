@@ -548,6 +548,16 @@ with a one-line reason; unmarked ACs are unchanged.
 - **AC-7 (PR1):** a new `export-toolchain-tests` CI job (installs `--extra export` **and** the
   Vulkan ICD, see AC-8/Task 8) runs `tests/export/` for real against IREE's `llvm-cpu` backend;
   zero tests in that run are skipped by `pytest.importorskip`.
+- **AC-8 — VOID (260902).** Falsified by the measurement pass (#114) before implementation.
+  IREE's Vulkan HAL passes dispatch parameters through push constants, which are not a WebGPU
+  capability, so naga rejects every SPIR-V module IREE emits; IREE 3.11 registers no webgpu
+  backend and no flag removes them. The B9 disposition below is **inverted**: it scoped the
+  push-constant risk out on the grounds that `create_shader_module` never exercises it, but that
+  call is exactly where naga validates and exactly where the rejection happens. The criterion is
+  also dishonestly satisfiable — enabling wgpu's native-only `immediates` feature turns 0/2 valid
+  into 2/2 while establishing nothing about browsers. Disposition: WebGPU reclassified as
+  research; `VULKAN_SPIRV` will ship `CODEGEN_ONLY`, and no naga gate is built. See
+  `.praxia/docs/research/260901_webgpu-export-measurement-pass.md`. Original text follows.
 - **AC-8 (PR2, CHANGED — split by target, V1/B9):** `Target.VULKAN_SPIRV` compiles the same
   fixture kernel used by AC-2 (not a synthetic one) and `xtrax.export.spirv.validate_webgpu()`
   returns `valid=True` against a real CPU (`llvmpipe`) `wgpu` adapter — i.e. `wgpu.create_shader_module`
@@ -558,6 +568,8 @@ with a one-line reason; unmarked ACs are unchanged.
   *module* acceptance only — `create_shader_module` — never pipeline creation, so
   `maxStorageBuffersPerShaderStage` (capped at 8 on WebGPU) and IREE's vulkan-HAL push-constant
   usage are never exercised or enforced by this AC (see Non-goals).
+- **AC-8b — VOID (260902).** Depends on `validate_webgpu()`, which AC-8's disposition removes
+  from the plan. Nothing else references it. Original text follows.
 - **AC-8b (PR2, NEW — V2/B10 negative case):** `validate_webgpu()` returns `valid=False` (never
   raises to its caller) for exactly the two orchestrator-measured fixtures: (1) valid SPIR-V
   magic with a garbage instruction body (`GPUValidationError: "unknown instruction 44510"`
@@ -780,7 +792,13 @@ were altered by this revision — see the Changelog.)
   requires the Vulkan ICD driver, Blocker 3 — a bare `ubuntu-latest` cannot get an `llvmpipe`
   adapter at all); a recorded bundle-size budget guards against vmfb regressions.
 - Rollout: PR1 (native + wasm32 + import-linter + extra), PR2 (SPIR-V + wgpu/naga gate), PR3
-  (multi-axis composer). Unchanged. **New (M16):** PR1 also retires the spike (Task 9b).
+  (multi-axis composer). **REORDERED 260902 — PR1, then PR3, then PR2':** AC-8's falsification
+  (#114) removed PR2's central deliverable, so the remaining order is by residual value rather
+  than by spec sequence. PR3 is untouched by that finding and closes the larger gap — multi-axis
+  plans could not be exported at all — so it landed second (PR #116). What survives of PR2 is
+  Tasks 10 (with `VULKAN_SPIRV` as `CODEGEN_ONLY`), 12, 13, 13b, 14, 17, 19; Task 11 is dropped
+  with AC-8, Task 15 reduces to threading `request_features`, and Task 16's `wgpu` pin is
+  replaced by pinning `huggingface_hub`, which #114 found floating to a major version. **New (M16):** PR1 also retires the spike (Task 9b).
   **New, this pass:** `materialize`'s foundation (the `AxisBoundary` field, Rule 3's kind-based
   revision, `export_pipeline`'s boundary pre-strip, AC-17/17b/17c/17d) lands in **PR1** — Task 2
   and Task 5 are where Rule 3 and `export_pipeline` are *first implemented* (neither exists on
