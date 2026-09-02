@@ -52,13 +52,16 @@ cli = [ "tyro>=0.9,<2", "flatbuffers>=2",]
 io = [ "zarr>=3.0",]
 # Pins reconciled against a real resolver on py3.13, 2026-09-01 (exit 0 alongside
 # the core jax pin) -- see .praxia/docs/research/260901_webgpu-export-measurement-pass.md.
-# huggingface-hub is pinned to <2 deliberately: left unpinned it floats to 1.x,
-# and hf_weights.py was written against the 0.x API.
 export = [
   "iree-base-compiler>=3.11,<4",
   "iree-base-runtime>=3.11,<4",
-  "huggingface_hub>=0.24,<2",
-  "safetensors>=0.4",
+  # Pinned to the 1.x line rather than the >=0.24,<2 range this started as. That
+  # range spans the 0.x -> 1.x major break, so a fresh resolve moved silently
+  # between API generations (measured floating to 1.29.0). src/xtrax/export/
+  # hf_weights.py is written and tested against 1.x -- the promoted spike
+  # targeted 0.x, which is what made the wide range look safe.
+  "huggingface_hub>=1,<2",
+  "safetensors>=0.4,<1",
 ]
 # NOTE: there is deliberately no `provenance = ["cisternal"]` extra yet.
 #

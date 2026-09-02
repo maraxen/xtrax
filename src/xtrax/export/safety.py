@@ -107,47 +107,110 @@ def find_bcoo_leaves(tree: Any) -> list[str]:
     return found
 
 
+def _dtype_blocker(
+    where: str,
+    dtype: Any,
+    target: Target,
+    request_features: frozenset[str],
+) -> ExportBlocker | None:
+    """Judge one dtype against a target, or None if the target accepts it.
+
+    Args:
+        where: Location to name in the blocker, e.g. ``"abstract_inputs[0]"`` or
+            a closure leaf's keypath.
+        dtype: The leaf's dtype.
+        target: The target being compiled for.
+        request_features: Device features the caller will request.
+
+    Returns:
+        A blocker, or None when the dtype is accepted outright or unlocked by a
+        requested feature.
+    """
+    name = dtype_name(dtype)
+    if name in target.supported_dtypes:
+        return None
+    if name in target.optional_dtypes:
+        feature = target.optional_dtype_features.get(name)
+        if feature is not None and feature in request_features:
+            return None
+        return ExportBlocker(
+            axis=where,
+            rule="dtype",
+            detail=(
+                f"dtype {name!r} is optional on target {target.name!r} and "
+                f"needs feature {feature!r}, which was not requested. Pass "
+                f"request_features=frozenset({{{feature!r}}})."
+            ),
+        )
+    supported = ", ".join(sorted(target.supported_dtypes))
+    detail = f"dtype {name!r} is not supported by target {target.name!r}. Supported: {supported}."
+    if name == "f64":
+        # Worth saying outright: IREE does not reject f64, it silently demotes
+        # it to f32 and rewrites the artifact's public signature. Without this
+        # the reader assumes a capability gap and goes looking for a flag.
+        detail += (
+            " IREE demotes f64 to f32 on every backend and rewrites the entry "
+            "point's signature to match, so the artifact would not have the "
+            "dtype you asked for. Cast to f32 yourself, so the precision loss "
+            "is yours rather than the compiler's."
+        )
+    return ExportBlocker(axis=where, rule="dtype", detail=detail)
+
+
+def _closure_dtype_leaves(fn: Any) -> list[tuple[str, Any]]:
+    """Return ``(keypath, dtype)`` for every array leaf reachable from ``fn``.
+
+    ``abstract_inputs`` covers only what the caller passes at trace time. A
+    model's weights typically ride along in the callable's closure instead --
+    an Equinox module holding a bf16 or f64 array is never an argument -- so
+    checking arguments alone leaves the commonest case unchecked.
+
+    Args:
+        fn: The callable being exported.
+
+    Returns:
+        One entry per leaf that has a ``dtype``, keypath first. Empty when the
+        callable holds no array leaves, which is the usual case for a plain
+        function.
+    """
+    try:
+        import jax
+    except ImportError:  # pragma: no cover - jax is a hard dependency
+        return []
+
+    try:
+        flat = jax.tree_util.tree_flatten_with_path(fn)[0]
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return []
+
+    leaves: list[tuple[str, Any]] = []
+    for path, leaf in flat:
+        dtype = getattr(leaf, "dtype", None)
+        if dtype is not None:
+            leaves.append((f"closure{jax.tree_util.keystr(path)}", dtype))
+    return leaves
+
+
 def _dtype_blockers(
     abstract_inputs: Sequence[Any],
+    fn: Any,
     target: Target,
     request_features: frozenset[str],
 ) -> list[ExportBlocker]:
-    """Collect a blocker for every abstract input whose dtype the target rejects."""
+    """Collect a blocker for every input or closure leaf whose dtype is rejected."""
     blockers: list[ExportBlocker] = []
     for index, spec in enumerate(abstract_inputs):
         dtype = getattr(spec, "dtype", None)
         if dtype is None:
             continue
-        name = dtype_name(dtype)
-        if name in target.supported_dtypes:
-            continue
-        if name in target.optional_dtypes:
-            feature = target.optional_dtype_features.get(name)
-            if feature is not None and feature in request_features:
-                continue
-            blockers.append(
-                ExportBlocker(
-                    axis=f"abstract_inputs[{index}]",
-                    rule="dtype",
-                    detail=(
-                        f"dtype {name!r} is optional on target {target.name!r} and "
-                        f"needs feature {feature!r}, which was not requested. Pass "
-                        f"request_features=frozenset({{{feature!r}}})."
-                    ),
-                )
-            )
-            continue
-        supported = ", ".join(sorted(target.supported_dtypes))
-        blockers.append(
-            ExportBlocker(
-                axis=f"abstract_inputs[{index}]",
-                rule="dtype",
-                detail=(
-                    f"dtype {name!r} is not supported by target {target.name!r}. "
-                    f"Supported: {supported}."
-                ),
-            )
-        )
+        blocker = _dtype_blocker(f"abstract_inputs[{index}]", dtype, target, request_features)
+        if blocker is not None:
+            blockers.append(blocker)
+
+    for where, dtype in _closure_dtype_leaves(fn):
+        blocker = _dtype_blocker(where, dtype, target, request_features)
+        if blocker is not None:
+            blockers.append(blocker)
     return blockers
 
 
@@ -178,8 +241,8 @@ def check_export_safety(
     Returns:
         Every blocker found, in discovery order. Empty means no dtype objection.
     """
-    del decisions, axis_boundaries, fn
-    return _dtype_blockers(abstract_inputs, target, request_features)
+    del decisions, axis_boundaries
+    return _dtype_blockers(abstract_inputs, fn, target, request_features)
 
 
 def validate_export_safe(

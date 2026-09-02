@@ -21,11 +21,61 @@ which is deliberately not the same for every target:
 |---|---|---|
 | `NATIVE` | `EXECUTED` | Compiled and run; numerics matched an independent oracle |
 | `WASM32` | `CODEGEN_ONLY` | Compiled. Nothing more |
+| `VULKAN_SPIRV` | `CODEGEN_ONLY` | Compiled; SPIR-V extracted |
+| `METAL_SPIRV` | `CODEGEN_ONLY` | Compiled. Nothing more |
 
 `WASM32` is not executed because doing so needs an emsdk-built IREE runtime,
-which has no published package. `ExportResult.verified` is unconditionally
-`False` for a `CODEGEN_ONLY` target; read `verification_level` to distinguish
-that from a genuine failure.
+which has no published package. The SPIR-V targets are not executed because
+doing so needs a device this package does not require. `ExportResult.verified`
+is unconditionally `False` for a `CODEGEN_ONLY` target; read
+`verification_level` to distinguish that from a genuine failure.
+
+No target is registered at `VALIDATED`, and `export_pipeline` raises
+`NotImplementedError` for one, rather than reporting a `verified` it has nothing
+to compute.
+
+`VULKAN_SPIRV` is the only target that populates `ExportResult.spirv_bytes`.
+`METAL_SPIRV` is named for its input dialect, not its output — it emits Metal
+Shading Language, so there is no SPIR-V to extract and `spirv_bytes` stays
+`None`.
+
+### Dtypes
+
+Each target declares the dtypes it carries. The envelope splits by verification
+level rather than by backend, because every backend compiles the same set and
+only the runtime differs:
+
+| dtype | `EXECUTED` | `CODEGEN_ONLY` |
+|---|---|---|
+| `f32`, `f16`, `i32`, `i64`, `i8`, `u32`, `bool` | yes | yes |
+| `bf16` | no | yes |
+| `f64` | no | no |
+
+`bf16` compiles everywhere and its signature is untouched, but IREE's Python
+runtime cannot map bf16 buffers back to numpy, so an executed target cannot run
+it and therefore cannot verify it.
+
+`f64` is rejected everywhere. IREE does not refuse it — it demotes it to `f32`
+and rewrites the entry point's public signature to match, with a warning rather
+than an error. On an executed target that surfaces later as a buffer-level type
+mismatch; on a codegen-only target it never surfaces at all, and you get an
+artifact that quietly takes and returns `f32`. Cast to `f32` yourself and the
+precision loss is a decision rather than a discovery.
+
+### Loading checkpoint weights
+
+`load_hf_weights` reads a safetensors checkpoint and casts anything the target
+will not carry, reporting every leaf it touched:
+
+```python
+from xtrax.export import NATIVE, load_hf_weights
+
+loaded = load_hf_weights("org/model", target=NATIVE)
+loaded.report.dtypes_cast   # ("layer.0.weight: bf16 -> f32", ...)
+```
+
+Casting is what makes a bf16 checkpoint verifiable, since `NATIVE` cannot run
+bf16. `f64` tensors raise instead of being cast, for the reason above.
 
 ## Exporting
 

@@ -9,7 +9,9 @@ import pytest
 
 from xtrax.export.targets import (
     ALL_TARGETS,
+    METAL_SPIRV,
     NATIVE,
+    VULKAN_SPIRV,
     WASM32,
     Target,
     VerificationLevel,
@@ -18,8 +20,50 @@ from xtrax.export.targets import (
 
 
 class TestRegistryContents:
-    def test_native_and_wasm32_are_registered(self):
-        assert ALL_TARGETS == (NATIVE, WASM32)
+    def test_the_four_targets_are_registered(self):
+        assert ALL_TARGETS == (NATIVE, WASM32, VULKAN_SPIRV, METAL_SPIRV)
+
+    def test_no_target_is_registered_as_validated(self):
+        """export_pipeline refuses VALIDATED, having nothing to populate it with."""
+        levels = {t.verification_level for t in ALL_TARGETS}
+        assert VerificationLevel.VALIDATED not in levels
+
+    def test_only_vulkan_emits_spirv(self):
+        """metal-spirv is named for its input dialect; it dumps MSL, not SPIR-V."""
+        emitters = {t.name for t in ALL_TARGETS if t.emits_spirv}
+        assert emitters == {"vulkan-spirv"}
+
+    @pytest.mark.parametrize("target", ALL_TARGETS)
+    def test_no_target_claims_f64(self, target: Target):
+        """IREE demotes f64 to f32 everywhere and rewrites the public signature.
+
+        Listing it would promise a dtype no artifact actually carries; the gate
+        rejects it up front instead.
+        """
+        assert "f64" not in target.supported_dtypes
+        assert "f64" not in target.optional_dtypes
+
+    def test_executed_target_excludes_bf16(self):
+        """IREE's runtime cannot map bf16 buffers to numpy, so it cannot be verified."""
+        assert "bf16" not in NATIVE.supported_dtypes
+
+    @pytest.mark.parametrize("target", [WASM32, VULKAN_SPIRV, METAL_SPIRV])
+    def test_codegen_only_targets_carry_bf16(self, target: Target):
+        """bf16 compiles and its signature is untouched; nothing here is executed."""
+        assert "bf16" in target.supported_dtypes
+
+    @pytest.mark.parametrize("target", ALL_TARGETS)
+    def test_the_envelope_splits_by_level_not_by_backend(self, target: Target):
+        """Measured: every backend compiles the same set; only the runtime differs."""
+        expected = NATIVE.supported_dtypes | {"bf16"}
+        if target.verification_level is VerificationLevel.EXECUTED:
+            expected = NATIVE.supported_dtypes
+        assert target.supported_dtypes == expected
+
+    @pytest.mark.parametrize("target", ALL_TARGETS)
+    def test_no_optional_dtypes_are_invented(self, target: Target):
+        """The machinery stays; nothing populates it without a measured reason."""
+        assert target.optional_dtypes == frozenset()
 
     def test_target_is_not_hashable(self):
         """Documents a real consequence of optional_dtype_features being a Mapping.
