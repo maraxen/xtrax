@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a8] - 2026-09-02
+
 ### Added
 
 - **`xtrax.export`**: compiles a `BatchPlan` to a standalone artifact via
@@ -56,6 +58,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EXECUTED` target cannot verify it.
 - `huggingface_hub` pinned to `>=1,<2`. The previous `>=0.24,<2` spanned the
   1.0 break and was resolving across API generations.
+
+### Fixed
+
+- The release-readiness gate no longer requires markers for a staging index that
+  was retired. `distribution/release_readiness.toml` asserted that
+  `publish.yml` contained `publish-testpypi` and `test.pypi.org/legacy`, but the
+  TestPyPI job was deliberately dropped on 2026-07-02 ("publishing to PyPI only
+  by decision"). The gate had therefore reported `BLOCKED_AUTOMATED` for two
+  months on a condition no longer wanted, with every other check passing.
+  `just audit-release-readiness` was the only place that failure could appear,
+  and nothing in CI ran it, so it surfaced only when someone went to cut a
+  release. Its hermetic half now runs inside `audit-deterministic` as
+  `audit-release-readiness-contract`, alongside every other
+  `tests/distribution` gate, and the test asserts against the config's own
+  marker list rather than restating it — the duplication is what let the two
+  drift apart.
 
 ### Note
 

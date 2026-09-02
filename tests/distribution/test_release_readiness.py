@@ -36,10 +36,18 @@ def test_load_release_readiness_config_reads_committed_toml() -> None:
 
 
 def test_verify_workflow_markers_passes_on_publish_workflow() -> None:
+    """The real publish workflow carries every marker the gate config requires.
+
+    Both arguments come from the config rather than being restated here. The
+    hardcoded pair this replaced kept asserting 'publish-testpypi' for two
+    months after the TestPyPI job was deliberately removed, which is the exact
+    drift a duplicated list invites.
+    """
+    config = load_release_readiness_config(CONFIG_PATH)
     failures = verify_workflow_markers(
         ROOT,
-        ".github/workflows/publish.yml",
-        ("publish-testpypi", "id-token: write"),
+        config.publish_workflow,
+        config.required_publish_markers,
     )
     assert failures == []
 
@@ -172,10 +180,8 @@ def test_audit_release_readiness_writes_report_with_mocks(tmp_path: Path) -> Non
                 audit-coverage-tier1
                 audit-coverage-tier2
                 --doctest-modules src/xtrax/io/
-                publish-testpypi
                 publish-pypi
                 id-token: write
-                test.pypi.org/legacy
                 """
             ).strip()
             + "\n",
