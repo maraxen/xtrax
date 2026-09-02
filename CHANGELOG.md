@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`xtrax.export`**: compiles a `BatchPlan` to a standalone artifact via
+  StableHLO and IREE. `export_pipeline` folds a plan into one traceable
+  callable, exports it, compiles it for one or more targets, and verifies
+  numerical parity against the original JAX callable where the target can be
+  executed. Four targets ship — `NATIVE` and `WASM32` (`EXECUTED`),
+  `VULKAN_SPIRV` and `METAL_SPIRV` (`CODEGEN_ONLY`) — with `VerificationLevel`
+  recording how far each one is actually checked, so a `CODEGEN_ONLY` artifact
+  never reads as verified. SPIR-V shaders are extracted from `vulkan-spirv`
+  builds, magic-filtered so `metal-spirv`'s MSL dump is rejected rather than
+  mistaken for a shader. The IREE toolchain is imported lazily behind the
+  `export` extra: a missing toolchain surfaces at compile time with a clear
+  error, never as an ImportError at module load.
+  (spec: `.praxia/docs/specs/260901_xtrax-export-webgpu.md`)
+- **Multi-axis export composition**: `build_traceable_callable` handles an outer
+  `Vmap` axis wrapping an inner `Scan` axis, following the composition recipe
+  certified by `tests/stages/test_nested_ordering.py` literally rather than
+  routing through the executor's scan helper. A plan whose shape forces a
+  literal `jax.vmap` around a lane-dependent ordered `Tap`/`Sink` is refused
+  with `MultiAxisCompositionError`, carrying the executor's own guidance rather
+  than a second paraphrase of it. Previously any plan with more than one axis
+  was refused outright.
+- **Export-safety gate** (`check_export_safety`, `validate_export_safe`): blocks
+  BCOO leaves and out-of-envelope dtypes before any compile runs, reporting
+  every blocker at once. Leaves reachable through `fn`'s closure are scanned
+  alongside `abstract_inputs`, which is what catches a weight held in an
+  Equinox module — the commonest shape, since weights are never arguments.
+- **`materialize` boundary kind** (`xtrax.stages`): marks a sink whose values
+  the export should carry as real outputs, stripped to a no-op inside the
+  exported artifact so the compiled graph stays pure.
+- **`load_hf_weights`**: loads safetensors checkpoints, casting any dtype the
+  chosen target cannot verify and reporting every cast leaf untruncated. `f64`
+  raises rather than casting silently.
+
+### Changed
+
+- The export dtype envelope is measured against IREE 3.11.0 rather than derived
+  from a backend's published numeric model. Two results are worth stating
+  because both contradict the obvious assumption: `f64` is rejected on **every**
+  target including `NATIVE`, because IREE does not refuse it — `ConvertTypesPass`
+  demotes it to `f32` and rewrites the entry point's public signature with a
+  warning, which on a `CODEGEN_ONLY` target is never surfaced at all. And `bf16`
+  splits by verification level rather than by backend: it compiles everywhere
+  with its signature untouched, and fails only in IREE's runtime
+  buffer-to-numpy mapping, so a `CODEGEN_ONLY` target carries it while an
+  `EXECUTED` target cannot verify it.
+- `huggingface_hub` pinned to `>=1,<2`. The previous `>=0.24,<2` spanned the
+  1.0 break and was resolving across API generations.
+
+### Note
+
+- No WebGPU target ships. IREE's Vulkan HAL passes dispatch parameters through
+  push constants, which are not a WebGPU capability, so naga rejects every
+  SPIR-V module IREE emits and no flag removes them. The question is tracked as
+  research rather than left implied by a `VALIDATED` target that nothing
+  registers.
+
 ## [0.4.0a7] - 2026-08-27
 
 ### Added

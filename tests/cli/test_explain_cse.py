@@ -12,7 +12,11 @@ import pytest
 pytest.importorskip("jax")
 
 REPO_SRC = Path(__file__).resolve().parents[2] / "src"
-DEMO_DIR = Path(__file__).resolve().parent  # tests/cli — parent of the _cse_demo package
+# tests/cli, placed on PYTHONPATH below so `_cse_demo.demo` resolves. The demo
+# package is committed under tests/cli/_cse_demo/ rather than generated at test
+# time, so the CLI subprocess and the assertions share one definition of the
+# demo functions.
+DEMO_DIR = Path(__file__).resolve().parent
 
 
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:  # type: ignore[name-defined]
@@ -30,29 +34,6 @@ def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:  # type: igno
         env=env,
         timeout=120,
     )
-
-
-DEMO_MODULE = '''
-"""Demo functions for CSE CLI tests."""
-import jax.numpy as jnp
-
-
-def duplicated_compute(x):
-    y = jnp.sin(x) * 2.0
-    z = jnp.sin(x) * 2.0
-    return y + z + jnp.exp(y)
-
-
-def clean_compute(x):
-    return jnp.sin(x) + jnp.cos(x)
-'''
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _demo_module(tmp_path_factory: pytest.TempPathFactory) -> None:
-    pass  # tests/cli is already on PYTHONPATH; package dir exists
-    (DEMO_DIR / "__init__.py").write_text("")
-    (DEMO_DIR / "demo.py").write_text(DEMO_MODULE)
 
 
 CSE_ARGS = [
