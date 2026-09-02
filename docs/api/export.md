@@ -105,6 +105,48 @@ Three things to know:
 collapses the very array materialize needs to expose — and only one axis per
 plan may materialize. Both raise named `PlanTopologyError` subclasses.
 
+## Multi-axis plans
+
+One two-axis shape composes: an outer `Vmap` axis wrapping an inner `Scan` axis.
+It is the shape `tests/stages/test_nested_ordering.py` certifies, and the
+composer follows that recipe rather than generalising past it. Deeper nestings,
+and other two-axis pairings, are refused with `MultiAxisCompositionError`.
+
+The initial carry's shape selects how lanes are iterated:
+
+- **Carry batched to the outer axis** — every `scan_init` leaf has the outer
+  cardinality as its leading dimension. The outer axis is then a dimension
+  rather than a loop, so the composer emits a single `jax.lax.scan` and no
+  `jax.vmap` runs at all. This is the recommended form: write the transition's
+  per-step logic as ordinary broadcasting array ops.
+- **Carry not batched** — lanes can only be iterated by an actual `jax.vmap`.
+  That composes when the inner axis's sunk value does not depend on the lane. When
+  it does, JAX refuses to vmap an ordered IO callback, and the composer re-raises
+  the executor's own guidance as `MultiAxisCompositionError`.
+
+```python
+plan = ...                       # outer "lane" Vmap axis, inner "step" Scan axis
+init = jnp.arange(batch) * base  # leading dim == the lane axis's cardinality
+composed = build_traceable_callable(transition, plan, boundaries, scan_init=init)
+```
+
+Boundaries attach to the inner `Scan` axis. On the batched form the outer axis
+has no per-lane call site for a `fuse`/`tap`/`sink` to fire at, so one declared
+there is refused rather than silently dropped.
+
+`sink` receives the exact value returned as the step's `y`, because both come
+from the single `y` the transition returned. Materializing sinks (above)
+depends on that: export strips the sink and reads the returned stack instead, so
+the two must be the same value.
+
+Ordering is certified in two independent places, because they fail differently.
+A composer-level test asserts host-call order on the un-stripped callable,
+catching wrong axis nesting or a dropped boundary. A separate test exports the
+stripped callable, runs the artifact, and decodes `(lane, step)` back out of its
+output — catching a lowering bug that a pre-export test double cannot see. A
+third leg runs the stripped callable in pure JAX in between, so a failure points
+at either the composition or the lowering rather than at both.
+
 ## A footgun worth naming
 
 For a `Scan` axis, the `fn` you pass to `export_pipeline` is always the

@@ -9,6 +9,14 @@ artifacts* serialized at a target version. ``Exported.mlir_module()`` emits
 current-version text, so if IREE rejects it we retry once through a portable
 artifact pinned to IREE's own minimum version.
 
+That retry is **inert on the pinned toolchain**: ``iree-base-compiler`` 3.11.0
+ships no ``stablehlo`` module under ``iree.compiler.dialects`` at all (measured
+260902), so ``_downgrade_to_portable`` always raises. Its remaining effect is
+the error message -- a rejected module reports both why the direct compile
+failed and that no downgrade was available, rather than only one of the two. The
+code is kept because the binding's absence is a property of this build, not of
+the API, and the ``ImportError`` path handles either case.
+
 IREE is imported lazily inside each function. Importing this module requires
 only the base install; a missing toolchain surfaces as a CompileError naming the
 extra to install, at the point of use.
@@ -73,6 +81,10 @@ def _downgrade_to_portable(mlir_text: str) -> bytes:
 
     Only called as a fallback: if IREE's bundled StableHLO is older than the one
     jax emits, the current-version text can carry ops it cannot parse.
+
+    Always raises on ``iree-base-compiler`` 3.11.0, which ships no such bindings
+    (see the module docstring). Do not treat a successful direct compile as
+    evidence that this path works.
 
     Args:
         mlir_text: Current-version StableHLO MLIR.
