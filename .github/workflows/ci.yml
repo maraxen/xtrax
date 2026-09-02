@@ -94,6 +94,34 @@ jobs:
       - name: Doctest canonical import paths
         run: uv run pytest --doctest-modules src/xtrax/io/ -q
 
+  export-toolchain-tests:
+    # tests/export/ runs twice on purpose: once in lint-format-type-test with no
+    # toolchain at all (proving the fakes hold and xtrax.export imports on a base
+    # install), and once here against real IREE.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      # A bare ubuntu-latest runner has no Vulkan ICD, so wgpu finds zero
+      # adapters and every SPIR-V validation would silently skip rather than
+      # fail. Measured 2026-09-01: 0 adapters before this step, 1 llvmpipe CPU
+      # adapter after it. See
+      # .praxia/docs/research/260901_webgpu-export-measurement-pass.md.
+      - name: Install Vulkan ICD
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+
+      - name: Install dependencies with the export toolchain
+        run: uv sync --extra dev --extra io --extra export
+
+      - name: Export tests against real IREE
+        run: uv run pytest tests/export/ -q
+
   audit-port:
     needs: port-changes
     if: needs.port-changes.outputs.port == 'true'

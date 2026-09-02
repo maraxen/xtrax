@@ -50,6 +50,16 @@ dev = [
 eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 cli = [ "tyro>=0.9,<2", "flatbuffers>=2",]
 io = [ "zarr>=3.0",]
+# Pins reconciled against a real resolver on py3.13, 2026-09-01 (exit 0 alongside
+# the core jax pin) -- see .praxia/docs/research/260901_webgpu-export-measurement-pass.md.
+# huggingface-hub is pinned to <2 deliberately: left unpinned it floats to 1.x,
+# and hf_weights.py was written against the 0.x API.
+export = [
+  "iree-base-compiler>=3.11,<4",
+  "iree-base-runtime>=3.11,<4",
+  "huggingface_hub>=0.24,<2",
+  "safetensors>=0.4",
+]
 # NOTE: there is deliberately no `provenance = ["cisternal"]` extra yet.
 #
 # xtrax.telemetry uses cisternal.provenance (durable per-run git refs, dirty-tree
@@ -143,6 +153,7 @@ source_modules = [
   "xtrax.inference",
   "xtrax.loop",
   "xtrax.telemetry",
+  "xtrax.export",
 ]
 forbidden_modules = ["xtrax.eda"]
 
@@ -180,8 +191,18 @@ source_modules = [
   "xtrax.jaxlint_runner",
   "xtrax.tombstone",
   "xtrax.telemetry",
+  "xtrax.export",
 ]
 forbidden_modules = ["xtrax.devtools"]
+
+[[tool.importlinter.contracts]]
+name = "Base modules must not import xtrax.export"
+# xtrax.export depends on tiling/stages/transforms, never the reverse. The
+# materialize field lives on AxisBoundary in stages, but it is plain data --
+# stages must not reach back into export to interpret it.
+type = "forbidden"
+source_modules = ["xtrax.tiling", "xtrax.stages", "xtrax.transforms"]
+forbidden_modules = ["xtrax.export"]
 
 [[tool.importlinter.contracts]]
 name = "tiling must not import inference"
