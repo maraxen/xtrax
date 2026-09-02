@@ -576,6 +576,30 @@ with a one-line reason; unmarked ACs are unchanged.
   internally), and (2) non-SPIR-V random bytes (`ValueError: "Given shader data does not look
   like a SpirV module"` internally). Both cases populate `SpirvValidationResult.error` with the
   caught exception's message text.
+- **AC-9/AC-10/AC-11 — AMENDED 260902 by measurement.** These specified a dtype envelope for the
+  SPIR-V targets derived from WebGPU's numeric model (`{f32, i32, bool}`, `f16` behind a
+  `shader-f16` feature). Measurement against IREE 3.11.0 found no backend-dependent dtype
+  behaviour at all: every backend compiles every dtype, and the emitted SPIR-V declares only
+  `Shader`/`Matrix`, never `Float16` or `Float64`. What the toolchain does distinguish is the
+  *verification level*, so the shipped envelope splits there instead:
+  - **`f64` is rejected on every target**, which AC-9 got right for a reason it did not give.
+    IREE does not refuse f64 — `ConvertTypesPass` demotes it to f32 and rewrites the entry
+    point's public signature, with a warning. On EXECUTED that resurfaces as
+    `input0 element type mismatch; expected f32 but have f64` from deep in the runtime; on
+    CODEGEN_ONLY it never surfaces at all and the caller gets an f32 artifact they did not ask
+    for.
+  - **`bf16` is rejected only on EXECUTED targets**, contradicting AC-9's "f64 or bf16 ... on
+    `VULKAN_SPIRV`". bf16 compiles fine everywhere and its signature is untouched; what fails is
+    IREE's *runtime* (`Unsupported VM Buffer -> numpy dtype mapping`), so a target that never
+    executes carries it happily. This is what gives AC-10's cast its real purpose: casting is how
+    a bf16 checkpoint becomes verifiable, not how it becomes compilable.
+  - **AC-11's `shader-f16` gating is not shipped.** The `optional_dtypes`/`request_features`
+    machinery is kept and tested, but populating it here would invent a distinction the toolchain
+    does not make.
+  - **AC-9b stands unchanged and was a real bug**: `check_export_safety` discarded `fn`
+    outright (`del ... fn`) while its own docstring promised a closure scan, so a bf16/f64 weight
+    held in an Equinox module passed every gate.
+  Original text follows.
 - **AC-9 (PR2):** a plan whose abstract inputs include an `f64` or `bf16` leaf, exported with
   `targets=(VULKAN_SPIRV,)`, raises `DtypeNotSupportedError` at `export_pipeline` call time
   (before `jax.export.export`), naming the offending dtype and the target.

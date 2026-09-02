@@ -22,11 +22,13 @@ only the base install; a missing toolchain surfaces as a CompileError naming the
 extra to install, at the point of use.
 """
 
+import contextlib
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from xtrax.export.spirv import spirv_binaries_in
 from xtrax.export.targets import Target
 
 __all__ = [
@@ -145,6 +147,33 @@ def compile_for_target(
         *target.extra_compiler_flags,
     ]
 
+    # Ask for the executable dump only when the target could carry SPIR-V. The
+    # flag is harmless elsewhere but the directory would just be scanned for
+    # nothing, and llvm-cpu writes object files that are not shaders at all.
+    dump_ctx: Any = contextlib.nullcontext(None)
+    if target.emits_spirv:
+        dump_ctx = tempfile.TemporaryDirectory(prefix=f"xtrax-spirv-{target.name}-")
+
+    with dump_ctx as dump_name:
+        dump_dir = Path(dump_name) if dump_name is not None else None
+        if dump_dir is not None:
+            args.append(f"--iree-hal-dump-executable-binaries-to={dump_dir}")
+        return _compile_with(tools, mlir_text, target, args, out_path, dump_dir)
+
+
+def _compile_with(
+    tools: Any,
+    mlir_text: str,
+    target: Target,
+    args: list[str],
+    out_path: Path,
+    dump_dir: Path | None,
+) -> "CompileResult":
+    """Run the compiler, retry through a portable artifact once, and write the vmfb.
+
+    Split out so ``compile_for_target`` can hold the dump directory open across
+    both attempts: the retry re-runs the compiler and re-populates it.
+    """
     downgraded = False
     stderr = ""
     try:
@@ -177,12 +206,19 @@ def compile_for_target(
             )
             raise CompileError(msg) from first_exc
 
+    # Read the dump before the caller's TemporaryDirectory closes over it. A
+    # target that emits no SPIR-V keeps spirv_bytes None rather than an empty
+    # dict, so "not applicable" stays distinguishable from "asked, found none".
+    spirv_bytes: dict[str, bytes] | None = None
+    if dump_dir is not None:
+        spirv_bytes = spirv_binaries_in(dump_dir)
+
     out_path.write_bytes(binary)
     return CompileResult(
         target=target,
         path=out_path,
         size_bytes=len(binary),
-        spirv_bytes=None,
+        spirv_bytes=spirv_bytes,
         downgraded_stablehlo=downgraded,
         stderr=stderr,
     )
