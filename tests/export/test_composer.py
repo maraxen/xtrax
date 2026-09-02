@@ -9,6 +9,7 @@ import pytest
 
 from xtrax.export.composer import (
     ComposerError,
+    MultiAxisCompositionError,
     UnsupportedStrategyError,
     build_traceable_callable,
     compose_single_axis,
@@ -48,6 +49,14 @@ class TestUnsupportedStrategies:
     def test_while_carry_raises_naming_the_strategy(self):
         with pytest.raises(UnsupportedStrategyError, match="'WhileCarry'"):
             compose_single_axis(lambda x: x, _decision("a", WhileCarry()))
+
+    def test_decision_without_a_strategy_raises_naming_the_axis(self):
+        class _NoStrategy:
+            strategy = None
+            spec = AxisSpec(name="orphan", cardinality=4, default_batch_size=0)
+
+        with pytest.raises(UnsupportedStrategyError, match="'orphan'"):
+            compose_single_axis(lambda x: x, _NoStrategy())
 
     def test_while_carry_explains_the_workaround(self):
         with pytest.raises(UnsupportedStrategyError, match="unbounded trip count"):
@@ -140,9 +149,15 @@ class TestBuildTraceableCallable:
         with pytest.raises(ComposerError, match="no axis decisions"):
             build_traceable_callable(lambda x: x, _Plan([]))
 
-    def test_multi_axis_plan_raises_naming_the_axes(self):
+    def test_uncertified_two_axis_shape_raises_naming_the_shape(self):
+        """Vmap-over-Scan is the one certified nesting; Vmap-over-Vmap is not."""
         plan = _Plan([_decision("outer", Vmap()), _decision("inner", Vmap())])
-        with pytest.raises(ComposerError, match="'outer', 'inner'"):
+        with pytest.raises(MultiAxisCompositionError, match="Vmap-over-Vmap"):
+            build_traceable_callable(lambda x: x, plan)
+
+    def test_three_axis_plan_raises_naming_the_axes(self):
+        plan = _Plan([_decision("a", Vmap()), _decision("b", Scan()), _decision("c", Vmap())])
+        with pytest.raises(MultiAxisCompositionError, match="'a', 'b', 'c'"):
             build_traceable_callable(lambda x: x, plan)
 
     def test_composes_unaware_of_materialize(self):
