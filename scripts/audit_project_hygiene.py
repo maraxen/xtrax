@@ -122,6 +122,23 @@ def _parse_citation_version(citation_path: Path) -> str | None:
     return match.group(1).strip()
 
 
+def _parse_skill_version(skill_path: Path) -> str | None:
+    """Return a SKILL.md's declared `xtrax_version:`, or None if it declares none.
+
+    Only the frontmatter block is searched. A skill that declares no version is not a
+    failure -- the marker is optional, and a skill without one cannot go stale.
+    """
+    text = skill_path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    frontmatter = text if end == -1 else text[:end]
+    match = re.search(r"^xtrax_version:\s*['\"]?([^'\"\n]+)", frontmatter, flags=re.MULTILINE)
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
 def _parse_citation_keys(citation_path: Path) -> set[str]:
     keys: set[str] = set()
     for line in citation_path.read_text(encoding="utf-8").splitlines():
@@ -182,6 +199,21 @@ def audit_project_hygiene(
                 f"{citation_version!r} != {config.version_attribute} "
                 f"{package_version!r}"
             )
+
+    # agent_assets/skills/*/SKILL.md is a third version site, after __init__.py and
+    # CITATION.cff. It was missed at 0.4.0a8 exactly as CITATION.cff would have been
+    # without the check above: all three markers still read 0.4.0a7 after the release,
+    # and nothing anywhere would have said so.
+    if init_path.is_file():
+        package_version = parse_init_version(init_path, attribute=config.version_attribute)
+        for skill_path in sorted((root / "agent_assets" / "skills").glob("*/SKILL.md")):
+            skill_version = _parse_skill_version(skill_path)
+            if skill_version is not None and skill_version != package_version:
+                rel = skill_path.relative_to(root)
+                failures.append(
+                    f"{rel} xtrax_version {skill_version!r} != "
+                    f"{config.version_attribute} {package_version!r}"
+                )
 
     pyproject_path = root / "pyproject.toml"
     if pyproject_path.is_file():
