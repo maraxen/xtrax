@@ -53,3 +53,22 @@ description = "Port validation tests (path-filtered in CI)"
 measure_coverage = false
 uv_sync_extras = ["dev"]
 pytest_args = ["port/tests/", "-q"]
+
+# controller/ is a top-level unshipped tree (wheel-smoke asserts it never ships),
+# so tier1's coverage_packages = ["xtrax"] does not reach it. Without this tier its
+# 4,456 lines were measured by nothing. The `controller` extra matters as much as the
+# tier does: bathos is what makes test_bathos_library_wrappers_integration.py's
+# collection-level importorskip pass, and installing it took tests/controller/ from
+# 259 passed / 2 skipped to 268 passed / 0 skipped.
+[[tiers]]
+id = "tier4_controller"
+description = "Loop controller (unshipped tree; real-bathos surface)"
+measure_coverage = true
+uv_sync_extras = ["dev", "io", "controller"]
+pytest_args = ["tests/controller/", "-q"]
+coverage_packages = ["controller"]
+coverage_omit = ["*/tests/*", "*/__init__.py"]
+target_line_pct = 90.0
+target_branch_pct = 80.0
+enforce_line_pct = 90.0
+enforce_branch_pct = 80.0

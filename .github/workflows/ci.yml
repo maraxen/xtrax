@@ -94,6 +94,34 @@ jobs:
       - name: Doctest canonical import paths
         run: uv run pytest --doctest-modules src/xtrax/io/ -q
 
+  controller-tests:
+    # Deliberately NOT gated on the controller-changes path filter above, unlike
+    # audit-port. controller/ imports from src/xtrax/loop/, so a src-only commit can
+    # break it: the higher_is_better/compute_ratchet_decision mismatch this job was
+    # added to catch lives in controller/main_loop.py but originates in a signature
+    # under src/. A controller/**-only filter would have sat out the commit that
+    # introduced it, which is the one shape of change this gate exists to catch.
+    #
+    # tier4 is its own tier rather than a widening of tier1 because the `controller`
+    # extra pulls bathos and ~62 transitive packages; tier1 stays lean and this job
+    # pays that cost alone.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      - name: Install just
+        run: uv tool install rust-just
+
+      - name: Install dependencies with the controller extra
+        run: uv sync --extra dev --extra io --extra controller
+
+      - name: Controller tests, types, and coverage gate
+        run: just audit-coverage-tier4
+
   export-toolchain-tests:
     # tests/export/ runs twice on purpose: once in lint-format-type-test with no
     # toolchain at all (proving the fakes hold and xtrax.export imports on a base

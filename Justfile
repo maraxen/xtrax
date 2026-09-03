@@ -194,15 +194,19 @@ audit-foundation: audit-imports audit-no-future-annotations audit-jaxlint
 
 audit-coverage-hygiene:
     uv run python scripts/audit_coverage_hygiene.py
+    uv run pytest tests/distribution/test_coverage_hygiene.py -v
 
 audit-version-wheel:
     uv run python scripts/audit_version_wheel.py
+    uv run pytest tests/distribution/test_version_wheel.py -v
 
 audit-packaging-metadata:
     uv run python scripts/audit_packaging_metadata.py
+    uv run pytest tests/distribution/test_packaging_metadata.py -v
 
 audit-public-api:
     uv run python scripts/audit_public_api.py
+    uv run pytest tests/distribution/test_public_api.py -v
 
 audit-docs-build:
     uv run ruff check scripts/audit_docs_plumbing.py tests/distribution/test_docs_plumbing.py
@@ -250,6 +254,7 @@ audit-release-readiness: audit-release-readiness-contract
 
 audit-coverage-dag:
     uv run python scripts/audit_coverage_dag.py
+    uv run pytest tests/distribution/test_coverage_dag.py -v
 
 audit-coverage-dag-all:
     uv run python scripts/audit_coverage_dag.py --all-tiers
@@ -259,6 +264,17 @@ audit-coverage-tier1:
 
 audit-coverage-tier2:
     uv run python scripts/audit_coverage_dag.py --tier tier2_eda --enforce tier2_eda
+
+# ty over controller/ needs the -c override: [tool.ty.src] include is scoped to
+# "src/**/*.py", which filters controller/ out before the CLI path is consulted, so a
+# bare `ty check controller/` prints "WARN No python files found" and then "All checks
+# passed!" -- a green that means nothing. The controller extra is required too, or the
+# bathos imports resolve to 10 spurious unresolved-import errors.
+audit-controller-types:
+    uv run --extra dev --extra io --extra controller ty check -c 'src.include=["controller/**/*.py"]' controller/
+
+audit-coverage-tier4: audit-controller-types
+    uv run python scripts/audit_coverage_dag.py --tier tier4_controller --enforce tier4_controller
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
 audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-release-readiness-contract audit-added-types-diff

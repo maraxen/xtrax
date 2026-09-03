@@ -33,6 +33,7 @@ from controller.dispatch import CandidateHandoff, CandidateHandoffFailure
 from controller.praxia_dispatch_backend import (
     PraxiaDispatchBackend,
     _call_write_staged_file,
+    _extract_tool_result,
     _is_safe_segment,
     _is_safe_subdir,
     _PraxiaToolUnavailable,
@@ -510,8 +511,88 @@ class TestRealWireTransport:
         assert handoff.path.read_text(encoding="utf-8") == content
 
 
+# ---------------------------------------------------------------------------
+# _extract_tool_result -- the tools/call response parser.
+#
+# A pure function with six decisions and, before tier4_controller existed, no direct
+# tests: it was only ever reached through the primary dispatch path, which exercised
+# the two well-formed shapes and none of the malformed ones. Every case below is a
+# response an MCP server can really return, not a synthetic reachability exercise --
+# not falling over on them is the parser's whole job.
+# ---------------------------------------------------------------------------
+
+
+class TestExtractToolResult:
+    def test_structured_content_is_returned_verbatim(self) -> None:
+        """structuredContent is preferred and short-circuits the content scan."""
+        payload = {"status": "staged", "path": "staged/c.py"}
+
+        assert _extract_tool_result({"structuredContent": payload}) == payload
+
+    def test_falls_back_to_the_first_parseable_text_block(self) -> None:
+        payload = {"status": "staged", "path": "staged/c.py"}
+        result = {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+        assert _extract_tool_result(result) == payload
+
+    def test_non_dict_structured_content_falls_through_to_content(self) -> None:
+        """structuredContent set to a non-dict must not be returned as the result.
+
+        `isinstance(structured, dict)` rather than a truthiness check is what makes a
+        server reporting `structuredContent: "ok"` fall through, instead of handing back
+        a string where every caller indexes a dict.
+        """
+        payload = {"status": "staged"}
+        result = {
+            "structuredContent": "ok",
+            "content": [{"type": "text", "text": json.dumps(payload)}],
+        }
+
+        assert _extract_tool_result(result) == payload
+
+    def test_blocks_that_are_not_text_dicts_are_skipped(self) -> None:
+        payload = {"status": "staged"}
+        result = {
+            "content": [
+                "not-a-dict",
+                {"type": "image", "data": "..."},
+                {"type": "text", "text": json.dumps(payload)},
+            ]
+        }
+
+        assert _extract_tool_result(result) == payload
+
+    def test_unparseable_text_block_is_skipped_not_fatal(self) -> None:
+        """A text block that is not JSON must be stepped over, not raised on.
+
+        This is the `continue` in the JSONDecodeError handler: a server that interleaves
+        a human-readable line with the JSON one still parses.
+        """
+        payload = {"status": "staged"}
+        result = {
+            "content": [
+                {"type": "text", "text": "staging the candidate now..."},
+                {"type": "text", "text": json.dumps(payload)},
+            ]
+        }
+
+        assert _extract_tool_result(result) == payload
+
+    def test_text_block_parsing_to_a_non_dict_is_not_accepted(self) -> None:
+        """Valid JSON that is not an object is not a tool result -- keep looking, then fail."""
+        result = {"content": [{"type": "text", "text": json.dumps(["staged"])}]}
+
+        with pytest.raises(ValueError, match="no parseable result"):
+            _extract_tool_result(result)
+
+    def test_no_content_at_all_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="no parseable result"):
+            _extract_tool_result({})
+
+
 __all__ = [
     "TestCallWriteStagedFileTransportFailures",
+    "TestExtractToolResult",
     "TestFallbackPath",
     "TestPrimaryPathViaInjectedTransport",
     "TestRealWireTransport",

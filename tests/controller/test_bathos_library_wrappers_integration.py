@@ -15,9 +15,11 @@ from controller.bathos_library_wrappers import (
     call_stats_battery_gate,
     get_capability_probe_result,
     get_seed_trial_counts,
+    get_sidecar_drift_signal,
 )
 from xtrax.loop.capability_probe_gate import CapabilityProbeResult
 from xtrax.loop.seed_gate import SeedTrialCounts
+from xtrax.loop.sidecar_drift_gate import SidecarDriftSignal
 from xtrax.loop.stats_battery_gate import BathosStatsBatteryVerdict
 
 # importorskip (not a bare `import duckdb`/`import bathos.stats_gates`) so this whole module
@@ -140,3 +142,101 @@ class TestGetCapabilityProbeResultRealBathos:
                 os.environ.pop("BTH_CATALOG_DIR", None)
             else:
                 os.environ["BTH_CATALOG_DIR"] = old_env
+
+
+class TestGetSidecarDriftSignalRealBathos:
+    """get_sidecar_drift_signal against the real bathos.prereg.check_sidecar_drift.
+
+    This wrapper had no coverage at all before the tier4_controller gate existed: it is
+    only reachable with the `controller` extra installed, and no gate installed it. Each
+    test below names the branch it is here to pin, because the wrapper's four decisions
+    (catalog default, hash lookup, lookup result, script id default) are what the gate
+    measures -- covering only the happy path would leave the gate red on branch.
+
+    Ground truth for the assertions: against an empty catalog directory, real bathos
+    returns `check_sidecar_drift(...) == False` ("no prior baseline to compare against"),
+    and `get_run(<unknown>) is None`. Both were confirmed against bathos 0.13.0a1 before
+    these assertions were written.
+    """
+
+    @pytest.fixture
+    def script(self, tmp_path):
+        path = tmp_path / "candidate.py"
+        path.write_text("print('candidate')\n")
+        return path
+
+    def test_explicit_catalog_and_hash_reports_no_drift(self, script, tmp_path):
+        """catalog_dir set, hash supplied: no catalog lookup, drift False on an empty catalog."""
+        signal = get_sidecar_drift_signal(
+            script_path=str(script),
+            catalog_dir=str(tmp_path),
+            current_sidecar_sha256="abc123",
+        )
+
+        assert isinstance(signal, SidecarDriftSignal)
+        # False here means "no prior baseline", not "hashes matched" -- bathos does not
+        # distinguish the two and neither does the wrapper. See SidecarDriftSignal.drifted.
+        assert signal.drifted is False
+        assert signal.current_sha256 == "abc123"
+        # script_id defaults to the script's stem, not its full path.
+        assert signal.script_id == "candidate"
+        # The wrapper never queries the baseline; it documents this as caller-owned.
+        assert signal.first_run_sha256 == ""
+
+    def test_explicit_script_id_overrides_the_stem_default(self, script, tmp_path):
+        signal = get_sidecar_drift_signal(
+            script_path=str(script),
+            catalog_dir=str(tmp_path),
+            current_sidecar_sha256="abc123",
+            script_id="human-readable-id",
+        )
+
+        assert signal.script_id == "human-readable-id"
+
+    def test_absent_hash_with_run_id_falls_back_to_a_catalog_lookup(self, script, tmp_path):
+        """An empty hash plus a run_id takes the bathos.query.get_run path.
+
+        The run does not exist in this empty catalog, so the lookup returns None and the
+        hash stays empty -- the wrapper must not crash on the miss, which is the whole
+        point of the `run_obj is not None` guard.
+        """
+        signal = get_sidecar_drift_signal(
+            script_path=str(script),
+            catalog_dir=str(tmp_path),
+            current_sidecar_sha256="",
+            run_id="no-such-run",
+        )
+
+        assert signal.drifted is False
+        assert signal.current_sha256 == ""
+
+    def test_absent_hash_without_run_id_skips_the_lookup_entirely(self, script, tmp_path):
+        """Neither hash nor run_id: the `and run_id` short-circuit must skip the lookup."""
+        signal = get_sidecar_drift_signal(
+            script_path=str(script),
+            catalog_dir=str(tmp_path),
+            current_sidecar_sha256="",
+        )
+
+        assert signal.drifted is False
+        assert signal.current_sha256 == ""
+
+    def test_default_catalog_dir_resolves_under_home(self, script, tmp_path, monkeypatch):
+        """An empty catalog_dir resolves to ~/.bth.
+
+        Home is redirected at the pathlib level rather than through BTH_CATALOG_DIR,
+        because the wrapper computes `Path.home() / ".bth"` itself and never consults
+        that variable -- pointing the env var at tmp_path would leave this test reading
+        the developer's real catalog while appearing to be isolated.
+        """
+        import pathlib
+
+        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+
+        signal = get_sidecar_drift_signal(
+            script_path=str(script),
+            current_sidecar_sha256="abc123",
+        )
+
+        assert signal.drifted is False
+        assert signal.current_sha256 == "abc123"
