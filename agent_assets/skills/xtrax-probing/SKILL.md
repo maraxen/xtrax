@@ -1,7 +1,7 @@
 ---
 name: xtrax-probing
 description: This skill should be used when the user asks to "profile a JAX function", "run stage-0 or stage-1 probes", "emit a ProbeRecord", "validate a ProbeRecord", "debug a ClaimValidityError", "check whether a claim is supported", "cite TERM_RANKING or DISPATCH_COUNT evidence", "persist benchmark results as ProbeRecords", "add dispatch-count tripwires to the performance gate", "attach probe records to controller passes", "generate a bottleneck report", or mentions ProbeRecord, xtrax.profiling, stage-0/stage-1/stage-2 probes, claim-validity, unanimity guards, XTRAX_BENCH_RECORD_DIR, or outputs/profiling. Covers the ProbeRecord contract, claim-validity rules, probe drivers, the benchmark bridge, gate and controller integration, and report generation.
-xtrax_version: 0.4.0a7
+xtrax_version: 0.4.0a8
 triggers:
   - ProbeRecord / xtrax.profiling
   - emit_probe_record / ClaimValidityError / permitted_claims / assert_claim_supported

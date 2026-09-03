@@ -1,7 +1,7 @@
 ---
 name: using-xtrax
-description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), loading your own TOML config via the domain-agnostic `xtrax.config` primitives, composing xtrax's own CLI verbs (`REGISTRY`) into your own CLI, or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep + unreleased graph-validate/graph-plan/graph-author), the xtrax.config TOML primitives, EDA, sparsification, and the signature-inference layer (xtrax.inference). xtrax v0.4.0a5 + main.
-xtrax_version: 0.4.0a7
+description: Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), loading your own TOML config via the domain-agnostic `xtrax.config` primitives, composing xtrax's own CLI verbs (`REGISTRY`) into your own CLI, or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep + unreleased graph-validate/graph-plan/graph-author), the xtrax.config TOML primitives, EDA, sparsification, the signature-inference layer (xtrax.inference), and ahead-of-time export via the xtrax.export subpackage (export_pipeline/Target/VerificationLevel/materialize/load_hf_weights, native + wasm32 + SPIR-V codegen).
+xtrax_version: 0.4.0a8
 triggers:
   - writing JAX pipeline with xtrax
   - building domain library on xtrax
@@ -15,6 +15,8 @@ triggers:
   - infer_bundle / BundleSchema / AxisOverride / axis_config
   - signature inference / xtrax.inference / AxisRole / AmbiguousAxisError
   - xtrax run / xtrax plan / xtrax explain / xtrax export / xtrax resume / xtrax sweep
+  - xtrax.export / export_pipeline / Target / VerificationLevel / CODEGEN_ONLY
+  - IREE / vmfb / wasm32 / SPIR-V / ahead-of-time export / load_hf_weights
   - TrainConfig / load_config / ConfigError / init_state
   - load_fn / CLIError / CLIImportError / REGISTRY (stable public xtrax.cli primitives)
   - xtrax graph-validate / xtrax graph-plan / xtrax graph-author (unreleased, main-only)
@@ -35,8 +37,10 @@ Before writing any xtrax code, verify your installation:
 ```python
 import xtrax
 
-# Version check — this skill is written for v0.4.0a5 (0.4.0 alpha line moves fast;
-# any 0.4.0aN is close enough, but re-verify sections touched by later alphas)
+# Version check — the alpha this skill was written against is the `xtrax_version` in
+# its own frontmatter (gated against __version__ by audit-project-hygiene, so it does
+# not drift). The 0.4.0 alpha line moves fast; any 0.4.0aN is close enough, but
+# re-verify sections touched by later alphas.
 assert xtrax.__version__.startswith("0.4.0"), f"Expected xtrax 0.4.0aN, got {xtrax.__version__}"
 
 # Verify in live source: read src/xtrax/__init__.py:1 to confirm __version__ definition
@@ -55,7 +59,7 @@ pip install xtrax[eda]
 pip install xtrax[io]
 ```
 
-Dependency floor: `jax>=0.10.2,<0.11` / `jaxlib>=0.10.2,<0.11` (verify: `pyproject.toml:7`). The io_callback shim (`xtrax.stages._callback` — unreleased `main` only, T1-03; not in the 0.4.0a5 wheel) pins this same range and fails loud at import time if the resolved jax drifts outside it.
+Dependency floor: read the `jax`/`jaxlib` specifiers in `pyproject.toml`'s `dependencies` rather than trusting a number quoted here -- this line said `<0.11` for the whole period the pin was already `<0.12`. The io_callback shim (`xtrax.stages._callback` — unreleased `main` only, T1-03; not in the 0.4.0a5 wheel) pins this same range and fails loud at import time if the resolved jax drifts outside it.
 
 ---
 
@@ -275,6 +279,7 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | EDA | `references/eda.md` | 10% | Plan analysis and visualization |
 | Sparse/Distributed/Checkpoint | `references/sparse-distributed.md` | 5% | Pointer pattern for structured pruning, multi-device training, checkpointing |
 | Signature Inference | `references/inference.md` | — | xtrax.inference: derive AxisSpecs + BundleSchema from a typed function |
+| Export (AOT) | `references/export.md` | — | xtrax.export: export_pipeline, Target/VerificationLevel, native + wasm32 + SPIR-V codegen, dtype envelope, load_hf_weights, materialize stripping, multi-axis composition |
 
 Use the Workflow Index above to pick which file(s) a given task needs — most tasks need one, some (e.g. tiled inference) need two. Don't load a reference file speculatively; load it when the task actually reaches that layer.
 
@@ -282,7 +287,7 @@ Use the Workflow Index above to pick which file(s) a given task needs — most t
 
 ## Summary
 
-This skill provides a complete, self-contained reference for xtrax v0.4.0a5 (+ Unreleased `main`).
+This skill provides a complete, self-contained reference for the xtrax alpha named in its frontmatter `xtrax_version`, plus unreleased `main`.
 
 **Use TIER-1 to**:
 - Verify compatibility (pre-flight)
@@ -301,7 +306,7 @@ This skill provides a complete, self-contained reference for xtrax v0.4.0a5 (+ U
 
 ---
 
-## Technical Gaps (Known Limitations in v0.4.0a5)
+## Technical Gaps (Known Limitations)
 
 | Gap | Location | Status |
 |-----|----------|--------|
@@ -309,9 +314,9 @@ This skill provides a complete, self-contained reference for xtrax v0.4.0a5 (+ U
 | Top-level exports missing (RunSpec, CarrySpec, DedupSpec, AxisBoundary) | `src/xtrax/__init__.py` | By design; use subpackage imports: `from xtrax.run import RunSpec`, `from xtrax.stages import AxisBoundary`, etc. |
 | `make_sink` has no writer for `"jsonl"`/`"h5"` | `src/xtrax/run/sink.py:32-39` | Routing-only stub values; `NotImplementedError` until their writers land. Use `"zarr"` (or `"none"`). |
 | Ordered `SafeMap` axis ignores `batch_size` (runs element-at-a-time) | `src/xtrax/stages/executor.py` | Structural JAX constraint, not fixable locally — see Boundary Executor section; use `Scan` if ordering + explicit sequential cost is acceptable |
-| Nested executor composition (vmap-of-scan) ordering not certified | `src/xtrax/stages/executor.py` | T1-05 stress harness pending |
-
 The `make_inference_plan` gap noted as of v0.3.0 is closed: plan-time checks now exist via `validate_plan_topology` (`xtrax.stages`, 0.3.1+).
+
+Nested executor composition (vmap-of-scan) ordering is also no longer a gap. The T1-05 stress harness landed and certifies `(lane, step)` call order at `N_TRIALS=20` in `tests/stages/test_nested_ordering.py`, and `xtrax.export`'s composer builds multi-axis plans on that certified recipe (`tests/export/test_multi_axis.py`). The composer still refuses `Bucket` (host-tier) and `WhileCarry` (unbounded trip count) — those are genuine remaining limits, not this one.
 
 ---
 
