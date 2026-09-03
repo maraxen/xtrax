@@ -1,12 +1,9 @@
 # xtrax Release Readiness Report
 
 - **Epic:** #1451 xtrax distribution readiness (N0-N10)
-- **Generated:** 2026-09-02T15:30:12.492551+00:00
-- **Verdict:** `BLOCKED_MANUAL`
+- **Generated:** 2026-09-02T15:53:41.325838+00:00
+- **Verdict:** `READY`
 - **Package version:** `0.4.0a8`
-
-## Blockers
-- human gate open: #1454 n9_human_oidc (probe invalidated attestation: git tag 'v0.4.0a8' not found locally)
 
 ## Distribution backlog (N0-N10)
 
@@ -21,7 +18,7 @@
 | 1459 | n5_output_sink_docs | completed | PASS | yes |
 | 1460 | n8_project_hygiene | completed | PASS | yes |
 | 1461 | n7_publish_oidc | completed | PASS | yes |
-| 1454 | n9_human_oidc | blocked | MANUAL | yes |
+| 1454 | n9_human_oidc | completed | MANUAL | yes |
 | 1462 | n10_release_readiness | in_progress | META | yes |
 
 ## Automated checks
