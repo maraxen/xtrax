@@ -104,6 +104,15 @@ Take the second. It keeps the existing job's environment untouched and puts
 everything controller-shaped in one place. Cost: the override lives in the recipe
 rather than in `pyproject.toml`, so it needs a comment saying why.
 
+There is a **fourth** ty site, easy to miss: `scripts/git-hooks/pre-push` runs its
+own `ty check src/`, ratcheted against `scripts/git-hooks/ty-baseline.txt` (empty
+today, so `src/` is clean), and syncs `dev,eda,io` — not `controller`. Decide
+explicitly whether the hook grows to cover `controller/` or stays CI-parity-only.
+Staying is defensible: the hook's stated job is to mirror `lint-format-type-test`,
+and making every local push pay a 62-package sync is a real cost. If it stays,
+say so in `scripts/git-hooks/README.md`, so the next person does not read the
+hook's green as covering the controller.
+
 **A5 — cap the bathos pin.** `controller = ["bathos>=0.13.0a1"]` has no upper
 bound. Phase A makes CI depend on it, so an alpha-to-alpha bathos release could
 turn the board red for reasons unrelated to any xtrax change. This repo already
