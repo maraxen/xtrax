@@ -72,7 +72,7 @@ audit-correctness-gate:
     uv run python scripts/audit_correctness_gate.py --no-write-baseline
 
 audit-jax-purity-gate:
-    uv run ruff check src/xtrax/devtools/gates/_jaxlint.py src/xtrax/devtools/gates/jax_purity.py scripts/audit_jax_purity_gate.py tests/audit/test_jax_purity_gate.py
+    uv run ruff check src/xtrax/jaxlint_runner.py src/xtrax/devtools/gates/jax_purity.py scripts/audit_jax_purity_gate.py tests/audit/test_jax_purity_gate.py
     uv run pytest tests/audit/test_jax_purity_gate.py tests/audit/test_correctness_gate.py -v
     uv run python scripts/audit_jax_purity_gate.py --no-write-baseline
 
@@ -277,7 +277,7 @@ audit-coverage-tier4: audit-controller-types
     uv run python scripts/audit_coverage_dag.py --tier tier4_controller --enforce tier4_controller
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-release-readiness-contract audit-added-types-diff
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-jax-purity-gate audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-release-readiness-contract audit-added-types-diff
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry
