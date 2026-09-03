@@ -1,14 +1,12 @@
 {
-  "timestamp": "2026-09-02T15:30:12.492551+00:00",
+  "timestamp": "2026-09-02T15:53:41.325838+00:00",
   "config_version": "0.1.0",
   "epic_id": 1451,
   "epic_title": "xtrax distribution readiness (N0-N10)",
   "package_version": "0.4.0a8",
   "mode": "full",
-  "verdict": "BLOCKED_MANUAL",
-  "verdict_reasons": [
-    "human gate open: #1454 n9_human_oidc (probe invalidated attestation: git tag 'v0.4.0a8' not found locally)"
-  ],
+  "verdict": "READY",
+  "verdict_reasons": [],
   "workflow_failures": [],
   "backlog": [
     {
@@ -127,11 +125,9 @@
       "blocking": true,
       "gate_type": "human",
       "notes": "PyPI Trusted Publisher configured and proven (0.2.1, 0.3.0 published via OIDC). TestPyPI intentionally not used \u2014 decision 2026-07-02; publish.yml is PyPI-only.",
-      "status": "blocked",
-      "gate_passed": false,
-      "freshness_reasons": [
-        "probe invalidated attestation: git tag 'v0.4.0a8' not found locally"
-      ],
+      "status": "completed",
+      "gate_passed": true,
+      "freshness_reasons": [],
       "gate": null
     },
     {
@@ -216,7 +212,7 @@
       "command": "just audit-output-sink-docs",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "TOTAL                                               9619   9114   2816      3   4.1%\nCoverage HTML written to dir .coverage_html\n\u001b[32m============================== \u001b[32m\u001b[1m6 passed\u001b[0m\u001b[32m in 5.75s\u001b[0m\u001b[32m ===============================\u001b[0m\nPASS: output-sink docs gate\n\nuv run ruff check scripts/audit_output_sink_docs.py tests/distribution/test_output_sink_docs.py\nuv run pytest tests/distribution/test_output_sink_docs.py -v\n/home/marielle/projects/xtrax/.claude/worktrees/wt-20260901-174237/.venv/lib/python3.13/site-packages/coverage/inorout.py:561: CoverageWarning: Module xtrax was never imported. (module-not-imported); see https://coverage.readthedocs.io/en/7.15.2/messages.html#warning-module-not-imported\n  self.warn(f\"Module {pkg} was never imported.\", slug=\"module-not-imported\")\n/home/marielle/projects/xtrax/.claude/worktrees/wt-20260901-174237/.venv/lib/python3.13/site-packages/coverage/control.py:955: CoverageWarning: No data was collected. (no-data-collected); see https://coverage.readthedocs.io/en/7.15.2/messages.html#warning-no-data-collected\n  self._warn(\"No data was collected.\", slug=\"no-data-collected\")\nuv run python scripts/audit_output_sink_docs.py"
+      "output_tail": "TOTAL                                               9619   9114   2816      3   4.1%\nCoverage HTML written to dir .coverage_html\n\u001b[32m============================== \u001b[32m\u001b[1m6 passed\u001b[0m\u001b[32m in 6.11s\u001b[0m\u001b[32m ===============================\u001b[0m\nPASS: output-sink docs gate\n\nuv run ruff check scripts/audit_output_sink_docs.py tests/distribution/test_output_sink_docs.py\nuv run pytest tests/distribution/test_output_sink_docs.py -v\n/home/marielle/projects/xtrax/.claude/worktrees/wt-20260901-174237/.venv/lib/python3.13/site-packages/coverage/inorout.py:561: CoverageWarning: Module xtrax was never imported. (module-not-imported); see https://coverage.readthedocs.io/en/7.15.2/messages.html#warning-module-not-imported\n  self.warn(f\"Module {pkg} was never imported.\", slug=\"module-not-imported\")\n/home/marielle/projects/xtrax/.claude/worktrees/wt-20260901-174237/.venv/lib/python3.13/site-packages/coverage/control.py:955: CoverageWarning: No data was collected. (no-data-collected); see https://coverage.readthedocs.io/en/7.15.2/messages.html#warning-no-data-collected\n  self._warn(\"No data was collected.\", slug=\"no-data-collected\")\nuv run python scripts/audit_output_sink_docs.py"
     },
     {
       "name": "audit-project-hygiene",
@@ -246,7 +242,7 @@
       "command": "just audit-imports",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "Core packages must not import EDA (optional extra) \u001b[32mKEPT\u001b[0m\nShipped packages must not import xtrax.devtools (unshipped dev-only tree) \u001b[32mKEPT\u001b[0m\nBase modules must not import xtrax.export \u001b[32mKEPT\u001b[0m\ntiling must not import inference \u001b[32mKEPT\u001b[0m\n\nContracts: 4 kept, 0 broken.\n\nuv run --extra dev lint-imports\n\u001b[1m\u001b[33mwarning\u001b[39m\u001b[0m\u001b[1m:\u001b[0m \u001b[1mFailed to hardlink files; falling back to full copy. This may lead to degraded performance.\n         If the cache and target directories are on different filesystems, hardlinking may not be supported.\n         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.\u001b[0m\n\u001b[2mInstalled \u001b[1m14 packages\u001b[0m \u001b[2min 230ms\u001b[0m\u001b[0m"
+      "output_tail": "\u001b[1mAnalyzed 195 files, 374 dependencies.\u001b[0m\n\u001b[1m-------------------------------------\u001b[0m\n\nCore packages must not import EDA (optional extra) \u001b[32mKEPT\u001b[0m\nShipped packages must not import xtrax.devtools (unshipped dev-only tree) \u001b[32mKEPT\u001b[0m\nBase modules must not import xtrax.export \u001b[32mKEPT\u001b[0m\ntiling must not import inference \u001b[32mKEPT\u001b[0m\n\nContracts: 4 kept, 0 broken.\n\nuv run --extra dev lint-imports\n\u001b[2mInstalled \u001b[1m14 packages\u001b[0m \u001b[2min 32ms\u001b[0m\u001b[0m"
     },
     {
       "name": "no_future_annotations",
@@ -266,7 +262,7 @@
       "command": "just audit-jaxlint",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "  \"tool\": \"jaxlint\",\n  \"tool_version\": \"0.1.0a1\",\n  \"emitted_at\": \"2026-09-02T15:23:31.792757+00:00\",\n  \"target\": \"src/xtrax\",\n  \"mode\": \"performance_only\",\n  \"exit_code\": 1,\n  \"finding_count\": 0,\n  \"error_count\": 0,\n  \"findings\": []\n}\n\nuv run python scripts/audit_jaxlint_json.py --performance-only"
+      "output_tail": "  \"tool\": \"jaxlint\",\n  \"tool_version\": \"0.1.0a1\",\n  \"emitted_at\": \"2026-09-02T15:46:45.915176+00:00\",\n  \"target\": \"src/xtrax\",\n  \"mode\": \"performance_only\",\n  \"exit_code\": 1,\n  \"finding_count\": 0,\n  \"error_count\": 0,\n  \"findings\": []\n}\n\nuv run python scripts/audit_jaxlint_json.py --performance-only"
     },
     {
       "name": "substrate_lock",
@@ -286,7 +282,7 @@
       "command": "just audit-jax-pin",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "src/xtrax/training/types.py                           15     15      0      0   0.0%   3-55\nsrc/xtrax/transforms/map.py                           10      6      4      0  28.6%   26-40\nsrc/xtrax/transforms/scan.py                          10      7      4      0  21.4%   37-47\n----------------------------------------------------------------------------------------------\nTOTAL                                               9619   9311   2816      3   2.6%\nCoverage HTML written to dir .coverage_html\n\u001b[32m============================== \u001b[32m\u001b[1m14 passed\u001b[0m\u001b[32m in 2.10s\u001b[0m\u001b[32m ==============================\u001b[0m\nPASS: jax pin gate (xtrax.stages._callback imported cleanly)\n\nuv run ruff check scripts/audit_jax_pin.py src/xtrax/stages/_callback.py tests/stages/test_callback.py\nuv run pytest tests/stages/test_callback.py -v\nuv run python scripts/audit_jax_pin.py"
+      "output_tail": "src/xtrax/training/types.py                           15     15      0      0   0.0%   3-55\nsrc/xtrax/transforms/map.py                           10      6      4      0  28.6%   26-40\nsrc/xtrax/transforms/scan.py                          10      7      4      0  21.4%   37-47\n----------------------------------------------------------------------------------------------\nTOTAL                                               9619   9311   2816      3   2.6%\nCoverage HTML written to dir .coverage_html\n\u001b[32m============================== \u001b[32m\u001b[1m14 passed\u001b[0m\u001b[32m in 2.27s\u001b[0m\u001b[32m ==============================\u001b[0m\nPASS: jax pin gate (xtrax.stages._callback imported cleanly)\n\nuv run ruff check scripts/audit_jax_pin.py src/xtrax/stages/_callback.py tests/stages/test_callback.py\nuv run pytest tests/stages/test_callback.py -v\nuv run python scripts/audit_jax_pin.py"
     },
     {
       "name": "ruff_lint",
@@ -316,7 +312,7 @@
       "command": "uv run --extra eda --extra io ty check src/",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "All checks passed!\n\n\u001b[1m\u001b[33mwarning\u001b[39m\u001b[0m\u001b[1m:\u001b[0m \u001b[1mFailed to hardlink files; falling back to full copy. This may lead to degraded performance.\n         If the cache and target directories are on different filesystems, hardlinking may not be supported.\n         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.\u001b[0m\n\u001b[2mInstalled \u001b[1m4 packages\u001b[0m \u001b[2min 105ms\u001b[0m\u001b[0m"
+      "output_tail": "All checks passed!\n\n\u001b[2mInstalled \u001b[1m4 packages\u001b[0m \u001b[2min 12ms\u001b[0m\u001b[0m"
     },
     {
       "name": "coverage_tier1",
@@ -346,7 +342,7 @@
       "command": "uv run pytest --doctest-modules src/xtrax/io/ -q",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "src/xtrax/training/loss.py                            22      6      2      0  66.7%   42, 85-107\nsrc/xtrax/training/optim.py                           17      8      2      0  47.4%   22, 41-43, 76-95, 124\nsrc/xtrax/training/state.py                            7      1      0      0  85.7%   14\nsrc/xtrax/training/step.py                            28     13      6      0  44.1%   55-56, 80-89, 112-121\nsrc/xtrax/training/trainer.py                         19      9      0      0  52.6%   49-72\nsrc/xtrax/training/types.py                           15      0      0      0 100.0%\nsrc/xtrax/transforms/map.py                           10     10      4      0   0.0%   1-40\nsrc/xtrax/transforms/scan.py                          10     10      4      0   0.0%   1-47\n----------------------------------------------------------------------------------------------\nTOTAL                                               9619   9114   2816      3   4.1%\nCoverage HTML written to dir .coverage_html\n\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 1.88s\u001b[0m\u001b[0m"
+      "output_tail": "src/xtrax/training/loss.py                            22      6      2      0  66.7%   42, 85-107\nsrc/xtrax/training/optim.py                           17      8      2      0  47.4%   22, 41-43, 76-95, 124\nsrc/xtrax/training/state.py                            7      1      0      0  85.7%   14\nsrc/xtrax/training/step.py                            28     13      6      0  44.1%   55-56, 80-89, 112-121\nsrc/xtrax/training/trainer.py                         19      9      0      0  52.6%   49-72\nsrc/xtrax/training/types.py                           15      0      0      0 100.0%\nsrc/xtrax/transforms/map.py                           10     10      4      0   0.0%   1-40\nsrc/xtrax/transforms/scan.py                          10     10      4      0   0.0%   1-47\n----------------------------------------------------------------------------------------------\nTOTAL                                               9619   9114   2816      3   4.1%\nCoverage HTML written to dir .coverage_html\n\u001b[32m\u001b[32m\u001b[1m1 passed\u001b[0m\u001b[32m in 2.17s\u001b[0m\u001b[0m"
     },
     {
       "name": "audit_contracts",
@@ -366,11 +362,11 @@
       "command": "just audit-added-types-diff",
       "passed": true,
       "exit_code": 0,
-      "output_tail": "src/xtrax/transforms/map.py                           10     10      4      0   0.0%   1-40\nsrc/xtrax/transforms/scan.py                          10     10      4      0   0.0%   1-47\n----------------------------------------------------------------------------------------------\nTOTAL                                               9619   9357   2816     25   2.6%\nCoverage HTML written to dir .coverage_html\n\u001b[32m============================== \u001b[32m\u001b[1m10 passed\u001b[0m\u001b[32m in 2.26s\u001b[0m\u001b[32m ==============================\u001b[0m\nmerge-base=e32fee9fddcf637359bf536647841f5306a84c9b files_checked=0 callables_checked=0\nPASS: added-types diff gate\n\nuv run ruff check src/xtrax/devtools/gates/added_types_diff.py scripts/audit_added_types_diff.py tests/audit/test_added_types_diff.py\nuv run pytest tests/audit/test_added_types_diff.py -v\nuv run python scripts/audit_added_types_diff.py --no-emit"
+      "output_tail": "src/xtrax/transforms/map.py                           10     10      4      0   0.0%   1-40\nsrc/xtrax/transforms/scan.py                          10     10      4      0   0.0%   1-47\n----------------------------------------------------------------------------------------------\nTOTAL                                               9619   9357   2816     25   2.6%\nCoverage HTML written to dir .coverage_html\n\u001b[32m============================== \u001b[32m\u001b[1m10 passed\u001b[0m\u001b[32m in 2.12s\u001b[0m\u001b[32m ==============================\u001b[0m\nmerge-base=e32fee9fddcf637359bf536647841f5306a84c9b files_checked=0 callables_checked=0\nPASS: added-types diff gate\n\nuv run ruff check src/xtrax/devtools/gates/added_types_diff.py scripts/audit_added_types_diff.py tests/audit/test_added_types_diff.py\nuv run pytest tests/audit/test_added_types_diff.py -v\nuv run python scripts/audit_added_types_diff.py --no-emit"
     }
   ],
   "coverage": {
-    "timestamp": "2026-09-02T15:29:57.859433+00:00",
+    "timestamp": "2026-09-02T15:53:27.254569+00:00",
     "dag_version": "0.2.2",
     "tiers": {
       "tier1_core": {
@@ -386,8 +382,8 @@
     }
   },
   "release_policy": {
-    "push_tags_allowed": false,
-    "trigger_publish_workflow_allowed": false,
+    "push_tags_allowed": true,
+    "trigger_publish_workflow_allowed": true,
     "human_gate_1454_required": true
   }
 }
