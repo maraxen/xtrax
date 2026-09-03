@@ -181,12 +181,33 @@ def test_audit_version_wheel_fails_on_wheel_version_mismatch(
 
 
 def test_script_metadata_only_subprocess_exits_zero() -> None:
+    """The script reports the repo's real version, whatever that currently is.
+
+    The expected version is read through parse_init_version rather than written out
+    here. The literal this replaced said '0.3.0' and had been wrong since the 0.4
+    line opened -- harmlessly, because no gate ran this file. It does now, so a
+    restated constant would just turn every release bump into a spurious failure.
+
+    --no-sync matters as much as the assertion: a bare `uv run` in a subprocess
+    re-resolves the shared venv to whatever extras it infers, which strips deps out
+    from under whichever tier is running this and produces failures elsewhere that
+    look nothing like their cause. The ambient environment is already correct.
+    """
+    expected_version = parse_init_version(ROOT / "src" / "xtrax" / "__init__.py")
+
     result = subprocess.run(
-        ["uv", "run", "python", "scripts/audit_version_wheel.py", "--metadata-only"],
+        [
+            "uv",
+            "run",
+            "--no-sync",
+            "python",
+            "scripts/audit_version_wheel.py",
+            "--metadata-only",
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr or result.stdout
     assert "PASS: version contract" in result.stdout
-    assert "__version__='0.3.0'" in result.stdout
+    assert f"__version__={expected_version!r}" in result.stdout

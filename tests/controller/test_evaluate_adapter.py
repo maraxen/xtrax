@@ -960,6 +960,36 @@ class TestLockBathosFrozenContext:
         after = lock_bathos_frozen_context(**kwargs)
         assert after.locked.closure_hash != first.locked.closure_hash
 
+    def test_omitted_pinned_deps_source_defers_to_build_closure_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        """`pinned_deps_source=None` must be omitted from the lock call, not passed as None.
+
+        The docstring promises build_closure_manifest then applies its own default
+        (`uv.lock`). Every other test in this file passes pinned_deps_source explicitly,
+        so the documented default had never been executed -- the branch that builds
+        lock_kwargs was only ever taken one way.
+
+        Equivalence against a build_closure_manifest call that likewise omits the argument
+        is the assertion that distinguishes "omitted" from "passed as None": passing None
+        through would either raise or hash differently, not silently agree.
+        """
+        from controller.evaluate_adapter import lock_bathos_frozen_context
+
+        evaluator, split, metric, pinned = _write_declared_closure_files(tmp_path)
+        kwargs = _lock_factory_kwargs(evaluator, split, metric, pinned)
+        del kwargs["pinned_deps_source"]
+
+        frozen = lock_bathos_frozen_context(**kwargs)
+
+        expected = build_closure_manifest(
+            evaluator_paths=(evaluator,),
+            split_paths=(split,),
+            metric_def_paths=(metric,),
+            config={"k": "v"},
+        )
+        assert frozen.locked.closure_hash == expected.closure_hash
+
 
 class TestClosureDeclarationLists:
     def test_closure_declaration_lists_roundtrip_write_manifest_dict(self, tmp_path: Path) -> None:

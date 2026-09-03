@@ -83,7 +83,10 @@ export = [
 # cisternal.provenance is pure stdlib, so nothing about that module requires
 # them.
 authoring-smoke = [ "outlines>=1.0", "transformers>=4.40", "torch>=2.0",]
-controller = [ "bathos>=0.13.0a1",]
+# Capped at <0.14 when tier4_controller made CI depend on this extra. An
+# uncapped alpha means an unrelated bathos release can turn the board red, and
+# this repo already treats that as debt (#3641 makes the same argument for jax).
+controller = [ "bathos>=0.13.0a1,<0.14",]
 
 [project.scripts]
 xtrax = "xtrax.cli:main"

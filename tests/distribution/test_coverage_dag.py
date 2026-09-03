@@ -37,9 +37,15 @@ def test_load_coverage_dag_reads_committed_toml() -> None:
     dag = load_coverage_dag(CONFIG_PATH)
     assert dag.version == "0.2.2"
     assert dag.state_path == ".praxia/coverage_last_measured.json"
-    assert len(dag.tiers) == 4
+    assert len(dag.tiers) == 5
     tier_ids = [tier.id for tier in dag.tiers]
-    assert tier_ids == ["tier0_audit", "tier1_core", "tier2_eda", "tier3_port"]
+    assert tier_ids == [
+        "tier0_audit",
+        "tier1_core",
+        "tier2_eda",
+        "tier3_port",
+        "tier4_controller",
+    ]
 
     tier1 = dag.tiers[1]
     assert tier1.measure_coverage is True
@@ -61,6 +67,19 @@ def test_load_coverage_dag_reads_committed_toml() -> None:
     tier0 = dag.tiers[0]
     assert tier0.measure_coverage is False
 
+    # tier4 measures controller/, a tree tier1 cannot see: tier1's coverage_packages
+    # is ("xtrax",) and controller/ lives outside src/. The `controller` extra is
+    # load-bearing rather than incidental -- without bathos installed,
+    # test_bathos_library_wrappers_integration.py skips at collection time and the
+    # wrappers it covers read as untested.
+    tier4 = dag.tiers[4]
+    assert tier4.measure_coverage is True
+    assert tier4.coverage_packages == ("controller",)
+    assert "controller" in tier4.uv_sync_extras
+    assert tier4.pytest_args[0] == "tests/controller/"
+    assert tier4.enforce_line_pct == 90.0
+    assert tier4.enforce_branch_pct == 80.0
+
 
 def test_select_tiers_defaults_to_tier1_core() -> None:
     dag = load_coverage_dag(CONFIG_PATH)
@@ -77,6 +96,7 @@ def test_select_tiers_all() -> None:
         "tier1_core",
         "tier2_eda",
         "tier3_port",
+        "tier4_controller",
     ]
 
 

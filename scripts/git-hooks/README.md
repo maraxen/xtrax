@@ -24,6 +24,23 @@ chmod +x "$(git rev-parse --git-common-dir)/hooks/pre-push"
 Since hooks are shared across worktrees, installing this once affects every
 worktree's `git push`, not just the one it was installed from.
 
+### The hook does not cover `controller/`
+
+`ty check src/` means `src/` -- `controller/` is a separate top-level tree, and
+`[tool.ty.src] include` is scoped to `src/**/*.py`, so `controller/` is filtered out
+before any path argument is even consulted. That is deliberate here: the hook's stated
+job is to mirror `lint-format-type-test`, and covering `controller/` would mean
+installing the `controller` extra (bathos plus ~62 transitive packages) on every local
+push.
+
+`controller/` is type-checked in CI instead, by the `controller-tests` job via
+`just audit-controller-types`. **A green pre-push says nothing about `controller/`.**
+The failure mode this note exists to prevent is subtler than a plain gap: a bare
+`ty check controller/` does not error, it prints `WARN No python files found` and then
+`All checks passed!` -- so the tree can look checked while nothing was read. The
+`audit-controller-types` recipe passes an explicit `-c 'src.include=[...]'` override
+for exactly that reason.
+
 ## ty-baseline.txt
 
 `ty check src/` is ratcheted against `ty-baseline.txt`: that file lists

@@ -841,7 +841,7 @@ def run_one_candidate_pass(
         )
         sidecar_drift_decision = assert_sidecar_drift_reaction(
             sidecar_signal,
-            agent_mode=agent_mode,  # type: ignore
+            agent_mode=agent_mode,
         )
 
     # 2.5. Score raw artifacts through the AC-7 closure-lock gate (S2.1, GW-02). output_paths is
@@ -906,7 +906,13 @@ def run_one_candidate_pass(
         )
         raise ValueError(msg)
 
-    if best_fitness is None:
+    if best_fitness is None or higher_is_better is None:
+        # The XOR check above already means both are None by the time we get here; the
+        # second disjunct adds no runtime behaviour and exists so that pairing is
+        # *provable* rather than merely true. Without it a type checker cannot correlate
+        # the two names across the XOR, and reads the else branch below as passing
+        # `Mapping[str, bool] | None` into a parameter declared `Mapping[str, bool]`.
+        #
         # C6 (backlog #4203): a fresh-start call (best_fitness=None) implicitly assumes no
         # prior lineage exists yet for ratchet_ref_name -- if one does, that's either a genuine
         # crash-resume or an accidental ref-name collision with stale/unrelated data. Fail loud
