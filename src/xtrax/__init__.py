@@ -60,6 +60,9 @@ __all__ = [
     "compact_ledger",
     "iter_rows",
     "find_run",
+    # Run layer (execution-time configuration)
+    "derive_sink_spec",
+    "new_run_id",
 ]
 
 _LAZY = {
@@ -123,6 +126,9 @@ _LAZY = {
     "compact_ledger": "xtrax.telemetry",
     "iter_rows": "xtrax.telemetry",
     "find_run": "xtrax.telemetry",
+    # Run layer (execution-time configuration)
+    "derive_sink_spec": "xtrax.run",
+    "new_run_id": "xtrax.run",
 }
 
 

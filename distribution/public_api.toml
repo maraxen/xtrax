@@ -56,6 +56,9 @@ tier1_exports = [
     "compact_ledger",
     "iter_rows",
     "find_run",
+    # Run layer: execution-time configuration utilities.
+    "derive_sink_spec",
+    "new_run_id",
 ]
 
 smoke_exports = [
