@@ -16,6 +16,7 @@ quickstart
 why-xtrax
 concepts
 architecture
+dependency-boundaries
 ```
 
 ```{toctree}

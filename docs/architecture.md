@@ -34,6 +34,10 @@ class LossFunction(Protocol):
 ```
 
 Any callable that returns a scalar is a valid loss — no inheritance needed.
+The same structural-subtyping principle applies to xtrax's boundary
+types (pytree-of-arrays, pytree-of-`ShapeDtypeStruct`); see
+{doc}`dependency-boundaries` for how that interlingua, plus xtrax's
+substrate/adapter and JAX-namespace-stability policies, are scoped.
 
 ### 2. Static Shape for Recompile Safety
 
