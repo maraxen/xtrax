@@ -208,9 +208,22 @@ audit-public-api:
     uv run python scripts/audit_public_api.py
     uv run pytest tests/distribution/test_public_api.py -v
 
-audit-docs-build:
+# Contract half: manifest + conf wiring, ruff, and the contract tests. `--check-only` is
+# what makes this safe to put in a chain. The full gate below shells out to
+# `uv sync --group=docs --extra=eda` (distribution/docs_plumbing.toml install_groups /
+# install_extras) from inside the audit, and that REPLACES the shared venv mid-run,
+# stripping the dev/io extras every later gate needs -- the mechanism behind the spurious
+# BLOCKED_AUTOMATED release-readiness reports. --check-only skips both that uv sync and the
+# sphinx build: 0.2s instead of 19s, and the venv is left untouched.
+audit-docs-build-contract:
     uv run ruff check scripts/audit_docs_plumbing.py tests/distribution/test_docs_plumbing.py
     uv run pytest tests/distribution/test_docs_plumbing.py -v
+    uv run python scripts/audit_docs_plumbing.py --check-only
+
+# Full gate: adds the real `sphinx-build -W -n`. Mutates the shared venv (see above), so run
+# it on its own, never inside a chain. Per-commit sphinx coverage does not depend on this
+# recipe -- .github/workflows/docs.yml already runs `sphinx-build -W -n` as its own job.
+audit-docs-build: audit-docs-build-contract
     uv run python scripts/audit_docs_plumbing.py
 
 audit-project-hygiene:
@@ -277,7 +290,7 @@ audit-coverage-tier4: audit-controller-types
     uv run python scripts/audit_coverage_dag.py --tier tier4_controller --enforce tier4_controller
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-jax-purity-gate audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-release-readiness-contract audit-added-types-diff
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-jax-purity-gate audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-docs-build-contract audit-publish-oidc audit-release-readiness-contract audit-added-types-diff
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry
