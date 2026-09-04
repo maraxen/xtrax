@@ -403,6 +403,13 @@ def build_backlog_report(
                 # Map gate recipe to check by running gate directly in backlog phase
                 row["status"] = "not_run"
                 row["gate_passed"] = False
+            elif result.get("skipped"):
+                # A --quick skip is not a failure. Recording it as one made the report
+                # say `failed` / FAIL for gates that were never run, which is how a
+                # --quick report came to name four "blockers" that were all skips.
+                row["status"] = "skipped"
+                row["gate_passed"] = False
+                row["gate_skipped"] = True
             else:
                 row["status"] = "completed" if result["passed"] else "failed"
                 row["gate_passed"] = result["passed"]
@@ -424,12 +431,23 @@ def compute_verdict(
     if workflow_failures:
         reasons.extend(workflow_failures)
 
+    # A skip is not a failure. Conflating them made a --quick run report "automated check
+    # failed" for checks that never ran, which reads identically to a real regression and
+    # sent at least one investigation looking for a break that did not exist.
     failed_blocking = [
-        item for item in automated_results if item["blocking"] and not item["passed"]
+        item
+        for item in automated_results
+        if item["blocking"] and not item["passed"] and not item.get("skipped")
+    ]
+    skipped_blocking = [
+        item for item in automated_results if item["blocking"] and item.get("skipped")
     ]
     if config.require_automated_pass and failed_blocking:
         for item in failed_blocking:
             reasons.append(f"automated check failed: {item['name']}")
+    if config.require_automated_pass and skipped_blocking:
+        for item in skipped_blocking:
+            reasons.append(f"automated check not run (--quick): {item['name']}")
 
     open_human = [
         row
@@ -448,14 +466,28 @@ def compute_verdict(
         if row["blocking"]
         and row["gate_type"] != "human"
         and not row.get("gate_passed", False)
+        and not row.get("gate_skipped", False)
         and row["id"] != 1462
     ]
     for row in failed_backlog:
         reasons.append(f"backlog gate failed: #{row['id']} {row['slug']}")
 
+    skipped_backlog = [
+        row
+        for row in backlog_rows
+        if row["blocking"] and row["gate_type"] != "human" and row.get("gate_skipped", False)
+    ]
+    for row in skipped_backlog:
+        reasons.append(f"backlog gate not run (--quick): #{row['id']} {row['slug']}")
+
     if reasons:
         if failed_blocking or failed_backlog or workflow_failures:
             return "BLOCKED_AUTOMATED", reasons
+        # Skips still block -- a run that did not execute its slow gates has not
+        # established readiness -- but they are reported as incomplete, not as failures.
+        # --quick therefore cannot yield READY, by construction, without claiming a break.
+        if skipped_blocking or skipped_backlog:
+            return "BLOCKED_INCOMPLETE", reasons
         return "BLOCKED_MANUAL", reasons
     return "READY", []
 
@@ -486,6 +518,8 @@ def render_markdown_report(payload: dict[str, Any]) -> str:
     for row in payload["backlog"]:
         status = row.get("status", "")
         passed = "PASS" if row.get("gate_passed") else "FAIL"
+        if row.get("gate_skipped"):
+            passed = "SKIP"
         if row.get("gate_type") == "human":
             passed = "MANUAL"
         if row.get("gate_type") == "meta":
