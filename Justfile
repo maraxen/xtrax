@@ -214,9 +214,14 @@ audit-public-api:
 # `uv sync --group=docs --extra=eda` (groups/extras from distribution/docs_plumbing.toml).
 # `uv sync` REPLACES the environment rather than adding to it, so it silently drops
 # everything that lives only in [project.optional-dependencies].dev and that nothing else
-# depends on -- beartype and jaxtyping among them. Every later gate in audit-deterministic
-# then dies on ModuleNotFoundError for reasons unrelated to what it tests. This is the
-# mechanism behind the spurious BLOCKED_AUTOMATED release-readiness reports.
+# depends on. beartype is the one that bites: jaxtyping SURVIVES, because equinox (a core
+# dependency) requires it (uv.lock). Every later gate in audit-deterministic then dies on
+# ModuleNotFoundError for reasons unrelated to what it tests.
+#
+# The underlying cause is two divergent `dev` definitions in pyproject.toml:
+# [dependency-groups].dev (uv-default-synced, no beartype) vs
+# [project.optional-dependencies].dev (has beartype). Any `uv sync --group X` keeps the
+# group and drops the extra. Consolidating those is the real fix -- see backlog #4969.
 #
 # Two things reach that code path, and both are excluded here:
 #   - the script itself, avoided with --check-only (which returns before run_uv_sync)
