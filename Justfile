@@ -208,16 +208,27 @@ audit-public-api:
     uv run python scripts/audit_public_api.py
     uv run pytest tests/distribution/test_public_api.py -v
 
-# Contract half: manifest + conf wiring, ruff, and the contract tests. `--check-only` is
-# what makes this safe to put in a chain. The full gate below shells out to
-# `uv sync --group=docs --extra=eda` (distribution/docs_plumbing.toml install_groups /
-# install_extras) from inside the audit, and that REPLACES the shared venv mid-run,
-# stripping the dev/io extras every later gate needs -- the mechanism behind the spurious
-# BLOCKED_AUTOMATED release-readiness reports. --check-only skips both that uv sync and the
-# sphinx build: 0.2s instead of 19s, and the venv is left untouched.
+# Contract half -- safe to run inside a chain, which the full gate below is NOT.
+#
+# scripts/audit_docs_plumbing.py's run_uv_sync() shells out to
+# `uv sync --group=docs --extra=eda` (groups/extras from distribution/docs_plumbing.toml).
+# `uv sync` REPLACES the environment rather than adding to it, so it silently drops
+# everything that lives only in [project.optional-dependencies].dev and that nothing else
+# depends on -- beartype and jaxtyping among them. Every later gate in audit-deterministic
+# then dies on ModuleNotFoundError for reasons unrelated to what it tests. This is the
+# mechanism behind the spurious BLOCKED_AUTOMATED release-readiness reports.
+#
+# Two things reach that code path, and both are excluded here:
+#   - the script itself, avoided with --check-only (which returns before run_uv_sync)
+#   - test_audit_docs_plumbing_builds_docs, which calls the real gate with skip_build=False
+#     against the real repo root, so it runs the sync AND a full sphinx build
+#
+# Measured: beartype is importable before this recipe and gone after, while the recipe
+# still exits 0 -- the mutation is silent. Note it is NOT caused by bare `uv run`, which
+# is inexact and prunes nothing; only the explicit `uv sync` does this.
 audit-docs-build-contract:
     uv run ruff check scripts/audit_docs_plumbing.py tests/distribution/test_docs_plumbing.py
-    uv run pytest tests/distribution/test_docs_plumbing.py -v
+    uv run pytest tests/distribution/test_docs_plumbing.py -v --deselect tests/distribution/test_docs_plumbing.py::test_audit_docs_plumbing_builds_docs
     uv run python scripts/audit_docs_plumbing.py --check-only
 
 # Full gate: adds the real `sphinx-build -W -n`. Mutates the shared venv (see above), so run
