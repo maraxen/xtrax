@@ -208,9 +208,38 @@ audit-public-api:
     uv run python scripts/audit_public_api.py
     uv run pytest tests/distribution/test_public_api.py -v
 
-audit-docs-build:
+# Contract half -- safe to run inside a chain, which the full gate below is NOT.
+#
+# scripts/audit_docs_plumbing.py's run_uv_sync() shells out to
+# `uv sync --group=docs --extra=eda` (groups/extras from distribution/docs_plumbing.toml).
+# `uv sync` REPLACES the environment rather than adding to it, so it silently drops
+# everything that lives only in [project.optional-dependencies].dev and that nothing else
+# depends on. beartype is the one that bites: jaxtyping SURVIVES, because equinox (a core
+# dependency) requires it (uv.lock). Every later gate in audit-deterministic then dies on
+# ModuleNotFoundError for reasons unrelated to what it tests.
+#
+# The underlying cause is two divergent `dev` definitions in pyproject.toml:
+# [dependency-groups].dev (uv-default-synced, no beartype) vs
+# [project.optional-dependencies].dev (has beartype). Any `uv sync --group X` keeps the
+# group and drops the extra. Consolidating those is the real fix -- see backlog #4969.
+#
+# Two things reach that code path, and both are excluded here:
+#   - the script itself, avoided with --check-only (which returns before run_uv_sync)
+#   - test_audit_docs_plumbing_builds_docs, which calls the real gate with skip_build=False
+#     against the real repo root, so it runs the sync AND a full sphinx build
+#
+# Measured: beartype is importable before this recipe and gone after, while the recipe
+# still exits 0 -- the mutation is silent. Note it is NOT caused by bare `uv run`, which
+# is inexact and prunes nothing; only the explicit `uv sync` does this.
+audit-docs-build-contract:
     uv run ruff check scripts/audit_docs_plumbing.py tests/distribution/test_docs_plumbing.py
-    uv run pytest tests/distribution/test_docs_plumbing.py -v
+    uv run pytest tests/distribution/test_docs_plumbing.py -v --deselect tests/distribution/test_docs_plumbing.py::test_audit_docs_plumbing_builds_docs
+    uv run python scripts/audit_docs_plumbing.py --check-only
+
+# Full gate: adds the real `sphinx-build -W -n`. Mutates the shared venv (see above), so run
+# it on its own, never inside a chain. Per-commit sphinx coverage does not depend on this
+# recipe -- .github/workflows/docs.yml already runs `sphinx-build -W -n` as its own job.
+audit-docs-build: audit-docs-build-contract
     uv run python scripts/audit_docs_plumbing.py
 
 audit-project-hygiene:
@@ -277,7 +306,7 @@ audit-coverage-tier4: audit-controller-types
     uv run python scripts/audit_coverage_dag.py --tier tier4_controller --enforce tier4_controller
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-jax-purity-gate audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-release-readiness-contract audit-added-types-diff
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-jax-purity-gate audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-docs-build-contract audit-publish-oidc audit-release-readiness-contract audit-added-types-diff
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry
