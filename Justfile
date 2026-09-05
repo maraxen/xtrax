@@ -305,8 +305,20 @@ audit-controller-types:
 audit-coverage-tier4: audit-controller-types
     uv run python scripts/audit_coverage_dag.py --tier tier4_controller --enforce tier4_controller
 
+# Reports which audit-* recipes no workflow reaches, and FAILS if a workflow names a
+# recipe the Justfile no longer defines. The report half is informational; the dangling
+# check is the gate, and it is in audit-deterministic so a renamed recipe is caught on the
+# commit that renames it rather than at the next scheduled run.
+#
+# .github/workflows/audit-orphans.yml runs the reported recipes weekly. That workflow does
+# not gate -- see its header, and #5002 for the phase that will.
+audit-orphan-recipes:
+    uv run ruff check scripts/audit_orphan_recipes.py tests/audit/test_orphan_recipes.py
+    uv run pytest tests/audit/test_orphan_recipes.py -v
+    uv run python scripts/audit_orphan_recipes.py --format report
+
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-jax-purity-gate audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-docs-build-contract audit-publish-oidc audit-release-readiness-contract audit-added-types-diff
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-jax-purity-gate audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-docs-build-contract audit-publish-oidc audit-release-readiness-contract audit-added-types-diff audit-orphan-recipes
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry
