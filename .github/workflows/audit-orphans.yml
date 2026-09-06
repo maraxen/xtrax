@@ -1,0 +1,116 @@
+# Weekly run of every audit-* recipe that no other workflow reaches (#5001).
+#
+# 27 of this repo's 65 audit-* recipes are invoked by nothing. They are maintained
+# and they are green, in the sense that an unplugged smoke detector is silent. Three
+# were found broken in one week once someone ran them by hand: audit-jax-purity-gate
+# had a dead ruff path, audit-docs-build was corrupting the shared venv, and
+# audit-release-readiness had been red since 2026-07-02.
+#
+# The recipe list is DERIVED, not listed here -- scripts/audit_orphan_recipes.py
+# computes it from the Justfile's dependency graph and the `just` invocations in
+# these workflow files. Wire a recipe into CI and it leaves this run automatically;
+# add a new one and it joins automatically. There is nothing to keep in sync.
+#
+# PHASE 1 -- THIS WORKFLOW DOES NOT GATE. Every recipe runs with its failure
+# recorded and tolerated, and the job succeeds regardless. That is deliberate: no
+# one has ever run most of these, so there is no basis yet for saying which *should*
+# pass. Claiming otherwise would manufacture exactly the unfounded green this exists
+# to expose. Phase 2 -- pin the passing set and start failing on regressions -- is
+# backlog #5002, and wants the first run's output as its input.
+#
+# Read the run's job summary, not its status badge. The badge is green by design.
+name: Audit Orphans
+
+on:
+  schedule:
+    # Monday 07:30 UTC, an hour after audit-judgment.yml so the two do not contend.
+    - cron: "30 7 * * 1"
+  workflow_dispatch:
+
+jobs:
+  audit-orphans:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      - name: Install just
+        run: uv tool install rust-just
+
+      - name: Install dev dependencies
+        run: uv sync --extra dev --extra io
+
+      - name: Enumerate unreached recipes
+        id: enumerate
+        run: uv run python scripts/audit_orphan_recipes.py --format report
+
+      - name: Run each unreached recipe
+        run: |
+          set -uo pipefail
+
+          uv run python scripts/audit_orphan_recipes.py --format lines > /tmp/orphans.txt
+          total=$(wc -l < /tmp/orphans.txt)
+
+          {
+            echo "## Unreached audit recipes"
+            echo
+            echo "\`$total\` recipes that no workflow invokes. This job does not gate --"
+            echo "a FAIL here is information, not a build break (see #5002)."
+            echo
+            echo "| recipe | result | seconds |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          passed=0
+          failed=0
+
+          while read -r recipe; do
+            [ -n "$recipe" ] || continue
+
+            # Restore the canonical environment before every recipe. Not hygiene
+            # theatre: audit-docs-build is in this very list and is known to strip
+            # beartype out of the shared venv (see the comment above
+            # audit-docs-build-contract in the Justfile). Without this line, every
+            # recipe sequenced after it would fail on an unrelated ImportError and
+            # the whole report would be noise.
+            uv sync --extra dev --extra io --quiet
+
+            start=$SECONDS
+            if timeout 900 just "$recipe" > "/tmp/${recipe}.log" 2>&1; then
+              result="PASS"
+              passed=$((passed + 1))
+            else
+              status=$?
+              result="FAIL (exit $status)"
+              failed=$((failed + 1))
+            fi
+            elapsed=$((SECONDS - start))
+
+            echo "| \`$recipe\` | $result | ${elapsed} |" >> "$GITHUB_STEP_SUMMARY"
+
+            echo "::group::$recipe -- $result"
+            tail -80 "/tmp/${recipe}.log"
+            echo "::endgroup::"
+          done < /tmp/orphans.txt
+
+          {
+            echo
+            echo "**$passed passed, $failed failed** of $total."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "$passed passed, $failed failed of $total"
+
+      - name: Upload recipe logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orphan-recipe-logs
+          path: /tmp/*.log
+          if-no-files-found: warn
+          retention-days: 30
