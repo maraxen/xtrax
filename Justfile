@@ -208,37 +208,40 @@ audit-public-api:
     uv run python scripts/audit_public_api.py
     uv run pytest tests/distribution/test_public_api.py -v
 
-# Contract half -- safe to run inside a chain, which the full gate below is NOT.
+# Contract half -- ruff, the whole test file, and the manifest/conf wiring check. Safe to
+# run inside a chain, which the full gate below still is not.
 #
-# scripts/audit_docs_plumbing.py's run_uv_sync() shells out to
-# `uv sync --group=docs --extra=eda` (groups/extras from distribution/docs_plumbing.toml).
-# `uv sync` REPLACES the environment rather than adding to it, so it silently drops
-# everything that lives only in [project.optional-dependencies].dev and that nothing else
-# depends on. beartype is the one that bites: jaxtyping SURVIVES, because equinox (a core
-# dependency) requires it (uv.lock). Every later gate in audit-deterministic then dies on
-# ModuleNotFoundError for reasons unrelated to what it tests.
+# Until #131 this deselected test_audit_docs_plumbing_builds_docs. That test calls the real
+# gate with skip_build=False against the real repo root, and the gate then shelled out to
+# `uv sync --group=docs --extra=eda`. `uv sync` REPLACES the environment rather than adding
+# to it, so it silently dropped beartype -- the one package that lives only in
+# [project.optional-dependencies].dev and that nothing else requires. (jaxtyping SURVIVES:
+# equinox, a core dependency, requires it.) Every later gate in audit-deterministic then
+# died on an unrelated ModuleNotFoundError while this recipe itself still exited 0.
 #
-# The underlying cause is two divergent `dev` definitions in pyproject.toml:
-# [dependency-groups].dev (uv-default-synced, no beartype) vs
-# [project.optional-dependencies].dev (has beartype). Any `uv sync --group X` keeps the
-# group and drops the extra. Consolidating those is the real fix -- see backlog #4969.
+# #131 moved the groups and extras onto `uv run`, which resolves additively and leaves the
+# environment alone. The deselect lost its reason to exist, so the whole file runs here.
 #
-# Two things reach that code path, and both are excluded here:
-#   - the script itself, avoided with --check-only (which returns before run_uv_sync)
-#   - test_audit_docs_plumbing_builds_docs, which calls the real gate with skip_build=False
-#     against the real repo root, so it runs the sync AND a full sphinx build
+# That is worth its cost -- the whole file runs in ~13s here, 23.5s for that one test from
+# a cold build dir -- and not merely for tidiness: .github/workflows/docs.yml invokes
+# `sphinx-build` DIRECTLY and never goes through audit_docs_plumbing.py, so it does not
+# cover this gate's own build-command construction -- which is precisely the code #131
+# rewrote. With the deselect in place that code had no per-commit coverage anywhere.
 #
-# Measured: beartype is importable before this recipe and gone after, while the recipe
-# still exits 0 -- the mutation is silent. Note it is NOT caused by bare `uv run`, which
-# is inexact and prunes nothing; only the explicit `uv sync` does this.
+# The root cause is still live: two divergent `dev` definitions in pyproject.toml,
+# [dependency-groups].dev (uv-default-synced, no beartype) versus
+# [project.optional-dependencies].dev (has it). Any `uv sync --group X` keeps the group and
+# drops the extra. Consolidating them is the real fix -- backlog #4969.
 audit-docs-build-contract:
     uv run ruff check scripts/audit_docs_plumbing.py tests/distribution/test_docs_plumbing.py
-    uv run pytest tests/distribution/test_docs_plumbing.py -v --deselect tests/distribution/test_docs_plumbing.py::test_audit_docs_plumbing_builds_docs
+    uv run pytest tests/distribution/test_docs_plumbing.py -v
     uv run python scripts/audit_docs_plumbing.py --check-only
 
-# Full gate: adds the real `sphinx-build -W -n`. Mutates the shared venv (see above), so run
-# it on its own, never inside a chain. Per-commit sphinx coverage does not depend on this
-# recipe -- .github/workflows/docs.yml already runs `sphinx-build -W -n` as its own job.
+# Full gate: runs the real `sphinx-build -W -n` over the whole docs tree through the gate's
+# own entry point. It no longer mutates the shared venv (#131), so the old "never inside a
+# chain" hazard is gone -- what keeps it out of audit-deterministic now is only cost, since
+# the contract half above already exercises one real build via
+# test_audit_docs_plumbing_builds_docs. Run it at release time.
 audit-docs-build: audit-docs-build-contract
     uv run python scripts/audit_docs_plumbing.py
 
