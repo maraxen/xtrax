@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a9] - 2026-09-07
+
+### Added
+
+- **`derive_sink_spec` and `new_run_id` on the public API**: both names now
+  resolve from the `xtrax` root and are listed in `distribution/public_api.toml`
+  as tier-1 exports. Backlog #4457 item (2) deliberately held them back until a
+  real driver consumed the seam, so that the surface would be shaped by a caller
+  rather than by speculation; the run CLI now builds its sink exclusively
+  through `derive_sink_spec`/`make_sink`, which discharges that condition. They
+  are promoted through the lazy-export path the contract requires, so
+  `xtrax.derive_sink_spec` still imports `xtrax.run` only on first attribute
+  access rather than at package import.
+
+### Changed
+
+- **The `controller` extra is capped at `bathos<0.14`** (was an uncapped
+  `>=0.13.0a1`). Once CI depended on that extra, an uncapped alpha meant an
+  unrelated bathos release could turn the board red without a commit here.
+
+
 ## [0.4.0a8] - 2026-09-02
 
 ### Added
