@@ -7,6 +7,7 @@
 - [260623_e1-e2-composition-layer](handoffs/260623_e1-e2-composition-layer.md) — session handoff: E1-MVP (xtrax.inference) + #2561 hardening + E2-MVP (xtrax.cli plan/explain/export) all merged to main (341 tests); deferred run/sweep/resume verbs + push pending
 
 ## Plans
+- [260909_release-trail-fail-loud](plans/260909_release-trail-fail-loud.md) — Sprint spec: fix zarr_content_digest determinism (#5013), consolidate the divergent dev dependency tables and the runtime-deps list (#4969, #4967), and make the test-rigor gate report its own failure (#5021) as the prerequisite for #5002
 - [260903_controller-gate-gap](plans/260903_controller-gate-gap.md) — Wire controller/ into ty and a coverage tier, install the controller extra in CI so the real-bathos surface runs, then fix the three defects that exposes
 - [260623_e1-mvp-backlog-dag](plans/260623_e1-mvp-backlog-dag.md) — E1-MVP implementation DAG (staff → adversarial plan-audit NEEDS_WORK, all 8 fixes folded in): 12 tasks incl. split E1.3a/E1.3b keystone, w1.5 decision gate (explicit AxisRole field; in-test InputResolver adapter), AC2/AC8 ownership fixes
 - [260623_e2-mvp-backlog-dag](plans/260623_e2-mvp-backlog-dag.md) — E2-MVP xtrax.cli DAG (staff → adversarial plan-audit NEEDS_WORK, 7 fixes folded): 9 tasks T0–T8 + roadmap node; caught the import-linter-lazy-import trap + AC4-unreachable-without-decorated-fixture; critical path through the explain+emit long pole
