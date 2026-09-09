@@ -201,7 +201,7 @@ fsync_tree(store_path)                    # durabilize directory-of-many-files b
 digest = zarr_content_digest(store_path)  # deterministic sha256 over full logical content
 ```
 
-- `zarr_content_digest(path, include_provenance=False)` — sha256 over the store's paths, array data, and caller attrs; excludes sink-written run-provenance fields (git SHA/branch/dirty, run_id, created_at on root; run_id/git_sha pointer on non-root groups) by default. Pass `include_provenance=True` to include them. Unaffected by filesystem metadata; excluding provenance means it is now unaffected by which process wrote it.
+- `zarr_content_digest(path, *, include_provenance=False)` — sha256 over the store's paths, array data, and caller attrs; excludes sink-written run-provenance fields (git SHA/branch/dirty, run_id, created_at on root; run_id/git_sha pointer on non-root groups) by default. Pass `include_provenance=True` to include them. Unaffected by filesystem metadata; excluding provenance means it is now unaffected by which process wrote it.
 - `update_zarr_node_digest(digest, node, path, *, include_provenance=False)` — folds one group/array node's path, attrs and data into an existing `hashlib` digest, recursing into children; `path` is the node's store path, so `"/"` selects the root exclusion set. Same `include_provenance` semantics as `zarr_content_digest`.
 - `fsync_tree(path)` — fsync every file and directory bottom-up; call before trusting the digest.
 - Lower-level building blocks also exported from `xtrax.run`: `canonical_json_bytes`, `normalize_json_value`, `update_array_digest`, `fsync_file`, `fsync_directory`.
