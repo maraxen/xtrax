@@ -156,15 +156,20 @@ fallback cut is executable by heading rather than by judgement.
 2 items). That drops **B4, B5, and all of Phase C** — which pushes #5002 out by
 two sprints instead of one. Choose this if the budget is meant to bind.
 
-It is also the only cut that fires **no loop-constitution gate**: Phase C is a
-gate-(b) event and needs a `T2-29` attestation before merge (see Phase C), while
-#5013 and #4969 touch no evaluator. A sprint that wants to run without a human
-sign-off step is this cut.
+The rubric-strict cut was *specified* as the only one firing no
+loop-constitution gate, on the reading that Phase C is a gate-(b) event. That
+reading was put to Marielle and **rejected**: gate (b) covers the #2181 loop's
+evaluator closure, not repository CI gates. See
+`.praxia/docs/decisions/260909_gate-b-scope-loop-evaluator-not-ci-gates.md`.
+No cut fires a constitution gate.
 
-**Decision point:** Marielle chooses the cut when approving this document (the
-PR that lands it). Phase A and B1-B3/B6-B8 may start under either answer; B4,
-B5 and Phase C do not open a branch until the full scope is confirmed. No
-answer means the fallback cut.
+**Decision taken (2026-09-09, Marielle): full scope.** All four rows run --
+#5013, #4969, #4967, #5021 -- 8 points across 4 items. The rubric's own first
+line scopes it to the autonomous loop (`# dual sprint governor for autonomous
+loop`), and no loop controller exists (`closure_lock.py:18-20`). The precedent
+is `260903_controller-gate-gap.md`, which landed as PRs #120-#124 with no Rubric
+section at all. Phase C is retained because it costs one point and repairs the
+gate through which every other phase's coverage evidence is read.
 
 ## Phase A — make the digest mean what its docstring says (#5013)
 
@@ -515,54 +520,28 @@ The scope is the **gate**, not the suite. Do not try to fix why the full
 `pytest tests/` run produces no coverage data. That is #5002's input, and this
 sprint's job is to make it legible.
 
-### Gate (b) — this phase needs Marielle's per-event sign-off
+### Gate (b) -- ruled out of scope; no attestation required
 
-`.praxia/docs/decisions/260714_2181-autoresearch-loop-constitution.md:46-52`
-(gate (b), AC-22): *"any change to evaluator code, test splits, or metric
-definitions requires Marielle's explicit sign-off before the changed evaluator is
-trusted ... This gate fires on every evaluator-change event, not once — there is
-no standing blanket approval."*
+This specification originally treated the whole of Phase C as a
+loop-constitution gate-(b) event, requiring a `T2-29` sign-off row in
+`.praxia/loop_human_gates.toml` and a closure-hash re-lock (C7) before merge.
 
-C6 changes what the evaluator passes on. Under the plain words, so does the whole
-of Phase C: `test_rigor.py` is the sole producer of `test_rigor.line_coverage_pct`
-and `test_rigor.branch_coverage_pct`, and C1/C3 change the environment those
-measurements are taken in. **Treat all of Phase C as one gate-(b) event.**
+**That reading was put to Marielle on 2026-09-09 and rejected.** Gate (b) covers
+the evaluator closure of the #2181 autonomous-evolution loop -- the `EvaluateFn`
+that judges evolved candidates -- and not repository CI and audit gates. The
+ruling and its evidence are recorded in
+`.praxia/docs/decisions/260909_gate-b-scope-loop-evaluator-not-ci-gates.md`:
+`src/xtrax/loop/` never imports `test_rigor` or `xtrax.devtools.gates`;
+`evaluator_change_gate` is imported only by its own test; and `closure_lock.py`'s
+docstring scopes the locked closure to the loop's fitness oracle while stating
+that no loop controller exists yet.
 
-The quote above elides the policy's second clause, which binds equally:
-"*and* forces a closure-hash re-lock (T2-05) of the new evaluator's complete
-closure (code + splits + metric defs + pinned deps + config)" (`:49-51`). Phase C
-therefore carries **two** obligations, not one: the sign-off row, and the re-lock
-that produces the identifier the row must reference. C7 below is the re-lock.
-
-**Approving this specification is not the sign-off.** The sign-off is a new
-`[[gates]]` row in `.praxia/loop_human_gates.toml`, written when Marielle approves
-the Phase C PR. It mirrors the T2-30 row already there for PR #96 (`:27-41`) in
-field shape only — **its `event_ref` is not a commit sha.**
-`src/xtrax/loop/evaluator_change_gate.py:148` matches a gate-(b) attestation on
-`raw.get("event_ref") == new_locked.closure_hash`, and that module's docstring
-(`:21-24`, `:33`) says why: a closure hash cannot be silently reused to approve a
-different change, a commit sha can. Nothing calls that checker today, but writing
-the first live gate-(b) row in a form the repo's own checker is structurally
-guaranteed to reject would be the same "green over a false fact" this sprint
-exists to remove. The PR is not mergeable before the row exists.
-
-```toml
-# T2-29 evaluator-change approval for the Phase C test-rigor gate rewrite.
-# Per-event gate per AC-22: this attestation covers exactly the commit below.
-[[gates]]
-id = "T2-29"
-ac = "AC-22"
-slug = "evaluator_test_rigor_fail_loud"
-title = "Evaluator change: test-rigor gate reports and fails on its own failure (gate b)"
-event_ref = "<ClosureManifest.closure_hash from C7 -- NOT a commit sha>"
-attested_at = "<ISO-8601 UTC at approval>"
-ttl_days = 7
-attested_by = "Marielle Russo"
-note = "<approval quote + what changed: report-path reservation, returncode/tests_failed in the verdict, explicit extras>"
-```
-
-The header comment at `:9-13` says gates (b)-(e) get "its own attestation entry
-here the first time its event actually fires". This is that first time for (b).
+**Consequences for this phase:** no `T2-29` row is written, no closure-hash
+re-lock is performed, sub-task **C7 is struck**, and Phase C proceeds as an
+ordinary reviewed pull request. Gate (b) remains in full force for changes to a
+real loop evaluator, where the `event_ref` must still be a
+`ClosureManifest.closure_hash` and never a commit sha
+(`evaluator_change_gate.py:148`).
 
 **C1 (#5021) — reserve the path without creating the file.** Replace the
 `tempfile.NamedTemporaryFile(delete=False)` block at `test_rigor.py:90-95` with a
@@ -688,30 +667,9 @@ no slot for detail. Specify the carrier exactly:
   `tests_failed`, and the tail of `pytest_output`.
 - `scripts/audit_test_rigor_gate.py:72-80` prints `failure_detail` on `FAIL`.
 
-**C7 (#5021) — the closure-hash re-lock the constitution requires.** Gate (b)'s
-second clause: the changed evaluator's closure is re-locked, and the attestation
-references the lock. `src/xtrax/loop/closure_lock.py:98-105` already exposes
-`build_closure_manifest(*, evaluator_paths, split_paths, metric_def_paths,
-config, pinned_deps_source=...)` over arbitrary paths, so this needs no new
-machinery:
-
-```python
-manifest = build_closure_manifest(
-    evaluator_paths=(Path("src/xtrax/devtools/gates/test_rigor.py"),
-                     Path("scripts/audit_test_rigor_gate.py")),
-    split_paths=(),
-    # The pass/fail thresholds are the ratchet baseline the CLI reads via
-    # DEFAULT_BASELINE_PATH (src/xtrax/devtools/baseline.py:19).
-    metric_def_paths=(Path(".praxia/audit_baseline.json"),),
-    config={"extras": ["dev", "io"], "tests_path": "tests"},
-)
-manifest.closure_hash  # -> the T2-29 event_ref
-```
-
-Compute it on the PR's final head, record the hash and the input paths in the PR
-body, and put the hash in the T2-29 row's `event_ref`. If the evaluator files
-change again after the hash is taken, the hash is stale and the row does not
-match — that is the mechanism working, recompute and re-attest.
+**C7 (#5021) -- STRUCK.** This sub-task was the closure-hash re-lock required
+by the gate-(b) reading rejected above. It is not performed. Nothing else in
+Phase C depended on it.
 
 **Gate for Phase C:**
 
@@ -720,9 +678,7 @@ uv run --extra dev --extra io pytest tests/audit/test_test_rigor_gate.py -q
 just audit-test-rigor-gate-quick    # expect exit 0
 ```
 
-Green, with both C4 tests demonstrated **red** against `origin/main`; a `T2-29`
-row present in `.praxia/loop_human_gates.toml` whose `event_ref` is the C7
-closure hash computed on the PR's final head; and
+Green, with both C4 tests demonstrated **red** against `origin/main`; and
 one `audit-orphans.yml` `workflow_dispatch` run completed with its
 `audit-test-rigor-gate` outcome — hypothesis (a) or (c) — written into #5002.
 **The phase is not done at merge — it is done when #5002 carries the answer.**
