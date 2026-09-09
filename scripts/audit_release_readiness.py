@@ -574,7 +574,23 @@ def audit_release_readiness(
     *,
     quick: bool = False,
     skip_sync: bool = False,
+    report_root: Path | None = None,
 ) -> tuple[bool, dict[str, Any]]:
+    """Run the gates and write the readiness report.
+
+    ``report_root`` decides where the report lands; it defaults to ``root``,
+    which is the release-time behaviour. It is separate from ``root`` because
+    the two are not the same axis: ``root`` is where the gates *execute* (they
+    are ``just`` recipes and need the real repo), while the report is just an
+    artifact. Redirecting ``root`` to relocate the report would break every
+    gate.
+
+    The split exists because the report is a *tracked* file. Without it,
+    anything that runs this script against the real repo -- notably
+    ``tests/distribution/test_release_readiness.py``, which runs in the
+    ``audit-deterministic`` chain -- overwrites the committed release
+    attestation with its own output (#5003).
+    """
     config = load_release_readiness_config(config_path)
     failures: list[str] = []
 
@@ -687,11 +703,13 @@ def audit_release_readiness(
         },
     }
 
-    report_json = root / config.report_json
+    out_root = report_root if report_root is not None else root
+    report_json = out_root / config.report_json
     report_json.parent.mkdir(parents=True, exist_ok=True)
     report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    report_md = root / config.report_markdown
+    report_md = out_root / config.report_markdown
+    report_md.parent.mkdir(parents=True, exist_ok=True)
     report_md.write_text(render_markdown_report(payload), encoding="utf-8")
 
     passed = verdict == "READY"
@@ -722,18 +740,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip uv sync prerequisite step",
     )
+    parser.add_argument(
+        "--report-root",
+        type=Path,
+        default=None,
+        help=(
+            "Directory to write the report under (default: --root). Gates still "
+            "run in --root; this only relocates the artifact, so a caller that is "
+            "not cutting a release can avoid overwriting the tracked report."
+        ),
+    )
     args = parser.parse_args(argv)
 
+    report_root = args.report_root.resolve() if args.report_root is not None else None
     passed, payload = audit_release_readiness(
         root=args.root.resolve(),
         config_path=args.config.resolve(),
         quick=args.quick,
         skip_sync=args.skip_sync,
+        report_root=report_root,
     )
     config = load_release_readiness_config(args.config.resolve())
+    out_root = report_root if report_root is not None else args.root.resolve()
     print(f"Release readiness verdict: {payload['verdict']}")
-    print(f"JSON report: {args.root.resolve() / config.report_json}")
-    print(f"Markdown report: {args.root.resolve() / config.report_markdown}")
+    print(f"JSON report: {out_root / config.report_json}")
+    print(f"Markdown report: {out_root / config.report_markdown}")
     if passed:
         print("PASS: release readiness gate")
         return 0

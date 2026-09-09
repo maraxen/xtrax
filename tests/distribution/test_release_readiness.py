@@ -215,7 +215,21 @@ def test_audit_release_readiness_writes_report_with_mocks(tmp_path: Path) -> Non
     assert len(saved["backlog"]) == 11
 
 
-def test_main_cli_generates_report_on_repo() -> None:
+def test_main_cli_generates_report_on_repo(tmp_path: Path) -> None:
+    """The CLI runs end to end on the real repo and writes a usable report.
+
+    ``--report-root`` is not optional decoration here (#5003). This test runs
+    inside the ``audit-deterministic`` chain, so without it every local run of
+    that chain overwrote the *tracked* ``.praxia/release_readiness_report.json``
+    -- replacing the committed post-publish ``mode=full`` / ``READY``
+    attestation with this test's ``mode=quick`` / ``BLOCKED_INCOMPLETE`` output,
+    whose "blockers" are all just --quick skips. A full release run rewrote it
+    afterwards, so it self-corrected; an interrupted one left a misleading
+    artifact that reads exactly like a real regression.
+    """
+    tracked_report = ROOT / ".praxia" / "release_readiness_report.json"
+    before = tracked_report.read_bytes() if tracked_report.is_file() else None
+
     result = subprocess.run(
         [
             "uv",
@@ -224,13 +238,64 @@ def test_main_cli_generates_report_on_repo() -> None:
             "scripts/audit_release_readiness.py",
             "--quick",
             "--skip-sync",
+            "--report-root",
+            str(tmp_path),
         ],
         cwd=ROOT,
         capture_output=True,
         text=True,
+        check=False,
     )
-    assert (ROOT / ".praxia" / "release_readiness_report.json").is_file()
-    assert "Release readiness verdict:" in result.stdout or result.returncode in (0, 1)
+
+    # The tracked artifact is untouched -- the regression this test exists for.
+    after = tracked_report.read_bytes() if tracked_report.is_file() else None
+    assert after == before, (
+        "running the readiness CLI rewrote the tracked release_readiness_report.json (#5003)"
+    )
+
+    # 0 = READY, 1 = a real verdict of not-ready. Anything else (2 = argparse,
+    # >2 = traceback) means the CLI broke, which the old `returncode in (0, 1)`
+    # inside an `or` could not distinguish from success.
+    assert result.returncode in (0, 1), result.stderr
+
+    written = tmp_path / ".praxia" / "release_readiness_report.json"
+    assert written.is_file(), result.stderr
+    payload = json.loads(written.read_text(encoding="utf-8"))
+
+    # Assert the content the test claims to verify, not merely that a file
+    # exists -- the old `is_file()` check passed on the committed file even if
+    # the script had crashed before writing anything.
+    assert payload["mode"] == "quick"
+    assert payload["verdict"] in {
+        "READY",
+        "BLOCKED_AUTOMATED",
+        "BLOCKED_MANUAL",
+        "BLOCKED_INCOMPLETE",
+    }
+    assert payload["epic_id"] == 1451
+    assert payload["package_version"]
+    assert (tmp_path / ".praxia" / "release_readiness_report.md").is_file()
+    assert "Release readiness verdict:" in result.stdout
+
+
+def test_report_root_defaults_to_root(tmp_path: Path) -> None:
+    """Omitting ``report_root`` keeps the release-time behaviour: write under root."""
+    config_path = ROOT / "distribution" / "release_readiness.toml"
+    config = load_release_readiness_config(config_path)
+
+    def fake_run(cmd, cwd, capture_output, text, check):  # noqa: ANN001
+        return subprocess.CompletedProcess(cmd, 0, "PASS", "")
+
+    (tmp_path / "src" / "xtrax").mkdir(parents=True)
+    (tmp_path / "src" / "xtrax" / "__init__.py").write_text(
+        '__version__ = "0.0.1"\n', encoding="utf-8"
+    )
+
+    with patch("scripts.audit_release_readiness.subprocess.run", side_effect=fake_run):
+        audit_release_readiness(tmp_path, config_path, skip_sync=True, quick=True)
+
+    assert (tmp_path / config.report_json).is_file()
+    assert (tmp_path / config.report_markdown).is_file()
 
 
 def test_justfile_defines_audit_release_readiness() -> None:

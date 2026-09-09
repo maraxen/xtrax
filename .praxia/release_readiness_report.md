@@ -1,9 +1,9 @@
 # xtrax Release Readiness Report
 
 - **Epic:** #1451 xtrax distribution readiness (N0-N10)
-- **Generated:** 2026-09-02T15:53:41.325838+00:00
+- **Generated:** 2026-09-09T13:53:34.525376+00:00
 - **Verdict:** `READY`
-- **Package version:** `0.4.0a8`
+- **Package version:** `0.4.0a9`
 
 ## Distribution backlog (N0-N10)
 
