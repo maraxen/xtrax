@@ -106,15 +106,17 @@ audit-api-ergonomics-gate:
     uv run pytest tests/audit/test_api_ergonomics_gate.py -v
     uv run python scripts/audit_api_ergonomics_gate.py --no-write-baseline
 
+# Explicit --extra flags guarantee these tools are present when run from a narrower
+# local environment. uv run is inexact by default and does not prune.
 audit-test-rigor-gate:
-    uv run ruff check src/xtrax/devtools/gates/test_rigor.py scripts/audit_test_rigor_gate.py tests/audit/test_test_rigor_gate.py
-    uv run pytest tests/audit/test_test_rigor_gate.py -v
-    uv run python scripts/audit_test_rigor_gate.py --no-write-baseline
+    uv run --extra dev --extra io ruff check src/xtrax/devtools/gates/test_rigor.py scripts/audit_test_rigor_gate.py tests/audit/test_test_rigor_gate.py
+    uv run --extra dev --extra io pytest tests/audit/test_test_rigor_gate.py -v
+    uv run --extra dev --extra io python scripts/audit_test_rigor_gate.py --no-write-baseline
 
 audit-test-rigor-gate-quick:
-    uv run ruff check src/xtrax/devtools/gates/test_rigor.py scripts/audit_test_rigor_gate.py tests/audit/test_test_rigor_gate.py
-    uv run pytest tests/audit/test_test_rigor_gate.py -v
-    uv run python scripts/audit_test_rigor_gate.py --quick --no-write-baseline
+    uv run --extra dev --extra io ruff check src/xtrax/devtools/gates/test_rigor.py scripts/audit_test_rigor_gate.py tests/audit/test_test_rigor_gate.py
+    uv run --extra dev --extra io pytest tests/audit/test_test_rigor_gate.py -v
+    uv run --extra dev --extra io python scripts/audit_test_rigor_gate.py --quick --no-write-baseline
 
 audit-structure-complexity-gate:
     uv run ruff check src/xtrax/devtools/gates/structure_complexity.py scripts/audit_structure_complexity_gate.py tests/audit/test_structure_complexity_gate.py
