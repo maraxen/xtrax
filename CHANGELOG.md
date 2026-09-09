@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   match values computed after it for any sink-written store** — stored done-marker
   digests will mismatch and must be recomputed.
 
+### Changed
+
+- **`grain` and `pytest-asyncio` are no longer runtime dependencies.** Both were
+  declared in `[project].dependencies` but imported nowhere under `src/`.
+  `grain` moves to a new `data` extra — consumers who need it must now install
+  `xtrax[data]`. `pytest-asyncio` is removed entirely from runtime deps; it
+  remains in the `dev` extra, where a test-only plugin belongs. **This is
+  consumer-visible:** anyone relying on `pip install xtrax` to pull `grain` or
+  `pytest-asyncio` must now ask for them explicitly.
+- **The `dev` and `eda` dependency-groups are now thin aliases of their
+  matching extras** (`dev = ["xtrax[dev]"]`). Previously each group duplicated
+  its extra's contents and had drifted apart, so `uv sync --group <x>` kept the
+  group and dropped the extra — silently uninstalling `beartype`, `chex`,
+  `interrogate`, `jaxlint` and `libcst`. An alias has no content of its own and
+  so cannot diverge. A new contract enforces the shape for any name declared in
+  both tables.
+
 ## [0.4.0a9] - 2026-09-07
 
 ### Added

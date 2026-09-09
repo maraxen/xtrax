@@ -4,7 +4,7 @@ epic_id = 1451
 epic_title = "xtrax distribution readiness (N0-N10)"
 report_json = ".praxia/release_readiness_report.json"
 report_markdown = ".praxia/release_readiness_report.md"
-prerequisite_sync = ["dev", "eda"]
+prerequisite_sync = ["dev", "eda", "io"]
 prerequisite_groups = ["docs"]
 
 [readiness.verdict]

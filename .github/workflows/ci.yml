@@ -183,7 +183,7 @@ jobs:
 
       - name: Build wheel (no dev extra)
         run: |
-          uv sync
+          uv sync --no-default-groups  # bare on purpose; --no-default-groups because dev is now an alias of the extra
           uv build
 
       - name: Assert port/ and controller/ absent from wheel

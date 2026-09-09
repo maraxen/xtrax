@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""Distribution N8 project hygiene gate — README/CHANGELOG/CITATION (#1460)."""
+"""Distribution N8 project hygiene gate — README/CHANGELOG/CITATION (#1460).
+
+Also covers #4969's group/extra alias contract (B3) and declared-vs-imported
+dependency contract (B5): a shared `dev`/`eda` name declared in both
+`[dependency-groups]` and `[project.optional-dependencies]` must be a single-element
+alias (`["xtrax[<name>]"]`), and every runtime dependency/import must resolve in both
+directions between `pyproject.toml` and `src/`.
+"""
 
 from __future__ import annotations
 
 import argparse
 import ast
+import importlib.metadata
 import re
 import sys
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +50,7 @@ class ProjectHygieneConfig:
     changelog_markers: tuple[str, ...]
     citation_keys: tuple[str, ...]
     pyproject_urls: tuple[str, ...]
+    import_name_overrides: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def load_project_hygiene_config(config_path: Path) -> ProjectHygieneConfig:
@@ -100,6 +109,15 @@ def load_project_hygiene_config(config_path: Path) -> ProjectHygieneConfig:
     if not isinstance(pyproject_urls, list) or not pyproject_urls:
         raise ValueError("hygiene.pyproject_urls.required must be a non-empty list")
 
+    overrides_table = data.get("import_name_overrides", {})
+    if not isinstance(overrides_table, dict):
+        raise ValueError("[import_name_overrides] must be a table")
+    import_name_overrides: dict[str, tuple[str, ...]] = {}
+    for import_name, dist_names in overrides_table.items():
+        if not isinstance(dist_names, list) or not dist_names:
+            raise ValueError(f"import_name_overrides.{import_name} must be a non-empty list")
+        import_name_overrides[import_name] = tuple(str(item) for item in dist_names)
+
     return ProjectHygieneConfig(
         version=version,
         version_source=version_source,
@@ -111,6 +129,7 @@ def load_project_hygiene_config(config_path: Path) -> ProjectHygieneConfig:
         changelog_markers=changelog_markers,
         citation_keys=tuple(str(item) for item in citation_keys),
         pyproject_urls=tuple(str(item) for item in pyproject_urls),
+        import_name_overrides=import_name_overrides,
     )
 
 
@@ -145,6 +164,323 @@ def _parse_citation_keys(citation_path: Path) -> set[str]:
         if ":" in line and not line.startswith(" "):
             keys.add(line.split(":", 1)[0].strip())
     return keys
+
+
+def _normalize_dist_name(name: str) -> str:
+    """PEP 503 normalization: case- and separator-insensitive distribution names."""
+    return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
+def _requirement_name(requirement: str) -> str:
+    """Extract the bare distribution name from a PEP 508 requirement string.
+
+    Handles version specifiers, extras (`foo[bar]>=1`), and environment markers
+    (`foo>=1; python_version<'4'`) -- only the leading name is needed here.
+    """
+    match = re.match(r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)", requirement)
+    if match is None:
+        raise ValueError(f"cannot parse requirement name from {requirement!r}")
+    return match.group(1)
+
+
+def check_group_extra_aliases(pyproject: dict) -> list[str]:
+    """B3: a name declared in BOTH tables must be a single-element `xtrax[<name>]` alias.
+
+    Disjointness is not the rule -- `dev`/`eda` are deliberately declared in both
+    `[dependency-groups]` and `[project.optional-dependencies]` on purpose. What's
+    forbidden is the two copies drifting apart (the #4969 root cause): a shared name's
+    group value must be exactly `["xtrax[<name>]"]`. A name present in only one table
+    is unconstrained (e.g. `docs`, which is group-only).
+    """
+    failures: list[str] = []
+    groups = pyproject.get("dependency-groups", {})
+    extras = pyproject.get("project", {}).get("optional-dependencies", {})
+    if not isinstance(groups, dict) or not isinstance(extras, dict):
+        return failures
+
+    shared = sorted(set(groups) & set(extras))
+    for name in shared:
+        expected = [f"xtrax[{name}]"]
+        actual = groups.get(name)
+        if actual != expected:
+            failures.append(
+                f"pyproject.toml [dependency-groups].{name} must be exactly "
+                f"{expected!r} (an alias to [project.optional-dependencies].{name}); "
+                f"got {actual!r}"
+            )
+    return failures
+
+
+_IMPORT_ERROR_LIKE_HANDLER_NAMES = {"ImportError", "ModuleNotFoundError", "Exception"}
+
+
+def _handler_catches_import_error(handler: ast.excepthandler) -> bool:
+    """True for a bare `except:`, or a handler naming ImportError/ModuleNotFoundError/
+    Exception (directly or in a tuple, e.g. `except (ImportError, OSError):`)."""
+    if handler.type is None:
+        return True
+    candidates = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    for exc in candidates:
+        name = None
+        if isinstance(exc, ast.Name):
+            name = exc.id
+        elif isinstance(exc, ast.Attribute):
+            name = exc.attr
+        if name in _IMPORT_ERROR_LIKE_HANDLER_NAMES:
+            return True
+    return False
+
+
+class _GuardedImportVisitor(ast.NodeVisitor):
+    """Marks Import/ImportFrom nodes lexically inside a `try` block's `body` whose
+    handlers catch ImportError/ModuleNotFoundError/bare-except -- such an import
+    cannot raise ModuleNotFoundError at a consumer's install, so B5 direction 2
+    exempts it. Real call sites this protects: `src/xtrax/telemetry/record.py`
+    (`cisternal`, `try: ... except ImportError: return None`) and
+    `src/xtrax/telemetry/store.py` (`zstandard`, same pattern).
+
+    `ast.walk()` loses parent links, so containment is tracked via an explicit guard
+    stack during a manual recursive descent: only `ast.Try` gets custom
+    body/handlers/orelse/finalbody handling (everything else falls through to
+    `generic_visit`'s default traversal, so nesting inside `if`/`for`/`def`/etc.
+    composes automatically). Only a try's own `body` is protected by its handlers --
+    `orelse`/`finalbody` are visited with that try's own guard already popped. Nested
+    tries compose naturally via the stack: an inner try without a matching handler is
+    still exempted if an OUTER try's handler (still on the stack) matches, since the
+    import is lexically within the outer try's body either way.
+    """
+
+    def __init__(self) -> None:
+        self.guard_stack: list[bool] = []
+        self.guarded_ids: set[int] = set()
+
+    def visit_Try(self, node: ast.Try) -> None:
+        guarded = any(_handler_catches_import_error(h) for h in node.handlers)
+        self.guard_stack.append(guarded)
+        for stmt in node.body:
+            self.visit(stmt)
+        self.guard_stack.pop()
+        for handler in node.handlers:
+            for stmt in handler.body:
+                self.visit(stmt)
+        for stmt in node.orelse:
+            self.visit(stmt)
+        for stmt in node.finalbody:
+            self.visit(stmt)
+
+    def _mark_if_guarded(self, node: ast.AST) -> None:
+        if any(self.guard_stack):
+            self.guarded_ids.add(id(node))
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self._mark_if_guarded(node)
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self._mark_if_guarded(node)
+        self.generic_visit(node)
+
+
+def _collect_src_imports(src_root: Path) -> dict[str, list[tuple[Path, int, bool]]]:
+    """Map every third-party top-level import name to its (file, lineno, is_guarded)
+    occurrences.
+
+    Walks every `ast.Import`/`ast.ImportFrom` node reachable via `ast.walk` -- i.e. at
+    ANY depth, not just `tree.body`. This is load-bearing: `jaxlib`'s only appearance
+    in the tree is `import jaxlib` inside a function body
+    (`src/xtrax/profiling/record.py`), so a walk restricted to top-level statements
+    would report a false positive on a dependency that is genuinely used.
+
+    `is_guarded` reflects `_GuardedImportVisitor` -- computed once per file, since
+    node identity (`id()`) is only meaningful while that file's tree is alive.
+    """
+    occurrences: dict[str, list[tuple[Path, int, bool]]] = {}
+    for path in sorted(src_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        guard_visitor = _GuardedImportVisitor()
+        guard_visitor.visit(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                guarded = id(node) in guard_visitor.guarded_ids
+                for alias in node.names:
+                    top = alias.name.split(".")[0]
+                    occurrences.setdefault(top, []).append((path, node.lineno, guarded))
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    guarded = id(node) in guard_visitor.guarded_ids
+                    top = node.module.split(".")[0]
+                    occurrences.setdefault(top, []).append((path, node.lineno, guarded))
+    return occurrences
+
+
+def _dist_to_import_names(env_map: dict[str, list[str]]) -> dict[str, set[str]]:
+    """Invert `importlib.metadata.packages_distributions()` to dist-name -> import names.
+
+    `env_map` (import_name -> [dist_name, ...]) reflects the CURRENTLY INSTALLED
+    environment, not a hand-maintained table -- avoiding a second copy of
+    pyproject.toml's names that could itself drift out of sync (the #4969 failure
+    class this whole gate exists to catch).
+    """
+    result: dict[str, set[str]] = {}
+    for import_name, dists in env_map.items():
+        for dist in dists:
+            result.setdefault(_normalize_dist_name(dist), set()).add(import_name)
+    return result
+
+
+def _declared_names(pyproject: dict) -> set[str]:
+    """Every normalized distribution name declared as a runtime dependency or extra."""
+    project = pyproject.get("project", {})
+    names: set[str] = set()
+    for requirement in project.get("dependencies", []) or []:
+        names.add(_normalize_dist_name(_requirement_name(requirement)))
+    extras = project.get("optional-dependencies", {})
+    if isinstance(extras, dict):
+        for requirements in extras.values():
+            if not isinstance(requirements, list):
+                continue
+            for requirement in requirements:
+                names.add(_normalize_dist_name(_requirement_name(requirement)))
+    return names
+
+
+def check_dependencies_are_imported(
+    root: Path,
+    pyproject: dict,
+    env_map: dict[str, list[str]],
+) -> list[str]:
+    """B5 direction 1: every `[project].dependencies` name is imported somewhere under src/."""
+    failures: list[str] = []
+    project = pyproject.get("project", {})
+    dependencies = project.get("dependencies", []) or []
+    if not dependencies:
+        return failures
+
+    src_imports = set(_collect_src_imports(root / "src").keys())
+    dist_to_imports = _dist_to_import_names(env_map)
+
+    for requirement in dependencies:
+        req_name = _requirement_name(requirement)
+        normalized = _normalize_dist_name(req_name)
+        if normalized == "xtrax":
+            continue
+        candidates = dist_to_imports.get(normalized)
+        if not candidates:
+            # Not resolvable in the installed environment -- fall back to a
+            # name-equality guess (hyphens/dots become underscores in import names)
+            # rather than silently skipping verification.
+            candidates = {normalized.replace("-", "_")}
+        if not (candidates & src_imports):
+            failures.append(
+                f"dependency {req_name!r} (candidate import name(s) "
+                f"{sorted(candidates)}) is declared in [project].dependencies but "
+                "never imported anywhere under src/"
+            )
+    return failures
+
+
+def check_imports_are_declared(
+    root: Path,
+    pyproject: dict,
+    env_map: dict[str, list[str]],
+    import_name_overrides: dict[str, tuple[str, ...]],
+) -> list[str]:
+    """B5 direction 2: every third-party import under src/ resolves to a declared name.
+
+    Resolution order per import name (failing only when ALL three miss):
+      1. the installed-environment map (`packages_distributions()`);
+      2. normalised name-equality against every declared dependency/extra name;
+      3. an explicit `[import_name_overrides]` entry in project_hygiene.toml, for the
+         residue where the import name differs from the distribution name AND the
+         distribution is not installed (e.g. `iree`, gated behind an unsynced extra).
+
+    A lazy/optional import guarded behind an extra (e.g. `zarr`) is EXPECTED to
+    resolve via a declared extra rather than `dependencies` -- that's success, not
+    a failure.
+
+    Applied LAST, only when all three steps above miss: an import lexically inside a
+    `try` block whose handlers catch ImportError/ModuleNotFoundError/bare-except is
+    exempted (see `_GuardedImportVisitor`). Such an import cannot raise
+    ModuleNotFoundError at a consumer's install -- direction 2's whole rationale for
+    existing -- so it is not the failure mode this check exists to catch. An
+    UNGUARDED import that resolves nowhere still fails exactly as before; this
+    exemption never weakens that.
+    """
+    failures: list[str] = []
+    src_imports = _collect_src_imports(root / "src")
+    stdlib = set(sys.stdlib_module_names)
+    declared = _declared_names(pyproject)
+    # import_name -> normalized dist names actually installed for it
+    installed_dists_for_import: dict[str, set[str]] = {
+        import_name: {_normalize_dist_name(d) for d in dists}
+        for import_name, dists in env_map.items()
+    }
+
+    for import_name in sorted(src_imports):
+        if import_name == "xtrax" or import_name in stdlib:
+            continue
+
+        env_dists = installed_dists_for_import.get(import_name, set())
+        if env_dists & declared:
+            continue
+        if _normalize_dist_name(import_name) in declared:
+            continue
+        override_dists = import_name_overrides.get(import_name)
+        if override_dists and ({_normalize_dist_name(d) for d in override_dists} & declared):
+            continue
+
+        # Guarded-import exemption -- applied last, only after all three resolution
+        # steps missed. If EVERY occurrence of this import name is guarded, it's
+        # fully exempt. If at least one occurrence is unguarded, report that one --
+        # it's the one that can actually break a consumer's install.
+        occurrences = src_imports[import_name]
+        unguarded = [(p, ln) for (p, ln, guarded) in occurrences if not guarded]
+        if not unguarded:
+            continue
+
+        first_path, first_line = unguarded[0]
+        rel = first_path.relative_to(root)
+        location = f"{rel}:{first_line}"
+
+        if env_dists:
+            failures.append(
+                f"import {import_name!r} ({location}) resolves to installed "
+                f"distribution(s) {sorted(env_dists)}, none of which are declared "
+                "as a dependency or extra in pyproject.toml"
+            )
+        elif override_dists:
+            failures.append(
+                f"import {import_name!r} ({location}) has an "
+                f"[import_name_overrides] entry {sorted(override_dists)}, but none "
+                "of those distribution names are declared as a dependency or extra"
+            )
+        else:
+            failures.append(
+                f"import {import_name!r} ({location}) does not resolve to any "
+                "declared dependency or extra: not in the installed environment, "
+                "not name-equal to a declared name, and no [import_name_overrides] "
+                "entry covers it"
+            )
+
+    # Self-cleaning check: an override entry resolvable via steps 1 or 2 is stale --
+    # it should have been removed once its distribution became installed/resolvable,
+    # keeping the hand-written table bounded to genuine un-installable residue.
+    for import_name, override_dists in sorted(import_name_overrides.items()):
+        env_dists = installed_dists_for_import.get(import_name, set())
+        if env_dists & declared:
+            failures.append(
+                f"[import_name_overrides].{import_name} is stale: now resolvable "
+                f"via the installed environment ({sorted(env_dists)}); remove the "
+                "override"
+            )
+            continue
+        if _normalize_dist_name(import_name) in declared:
+            failures.append(
+                f"[import_name_overrides].{import_name} is stale: now resolvable "
+                "via name-equality against a declared name; remove the override"
+            )
+
+    return failures
 
 
 def audit_project_hygiene(
@@ -229,6 +565,18 @@ def audit_project_hygiene(
             for key in config.pyproject_urls:
                 if key not in urls:
                     failures.append(f"pyproject.toml missing project.urls.{key}")
+
+        # B3 (#4969): dependency-groups/optional-dependencies alias contract.
+        failures.extend(check_group_extra_aliases(data))
+
+        # B5 (#4969): declared-vs-imported dependency contract, both directions.
+        src_root = root / "src"
+        if src_root.is_dir():
+            env_map = importlib.metadata.packages_distributions()
+            failures.extend(check_dependencies_are_imported(root, data, env_map))
+            failures.extend(
+                check_imports_are_declared(root, data, env_map, config.import_name_overrides)
+            )
 
     return len(failures) == 0, failures
 

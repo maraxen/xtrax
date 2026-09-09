@@ -3883,13 +3883,11 @@ name = "xtrax"
 source = { editable = "." }
 dependencies = [
     { name = "equinox" },
-    { name = "grain" },
     { name = "jax" },
     { name = "jaxlib" },
     { name = "numpy" },
     { name = "optax" },
     { name = "orbax-checkpoint" },
-    { name = "pytest-asyncio" },
 ]
 
 [package.optional-dependencies]
@@ -3905,10 +3903,14 @@ cli = [
 controller = [
     { name = "bathos" },
 ]
+data = [
+    { name = "grain" },
+]
 dev = [
     { name = "beartype" },
     { name = "chex" },
     { name = "complexipy" },
+    { name = "flatbuffers" },
     { name = "import-linter" },
     { name = "interrogate" },
     { name = "jaxlint" },
@@ -3921,6 +3923,7 @@ dev = [
     { name = "pyyaml" },
     { name = "ruff" },
     { name = "ty" },
+    { name = "tyro" },
 ]
 eda = [
     { name = "matplotlib" },
@@ -3939,13 +3942,7 @@ io = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "complexipy" },
-    { name = "import-linter" },
-    { name = "pytest-benchmark" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "ty" },
-    { name = "tyro" },
+    { name = "xtrax", extra = ["dev"] },
 ]
 docs = [
     { name = "furo" },
@@ -3954,9 +3951,7 @@ docs = [
     { name = "sphinx-autodoc-typehints" },
 ]
 eda = [
-    { name = "matplotlib" },
-    { name = "pandas" },
-    { name = "seaborn" },
+    { name = "xtrax", extra = ["eda"] },
 ]
 
 [package.metadata]
@@ -3967,7 +3962,8 @@ requires-dist = [
     { name = "complexipy", marker = "extra == 'dev'", specifier = ">=5.6.1" },
     { name = "equinox", specifier = ">=0.11.0" },
     { name = "flatbuffers", marker = "extra == 'cli'", specifier = ">=2" },
-    { name = "grain", specifier = ">=0.2.0" },
+    { name = "flatbuffers", marker = "extra == 'dev'", specifier = ">=2" },
+    { name = "grain", marker = "extra == 'data'", specifier = ">=0.2.0" },
     { name = "huggingface-hub", marker = "extra == 'export'", specifier = ">=1,<2" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.1" },
     { name = "interrogate", marker = "extra == 'dev'", specifier = ">=1.7.0" },
@@ -3985,7 +3981,6 @@ requires-dist = [
     { name = "outlines", marker = "extra == 'authoring-smoke'", specifier = ">=1.0" },
     { name = "pandas", marker = "extra == 'eda'", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pytest-benchmark", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
@@ -3997,31 +3992,20 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'authoring-smoke'", specifier = ">=4.40" },
     { name = "ty", marker = "extra == 'dev'" },
     { name = "tyro", marker = "extra == 'cli'", specifier = ">=0.9,<2" },
+    { name = "tyro", marker = "extra == 'dev'", specifier = ">=0.9,<2" },
     { name = "zarr", marker = "extra == 'io'", specifier = ">=3.0" },
 ]
-provides-extras = ["authoring-smoke", "cli", "controller", "dev", "eda", "export", "io"]
+provides-extras = ["authoring-smoke", "cli", "controller", "data", "dev", "eda", "export", "io"]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "complexipy", specifier = ">=5.6.1" },
-    { name = "import-linter", specifier = ">=2.1" },
-    { name = "pytest-benchmark", specifier = ">=5.2.3" },
-    { name = "pytest-cov", specifier = ">=7.1.0" },
-    { name = "ruff", specifier = ">=0.15.22" },
-    { name = "ty", specifier = ">=0.0.60" },
-    { name = "tyro", specifier = ">=0.9,<2" },
-]
+dev = [{ name = "xtrax", extras = ["dev"] }]
 docs = [
     { name = "furo" },
     { name = "myst-parser" },
     { name = "sphinx", specifier = ">=7" },
     { name = "sphinx-autodoc-typehints" },
 ]
-eda = [
-    { name = "matplotlib", specifier = ">=3.8" },
-    { name = "pandas", specifier = ">=2.0" },
-    { name = "seaborn", specifier = ">=0.13" },
-]
+eda = [{ name = "xtrax", extras = ["eda"] }]
 
 [[package]]
 name = "zarr"

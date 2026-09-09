@@ -158,6 +158,7 @@ def load_coverage_dag(config_path: Path) -> CoverageDag:
 
 
 def run_uv_sync(root: Path, extras: tuple[str, ...]) -> tuple[bool, str]:
+    # Builds explicit `--extra` flags per-tier to guarantee environment narrowness.
     cmd = ["uv", "sync", *[f"--extra={extra}" for extra in extras]]
     result = subprocess.run(
         cmd,
