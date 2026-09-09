@@ -198,9 +198,14 @@ def check_group_extra_aliases(pyproject: dict) -> list[str]:
     if not isinstance(groups, dict) or not isinstance(extras, dict):
         return failures
 
+    # Read the project name rather than hardcoding "xtrax": a hardcoded name would,
+    # after any rename, demand an alias pointing at a distribution that no longer
+    # exists, which no edit to pyproject.toml could satisfy.
+    dist_name = pyproject.get("project", {}).get("name", "xtrax")
+
     shared = sorted(set(groups) & set(extras))
     for name in shared:
-        expected = [f"xtrax[{name}]"]
+        expected = [f"{dist_name}[{name}]"]
         actual = groups.get(name)
         if actual != expected:
             failures.append(
@@ -298,7 +303,9 @@ class _GuardedImportVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _collect_src_imports(src_root: Path) -> dict[str, list[tuple[Path, int, bool]]]:
+def _collect_src_imports(
+    src_root: Path,
+) -> tuple[dict[str, list[tuple[Path, int, bool]]], list[str]]:
     """Map every third-party top-level import name to its (file, lineno, is_guarded)
     occurrences.
 
@@ -312,8 +319,19 @@ def _collect_src_imports(src_root: Path) -> dict[str, list[tuple[Path, int, bool
     node identity (`id()`) is only meaningful while that file's tree is alive.
     """
     occurrences: dict[str, list[tuple[Path, int, bool]]] = {}
+    unreadable: list[str] = []
     for path in sorted(src_root.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        # Reported, not raised: every other check in this script returns failure
+        # strings, and one unparseable or non-UTF-8 file should not take the whole
+        # gate down with a bare traceback before any other check has run.
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            unreadable.append(
+                f"{path.relative_to(src_root.parent)} could not be parsed for the "
+                f"declared-vs-imported contract: {type(exc).__name__}: {exc}"
+            )
+            continue
         guard_visitor = _GuardedImportVisitor()
         guard_visitor.visit(tree)
         for node in ast.walk(tree):
@@ -327,7 +345,7 @@ def _collect_src_imports(src_root: Path) -> dict[str, list[tuple[Path, int, bool
                     guarded = id(node) in guard_visitor.guarded_ids
                     top = node.module.split(".")[0]
                     occurrences.setdefault(top, []).append((path, node.lineno, guarded))
-    return occurrences
+    return occurrences, unreadable
 
 
 def _dist_to_import_names(env_map: dict[str, list[str]]) -> dict[str, set[str]]:
@@ -373,7 +391,9 @@ def check_dependencies_are_imported(
     if not dependencies:
         return failures
 
-    src_imports = set(_collect_src_imports(root / "src").keys())
+    occurrences, unreadable = _collect_src_imports(root / "src")
+    failures.extend(unreadable)
+    src_imports = set(occurrences.keys())
     dist_to_imports = _dist_to_import_names(env_map)
 
     for requirement in dependencies:
@@ -386,7 +406,15 @@ def check_dependencies_are_imported(
             # Not resolvable in the installed environment -- fall back to a
             # name-equality guess (hyphens/dots become underscores in import names)
             # rather than silently skipping verification.
-            candidates = {normalized.replace("-", "_")}
+            # Two candidates, not one: the full name with separators normalised
+            # (`foo-bar` -> `foo_bar`) AND its first segment, because a namespace
+            # distribution imports under its prefix -- `orbax-checkpoint` is
+            # imported as `orbax`. With one candidate this branch reports a
+            # genuinely-used runtime dependency as never imported.
+            candidates = {
+                normalized.replace("-", "_"),
+                normalized.split("-", 1)[0],
+            }
         if not (candidates & src_imports):
             failures.append(
                 f"dependency {req_name!r} (candidate import name(s) "
@@ -424,7 +452,8 @@ def check_imports_are_declared(
     exemption never weakens that.
     """
     failures: list[str] = []
-    src_imports = _collect_src_imports(root / "src")
+    src_imports, unreadable = _collect_src_imports(root / "src")
+    failures.extend(unreadable)
     stdlib = set(sys.stdlib_module_names)
     declared = _declared_names(pyproject)
     # import_name -> normalized dist names actually installed for it
@@ -479,18 +508,19 @@ def check_imports_are_declared(
                 "entry covers it"
             )
 
-    # Self-cleaning check: an override entry resolvable via steps 1 or 2 is stale --
-    # it should have been removed once its distribution became installed/resolvable,
-    # keeping the hand-written table bounded to genuine un-installable residue.
-    for import_name, override_dists in sorted(import_name_overrides.items()):
-        env_dists = installed_dists_for_import.get(import_name, set())
-        if env_dists & declared:
-            failures.append(
-                f"[import_name_overrides].{import_name} is stale: now resolvable "
-                f"via the installed environment ({sorted(env_dists)}); remove the "
-                "override"
-            )
-            continue
+    # Self-cleaning check: an override entry that name-equals a declared requirement
+    # is stale, and should be removed to keep the hand-written table bounded to the
+    # genuine un-installable residue.
+    #
+    # Deliberately name-equality ONLY, never the installed environment. Keying
+    # staleness off what happens to be installed makes the gate unsatisfiable across
+    # environments: `iree` is invisible to packages_distributions() under the audit's
+    # own dev+io sync (so the override is required), but visible under
+    # `--extra export` (so the override would be reported stale) -- and obeying that
+    # report breaks dev+io again. Whether a name is declared is a fact about
+    # pyproject.toml; whether it is installed is a fact about which extras someone
+    # happened to sync.
+    for import_name in sorted(import_name_overrides):
         if _normalize_dist_name(import_name) in declared:
             failures.append(
                 f"[import_name_overrides].{import_name} is stale: now resolvable "

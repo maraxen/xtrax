@@ -202,29 +202,32 @@ def test_guarded_optional_imports_are_exempted_on_repo() -> None:
     assert not any(item.startswith("import 'zstandard'") for item in failures), failures
 
 
-def test_stale_override_entry_fails_the_gate(tmp_path: Path) -> None:
-    """An [import_name_overrides] entry that has become resolvable via the
-    environment map is stale and must fail loudly, not sit unused -- this is
-    what keeps the hand-written table bounded to genuine un-installable residue.
+def test_override_visible_in_the_environment_is_NOT_stale(tmp_path: Path) -> None:
+    """Staleness is judged on DECLARATION, never on what happens to be installed.
+
+    Regression guard for a gate that could not be satisfied in both environments at
+    once. `iree` is invisible to packages_distributions() under the audit's own
+    dev+io sync, so the override is required; under `--extra export` it becomes
+    visible, and an environment-keyed staleness check would then demand the override
+    be removed -- which breaks dev+io again. Whether a name is declared is a fact
+    about pyproject.toml; whether it is installed is a fact about which extras
+    someone happened to sync, and only the former may drive this check.
+
+    Here `widgets` is installed and maps to `widgets-pkg`, but no declared
+    requirement is NAMED `widgets`, so the override is still doing real work.
     """
     src = tmp_path / "src" / "pkg"
     src.mkdir(parents=True)
     (src / "__init__.py").write_text("", encoding="utf-8")
     (src / "mod.py").write_text("import widgets\n", encoding="utf-8")
 
-    pyproject = {
-        "project": {
-            "dependencies": ["widgets-pkg>=1"],
-        }
-    }
-    # widgets IS installed and resolves to a declared name -- the override below
-    # is therefore stale.
+    pyproject = {"project": {"dependencies": ["widgets-pkg>=1"]}}
     env_map = {"widgets": ["widgets-pkg"]}
     overrides = {"widgets": ("widgets-pkg",)}
 
     failures = check_imports_are_declared(tmp_path, pyproject, env_map, overrides)
 
-    assert any("is stale" in item for item in failures), failures
+    assert not any("is stale" in item for item in failures), failures
 
 
 def test_override_import_that_resolves_via_name_equality_is_stale(tmp_path: Path) -> None:
