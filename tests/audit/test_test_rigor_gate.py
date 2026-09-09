@@ -103,6 +103,7 @@ def test_run_test_rigor_gate_passes_at_baseline(tmp_path: Path) -> None:
         branch_pct=40.0,
         tests_run=10,
         tests_failed=0,
+        returncode=0,
     )
 
     with patch(
@@ -151,6 +152,7 @@ def test_run_test_rigor_gate_fails_on_regression(tmp_path: Path) -> None:
         branch_pct=75.0,
         tests_run=20,
         tests_failed=0,
+        returncode=0,
     )
 
     with patch(
@@ -192,6 +194,7 @@ def test_run_test_rigor_gate_tightens_baseline(tmp_path: Path) -> None:
         branch_pct=8.0,
         tests_run=5,
         tests_failed=0,
+        returncode=0,
     )
 
     with patch(
@@ -251,6 +254,7 @@ def test_audit_test_rigor_gate_cli_exits_zero_with_mock(
         branch_pct=1.0,
         tests_run=1,
         tests_failed=0,
+        returncode=0,
     )
     mock_result = GateResult(
         passed=True,
@@ -294,16 +298,14 @@ def _extract_cov_report_path(cmd: list[str]) -> Path:
 def test_run_pytest_coverage_raises_runtime_error_when_report_missing(
     tmp_path: Path,
 ) -> None:
-    """C4 case 1: subprocess exits non-zero and never writes a report.
+    """Regression guard for #5021: the missing-report branch must stay reachable.
 
-    Against current code this must NOT reach this RuntimeError at all --
-    ``tempfile.NamedTemporaryFile`` already pre-created an (empty) file at
-    ``cov_path`` before the subprocess ever ran, so ``cov_path.is_file()`` is
-    always True and the "missing" branch is dead code. Control instead falls
-    through to ``parse_coverage_json``, which raises a bare
-    ``json.JSONDecodeError`` on the empty file. This test pins the FIXED
-    behavior (a ``RuntimeError`` naming the exit code and captured output) and
-    is expected to fail against current code with a JSONDecodeError instead.
+    Before the fix ``tempfile.NamedTemporaryFile`` pre-created an empty file at
+    ``cov_path`` before the subprocess ran, so ``cov_path.is_file()`` was always
+    True, the "missing" branch was dead code, and control fell through to
+    ``parse_coverage_json``, which raised a bare ``json.JSONDecodeError``. This
+    test failed that way when written. It now pins the shipped behaviour: a
+    ``RuntimeError`` naming the exit code and the captured output.
     """
 
     def fake_run(
@@ -333,21 +335,23 @@ def test_run_pytest_coverage_raises_runtime_error_when_report_missing(
             run_pytest_coverage(root=tmp_path)
 
     message = str(exc_info.value)
-    assert "17" in message
+    # Anchored, not a bare "17": a loose substring check would also match a
+    # returncode echoed anywhere in the captured output, and would stay green
+    # against a regression that dropped the exit code from the message.
+    assert "exit=17" in message
     assert "boom-case1-no-report-stderr" in message
 
 
 def test_run_pytest_coverage_raises_distinct_runtime_error_when_report_unparsable(
     tmp_path: Path,
 ) -> None:
-    """C4 case 2: subprocess exits zero but writes a zero-byte report.
+    """Regression guard for #5021: a present-but-unusable report is its own failure.
 
-    Distinct from the missing-report case: the report file genuinely exists
-    (pytest-cov started writing it) but is empty/truncated and cannot be
-    parsed as JSON. Against current code this also raises a bare
-    ``json.JSONDecodeError`` because the empty pre-created temp file is
-    indistinguishable from a partially-written one under the current
-    ``cov_path.is_file()`` guard.
+    Distinct from the missing-report case: the file genuinely exists (pytest-cov
+    started writing it) but is empty or truncated. Before the fix both cases
+    raised the same bare ``json.JSONDecodeError``, because a pre-created empty
+    temp file was indistinguishable from a partially-written one. The two now
+    produce different messages, and this test asserts it is the unparsable one.
     """
 
     def fake_run(
@@ -378,8 +382,14 @@ def test_run_pytest_coverage_raises_distinct_runtime_error_when_report_unparsabl
             run_pytest_coverage(root=tmp_path)
 
     message = str(exc_info.value)
-    assert "0" in message
+    # "0" alone matched "exit=0", "report size=0 bytes" AND the "0.1s" in the
+    # echoed stdout, so it could not tell a correct message from a wrong one.
+    assert "exit=0" in message
+    assert "report size=0 bytes" in message
     assert "5 passed in 0.1s" in message
+    # And it must be the UNPARSABLE message, not the missing-report one.
+    assert "unparsable" in message
+    assert "missing" not in message
 
 
 def test_run_test_rigor_gate_fails_on_red_suite_despite_good_coverage(
@@ -456,5 +466,57 @@ def test_run_test_rigor_gate_fails_on_red_suite_despite_good_coverage(
         )
 
     assert result.passed is False
-    assert "1" in result.failure_detail
-    assert "3" in result.failure_detail
+    # Assert the parsed fields and the anchored phrases, not bare digits: "1"
+    # matched the "100%" in the echoed progress line, and "3" would have passed
+    # just as happily with returncode and tests_failed swapped or hardcoded.
+    assert result.stats.returncode == 1
+    assert result.stats.tests_failed == 3
+    assert "pytest exit code 1" in result.failure_detail
+    assert "3 tests failed" in result.failure_detail
+
+
+def test_stderr_mentioning_errors_does_not_poison_the_summary(tmp_path: Path) -> None:
+    """Regression guard: a GREEN suite must not be failed by stderr noise.
+
+    ``parse_pytest_summary`` scans in reverse and breaks on the first line
+    matching ``(\\d+) error``. The captured output was originally passed to it as
+    ``stdout + "\\n" + stderr``, so ``reversed()`` reached STDERR first: measured,
+    a stdout of "40 passed in 12.0s" with a stderr line reading
+    "WARNING: 2 errors were suppressed by the plugin" parsed as ``(2, 2)``.
+
+    That was merely a wrong count in an info finding until #5021 made
+    ``tests_failed`` load-bearing in the verdict -- at which point it would fail
+    the gate on a passing suite, in a repo whose JAX stack writes plenty of
+    stderr. The summary is parsed from stdout alone.
+    """
+
+    def fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        capture_output: bool = True,
+        text: bool = True,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        cov_path = _extract_cov_report_path(cmd)
+        cov_path.write_text(
+            json.dumps({"totals": {"percent_covered": 91.0, "percent_branches_covered": 82.0}}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="....... [100%]\n40 passed in 12.0s",
+            stderr="WARNING: 2 errors were suppressed by the plugin\nnoise",
+        )
+
+    with patch(
+        "xtrax.devtools.gates.test_rigor.subprocess.run",
+        side_effect=fake_run,
+    ):
+        stats = run_pytest_coverage(root=tmp_path)
+
+    assert stats.tests_run == 40
+    assert stats.tests_failed == 0
+    assert stats.returncode == 0

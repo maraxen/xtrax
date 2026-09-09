@@ -33,8 +33,14 @@ class CoverageStats:
     branch_pct: float
     tests_run: int
     tests_failed: int
-    returncode: int = 0
-    pytest_output: str = ""
+    # No default: a defaulted returncode silently asserts a clean run, which is
+    # exactly the bug #5021 fixed. Every construction site must state it.
+    returncode: int
+    # Kept apart rather than pre-joined: pytest writes its "N failed, M passed"
+    # summary and its "FAILED tests/..." lines to STDOUT, so a tail of the two
+    # concatenated returns stderr warnings and none of the diagnosis.
+    pytest_stdout: str = ""
+    pytest_stderr: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +125,16 @@ def run_pytest_coverage(
             check=False,
         )
         combined = f"{result.stdout}\n{result.stderr}"
-        tests_run, tests_failed = parse_pytest_summary(combined)
+        # STDOUT ONLY, deliberately. parse_pytest_summary scans in reverse and
+        # breaks on the first line matching "(\d+) error", and `combined` puts
+        # stderr last -- so reversed() reaches stderr FIRST. A green run whose
+        # stderr merely mentions "N errors" (common in this JAX-heavy repo)
+        # parsed as N failures: measured, "40 passed" + a stderr line reading
+        # "WARNING: 2 errors were suppressed" returned (2, 2). That was a wrong
+        # count in an info finding before tests_failed became load-bearing in the
+        # verdict below; now it would fail the gate on a passing suite. pytest
+        # writes its summary to stdout.
+        tests_run, tests_failed = parse_pytest_summary(result.stdout)
         if not cov_path.is_file():
             msg = (
                 "pytest-cov JSON report missing; "
@@ -128,7 +143,14 @@ def run_pytest_coverage(
             raise RuntimeError(msg)
         try:
             line_pct, branch_pct = parse_coverage_json(cov_path)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, KeyError, UnicodeDecodeError, ValueError) as exc:
+            # KeyError and UnicodeDecodeError, not just JSONDecodeError: a report
+            # whose `totals` lacks percent_branches_covered (branch coverage
+            # silently not applied) or whose bytes are truncated is the same class
+            # of "present but unusable" failure this handler exists for, and would
+            # otherwise escape as a bare traceback carrying no exit code, report
+            # size, or captured output.
+            #
             # `combined`, not just stdout: pytest-cov emits
             # "CovReportWarning: Failed to generate report: No data to report"
             # on stderr, and that warning is the whole diagnosis when the suite
@@ -148,7 +170,8 @@ def run_pytest_coverage(
         tests_run=tests_run,
         tests_failed=tests_failed,
         returncode=result.returncode,
-        pytest_output=combined,
+        pytest_stdout=result.stdout,
+        pytest_stderr=result.stderr,
     )
 
 
@@ -203,8 +226,14 @@ def run_test_rigor_gate(
     failure_detail = ""
     if not passed:
         if stats.returncode != 0 or stats.tests_failed > 0:
-            output_lines = stats.pytest_output.splitlines()
-            tail = "\n".join(output_lines[-5:]) if output_lines else ""
+            parts: list[str] = []
+            stdout_lines = stats.pytest_stdout.splitlines()
+            if stdout_lines:
+                parts.append("\n".join(stdout_lines[-5:]))
+            stderr_lines = stats.pytest_stderr.splitlines()
+            if stderr_lines:
+                parts.append("stderr: " + "\n".join(stderr_lines[-3:]))
+            tail = "\n".join(parts)
             failure_detail = (
                 f"pytest exit code {stats.returncode}, "
                 f"{stats.tests_failed} tests failed. "
