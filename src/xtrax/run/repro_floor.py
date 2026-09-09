@@ -86,6 +86,7 @@ def run_repro_floor(
     content_hash: str | None = None,
     created_by: str = "xtrax.run.repro_floor",
     now: datetime | None = None,
+    include_provenance: bool = False,
 ) -> ReproFloorResult:
     """Re-run ``compute(seed)`` ``rerun_count`` times with the seed pinned.
 
@@ -127,7 +128,7 @@ def run_repro_floor(
     for _ in range(rerun_count):
         path = compute(seed)
         fsync_tree(path)
-        digests.append(zarr_content_digest(path))
+        digests.append(zarr_content_digest(path, include_provenance=include_provenance))
         output_path = path
 
     reference = content_hash if content_hash is not None else digests[0]

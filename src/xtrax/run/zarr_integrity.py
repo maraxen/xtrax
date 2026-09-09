@@ -113,8 +113,14 @@ def update_zarr_node_digest(
     elif include_provenance:
         # Caller explicitly wants provenance included.
         exclude_keys = set()
-    elif path == "/":
+    elif path.strip("/") == "":
         # Root group: exclude all core provenance fields.
+        #
+        # Matched on the STRIPPED path, not the literal "/", because zarr's own
+        # root group reports `path == ""` (only `name` is "/"). A caller passing
+        # the natural `root.path` would otherwise land in the non-root branch and
+        # silently keep created_at/git_branch/git_dirty in the digest -- exactly
+        # the #5013 bug, reintroduced through the public API with no error.
         exclude_keys = _CORE_PROVENANCE_FIELDS
     else:
         # Non-root group: exclude only run_id and git_sha (the per-key pointer pair).
@@ -123,7 +129,10 @@ def update_zarr_node_digest(
     attrs_payload = {
         str(key): normalize_json_value(value)
         for key, value in sorted(node.attrs.items())
-        if key not in exclude_keys
+        # str(key) to match the payload's own normalization one line above: a
+        # non-str attr key would otherwise be recorded as "run_id" while failing
+        # to match the exclusion set, and be hashed anyway.
+        if str(key) not in exclude_keys
     }
     digest.update(canonical_json_bytes(attrs_payload))
     digest.update(b"\n")

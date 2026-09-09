@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from xtrax.run.zarr_integrity import (
     fsync_file,
     fsync_tree,
     normalize_json_value,
+    update_zarr_node_digest,
     zarr_content_digest,
 )
 
@@ -29,12 +31,14 @@ def _make_store(tmp_path: Path, name: str = "test.zarr") -> Path:
     return store_path
 
 
-def _build_sink_store(run_id: str, output_dir: Path) -> Path:
+def _build_sink_store(run_id: str, output_dir: Path, *, finalize: bool = False) -> Path:
     """Build a real ZarrStagingSink store at ``output_dir`` under ``run_id``,
     staging identical array content regardless of ``run_id``."""
     sink = ZarrStagingSink(SinkSpec(run_id=run_id, output_dir=output_dir, format="zarr"))
     sink.stage(("k",), data=np.array([1, 2, 3], dtype=np.int32))
     sink.drain()
+    if finalize:
+        sink.finalize()
     return output_dir
 
 
@@ -220,4 +224,43 @@ def test_non_root_group_run_id_attr_excluded_by_default_known_cost(tmp_path: Pat
         "non-root GROUP attrs named run_id/git_sha are excluded from the digest "
         "by default (include_provenance=False) -- a caller-authored attr sharing "
         "that name pays the same cost as the sink's own provenance pointer."
+    )
+
+
+def test_root_exclusion_applies_when_caller_passes_zarrs_own_root_path(tmp_path: Path) -> None:
+    """`update_zarr_node_digest` is public API, and zarr's root reports ``path == ""``.
+
+    Regression guard: the root branch originally matched the literal ``"/"``, which
+    `zarr_content_digest` passes internally but which zarr itself never reports --
+    `root.path` is ``""`` and only `root.name` is ``"/"``. A caller writing the
+    natural `update_zarr_node_digest(h, root, root.path)` therefore fell into the
+    NON-root branch and kept created_at/git_branch/git_dirty in the digest, silently
+    reintroducing #5013 through the public API with no error.
+    """
+    path_a = _build_sink_store("run-aaaaaaaaaaaa", tmp_path / "a.zarr")
+    path_b = _build_sink_store("run-bbbbbbbbbbbb", tmp_path / "b.zarr")
+
+    def digest_via_root_path(store: Path) -> str:
+        root = zarr.open_group(str(store), mode="r")
+        h = hashlib.sha256()
+        update_zarr_node_digest(h, root, root.path)
+        return h.hexdigest()
+
+    assert digest_via_root_path(path_a) == digest_via_root_path(path_b)
+
+
+def test_provenance_exclusion_survives_finalize_consolidated_metadata(tmp_path: Path) -> None:
+    """The shape a done-marker digest is actually taken over.
+
+    After `finalize()`, `zarr.consolidate_metadata()` has run and a reader serves
+    attrs from the consolidated document rather than per-node `zarr.json`. Every
+    other sink-backed test here stops at `drain()`, so this is the one path a
+    regression in attr plumbing could hide in.
+    """
+    path_a = _build_sink_store("run-cccccccccccc", tmp_path / "c.zarr", finalize=True)
+    path_b = _build_sink_store("run-dddddddddddd", tmp_path / "d.zarr", finalize=True)
+
+    assert zarr_content_digest(path_a) == zarr_content_digest(path_b)
+    assert zarr_content_digest(path_a, include_provenance=True) != zarr_content_digest(
+        path_b, include_provenance=True
     )
