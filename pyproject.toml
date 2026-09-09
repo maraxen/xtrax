@@ -30,14 +30,22 @@ docs = [ "sphinx>=7", "furo", "sphinx-autodoc-typehints", "myst-parser",]
 eda = [ "xtrax[eda]",]
 
 [project.optional-dependencies]
+# Floors here are the union of what this extra and the former
+# [dependency-groups].dev each asserted. That group carried TIGHTER floors on
+# pytest-cov, pytest-benchmark, ruff and ty; before #4969 both constraint sets
+# applied wherever the group and the extra were synced together, so aliasing the
+# group would have silently dropped the tighter one from the requirement graph.
+# ruff is the one that bites: its lint rules change substantially across
+# versions, so a resolve free to pick an old ruff quietly weakens what the lint
+# gate enforces.
 dev = [
  "complexipy>=5.6.1",
  "pytest>=8.0",
  "pytest-asyncio>=0.23",
- "pytest-cov>=5.0",
- "pytest-benchmark>=4.0",
- "ruff>=0.4.0",
- "ty",
+ "pytest-cov>=7.1.0",
+ "pytest-benchmark>=5.2.3",
+ "ruff>=0.15.22",
+ "ty>=0.0.60",
  "jaxtyping>=0.2.28",
  "beartype>=0.18.0",
  "libcst>=1.5.0",

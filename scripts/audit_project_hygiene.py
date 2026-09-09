@@ -231,13 +231,28 @@ def _handler_catches_import_error(handler: ast.excepthandler) -> bool:
     return False
 
 
+def _handler_suppresses(handler: ast.excepthandler) -> bool:
+    """True when the handler cannot let an exception escape, i.e. contains no `raise`.
+
+    A handler that catches ImportError only to re-raise it as something friendlier --
+    `except ImportError as e: raise RuntimeError("pip install foo") from e` -- still
+    fails at the same point in a consumer's install, just with a different exception
+    type. Exempting it would be exactly the "green over a false fact" this gate exists
+    to catch, so a handler that can raise earns no exemption.
+    """
+    return not any(isinstance(node, ast.Raise) for stmt in handler.body for node in ast.walk(stmt))
+
+
 class _GuardedImportVisitor(ast.NodeVisitor):
     """Marks Import/ImportFrom nodes lexically inside a `try` block's `body` whose
-    handlers catch ImportError/ModuleNotFoundError/bare-except -- such an import
-    cannot raise ModuleNotFoundError at a consumer's install, so B5 direction 2
-    exempts it. Real call sites this protects: `src/xtrax/telemetry/record.py`
-    (`cisternal`, `try: ... except ImportError: return None`) and
-    `src/xtrax/telemetry/store.py` (`zstandard`, same pattern).
+    handlers catch ImportError/ModuleNotFoundError/bare-except AND cannot themselves
+    raise -- such an import cannot fail a consumer's install, so B5 direction 2
+    exempts it. A handler that re-raises earns no exemption: it fails at the same
+    point, merely with a different exception type.
+
+    Real call sites this protects: `src/xtrax/telemetry/record.py` (`cisternal`,
+    `try: ... except ImportError: return None`) and `src/xtrax/telemetry/store.py`
+    (`zstandard`, same pattern). Both genuinely suppress.
 
     `ast.walk()` loses parent links, so containment is tracked via an explicit guard
     stack during a manual recursive descent: only `ast.Try` gets custom
@@ -255,7 +270,9 @@ class _GuardedImportVisitor(ast.NodeVisitor):
         self.guarded_ids: set[int] = set()
 
     def visit_Try(self, node: ast.Try) -> None:
-        guarded = any(_handler_catches_import_error(h) for h in node.handlers)
+        guarded = any(
+            _handler_catches_import_error(h) and _handler_suppresses(h) for h in node.handlers
+        )
         self.guard_stack.append(guarded)
         for stmt in node.body:
             self.visit(stmt)

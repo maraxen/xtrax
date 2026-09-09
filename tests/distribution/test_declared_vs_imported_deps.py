@@ -403,6 +403,61 @@ def test_unguarded_import_is_not_exempted_and_still_fails(tmp_path: Path) -> Non
     assert "does not resolve to any declared dependency or extra" in failures[0]
 
 
+def test_import_guarded_by_a_reraising_handler_still_fails(tmp_path: Path) -> None:
+    """A handler that catches ImportError only to re-raise earns NO exemption.
+
+    `except ImportError as e: raise RuntimeError(...) from e` is a common way to
+    give a friendlier "pip install foo" message, but it still fails at the same
+    point in a consumer's install -- only the exception type differs. Exempting it
+    would let a genuinely-missing dependency past the gate, which is precisely the
+    failure direction 2 exists to catch.
+    """
+    _write_guarded_import_module(
+        tmp_path,
+        "def f():\n"
+        "    try:\n"
+        "        import widgets\n"
+        "    except ImportError as exc:\n"
+        '        msg = "install widgets"\n'
+        "        raise RuntimeError(msg) from exc\n"
+        "    return widgets\n",
+    )
+
+    failures = check_imports_are_declared(tmp_path, {"project": {"dependencies": []}}, {}, {})
+
+    assert len(failures) == 1
+    assert "'widgets'" in failures[0]
+
+
+def test_import_guarded_by_a_handler_that_reraises_conditionally_still_fails(
+    tmp_path: Path,
+) -> None:
+    """A `raise` anywhere in the handler body, even nested, blocks the exemption.
+
+    The check is deliberately conservative: it walks the whole handler body rather
+    than only its top level. A false positive here costs a dependency declaration;
+    a false negative costs a consumer a ModuleNotFoundError at install.
+    """
+    _write_guarded_import_module(
+        tmp_path,
+        "STRICT = True\n"
+        "\n"
+        "def f():\n"
+        "    try:\n"
+        "        import widgets\n"
+        "    except ImportError:\n"
+        "        if STRICT:\n"
+        "            raise\n"
+        "        return None\n"
+        "    return widgets\n",
+    )
+
+    failures = check_imports_are_declared(tmp_path, {"project": {"dependencies": []}}, {}, {})
+
+    assert len(failures) == 1
+    assert "'widgets'" in failures[0]
+
+
 def test_import_guarded_by_unrelated_exception_still_fails(tmp_path: Path) -> None:
     """3. A `try` whose handlers catch only something unrelated (e.g. `OSError`)
     must NOT exempt the import.
