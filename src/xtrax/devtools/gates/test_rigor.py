@@ -195,10 +195,14 @@ def run_test_rigor_gate(
     passes_branch, update_branch = evaluate_metric(baseline, BRANCH_METRIC, branch_pct)
     passed = passes_line and passes_branch and stats.returncode == 0 and stats.tests_failed == 0
 
+    # Populated only for the suite-failure case, which is the one the caller had
+    # no way to see: a coverage-only failure is already fully explained by the
+    # unconditional status line in scripts/audit_test_rigor_gate.py, which prints
+    # both percentages alongside tests_run/tests_failed. An empty failure_detail
+    # therefore means "the suite was green, the numbers were not".
     failure_detail = ""
     if not passed:
         if stats.returncode != 0 or stats.tests_failed > 0:
-            # Extract tail of pytest output for diagnostics
             output_lines = stats.pytest_output.splitlines()
             tail = "\n".join(output_lines[-5:]) if output_lines else ""
             failure_detail = (
