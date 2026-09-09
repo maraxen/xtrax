@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`zarr_content_digest` now excludes provenance attrs by default**: run-ID,
+  git SHA/branch/dirty, and creation timestamp are excluded from the digest
+  unless explicitly included via the new `include_provenance=True` parameter
+  (same parameter added to `update_zarr_node_digest`). This restores the
+  intended contract that digest values are unaffected by which process or
+  session wrote the store. **Digest values computed before this change do not
+  match values computed after it for any sink-written store** — stored done-marker
+  digests will mismatch and must be recomputed.
+
 ## [0.4.0a9] - 2026-09-07
 
 ### Added
