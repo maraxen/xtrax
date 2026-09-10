@@ -228,10 +228,12 @@ audit-public-api:
 # cover this gate's own build-command construction -- which is precisely the code #131
 # rewrote. With the deselect in place that code had no per-commit coverage anywhere.
 #
-# The root cause is still live: two divergent `dev` definitions in pyproject.toml,
-# [dependency-groups].dev (uv-default-synced, no beartype) versus
-# [project.optional-dependencies].dev (has it). Any `uv sync --group X` keeps the group and
-# drops the extra. Consolidating them is the real fix -- backlog #4969.
+# That root cause is closed (#4969). The groups are now thin self-referential
+# aliases -- [dependency-groups].dev is exactly ["xtrax[dev]"] -- so the group has
+# no content of its own and cannot drift from the extra. The shape is enforced for
+# any name declared in BOTH tables by tests/distribution/test_dependency_group_alias.py
+# and by scripts/audit_project_hygiene.py, so a future edit that re-splits them
+# fails this gate rather than silently uninstalling beartype again.
 audit-docs-build-contract:
     uv run ruff check scripts/audit_docs_plumbing.py tests/distribution/test_docs_plumbing.py
     uv run pytest tests/distribution/test_docs_plumbing.py -v

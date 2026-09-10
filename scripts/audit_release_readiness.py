@@ -238,6 +238,7 @@ def load_release_readiness_config(config_path: Path) -> ReleaseReadinessConfig:
 
 
 def run_prerequisite_sync(root: Path, config: ReleaseReadinessConfig) -> tuple[bool, str]:
+    # First release-gate step on fresh environment; reads and applies extras/groups from config.
     cmd = ["uv", "sync"]
     for extra in config.prerequisite_sync:
         cmd.append(f"--extra={extra}")
