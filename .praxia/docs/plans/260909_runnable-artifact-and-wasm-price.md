@@ -67,7 +67,7 @@ it took to establish.
 time.** It suggested blocker 2 might be a configuration flag, since coordinate
 noise is meaningless for deterministic scoring. It is not: the noise sits inside
 `jax.lax.cond(backbone_noise > 0, add_noise, no_noise, coordinates)`
-(`coordinates.py:50-55`), and `lax.cond` traces **both** branches, so
+(`utils/coordinates.py:51-56`), and `lax.cond` traces **both** branches, so
 `jax.random.normal` is in the graph whatever `backbone_noise` is set to. Removing
 it requires bypassing the call, not configuring it.
 
@@ -205,10 +205,15 @@ unpadded call:
 far enough away" problem — it saturates, and the error does not go to zero.
 
 **Put the scale next to the sprint's other numbers.** This document spends a whole
-section deciding a `1.6e-05` parity tolerance. The *best available* padding
-convention moves the NLL by `2.3e-02` nats — three orders of magnitude larger, and
-the same order as the 0.036-nat self-leak that `scoring/score.py:155-166` documents
-as a measured, serious defect (t = 41.3).
+section deciding a `1.6e-05` parity tolerance. The smallest NLL shift any convention
+achieves is `1.04e-02` nats — three orders of magnitude larger, and the same order as
+the 0.036-nat self-leak that `scoring/score.py:155-166` documents as a measured,
+serious defect (t = 41.3).
+
+Note there is no single "best" convention: the smallest *logit* shift (0.608) and the
+smallest *NLL* shift (`1.04e-02`) come from two **different** rows of the table above,
+so improving one worsens the other. An earlier revision quoted `2.3e-02` as "the best
+available", pairing the winning logit row's NLL figure with the word "best".
 
 **Every measurement in this document is exact-length.** L=17, L=40 and L=128 were
 each their own artifact at their own `L`. Bucketing was never tested, and it does
@@ -260,7 +265,7 @@ Four things must be true at once.
    `static_argnames=("multi_state_strategy", "use_rolling_state")`.
 2. **A program IREE can legalize.** aminx does **not** have this out of the box,
    but the gap is now fully mapped: exactly two constructs block it, and a
-   prototype with both bypassed compiles and runs. Phase B1.
+   prototype with both bypassed compiles and runs. Phase B1a.
 3. **Weights the artifact can use.** Already satisfied, and this corrects an earlier
    draft: at concrete shapes the Equinox weights are **baked into the module as
    constants** — that is most of the 6.7 MB of MLIR. There is no weight-conversion
@@ -289,7 +294,8 @@ anything depends on it.
 autonomous loop, and no loop controller exists — the reading Marielle accepted for
 sprint 260909.
 
-- **Phase A** (xtrax: portable target, extra split, boundary documented, skip
+- **Phase A** (xtrax: A1 portable target, A2 symbolic-shape boundary, A3
+  per-element parity, A4 budgets + target list + docs, A5 extra split, A6 skip
   enforcement) — **standard, 3**
 - **Phase B** (aminx: replace `top_k`, export, verify, ship) — **extended, 5**
 - **Phase C** (wasm execution spike) — **extended, 5**
@@ -300,8 +306,8 @@ decision, an unsized dependency repin, and a packaging/tagging decision. But it 
 no longer *unbounded*: the compile blockers are enumerated and a working prototype
 exists end to end, so the largest unknown in the previous revision is closed.
 
-Phase A picked up two tasks it did not originally have — A4 (the extra split) and
-the skip enforcement — both moved *into* A because they are edits to xtrax files
+Phase A picked up two tasks it did not originally have — A5 (the extra split) and
+A6 (the skip enforcement) — both moved *into* A because they are edits to xtrax files
 that Phase B was wrongly assumed to cover. A stays **standard**: they are small,
 mechanical, and local to files Phase A already opens.
 
@@ -493,9 +499,17 @@ Split it here, in Phase A, where the file lives:
 - `export` — `export-runtime` plus `iree-base-compiler`. What xtrax needs to *build*
   one, and what CI installs.
 
-Use the self-referential alias form already established in this repo
-(`xtrax[export-runtime]` inside `export`), not a restated dependency list — a
-restated list is how sprint 260909 silently dropped `tyro` and four version floors.
+Use the self-referential alias form (`xtrax[export-runtime]` inside `export`), not
+a restated dependency list — a restated list is how sprint 260909 silently dropped
+`tyro` and four version floors.
+
+**That form is not yet used anywhere in xtrax's `pyproject.toml`.** An earlier
+revision claimed it was "already established in this repo"; it is not, and an
+implementer looking for the precedent would not find one. What *was* established is
+that it works: it was verified against a hatchling replica of xtrax's build config,
+where `uv build` flattens the alias into the concrete requirement list, so the built
+wheel's metadata carries the real dependencies rather than a dangling self-reference.
+
 **Name both extras explicitly in B0** so the aminx side cannot guess wrong.
 
 If A5 slips, B0's fallback is to depend on **plain `xtrax` (no extra) plus a direct
@@ -504,6 +518,16 @@ If A5 slips, B0's fallback is to depend on **plain `xtrax` (no extra) plus a dir
 today without any xtrax change. A5 is the better shape because it makes the runtime
 set discoverable and versioned in one place; the fallback exists so B0 is never
 blocked on it.
+
+**A6 — put a gate behind the "0 skips" invariant.** The Verification section below
+requires `export-toolchain-tests` to report **0 skips**, and nothing enforces it:
+`.github/workflows/ci.yml:151` runs a bare `uv run pytest tests/export/ -q`, which is
+exactly as green with every export test skipped as with all of them run. The
+invariant is prose. Run that step with `-rs` and fail it on any `SKIPPED` line, so a
+silently-failed IREE install cannot present as a passing real-toolchain claim.
+
+This was named in the Rubric as one of Phase A's tasks but had no numbered task of
+its own, which is how an item gets scored and then not built.
 
 **Gate for Phase A:**
 
@@ -522,8 +546,15 @@ Branch `feat/export-scoring-artifact`, aminx. Serial after Phase A.
 
 **B0 — repin xtrax.** `pyproject.toml:26` pins a sha with no `export` and no
 `telemetry`. Move to a sha containing Phase A and depend on
-**`xtrax[export-runtime]`** (the runtime-only extra added in A5), *not* on
-`xtrax[export]`.
+**`xtrax[io,export-runtime]`** — *both* extras. This task **adds** an extra; it does
+not replace one. The current pin is `xtrax[io]`, and dropping `io` breaks aminx at
+import time, not at runtime: `src/aminx/sampling/multistate_poe.py:48` does
+`from xtrax.run import SinkSpec, ZarrStagingSink` at module scope, which needs zarr,
+which `io` carries. An earlier revision wrote `xtrax[export-runtime]` alone and would
+have done exactly that.
+
+Do **not** depend on `xtrax[export]` — that pulls the 349 MB compiler onto a consumer
+that only needs to load and run an artifact.
 
 **The previous revision's instruction here was unimplementable.** It said "add the
 `export` extra" and then, four lines later, "depend on `iree-base-runtime`, not
@@ -586,14 +617,15 @@ JAX. B1a is turning that into real code, not rediscovering it.
   - CLI `--backbone-noise` (`cli.py:470`, `cli.py:1042`) — defaults to `"0.0"` but
     accepts a **comma-separated list**.
   - `host/runner.py:273 _make_averaged_score_fn`, selected when
-    `spec.average_node_features` (`runner.py:501-506`) — builds one bundle per noise
+    `spec.average_node_features` (`host/runner.py:499`) — builds one bundle per noise
     level and averages.
 
   **A documented precondition on `score_sequence` is not sufficient**, for two
   independent reasons. First, the noise-averaging path is a *different callable*
   (`score_sequence_averaged`) that `del`s `backbone_noise` and sources noise from the
   spec, so a precondition on `score_sequence` says nothing about the mode a user
-  reaches with `--average-node-features`. Second, `bundle_builder.py:300` does
+  reaches with `--average-node-features`. Second, `inference/bundle_builder.py:300`
+  does
   `backbone_noise=jnp.array(backbone_noise)`, making the predicate always a tracer —
   so an export that accepted noise as an input would compile a noise-stripped graph
   that **silently accepts and ignores** a nonzero argument. That is the exact
@@ -635,16 +667,17 @@ equivalence test goes green and misses it entirely. So: put NaN rows in the
 equivalence test, **and** either assert NaN-free coordinates at the export boundary
 or define the NaN convention explicitly. Keep the tie cases as regression coverage.
 
- `model/features.py:48`
-is `return jax.lax.top_k(x, k)`. Replace it with an IREE-legalizable formulation;
-`argsort` + `take_along_axis` and `sort_key_val` both compile (measured above).
+The call site is `model/features.py:48`, `return jax.lax.top_k(x, k)`. Replace it
+with an IREE-legalizable formulation; `argsort` + `take_along_axis` and
+`sort_key_val` both compile (measured above).
 
 **The equivalence proof is the substance of this sub-task, not a formality.**
 `top_k` and a sort-based selection differ in tie-breaking order, and k-neighbour
 indices feed graph construction, so a different tie-break changes which edges exist
 and can move outputs without any numerical error being visible. The test must
-assert index-level equality against `top_k` over randomised inputs **including
-deliberate ties**, not merely that scores are close.
+assert index-level equality against `top_k` over randomised inputs — **NaN rows
+first**, since that is the one case measured to actually diverge, with tie rows kept
+as regression coverage — not merely that scores are close.
 
 Keep the change behind the smallest possible surface. If `top_k` is faster on the
 JAX path, keep it there and use the substitute only for export — but then the
@@ -663,8 +696,9 @@ this function.
 must not change the score of a real one". That requirement cannot be met** — see
 "padding is not score-preserving" above. `k` comes from the padded array length
 (`features.py:183`), so padding enlarges the k-NN graph and moves real residues'
-logits by up to 5.1 (0.61 in the best convention, 0.023 nats of NLL). It saturates,
-so no choice of pad coordinates fixes it.
+logits by up to 5.1. No convention escapes it: the smallest logit shift measured is
+0.61 and the smallest NLL shift is `1.04e-02` nats, and those come from *different*
+conventions. It saturates, so no choice of pad coordinates fixes it.
 
 So the artifact is **exact-length: one `.vmfb` per `L`, and it refuses any other
 `L`.**
@@ -673,6 +707,11 @@ So the artifact is **exact-length: one `.vmfb` per `L`, and it refuses any other
   score, not a power-of-two ladder. Each is an independent compile; measured cost is
   **8.9 s** per artifact and ~7 MB on disk, so a handful is cheap in time and the
   real budget question is disk.
+  **Absent an answer, emit `{17, 40, 128}`** — the three lengths B3 already sweeps,
+  so the shipped set and the verified set are the same set by construction. This is a
+  default that lets B2 start, not an answer: it is a product question, and the real
+  list should come from Marielle and the PI's actual sequences. Record in the PR
+  which list was used and whether it was the default.
 - **The entry point must reject a mismatched `L` loudly**, with an error naming the
   artifact's `L` and the one it was handed. A silent wrong answer is the failure
   this whole finding is about; a refusal is correct behaviour, not a limitation to
@@ -727,17 +766,26 @@ false green in a different costume.
 **B3 needs a CI job that actually runs it, and today none exists.** This is not a
 detail — the document names B3 as the sprint's end-to-end evidence and says no other
 green check substitutes for it, then never asks for anywhere to run it. aminx's
-`.github/workflows/ci.yml:47` installs `--extra cpu --extra dev --extra tests`, with
+`.github/workflows/ci.yml:46` installs `--extra cpu --extra dev --extra tests`, with
 **no IREE at all**, and runs `pytest -n auto -m "$MARKER"` where PRs use
 `MARKER="not slow and not parity_heavy and not parity_audit"`. So a B3 test guarded
 by `importorskip("iree.runtime")` **skips green**, and one marked `slow` is
 **deselected green**, on every PR. Either way the sprint's central claim would be
 gated by a check that never executes.
 
-Add a dedicated aminx CI job that installs the export runtime and runs B3 unmarked
-and unskipped, failing on a skip. Cost is not the obstacle: the real compile is
-**8.9 s** for the 13.8 MB MLIR, so the whole three-length sweep is a sub-two-minute
-job.
+Add a dedicated aminx CI job that installs **`xtrax[export]` — the compiler extra,
+not `export-runtime`** — and runs B3 unmarked and unskipped, failing on a skip. The
+compiler is required because this job *builds* the artifacts it then executes:
+`xtrax.export.compile` imports `iree.compiler.tools`
+(`src/xtrax/export/compile.py:74`), which A5 places in `export` only. `export-runtime`
+is what the shipped consumer needs; that asymmetry is the entire point of the split,
+and mis-stating this job is how it would collapse back into one extra. Cost is not the
+obstacle: the real compile is **8.9 s** for the 13.8 MB MLIR, so the whole
+three-length sweep is a sub-two-minute job.
+
+If you would rather build the artifacts once and cache them, say so explicitly and
+say where they come from — and have the job re-check their `cpu_features`. A job that
+silently executes a stale cached `.vmfb` is the same false green relocated.
 
 **Sweep at least three sequence lengths, and treat that as load-bearing rather
 than as thoroughness.** The measured sweep above shows `L=40` failing the default
@@ -813,21 +861,50 @@ command inspects a wheel. That is a criterion checkable only by the author's own
 prose in the PR body, in a repo that has already shipped a coverage step printing
 `PASS` over 19 failing tests (#5035). Close it with a real assertion.
 
-`scripts/check_shipped_artifact.py` is new in B4 and must assert, by reading
-`dist/*.whl` directly:
+`scripts/check_shipped_artifact.py` is new in B4 and asserts against the built
+wheels directly. **What it asserts depends on which packaging option was chosen, and
+an earlier revision got this wrong:** it recommended option (3) and then wrote a gate
+that option (3) fails three of four criteria on, because under (3) the `aminx` wheel
+is deliberately pure and holds no artifact at all. So the script takes the chosen
+option as an explicit argument and asserts the matching set.
 
-1. the artifact path **is** present in the wheel;
-2. the wheel's tag is **not** `py3-none-any` — an `embedded-elf-x86_64` artifact in
+*Under option (1) — a platform-tagged `aminx` wheel:*
+
+1. the artifact path **is** present in `dist/aminx-*.whl`;
+2. that wheel's tag is **not** `py3-none-any` — an `embedded-elf-x86_64` artifact in
    a pure wheel installs cleanly on macOS and then fails at runtime;
 3. no `.eqx.zst` weight file is present (the artifact carries weights as constants);
 4. the artifact's `cpu_features` is the `NATIVE_PORTABLE` set, not host's.
 
-**Mirror the existing pattern rather than inventing one.** `.github/workflows/ci.yml`'s
-`wheel-smoke` job already does zipfile-based wheel assertions for `port/` and
-`controller/`; follow it, and wire the new script into that job.
+*Under option (3) — the recommended companion distribution:*
 
-Then: green, with B1's tie-breaking equivalence test passing and B3 passing against
-a real checkpoint on the per-element output at three lengths.
+1. the artifact **is** present in the companion wheel
+   (`dist/aminx_artifact_linux_x86_64-*.whl`) and **absent** from `dist/aminx-*.whl`;
+2. the companion wheel's tag is **not** `py3-none-any`, and the `aminx` wheel's tag
+   **is** — a pure `aminx` is the whole point of this option, so asserting its purity
+   belongs in the gate rather than contradicting it;
+3. `aminx`'s metadata declares the companion as a dependency under a platform
+   environment marker, so `pip install aminx` resolves it on Linux x86-64 and skips
+   it elsewhere. This is the criterion that actually protects the macOS user under
+   (3), and it has no analogue under (1);
+4. criteria 3 and 4 from option (1) — no weights, `cpu_features` is
+   `NATIVE_PORTABLE` — apply unchanged, to the companion wheel.
+
+*Under option (2) or (4)* no artifact ships in any wheel, so the wheel assertions
+would pass vacuously. Replace them: gate instead on a test that exercises the
+download-or-compile path end to end and checks the resulting artifact's
+`cpu_features`. Do not leave the wheel checks in place to go green over nothing.
+
+**Mirror xtrax's pattern — and note the job it mirrors is in the other repo.**
+xtrax's `.github/workflows/ci.yml` has a `wheel-smoke` job doing zipfile-based wheel
+assertions for `port/` and `controller/`; copy its shape. But **`wheel-smoke` is an
+xtrax job, and B4 is aminx work**: aminx's `ci.yml` has only `epic-attribution-lint`
+(`:12`) and `unit-tests` (`:26`). An earlier revision told the aminx implementer to
+"wire the new script into that job", naming a job in a repository their branch does
+not touch. Add a **new** wheel-assertion job to aminx's `ci.yml`, modelled on xtrax's.
+
+Then: green, with B1b's equivalence test — NaN rows and tie rows both — passing, and
+B3 passing against a real checkpoint on the per-element output at three lengths.
 
 ## Phase C — the wasm spike (DEFERRED, not in this sprint)
 
@@ -877,11 +954,9 @@ just audit-project-hygiene
 Then CI on the PR: all eight checks, with `export-toolchain-tests` reporting
 **0 skips** — and note this invariant is currently **prose with no gate behind it**.
 The job runs a bare `uv run pytest tests/export/ -q` (`ci.yml:151`), which passes
-just as green with every export test skipped as with all of them run. **Phase A must
-add the enforcement**, not merely restate the expectation: run with `-rs` and fail
-the step on any `SKIPPED` line, so a silently-failed toolchain install cannot
-present as a passing real-toolchain claim. Until that lands, treat a green
-`export-toolchain-tests` as unproven
+just as green with every export test skipped as with all of them run. **A6 adds the
+enforcement**, not merely a restatement of the expectation. Until A6 lands, treat a
+green `export-toolchain-tests` as unproven.
 
 **Do not run `just audit-deterministic` locally.** It chains `tier1_core`, whose
 `pytest_args` are `tests/`, so it runs the whole suite, which this machine cannot
