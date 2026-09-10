@@ -4,7 +4,7 @@ dynamic = [ "version",]
 description = "High-performance composable JAX library"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = [ "jax>=0.10.2,<0.12", "jaxlib>=0.10.2,<0.12", "equinox>=0.11.0", "optax>=0.2.3", "orbax-checkpoint>=0.6.0", "grain>=0.2.0", "numpy>=1.26", "pytest-asyncio>=0.23",]
+dependencies = [ "jax>=0.10.2,<0.12", "jaxlib>=0.10.2,<0.12", "equinox>=0.11.0", "optax>=0.2.3", "orbax-checkpoint>=0.6.0", "numpy>=1.26",]
 license = "Apache-2.0"
 keywords = [ "jax", "equinox", "training", "sparse", "distributed",]
 classifiers = [ "Development Status :: 3 - Alpha", "Programming Language :: Python :: 3.13", "Intended Audience :: Science/Research", "License :: OSI Approved :: Apache Software License", "Typing :: Typed",]
@@ -16,28 +16,36 @@ email = "67157875+maraxen@users.noreply.github.com"
 requires = [ "hatchling",]
 build-backend = "hatchling.build"
 
+# A dependency-group that duplicates an extra's contents will diverge from it --
+# that divergence was the #131 mechanism, where `uv sync --group docs` kept the
+# 7-package group and dropped the 15-package extra, silently uninstalling
+# beartype. (`uv sync` is exact by default and prunes; `uv run` is inexact and
+# prunes nothing.) A self-referential alias has no content of its own, so it is
+# structurally unable to diverge. Enforced by tests/distribution/
+# test_dependency_group_alias.py: any name in BOTH tables must be exactly
+# ["xtrax[<name>]"]. See backlog #4969.
 [dependency-groups]
-dev = [
- "complexipy>=5.6.1",
- "import-linter>=2.1",
- "pytest-benchmark>=5.2.3",
- "pytest-cov>=7.1.0",
- "ruff>=0.15.22",
- "ty>=0.0.60",
- "tyro>=0.9,<2",
-]
+dev = [ "xtrax[dev]",]
 docs = [ "sphinx>=7", "furo", "sphinx-autodoc-typehints", "myst-parser",]
-eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
+eda = [ "xtrax[eda]",]
 
 [project.optional-dependencies]
+# Floors here are the union of what this extra and the former
+# [dependency-groups].dev each asserted. That group carried TIGHTER floors on
+# pytest-cov, pytest-benchmark, ruff and ty; before #4969 both constraint sets
+# applied wherever the group and the extra were synced together, so aliasing the
+# group would have silently dropped the tighter one from the requirement graph.
+# ruff is the one that bites: its lint rules change substantially across
+# versions, so a resolve free to pick an old ruff quietly weakens what the lint
+# gate enforces.
 dev = [
  "complexipy>=5.6.1",
  "pytest>=8.0",
  "pytest-asyncio>=0.23",
- "pytest-cov>=5.0",
- "pytest-benchmark>=4.0",
- "ruff>=0.4.0",
- "ty",
+ "pytest-cov>=7.1.0",
+ "pytest-benchmark>=5.2.3",
+ "ruff>=0.15.22",
+ "ty>=0.0.60",
  "jaxtyping>=0.2.28",
  "beartype>=0.18.0",
  "libcst>=1.5.0",
@@ -46,14 +54,22 @@ dev = [
  "chex>=0.1.86",
  "interrogate>=1.7.0",
  "pyyaml>=6.0",
+ # The dev environment must be able to run tests/cli/, which imports tyro.
+ # Referenced as an extra rather than restating "tyro" here, so that a future
+ # addition to [cli] reaches dev automatically -- restating it is the same
+ # duplication-then-divergence this consolidation (#4969) exists to remove.
+ "xtrax[cli]",
 ]
 eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 cli = [ "tyro>=0.9,<2", "flatbuffers>=2",]
 io = [ "zarr>=3.0",]
+# grain is a data-pipeline dependency, not a core one: it was in runtime
+# `dependencies` but is imported nowhere under src/. Consumers who need it must
+# now ask for xtrax[data]. See backlog #4967.
+data = [ "grain>=0.2.0",]
 # Pins reconciled against a real resolver on py3.13, 2026-09-01 (exit 0 alongside
 # the core jax pin) -- see .praxia/docs/research/260901_webgpu-export-measurement-pass.md.
-export = [
-  "iree-base-compiler>=3.11,<4",
+export-runtime = [
   "iree-base-runtime>=3.11,<4",
   # Pinned to the 1.x line rather than the >=0.24,<2 range this started as. That
   # range spans the 0.x -> 1.x major break, so a fresh resolve moved silently
@@ -62,6 +78,10 @@ export = [
   # targeted 0.x, which is what made the wide range look safe.
   "huggingface_hub>=1,<2",
   "safetensors>=0.4,<1",
+]
+export = [
+  "xtrax[export-runtime]",
+  "iree-base-compiler>=3.11,<4",
 ]
 # NOTE: there is deliberately no `provenance = ["cisternal"]` extra yet.
 #

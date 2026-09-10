@@ -1,8 +1,9 @@
 """Load safetensors weights and bring their dtypes inside a target's envelope.
 
-HuggingFace checkpoints ship bf16 and f16 routinely, and ``native`` -- the only
-target that executes, and therefore the only one that can verify anything --
-cannot run bf16 at all: IREE's runtime has no bf16 buffer-to-numpy mapping. So a
+HuggingFace checkpoints ship bf16 and f16 routinely, and the ``EXECUTED``
+targets -- ``native`` and ``native-portable``, the only ones that run and
+therefore the only ones that can verify anything -- cannot run bf16 at all:
+IREE's runtime has no bf16 buffer-to-numpy mapping. So a
 bf16 checkpoint has to be cast before it can be exported and checked. Doing that
 explicitly, and reporting every leaf it happened to, is the point of this
 module; an implicit cast would change the exported artifact's dtypes silently.

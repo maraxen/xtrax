@@ -32,3 +32,13 @@ keys = ["cff-version", "title", "version", "repository-code", "license"]
 
 [hygiene.pyproject_urls]
 required = ["Documentation", "Changelog", "Repository"]
+
+# B5 (#4969) direction-2 residue: import names whose distribution is not installed in
+# the audit-project-hygiene environment (dev+io only), so packages_distributions()
+# can't see them, AND whose import name differs from every declared dependency/extra
+# name, so name-equality can't resolve them either. An entry here that becomes
+# resolvable via either of those two paths is stale and must be removed -- the gate
+# fails loudly on that (self-cleaning), so this table stays bounded to genuine
+# un-installable residue.
+[import_name_overrides]
+iree = ["iree-base-compiler", "iree-base-runtime"]

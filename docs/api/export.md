@@ -20,6 +20,7 @@ which is deliberately not the same for every target:
 | Target | Level | What was established |
 |---|---|---|
 | `NATIVE` | `EXECUTED` | Compiled and run; numerics matched an independent oracle |
+| `NATIVE_PORTABLE` | `EXECUTED` | Compiled and run on a fixed, portable CPU baseline (see below) |
 | `WASM32` | `CODEGEN_ONLY` | Compiled. Nothing more |
 | `VULKAN_SPIRV` | `CODEGEN_ONLY` | Compiled; SPIR-V extracted |
 | `METAL_SPIRV` | `CODEGEN_ONLY` | Compiled. Nothing more |
@@ -29,6 +30,38 @@ which has no published package. The SPIR-V targets are not executed because
 doing so needs a device this package does not require. `ExportResult.verified`
 is unconditionally `False` for a `CODEGEN_ONLY` target; read
 `verification_level` to distinguish that from a genuine failure.
+
+### `NATIVE` vs. `NATIVE_PORTABLE`
+
+Both compile via IREE's `llvm-cpu` backend and are `EXECUTED`, but they answer
+different questions. `NATIVE` passes `--iree-llvmcpu-target-cpu=host`: it is
+tuned to the machine doing the compiling, which is correct for its job as a
+parity oracle and wrong for anything handed to someone else — an artifact
+built with, say, AVX-512 enabled can fault with an illegal instruction on a
+recipient's CPU that lacks it.
+
+`NATIVE_PORTABLE` passes `--iree-llvmcpu-target-cpu=x86-64-v2` instead: a
+fixed ISA baseline rather than "whatever this machine has". The portability
+claim is narrower than "distributable":
+
+- the artifact is an `embedded-elf-x86_64` module with
+  `cpu_features = "+cmov,+mmx,+popcnt,+sse,+sse2,+sse4.2,+cx16,+sahf,+cx8,+crc32,+x87,+fxsr"`,
+  using IREE's own ELF loader with no libc or dylib dependency;
+- it still declares `Module Dependencies: hal, version >= 6, required` — it
+  is **not** a standalone binary, and the recipient needs an IREE runtime
+  (the `xtrax[export-runtime]` extra) to load it, not just a compatible CPU;
+- x86-64-v2 is **not** "any CPU since 2009". SSE4.2 — the feature that
+  defines the v2 baseline — arrived with Intel Nehalem in late 2008 but AMD
+  only added it at Bulldozer in 2011, and Intel's own Atom line lacked it
+  through Silvermont in 2013. The honest claim is "any x86-64 CPU from
+  roughly 2013 onward".
+
+No target triple is passed alongside the CPU flag. Adding
+`--iree-llvmcpu-target-triple=x86_64-unknown-linux-gnu` produces a
+byte-identical artifact (same md5): IREE rewrites the embedded triple to
+`x86_64-unknown-unknown-eabi-elf` for its embedded loader regardless of what
+triple is requested, so naming an OS there would be inert and would also
+misdescribe an artifact that commits to no OS.
 
 No target is registered at `VALIDATED`, and `export_pipeline` raises
 `NotImplementedError` for one, rather than reporting a `verified` it has nothing

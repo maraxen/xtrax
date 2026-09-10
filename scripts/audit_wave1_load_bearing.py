@@ -140,12 +140,11 @@ _UV_SYNC_EXTRAS: tuple[str, ...] = ("dev", "cli", "eda", "io")
 def check_certifying_tests_green(test_files: Sequence[str], root: Path) -> list[str]:
     """Return 'path: ...' hits for any certifying test file that does not pass live, right now.
 
-    Explicit `--extra` flags on every `uv run` call: a bare `uv run pytest` resyncs the shared
-    venv to whatever extras THAT command requests, silently uninstalling packages (e.g.
-    beartype, tyro) a prior `--extra dev`/`--extra cli` sync installed -- confirmed directly by
-    mutation-testing this exact function, which surfaced a `ModuleNotFoundError: No module
-    named 'beartype'` collection error on every certifying test file, not just the mutated one,
-    once a bare `uv run pytest` call silently resynced the venv underneath it.
+    Explicit `--extra` flags on every `uv run` call guarantee presence of these packages in the
+    narrower environment. Without explicit extras, a preceding `uv sync --extra X` call (which
+    replaces the environment) can silently uninstall packages (e.g. beartype, tyro) required
+    here. Mutation-testing this exact function surfaced a `ModuleNotFoundError: No module
+    named 'beartype'` collection error confirming this risk across all certifying test files.
     """
     hits: list[str] = []
     extra_flags = [flag for extra in _UV_SYNC_EXTRAS for flag in ("--extra", extra)]
