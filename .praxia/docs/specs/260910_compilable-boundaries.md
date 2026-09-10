@@ -46,8 +46,15 @@ extends it to `Tap`.
 |---|---|---|---|
 | **PURE** | A JAX-traceable function of its input. No host call. | Keep in graph verbatim. | `Fuse`; `SplitTap.transform` (new) |
 | **MATERIALIZABLE** | Host effect whose payload is exactly a value the exported callable already returns. | Remove the call before tracing; caller reads the output. | `Sink` with `materialize=True`; `SplitTap.observe` with `materialize=True` (new) |
-| **HOST-ONLY** | Host effect whose payload or correctness is not recoverable from the output. | Refuse the plan, naming the axis and the op. | Every `Sink`/`Tap` not declared materializing; any legacy `Tap`; every boundary op on a `DedupGather` axis (§5.1) |
+| **HOST-ONLY** | Host effect whose payload or correctness is not recoverable from the output. | Refuse the plan, naming the axis and the op. | Every `Sink`/`Tap` not declared materializing; any legacy `Tap` |
 | **OUT-OF-TRACE** | Runs in host Python that was never inside a trace to begin with. | Nothing — there is no boundary to cross. | All 7 `training.Callback` hooks (§4) |
+
+**`DedupGather` sits outside this table.** §5.1 refuses every boundary op on a `DedupGather`
+axis, and that refusal is about **missing plumbing**, not effect kind: `compose_single_axis`
+passes no boundary to `axis_dispatch` (`composer.py:119-126`), so the op never reaches the graph.
+A `fuse` on such an axis stays PURE by this taxonomy — it is a pure in-trace reduction that is
+merely unwired. Whoever writes that error message (AC-14) therefore describes absent wiring, not
+a host effect, and must not reuse the HOST-ONLY vocabulary.
 
 `PURE` and `OUT-OF-TRACE` are distinct even though neither requires exporter action: `PURE` ops
 are *inside* the traced callable and constrain what may appear in the jaxpr; `OUT-OF-TRACE` ops
@@ -133,10 +140,21 @@ and the distinction matters for this spec:
   exported program's numerics. That is a strictly worse failure than an incomplete replay, and
   it is why this spec does not extend `materialize`'s declare-and-trust pattern to taps.
 
-**This spec therefore fixes the weakness for taps and inherits it for sinks.** Taps get a
-structural split (§2), where the pure part is a separate callable that is traced and checked and
-the effectful part is dropped — nothing is asserted about a callable the exporter cannot see.
-Sinks keep the existing precondition, unchanged; see Out of Scope.
+**This spec therefore closes the graph-correctness half for taps, and closes nothing for
+sinks.** Taps get a structural split (§2): the pure half is a separate callable that is traced
+and checked, so dropping the effectful half cannot change a traced value. That is the whole of
+the improvement, and it is worth having — a silent numerics change is strictly worse than an
+incomplete replay.
+
+**Replay completeness is inherited unchanged, for taps exactly as for sinks.** A `SplitTap`
+whose `observe` records something other than the value it was handed — its own accumulated
+state, or the pre-transform input closed over from an enclosing scope — is expressible, passes
+AC-1, AC-2, AC-3, AC-5, AC-9, AC-10 and AC-11, and still yields an artifact whose output does
+not reproduce what the eager run observed. §2.2's post-transform decision makes the payload the
+exporter *strips* equal to `ys`; it cannot make `observe`'s body honest about what it writes
+down. Materializing a tap is therefore a precondition on `observe`, not a proof about it — the
+identical standing `materialize` has for `sink` (`boundaries.py:115-118`). Sinks keep that
+precondition unchanged; see Out of Scope.
 
 The residual-callback gate (check 7) narrows the sink weakness without closing it: a
 "materializing" sink that leaves a callback in the trace fails with an xtrax error naming the
@@ -224,6 +242,19 @@ class _ObserveStrippedTap:
 `getattr(boundary, "materialize", False)` and `boundary.tap` satisfies `SplitTap`, replace
 `tap` via the same `dataclasses.replace` call already used at `pipeline.py:113`.
 
+**The sink and tap replacements are independent, not alternatives — do not write the tap branch
+as an `elif`.** `pipeline.py:107` today reads
+`if getattr(boundary, "materialize", False) and boundary.sink is not None`, and an `elif` hung
+off it is the obvious shape. Nothing in §1.2 rejects an axis carrying **both** a materializing
+sink and a materializing `SplitTap`: check 3 requires *one of* them, check 4 concerns `fuse`,
+and check 5 counts axes rather than ops. The combination is also coherent — the executor applies
+`tap` before `sink` (`executor.py:127-131`), so both observe the same per-step value that
+becomes `ys`, and one output replays both. Written as an `elif`, only the sink is replaced; the
+tap's `observe` `io_callback` survives into the trace and export dies on JAX's refusal, which
+Task 6 relabels into an error whose stated remedy — declare `materialize=True` — the caller has
+*already* satisfied. That is a dead end, not a diagnosis. Compute both substitutions and apply
+them in a single `dataclasses.replace` (AC-9b).
+
 **`ordered` must be preserved on the stand-in**, for the reason already established for
 `_StrippedSink` at `pipeline.py:62-74` and `pipeline.py:112`: the executor's branch selection
 reads `.ordered` off the tap (`executor.py:107-113`, `executor.py:201`), so dropping the flag
@@ -279,6 +310,15 @@ on `"has a Tap"`, which constraint (b) preserves. Two things around it must chan
 
 **`boundaries.py:112-113`** ("Never applies to `tap`: … not droppable on any target") must be
 rewritten to distinguish droppable from materializable and point at `SplitTap`.
+
+**`topology.py:302-304`** — Rule 3's inline comment, "Kind-based: a Tap always rejects; a Sink
+rejects unless declared materializing", states exactly the rule this spec replaces and sits two
+lines above the `_check_export_boundary` call it describes. Task 2 rewrites it.
+
+**`boundaries.py:88-94`** — `AxisBoundary`'s class docstring enumerates three topology rules and
+never mentions the `export_safe=True` rules at all, so a reader of the type gets no signal that
+`materialize`, let alone `SplitTap`, exists. This is an omission rather than a falsehood — the
+same omission as `run.md:277` below — and Task 1 extends the list rather than correcting it.
 
 **Public docs — must change.** Three places state the old absolute:
 
@@ -433,9 +473,15 @@ step were ever exported, `metrics` would be an output slot and the hook would re
 - **Concreteness (AC-17).** Test the invariant at `training/types.py:27` that is today an
   unbacked assertion: a callback registered on a real `Engine.fit` run must receive **concrete**
   arrays. The hook body calls `numpy.asarray(v)` on every value in `metrics` and every array leaf
-  of `state` and **appends the results to a module-level list**. The test body, after `fit`
-  returns, asserts `len(recorded) == expected_step_count` and that every recorded leaf is a
-  `numpy.ndarray`. Under a tracer, `numpy.asarray` raises
+  of `state`, collects that step's results into a **single list**, and appends that one list
+  to a module-level list — **exactly one append per `on_step_end` call**. The per-step grouping
+  is what makes the length assertion checkable: appending per leaf instead would make the true
+  count `steps × (len(metrics) + n_state_leaves)`, where `ResumableState` contributes `step`,
+  `key`, and every leaf of `params`, `opt_state` and `extras` (`training/types.py:50-54`) — a
+  number the test cannot state without recomputing the model's own leaf count, so a fixer
+  handed the resulting red test would weaken the guard rather than fix it. The test body, after
+  `fit` returns, asserts `len(recorded) == expected_step_count` and that every element of every
+  recorded entry is a `numpy.ndarray`. Under a tracer, `numpy.asarray` raises
   `jax.errors.TracerArrayConversionError`. `isinstance(v, jax.core.Tracer)` is deliberately not
   used: it is a version-fragile private-ish surface, and this repo pins a JAX *range*
   (`PINNED_JAX_RANGE` at `src/xtrax/stages/_callback.py`, enforced at import,
@@ -563,9 +609,28 @@ qualifier). Whether it is removable by padding is Open Question 1.
 final carry, and materialization has nothing to read off the output. Which route runs depends on
 the shape of `scan_init` — a value topology validation never receives.
 
-**Fix: refuse the combination in the composer.** On the non-batched route, `compose_vmap_of_scan`
-raises `MultiAxisCompositionError` when `getattr(inner_boundary, "materialize", False)`, naming
-the batched-carry recipe (already documented at `composer.py:250-257`) as the workaround.
+**Fix: refuse both losses in the composer, before the route is returned.**
+`compose_vmap_of_scan` raises `MultiAxisCompositionError` when the unbatched route is selected
+and **either** `getattr(inner_boundary, "materialize", False)` **or**
+`inner_boundary.fuse is not None`, naming the batched-carry recipe (already documented at
+`composer.py:250-257`) as the workaround.
+
+**The `fuse` conjunct is not optional.** `_apply_fuse` is never reached on this route, so a
+non-materializing inner `fuse` is discarded exactly as silently as a materialized value, and the
+exported output shape differs from what the batched route produces for the same plan. That is
+the same class of defect §5.1 declares in scope for `DedupGather` — "a fuse unapplied" — so
+refusing one and not the other would be arbitrary. Both conjuncts are covered by AC-14 and by
+the §6.2 row.
+
+**Where the check runs: at compose time, immediately before `return _run_literal_vmap`
+(`composer.py:301`) — not inside the closure.** Route selection resolves when
+`_init_is_batched(init, outer_n)` is evaluated at `composer.py:262`, so the refusal is decidable
+there, and raising there hands the caller a plain `MultiAxisCompositionError` from the call that
+composed the bad plan. Placed inside `_run_literal_vmap`'s body it would instead fire during
+tracing, wrapped in JAX trace context and raised from inside the `try` block Task 6 wraps around
+`jax.export.export` (`pipeline.py:236`) — so the failure would be reported against the export
+call rather than against the composition that caused it.
+
 `materialize` is readable at that point: `_boundaries_for_export` rebuilds with
 `dataclasses.replace` (`pipeline.py:113`), which preserves `materialize=True` on the stripped
 boundary. Two comments become false and must be corrected in the same task —
@@ -605,7 +670,7 @@ tap alone.
 | Was | Becomes | Site |
 |---|---|---|
 | Any `fuse`/`tap`/`sink` on a `DedupGather` axis accepted under `export_safe=True`, exporting an artifact that drops it — a tap absent from the graph, a fuse unapplied, a sink's N-vs-K call count | `PlanTopologyError` | `topology.py:178-239` (§5.1) |
-| A two-axis Vmap-over-Scan plan with an unbatched `scan_init` and a materializing inner boundary, exporting an artifact that holds only the final carry | `MultiAxisCompositionError` naming the batched-carry recipe | `composer.py:279-301` (§5.3) |
+| A two-axis Vmap-over-Scan plan with an unbatched `scan_init` whose inner boundary either materializes or carries a `fuse`, exporting an artifact that holds only the final carry — per-step values discarded, `fuse` unapplied | `MultiAxisCompositionError` naming the batched-carry recipe | `composer.py:262-301` (§5.3) |
 | An exported callable whose post-strip trace still binds a host callback, failing with JAX's internal `NotImplementedError: serialization of host_callbacks is not yet implemented` (`jax/_src/export/_export.py:1047`), which names no axis | the same refusal, re-labelled as a named xtrax error naming the boundary-bearing axes and `materialize=True` | `pipeline.py:236` (§1.2 check 7) |
 
 Rows 1 and 2 replace a silent wrong answer with a loud refusal. Row 3 changes no plan's outcome —
@@ -681,6 +746,12 @@ raise `MultipleMaterializeAxesError` naming both axes. *File:* `tests/stages/tes
 object; and returns the input mapping **by identity** when no axis materializes. *File:*
 `tests/export/test_boundary_stripping.py` (new)
 
+**AC-9b** — An axis carrying **both** a materializing sink and a materializing `SplitTap`
+has **both** replaced: the boundary returned by `_boundaries_for_export` has a `_StrippedSink`
+for its `sink` and an `_ObserveStrippedTap` for its `tap`, and neither is the original object.
+The same plan exports without raising Task 6's residual-callback error. *File:*
+`tests/export/test_boundary_stripping.py` (new)
+
 **AC-10** — Output-arity invariance: for a one-axis plan, the output pytree structure
 (`jax.tree_util.tree_structure`) and every leaf's shape/dtype of the callable built with a
 materializing `SplitTap` boundary equal those of the callable built with `boundary=None`. *File:*
@@ -710,10 +781,14 @@ pass vacuously; (a) is what makes it a gate. *File:*
 workaround. A sibling case with `tap=` and one with `fuse=` raise identically. *File:*
 `tests/stages/test_topology.py`
 
-**AC-14** — Vmap-over-Scan route selection. A two-axis plan with an **unbatched** `scan_init` and
-a materializing inner boundary raises `MultiAxisCompositionError`, and the message names the
-batched-carry recipe. The same plan with a **batched** `scan_init` exports, and its output holds
-the per-step values, not just the final carry. *File:* `tests/export/test_multi_axis.py`
+**AC-14** — Vmap-over-Scan route selection, parameterized over both losses. A two-axis plan
+with an **unbatched** `scan_init` raises `MultiAxisCompositionError` when the inner boundary
+materializes, **and** when it carries a `fuse` without materializing; the message names the
+batched-carry recipe in both cases. Assert the raise from the `compose_vmap_of_scan` call itself
+**without ever invoking the returned callable** — that is what pins the check to compose time
+rather than trace time (§5.3). The same two plans with a **batched** `scan_init` export, and the
+output holds the per-step values — fused, where a `fuse` is present — not just the final carry.
+*File:* `tests/export/test_multi_axis.py`
 
 **AC-15** — An ordered materializing boundary on a `SafeMap` axis with a non-`None` `batch_size`
 produces an `ExportResult.diagnostics` entry naming the axis and the ignored `batch_size`; the
@@ -727,8 +802,11 @@ gate. *File:* `tests/training/test_types.py`
 
 **AC-17** — Hook payload concreteness. A callback on a real `Engine.fit` run calls
 `numpy.asarray(v)` inside `on_step_end` for every value in `metrics` and every array leaf of
-`state`, appending the results to a module-level list. After `fit` returns, the test asserts
-`len(recorded) == expected_step_count` and that every recorded leaf is a `numpy.ndarray`. The
+`state`, gathers that step's results into one list, and appends that list to a module-level list
+— **one append per call**, so the module-level list holds exactly one entry per step however
+many metrics or state leaves exist. After `fit` returns, the test asserts
+`len(recorded) == expected_step_count` and that every element of every entry is a
+`numpy.ndarray`. The
 length assertion is the guard against a hook that never ran or that raised and was swallowed
 (`io.py:163-169`); `wait_all()` (`engine.py:195`) makes the count exact by the time `fit`
 returns. *File:* `tests/engine/test_engine.py`
@@ -754,7 +832,9 @@ Add the `SplitTap` Protocol per §2.2 and to `__all__`. Add no field. Three docs
 `materialize`'s "Never applies to `tap`" paragraph (`boundaries.py:112-113`) per §2.5;
 `Tap`'s "Identity transform with side effect" (`boundaries.py:49-51`), which the executor's tests
 falsify (§2.2); and `materialize`'s "Only xtrax.export reads this" (`boundaries.py:102-103`),
-which omits the `topology.py:199` read (§6.4).
+which omits the `topology.py:199` read (§6.4). Also extend `AxisBoundary`'s class-docstring rule
+list (`boundaries.py:88-94`), which stops at three rules and never mentions the
+`export_safe=True` rules at all (§2.5).
 *Gate:* AC-1, AC-2, AC-19 — `uv run --extra dev --extra io pytest tests/stages/test_boundaries.py -q`
 *Scope:* ~45 LOC.
 
@@ -766,8 +846,9 @@ requirement (AC-5); rewrite the message per §2.5's three constraints; add the `
 to `topology.py:211` and drop the `sink is not None` conjunct from `topology.py:229`, both per
 §1.2 checks 3-4; return `True` for a materializing tap so it counts toward `materializing_axes`
 (`topology.py:264`, `topology.py:322-330`); rewrite the `Raises:` docstring
-(`topology.py:188-191`). Update the comment at `tests/stages/test_topology.py:287` and the class
-docstring at line 284.
+(`topology.py:188-191`); rewrite Rule 3's inline comment at `topology.py:302-304`, which states
+the kind-based rule being replaced (§2.5). Update the comment at
+`tests/stages/test_topology.py:287` and the class docstring at line 284.
 *Depends on:* Task 1. *Gate:* AC-3, AC-4, AC-5, AC-6, AC-7, AC-8. *Scope:* ~80 LOC.
 
 **Task 3 — Topology: reject boundary ops on `DedupGather` axes.**
@@ -784,16 +865,20 @@ sequence after Task 2 to avoid a conflict.
 `tests/export/test_boundary_stripping.py` (create).
 Per §2.3, mirroring `_StrippedSink` (`pipeline.py:62-84`) including the `ordered` preservation and
 its rationale. Extend `_boundaries_for_export` (`pipeline.py:86-117`), keeping the
-identity-return-when-unchanged behavior at `pipeline.py:117`. Add the `n > batch_size` qualifier
+identity-return-when-unchanged behavior at `pipeline.py:117`. The sink and tap substitutions are
+**independent** — compute both, then apply them in one `dataclasses.replace`; an `elif` on
+`pipeline.py:107` half-strips an axis carrying both (§2.3). Add the `n > batch_size` qualifier
 to `_StrippedSink`'s docstring (`pipeline.py:69`) and write the new stand-in's docstring with it.
-*Depends on:* Task 1. *Gate:* AC-9, AC-10, AC-11. *Scope:* ~75 LOC.
+*Depends on:* Task 1. *Gate:* AC-9, AC-9b, AC-10, AC-11. *Scope:* ~75 LOC.
 
 **Task 5 — Composer: refuse materializing on the unbatched Vmap-over-Scan route.**
 *Files:* `src/xtrax/export/composer.py` (modify), `src/xtrax/export/pipeline.py` (modify —
 comment only), `tests/export/test_multi_axis.py` (modify).
-Per §5.3. In `compose_vmap_of_scan`, on the non-batched route (`composer.py:279`), raise
-`MultiAxisCompositionError` when `getattr(inner_boundary, "materialize", False)`, naming the
-batched-carry recipe as the workaround. Correct the two now-false comments:
+Per §5.3. In `compose_vmap_of_scan`, once `_init_is_batched` (`composer.py:262`) has selected
+the unbatched route and **before `return _run_literal_vmap` (`composer.py:301`)** — at compose
+time, not inside the closure — raise `MultiAxisCompositionError` when
+`getattr(inner_boundary, "materialize", False)` **or** `inner_boundary.fuse is not None`, naming
+the batched-carry recipe as the workaround. Correct the two now-false comments:
 `composer.py:324-325` and `pipeline.py:232-233`.
 *Depends on:* Task 4. *Gate:* AC-14. *Scope:* ~35 LOC.
 
