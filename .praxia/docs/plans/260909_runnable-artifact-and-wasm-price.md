@@ -227,7 +227,8 @@ anything depends on it.
 autonomous loop, and no loop controller exists — the reading Marielle accepted for
 sprint 260909.
 
-- **Phase A** (xtrax: portable target, boundary documented) — **standard, 3**
+- **Phase A** (xtrax: portable target, extra split, boundary documented, skip
+  enforcement) — **standard, 3**
 - **Phase B** (aminx: replace `top_k`, export, verify, ship) — **extended, 5**
 - **Phase C** (wasm execution spike) — **extended, 5**
 
@@ -236,6 +237,14 @@ numerical-equivalence proof on a model's feature extraction, a tolerance
 decision, an unsized dependency repin, and a packaging/tagging decision. But it is
 no longer *unbounded*: the compile blockers are enumerated and a working prototype
 exists end to end, so the largest unknown in the previous revision is closed.
+
+Phase A picked up two tasks it did not originally have — A4 (the extra split) and
+the skip enforcement — both moved *into* A because they are edits to xtrax files
+that Phase B was wrongly assumed to cover. A stays **standard**: they are small,
+mechanical, and local to files Phase A already opens.
+
+Phase C is **not scored against this sprint**; it is listed above only for
+continuity with the earlier revision. The sprint's total is A + B = 8.
 
 The residual risk in B is concentrated in the repin (B0), which crosses every
 xtrax change since a sha that predates two whole subpackages, and which nothing
@@ -248,22 +257,50 @@ evidence. Its central step — build IREE's runtime under emsdk, embed a real
 could establish, **never been published by anyone**, for IREE, under Node or
 wasmtime or a browser. That is first-time integration work, not a checklist item.
 
-### Decision point 1 — what must the PI be able to run it on?
+### Decision point 1 — what must the PI be able to run it on? **ANSWERED**
 
-This decides whether Phase A's deliverable is sufficient or merely a step, and
-there is evidence the answer is *not* Linux: **aminx's own `[tool.uv].environments`
-declares `sys_platform == 'darwin'`.**
+**Correction to an earlier revision of this document.** A previous draft claimed
+"there is evidence the answer is *not* Linux: aminx's own `[tool.uv].environments`
+declares `sys_platform == 'darwin'`." That was an overread of a file I had only
+partially quoted. aminx declares **both**, and says so deliberately
+(`aminx/pyproject.toml:294-299`):
+
+```toml
+[tool.uv]
+# Only resolve for platforms we actually target (including WSL which reports as linux)
+environments = [
+    "sys_platform == 'darwin' and python_version >= '3.13'",
+    "sys_platform == 'linux' and python_version >= '3.13'",
+]
+```
+
+Linux is not a fallback aminx tolerates — it is a first-class declared target, with
+a comment explaining it covers WSL. The evidence I cited for "Linux is probably
+wrong" does not say that.
+
+**Decided: Linux x86-64.** It is a declared aminx target *and* the only one this
+repo can verify by executing, which is what "verified native artifacts first"
+requires. macOS arm64 is a **named follow-up, not a default** — see below.
 
 - **Linux x86-64** → satisfied by Phase A as written. Measured working today.
+  **This is the sprint's target.**
 - **macOS (arm64)** → IREE can cross-compile to `aarch64-apple-darwin`, but nothing
   in this repo or CI can execute it, so it would ship at `CODEGEN_ONLY` — the exact
   "green over a false fact" the last sprint removed. Needs a Mac runner, or an
   honest statement that the artifact is unverified on the target machine.
 - **"Anywhere / in a browser"** → only wasm, and only after Phase C.
 
-No answer defaults to Linux x86-64, because it is the only one verifiable by
-running. **Given the darwin declaration, please answer this one explicitly rather
-than letting it default.**
+**macOS arm64 is deferred as a named decision, not silently dropped.** If the PI
+works on a Mac, Phase A's Linux artifact does not serve them and the sprint ends
+one step short of the actual request. Cross-compiling to `aarch64-apple-darwin` is
+possible but would ship at `CODEGEN_ONLY` — compiled, never executed — which is
+precisely the "green over a false fact" the previous sprint removed. Closing it
+honestly needs a Mac runner.
+
+**Marielle: if your PI is on macOS, say so and this becomes a Phase A2b with a
+hardware dependency.** Silence is read as Linux, which is now a positive choice
+backed by aminx's own declaration rather than a default taken for lack of an
+answer.
 
 ### Decision point 2 — native-first, or take the wasm risk now? **ANSWERED**
 
@@ -288,6 +325,10 @@ target beside `NATIVE` keeping `verification_level=EXECUTED` and
 `supported_dtypes=_EXECUTABLE_DTYPES`, replacing `--iree-llvmcpu-target-cpu=host`
 with `--iree-llvmcpu-target-cpu=x86-64-v2`.
 
+**Name it `NATIVE_PORTABLE`.** The constant needs a name written down here, because
+Phase B has to reference it by name and an unnamed target is how the shipped
+artifact ends up built with the wrong one (see B4).
+
 **Pass the CPU flag only. Do not pass a target triple.** Measured: adding
 `--iree-llvmcpu-target-triple=x86_64-unknown-linux-gnu` produces a **byte-identical
 artifact** (same md5), and IREE rewrites the embedded triple to
@@ -310,6 +351,38 @@ name the ISA level and stop.
 **Do not repurpose `NATIVE`.** Host tuning is correct for its job as a parity
 oracle, and `tests/export/test_size_budget.py` records its measured size. Add a
 sibling.
+
+**A4 — split the `export` extra so a consumer can install the runtime alone.**
+This task exists because B0 currently asks for something that does not exist. B0
+says to "add the `export` extra" and then, two sentences later, to "depend on
+`iree-base-runtime`, not `iree-base-compiler`". Those instructions contradict each
+other against the real file — `pyproject.toml:55-65` defines a single `export`
+extra carrying **both**:
+
+```toml
+export = [
+  "iree-base-compiler>=3.11,<4",
+  "iree-base-runtime>=3.11,<4",
+  "huggingface_hub>=1,<2",
+  "safetensors>=0.4,<1",
+]
+```
+
+There is no runtime-only extra anywhere in the repo, so B0 taken literally pulls in
+the ~349 MB compiler it is explicitly trying to avoid. Neither phase owned the fix:
+Phase A is scoped "no aminx dependency" and Phase B's branch is aminx-only.
+
+Split it here, in Phase A, where the file lives:
+
+- `export-runtime` — `iree-base-runtime`, `safetensors`, `huggingface_hub`. What a
+  consumer needs to *load and run* an artifact.
+- `export` — `export-runtime` plus `iree-base-compiler`. What xtrax needs to *build*
+  one, and what CI installs.
+
+Use the self-referential alias form already established in this repo
+(`xtrax[export-runtime]` inside `export`), not a restated dependency list — a
+restated list is how sprint 260909 silently dropped `tyro` and four version floors.
+**Name both extras explicitly in B0** so the aminx side cannot guess wrong.
 
 **A2 — pin the symbolic-shape boundary; do not claim general support.** Symbolic
 shapes work through `export_pipeline` — verified: it returns `verified=True` with
@@ -397,7 +470,7 @@ conclusion that survived into a draft:
   attempt `chlo.top_k` stayed at 2 while the run looked entirely successful; only
   counting caught it. It went to 0 on the second.
 
-**B1b — replace `top_k`, and prove the replacement identical.****B1b — replace `top_k`, and prove the replacement identical.** `model/features.py:48`
+**B1b — replace `top_k`, and prove the replacement identical.** `model/features.py:48`
 is `return jax.lax.top_k(x, k)`. Replace it with an IREE-legalizable formulation;
 `argsort` + `take_along_axis` and `sort_key_val` both compile (measured above).
 
@@ -458,6 +531,21 @@ regression case, since it is the known-worst draw.
 **B4 — ship it, tagged honestly.** Reverse `include-package-data = false` for the
 artifact path only. Report wheel size before and after.
 
+**Compile the shipped artifact with `NATIVE_PORTABLE` (from A1), never `NATIVE`.**
+This is the single most consequential wiring instruction in the sprint and the
+previous revision omitted it entirely: Phase A built a portable target and Phase B
+never said to use it. `NATIVE` is `target-cpu=host`, correct as a parity oracle and
+wrong as a deliverable — an artifact tuned to this machine's CPU may fault with an
+illegal instruction on the PI's. Every gate in the previous revision would have gone
+green over exactly that, which is the false-green class this sprint exists to close,
+landing at the worst possible point: the artifact handed to the PI.
+
+**Assert it mechanically, not by eye.** The check is cheap — `iree-dump-module` on
+the shipped `.vmfb` and grep the `cpu_features` string. It must be the
+`x86-64-v2` feature set recorded in A1 and must **not** contain host-only features
+(on this machine, `+avx512*`). A test that reads the artifact's own metadata cannot
+be satisfied by a build that silently used the wrong target.
+
 **The wheel tag is not optional.** An `embedded-elf-x86_64` artifact inside a
 `py3-none-any` wheel is a wheel that installs cleanly on macOS and then fails at
 runtime. Either build a platform-tagged wheel, or ship the artifact as an optional
@@ -473,11 +561,30 @@ carries them as constants, and bundling the `.eqx.zst` files as well would dupli
 ```bash
 uv run pytest tests/export/ -q
 uv build
+uv run python scripts/check_shipped_artifact.py dist/*.whl
 ```
 
-Green, with B1's tie-breaking equivalence test passing, B3 passing against a real
-checkpoint on the per-element output, the artifact present in the built wheel, and
-the wheel's tag stated in the PR body.
+The previous revision's gate was `pytest` + `uv build` while its prose claimed to
+gate "the artifact present in the built wheel, and the wheel's tag" — neither
+command inspects a wheel. That is a criterion checkable only by the author's own
+prose in the PR body, in a repo that has already shipped a coverage step printing
+`PASS` over 19 failing tests (#5035). Close it with a real assertion.
+
+`scripts/check_shipped_artifact.py` is new in B4 and must assert, by reading
+`dist/*.whl` directly:
+
+1. the artifact path **is** present in the wheel;
+2. the wheel's tag is **not** `py3-none-any` — an `embedded-elf-x86_64` artifact in
+   a pure wheel installs cleanly on macOS and then fails at runtime;
+3. no `.eqx.zst` weight file is present (the artifact carries weights as constants);
+4. the artifact's `cpu_features` is the `NATIVE_PORTABLE` set, not host's.
+
+**Mirror the existing pattern rather than inventing one.** `.github/workflows/ci.yml`'s
+`wheel-smoke` job already does zipfile-based wheel assertions for `port/` and
+`controller/`; follow it, and wire the new script into that job.
+
+Then: green, with B1's tie-breaking equivalence test passing and B3 passing against
+a real checkpoint on the per-element output at three lengths.
 
 ## Phase C — the wasm spike (DEFERRED, not in this sprint)
 
@@ -524,9 +631,14 @@ uv run --extra dev ty check src/
 just audit-project-hygiene
 ```
 
-Then CI, with `export-toolchain-tests` reporting **0 skips** against real IREE 3.11 —
-a skip there means the toolchain silently failed to install and the real-toolchain
-claim is void.
+Then CI on the PR: all eight checks, with `export-toolchain-tests` reporting
+**0 skips** — and note this invariant is currently **prose with no gate behind it**.
+The job runs a bare `uv run pytest tests/export/ -q` (`ci.yml:151`), which passes
+just as green with every export test skipped as with all of them run. **Phase A must
+add the enforcement**, not merely restate the expectation: run with `-rs` and fail
+the step on any `SKIPPED` line, so a silently-failed toolchain install cannot
+present as a passing real-toolchain claim. Until that lands, treat a green
+`export-toolchain-tests` as unproven
 
 **Do not run `just audit-deterministic` locally.** It chains `tier1_core`, whose
 `pytest_args` are `tests/`, so it runs the whole suite, which this machine cannot
@@ -550,8 +662,10 @@ green check substitutes for it.
   it becomes relevant only if artifacts-per-checkpoint becomes a problem.
 - **Shipping weights in the wheel.** The artifact carries them already.
 - **`wasm32-unknown-unknown` without Emscripten.** IREE issue #8327, open since 2022.
-- **macOS or Windows artifacts.** Contingent on Decision 1; neither is executable by
-  anything this repo runs, so neither can be verified here.
+- **macOS or Windows artifacts.** Decision 1 is answered Linux x86-64, so these are
+  out. Neither is executable by anything this repo runs, so neither could be
+  verified here even if built. macOS arm64 is the named follow-up if the PI is on a
+  Mac — flagged under Decision 1, not silently dropped.
 - **Cross-IREE-version artifact loading.** Only one IREE version is installed, so
   whether a vmfb built against 3.11 loads on a different runtime version is
   **unresolved in either direction**. If the PI's machine will have its own IREE,
