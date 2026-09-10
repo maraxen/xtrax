@@ -1040,6 +1040,25 @@ green check substitutes for it.
   out. Neither is executable by anything this repo runs, so neither could be
   verified here even if built. macOS arm64 is the named follow-up if the PI is on a
   Mac — flagged under Decision 1, not silently dropped.
+
+  **New constraint, found while implementing Phase A (2026-09-10): `NATIVE_PORTABLE`
+  cannot be *built* correctly on a non-x86-64 host either, not merely un-run there.**
+  A1 deliberately passes no target triple (measured byte-identical, and a triple
+  naming an OS would misdescribe the artifact), so IREE takes the compiling host's
+  triple. On arm64 — an Apple Silicon laptop, an arm64 runner — LLVM does not
+  recognise `x86-64-v2` as a CPU for that subtarget and **warns-and-ignores it**,
+  quietly falling back to host-tuned codegen: exactly the failure the target exists
+  to prevent, arriving silently.
+
+  This bears on two live decisions rather than being trivia. If Decision 1 is ever
+  re-answered "the PI is on a Mac", the follow-up is not just "also build a macOS
+  artifact" — it is that a Mac cannot be the *build* machine for the Linux one
+  either. And B4's option (3), the companion distribution, assumes a build host that
+  can produce the x86-64 artifact; say which machine that is. The mitigation shipped
+  in Phase A is that `tests/export/test_parity_multi_size.py` reads `cpu_features`
+  back off the artifact and fails loudly on arm64 rather than passing over a
+  mis-built one — but it reads as a test bug unless you know this, which is why it
+  is written down here and in `targets.py`.
 - **Cross-IREE-version artifact loading.** Only one IREE version is installed, so
   whether a vmfb built against 3.11 loads on a different runtime version is
   **unresolved in either direction**. If the PI's machine will have its own IREE,
