@@ -225,6 +225,104 @@ which is worse than the crash this sprint set out to prevent.
 mask-aware `k` in aminx is the alternative and it is a genuine piece of work with
 its own numerical-equivalence burden — it is **not** in this sprint.
 
+> **SUPERSEDED IN SCOPE by amendment 12 below.** Everything measured above is
+> reproduced and stands — but it holds only for `L < k_neighbors`, which is a
+> regime real proteins essentially never occupy. Read amendment 12 before
+> implementing B2.
+
+### Amendment 12 — padding is score-preserving above `k_neighbors`; the restriction narrows to `L < 48`
+
+**The finding above is correct and its cause was mis-scoped.** It concluded that
+bucketing is unsound in general. Measured this session, it is unsound only when the
+**real** sequence length is below the checkpoint's `k_neighbors` — 48 for every
+`v_48_*` checkpoint, 32 for the two `v_32_*` ones (`model/versions.py` names them
+`v_{k}_{noise}`).
+
+Re-read the mechanism:
+
+```python
+k = min(self.k_neighbors, structure_coordinates.shape[0])   # features.py:183
+```
+
+`k` is clamped by the array length, so padding changes `k` **only when the real
+length is under the clamp**. Above it, `k` is 48 padded and unpadded alike. And
+`features.py:165-180` sets every masked entry's distance to `+inf` before `top_k`,
+so padded residues sort last and are never selected as neighbours while at least
+`k` real residues exist. The k-NN graph is then bit-identically the same graph.
+
+The original table was measured at **`L=17` padded into a 40-bucket**. Both numbers
+are below 48, so `k` moved (17 → 40) and the graph genuinely changed. That is the
+degenerate regime, not the shipping regime.
+
+**Measured 260910** (`proteinmpnn_v_48_020`, protein path, `backbone_noise=0`,
+default full-context `ar_mask`, `S=1`, comparing `out[1]` per-element logits on the
+real residues):
+
+| structure | L | → padded | `k` | `max|Δlogit|` | verdict |
+|---|---|---|---|---|---|
+| 1ubq | 47 | 64 | 47 → 48 | `2.13e-01` | **shifted** |
+| 1ubq | 48 | 64 | 48 → 48 | `1.55e-06` | invariant |
+| 1ubq | 53 | 64 | 48 → 48 | `5.48e-06` | invariant |
+| 1ubq | 76 | 128 | 48 → 48 | `1.91e-06` | invariant |
+| 1ubq | 76 | 256 | 48 → 48 | `1.91e-06` | invariant |
+| 1ubq | 76 | 512 | 48 → 48 | `2.15e-06` | invariant |
+| 1mbn | 153 | 256 | 48 → 48 | `4.53e-06` | invariant |
+| 1mbn | 153 | 512 | 48 → 48 | `4.23e-06` | invariant |
+
+The boundary is exact: **invariant if and only if `k` is unchanged**, i.e. `L ≥ 48`.
+The residual `~2e-06` is float32 noise, an order of magnitude *below* the
+`1.6e-05` parity tolerance this document already settles for B3. Padding distance is
+irrelevant — `76 → 512` is no worse than `76 → 128`.
+
+**The control is what makes this a result rather than an absence.** The same
+comparison at `L=40 → 64` returns `max|Δlogit| = 2.07`, reproducing the original
+finding's order of magnitude on the same code path. A null that appears only where
+predicted, alongside a large effect where predicted, is not an insensitive test.
+
+**Consequence: the artifact is bucket-aligned, not exact-length.** It emits one
+`.vmfb` per bucket ceiling and **refuses any input whose real length is below
+`k_neighbors`** — the refusal is on the real length against the clamp, *not* on the
+bucket. `L=50` in a 64-bucket is fine; `L=20` in the same bucket is not.
+
+Use the `(64, 128, 256, 512)` ladder aminx already has
+(`tiling/bucketing.py:32`), which is not a new invention here — it was reviewed and
+confirmed by the user at the ProteinEBM design-review gate
+(`260709_proteinebm-epic-backlog-dag.md` §1 Fork 6). Coverage over aminx's own
+documented length model (`scripts/ebm/bucket_boundary_check.py`, n=20000):
+
+| population | share |
+|---|---|
+| `L < 48` — refused, padding unsound | **0.01%** |
+| `48..512` — covered by the four-bucket ladder | **92.30%** |
+| `L > 512` — overflow | **7.68%** |
+| a fifth `1024` bucket would add | **+7.31%** (→ 99.6%) |
+
+The 7.68% overflow is the repo's own pre-existing "~7% proxy-length overflow
+CONCERN", not a new problem introduced here.
+
+**Why this matters more than a compile-count saving.** Exact-length was never
+merely expensive — it was *unshippable*. aminx's default path does not quantise
+length at all (`inference/bundle_builder.py:75`, `bucket_config` defaults to `None`
+and **no caller in `src/` opts in**), and the project's own length model is a
+continuous log-normal mixture over `[20, 1500]`. So "declare the list of lengths"
+had no finite answer: the PI's next protein is a new `L` and a new artifact. Four
+artifacts (~28 MB) cover 92% of that distribution; five cover 99.6%.
+
+**What was NOT tested, and must not be assumed:**
+
+- Only `proteinmpnn_v_48_020`, protein (non-ligand) path. The `v_32_*` checkpoints
+  have a threshold of **32**, and the ligand path has its own feature builder
+  (`model/ligand_features.py`) that this measurement never touched.
+- `backbone_noise=0`, `S=1`, single chain, default full-context `ar_mask`.
+- `out[1]` logits and `out[0]` scalar only; `out[2]` decoding order was not compared.
+- Multi-chain inputs, where `structure_mapping` adds a second `+inf` mask, are
+  untested — the same argument should hold but has not been measured.
+
+**B2 must land this as a real aminx test, not cite this table.** A padding-invariance
+test parameterised over lengths straddling `k_neighbors`, asserting invariance above
+and refusal below, is the gate. The measurement scripts behind the table are
+throwaway probes; the assertion belongs in the repo.
+
 **The symbolic-shape boundary (row 7), measured case by case.** This matters
 because an earlier draft of this spec claimed shape polymorphism was generally
 available and used that to retire a bucketing requirement. It is not general:
@@ -325,7 +423,13 @@ artifact to be exact-length rather than bucketed. B2 now absorbs that, and the
 open question it leaves is a product one rather than a technical one — *which*
 lengths to emit — which only Marielle and the PI's actual use can answer.
 
-B stays **extended**: exact-length emission, a NaN-safe `top_k` replacement, a
+> **CLOSED by amendment 12.** The question turned out to be technical after all,
+> and it has an answer: emit the `(64, 128, 256, 512)` bucket ladder and refuse
+> below `k_neighbors`. It was never answerable as a product question, because
+> aminx's length distribution is continuous — there was no finite list to ask for.
+
+B stays **extended**: bucket-aligned emission (amendment 12; this line read
+"exact-length emission" before it), a NaN-safe `top_k` replacement, a
 tolerance that must be justified rather than chosen, a new CI job that can actually
 run B3, and a packaging decision with four options.
 
@@ -732,7 +836,9 @@ JAX path, keep it there and use the substitute only for export — but then the
 exported artifact is no longer the same program as the library, and that must be
 stated in the artifact's provenance rather than assumed away.
 
-**B2 — a concrete entry point, at exact lengths. Do not bucket.** `score_sequence`
+**B2 — a concrete entry point, bucket-aligned, refusing below `k_neighbors`.**
+*(Heading revised by amendment 12; it previously read "at exact lengths. Do not
+bucket.")* `score_sequence`
 takes `multi_state_strategy` and `use_rolling_state` as static arguments. Pick one
 combination, name it, and export that; do not attempt the cross-product. Fix `S = 1`
 and say so.
@@ -748,32 +854,40 @@ logits by up to 5.1. No convention escapes it: the smallest logit shift measured
 0.61 and the smallest NLL shift is `1.04e-02` nats, and those come from *different*
 conventions. It saturates, so no choice of pad coordinates fixes it.
 
-So the artifact is **exact-length: one `.vmfb` per `L`, and it refuses any other
-`L`.**
+**REVISED by amendment 12.** The paragraph above holds only for `L < k_neighbors`.
+Padding was measured score-preserving at and above the clamp (`1.5e-06` at `L=48`,
+against `2.1e-01` one residue below it), so the artifact is **bucket-aligned**, not
+exact-length.
 
-- **Emit for a declared list of lengths**, chosen from what the PI will actually
-  score, not a power-of-two ladder. Each is an independent compile; measured cost is
-  **8.9 s** per artifact and ~7 MB on disk, so a handful is cheap in time and the
-  real budget question is disk.
-  **Absent an answer, emit `{17, 40, 128}`** — the three lengths B3 already sweeps,
-  so the shipped set and the verified set are the same set by construction. This is a
-  default that lets B2 start, not an answer: it is a product question, and the real
-  list should come from Marielle and the PI's actual sequences. Record in the PR
-  which list was used and whether it was the default.
-- **The entry point must reject a mismatched `L` loudly**, with an error naming the
-  artifact's `L` and the one it was handed. A silent wrong answer is the failure
-  this whole finding is about; a refusal is correct behaviour, not a limitation to
-  apologise for.
-- **State the exact-length restriction in the artifact's provenance and in the PR.**
-  Someone will otherwise assume it generalises, which is precisely the assumption
-  the measurement above kills.
+- **Emit one `.vmfb` per bucket ceiling**, using the `(64, 128, 256, 512)` ladder
+  aminx already carries at `tiling/bucketing.py:32` and that the user confirmed at
+  the ProteinEBM design-review gate. Four artifacts cover **92.3%** of the project's
+  own documented length model; a fifth at `1024` takes it to **99.6%**. Each is an
+  independent compile at a measured **8.9 s** and ~7 MB, so the whole ladder is
+  ~28 MB and under a minute.
+  **The earlier default of `{17, 40, 128}` is withdrawn** — two of those three sit
+  below `k_neighbors`, i.e. in the only regime where the artifact must refuse, and
+  none of them is a length the PI would ever score. There is no "declared list of
+  exact lengths" to obtain, because aminx's default path does not quantise length at
+  all and the length distribution is continuous over `[20, 1500]`.
+- **The entry point must refuse on the REAL length, not the bucket.** Reject any
+  input whose true residue count is below the checkpoint's `k_neighbors` (48 for
+  `v_48_*`, 32 for `v_32_*`), with an error naming both numbers and saying that
+  padding moves real residues' logits in that regime. `L=50` into the 64-bucket is
+  correct; `L=20` into the same bucket is a silent wrong answer. Note aminx's own
+  `tests/data/5awl.pdb` is `L=10` and will hit this path.
+- **Refuse `L` above the top bucket too**, rather than silently truncating.
+- **State the `k_neighbors` floor in the artifact's provenance and in the PR**, with
+  the number the artifact was built against. Someone will otherwise assume the
+  artifact is safe at any length, which is precisely the assumption the `L=47` vs
+  `L=48` measurement kills.
 
 Mask semantics still need stating (a `mask=0` residue inside a *real* structure is a
 different thing from padding), but the mask no longer has to carry a burden it
 cannot bear.
 
-**If exact-length proves too restrictive in practice, the fix is mask-aware `k` in
-aminx — deriving `k` from the masked residue count rather than the array length.
+**If the `L < k_neighbors` refusal proves too restrictive in practice, the fix is
+mask-aware `k` in aminx — deriving `k` from the masked residue count rather than the array length.
 That is its own piece of work, with its own numerical-equivalence burden against
 every existing score, and it is explicitly not in this sprint.**
 
@@ -842,6 +956,22 @@ against any single length would therefore be a coin flip on whether the gate is
 green — and a green one would be the more dangerous outcome, because it would hide
 an intermittent failure behind a passing check. Include `L=40` explicitly as a
 regression case, since it is the known-worst draw.
+
+**REVISED by amendment 12.** The sweep must now run over lengths the artifact
+actually *serves*. `L=17` and `L=40` are below `k_neighbors` and are cases the entry
+point **refuses**, so they cannot be parity cases — asserting parity on an input the
+artifact rejects is not a test of anything. Restructure the sweep as:
+
+- **Parity cases**, one per bucket the artifact ships, at a real length inside each:
+  e.g. `L=76 → 128`, `L=153 → 256`, `L=415 → 512`, and `L=53 → 64` for the narrow
+  band just above the clamp. All four are real in-repo structures (`1ubq`, `1mbn`,
+  `3pgk`, and a truncation), so no synthetic geometry is needed.
+- **Boundary regression at `L=47` vs `L=48`**, the exact point where invariance
+  breaks. This is the replacement for "include the known-worst draw": it is the only
+  pair in the whole space where a one-residue change flips the answer by five orders
+  of magnitude, so it is where a regression in the clamp logic would first show.
+- **Refusal cases**, asserting a loud error rather than a number: `L=10`
+  (`tests/data/5awl.pdb`, real) and any `L` above the top bucket.
 
 **B4 — ship it, tagged honestly.** Reverse `include-package-data = false` for the
 artifact path only. Report wheel size before and after.
@@ -1029,9 +1159,11 @@ green check substitutes for it.
 - **Shipping weights in the wheel.** The artifact carries them already.
 - **Mask-aware `k` in aminx.** Deriving `k` from the masked residue count instead of
   the padded array length is what bucketing would require. Real work, own
-  equivalence burden, not this sprint. It is the reason B2 ships exact-length.
-- **Bucketed / padded artifacts.** Falsified above; a padded residue changes a real
-  residue's score by up to 5.1 logits.
+  equivalence burden, not this sprint. It is the reason B2 refuses inputs below
+  `k_neighbors` rather than padding them (amendment 12).
+- **Artifacts serving `L < k_neighbors`.** A padded residue changes a real residue's
+  score by up to 5.1 logits *in that regime only*; at or above the clamp, padding is
+  invariant to `~2e-06` and the bucket ladder is sound (amendment 12).
 - **`average_node_features` scoring.** Reaches a different callable that sources
   backbone noise from the spec; the artifact strips noise, so this mode is not
   representable in it.
