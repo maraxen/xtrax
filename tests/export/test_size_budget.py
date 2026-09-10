@@ -1,8 +1,15 @@
 """Artifact size budgets, to catch a codegen regression that still compiles.
 
-The budgets are seeded from real measurements of the fixture below (260902,
-IREE 3.11.0, linux x86_64), with roughly 2.5x headroom so ordinary toolchain
-drift does not fail the suite:
+``SIZE_BUDGET_BYTES`` is a single flat 32 KiB ceiling applied to every target,
+not a per-target multiple of its measurement. That is deliberate -- the budget
+exists to catch an order-of-magnitude codegen blowup, not to track each
+target's byte count -- but it means the headroom is whatever the flat ceiling
+happens to leave, and it varies: roughly 2.3x for metal-spirv up to 3.1x for
+wasm32. (An earlier revision of this docstring described "roughly 2.5x
+headroom", which read as a per-target rule that was never implemented.)
+
+The measurements the ceiling was chosen against, from the fixture below
+(260902, IREE 3.11.0, linux x86_64):
 
     native           13889 B
     wasm32           10632 B
@@ -16,7 +23,7 @@ use the wider vector ISA the host CPU offers -- on the machine that measured
 this, ``native`` resolved to ``cpu = znver5`` with the full AVX-512 feature set
 while ``native-portable`` resolved to the twelve-feature v2 baseline. Note the
 ``native`` row is the original 260902 figure; the same fixture measures 13897 B
-today, which is the ordinary drift the headroom exists to absorb.
+today, which is the ordinary drift a generous flat ceiling exists to absorb.
 
 A floor is checked as well as a ceiling. An artifact that suddenly collapses to
 a few hundred bytes still "compiles" and would sail past a ceiling-only budget,

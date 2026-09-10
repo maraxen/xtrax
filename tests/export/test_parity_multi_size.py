@@ -44,11 +44,15 @@ from xtrax.tiling.strategy import Vmap
 
 INPUT_SIZES = (256, 1024, 4096)
 
-# x86-64-v2's defining feature; a native-portable artifact carrying anything
-# host-only (e.g. avx512f) alongside this would mean the wrong target was
-# built.
-_V2_FEATURES = {"sse4.2"}
-_HOST_ONLY_MARKERS = {"avx512f", "avx2", "avx"}
+# The complete x86-64-v2 feature set, as measured off a native-portable
+# artifact and as quoted verbatim in targets.py, docs/api/export.md and the
+# shipped skill reference. Assert the whole set, not a representative member:
+# an earlier revision checked only "sse4.2", which is narrower than the claim
+# those three documents make, so a codegen change that dropped, say, +crc32
+# would leave all of them stating something no test checked.
+_V2_FEATURE_STRING = "+cmov,+mmx,+popcnt,+sse,+sse2,+sse4.2,+cx16,+sahf,+cx8,+crc32,+x87,+fxsr"
+_V2_FEATURES = frozenset(f.lstrip("+") for f in _V2_FEATURE_STRING.split(","))
+_HOST_ONLY_MARKERS = {"avx512f", "avx2", "avx", "fma", "bmi2", "f16c"}
 
 
 class TinyMLP(eqx.Module):
@@ -152,16 +156,26 @@ class TestParityAcrossSizesAndTargets:
     def test_max_abs_diff_stays_in_the_ordinary_float32_range(
         self, exported_by_size, size, target_name
     ):
-        """Sanity ceiling, not a tight bound -- ordinary XLA/IREE drift is ~1e-6/1e-7.
+        """A bound that can actually fail while ``parity.passed`` still holds.
 
-        A regression that widened this by orders of magnitude (while still
-        sneaking under ``np.allclose``'s per-element rtol on a large-magnitude
-        output) would still trip this.
+        An earlier revision asserted ``< 1e-4``, which was vacuous here: with
+        ``atol=rtol=1e-5`` and this fixture's outputs (``|y| <~ 0.5``),
+        ``parity.passed`` already implies ``max|diff| <= 1e-5 + 1e-5*0.5``,
+        about ``1.05e-05`` -- two decades under the ceiling. The test could not
+        fail unless its neighbour failed first, so it established nothing.
+
+        ``1e-6`` sits above every measured value (the worst is ``1.79e-07``, on
+        native-portable at n=4096) and below what ``parity.passed`` permits, so
+        it is a real, independent tripwire: codegen drift that grew the error
+        by an order of magnitude would trip this while still passing
+        ``np.allclose``.
         """
         parity = exported_by_size[size][target_name].parity
-        assert parity.max_abs_diff < 1e-4, (
+        assert parity.max_abs_diff < 1e-6, (
             f"{target_name} @ n={size}: max|diff|={parity.max_abs_diff:.6e} "
-            f"(atol={parity.atol:g}, rtol={parity.rtol:g})"
+            f"exceeds the ordinary float32 drift band, though it still passes "
+            f"np.allclose (atol={parity.atol:g}, rtol={parity.rtol:g}). "
+            f"Investigate before widening this bound."
         )
 
 
@@ -170,10 +184,16 @@ class TestNativePortableCarriesTheV2Baseline:
 
     @pytest.mark.parametrize("size", INPUT_SIZES)
     def test_portable_artifact_declares_x86_64_v2_features(self, exported_by_size, size):
+        """Every feature in the set the docs quote, not a representative one."""
         path = exported_by_size[size][NATIVE_PORTABLE.name].path
         features = _cpu_features(path)
-        for expected in _V2_FEATURES:
-            assert f"+{expected}" in features, f"expected +{expected} in {features!r}"
+        present = frozenset(f.lstrip("+") for f in features.split(",") if f.startswith("+"))
+        missing = _V2_FEATURES - present
+        assert not missing, (
+            f"native-portable is missing {sorted(missing)} from the x86-64-v2 set "
+            f"that targets.py, docs/api/export.md and the skill reference all quote "
+            f"as an established property. Got: {features!r}"
+        )
 
     @pytest.mark.parametrize("size", INPUT_SIZES)
     def test_portable_artifact_excludes_host_only_features(self, exported_by_size, size):

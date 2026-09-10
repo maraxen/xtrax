@@ -152,6 +152,19 @@ NATIVE = Target(
 #     Silvermont in 2013. The honest claim is "any x86-64 CPU from roughly 2013
 #     onward", not "any x86-64 CPU".
 #
+# KNOWN LIMITATION -- the guarantee is conditional on the COMPILING host being
+# x86-64. Because no triple is passed (see below), IREE takes the host's own
+# triple; on an arm64 host (Apple Silicon, an arm64 runner) LLVM does not
+# recognise `x86-64-v2` as a CPU for that subtarget and warns-and-ignores it,
+# so the artifact would quietly fall back to host-tuned codegen -- precisely
+# the failure this target exists to prevent, and silently. The measurements
+# and the byte-identical-triple result below were all taken on x86-64.
+# `tests/export/test_parity_multi_size.py` asserts the resulting artifact's
+# actual `cpu_features`, so on an arm64 host that check fails loudly rather
+# than passing over a mis-built artifact -- but the failure would read as a
+# test bug rather than an unsupported build host, so it is written down here.
+# Building native-portable on a non-x86-64 host is unsupported and untested.
+#
 # Only the CPU flag is passed, deliberately not a target triple. Measured:
 # adding `--iree-llvmcpu-target-triple=x86_64-unknown-linux-gnu` produces a
 # byte-identical artifact (same md5) to omitting it, because IREE rewrites the

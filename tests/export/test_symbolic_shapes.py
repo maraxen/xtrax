@@ -29,6 +29,13 @@ A2, for the fuller boundary table: rank-3 batched matmul and gather->reshape
 also fail the same way). Both halves of this file are the point; neither one
 alone would establish the boundary.
 
+The two headline cases above differ in **two** variables, not one -- where the
+symbolic dimension lives, as well as whether a reshape is present (see the note
+below). So a third case, ``test_reshape_free_at_the_negative_case_s_own_shape``,
+holds the shape fixed at the negative's and removes only the reshape. That
+control is what makes the reshape the *identified* cause rather than a
+plausible one; without it this file would claim a boundary it had not isolated.
+
 Note on where the symbolic dimension has to live to trigger the negative case:
 ``export_pipeline`` composes ``fn`` under ``jax.vmap`` over the plan's batch
 axis (see ``xtrax.tiling.dispatch``), which strips that axis's dimension out
@@ -136,6 +143,51 @@ class TestSymbolicShapePositive:
             actual = np.asarray(run_native_vmfb(artifact_path, np.asarray(other_xs)))
             expected = np.asarray(_reference_fn((other_xs,)))
             np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=1e-5)
+
+    def test_reshape_free_at_the_negative_case_s_own_shape(self):
+        """The control: the negative fixture's shape, minus the reshape.
+
+        Without this, the positive and negative cases above differ in *two*
+        variables, not one -- the positive puts the symbolic dimension on the
+        vmap batch axis (which ``export_pipeline`` strips before ``fn`` sees
+        it, so ``fn`` traces over a fully concrete ``(4,)``), while the
+        negative gives the batch axis a concrete cardinality and puts the
+        symbolic dimension inside each per-element input. A pair that differs
+        in two variables cannot attribute the failure to either one, so the
+        module's "reshape is the boundary" claim would rest on nothing.
+
+        This case holds the shape fixed at the negative's and removes only the
+        reshape. It passing is what makes the reshape the identified cause.
+        """
+        pytest.importorskip("iree.compiler")
+        pytest.importorskip("iree.runtime")
+
+        def summing_fn(x: jax.Array) -> jax.Array:
+            # Same (n, 4) per-element input as the negative case, but reduces
+            # over the symbolic axis instead of reshaping on it.
+            return jnp.sum(x, axis=0)
+
+        def summing_reference_fn(inputs):
+            (arr,) = inputs
+            return jnp.stack([summing_fn(arr[i]) for i in range(arr.shape[0])])
+
+        n, four = jax.export.symbolic_shape("n, 4")
+        abstract_inputs = (jax.ShapeDtypeStruct((8, n, four), jnp.float32),)
+        xs = jnp.asarray(np.random.default_rng(2).normal(size=(8, 5, 4)), dtype=jnp.float32)
+
+        results = export_pipeline(
+            summing_fn,
+            _vmap_plan("batch", 8),
+            abstract_inputs,
+            (xs,),
+            targets=(NATIVE,),
+            reference_fn=summing_reference_fn,
+        )
+
+        result = results["native"]
+        assert result.verified is True
+        assert result.parity is not None
+        assert result.parity.passed is True
 
 
 class TestSymbolicShapeNegative:
