@@ -104,8 +104,18 @@ that trade explicit rather than quietly picking a side.
 
 ### Measured, not inferred
 
-Run first-hand against the pinned toolchain (jax 0.11.1, IREE 3.11) in this
-worktree. Nothing here is quoted from a docstring or inferred from reading source.
+Run first-hand. Nothing here is quoted from a docstring or inferred from reading
+source.
+
+**Toolchain provenance, corrected.** An earlier revision said all of this ran
+"against the pinned toolchain (jax 0.11.1, IREE 3.11) in this worktree". That is
+true of the xtrax-side rows but **false of every aminx-side row (2, 3, 3b–3f)**,
+which ran in aminx's own venv at **jax 0.10.2** — aminx's lock is capped there by
+the old xtrax pin. IREE is 3.11 throughout. The discrepancy is real but narrow:
+blocker 1's emission was re-checked in both environments and is unchanged (the
+`chlo.top_k` composite appears at 0.10.2 and 0.11.1 alike; 0.11.1 only adds
+`is_stable = true` to its `composite_attributes`). It matters anyway, because B0's
+repin **frees aminx's jax ceiling** — see G3 in B0.
 
 | # | Question | Result |
 |---|---|---|
@@ -118,7 +128,7 @@ worktree. Nothing here is quoted from a docstring or inferred from reading sourc
 | 3e | Does "exactly two" survive a **shape change**? | **Yes** — at `L=17`, `L=40` and `L=128` the export is identical in kind: zero `chlo.top_k`, zero RNG ops, zero composites, and all three compile clean. No third blocker is hiding behind `L=40` |
 | 3f | Does the parity margin survive a shape change? | **No — and this is the important one.** `L=17` and `L=128` *pass* the default tolerance; `L=40` *fails* it. The margin is thin and data-dependent, not a systematic gap |
 | 4 | Is there a legalizable substitute for `top_k`? | **Yes** — `argsort`+`take_along_axis`, `sort_key_val`, and `sort` all compile in isolation; the argsort form is the one used in the working prototype above |
-| 5 | Is a *portable* native artifact executable? | **Yes** — `target-cpu=x86-64-v2` (12296 B) and `generic` (12248 B) both execute correctly |
+| 5 | Is a *portable* native artifact executable? | **Yes, at real size** — the 7,027,777 B `L=17` aminx artifact carries `cpu = "x86-64-v2"`, `cpu_features = "+cmov,+mmx,+popcnt,+sse,+sse2,+sse4.2,+cx16,+sahf,+cx8,+crc32,+x87,+fxsr"`, `target_triple = "x86_64-unknown-unknown-eabi-elf"` and **executed correctly** (`max|diff| 7.391e-06`, indices exact). The toy fixtures (12296 B / 12248 B) agree but are no longer the evidence |
 | 6 | Can any wasm triple avoid the emsdk runtime? | **No.** All five compile, but IREE **silently overrides** `--iree-llvmcpu-link-embedded=true`, always emitting `system-wasm-wasm_32` |
 | 7 | Do symbolic shapes work in general? | **Only for reshape-free programs.** See the boundary below |
 
@@ -157,6 +167,58 @@ Note also that artifact size is **not** monotonic in `L` — `L=40` produces the
 largest of the three. Size is dominated by the weight constants, with kernel
 specialisation varying non-monotonically on top. Do not use artifact size as a
 proxy for input size in any budget assertion.
+
+### The finding that changes Phase B: padding is not score-preserving
+
+**This falsifies B2 as it was written, and it is the most important thing in this
+document.** The previous revision told the implementer to "specify the bucket set
+and the masking semantics explicitly: a padded residue must not change the score of
+a real one, and a test must show that." **No masking convention satisfies that**,
+because the problem is upstream of masking.
+
+`model/features.py:183`:
+
+```python
+k = min(self.k_neighbors, structure_coordinates.shape[0])
+```
+
+`k` is derived from the **padded array length**, not from the masked residue count.
+Pad an `L=17` structure into an `L=40` bucket and the k-NN graph goes from 17
+neighbours to 40. `distances_masked` sets masked entries to `jnp.inf`, so `top_k`
+fills the 23 surplus slots with tied `-inf` picks whose features are then aggregated
+into the graph. The real residues' logits move as a result.
+
+Measured, `L=17` padded into a 40-bucket, comparing real residues against the
+unpadded call:
+
+| padding convention | logits `max|diff|` | NLL diff (nats) |
+|---|---|---|
+| control (identical call) | 0.0 | 0.0 |
+| `mask=0`, coords 0, resi 0, chain 0 | 5.117 | 0.738 |
+| `mask=0`, coords 1e3, resi continues, chain 0 | 0.608 | 0.0229 |
+| `mask=0`, coords 1e3, resi continues, chain 1 | 1.142 | 0.0104 |
+| `mask=0`, coords **1e6**, resi continues, chain 1 | 1.142 | 0.0104 |
+| `mask=0`, coords replicate last real | 5.041 | 0.477 |
+| `mask=1` on padding, coords 1e3 | 4.627 | 1.312 |
+
+`1e3` and `1e6` giving **identical** results proves this is not a "move the padding
+far enough away" problem — it saturates, and the error does not go to zero.
+
+**Put the scale next to the sprint's other numbers.** This document spends a whole
+section deciding a `1.6e-05` parity tolerance. The *best available* padding
+convention moves the NLL by `2.3e-02` nats — three orders of magnitude larger, and
+the same order as the 0.036-nat self-leak that `scoring/score.py:155-166` documents
+as a measured, serious defect (t = 41.3).
+
+**Every measurement in this document is exact-length.** L=17, L=40 and L=128 were
+each their own artifact at their own `L`. Bucketing was never tested, and it does
+not work. A bucketed artifact would return different numbers than aminx for every
+sequence shorter than its bucket — shipped to a PI, that is a silent wrong answer,
+which is worse than the crash this sprint set out to prevent.
+
+**Consequence: the sprint ships exact-length artifacts.** See B2, rewritten. Fixing
+mask-aware `k` in aminx is the alternative and it is a genuine piece of work with
+its own numerical-equivalence burden — it is **not** in this sprint.
 
 **The symbolic-shape boundary (row 7), measured case by case.** This matters
 because an earlier draft of this spec claimed shape polymorphism was generally
@@ -246,9 +308,20 @@ mechanical, and local to files Phase A already opens.
 Phase C is **not scored against this sprint**; it is listed above only for
 continuity with the earlier revision. The sprint's total is A + B = 8.
 
-The residual risk in B is concentrated in the repin (B0), which crosses every
-xtrax change since a sha that predates two whole subpackages, and which nothing
-has yet sized.
+**The residual risk in B is no longer the repin.** An earlier revision said it was,
+"which nothing has yet sized" — it has now been sized and it is roughly a half-hour
+job (zero removed symbols, 53/54 imported names resolving, five additive
+signature changes, no dependency conflict; details in B0).
+
+The real risk was found by the same pass that sized it: **padding is not
+score-preserving**, which falsified B2's central acceptance criterion and forced the
+artifact to be exact-length rather than bucketed. B2 now absorbs that, and the
+open question it leaves is a product one rather than a technical one — *which*
+lengths to emit — which only Marielle and the PI's actual use can answer.
+
+B stays **extended**: exact-length emission, a NaN-safe `top_k` replacement, a
+tolerance that must be justified rather than chosen, a new CI job that can actually
+run B3, and a packaging decision with four options.
 
 **Recommended cut: A + B.** It ends with an artifact the PI can run. Phase C is
 excluded and re-filed as research for one reason: its cost cannot be bounded from
@@ -352,7 +425,48 @@ name the ISA level and stop.
 oracle, and `tests/export/test_size_budget.py` records its measured size. Add a
 sibling.
 
-**A4 — split the `export` extra so a consumer can install the runtime alone.**
+**A2 — pin the symbolic-shape boundary; do not claim general support.** Symbolic
+shapes work through `export_pipeline` — verified: it returns `verified=True` with
+`parity` reporting `max|diff| = 1.192e-07`, and the same artifact re-executes at
+n=3/8/40. But that holds **only for reshape-free, `top_k`-free programs**, per the
+boundary table above.
+
+So A2 is two tests, not one: a **positive** test that a reshape-free symbolic
+export round-trips, and a **negative** test that a program containing a dynamic
+reshape fails with a clear diagnostic rather than silently producing something
+unverified. Document the boundary next to the target. A single passing positive
+test would certify a capability that does not hold for the consumer this exists
+for — that is the failure mode this whole sprint is about.
+
+**A3 — parity on a per-element output, at more than one input.** `verify_native_parity`
+(`src/xtrax/export/parity.py:107`) defaults to `atol=rtol=1e-5`, and `np.allclose`
+computes `atol + rtol·|b|`. On a **reduced scalar** that is far weaker than "1e-5"
+reads: at L=1024 the observed diff was 3.0e-5 against a value of 179.6, passing
+because rtol allowed 1.8e-3. Add a test whose oracle output is an **array, not a
+scalar sum**, verified at three input sizes.
+
+**A4 — budgets, target list, docs.** Adding a fifth target touches more than one
+file: `tests/export/test_targets.py:24` asserts `ALL_TARGETS` equals an exact
+4-tuple, and `tests/export/test_size_budget.py` parametrises over
+`tuple(ALL_TARGETS)`, so a new `EXECUTED` target adds a full compile-and-execute
+round to that module. Update both. **The size instruction in the previous revision was inert**: it said
+to record "the measured size (12296 B for the spike fixture)", but
+`tests/export/test_size_budget.py` holds a flat `32 * 1024` ceiling per target and a
+shared `1024` B floor — there is nowhere for a specific byte count to go, and the
+spike fixture is not that module's `_fixture_model`. The real edit is a
+`"native-portable": 32 * 1024` entry in `SIZE_BUDGET_BYTES`, plus the measured
+fixture size added to the docstring's table beside the other four.
+
+**Also fix `CHANGELOG.md` while in the docs pass.** Its 0.4.0a8 entry says `NATIVE`
+and `WASM32` are both `EXECUTED`; `src/xtrax/export/targets.py:131-134` registers
+`WASM32` at `CODEGEN_ONLY`. The code is right and the changelog is wrong. Left
+alone, a reader of the changelog concludes wasm already executes — which is the
+premise this whole sprint exists to correct. Update `docs/api/export.md` and
+`agent_assets/skills/using-xtrax/references/` — that tree ships in the wheel and its
+only gate checks a version marker, not prose, so stale text there reaches consumers
+silently.
+
+**A5 — split the `export` extra so a consumer can install the runtime alone.**
 This task exists because B0 currently asks for something that does not exist. B0
 says to "add the `export` extra" and then, two sentences later, to "depend on
 `iree-base-runtime`, not `iree-base-compiler`". Those instructions contradict each
@@ -384,35 +498,12 @@ Use the self-referential alias form already established in this repo
 restated list is how sprint 260909 silently dropped `tyro` and four version floors.
 **Name both extras explicitly in B0** so the aminx side cannot guess wrong.
 
-**A2 — pin the symbolic-shape boundary; do not claim general support.** Symbolic
-shapes work through `export_pipeline` — verified: it returns `verified=True` with
-`parity` reporting `max|diff| = 1.192e-07`, and the same artifact re-executes at
-n=3/8/40. But that holds **only for reshape-free, `top_k`-free programs**, per the
-boundary table above.
-
-So A2 is two tests, not one: a **positive** test that a reshape-free symbolic
-export round-trips, and a **negative** test that a program containing a dynamic
-reshape fails with a clear diagnostic rather than silently producing something
-unverified. Document the boundary next to the target. A single passing positive
-test would certify a capability that does not hold for the consumer this exists
-for — that is the failure mode this whole sprint is about.
-
-**A3 — parity on a per-element output, at more than one input.** `verify_native_parity`
-(`src/xtrax/export/parity.py:107`) defaults to `atol=rtol=1e-5`, and `np.allclose`
-computes `atol + rtol·|b|`. On a **reduced scalar** that is far weaker than "1e-5"
-reads: at L=1024 the observed diff was 3.0e-5 against a value of 179.6, passing
-because rtol allowed 1.8e-3. Add a test whose oracle output is an **array, not a
-scalar sum**, verified at three input sizes.
-
-**A4 — budgets, target list, docs.** Adding a fifth target touches more than one
-file: `tests/export/test_targets.py:24` asserts `ALL_TARGETS` equals an exact
-4-tuple, and `tests/export/test_size_budget.py` parametrises over
-`tuple(ALL_TARGETS)`, so a new `EXECUTED` target adds a full compile-and-execute
-round to that module. Update both, with the measured size (12296 B for the spike
-fixture). Update `docs/api/export.md` and
-`agent_assets/skills/using-xtrax/references/` — that tree ships in the wheel and its
-only gate checks a version marker, not prose, so stale text there reaches consumers
-silently.
+If A5 slips, B0's fallback is to depend on **plain `xtrax` (no extra) plus a direct
+`iree-base-runtime`** — `xtrax.export.compile.run_native_vmfb` needs only
+`iree.runtime` and xtrax's toolchain imports are lazy, so that combination works
+today without any xtrax change. A5 is the better shape because it makes the runtime
+set discoverable and versioned in one place; the fallback exists so B0 is never
+blocked on it.
 
 **Gate for Phase A:**
 
@@ -429,18 +520,48 @@ against `origin/main` first, and measured sizes pasted into the PR body.
 
 Branch `feat/export-scoring-artifact`, aminx. Serial after Phase A.
 
-**B0 — repin xtrax, and size the breakage before committing to the rest.**
-`pyproject.toml:26` pins a sha with no `export` and no `telemetry`. Move to a sha
-containing Phase A and add the `export` extra.
+**B0 — repin xtrax.** `pyproject.toml:26` pins a sha with no `export` and no
+`telemetry`. Move to a sha containing Phase A and depend on
+**`xtrax[export-runtime]`** (the runtime-only extra added in A5), *not* on
+`xtrax[export]`.
 
-**Depend on `iree-base-runtime`, not `iree-base-compiler`.** Measured: the compiler
-is **349 MB installed** (83 MB wheel) against ~7 MB for the runtime. Executing an
-artifact needs only the runtime; the compiler is a build-time tool. Putting the
-whole `export` extra into aminx's runtime dependencies would add a third of a
-gigabyte to every `pip install aminx`. Split it.
+**The previous revision's instruction here was unimplementable.** It said "add the
+`export` extra" and then, four lines later, "depend on `iree-base-runtime`, not
+`iree-base-compiler` … Split it." You cannot take half an extra, and no runtime-only
+extra existed. Hence A5. The size argument behind it stands and is why A5 is worth
+doing: the compiler is **349 MB installed** (83 MB wheel) against ~7 MB for the
+runtime, and executing an artifact needs only the runtime.
 
-If the repin's breakage is larger than a day, **stop and report** rather than
-absorbing it silently — that is a separate piece of work and it should be visible.
+**The repin is NOT the sprint's largest risk, contrary to the previous revision.**
+It has now been sized rather than guessed at. The sha range is 34 commits / 204
+files / +29,605 −4,386, but restricted to what aminx actually imports:
+
+- **zero** removed symbols, **zero** missing modules, **53 of 54** imported names
+  resolve;
+- **5** signature changes, **all additive with defaults** — kw-only `ledger` /
+  `run_id` / `context` on `Engine.fit` / `fit_sync` / `eval`, a defaulted
+  `materialize: bool` field on `AxisBoundary`, and a kw-only `export_safe` on
+  `validate_plan_topology`;
+- no dependency conflict — aminx is already on `huggingface-hub 1.18.0`, inside
+  xtrax's `>=1,<2`.
+
+**Treat B0 as roughly a half-hour job.** The contingency the previous revision
+attached to it ("if the repin's breakage is larger than a day, stop and report") was
+pointed at the wrong hazard. The sprint's real risk is the padding finding above,
+which B2 now absorbs.
+
+**Pin jax explicitly in aminx as part of this repin.** aminx sits at jax 0.10.2 only
+because the *old* xtrax capped it at `<0.11`; current xtrax allows `<0.12`. The
+moment that cap lifts, any `uv lock --upgrade` floats aminx to 0.11.x and changes
+the StableHLO emitter that produced every artifact and every parity number in this
+document. Either pin jax in aminx, or re-baseline B3 after the repin — do not let
+it float silently.
+
+**One expected `ty` failure is pre-existing and must not be read as repin
+fallout.** `src/aminx/host/plan.py:28` imports `DedupSpec` from `xtrax.tiling` inside
+a `TYPE_CHECKING` block; `xtrax/tiling/__init__.py` has never exported it (not at
+the pinned sha, not at HEAD), and aminx's own `pyproject.toml:162` bans the real
+path `xtrax.tiling.dedup`. It is type-check-only and already broken today.
 
 **B1a — port the two known fixes properly.** A throwaway prototype has already
 proved the shape of this: with `top_k` substituted and the noise call bypassed,
@@ -454,10 +575,34 @@ JAX. B1a is turning that into real code, not rediscovering it.
   must live in aminx and must not degrade the JAX path.
 - It ran at **one shape only** (`L=40`, `S=1`). Nothing is known about other
   lengths or multi-structure inputs.
-- It **removed noise entirely**, which is a semantic change if any scoring caller
-  ever passes `backbone_noise > 0`. Establish whether that is reachable in
-  scoring; if it is, the export path needs a documented precondition
-  (`backbone_noise == 0`) enforced at the boundary rather than silently assumed.
+- It **removed noise entirely**, which is a semantic change. The previous revision
+  left "is `backbone_noise > 0` reachable from scoring?" as an open question for
+  B1a. **It is answered: yes, by four routes**, and the answer changes the remedy.
+
+  - `aminx.score(..., backbone_noise=...)` — public, re-exported at
+    `aminx/__init__.py:24`.
+  - `score_sequence(..., backbone_noise=...)` — a **traced** argument, not in
+    `static_argnames` (`scoring/score.py:114-122`).
+  - CLI `--backbone-noise` (`cli.py:470`, `cli.py:1042`) — defaults to `"0.0"` but
+    accepts a **comma-separated list**.
+  - `host/runner.py:273 _make_averaged_score_fn`, selected when
+    `spec.average_node_features` (`runner.py:501-506`) — builds one bundle per noise
+    level and averages.
+
+  **A documented precondition on `score_sequence` is not sufficient**, for two
+  independent reasons. First, the noise-averaging path is a *different callable*
+  (`score_sequence_averaged`) that `del`s `backbone_noise` and sources noise from the
+  spec, so a precondition on `score_sequence` says nothing about the mode a user
+  reaches with `--average-node-features`. Second, `bundle_builder.py:300` does
+  `backbone_noise=jnp.array(backbone_noise)`, making the predicate always a tracer —
+  so an export that accepted noise as an input would compile a noise-stripped graph
+  that **silently accepts and ignores** a nonzero argument. That is the exact
+  false-green class this sprint exists to remove.
+
+  **Therefore: `average_node_features` scoring is out of scope for the artifact**,
+  and the artifact's entry point must not accept a `backbone_noise` parameter at all
+  — omitting it is honest, whereas accepting and ignoring it is not. Say both in the
+  artifact's provenance.
 
 Two traps, both hit while producing this spec — the second cost a wrong
 conclusion that survived into a draft:
@@ -470,7 +615,27 @@ conclusion that survived into a draft:
   attempt `chlo.top_k` stayed at 2 while the run looked entirely successful; only
   counting caught it. It went to 0 on the second.
 
-**B1b — replace `top_k`, and prove the replacement identical.** `model/features.py:48`
+**B1b — replace `top_k`, and prove the replacement identical. The failure mode is
+NaN, not ties.** The previous revision asked for an index-equality test "including
+deliberate ties". That test has been run, and it passes everywhere: `argsort` +
+`take_along_axis` matches `jax.lax.top_k` on all-equal rows, half-tied-at-max,
+integer duplicates, signed zeros, and an aminx-like masked-sentinel row. Ties are
+**not** where this breaks.
+
+NaN is:
+
+```
+with-NaN  idx top_k  : [0 9 8 7 6 5 4 3]     <- NaN sorts FIRST
+with-NaN  idx argsort: [9 8 7 6 5 4 3 2]     <- NaN sorts LAST
+```
+
+A PDB with missing backbone atoms yields NaN coordinates, hence NaN distances, hence
+a **silently different neighbour set** — with no error raised. A tie-only
+equivalence test goes green and misses it entirely. So: put NaN rows in the
+equivalence test, **and** either assert NaN-free coordinates at the export boundary
+or define the NaN convention explicitly. Keep the tie cases as regression coverage.
+
+ `model/features.py:48`
 is `return jax.lax.top_k(x, k)`. Replace it with an IREE-legalizable formulation;
 `argsort` + `take_along_axis` and `sort_key_val` both compile (measured above).
 
@@ -486,15 +651,44 @@ JAX path, keep it there and use the substitute only for export — but then the
 exported artifact is no longer the same program as the library, and that must be
 stated in the artifact's provenance rather than assumed away.
 
-**B2 — a concrete entry point, and which one.** `score_sequence` takes
-`multi_state_strategy` and `use_rolling_state` as static arguments. Pick one
-combination, name it, and export that; do not attempt the cross-product.
+**B2 — a concrete entry point, at exact lengths. Do not bucket.** `score_sequence`
+takes `multi_state_strategy` and `use_rolling_state` as static arguments. Pick one
+combination, name it, and export that; do not attempt the cross-product. Fix `S = 1`
+and say so.
 
-Shapes are **concrete**, per the boundary in A2 — symbolic shapes are unavailable
-to this function. That means choosing a fixed `L` (and deciding whether `S` is 1 or
-fixed), and it means padding and masking at the call site. Specify the bucket set
-and the masking semantics explicitly: a padded residue must not change the score of
-a real one, and a test must show that.
+Shapes are **concrete**, per the boundary in A2 — symbolic shapes are unavailable to
+this function.
+
+**The previous revision said to bucket-and-pad, and required that "a padded residue
+must not change the score of a real one". That requirement cannot be met** — see
+"padding is not score-preserving" above. `k` comes from the padded array length
+(`features.py:183`), so padding enlarges the k-NN graph and moves real residues'
+logits by up to 5.1 (0.61 in the best convention, 0.023 nats of NLL). It saturates,
+so no choice of pad coordinates fixes it.
+
+So the artifact is **exact-length: one `.vmfb` per `L`, and it refuses any other
+`L`.**
+
+- **Emit for a declared list of lengths**, chosen from what the PI will actually
+  score, not a power-of-two ladder. Each is an independent compile; measured cost is
+  **8.9 s** per artifact and ~7 MB on disk, so a handful is cheap in time and the
+  real budget question is disk.
+- **The entry point must reject a mismatched `L` loudly**, with an error naming the
+  artifact's `L` and the one it was handed. A silent wrong answer is the failure
+  this whole finding is about; a refusal is correct behaviour, not a limitation to
+  apologise for.
+- **State the exact-length restriction in the artifact's provenance and in the PR.**
+  Someone will otherwise assume it generalises, which is precisely the assumption
+  the measurement above kills.
+
+Mask semantics still need stating (a `mask=0` residue inside a *real* structure is a
+different thing from padding), but the mask no longer has to carry a burden it
+cannot bear.
+
+**If exact-length proves too restrictive in practice, the fix is mask-aware `k` in
+aminx — deriving `k` from the masked residue count rather than the array length.
+That is its own piece of work, with its own numerical-equivalence burden against
+every existing score, and it is explicitly not in this sprint.**
 
 **B3 — parity against JAX on a real checkpoint.** Not a mock. The existing
 `tests/export/test_jax_export_smoke.py` uses a `MockModel` returning zero-filled
@@ -514,11 +708,36 @@ of magnitude throughout, consistent with ordinary float32 accumulation differenc
 between XLA and IREE rather than with a defect. `np.allclose`
 computes `atol + rtol·|b|`, so the failures are concentrated on small-magnitude
 logits where the effective tolerance collapses toward `atol`. Do **not** simply
-widen `rtol` until it passes. Either establish an absolute tolerance appropriate
-to the logits' range and say why, or show the divergence is smaller than the
-model's own run-to-run variation. Record the chosen number and its reasoning in
+widen `rtol` until it passes.
+
+**Establish an absolute tolerance appropriate to the logits' range and say why.
+That is the only route — the alternative the previous revision offered is
+impossible.** It suggested you could instead "show the divergence is smaller than
+the model's own run-to-run variation". That variation is **exactly zero**, measured
+both ways at `L=40` on the real checkpoint: two calls with the same key are
+bit-identical, and six *different* keys are also bit-identical on `out[0]` and
+`out[1]` (only `out[2]`, the decoding order, changes). This is by design —
+`scoring/score.py:155-171` replaced the order-dependent AR mask precisely to make
+scoring order-free and key-invariant at `backbone_noise=0`. Any nonzero divergence
+exceeds zero, so that criterion could never be satisfied by anything. It is deleted
+rather than left as a tempting escape hatch. Record the chosen number and its reasoning in
 the artifact's provenance — a tolerance picked to make a test green is the same
 false green in a different costume.
+
+**B3 needs a CI job that actually runs it, and today none exists.** This is not a
+detail — the document names B3 as the sprint's end-to-end evidence and says no other
+green check substitutes for it, then never asks for anywhere to run it. aminx's
+`.github/workflows/ci.yml:47` installs `--extra cpu --extra dev --extra tests`, with
+**no IREE at all**, and runs `pytest -n auto -m "$MARKER"` where PRs use
+`MARKER="not slow and not parity_heavy and not parity_audit"`. So a B3 test guarded
+by `importorskip("iree.runtime")` **skips green**, and one marked `slow` is
+**deselected green**, on every PR. Either way the sprint's central claim would be
+gated by a check that never executes.
+
+Add a dedicated aminx CI job that installs the export runtime and runs B3 unmarked
+and unskipped, failing on a skip. Cost is not the obstacle: the real compile is
+**8.9 s** for the 13.8 MB MLIR, so the whole three-length sweep is a sub-two-minute
+job.
 
 **Sweep at least three sequence lengths, and treat that as load-bearing rather
 than as thoroughness.** The measured sweep above shows `L=40` failing the default
@@ -548,8 +767,32 @@ be satisfied by a build that silently used the wrong target.
 
 **The wheel tag is not optional.** An `embedded-elf-x86_64` artifact inside a
 `py3-none-any` wheel is a wheel that installs cleanly on macOS and then fails at
-runtime. Either build a platform-tagged wheel, or ship the artifact as an optional
-download and keep the wheel pure — decide, and say which in the PR.
+runtime. The previous revision framed this as a binary; there are **four** options,
+and the two it named are not the strongest.
+
+1. **Platform-tagged wheel.** Achievable, but not by default and not obviously:
+   aminx has no `setup.py`/`setup.cfg`, only declarative setuptools, so bare
+   `uv build` always emits `py3-none-any`. Measured on a replica of aminx's build
+   config, the incantation is
+   `uv build --wheel -C--build-option=--plat-name=manylinux_2_28_x86_64`. Note also
+   that a bare `linux_x86_64` tag is **rejected by PyPI** — it must be a
+   `manylinux_*` tag, which then asserts a glibc floor the `embedded-elf-x86_64`
+   artifact does not actually have.
+2. **Optional download**, wheel stays pure.
+3. **A separate platform-tagged companion distribution** (`aminx-artifact-linux-x86_64`)
+   that the pure `aminx` wheel depends on under an environment marker — the
+   `jaxlib` / `nvidia-*` pattern. `pip install aminx` then stays correct on macOS by
+   simply not resolving the artifact there, rather than installing something
+   unloadable.
+4. **Ship the portable `.mlir` and compile to `.vmfb` on first use, cached.** MLIR is
+   architecture-neutral, which sidesteps the tag question entirely. The price is an
+   `iree-base-compiler` dependency (349 MB, already priced above) and a one-time
+   **8.9 s** compile, both measured.
+
+**Recommended: (3).** It is the only one that stays correct if the macOS question in
+Decision 1 is later answered yes, and it does not put a third of a gigabyte into
+every install the way (4) does. Decide explicitly and say which in the PR — and note
+that whichever is chosen, the gate below asserts it rather than trusting the prose.
 
 Add a CLI path that runs inference through the artifact instead of JAX, plus a test
 that the two agree. Do **not** ship weights in the wheel: the artifact already
@@ -661,6 +904,14 @@ green check substitutes for it.
   and warns safetensors is poorly aligned. Irrelevant while weights are constants;
   it becomes relevant only if artifacts-per-checkpoint becomes a problem.
 - **Shipping weights in the wheel.** The artifact carries them already.
+- **Mask-aware `k` in aminx.** Deriving `k` from the masked residue count instead of
+  the padded array length is what bucketing would require. Real work, own
+  equivalence burden, not this sprint. It is the reason B2 ships exact-length.
+- **Bucketed / padded artifacts.** Falsified above; a padded residue changes a real
+  residue's score by up to 5.1 logits.
+- **`average_node_features` scoring.** Reaches a different callable that sources
+  backbone noise from the spec; the artifact strips noise, so this mode is not
+  representable in it.
 - **`wasm32-unknown-unknown` without Emscripten.** IREE issue #8327, open since 2022.
 - **macOS or Windows artifacts.** Decision 1 is answered Linux x86-64, so these are
   out. Neither is executable by anything this repo runs, so neither could be
