@@ -288,8 +288,9 @@ measurement that this spec names but does not fund.
 
 **If M1 or M2 fails, R2″ is cancelled and the spec degrades to R1 alone.** Tasks 4 through 8
 are cancelled with it, so the surviving acceptance criteria are exactly those of the three
-Task-0-independent tasks: **AC-5, AC-5a, AC-5b, AC-5c** (Task 1), **AC-7** (Task 3), and
-**AC-8** (Task 2). Nothing else survives. In particular AC-11 does not: it mandates docs
+Task-0-independent tasks: **AC-5, AC-5a, AC-5b, AC-5c, AC-5d** (Task 1), **AC-7** (Task 3),
+and **AC-8** (Task 2). Nothing else survives. AC-6b does not: it constrains the validator
+wiring Task 6 lands, which is cancelled with the rest. In particular AC-11 does not: it mandates docs
 saying `vulkan-spirv` is checked for structural conformance, which would be false in the
 branch where the validator was never built. That degradation is a planned outcome, not a
 failure of the spec.
@@ -322,7 +323,10 @@ The **fields** do need to change, and this is the one part of R2′ that R2″ k
 `SpirvValidationResult` carries `adapter_type`, `backend`, and `device_name`
 (`src/xtrax/export/spirv.py:89-93`), shaped for a wgpu adapter that neither route
 constructs. Populating `device_name="llvmpipe"` would be false and `device_name="N/A"` would
-be noise. They are replaced by `validator` and `validator_version`.
+be noise. They are replaced by `validator` and `validator_version`. A third field, `module_count`, is
+added in the same change: `valid=False` alone cannot distinguish "a module was rejected" from
+"there was no module to validate", and AC-4's `claim` must not report the first sentence for
+the second state — which AC-3 makes the *default* state on the fake path.
 
 This is a public-API break — the class is in `__all__` (`src/xtrax/export/spirv.py:21-27`) —
 and **no deterministic gate observes it**, measured. `audit-added-types-diff` collects only
@@ -381,15 +385,26 @@ which invites the opposite misreading — is met with a mechanism instead of a c
 `ExportResult` gains a **`claim` property**, derived from `verification_level`, `verified`,
 and `spirv_validation`, returning one sentence stating exactly what was established. A
 property rather than a field, so no constructor signature changes and no existing call site
-breaks. The five claims:
+breaks. The six claims:
 
 | level | `verified` | `spirv_validation` | `claim` |
 |---|---|---|---|
 | `EXECUTED` | True | — | "executed against an independent oracle; numerics matched" |
 | `EXECUTED` | False | — | "executed against an independent oracle; numerics did not match" |
 | `CODEGEN_ONLY` | False | `valid=True` | "compiled; the SPIR-V is structurally valid; not executed on any device" |
-| `CODEGEN_ONLY` | False | `valid=False` | "compiled; the SPIR-V was rejected by the structural validator" |
+| `CODEGEN_ONLY` | False | `valid=False`, `module_count > 0` | "compiled; the SPIR-V was rejected by the structural validator" |
+| `CODEGEN_ONLY` | False | `valid=False`, `module_count == 0` | "compiled; no SPIR-V module was extracted, so nothing was validated" |
 | `CODEGEN_ONLY` | False | None | "compiled only; nothing further was established" |
+
+**The last two rows must not be collapsed, and `module_count` is why they can be told apart.**
+AC-3 makes an empty extraction `valid=False`, so keying the rejection sentence on `valid=False`
+alone reports *"the SPIR-V was rejected by the structural validator"* for an artifact where
+nothing was ever handed to a validator. That is not an edge case: the fake compiler writes no
+dump, so `spirv_bytes` is exactly `{}` (`tests/export/test_spirv.py:136-145`), and Task 7 makes
+that the primary fake path — the mechanism introduced here specifically to make claims
+unmisreadable would assert a false sentence on **every** fake-path `vulkan-spirv` export. The
+discriminator is a count rather than the `.error` string, because matching on error prose is
+exactly the kind of convention this section exists to replace with a mechanism.
 
 `CODEGEN_ONLY` has no `verified=True` row because `_verified_for` returns False
 unconditionally for it (`src/xtrax/export/pipeline.py:130`); AC-4 asserts that
@@ -493,7 +508,9 @@ criterion.
   `result["vulkan-spirv"].verified is False` in **both** cases. Two aggregation rules are
   asserted with them, because `spirv_bytes` is a dict of N modules, not one:
   - **Zero extracted modules is a failure, not a pass.** An empty `spirv_bytes` yields
-    `valid=False` with `.error` naming the empty extraction. `all([])` is `True`, so the
+    `valid=False` with `.error` naming the empty extraction **and `module_count == 0`**, which
+    is what AC-4's `claim` keys on so it does not report a rejection that never happened.
+    `all([])` is `True`, so the
     natural implementation is a vacuous green — and the fake-toolchain path reaches it: the
     fake compiler writes no dump (`tests/export/conftest.py:93-101`),
     `src/xtrax/export/compile.py:212-214` sets `spirv_bytes = spirv_binaries_in(dump_dir)`,
@@ -503,7 +520,8 @@ criterion.
 
   Lives in `tests/export/test_spirv_validation.py` (new).
 - **AC-4 — `claim` says what was established and never implies a browser.**
-  `ExportResult.claim` returns the five distinct strings tabled above; the two
+  `ExportResult.claim` returns the six distinct strings tabled above — distinctness itself is
+  asserted, so the two `valid=False` rows cannot silently collapse into one; the two
   validation-bearing strings contain "not executed" or "rejected"; no claim matches
   `(?i)(webgpu|browser|wgsl)`; and `_verified_for(CODEGEN_ONLY, <passing parity>, <valid
   validation>)` is False, so no `CODEGEN_ONLY`-with-`verified=True` claim is reachable
@@ -537,14 +555,32 @@ criterion.
   ```
   (?i)NEG webgpu[- ](compatible|ready|valid|support|verified)
   (?i)NEG (runs?|running|executes?) in (a |the )?browser
-  (?i)NEG browser[- ](tested|verified)
+  (?i)NEG browser[- ](compatible|ready|support|tested|verified)
   ```
+
+  The third pattern deliberately mirrors the first's alternation. Narrowed to
+  `(tested|verified)` it would let the most natural false claim straight through: a CHANGELOG or
+  docs line reading *"wasm32 artifacts are browser-ready"* or *"browser-compatible"* would pass
+  green while the WebGPU-worded equivalent failed — an asymmetry with no basis, since the risk
+  this gate exists for is a browser claim shipping by accident, whatever noun it is spelled with.
 
   (with `NEG` spliced in immediately before the claim, no space). Without the lookbehind the
   gate flags true statements: `"vulkan-spirv is not WebGPU-valid"` matches the first pattern
   as written before this revision, and the tree is clean under those patterns today — so the
   gate would have manufactured the only defect it ever found. Each lookbehind alternative is
   individually fixed-width, which Python's `re` requires.
+
+  **The scan runs over a whitespace-normalized buffer, not line by line.** A lookbehind is
+  line-local, and this repo wraps prose near 88 columns — `docs/api/export.md:242-243` already
+  wraps mid-sentence as `…which are not` / `part of the WebGPU feature set…`. A denial that
+  happened to wrap as `…is not` / `WebGPU-valid` would put its negation on the previous line,
+  out of the lookbehind's reach, and the gate would redden the build on a true statement. That
+  is the *same* false-positive class the `NEG` prefix was added to fix, merely displaced from
+  "no lookbehind" to "the lookbehind cannot see across the wrap". So the scanner collapses every
+  run of whitespace in a file to a single space before matching, and keeps an offset→line map
+  built during that collapse so a finding still reports `path:line` against the original file,
+  using the line the match *starts* on. AC-11's negation-free wording for two files stays a
+  belt-and-braces convention; it is not the mechanism.
 
   One escape hatch: a marker comment `webgpu-claim-evidence: <path>` on the line above, whose
   `<path>` the gate resolves relative to the repo root and **fails if it does not exist**.
@@ -560,6 +596,11 @@ criterion.
     `"xtrax artifacts are not WebGPU-compatible"`, the scanner returns **zero** findings,
     while AC-5a's positive case still returns exactly one. Both halves are asserted in the
     same test, so widening the lookbehind until it swallows AC-5a fails rather than passes.
+  - **AC-5d — a denial survives a line wrap.** Given a synthetic document whose text is
+    `"xtrax artifacts are not\nWebGPU-compatible"`, the scanner returns **zero** findings, while
+    AC-5a's positive case, run through the same normalization, still returns exactly one. This is
+    the criterion that fails if the scanner is ever implemented line-by-line, and it is the
+    reason AC-5's patterns are specified against a normalized buffer rather than a file's lines.
 
   Picked up automatically by `just audit-deterministic`, which runs
   `uv run pytest tests/audit/ -v` (`Justfile:329`). No new `just` recipe, so
@@ -576,6 +617,24 @@ criterion.
   Call-time resolution splits the two jobs correctly: `export-toolchain-tests` goes red on a
   runner without SPIRV-Tools, while `lint-format-type-test` passes through the fake.
 
+  **The third environment — real IREE, no `spirv-val` — must degrade, not raise.** Those two
+  jobs are not exhaustive. A developer or downstream consumer with the `export` extra installed
+  and SPIRV-Tools absent is the ordinary case off CI, and it is this author's own box (see "What
+  is not established"): `spirv-val` is a *system* binary, so no Python extra can carry it. Left
+  unhandled, `export_pipeline(..., targets=(VULKAN_SPIRV,))` would begin raising where it
+  previously returned an artifact with `verified=False`, and `tests/export/test_size_budget.py`'s
+  `exported` fixture — guarded only by `importorskip("iree.compiler")` (`:73-74`) — would go from
+  passing to erroring there.
+
+  So the raise lives in `validate_spirv_structure` and **stops at `export_pipeline`**: Task 6
+  catches the missing-binary error, leaves `spirv_validation` at `None`, and appends an
+  `ExportResult.diagnostics` entry naming `spirv-val`. That lands the result on the existing
+  "compiled only; nothing further was established" row — the same outcome as before this spec —
+  rather than on a new failure mode. `export-toolchain-tests` is unaffected: its own install step
+  (Task 6) makes the binary present, and the zero-skips grep makes its absence red. The new
+  optional system dependency is named in `docs/api/export.md` and in the `CHANGELOG.md` entry
+  AC-10 requires, because nothing else tells a consumer it exists.
+
   Asserted three ways: `tests/export/test_spirv_validation.py` contains none of
   `importorskip`, `skipif`, `pytest.skip`, `mark.skip`, or `mark.xfail` (a source-level
   assertion in `tests/audit/test_webgpu_claim_gate.py`); a call with the binary absent and no
@@ -583,6 +642,15 @@ criterion.
   (`.github/workflows/ci.yml:166-175`) still reports zero. A bare early `return` remains
   invisible to the source-level grep — TD-WGPU-10 owns that general form and this criterion
   does not claim to close it.
+- **AC-6b — a missing `spirv-val` degrades the export, and only the export.** With the binary
+  absent and no fake installed, both halves are asserted in the **same** test, so collapsing the
+  raise into the degrade (or the degrade into the raise) fails: a direct
+  `validate_spirv_structure(...)` call raises (AC-6), **and**
+  `export_pipeline(..., targets=(VULKAN_SPIRV,))` returns an `ExportResult` with
+  `spirv_validation is None`, `verified is False`,
+  `claim == "compiled only; nothing further was established"`, and a `diagnostics` entry naming
+  `spirv-val`. `tests/export/test_size_budget.py`'s `exported` fixture still passes under the
+  same conditions. Lives in `tests/export/test_spirv_validation.py`.
 - **AC-7 — every SPIR-V-emitting target has a measured SPIR-V budget.**
   `set(SPIRV_BUDGET_BYTES) == {t.name for t in ALL_TARGETS if t.emits_spirv}`, mirroring
   `test_every_registered_target_has_a_budget` (`tests/export/test_size_budget.py:113-115`).
@@ -641,15 +709,30 @@ criterion.
   `src/xtrax/export/targets.py:17-20`'s "compiled only" description, the first clause of
   `:22` ("No target is registered at `VALIDATED`"), and `tests/export/test_targets.py:57-60`
   all stay true under R2″ and need no edit. Only `:22-23`'s trailing rationale changes.
-- **AC-12 — a tracked debt row points somewhere real.** Every `TD-WGPU-##` row in this
-  document whose Resolution text begins with the literal `Unresolved, tracked at ` names
-  either a praxia backlog id matching `#\d+` or a tree path that itself contains the literal
-  row id — bidirectional, so a pointer and its target cannot drift apart. Rows whose honest
-  disposition is "accepted, unfunded" are out of scope by construction; the criterion does
-  not force an id onto them. Asserted by a parser over this file in
-  `tests/audit/test_webgpu_claim_gate.py`, with two non-vacuity assertions:
-  - the parser finds every `TD-WGPU-##` row in the table (a parser matching nothing fails),
-    and at least one row uses the `Unresolved, tracked at ` form — TD-WGPU-11 does today;
+- **AC-12 — a tracked debt row points somewhere real, as far as a test can see.** Every debt
+  row in this document whose Resolution text begins with the literal `Unresolved, tracked at `
+  names either a praxia backlog id matching `#\d+` or a tree path that itself contains the
+  literal row id. Rows whose honest disposition is "accepted, unfunded" are out of scope by
+  construction; the criterion does not force an id onto them.
+
+  **The two branches are not equally strong, and this criterion must not claim they are.** Only
+  the tree-path branch is bidirectional: the gate opens the path and checks the row id appears
+  inside it, so a pointer and its target cannot drift apart. The backlog-id branch is a **shape
+  check only** — a test in this repo cannot reach the praxia backlog DB, so nothing verifies that
+  the item exists, is open, or mentions the row, and `Unresolved, tracked at #1` passes. The sole
+  row in that form today is TD-WGPU-11 → `#5090`. That residual gap is stated rather than papered
+  over; closing it needs a gate with DB access, which this spec does not fund.
+
+  **Row ids parse as `TD-WGPU-\d{2}(?:-[A-Z])?`, not `TD-WGPU-\d{2}`.** The narrower shape
+  matches the `01` prefix inside `TD-WGPU-01-M` and maps two rows onto one key, so a parser keyed
+  by id silently drops a row while a "found every row" assertion still passes green.
+
+  Asserted by a parser over this file in `tests/audit/test_webgpu_claim_gate.py`, with three
+  non-vacuity assertions:
+  - the parser finds every debt row in the table (a parser matching nothing fails), and at least
+    one row uses the `Unresolved, tracked at ` form — TD-WGPU-11 does today;
+  - the number of parsed ids equals the number of **distinct** parsed ids — the assertion that
+    fails if the `-M` suffix is ever dropped from the pattern;
   - over a synthetic table fragment whose Resolution reads
     `Unresolved, tracked at nowhere/at/all.md`, the parser returns exactly one finding.
 
@@ -717,7 +800,9 @@ passes with no export extra installed.
 
 ### Task 5 — `validate_spirv_structure` (needs Task 0 positive)
 
-Implement AC-2 and the `SpirvValidationResult` field rename. The `spirv-val` binary is
+Implement AC-2 and the `SpirvValidationResult` field change — the
+`adapter_type`/`backend`/`device_name` → `validator`/`validator_version` rename, plus the added
+`module_count` AC-4's claim table keys on. The `spirv-val` binary is
 resolved **lazily, inside `validate_spirv_structure`** — not at import — for AC-6's reason,
 which also keeps `import xtrax.export` clean (AC-9).
 
@@ -734,16 +819,19 @@ fresh-interpreter check at `tests/export/test_targets.py:143-158` still prints `
 
 ### Task 6 — Wire validation into `export_pipeline` (needs Task 5)
 
-Implement AC-1, AC-3, AC-6. `VULKAN_SPIRV` **stays `CODEGEN_ONLY`**
+Implement AC-1, AC-3, AC-6, AC-6b. `VULKAN_SPIRV` **stays `CODEGEN_ONLY`**
 (`src/xtrax/export/targets.py:212-218` is unchanged), `test_no_target_is_registered_as_validated`
 (`tests/export/test_targets.py:33-36`) is kept, and the guard at
 `src/xtrax/export/pipeline.py:208-217` is kept verbatim. AC-1's assertion is **added** to
 `test_targets.py` beside the retained test.
 
-The wiring is two lines and a comment. Populate `spirv_validation` at
+The wiring is a short block. Populate `spirv_validation` at
 `src/xtrax/export/pipeline.py:258` for targets with `target.emits_spirv`, and thread that
 same value into `_verified_for` at `:256`, which today hardcodes
-`_verified_for(target.verification_level, parity, None)`. Threading it cannot produce a
+`_verified_for(target.verification_level, parity, None)`. Wrap the populate step in a
+`try/except` on the missing-binary error, leaving `spirv_validation` at `None` and appending a
+`diagnostics` entry naming `spirv-val` (AC-6b) — raising is the *validator's* contract, not the
+pipeline's. Threading it cannot produce a
 contradiction — `_verified_for` returns False for `CODEGEN_ONLY` unconditionally (`:130`) —
 and it turns AC-4's `_verified_for(CODEGEN_ONLY, <passing parity>, <valid validation>) is
 False` assertion into a live safety test over the value the pipeline really passes.
@@ -783,6 +871,12 @@ thresholds.
 **Scope estimate**: ~80 LOC.
 
 ### Task 8 — Docs, CHANGELOG, debt references (needs Task 6)
+
+The CHANGELOG entry covers two things, not one: the `SpirvValidationResult` field change
+(AC-10) **and** the new *optional* system dependency on SPIRV-Tools, which no Python extra can
+declare and which AC-6b makes soft — absent, an export degrades to "compiled only" rather than
+failing. `docs/api/export.md` states the same in prose.
+
 
 Implement AC-10, AC-11's two documentation files, and AC-12. The source-docstring half of
 AC-11 lands in Tasks 5 and 6; this task adds `docs/api/export.md`,
@@ -839,7 +933,7 @@ printing PASS over failing tests. Its exit code alone is not evidence the suite 
 | TD-WGPU-08 | Host callbacks are impossible on GPU targets. `Tap`/`Sink` must use `io_callback` (`src/xtrax/stages/boundaries.py:54`, `:71`); a SPIR-V dispatch has no host to call | Accepted. `export_pipeline` strips declared materializing sinks (`src/xtrax/export/pipeline.py:86-117`) and the topology gate rejects the rest (`src/xtrax/export/safety.py:275`), so nothing unrepresentable reaches a backend. Cross-referenced to `.praxia/docs/specs/260910_compilable-boundaries.md` |
 | TD-WGPU-09 | CI installs `mesa-vulkan-drivers`/`libvulkan1` (`.github/workflows/ci.yml:142-145`) for a wgpu adapter that no tracked file constructs, and the step's comment (`:137-141`) explains it in terms of the voided AC-8 | Resolved by AC-8 / Task 2 |
 | TD-WGPU-10 | The zero-skips assertion greps `^SKIPPED \[[0-9]+\] ` (`.github/workflows/ci.yml:166-175`), which matches pytest's `-rs` short-summary shape. A whole-module collection-level skip has been observed in this repo to evade a line-shaped skip check | Resolved by AC-6 for the new validator test, which cannot skip at all. Accepted, unfunded for the grep itself: the general fix is to assert on `--junitxml` skip counts rather than on stdout text, and no task here funds it. This row also owns the bare-early-`return` form that AC-6's source-level assertion cannot see |
-| TD-WGPU-11 | No deterministic gate observes a public dataclass field rename — `audit-added-types-diff` collects only `FunctionDef` nodes and diffs signatures (`src/xtrax/devtools/gates/added_types_diff.py:47-55`, `:67-79`); `audit_public_api.py` inspects only root `__all__`/`_LAZY`/`tier1_exports` (`scripts/audit_public_api.py:199-262`) and merely asserts subpackage `__all__` is non-empty (`:164-179`). `SpirvValidationResult` is neither a function nor a root export, so the `adapter_type`/`backend`/`device_name` → `validator`/`validator_version` rename fires nothing | Unresolved, tracked at #5090. Interim mitigation in this spec is AC-10's literal `CHANGELOG.md` grep, which is per-change and does not generalize |
+| TD-WGPU-11 | No deterministic gate observes a public dataclass field rename — `audit-added-types-diff` collects only `FunctionDef` nodes and diffs signatures (`src/xtrax/devtools/gates/added_types_diff.py:47-55`, `:67-79`); `audit_public_api.py` inspects only root `__all__`/`_LAZY`/`tier1_exports` (`scripts/audit_public_api.py:199-262`) and merely asserts subpackage `__all__` is non-empty (`:164-179`). `SpirvValidationResult` is neither a function nor a root export, so the `adapter_type`/`backend`/`device_name` → `validator`/`validator_version`/`module_count` field change fires nothing | Unresolved, tracked at #5090. Interim mitigation in this spec is AC-10's literal `CHANGELOG.md` grep, which is per-change and does not generalize |
 
 ## Risks
 
