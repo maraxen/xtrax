@@ -94,6 +94,7 @@ def _passing_gate_results() -> dict[str, object]:
                 branch_pct=90.0,
                 tests_run=10,
                 tests_failed=0,
+                returncode=0,
             ),
             line_coverage_pct=95.0,
             branch_coverage_pct=90.0,

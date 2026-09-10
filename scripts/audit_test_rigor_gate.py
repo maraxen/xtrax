@@ -78,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
         f"findings_emitted={result.findings_emitted}, "
         f"baseline_updated={result.baseline_updated})"
     )
+    if result.failure_detail:
+        print(f"Failure detail: {result.failure_detail}")
     return 0 if result.passed else 1
 
 

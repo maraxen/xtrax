@@ -22,6 +22,9 @@ from xtrax.findings import append_finding, emit_metric_finding
 LINE_METRIC = "test_rigor.line_coverage_pct"
 BRANCH_METRIC = "test_rigor.branch_coverage_pct"
 DIMENSION = "test_rigor"
+# Explicit extras guarantee presence of dev/io tools in any environment,
+# not prevent pruning (uv run is inexact and prunes nothing by default).
+UV_PYTEST_EXTRAS = ["--extra", "dev", "--extra", "io"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +33,14 @@ class CoverageStats:
     branch_pct: float
     tests_run: int
     tests_failed: int
+    # No default: a defaulted returncode silently asserts a clean run, which is
+    # exactly the bug #5021 fixed. Every construction site must state it.
+    returncode: int
+    # Kept apart rather than pre-joined: pytest writes its "N failed, M passed"
+    # summary and its "FAILED tests/..." lines to STDOUT, so a tail of the two
+    # concatenated returns stderr warnings and none of the diagnosis.
+    pytest_stdout: str = ""
+    pytest_stderr: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +53,7 @@ class GateResult:
     baseline_updated: bool
     line_metric_key: str = LINE_METRIC
     branch_metric_key: str = BRANCH_METRIC
+    failure_detail: str = ""
 
 
 def parse_coverage_json(path: Path) -> tuple[float, float]:
@@ -87,27 +99,23 @@ def run_pytest_coverage(
     if not resolved_tests.is_absolute():
         resolved_tests = (resolved_root / resolved_tests).resolve()
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".json",
-        prefix="coverage-",
-        delete=False,
-    ) as handle:
-        cov_path = Path(handle.name)
+    with tempfile.TemporaryDirectory(prefix="xtrax-test-rigor-") as tmpdir:
+        cov_path = Path(tmpdir) / "coverage.json"
 
-    env = {**os.environ, "PYTEST_ADDOPTS": ""}
-    cmd = [
-        "uv",
-        "run",
-        "pytest",
-        str(resolved_tests),
-        "--cov=xtrax",
-        "--cov-branch",
-        f"--cov-report=json:{cov_path}",
-        "-q",
-        "-o",
-        "addopts=",
-    ]
-    try:
+        env = {**os.environ, "PYTEST_ADDOPTS": ""}
+        cmd = [
+            "uv",
+            "run",
+            *UV_PYTEST_EXTRAS,
+            "pytest",
+            str(resolved_tests),
+            "--cov=xtrax",
+            "--cov-branch",
+            f"--cov-report=json:{cov_path}",
+            "-q",
+            "-o",
+            "addopts=",
+        ]
         result = subprocess.run(
             cmd,
             cwd=resolved_root,
@@ -117,22 +125,53 @@ def run_pytest_coverage(
             check=False,
         )
         combined = f"{result.stdout}\n{result.stderr}"
-        tests_run, tests_failed = parse_pytest_summary(combined)
+        # STDOUT ONLY, deliberately. parse_pytest_summary scans in reverse and
+        # breaks on the first line matching "(\d+) error", and `combined` puts
+        # stderr last -- so reversed() reaches stderr FIRST. A green run whose
+        # stderr merely mentions "N errors" (common in this JAX-heavy repo)
+        # parsed as N failures: measured, "40 passed" + a stderr line reading
+        # "WARNING: 2 errors were suppressed" returned (2, 2). That was a wrong
+        # count in an info finding before tests_failed became load-bearing in the
+        # verdict below; now it would fail the gate on a passing suite. pytest
+        # writes its summary to stdout.
+        tests_run, tests_failed = parse_pytest_summary(result.stdout)
         if not cov_path.is_file():
             msg = (
                 "pytest-cov JSON report missing; "
                 f"pytest exit={result.returncode}: {combined.strip()}"
             )
             raise RuntimeError(msg)
-        line_pct, branch_pct = parse_coverage_json(cov_path)
-    finally:
-        cov_path.unlink(missing_ok=True)
+        try:
+            line_pct, branch_pct = parse_coverage_json(cov_path)
+        except (json.JSONDecodeError, KeyError, UnicodeDecodeError, ValueError) as exc:
+            # KeyError and UnicodeDecodeError, not just JSONDecodeError: a report
+            # whose `totals` lacks percent_branches_covered (branch coverage
+            # silently not applied) or whose bytes are truncated is the same class
+            # of "present but unusable" failure this handler exists for, and would
+            # otherwise escape as a bare traceback carrying no exit code, report
+            # size, or captured output.
+            #
+            # `combined`, not just stdout: pytest-cov emits
+            # "CovReportWarning: Failed to generate report: No data to report"
+            # on stderr, and that warning is the whole diagnosis when the suite
+            # ran green but collected nothing. Chained from `exc` rather than
+            # suppressed -- a gate whose job is to fail loudly should not hide
+            # the error it is reporting on.
+            report_size = cov_path.stat().st_size
+            msg = (
+                f"pytest-cov JSON report unparsable (exit={result.returncode}, "
+                f"report size={report_size} bytes): {combined.strip()}"
+            )
+            raise RuntimeError(msg) from exc
 
     return CoverageStats(
         line_pct=line_pct,
         branch_pct=branch_pct,
         tests_run=tests_run,
         tests_failed=tests_failed,
+        returncode=result.returncode,
+        pytest_stdout=result.stdout,
+        pytest_stderr=result.stderr,
     )
 
 
@@ -177,7 +216,29 @@ def run_test_rigor_gate(
     baseline = load_baseline(path=baseline_path)
     passes_line, update_line = evaluate_metric(baseline, LINE_METRIC, line_pct)
     passes_branch, update_branch = evaluate_metric(baseline, BRANCH_METRIC, branch_pct)
-    passed = passes_line and passes_branch
+    passed = passes_line and passes_branch and stats.returncode == 0 and stats.tests_failed == 0
+
+    # Populated only for the suite-failure case, which is the one the caller had
+    # no way to see: a coverage-only failure is already fully explained by the
+    # unconditional status line in scripts/audit_test_rigor_gate.py, which prints
+    # both percentages alongside tests_run/tests_failed. An empty failure_detail
+    # therefore means "the suite was green, the numbers were not".
+    failure_detail = ""
+    if not passed:
+        if stats.returncode != 0 or stats.tests_failed > 0:
+            parts: list[str] = []
+            stdout_lines = stats.pytest_stdout.splitlines()
+            if stdout_lines:
+                parts.append("\n".join(stdout_lines[-5:]))
+            stderr_lines = stats.pytest_stderr.splitlines()
+            if stderr_lines:
+                parts.append("stderr: " + "\n".join(stderr_lines[-3:]))
+            tail = "\n".join(parts)
+            failure_detail = (
+                f"pytest exit code {stats.returncode}, "
+                f"{stats.tests_failed} tests failed. "
+                f"Output tail: {tail}"
+            )
 
     baseline_updated = False
     if passed and write_baseline and (update_line or update_branch):
@@ -201,4 +262,5 @@ def run_test_rigor_gate(
         branch_coverage_pct=branch_pct,
         findings_emitted=emitted,
         baseline_updated=baseline_updated,
+        failure_detail=failure_detail,
     )
