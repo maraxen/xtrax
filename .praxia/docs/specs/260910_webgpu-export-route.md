@@ -96,13 +96,26 @@ someone else's bug rather than unbounded.
 or `webgpu-spirv` backend. **Not met on the pinned toolchain, re-measured 260910:** the
 installed `iree-base-compiler 3.11.0rc20260316` lists exactly
 `cuda  llvm-cpu  metal-spirv  rocm  vmvx  vmvx-inline  vulkan-spirv`, reproducing
-`260901_webgpu-export-measurement-pass.md:69-73` exactly. That build is dated 2026-03-16
-and so predates #24463 by two months; the `export` extra's range is
-`iree-base-compiler>=3.11,<4` and stable PyPI carries nothing above `3.11.0`, so
-reaching the new backend means a nightly index or a 3.12 release, and then #24650 on
-top of that. **Both conditions must hold** -- a release carrying the backend is not by
-itself the trigger, because a `webgpu-spirv` that rejects push constants compiles
-nothing this package exports.
+`260901_webgpu-export-measurement-pass.md:69-73` exactly.
+
+**A newer build does not help, and this is the load-bearing measurement.** Today's
+nightly -- `iree-base-compiler 3.12.0rc20260910`, resolved from
+`--find-links https://iree.dev/pip-release-links.html` -- lists the *same seven*
+backends, four months after #24463 closed. The reason is not that the code is missing:
+`compiler/plugins/target/WebGPUSPIRV/` exists in the IREE tree, and
+`compiler/plugins/iree_compiler_plugin.cmake:47-48` adds it only under
+`if(IREE_TARGET_BACKEND_WEBGPU_SPIRV)`. It is a build-time plugin, and **no published
+wheel enables it** -- not the pinned rc, not stable `3.11.0` (which is stable PyPI's
+ceiling against the extra's `>=3.11,<4`), not the 3.12 nightly.
+
+So the honest statement of R1's latency is neither "nobody has written it" nor "wait for
+the next release". It is: *the backend exists upstream, no installable artifact carries
+it, and even once one does, #24650 rejects the push constants this package's dispatches
+carry.* **Three conditions must hold**, not one -- a wheel built with
+`IREE_TARGET_BACKEND_WEBGPU_SPIRV`, #24650 fixed, and the browser glue of TD-WGPU-07 --
+and only the first two are upstream's to grant. Building IREE from source with the
+option enabled is possible and is *not* proposed here; it would put a bespoke toolchain
+on the critical path of a package whose export story is otherwise pip-installable.
 
 **What becomes cheap on trigger.** Nearly everything. `Target` is plain data and
 `compile_for_target` reads the backend and flags off the object rather than branching
