@@ -4,10 +4,19 @@ The budgets are seeded from real measurements of the fixture below (260902,
 IREE 3.11.0, linux x86_64), with roughly 2.5x headroom so ordinary toolchain
 drift does not fail the suite:
 
-    native        13889 B
-    wasm32        10632 B
-    vulkan-spirv  12577 B   (4780 B of extracted SPIR-V)
-    metal-spirv   14275 B
+    native           13889 B
+    wasm32           10632 B
+    vulkan-spirv     12577 B   (4780 B of extracted SPIR-V)
+    metal-spirv      14275 B
+
+    native-portable  11985 B   (260910, same toolchain)
+
+``native-portable`` is smaller than ``native`` because x86-64-v2 codegen cannot
+use the wider vector ISA the host CPU offers -- on the machine that measured
+this, ``native`` resolved to ``cpu = znver5`` with the full AVX-512 feature set
+while ``native-portable`` resolved to the twelve-feature v2 baseline. Note the
+``native`` row is the original 260902 figure; the same fixture measures 13897 B
+today, which is the ordinary drift the headroom exists to absorb.
 
 A floor is checked as well as a ceiling. An artifact that suddenly collapses to
 a few hundred bytes still "compiles" and would sail past a ceiling-only budget,
@@ -27,6 +36,7 @@ from xtrax.tiling.strategy import Vmap
 
 SIZE_BUDGET_BYTES = {
     "native": 32 * 1024,
+    "native-portable": 32 * 1024,
     "wasm32": 32 * 1024,
     "vulkan-spirv": 32 * 1024,
     "metal-spirv": 32 * 1024,

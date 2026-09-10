@@ -6,7 +6,12 @@ package is willing to vouch for the resulting artifact, which is deliberately
 not the same for every target:
 
 - ``native`` is compiled AND executed, so its numerics can be checked against an
-  independently-computed oracle.
+  independently-computed oracle. It is host-tuned and is a parity oracle, not
+  something to distribute.
+- ``native-portable`` is also compiled AND executed, on the same dtype envelope
+  as ``native``, but built for a fixed ``x86-64-v2`` baseline instead of the
+  host CPU, so the artifact runs on a recipient's machine rather than only the
+  one that compiled it. It still requires an IREE runtime on that machine.
 - ``wasm32`` is compiled only. Executing it needs an emsdk-built IREE runtime,
   which has no published package, so claiming more would be dishonest.
 - ``vulkan-spirv`` and ``metal-spirv`` are compiled only. Executing either needs
@@ -29,6 +34,7 @@ __all__ = [
     "ALL_TARGETS",
     "METAL_SPIRV",
     "NATIVE",
+    "NATIVE_PORTABLE",
     "VULKAN_SPIRV",
     "WASM32",
     "Target",
@@ -124,6 +130,43 @@ NATIVE = Target(
     extra_compiler_flags=("--iree-llvmcpu-target-cpu=host",),
 )
 
+# A sibling of NATIVE for the one case NATIVE cannot cover: handing the artifact
+# to someone else. NATIVE's `target-cpu=host` bakes in whatever ISA extensions
+# this machine happens to have (on this box, up through avx512); running that
+# artifact on a recipient's CPU lacking one of them faults with an illegal
+# instruction rather than a clean error. `x86-64-v2` is a fixed, portable ISA
+# baseline instead of "whatever this machine has".
+#
+# The portability claim is narrower than "distributable" and must not be
+# overstated:
+#   - the resulting artifact is an `embedded-elf-x86_64` module with
+#     `cpu_features = "+cmov,+mmx,+popcnt,+sse,+sse2,+sse4.2,+cx16,+sahf,+cx8,
+#     +crc32,+x87,+fxsr"`, using IREE's own ELF loader with no libc or dylib
+#     dependency;
+#   - it still declares `Module Dependencies: hal, version >= 6, required` --
+#     it is NOT a standalone binary, and the recipient needs an IREE runtime
+#     (`iree-base-runtime`) to load it, not just a compatible CPU;
+#   - x86-64-v2 is not "any CPU since 2009". SSE4.2 -- the feature that defines
+#     the v2 baseline -- arrived with Intel Nehalem in late 2008 but AMD only
+#     added it at Bulldozer in 2011, and Intel's own Atom line lacked it through
+#     Silvermont in 2013. The honest claim is "any x86-64 CPU from roughly 2013
+#     onward", not "any x86-64 CPU".
+#
+# Only the CPU flag is passed, deliberately not a target triple. Measured:
+# adding `--iree-llvmcpu-target-triple=x86_64-unknown-linux-gnu` produces a
+# byte-identical artifact (same md5) to omitting it, because IREE rewrites the
+# embedded triple to `x86_64-unknown-unknown-eabi-elf` for its embedded loader
+# regardless of what triple is requested. A triple naming an operating system
+# would therefore be inert, and would also misdescribe an artifact that commits
+# to no OS.
+NATIVE_PORTABLE = Target(
+    name="native-portable",
+    iree_backend="llvm-cpu",
+    verification_level=VerificationLevel.EXECUTED,
+    supported_dtypes=_EXECUTABLE_DTYPES,
+    extra_compiler_flags=("--iree-llvmcpu-target-cpu=x86-64-v2",),
+)
+
 # +simd128 is the meaningful perf lever for wasm CPU codegen; atomics and
 # bulk-memory are required by the threaded runtime variants. target-cpu must be
 # set explicitly: left unset, IREE warns while creating the CPU target and falls
@@ -173,7 +216,13 @@ METAL_SPIRV = Target(
     emits_spirv=False,
 )
 
-ALL_TARGETS: tuple[Target, ...] = (NATIVE, WASM32, VULKAN_SPIRV, METAL_SPIRV)
+ALL_TARGETS: tuple[Target, ...] = (
+    NATIVE,
+    NATIVE_PORTABLE,
+    WASM32,
+    VULKAN_SPIRV,
+    METAL_SPIRV,
+)
 
 
 def target_by_name(name: str) -> Target:

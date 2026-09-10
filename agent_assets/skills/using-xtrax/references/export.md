@@ -10,11 +10,12 @@ compilation needs it.
 
 ## Targets, and what each one actually proves
 
-`verify: src/xtrax/export/targets.py:119-174`
+`verify: src/xtrax/export/targets.py:125-225`
 
 | Target | IREE backend | VerificationLevel | Emits SPIR-V |
 |---|---|---|---|
-| `NATIVE` | `llvm-cpu` | `EXECUTED` | no |
+| `NATIVE` | `llvm-cpu` (`target-cpu=host`) | `EXECUTED` | no |
+| `NATIVE_PORTABLE` | `llvm-cpu` (`target-cpu=x86-64-v2`) | `EXECUTED` | no |
 | `WASM32` | `llvm-cpu` (wasm32 triple) | `CODEGEN_ONLY` | no |
 | `VULKAN_SPIRV` | `vulkan-spirv` | `CODEGEN_ONLY` | yes |
 | `METAL_SPIRV` | `metal-spirv` | `CODEGEN_ONLY` | **no** — it dumps MSL, not SPIR-V, despite the name |
@@ -22,11 +23,25 @@ compilation needs it.
 `VerificationLevel` is the whole point of the type, so read it literally:
 
 - `EXECUTED` — the artifact was compiled **and run**, and its output compared against a
-  caller-supplied `reference_fn`. Only `NATIVE` reaches this.
+  caller-supplied `reference_fn`. `NATIVE` and `NATIVE_PORTABLE` reach this.
 - `CODEGEN_ONLY` — the artifact compiled. Nothing ran it. A green `CODEGEN_ONLY` export says
   the compiler accepted the program, and says nothing whatsoever about numerics.
 - `VALIDATED` exists in the enum but no target registers it; `export_pipeline` raises
   `NotImplementedError` for one. That is deliberate, not unfinished — see WebGPU below.
+
+**`NATIVE` vs. `NATIVE_PORTABLE`:** both are `EXECUTED`, but `NATIVE` is tuned to the
+compiling machine's own CPU (`--iree-llvmcpu-target-cpu=host`) and exists as a parity
+oracle only — it is not safe to hand to someone else, since a host CPU feature (e.g.
+AVX-512) baked into the artifact can fault as an illegal instruction on a recipient's
+CPU that lacks it. `NATIVE_PORTABLE` fixes the ISA baseline to `x86-64-v2` instead
+(`cpu_features = "+cmov,+mmx,+popcnt,+sse,+sse2,+sse4.2,+cx16,+sahf,+cx8,+crc32,+x87,+fxsr"`,
+no AVX/AVX-512/etc.), so it runs on any x86-64 CPU from roughly 2013 onward — **not**
+"any CPU since 2009" (SSE4.2 arrived on AMD only at Bulldozer in 2011, and Intel Atom
+lacked it through Silvermont in 2013). It still requires an IREE runtime on the
+recipient's machine (`Module Dependencies: hal, version >= 6, required`); it is not a
+standalone binary. Do not pass a target triple alongside the CPU flag — measured to
+produce a byte-identical artifact, since IREE rewrites the embedded triple to
+`x86_64-unknown-unknown-eabi-elf` regardless.
 
 ## The parity oracle must be independent
 
