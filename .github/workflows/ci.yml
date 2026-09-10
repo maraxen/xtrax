@@ -148,7 +148,88 @@ jobs:
         run: uv sync --extra dev --extra io --extra export
 
       - name: Export tests against real IREE
-        run: uv run pytest tests/export/ -q
+        # A bare `pytest -q` here is exactly as green with every export test
+        # skipped as with all of them run, so the "0 skips against real IREE
+        # 3.11" claim this job exists to make had nothing behind it. `-rs`
+        # lists the skips; the grep turns them into a failure.
+        #
+        # `tee` rather than a plain redirect so a genuine test failure still
+        # prints its log: this step runs under bash -e, and with `> file` the
+        # step would abort before anything got echoed, leaving a red job with
+        # an empty log. `--color=no` keeps `^SKIPPED` matchable.
+        run: |
+          set +e
+          set -o pipefail
+          uv run pytest tests/export/ -q -rs --color=no 2>&1 | tee export_test_output.txt
+          pytest_status=$?
+          set -e
+          if grep -qE '^SKIPPED \[[0-9]+\] ' export_test_output.txt; then
+            echo "::error::export-toolchain-tests skipped at least one test."
+            echo "This job exists to exercise tests/export/ against a real optional"
+            echo "toolchain (IREE 3.11, safetensors, huggingface_hub). Every skip in"
+            echo "here is an importorskip, so a skip means one of those did not"
+            echo "install and this job's 'tested for real' claim is void for the"
+            echo "tests below -- it is not a pass."
+            grep -E '^SKIPPED \[[0-9]+\] ' export_test_output.txt
+            exit 1
+          fi
+          exit "$pytest_status"
+
+  # The `export-runtime` extra exists so a downstream consumer that only LOADS
+  # AND RUNS an artifact does not have to install iree-base-compiler (349 MB
+  # installed, against ~7 MB for the runtime). Nothing else in CI installs that
+  # extra alone: lint-format-type-test installs no export extra at all, and
+  # export-toolchain-tests installs the full `export`. So without this job the
+  # split's entire advertised benefit is an unenforced claim in a CHANGELOG --
+  # which is the failure class the rest of this sprint exists to remove.
+  export-runtime-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      - name: Install the runtime extra alone
+        run: uv sync --extra export-runtime
+
+      - name: The runtime is present and the compiler is absent
+        run: |
+          uv run --no-sync python - <<'PY'
+          import importlib.util as u
+          import sys
+
+          runtime = u.find_spec("iree.runtime")
+          compiler = u.find_spec("iree.compiler")
+          failures = []
+          if runtime is None:
+              failures.append(
+                  "iree.runtime is NOT importable under [export-runtime]; the extra "
+                  "does not deliver what a consumer needs to execute an artifact."
+              )
+          if compiler is not None:
+              failures.append(
+                  "iree.compiler IS importable under [export-runtime]; the split is "
+                  "not actually saving the consumer the 349 MB compiler, so the "
+                  "CHANGELOG's claim for this extra is false."
+              )
+          # xtrax.export must import with no compiler present -- its toolchain
+          # imports are lazy, and a module-scope `iree` import anywhere under
+          # src/xtrax/export/ would break every runtime-only consumer.
+          try:
+              import xtrax.export  # noqa: F401
+              from xtrax.export.compile import run_native_vmfb  # noqa: F401
+          except Exception as exc:  # noqa: BLE001
+              failures.append(f"xtrax.export failed to import without the compiler: {exc!r}")
+
+          if failures:
+              for f in failures:
+                  print(f"::error::{f}")
+              sys.exit(1)
+          print("export-runtime delivers iree.runtime, omits iree.compiler, "
+                "and xtrax.export imports cleanly.")
+          PY
 
   audit-port:
     needs: port-changes

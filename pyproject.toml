@@ -69,8 +69,7 @@ io = [ "zarr>=3.0",]
 data = [ "grain>=0.2.0",]
 # Pins reconciled against a real resolver on py3.13, 2026-09-01 (exit 0 alongside
 # the core jax pin) -- see .praxia/docs/research/260901_webgpu-export-measurement-pass.md.
-export = [
-  "iree-base-compiler>=3.11,<4",
+export-runtime = [
   "iree-base-runtime>=3.11,<4",
   # Pinned to the 1.x line rather than the >=0.24,<2 range this started as. That
   # range spans the 0.x -> 1.x major break, so a fresh resolve moved silently
@@ -79,6 +78,10 @@ export = [
   # targeted 0.x, which is what made the wide range look safe.
   "huggingface_hub>=1,<2",
   "safetensors>=0.4,<1",
+]
+export = [
+  "xtrax[export-runtime]",
+  "iree-base-compiler>=3.11,<4",
 ]
 # NOTE: there is deliberately no `provenance = ["cisternal"]` extra yet.
 #

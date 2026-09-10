@@ -11,6 +11,7 @@ from xtrax.export.targets import (
     ALL_TARGETS,
     METAL_SPIRV,
     NATIVE,
+    NATIVE_PORTABLE,
     VULKAN_SPIRV,
     WASM32,
     Target,
@@ -20,8 +21,14 @@ from xtrax.export.targets import (
 
 
 class TestRegistryContents:
-    def test_the_four_targets_are_registered(self):
-        assert ALL_TARGETS == (NATIVE, WASM32, VULKAN_SPIRV, METAL_SPIRV)
+    def test_the_five_targets_are_registered(self):
+        assert ALL_TARGETS == (
+            NATIVE,
+            NATIVE_PORTABLE,
+            WASM32,
+            VULKAN_SPIRV,
+            METAL_SPIRV,
+        )
 
     def test_no_target_is_registered_as_validated(self):
         """export_pipeline refuses VALIDATED, having nothing to populate it with."""
@@ -97,6 +104,25 @@ class TestRegistryContents:
 
     def test_native_targets_the_host(self):
         assert "--iree-llvmcpu-target-cpu=host" in NATIVE.extra_compiler_flags
+
+    def test_native_portable_is_executed(self):
+        assert NATIVE_PORTABLE.verification_level is VerificationLevel.EXECUTED
+
+    def test_native_portable_uses_the_llvm_cpu_backend(self):
+        assert NATIVE_PORTABLE.iree_backend == "llvm-cpu"
+
+    def test_native_portable_targets_the_v2_baseline_not_the_host(self):
+        assert "--iree-llvmcpu-target-cpu=x86-64-v2" in NATIVE_PORTABLE.extra_compiler_flags
+        assert "host" not in " ".join(NATIVE_PORTABLE.extra_compiler_flags)
+
+    def test_native_portable_carries_no_target_triple(self):
+        """A triple is measured to be inert (byte-identical artifact) and would
+        misdescribe an artifact that commits to no OS."""
+        joined = " ".join(NATIVE_PORTABLE.extra_compiler_flags)
+        assert "target-triple" not in joined
+
+    def test_native_portable_shares_natives_dtype_envelope(self):
+        assert NATIVE_PORTABLE.supported_dtypes == NATIVE.supported_dtypes
 
 
 class TestTargetLookup:

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`xtrax.export.targets.NATIVE_PORTABLE`**: a fifth export target, `"native-portable"`,
+  `EXECUTED` like `NATIVE` but compiled with a fixed `--iree-llvmcpu-target-cpu=x86-64-v2`
+  baseline instead of `=host`, so the artifact runs on a recipient's CPU rather than only
+  the one that compiled it (any x86-64 CPU from roughly 2013 onward — not "any CPU since
+  2009"). It still requires an IREE runtime on the recipient's machine; it is not a
+  standalone binary. `NATIVE` is unchanged and remains host-tuned, for use as a parity
+  oracle only.
+- **`export-runtime` extra**: `iree-base-runtime`, `safetensors` and `huggingface_hub` —
+  what a consumer needs to *load and run* an exported artifact. The existing `export`
+  extra now aliases it and adds `iree-base-compiler`, which is what xtrax needs to
+  *build* one. The compiler is 349 MB installed against ~7 MB for the runtime, so a
+  downstream package that only executes artifacts no longer pays for a toolchain it
+  never invokes.
+
 ### Fixed
 
 - **`zarr_content_digest` now excludes provenance attrs by default**: run-ID,
@@ -19,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session wrote the store. **Digest values computed before this change do not
   match values computed after it for any sink-written store** — stored done-marker
   digests will mismatch and must be recomputed.
+- **`export-toolchain-tests` now fails on a skipped test.** The job ran a bare
+  `pytest tests/export/ -q`, which was exactly as green with every export test skipped
+  as with all of them run — so the "tested against real IREE 3.11" claim it exists to
+  make had nothing enforcing it. A silently-failed toolchain install now fails the job
+  instead of passing it.
+- **Corrected the 0.4.0a8 entry below**, which described `WASM32` as `EXECUTED`. It has
+  always been registered `CODEGEN_ONLY` (`targets.py`); executing a wasm artifact needs
+  an emsdk-built IREE runtime that no published package provides. The code was right and
+  the changelog was wrong, in the direction that overstates what ships.
 
 ### Changed
 
@@ -66,8 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   StableHLO and IREE. `export_pipeline` folds a plan into one traceable
   callable, exports it, compiles it for one or more targets, and verifies
   numerical parity against the original JAX callable where the target can be
-  executed. Four targets ship — `NATIVE` and `WASM32` (`EXECUTED`),
-  `VULKAN_SPIRV` and `METAL_SPIRV` (`CODEGEN_ONLY`) — with `VerificationLevel`
+  executed. Four targets ship — `NATIVE` (`EXECUTED`), `WASM32`,
+  `VULKAN_SPIRV`, and `METAL_SPIRV` (all `CODEGEN_ONLY`) — with `VerificationLevel`
   recording how far each one is actually checked, so a `CODEGEN_ONLY` artifact
   never reads as verified. SPIR-V shaders are extracted from `vulkan-spirv`
   builds, magic-filtered so `metal-spirv`'s MSL dump is rejected rather than
