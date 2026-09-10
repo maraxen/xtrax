@@ -148,7 +148,29 @@ jobs:
         run: uv sync --extra dev --extra io --extra export
 
       - name: Export tests against real IREE
-        run: uv run pytest tests/export/ -q
+        # A bare `pytest -q` here is exactly as green with every export test
+        # skipped as with all of them run, so the "0 skips against real IREE
+        # 3.11" claim this job exists to make had nothing behind it. `-rs`
+        # lists the skips; the grep turns them into a failure.
+        #
+        # `tee` rather than a plain redirect so a genuine test failure still
+        # prints its log: this step runs under bash -e, and with `> file` the
+        # step would abort before anything got echoed, leaving a red job with
+        # an empty log. `--color=no` keeps `^SKIPPED` matchable.
+        run: |
+          set +e
+          set -o pipefail
+          uv run pytest tests/export/ -q -rs --color=no 2>&1 | tee export_test_output.txt
+          pytest_status=$?
+          set -e
+          if grep -qE '^SKIPPED' export_test_output.txt; then
+            echo "::error::export-toolchain-tests skipped at least one test."
+            echo "A skip here means the IREE 3.11 toolchain did not install, so this"
+            echo "job's 'tested against real IREE' claim is void -- it is not a pass."
+            grep -E '^SKIPPED' export_test_output.txt
+            exit 1
+          fi
+          exit "$pytest_status"
 
   audit-port:
     needs: port-changes
