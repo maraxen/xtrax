@@ -47,16 +47,29 @@ aminx/utils/coordinates.py:44: error: expected rank to be smaller or equal to th
     noise = jax.random.normal(coord_key, coords.shape, dtype=coords.dtype)
 ```
 
-**There is no basis for believing blocker 2 is the last one.** Each was discoverable
-only by removing its predecessor and re-running a ~7-minute compile. That is the
-honest shape of Phase B: not "replace one op", but "iterate until it compiles,
-against an unknown count".
+**There are exactly two, and with both removed the whole path works.** A
+prototype removing blocker 1 (argsort substitute) and blocker 2 (noise bypass)
+compiles the real scoring function to a **7,707,585-byte artifact** and executes
+it against JAX:
 
-One promising lead on blocker 2, to try first because it may cost nothing:
-`coordinates.py:44` adds **stochastic coordinate noise**, which is a
-training/augmentation concern with no meaning for deterministic scoring. If aminx
-can be configured to disable backbone noise on the export path, blocker 2 may
-disappear rather than need fixing. Establish that before writing any code.
+```
+out[0] shape=()       match=True   max|diff|=4.768e-07
+out[1] shape=(40, 21) match=False  max|diff|=1.624e-05   <-- see tolerance, below
+out[2] shape=(40,)    dtype=int32  exact=True
+```
+
+So Phase B is no longer an open-ended search. It is: port two known fixes
+properly, and settle a tolerance. That is a materially different sprint from the
+one the previous revision described, and the difference was worth the two hours
+it took to establish.
+
+**A lead recorded in the previous revision is now dead, and would have wasted
+time.** It suggested blocker 2 might be a configuration flag, since coordinate
+noise is meaningless for deterministic scoring. It is not: the noise sits inside
+`jax.lax.cond(backbone_noise > 0, add_noise, no_noise, coordinates)`
+(`coordinates.py:50-55`), and `lax.cond` traces **both** branches, so
+`jax.random.normal` is in the graph whatever `backbone_noise` is set to. Removing
+it requires bypassing the call, not configuring it.
 
 **Second, blocker 1's fix is small and it exists.** Three alternative formulations
 of the same selection compile cleanly in isolation; only `top_k` fails:
@@ -100,7 +113,9 @@ worktree. Nothing here is quoted from a docstring or inferred from reading sourc
 | 2 | Does the real scoring fn export at concrete shapes? | **Yes** — 6,711,213 serialized bytes, outputs `()` f32, `(40,21)` f32, `(40,)` i32 |
 | 3 | Does that artifact compile in IREE? | **No** — `top_k` composite illegal, at concrete *and* symbolic shapes |
 | 3b | With `top_k` substituted, does it compile? | **No** — a *different* failure appears at `coordinates.py:44` (`jax.random.normal` rank error). Blocker count unknown |
-| 4 | Is there a legalizable substitute for `top_k`? | **Yes** — `argsort`+`take_along_axis`, `sort_key_val`, and `sort` all compile in isolation |
+| 3c | With BOTH blockers removed, does it compile? | **Yes** — 7,707,585-byte artifact, no errors. The count is two |
+| 3d | Does that artifact execute and match JAX? | **Yes**, with a caveat — indices exact, scalar `max diff 4.8e-07`, per-element logits `max diff 1.6e-05` which *fails* the default `1e-5` |
+| 4 | Is there a legalizable substitute for `top_k`? | **Yes** — `argsort`+`take_along_axis`, `sort_key_val`, and `sort` all compile in isolation; the argsort form is the one used in the working prototype above |
 | 5 | Is a *portable* native artifact executable? | **Yes** — `target-cpu=x86-64-v2` (12296 B) and `generic` (12248 B) both execute correctly |
 | 6 | Can any wasm triple avoid the emsdk runtime? | **No.** All five compile, but IREE **silently overrides** `--iree-llvmcpu-link-embedded=true`, always emitting `system-wasm-wasm_32` |
 | 7 | Do symbolic shapes work in general? | **Only for reshape-free programs.** See the boundary below |
@@ -143,9 +158,9 @@ Four things must be true at once.
 1. **A traceable callable.** aminx has one: `src/aminx/scoring/score.py:114`,
    `score_sequence`, `jax.jit`-wrapped with
    `static_argnames=("multi_state_strategy", "use_rolling_state")`.
-2. **A program IREE can legalize.** aminx does **not** have this. Two blockers
-   are known (`top_k`, then `jax.random.normal` coordinate noise) and there is no
-   evidence they are the only two. Phase B1.
+2. **A program IREE can legalize.** aminx does **not** have this out of the box,
+   but the gap is now fully mapped: exactly two constructs block it, and a
+   prototype with both bypassed compiles and runs. Phase B1.
 3. **Weights the artifact can use.** Already satisfied, and this corrects an earlier
    draft: at concrete shapes the Equinox weights are **baked into the module as
    constants** — that is most of the 6.7 MB of MLIR. There is no weight-conversion
@@ -178,18 +193,15 @@ sprint 260909.
 - **Phase B** (aminx: replace `top_k`, export, verify, ship) — **extended, 5**
 - **Phase C** (wasm execution spike) — **extended, 5**
 
-A + B is 8 points over 2 items. **`extended` is the rubric's ceiling, so it cannot
-express B's real cost**: B contains an open-ended discovery step (B1a — an unknown
-number of compile blockers, each found only by removing the last), a
-numerical-equivalence proof on a model's feature extraction, and an unsized
-dependency repin. Treat 5 as a floor, not an estimate.
+A + B is 8 points over 2 items. B remains **extended** — it carries a
+numerical-equivalence proof on a model's feature extraction, a tolerance
+decision, an unsized dependency repin, and a packaging/tagging decision. But it is
+no longer *unbounded*: the compile blockers are enumerated and a working prototype
+exists end to end, so the largest unknown in the previous revision is closed.
 
-**B is therefore the phase most likely to overrun**, and B1a exists so that
-overrun is discovered in hours rather than at the end of the sprint. If B1a's
-blocker list is long, the correct outcome is to stop and re-plan, not to push on.
-
-**A and B are strictly serial** — B0 needs Phase A on `main`. The sprint's duration
-is a sum, not a maximum.
+The residual risk in B is concentrated in the repin (B0), which crosses every
+xtrax change since a sha that predates two whole subpackages, and which nothing
+has yet sized.
 
 **Recommended cut: A + B.** It ends with an artifact the PI can run. Phase C is
 excluded and re-filed as research for one reason: its cost cannot be bounded from
@@ -314,34 +326,35 @@ gigabyte to every `pip install aminx`. Split it.
 If the repin's breakage is larger than a day, **stop and report** rather than
 absorbing it silently — that is a separate piece of work and it should be visible.
 
-**B1a — first, find out how many blockers there are. Timebox this before
-committing to the rest of the phase.** Two are known and each was invisible until
-its predecessor was removed. The loop is: substitute or disable the offending
-construct, re-export, re-compile (~7 minutes), read the next error. Stop when it
-compiles, or when the count makes the phase unreasonable.
+**B1a — port the two known fixes properly.** A throwaway prototype has already
+proved the shape of this: with `top_k` substituted and the noise call bypassed,
+the real scoring function compiles to a 7.7 MB artifact that executes and matches
+JAX. B1a is turning that into real code, not rediscovering it.
 
-Do this with **monkeypatches in a scratch script, not edits to aminx** — the point
-is to count blockers cheaply, not to land changes. Two traps, both hit while
-producing this spec:
+**What the prototype does NOT establish**, and B1a must:
+
+- It used **monkeypatches**, not edits. `features.top_k` and
+  `features.apply_noise_to_coordinates` were rebound at runtime. The real change
+  must live in aminx and must not degrade the JAX path.
+- It ran at **one shape only** (`L=40`, `S=1`). Nothing is known about other
+  lengths or multi-structure inputs.
+- It **removed noise entirely**, which is a semantic change if any scoring caller
+  ever passes `backbone_noise > 0`. Establish whether that is reachable in
+  scoring; if it is, the export path needs a documented precondition
+  (`backbone_noise == 0`) enforced at the boundary rather than silently assumed.
+
+Two traps, both hit while producing this spec — the second cost a wrong
+conclusion that survived into a draft:
 
 - `score_sequence` is wrapped in `@partial(jax.jit, ...)` inside `make_score_fn`,
-  so calling it once caches a trace. If you compute a reference with the original
-  code first, the patched call silently reuses the cached trace and your patch
-  never reaches the graph. Export in a **fresh process** with the patch applied
-  before anything is traced.
-- Verify the patch landed by counting the op in the emitted MLIR, not by assuming.
-  `chlo.top_k` went 2 → 0 only on the second attempt; the first looked plausible
-  and had changed nothing.
+  so calling it once caches a trace. Compute a reference with the original code
+  first and the patched call silently reuses that trace — the patch never reaches
+  the graph. Export in a **fresh process**, patched before anything is traced.
+- **Verify the patch landed by counting the op in the emitted MLIR.** On the first
+  attempt `chlo.top_k` stayed at 2 while the run looked entirely successful; only
+  counting caught it. It went to 0 on the second.
 
-Report the blocker list, with each one's file:line and error, before B1b. **If the
-list is long or reaches into model semantics rather than op selection, stop and
-escalate** — that is a different sprint, and finding it out cheaply is this
-sub-task's whole value.
-
-Start with the coordinate-noise lead: it may be a configuration flag rather than a
-code change, and if so it costs nothing.
-
-**B1b — replace `top_k`, and prove the replacement identical.** `model/features.py:48`
+**B1b — replace `top_k`, and prove the replacement identical.****B1b — replace `top_k`, and prove the replacement identical.** `model/features.py:48`
 is `return jax.lax.top_k(x, k)`. Replace it with an IREE-legalizable formulation;
 `argsort` + `take_along_axis` and `sort_key_val` both compile (measured above).
 
@@ -373,11 +386,25 @@ tensors, establishing only that a signature serialises. B3 loads a real checkpoi
 runs the JAX path and the compiled artifact on the same real input, and compares.
 
 Compare **out[1], the `(40, 21)` per-element logits array**, not out[0]'s reduced
-scalar — the scalar is the weak witness A3 warns about, and this function returns a
-per-element array for free. **This is the sub-task that makes the sprint's claim
-true**; without it, "we ship a compiled artifact" is unverified.
+scalar. This is not a stylistic preference — it is measured. On the working
+prototype the scalar **passes** at `max diff 4.8e-07` while the per-element array
+**fails** the same default tolerance at `max diff 1.6e-05`. A B3 that compared the
+scalar would have reported success over a real discrepancy, which is precisely the
+failure mode this sprint exists to remove.
 
-**B4 — ship it, tagged honestly.** Reverse `include-package-data = false` for the
+**Settle the tolerance explicitly, and justify it.** `1.6e-05` is consistent with
+ordinary float32 accumulation differences between XLA and IREE, and `np.allclose`
+computes `atol + rtol·|b|`, so the failures are concentrated on small-magnitude
+logits where the effective tolerance collapses toward `atol`. Do **not** simply
+widen `rtol` until it passes. Either establish an absolute tolerance appropriate
+to the logits' range and say why, or show the divergence is smaller than the
+model's own run-to-run variation. Record the chosen number and its reasoning in
+the artifact's provenance — a tolerance picked to make a test green is the same
+false green in a different costume.
+
+Assert at more than one sequence length; the prototype covered only `L=40`.
+
+**B4 — ship it, tagged honestly.****B4 — ship it, tagged honestly.** Reverse `include-package-data = false` for the
 artifact path only. Report wheel size before and after.
 
 **The wheel tag is not optional.** An `embedded-elf-x86_64` artifact inside a
