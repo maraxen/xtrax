@@ -297,6 +297,9 @@ documented length model (`scripts/ebm/bucket_boundary_check.py`, n=20000):
 | `L > 512` — overflow | **7.68%** |
 | a fifth `1024` bucket would add | **+7.31%** (→ 99.6%) |
 
+*(The ladder was extended to `2048` and split into bundled and on-demand tiers by
+amendment 13, below. The `7.68%` overflow row is what that amendment closes.)*
+
 The 7.68% overflow is the repo's own pre-existing "~7% proxy-length overflow
 CONCERN", not a new problem introduced here.
 
@@ -322,6 +325,90 @@ artifacts (~28 MB) cover 92% of that distribution; five cover 99.6%.
 test parameterised over lengths straddling `k_neighbors`, asserting invariance above
 and refusal below, is the gate. The measurement scripts behind the table are
 throwaway probes; the assertion belongs in the repo.
+
+### Amendment 13 — the ladder runs to 2048, and splits into a bundled tier and an on-demand tier
+
+**Decided by Marielle, 260910**, on the amendment-12 numbers: *"let's add a 1024 and a
+couple other buckets up to 2048 I think. but larger buckets should be fetched on
+demand rather than prefetched."*
+
+**The ladder is `(64, 128, 256, 512, 1024, 1536, 2048)`.**
+
+Per-bucket share of aminx's own documented length model (n=100000):
+
+| bucket | share | cumulative | tier |
+|---|---|---|---|
+| 64 | 0.35% | 0.35% | bundled |
+| 128 | 26.97% | 27.32% | bundled |
+| 256 | 46.92% | 74.24% | bundled |
+| 512 | 18.18% | **92.43%** | bundled |
+| 1024 | 7.16% | 99.58% | on demand |
+| 1536 | 0.41% | 99.99% | on demand |
+| 2048 | ~0.00% | 99.99% | on demand |
+
+**Do not read the top two rows as evidence those buckets are unnecessary.** The proxy
+distribution is **clipped at 1500** (`SYNTHETIC_MAX_LENGTH`), so `2048`'s 0.00% is an
+artifact of the clip, not a measurement — the model cannot express a protein longer
+than 1500 and therefore cannot tell you how many there are. Real sequences run far
+past 2048. The 1536 and 2048 buckets are justified as cheap insurance against a tail
+the distribution structurally cannot see, **not** by their measured share, and the
+document should not later be mined for a "0.00%, delete it" argument.
+
+**Tiering.** The bundled tier is `64..512`: four artifacts, ~28 MB, serving **92.43%**
+of inputs with no network at all. The on-demand tier is `1024..2048`, fetched on
+first use and cached.
+
+The cost of the boundary, stated plainly so it can be moved on evidence: with the
+split at 512, **7.16% of inputs — about one in fourteen — hit a fetch on first use**
+(that is the 1024 bucket alone). Moving the split to 1024 would bundle 99.58% offline
+for ~35 MB instead of ~28 MB. The split stays at 512 as decided; this paragraph
+exists so that choice is revisitable with a number rather than re-derived.
+
+**Upward fallback is numerically sound; downward is not.** This follows directly from
+amendment 12 and is worth stating because it is counter-intuitive: since padding is
+invariant at or above `k_neighbors`, serving an `L=600` input from a **cached 2048**
+artifact returns the same logits as the 1024 artifact would, to float32 noise. It is
+merely slower. So when the exact bucket is unavailable (offline, fetch failed), the
+entry point **may** fall back to any *larger* cached bucket and must say it did.
+Falling back to a *smaller* bucket is truncation and must never happen.
+
+**Requirements on the on-demand path** — this is new attack surface and the sprint's
+whole subject is false greens, so it gets gates rather than prose:
+
+- **Verify `cpu_features` on every fetched artifact**, the same assertion B4 already
+  requires for the shipped one. A downloaded artifact is precisely where a
+  host-tuned (`NATIVE`) build would slip past, and it would fault on the PI's machine
+  with an illegal instruction. Verify **after** download, before first execution.
+- **Pin by content hash, not by name.** Record the digest in aminx alongside the
+  bucket, and refuse an artifact whose digest does not match.
+- **Fail loudly offline.** No network and no cache must produce an error naming the
+  bucket, the expected digest, and the command to pre-fetch it — never a silent
+  fallback to a smaller bucket, and never a silent switch to the JAX path (that
+  would make the artifact's whole purpose unobservable).
+- **Provide an explicit pre-fetch command** so an air-gapped or
+  cluster-batch user can populate the cache ahead of a run rather than discovering
+  the dependency mid-job.
+- **Cache location must be configurable** and default somewhere durable across runs;
+  `huggingface_hub` is already an aminx dependency and already has this behaviour, so
+  reuse it rather than inventing a second cache.
+
+**This resolves B4's four-way packaging question rather than leaving it open**, and it
+resolves it as a *split* — which none of the four options was on its own:
+
+- Bundled tier (`64..512`) → **option 3**, the platform-tagged companion
+  distribution (`aminx-artifact-linux-x86_64`) under an environment marker. It stays
+  correct on macOS by not resolving there.
+- On-demand tier (`1024..2048`) → **option 2**, optional download, with the gates
+  above.
+- Option 4 (ship `.mlir`, compile on first use) stays rejected: it puts
+  `iree-base-compiler` (349 MB) into every install, which is more than the entire
+  bundled tier costs.
+
+**Gate:** a CI job must exercise the on-demand path end to end — fetch a
+non-bundled bucket, verify its digest and `cpu_features`, execute it, and compare
+against JAX — plus a test that the offline path raises rather than degrades. A
+mocked fetch does not satisfy this; the failure mode being gated is a real artifact
+built for the wrong target.
 
 **The symbolic-shape boundary (row 7), measured case by case.** This matters
 because an earlier draft of this spec claimed shape polymorphism was generally
@@ -424,7 +511,8 @@ open question it leaves is a product one rather than a technical one — *which*
 lengths to emit — which only Marielle and the PI's actual use can answer.
 
 > **CLOSED by amendment 12.** The question turned out to be technical after all,
-> and it has an answer: emit the `(64, 128, 256, 512)` bucket ladder and refuse
+> and it has an answer: emit a bucket ladder — `(64, 128, 256, 512)` as measured
+> here, extended to `2048` and tiered by amendment 13 — and refuse
 > below `k_neighbors`. It was never answerable as a product question, because
 > aminx's length distribution is continuous — there was no finite list to ask for.
 
@@ -859,12 +947,15 @@ Padding was measured score-preserving at and above the clamp (`1.5e-06` at `L=48
 against `2.1e-01` one residue below it), so the artifact is **bucket-aligned**, not
 exact-length.
 
-- **Emit one `.vmfb` per bucket ceiling**, using the `(64, 128, 256, 512)` ladder
-  aminx already carries at `tiling/bucketing.py:32` and that the user confirmed at
-  the ProteinEBM design-review gate. Four artifacts cover **92.3%** of the project's
-  own documented length model; a fifth at `1024` takes it to **99.6%**. Each is an
-  independent compile at a measured **8.9 s** and ~7 MB, so the whole ladder is
-  ~28 MB and under a minute.
+- **Emit one `.vmfb` per bucket ceiling**, using the
+  **`(64, 128, 256, 512, 1024, 1536, 2048)`** ladder settled in amendment 13 — the
+  first four are the ceilings aminx already carries at `tiling/bucketing.py:32` and
+  that the user confirmed at the ProteinEBM design-review gate; the top three extend
+  it. Each is an independent compile at a measured **8.9 s** and ~7 MB, so all seven
+  are ~49 MB and under two minutes to build.
+  **They do not all ship the same way**: `64..512` (~28 MB, 92.43% of inputs) is
+  bundled, `1024..2048` is fetched on demand. See amendment 13 for the tiering, the
+  upward-fallback allowance, and the gates the fetch path has to pass.
   **The earlier default of `{17, 40, 128}` is withdrawn** — two of those three sit
   below `k_neighbors`, i.e. in the only regime where the artifact must refuse, and
   none of them is a length the PI would ever score. There is no "declared list of
@@ -876,7 +967,9 @@ exact-length.
   padding moves real residues' logits in that regime. `L=50` into the 64-bucket is
   correct; `L=20` into the same bucket is a silent wrong answer. Note aminx's own
   `tests/data/5awl.pdb` is `L=10` and will hit this path.
-- **Refuse `L` above the top bucket too**, rather than silently truncating.
+- **Refuse `L` above the top bucket (2048) too**, rather than silently truncating.
+  A larger *cached* bucket may serve a smaller input (amendment 13: upward fallback
+  is numerically sound); nothing may serve an input larger than every bucket.
 - **State the `k_neighbors` floor in the artifact's provenance and in the PR**, with
   the number the artifact was built against. Someone will otherwise assume the
   artifact is safe at any length, which is precisely the assumption the `L=47` vs
@@ -962,7 +1055,14 @@ actually *serves*. `L=17` and `L=40` are below `k_neighbors` and are cases the e
 point **refuses**, so they cannot be parity cases — asserting parity on an input the
 artifact rejects is not a test of anything. Restructure the sweep as:
 
-- **Parity cases**, one per bucket the artifact ships, at a real length inside each:
+- **Parity cases**, one per bucket the artifact ships, at a real length inside each.
+  With the seven-bucket ladder of amendment 13 this means the four bundled buckets
+  from real in-repo structures, **plus at least one on-demand bucket** (`1024`) so
+  the tier that is fetched rather than shipped is not the only tier nobody checks.
+  The in-repo corpus tops out at 495 residues, so an on-demand parity case needs a
+  longer structure — state where it comes from rather than synthesising geometry,
+  since a fabricated backbone exercises the k-NN graph differently than a real one.
+  Concretely, at a real length inside each:
   e.g. `L=76 → 128`, `L=153 → 256`, `L=415 → 512`, and `L=53 → 64` for the narrow
   band just above the clamp. All four are real in-repo structures (`1ubq`, `1mbn`,
   `3pgk`, and a truncation), so no synthetic geometry is needed.
@@ -1019,6 +1119,14 @@ and the two it named are not the strongest.
 Decision 1 is later answered yes, and it does not put a third of a gigabyte into
 every install the way (4) does. Decide explicitly and say which in the PR — and note
 that whichever is chosen, the gate below asserts it rather than trusting the prose.
+
+> **DECIDED by amendment 13, and the answer is a split rather than one option.**
+> Bundled tier `64..512` → **(3)**, the platform-tagged companion distribution.
+> On-demand tier `1024..2048` → **(2)**, optional download, gated on a digest check
+> and a `cpu_features` check after fetch. **(4)** stays rejected — 349 MB of compiler
+> in every install costs more than the entire bundled tier. No option on its own
+> covered a seven-bucket ladder whose tail is too rare to bundle and too important to
+> drop.
 
 Add a CLI path that runs inference through the artifact instead of JAX, plus a test
 that the two agree. Do **not** ship weights in the wheel: the artifact already
