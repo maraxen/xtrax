@@ -74,13 +74,35 @@ WebGPU claim. R2′ and R2″ differ from each other in exactly one respect — 
 
 ### R1 — Wait for IREE
 
-Track [IREE issue #8327](https://github.com/iree-org/iree/issues/8327), open since 2022, no
-movement as of 260902. Engineering cost zero; agency zero; latency unbounded.
+The WebGPU epic is [IREE #13702](https://github.com/iree-org/iree/issues/13702). Its
+end-to-end path landed upstream in
+[#24463](https://github.com/iree-org/iree/issues/24463), closed 2026-05-18: a compiler
+backend emitting WGSL executables, plus a JavaScript-hosted HAL driver that submits them
+through the browser/Node WebGPU API from a freestanding wasm32 runtime -- explicitly
+*not* an Emscripten port and not a native Dawn HAL. The route is therefore no longer
+"nobody has written a WebGPU HAL for IREE"; one exists and is merged.
+
+What it is blocked on instead is
+[#24650](https://github.com/iree-org/iree/issues/24650), open since 2026-06-29:
+`webgpu-spirv` compilation fails on any dispatch carrying push constants, with Tint
+reporting ``use of variable address space 'immediate' requires the
+immediate_address_space language feature, which is not allowed in the current
+environment``. **That independently confirms this spec's central finding** -- push
+constants are the blocker -- while reclassifying it from "no backend exists" to "a live
+bug in a backend that does". Engineering cost zero; agency zero; latency bounded by
+someone else's bug rather than unbounded.
 
 **Trigger condition.** `iree-compile --iree-hal-list-target-backends` lists a `webgpu`
-or `webgpu-spirv` backend. Today it lists exactly
-`cuda  llvm-cpu  metal-spirv  rocm  vmvx  vmvx-inline  vulkan-spirv`
-(`260901_webgpu-export-measurement-pass.md:69-73`).
+or `webgpu-spirv` backend. **Not met on the pinned toolchain, re-measured 260910:** the
+installed `iree-base-compiler 3.11.0rc20260316` lists exactly
+`cuda  llvm-cpu  metal-spirv  rocm  vmvx  vmvx-inline  vulkan-spirv`, reproducing
+`260901_webgpu-export-measurement-pass.md:69-73` exactly. That build is dated 2026-03-16
+and so predates #24463 by two months; the `export` extra's range is
+`iree-base-compiler>=3.11,<4` and stable PyPI carries nothing above `3.11.0`, so
+reaching the new backend means a nightly index or a 3.12 release, and then #24650 on
+top of that. **Both conditions must hold** -- a release carrying the backend is not by
+itself the trigger, because a `webgpu-spirv` that rejects push constants compiles
+nothing this package exports.
 
 **What becomes cheap on trigger.** Nearly everything. `Target` is plain data and
 `compile_for_target` reads the backend and flags off the object rather than branching
@@ -1006,6 +1028,16 @@ printing PASS over failing tests. Its exit code alone is not evidence the suite 
   above.
 - `.praxia/docs/plans/260909_runnable-artifact-and-wasm-price.md` — Phase A2's symbolic-shape
   boundary table, cited by `tests/export/test_symbolic_shapes.py:27-29`.
-- [IREE issue #8327](https://github.com/iree-org/iree/issues/8327) — R1's watch item.
+- [IREE issue #13702](https://github.com/iree-org/iree/issues/13702) — the WebGPU epic;
+  R1's watch item. [#24463](https://github.com/iree-org/iree/issues/24463) (closed
+  2026-05-18) landed the WGSL target and JS-hosted HAL driver;
+  [#24650](https://github.com/iree-org/iree/issues/24650) (open 2026-06-29) is the
+  push-constant bug that still gates it, and is upstream's independent confirmation of
+  this spec's central finding.
+- [IREE issue #8327](https://github.com/iree-org/iree/issues/8327) — *not* a WebGPU
+  issue, despite being cited as R1's watch item in this spec's first revision. It is
+  "Port the IREE runtime to WebAssembly+JavaScript without Emscripten", and it bears on
+  the `wasm32` target's execution story (`src/xtrax/export/targets.py:15-17`), not on
+  WebGPU. #24463's freestanding-wasm32 runtime is the same territory.
 - `.praxia/docs/specs/260618_hmw-design-unified-implementation-valida.md:292` — the
   `## Tech debt` table format this document follows.
