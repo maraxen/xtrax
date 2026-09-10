@@ -115,10 +115,48 @@ worktree. Nothing here is quoted from a docstring or inferred from reading sourc
 | 3b | With `top_k` substituted, does it compile? | **No** — a *different* failure appears at `coordinates.py:44` (`jax.random.normal` rank error). Blocker count unknown |
 | 3c | With BOTH blockers removed, does it compile? | **Yes** — 7,707,585-byte artifact, no errors. The count is two |
 | 3d | Does that artifact execute and match JAX? | **Yes**, with a caveat — indices exact, scalar `max diff 4.8e-07`, per-element logits `max diff 1.6e-05` which *fails* the default `1e-5` |
+| 3e | Does "exactly two" survive a **shape change**? | **Yes** — at `L=17`, `L=40` and `L=128` the export is identical in kind: zero `chlo.top_k`, zero RNG ops, zero composites, and all three compile clean. No third blocker is hiding behind `L=40` |
+| 3f | Does the parity margin survive a shape change? | **No — and this is the important one.** `L=17` and `L=128` *pass* the default tolerance; `L=40` *fails* it. The margin is thin and data-dependent, not a systematic gap |
 | 4 | Is there a legalizable substitute for `top_k`? | **Yes** — `argsort`+`take_along_axis`, `sort_key_val`, and `sort` all compile in isolation; the argsort form is the one used in the working prototype above |
 | 5 | Is a *portable* native artifact executable? | **Yes** — `target-cpu=x86-64-v2` (12296 B) and `generic` (12248 B) both execute correctly |
 | 6 | Can any wasm triple avoid the emsdk runtime? | **No.** All five compile, but IREE **silently overrides** `--iree-llvmcpu-link-embedded=true`, always emitting `system-wasm-wasm_32` |
 | 7 | Do symbolic shapes work in general? | **Only for reshape-free programs.** See the boundary below |
+
+**The three-shape sweep (rows 3e and 3f), measured.** The prototype that
+established the blocker count ran at exactly one shape, which is the weakest point
+a reviewer could press on. Re-running export, compile and execution at two further
+lengths — one below the model's 48-neighbour count, one three times longer than the
+original — settles both halves of that worry, and the two halves come out
+differently:
+
+| L | artifact | out[0] scalar | out[1] per-element `max|diff|` | passes default `1e-5` |
+|---|---|---|---|---|
+| 17 | 7,027,777 B | 2.384e-07 | 7.391e-06 | **yes** |
+| 40 | 7,707,585 B | 4.768e-07 | **1.624e-05** | **no** |
+| 128 | 6,992,225 B | 4.768e-07 | 7.808e-06 | **yes** |
+
+Decoded indices (`out[2]`) are bit-exact at all three lengths.
+
+Two consequences, and the second is the one that changes B3.
+
+**The blocker count is safe to state.** Three lengths, spanning the interesting
+boundary (`L=17` is *below* the 48-neighbour count the model gathers over), all
+produce a module with no illegal construct and all compile. "Exactly two" is no
+longer a claim resting on a single lucky shape.
+
+**A single-shape parity test would have been a coin flip.** `L=40` fails the
+default tolerance while `L=17` and `L=128` pass it comfortably, at roughly half the
+error. So the `1.6e-05` figure is not "IREE is systematically less accurate than
+XLA" — it is one draw from a distribution whose tail crosses the default threshold.
+Had B3 been written against `L=17` alone it would have gone green and shipped a
+gate that fails intermittently on real inputs, which is exactly the class of false
+green this sprint exists to remove. **B3 must sweep lengths, and must not infer a
+tolerance from one of them.**
+
+Note also that artifact size is **not** monotonic in `L` — `L=40` produces the
+largest of the three. Size is dominated by the weight constants, with kernel
+specialisation varying non-monotonically on top. Do not use artifact size as a
+proxy for input size in any budget assertion.
 
 **The symbolic-shape boundary (row 7), measured case by case.** This matters
 because an earlier draft of this spec claimed shape polymorphism was generally
@@ -227,14 +265,19 @@ No answer defaults to Linux x86-64, because it is the only one verifiable by
 running. **Given the darwin declaration, please answer this one explicitly rather
 than letting it default.**
 
-### Decision point 2 — native-first, or take the wasm risk now?
+### Decision point 2 — native-first, or take the wasm risk now? **ANSWERED**
 
-- **Native-first (recommended).** Phase A + B, ending in a verified runnable
-  artifact. wasm filed as research beside #4856.
-- **wasm now.** Add Phase C, accept 13 points and an unbounded phase, and accept
-  that the sprint may end with a spike report and no shippable artifact.
+**Decided 2026-09-10 (Marielle): ship the verified native artifacts first, before
+the wasm spike.**
 
-Phase C can be added without changing A or B.
+So the sprint is **Phase A + Phase B**, ending in a runnable artifact that has
+actually been executed. **Phase C is not in this sprint.** It stays written down
+below — the research is real and the write-up is worth keeping — but it is not
+scheduled, not estimated against this sprint's budget, and nothing in A or B may
+be shaped around it. wasm is filed as research beside #4856.
+
+This also resolves the rubric: the recommended cut (A + B, 8 points) *is* the
+sprint, rather than a recommendation competing with a 13-point alternative.
 
 ## Phase A — a target that is both verified and distributable
 
@@ -392,8 +435,10 @@ prototype the scalar **passes** at `max diff 4.8e-07` while the per-element arra
 scalar would have reported success over a real discrepancy, which is precisely the
 failure mode this sprint exists to remove.
 
-**Settle the tolerance explicitly, and justify it.** `1.6e-05` is consistent with
-ordinary float32 accumulation differences between XLA and IREE, and `np.allclose`
+**Settle the tolerance explicitly, and justify it.** Across the three measured
+lengths the per-element error runs `7.4e-06 / 1.6e-05 / 7.8e-06` — the same order
+of magnitude throughout, consistent with ordinary float32 accumulation differences
+between XLA and IREE rather than with a defect. `np.allclose`
 computes `atol + rtol·|b|`, so the failures are concentrated on small-magnitude
 logits where the effective tolerance collapses toward `atol`. Do **not** simply
 widen `rtol` until it passes. Either establish an absolute tolerance appropriate
@@ -402,9 +447,15 @@ model's own run-to-run variation. Record the chosen number and its reasoning in
 the artifact's provenance — a tolerance picked to make a test green is the same
 false green in a different costume.
 
-Assert at more than one sequence length; the prototype covered only `L=40`.
+**Sweep at least three sequence lengths, and treat that as load-bearing rather
+than as thoroughness.** The measured sweep above shows `L=40` failing the default
+tolerance while `L=17` and `L=128` pass at roughly half the error. A test written
+against any single length would therefore be a coin flip on whether the gate is
+green — and a green one would be the more dangerous outcome, because it would hide
+an intermittent failure behind a passing check. Include `L=40` explicitly as a
+regression case, since it is the known-worst draw.
 
-**B4 — ship it, tagged honestly.****B4 — ship it, tagged honestly.** Reverse `include-package-data = false` for the
+**B4 — ship it, tagged honestly.** Reverse `include-package-data = false` for the
 artifact path only. Report wheel size before and after.
 
 **The wheel tag is not optional.** An `embedded-elf-x86_64` artifact inside a
@@ -428,7 +479,11 @@ Green, with B1's tie-breaking equivalence test passing, B3 passing against a rea
 checkpoint on the per-element output, the artifact present in the built wheel, and
 the wheel's tag stated in the PR body.
 
-## Phase C — the wasm spike, if taken
+## Phase C — the wasm spike (DEFERRED, not in this sprint)
+
+> **Not scheduled.** Decision point 2 was answered native-first on 2026-09-10.
+> This section is retained as the research record for whenever wasm is picked up;
+> it is not part of this sprint's scope, budget, or gates.
 
 **Not a deliverable.** Its output is a written answer and a decision, and it must be
 allowed to conclude "no". Time-box it; if C1 and C2 are not both working inside the
