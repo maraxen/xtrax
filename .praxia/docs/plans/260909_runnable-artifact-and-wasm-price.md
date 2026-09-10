@@ -444,12 +444,42 @@ unverified. Document the boundary next to the target. A single passing positive
 test would certify a capability that does not hold for the consumer this exists
 for — that is the failure mode this whole sprint is about.
 
-**A3 — parity on a per-element output, at more than one input.** `verify_native_parity`
-(`src/xtrax/export/parity.py:107`) defaults to `atol=rtol=1e-5`, and `np.allclose`
-computes `atol + rtol·|b|`. On a **reduced scalar** that is far weaker than "1e-5"
-reads: at L=1024 the observed diff was 3.0e-5 against a value of 179.6, passing
-because rtol allowed 1.8e-3. Add a test whose oracle output is an **array, not a
-scalar sum**, verified at three input sizes.
+**A3 — parity at more than one input size.** *(Rescoped 2026-09-10 during
+implementation; the previous rationale was measured and found false. See below.)*
+
+Add a test that verifies per-element parity across **at least three input sizes** and
+across **both** `NATIVE` and `NATIVE_PORTABLE`. Covering the portable target at several
+shapes is the substance: Phase B ships a `native-portable` artifact to a real person.
+Have it also read the artifact's own `cpu_features` back with `iree-dump-module` and
+assert the x86-64-v2 set with no host-only feature — that is the check a build which
+silently used the wrong target cannot pass.
+
+**What the previous revision claimed, and why it was wrong.** It said existing tests
+compare a *reduced scalar*, where `np.allclose`'s `atol + rtol·|b|` makes the default
+`1e-5` far weaker than it reads, citing an observed 3.0e-5 diff against a value of 179.6
+passing on a 1.8e-3 effective tolerance. Checked against the real files: the shared
+oracle at `tests/export/conftest.py:70` already returns an **array**
+(`jnp.stack([model(arr[i]) for i in ...])`), and `test_size_budget.py:77` uses
+`jax.vmap`. Array oracles are already the established pattern here, so "add an array
+oracle" was work already done.
+
+Measured directly at three cardinalities on a 4→64→8 MLP, the scalar-vs-array gap is
+also much smaller than implied — the scalar's effective tolerance came out **2.1–2.3×**
+looser, not ~180×, and both pass:
+
+| cardinality | per-element `max|diff|` | scalar-sum `max|diff|` | scalar tol / array tol |
+|---|---|---|---|
+| 256 | 4.77e-06 | 7.63e-06 | 2.1× |
+| 1024 | 5.72e-06 | 1.14e-05 | 2.3× |
+| 4096 | 7.63e-06 | 1.14e-05 | 2.3× |
+
+The tolerance asymmetry is real and worth a comment in the test, but it is not the gap.
+
+**The real gap is shape coverage.** Every existing export test runs one fixed 32×8
+input. Phase B's sweep found that a single-shape parity test would have been a coin
+flip — and that the *green* draw is the more dangerous one, because it hides an
+intermittent failure behind a passing check. A3 closes that here, in xtrax, on the
+target Phase B ships.
 
 **A4 — budgets, target list, docs.** Adding a fifth target touches more than one
 file: `tests/export/test_targets.py:24` asserts `ALL_TARGETS` equals an exact
@@ -537,8 +567,26 @@ uv run --extra dev ruff check src/ tests/ && uv run --extra dev ty check src/
 just audit-public-api
 ```
 
-Green, with A2's negative test and A3's per-element test both demonstrated **red**
-against `origin/main` first, and measured sizes pasted into the PR body.
+Green, with measured sizes pasted into the PR body.
+
+**The previous revision also required A2's negative test and A3's test to be
+"demonstrated **red** against `origin/main` first". That requirement is wrong for both,
+and was dropped rather than satisfied by contrivance.** Red-first is the right discipline
+for a test that pins a *fix*; neither of these does. Measured before implementation:
+
+- **A2's negative case already fails correctly.** A dynamic reshape under symbolic shapes
+  raises `CompileError` naming `stablehlo.dynamic_broadcast_in_dim` as explicitly illegal,
+  with the offending source line. The diagnostic is already clear, so A2 *pins* good
+  behaviour; the regression it guards against is that diagnostic degrading.
+- **A3's case already passes**, at every size measured. It is shape-regression coverage,
+  not a bug fix.
+
+Requiring red here would have meant either writing a test that fails for a manufactured
+reason, or reporting a red that was not real — both of which are the false-evidence
+failure mode this sprint exists to remove, just pointed the other way. What each test
+must instead demonstrate is stated in its own task: for A2, that the negative half fails
+loudly *and names the op*; for A3, that parity holds at three sizes on both executed
+targets, with `cpu_features` read back from the artifact.
 
 ## Phase B — make aminx's scoring function compilable, then ship it
 
