@@ -205,7 +205,11 @@ jobs:
 
       - name: Build wheel (no dev extra)
         run: |
-          uv sync
+          # No dev extra, per this step's name: since #4969 the default `dev`
+          # group is an alias of the 15-package dev extra, so without
+          # --no-default-groups a plain `uv sync` would install beartype,
+          # libcst, jaxlint, chex and the rest that this job does not want.
+          uv sync --no-default-groups
           uv build
 
       - name: Assert port/ and controller/ absent from wheel
