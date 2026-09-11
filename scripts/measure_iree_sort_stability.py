@@ -214,6 +214,67 @@ def measure_stable_argsort(length: int, k: int, n_real: int) -> bool:
     return idx_same
 
 
+def measure_mask_intersection(length: int, k: int) -> dict[str, int]:
+    """M5: does the tie divergence reach a LIVE (mask==1) row?
+
+    Replicates aminx `features.py` masking verbatim -- masked pairs become
+    `+inf`, so under `top_k(-distances_masked, k)` they sort last and are
+    selected only when a row has fewer than `k` finite entries. Reports, per
+    regime, how many differing rows are live.
+
+    Returns a mapping of regime label -> count of live differing rows.
+    """
+
+    def shipped_knn(coords, mask):
+        d = jnp.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
+        distances_masked = jnp.where(
+            (mask[:, None] * mask[None, :]).astype(jnp.bool_), d, jnp.inf
+        )
+        order = jnp.argsort(distances_masked, axis=-1, stable=True)[..., :k]
+        return order.astype(jnp.int32)
+
+    rng = np.random.default_rng(0)
+    steps = rng.normal(size=(length, 3)).astype(np.float32)
+    steps /= np.linalg.norm(steps, axis=-1, keepdims=True)
+    # Jitter the step length. A CONSTANT 3.8 A step makes d(i, i-1) and
+    # d(i, i+1) exactly equal, manufacturing geometric ties that are an
+    # artefact of the generator rather than of masking -- that confound was
+    # measured and removed here deliberately.
+    steps *= (3.8 + rng.normal(size=(length, 1)) * 0.15).astype(np.float32)
+    coords = jnp.asarray(np.cumsum(steps, axis=0).astype(np.float32))
+
+    entry = _build(
+        shipped_knn,
+        jax.ShapeDtypeStruct(coords.shape, coords.dtype),
+        jax.ShapeDtypeStruct((length,), jnp.int32),
+    )
+
+    results: dict[str, int] = {}
+    logger.info("M5 mask intersection (L=%d, k=%d)", length, k)
+    for label, n_valid in (("no padding", length), ("sub-k padding", max(k - 8, 1))):
+        mask = np.zeros(length, dtype=np.int32)
+        mask[:n_valid] = 1
+        xla = np.asarray(shipped_knn(coords, jnp.asarray(mask)))
+        iree = np.asarray(entry(np.asarray(coords), mask))
+        differing = np.nonzero((xla != iree).any(axis=-1))[0]
+        live = [int(r) for r in differing if mask[r] == 1]
+        results[label] = len(live)
+        logger.info(
+            "M5   %-14s valid=%3d ties_selected=%-3s differing=%2d live_differing=%2d",
+            label,
+            n_valid,
+            "YES" if n_valid < k else "no",
+            len(differing),
+            len(live),
+        )
+    logger.info(
+        "M5 VERDICT: divergence requires an exact tie on a live row. With every "
+        "row holding >= k finite entries there is none; below k, live rows are "
+        "forced to select tied padding and do diverge."
+    )
+    return results
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--runs", type=int, default=20, help="M2 replay count")
@@ -222,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--length", type=int, default=32, help="M4 row length")
     parser.add_argument("--k", type=int, default=8, help="M4 top-k")
     parser.add_argument("--n-real", type=int, default=12, help="M4 unmasked slots")
+    parser.add_argument("--knn-length", type=int, default=64, help="M5 chain length")
+    parser.add_argument("--k-neighbors", type=int, default=48, help="M5 kNN k")
     parser.add_argument(
         "--fail-on-divergence",
         action="store_true",
@@ -245,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     measure_determinism(args.runs)
     m3_agree = measure_integer_sort_tiebreak(args.n, args.distinct)
     m4_agree = measure_stable_argsort(args.length, args.k, args.n_real)
+    measure_mask_intersection(args.knn_length, args.k_neighbors)
 
     if args.fail_on_divergence and not (m3_agree and m4_agree):
         logger.error("sort tie-breaking diverges between XLA and IREE")
