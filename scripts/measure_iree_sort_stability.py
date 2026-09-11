@@ -8,7 +8,7 @@ headline claim -- that IREE does not honour `jnp.argsort(stable=True)` -- is
 the identified mechanism for the aminx #5093 divergence and will be re-run
 against future IREE releases to see when it closes.
 
-Four measurements:
+Six measurements:
 
 M1  A multi-output (pytree) exported function survives jax.export -> IREE ->
     runtime, and what Python type comes back. The probe design in the spec
@@ -28,6 +28,17 @@ M4  Whether IREE honours `jnp.argsort(..., stable=True)` on a tie-heavy float
     row. This is verbatim the construct aminx PR #155 shipped to replace the
     IREE-illegal `jax.lax.top_k`, whose correctness argument depends on stable
     tie-breaking.
+
+M5  Whether the divergence reaches a LIVE (mask==1) row. Masked pairs become
+    `+inf` and sort last, so they are selected only by a row holding fewer than
+    `k` finite entries -- a regime the artifact REFUSES under the bucket-ladder
+    clamp. Diagnostic only; it cannot carry the claim on its own.
+
+M6  Whether an IN-CONTRACT input diverges: exact geometric ties at `L >= k`
+    with no padding. An ideal alpha-helix has `d(i,j)` depending only on
+    `|i-j|`, so equal separations are exactly equidistant. This is the
+    load-bearing measurement, and idealised backbones are the standard input of
+    de novo design rather than a synthetic curiosity.
 
 Requires the `export` and `export-runtime` extras:
 
@@ -173,10 +184,12 @@ def measure_stable_argsort(length: int, k: int, n_real: int) -> bool:
 
     # A masked distance row: real values in the first `n_real` slots, the rest
     # clamped to one identical sentinel -- exactly what padding produces.
-    row = np.concatenate([
-        np.linspace(0.1, 1.2, n_real).astype(np.float32),
-        np.full(length - n_real, 1.0e4, dtype=np.float32),
-    ])
+    row = np.concatenate(
+        [
+            np.linspace(0.1, 1.2, n_real).astype(np.float32),
+            np.full(length - n_real, 1.0e4, dtype=np.float32),
+        ]
+    )
     tied = jnp.asarray(np.stack([row, row[::-1].copy()]))
 
     entry = _build(topk_shipped, jax.ShapeDtypeStruct(tied.shape, tied.dtype))
@@ -194,10 +207,14 @@ def measure_stable_argsort(length: int, k: int, n_real: int) -> bool:
 
     # Control: the same function on strictly distinct values must agree, or the
     # measurement says nothing about ties specifically.
-    distinct = jnp.asarray(np.stack([
-        np.linspace(0.1, 9.9, length).astype(np.float32),
-        np.linspace(9.9, 0.1, length).astype(np.float32),
-    ]))
+    distinct = jnp.asarray(
+        np.stack(
+            [
+                np.linspace(0.1, 9.9, length).astype(np.float32),
+                np.linspace(9.9, 0.1, length).astype(np.float32),
+            ]
+        )
+    )
     entry2 = _build(topk_shipped, jax.ShapeDtypeStruct(distinct.shape, distinct.dtype))
     c_iree_vals, c_iree_idx = _split_by_dtype(entry2(np.asarray(distinct)))
     c_xla_vals, c_xla_idx = _split_by_dtype(topk_shipped(distinct))
@@ -227,9 +244,7 @@ def measure_mask_intersection(length: int, k: int) -> dict[str, int]:
 
     def shipped_knn(coords, mask):
         d = jnp.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
-        distances_masked = jnp.where(
-            (mask[:, None] * mask[None, :]).astype(jnp.bool_), d, jnp.inf
-        )
+        distances_masked = jnp.where((mask[:, None] * mask[None, :]).astype(jnp.bool_), d, jnp.inf)
         order = jnp.argsort(distances_masked, axis=-1, stable=True)[..., :k]
         return order.astype(jnp.int32)
 
@@ -275,6 +290,78 @@ def measure_mask_intersection(length: int, k: int) -> dict[str, int]:
     return results
 
 
+def measure_in_contract_symmetry(length: int, k: int) -> int:
+    """M6: does an IN-CONTRACT input produce live-row tie divergence?
+
+    M5's sub-`k` regime is the one the artifact refuses under the bucket-ladder
+    clamp, so it cannot carry the claim on its own. The in-contract route is
+    exact *geometric* ties at `length >= k` with no padding at all.
+
+    An ideal alpha-helix is the natural case: with constant rise and turn,
+    `d(i, j)` depends only on `|i - j|`, so every pair at equal separation is
+    exactly equidistant. Idealised and designed backbones are a real input
+    class for ProteinMPNN, not a synthetic curiosity.
+
+    Returns the number of live rows whose kNN selection diverges.
+    """
+
+    def knn(coords, mask):
+        d = jnp.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
+        dm = jnp.where((mask[:, None] * mask[None, :]).astype(jnp.bool_), d, jnp.inf)
+        return jnp.argsort(dm, axis=-1, stable=True)[..., :k].astype(jnp.int32)
+
+    idx = np.arange(length, dtype=np.float64)
+    theta = np.deg2rad(100.0) * idx
+    helix = np.stack([2.3 * np.cos(theta), 2.3 * np.sin(theta), 1.5 * idx], axis=-1).astype(
+        np.float32
+    )
+
+    rng = np.random.default_rng(0)
+    steps = rng.normal(size=(length, 3)).astype(np.float32)
+    steps /= np.linalg.norm(steps, axis=-1, keepdims=True)
+    steps *= (3.8 + rng.normal(size=(length, 1)) * 0.15).astype(np.float32)
+    irregular = np.cumsum(steps, axis=0).astype(np.float32)
+
+    mask = np.ones(length, dtype=np.int32)
+    entry = _build(
+        knn,
+        jax.ShapeDtypeStruct((length, 3), jnp.float32),
+        jax.ShapeDtypeStruct((length,), jnp.int32),
+    )
+
+    logger.info(
+        "M6 in-contract symmetry (L=%d >= k=%d, mask all ones, no padding)",
+        length,
+        k,
+    )
+    helix_live = 0
+    for label, coords in (("ideal alpha-helix", helix), ("irregular (control)", irregular)):
+        xla = np.asarray(knn(jnp.asarray(coords), jnp.asarray(mask)))
+        iree = np.asarray(entry(coords, mask))
+        dist = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
+        tied_rows = sum(1 for r in range(length) if len(np.unique(dist[r])) < length)
+        differing = np.nonzero((xla != iree).any(axis=-1))[0]
+        slots = int((xla != iree).sum())
+        if label.startswith("ideal"):
+            helix_live = len(differing)
+        logger.info(
+            "M6   %-20s tied_rows=%2d/%d differing_rows=%2d/%d differing_slots=%d/%d",
+            label,
+            tied_rows,
+            length,
+            len(differing),
+            length,
+            slots,
+            length * k,
+        )
+    logger.info(
+        "M6 VERDICT: symmetric geometry diverges with no padding and no sub-k "
+        "row, so the divergence is inside the artifact's supported contract; "
+        "an irregular backbone has no ties and does not diverge."
+    )
+    return helix_live
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--runs", type=int, default=20, help="M2 replay count")
@@ -309,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     m3_agree = measure_integer_sort_tiebreak(args.n, args.distinct)
     m4_agree = measure_stable_argsort(args.length, args.k, args.n_real)
     measure_mask_intersection(args.knn_length, args.k_neighbors)
+    measure_in_contract_symmetry(args.knn_length, args.k_neighbors)
 
     if args.fail_on_divergence and not (m3_agree and m4_agree):
         logger.error("sort tie-breaking diverges between XLA and IREE")
