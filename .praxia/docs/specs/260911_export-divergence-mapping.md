@@ -2,8 +2,8 @@
 title: Divergence mapping for exported artifacts
 description: A comparison ladder and a reusable fixture that localizes where a compiled artifact departs from production JAX, instead of reporting one scalar
 task_id: 260911_export-divergence-map
-status: draft
-revision: 3 (post-defense)
+status: ready
+revision: 4 (converged)
 ---
 
 # Divergence mapping for exported artifacts
@@ -26,6 +26,18 @@ revision: 3 (post-defense)
 > redenominated in ULP, which its own rationale required; treedef and leaf
 > mismatch were separated; `DISCRETE_FLIP` stopped relabelling inherited index
 > flips as fresh injections; and every task now maps to a criterion.
+>
+> **Revision 4.** Convergence pass; three blocking text defects, no new
+> measurement. AC-1 still said "structure mismatch … continues", contradicting
+> AC-13's raise. The `AMPLIFIED`/`ATTENUATED` ordering became **cross-dtype** the
+> moment `DISCRETE_FLIP` began quantifying over discrete predecessors, and float
+> and discrete metrics are not comparable — leaving the classifier undefined on
+> the dogfood's first edge; fixed with a severity ordinal. AC-10 asserted an
+> answer to the question §2.3 declares open, which would have inverted the
+> instrument: a true positive on the reference input would have read as a fixture
+> failure. Also: the slice-subset check's three false-accept modes are now
+> stated, `probe_deps` is documented as configuration-dependent, and the last
+> task without a criterion has one.
 
 ## 1. The problem, stated as a measurement failure
 
@@ -84,7 +96,10 @@ Revision 2 said "necessarily", which was too strong. There is a third path:
 `features.py:152` branches on `if rbf_features is not None`, setting
 `distances = None` (`:158-162`), and the sole `top_k` call at `:202` is gated on
 `if distances is not None` (`:182`). An artifact exported in precomputed-features
-mode contains **no sort at all** and compiles regardless. That matters twice —
+mode contains **no sort at all** and compiles regardless. (Precisely: that holds
+when `neighbor_indices` is *also* supplied. Supplying `rbf_features` alone still
+reaches the `top_k` at `:202`, since the indices must come from somewhere.) That
+matters twice —
 it bounds this section's claim, and it is a live alternative explanation for
 #5093 (§2.3).
 
@@ -101,7 +116,7 @@ masked slots sit at indices 0–19, top-8 selection gives:
 Disjoint sets, with `max|value diff|` at `0.000e+00` because every entry holds
 the same sentinel.
 
-### 2.2 When it reaches a live row — M5
+### 2.2 When it reaches a live row — M5 (out of contract) and M6 (in contract)
 
 aminx masks by `jnp.where(mask[:,None]*mask[None,:], distances, jnp.inf)`
 (`features.py:182-189`), so masked pairs become `+inf` and sort **last**. They
@@ -131,8 +146,10 @@ proves nothing about served inputs.
 
 The in-contract route is **exact geometric ties at `L >= k` with no padding at
 all**, and it is measured as M6. An ideal α-helix has constant rise and turn, so
-`d(i,j)` depends only on `|i-j|` and every pair at equal separation is exactly
-equidistant:
+`d(i,j)` depends only on `|i-j|` and pairs at equal separation are equidistant in
+exact arithmetic. After the float32 cast most, not all, of that structure
+survives — the script measures 60 of 64 rows carrying an exact duplicate, which
+is the honest figure and is what the tie surface actually is:
 
 | input (L=64, k=48, mask all ones) | tied rows | live rows diverging | index slots diverging |
 |---|---|---|---|
@@ -253,7 +270,8 @@ Revision 1 asserted the budget should derive from measured fusion sensitivity
 but gave no formula, no floor, and no scope. All three are now fixed, and the
 scope limit is the important one.
 
-Let `m_leaf` be R2a's measured `eager`-vs-`jit` divergence for a float leaf.
+Let `m_leaf` be R2a's measured `eager`-vs-`jit` divergence for a float leaf,
+**denominated in `max_ulp_diff`** (§5.2) so that it and the floor share units.
 
 ```
 budget_leaf = max(ULP_FLOOR, SLACK * m_leaf)   ULP_FLOOR = 4 ULP, SLACK = 4.0
@@ -405,6 +423,26 @@ subset test is rejected with both slices named. This catches the exact error
 revision 2 made: `slice(rbf) ⊄ slice(encoded_positions)`, because
 `encoded_positions` does not consume `rbf`.
 
+The check is **one-directional**: no false rejections (backward slices are
+transitively closed, and pre-optimization StableHLO preserves sharing), but three
+false-accept modes, which it must not be sold as covering:
+
+- a **transitive** edge `p → r` passes when the truth is `p → q → r`;
+- a **passthrough** probe with an empty slice (aminx's `prng_key`,
+  `node_features_out`) is a subset of everything;
+- a **missing** edge is invisible — the check validates declared edges, never
+  completeness.
+
+It is a cheap guard against the most likely authoring error, not a proof that a
+declared graph is right.
+
+**The graph is configuration-dependent.** `forward_edge_stages` has three
+branches — kNN computed vs. `neighbor_indices` supplied (`features.py:212-213`),
+and `rbf` computed vs. `rbf_features` supplied (`:152-162`) — and two of them
+lack the `neighbor_indices → rbf` edge entirely. `probe_deps` is therefore a
+property of *the exported configuration*, not of the model, and the consumer
+declares it per export.
+
 Classes:
 
 - **CLEAN** — within the §3.2 budget (float) or exact (discrete).
@@ -431,6 +469,30 @@ Classes:
   discrete branch, exactly the propagation-as-injection error that declared
   dependencies were introduced to stop. An index mismatch whose predecessor also
   had one is `AMPLIFIED`.
+
+**Severity, and why magnitudes cannot be compared directly.** `AMPLIFIED` and
+`ATTENUATED` compare a probe's divergence against its predecessors', and
+max-over-predecessors needs an ordering. But §5.2's float and discrete metric
+sets are **disjoint and non-comparable** — there is no meaningful sense in which
+`3 ULP` is more or less than `7 mismatched indices`. Since `DISCRETE_FLIP` now
+quantifies over discrete predecessors too, the comparison is unavoidably
+cross-dtype: the dogfood's very first edge is `neighbor_indices` (int) → `rbf`
+(float).
+
+Every leaf therefore carries an ordinal **severity**, which *is* comparable:
+
+| severity | meaning |
+|---|---|
+| 0 | bit-identical |
+| 1 | diverged but within budget — float leaves only, since discrete has no budget (§3.2) |
+| 2 | beyond budget, or any discrete mismatch |
+
+A probe's severity is the max over its leaves; `max`-over-predecessors is taken
+on severity. Magnitude comparisons (`max_ulp_diff`, `n_mismatched`) are used only
+**within** a dtype class, to order two float leaves or two discrete leaves
+against each other — never across. `AMPLIFIED` means severity ≥ every
+predecessor's with at least one predecessor above 0; `ATTENUATED` means strictly
+below the predecessor max.
 
 **Precedence.** A probe may qualify under more than one class — typically float
 divergence beyond budget *and* a discrete mismatch. Evaluate in this order and
@@ -579,7 +641,7 @@ swept.
 
 Every task maps to at least one acceptance criterion and every criterion to a
 task: T1→AC-1/AC-13, T2→AC-3/4/5/14, T3→AC-9, T3b→AC-15, T4→AC-16, T5→AC-7/8,
-T6→AC-6, T7→AC-2, T8→AC-17, T9/T10→AC-12, T11→docs, T12→AC-10, and AC-11 is
+T6→AC-6, T7→AC-2, T8→AC-17, T9/T10→AC-12, T11→AC-18, T12→AC-10, and AC-11 is
 T4/T5's API surface. Revision 2 left T4 — the R0 gate and R1's `cpu_features`
 precondition, both normative — with no criterion at all, and AC-11 with no task.
 
@@ -610,7 +672,10 @@ aminx supplies the probes and the schema, so no model changes are needed:
 - `node_features_out` is typed `jax.Array | None` (`features.py:79`) and JAX
   flattens `None` as an empty node, so the **output arity is
   configuration-dependent**. This is the concrete reason §5.2 must separate
-  treedef mismatch from leaf mismatch, and it is reachable in the dogfood rather
+  treedef mismatch from leaf mismatch. Note it cannot arise *within* a ring — no
+  ring varies configuration, so both sides always share a treedef — but it does
+  arise across exports and when a caller supplies a probe set built under a
+  different configuration, which is the realistic authoring mistake rather
   than theoretical.
 - It is a `NamedTuple`, so it flattens in field order, which *coincides* with a
   topological order of the real DAG — a coincidence the fixture must not rely on
@@ -623,7 +688,8 @@ aminx supplies the probes and the schema, so no model changes are needed:
 
 **Acceptance:** the ladder, run on the real `proteinmpnn_v_48_020` artifact under
 the §6.2 input classes, must report `DISCRETE_FLIP` on `neighbor_indices` for
-`symmetric_geometry` — the in-contract class — and **not** for `nominal`. It must
+`symmetric_geometry` — the in-contract class. The `nominal` result is reported
+rather than asserted (AC-10). It must
 additionally *answer §2.3's open question*: whether the exported artifact
 computes its own kNN at all (§2.1's precomputed-features path contains no sort),
 and if it does, whether its reference input carries ties. Those are the two
@@ -632,17 +698,23 @@ competing explanations for #5093, and the dogfood is what distinguishes them.
 ## 10. Acceptance criteria
 
 - **AC-1** `compare_pytree` returns one `LeafDivergence` per leaf with
-  dtype-appropriate metrics; a structure mismatch yields per-leaf failure records
-  and continues (§5.2), asserted on a pytree with one mismatched leaf among
-  matching ones.
+  dtype-appropriate metrics; a **leaf** mismatch (matching treedefs, differing
+  leaf shape or dtype) yields a per-leaf failure record and continues, asserted
+  on a pytree with one mismatched leaf among matching ones. Treedef mismatch is
+  AC-13's, and raises. Revision 3 left this criterion saying "structure
+  mismatch … and continues", which directly contradicted AC-13.
 - **AC-2** Probe names are recovered from `out_tree`. Two tests: a **dict** whose
   sorted key order differs from declaration order, and a **NamedTuple** whose
   field order differs from sorted order. Both assert names bind to the right
   arrays.
 - **AC-3** `classify_probes` labels a DAG containing a join with one clean and
   one diverged predecessor as `AMPLIFIED` (max-over-predecessors), **not**
-  `INJECTED`. This is the OBJ-15 regression and is the reason the ordering is
-  declared.
+  `INJECTED` — the false-injection-at-a-join regression, and the reason
+  dependencies are declared rather than inferred.
+- **AC-3b** Classification is defined across a dtype boundary: an edge from a
+  **discrete** predecessor to a **float** probe (the dogfood's first edge,
+  `neighbor_indices → rbf`) is classified by §5.3's severity ordinal, and a test
+  asserts a definite class rather than an error.
 - **AC-4** `ATTENUATED` is produced for a probe whose divergence is strictly
   smaller than its predecessor's.
 - **AC-5** `DISCRETE_FLIP` is raised for a mismatched int leaf with
@@ -663,11 +735,17 @@ competing explanations for #5093, and the dogfood is what distinguishes them.
   `unattributed_ops`, and its docstring states the three §5.5b caveats.
 - **AC-10** aminx dogfood: `DISCRETE_FLIP` on `neighbor_indices` under
   `symmetric_geometry` (in-contract; revision 2 named the refused
-  `sub_k_neighbours` class here), **no** `DISCRETE_FLIP` under `nominal`, and —
-  the **negative control**, without which this AC is unfalsifiable — **no**
-  `DISCRETE_FLIP` under `symmetric_geometry` after applying §8's explicit index
-  tiebreak to the same model. A fixture that hardcodes the expected answer passes
-  the first clause and fails the other two.
+  `sub_k_neighbours` class here), and — the **negative control**, without which
+  this AC is unfalsifiable — **no** `DISCRETE_FLIP` under `symmetric_geometry`
+  after applying §8's explicit index tiebreak to the same model. A fixture that
+  hardcodes the expected answer passes the first clause and fails the second.
+
+  **`nominal` is deliberately not asserted either way.** Whether the reference
+  input carries ties is the open question of §2.3; asserting "no `DISCRETE_FLIP`
+  under `nominal`" would encode an answer the instrument is supposed to supply,
+  and would invert it — a true positive would read as a fixture failure whose
+  obvious remedy is to perturb the input until it passes. The `nominal` result is
+  **reported, not asserted**.
 - **AC-11** R0/R1/R2 runners accept no probe argument — an **API-surface** claim,
   not a guarantee. Since a probe is an ordinary pytree entry (§5.1), nothing
   type-level distinguishes an instrumented callable from a plain one, so a caller
@@ -693,6 +771,10 @@ competing explanations for #5093, and the dogfood is what distinguishes them.
 - **AC-17** Each §6.2 generator is labelled in the report with its
   in-contract/out-of-contract status, and `sub_k_neighbours` results are marked
   out-of-contract so no verdict rests on them alone.
+- **AC-18** `docs/api/export.md` documents the ladder, the escalation order, and
+  the §5.5b caveats, and `just audit-narrative-docs` passes over it. T11 was the
+  last task with no criterion — the same defect revision 3 fixed for T4, and
+  worth fixing rather than exempting docs on principle.
 
 **Merge gate, not an acceptance criterion:** `just audit-deterministic` exits 0
 *and* its log contains no `FAILED` (the known audit-masking trap). It is
