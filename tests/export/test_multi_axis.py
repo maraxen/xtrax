@@ -384,3 +384,81 @@ class TestMultiAxisRefusal:
         with pytest.raises(MultiAxisCompositionError) as excinfo:
             composed(jnp.arange(3) * 100)
         assert isinstance(excinfo.value.__cause__, ExecutorError)
+
+
+class TestMaterializingSinkOnLiteralVmapRoute:
+    """Backlog #5089: the literal-vmap route's ``_lane`` discards ``ys`` and returns
+    only the final carry, so a materializing inner sink on this route would silently
+    export the wrong thing. Refused at composition time instead.
+    """
+
+    def _unbatched_materializing_plan(self, *, ordered: bool = False):
+        records: list[int] = []
+        plan = _vmap_of_scan_plan(3, 4)
+        boundary = AxisBoundary(sink=HostRecordSink(records, ordered=ordered), materialize=True)
+        return plan, boundary
+
+    def test_materializing_inner_sink_is_refused_at_composition_time(self) -> None:
+        """The raise must come from composing, not from calling the composed fn."""
+        plan, boundary = self._unbatched_materializing_plan()
+        # Scalar init: the outer axis is NOT baked into the carry, so this selects
+        # the literal-vmap route -- exactly the shape that discards ys.
+        with pytest.raises(MultiAxisCompositionError, match="materializing sink"):
+            build_traceable_callable(
+                lambda carry, x: (carry + x, carry),
+                plan,
+                {"step": boundary},
+                scan_init=jnp.int32(0),
+            )
+
+    def test_error_names_the_batched_shape_remedy(self) -> None:
+        plan, boundary = self._unbatched_materializing_plan()
+        with pytest.raises(MultiAxisCompositionError, match="[Bb]atch scan_init"):
+            build_traceable_callable(
+                lambda carry, x: (carry + x, carry),
+                plan,
+                {"step": boundary},
+                scan_init=jnp.int32(0),
+            )
+
+    def test_batching_scan_init_to_the_outer_axis_still_composes(self) -> None:
+        """Regression guard: the same materialize=True boundary must not be over-refused
+        once scan_init is batched, and the batched route must return the stacked
+        per-step values (not just a final carry).
+        """
+        records: list[list[int]] = []
+        plan = _vmap_of_scan_plan(3, 4)
+        boundary = AxisBoundary(sink=BatchedHostRecordSink(records, ordered=True), materialize=True)
+        init = jnp.arange(3)
+        composed = build_traceable_callable(
+            lambda carry, x: (carry + x, carry),
+            plan,
+            {"step": boundary},
+            scan_init=init,
+        )
+        ys = jax.jit(composed)(jnp.arange(4))
+        jax.block_until_ready(ys)
+
+        running = [0, 1, 2]
+        expected: list[list[int]] = []
+        for step in range(4):
+            expected.append(list(running))
+            running = [r + step for r in running]
+
+        np.testing.assert_array_equal(np.asarray(ys), np.array(expected))
+        assert records == expected, "materializing sink still fires per step on this route"
+
+    def test_non_materializing_boundary_on_literal_vmap_route_is_unaffected(self) -> None:
+        """Same unbatched shape as the refusal test, but materialize=False (the
+        default) must keep composing -- this refusal is scoped to materialize alone.
+        """
+        plan, boundary = self._unbatched_materializing_plan()
+        non_materializing = AxisBoundary(sink=boundary.sink, materialize=False)
+        composed = build_traceable_callable(
+            lambda carry, x: (carry + x, carry),
+            plan,
+            {"step": non_materializing},
+            scan_init=jnp.int32(0),
+        )
+        out = jax.jit(composed)(jnp.arange(3) * 100)
+        jax.block_until_ready(out)
