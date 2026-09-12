@@ -22,7 +22,10 @@ Blockers cover the rules this module owns:
   nested ``_shuffle`` jit. IREE can compile it and still return a valid but
   wrong permutation; float parity then passes because the divergence lives
   entirely in integer indices. Unlike ``"unlegalizable-op"``, this rule is
-  suppressible via ``acknowledged``.
+  suppressible via ``acknowledged``. It is **necessary but not sufficient**:
+  the defect is really the split-derived key, and a large enough program
+  diverges on ``jnp.argsort(jax.random.bits(k1, ...))`` too, so a clean run of
+  this rule does not certify a model's randomness. See its detail string.
 
 They are collected rather than raised one at a time so a caller fixing a model
 sees every offending leaf/op at once.
@@ -266,14 +269,23 @@ _SORT_STABILITY_DETAIL = (
 )
 
 _RANDOM_PERMUTATION_DETAIL = (
-    "jax.random.permutation lowers to a nested _shuffle jit that IREE can "
-    "miscompile when the permutation key is a split half and the sibling "
+    "jax.random.permutation lowers to a nested _shuffle jit that IREE "
+    "miscompiles when the permutation key is a split half and the sibling "
     "half is also consumed. The artifact returns a valid but wrong "
     "permutation; nothing crashes, and a float-tolerance parity check "
     "reports max_abs_diff 0.0 because the divergence is carried entirely "
-    "by integer indices. Replace it with jnp.argsort(jax.random.bits(...)), "
-    "which is exact through IREE. This rule is suppressible via "
-    "acknowledged=frozenset({'random-permutation'}) if an informed caller "
+    "by integer indices. Measured 260911 on iree-base-compiler 3.11: 248 of "
+    "256 positions differ, byte-identical across two --iree-llvmcpu-target-cpu "
+    "values, so it is a lowering defect rather than float reassociation. "
+    "THIS RULE IS NECESSARY BUT NOT SUFFICIENT. permutation is the most "
+    "sensitive construct -- it diverges even in a tiny program -- but the "
+    "underlying defect is the SPLIT-DERIVED KEY, not the permutation. In a "
+    "large program jnp.argsort(jax.random.bits(k1, ...)) on a split half "
+    "diverges too, while the same spelling on the RAW, unsplit key is exact. "
+    "So swapping the construct is not a fix on its own; only an unsplit key "
+    "was measured exact end to end. Do not read a clean run of this gate as "
+    "'this model's randomness is safe to export'. This rule is suppressible "
+    "via acknowledged=frozenset({'random-permutation'}) if an informed caller "
     "accepts the risk."
 )
 
