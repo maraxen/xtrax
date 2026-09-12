@@ -239,11 +239,19 @@ exported artifact can differ from what an eager run of the same plan does.
 
 ## WebGPU
 
-Not currently reachable through IREE. IREE 3.11 registers no webgpu backend, and
-its Vulkan HAL passes dispatch parameters through push constants, which are not
-part of the WebGPU feature set — a shader validator configured the way a browser
-is configured rejects the result. Measured in
+Not currently reachable through IREE. IREE's `webgpu-spirv` backend exists
+upstream but is a build-time plugin that no published wheel enables, so the
+installed compiler registers no `webgpu` backend; and IREE's Vulkan HAL passes
+dispatch parameters through push constants, which a shader validator configured
+the way a browser is configured rejects. Measured in
 `.praxia/docs/research/260901_webgpu-export-measurement-pass.md`.
+
+WebGPU has since standardised push constants as Immediates, shipping in Chrome,
+so that second point is no longer a permanent property of the web platform. It
+does not make the route reachable: the backend is still absent from every
+published wheel, and `iree#24650` — `webgpu-spirv` failing on any dispatch that
+carries push constants — is still open. See
+`.praxia/docs/specs/260910_webgpu-export-route.md` for the full gate.
 
 ```{automodule} xtrax.export
 :members:
