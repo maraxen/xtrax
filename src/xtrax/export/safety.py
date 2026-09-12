@@ -18,6 +18,14 @@ Blockers cover the rules this module owns:
   silently produces different index results on ties, invisible to a
   float-tolerance parity check because the divergence lives entirely in
   integer indices.
+- ``"random-permutation"``: ``jax.random.permutation``, which lowers to a
+  nested ``_shuffle`` jit. IREE can compile it and still return a valid but
+  wrong permutation; float parity then passes because the divergence lives
+  entirely in integer indices. Unlike ``"unlegalizable-op"``, this rule is
+  suppressible via ``acknowledged``. It is **necessary but not sufficient**:
+  the defect is really the split-derived key, and a large enough program
+  diverges on ``jnp.argsort(jax.random.bits(k1, ...))`` too, so a clean run of
+  this rule does not certify a model's randomness. See its detail string.
 
 They are collected rather than raised one at a time so a caller fixing a model
 sees every offending leaf/op at once.
@@ -233,6 +241,7 @@ def _dtype_blockers(
 
 _UNLEGALIZABLE_OP_RULE = "unlegalizable-op"
 _SORT_STABILITY_RULE = "sort-stability"
+_RANDOM_PERMUTATION_RULE = "random-permutation"
 
 #: Rules a caller cannot suppress via ``acknowledged`` -- currently only
 #: unlegalizable ops, because acknowledging one does not make it compile; it
@@ -257,6 +266,27 @@ _SORT_STABILITY_DETAIL = (
     "bit-identical values and passes. Fold an explicit index tiebreak into "
     "the sort key instead of relying on backend stability: sort "
     "lexicographically on (-x, index) rather than sorting x alone."
+)
+
+_RANDOM_PERMUTATION_DETAIL = (
+    "jax.random.permutation lowers to a nested _shuffle jit that IREE "
+    "miscompiles when the permutation key is a split half and the sibling "
+    "half is also consumed. The artifact returns a valid but wrong "
+    "permutation; nothing crashes, and a float-tolerance parity check "
+    "reports max_abs_diff 0.0 because the divergence is carried entirely "
+    "by integer indices. Measured 260911 on iree-base-compiler 3.11: 248 of "
+    "256 positions differ, byte-identical across two --iree-llvmcpu-target-cpu "
+    "values, so it is a lowering defect rather than float reassociation. "
+    "THIS RULE IS NECESSARY BUT NOT SUFFICIENT. permutation is the most "
+    "sensitive construct -- it diverges even in a tiny program -- but the "
+    "underlying defect is the SPLIT-DERIVED KEY, not the permutation. In a "
+    "large program jnp.argsort(jax.random.bits(k1, ...)) on a split half "
+    "diverges too, while the same spelling on the RAW, unsplit key is exact. "
+    "So swapping the construct is not a fix on its own; only an unsplit key "
+    "was measured exact end to end. Do not read a clean run of this gate as "
+    "'this model's randomness is safe to export'. This rule is suppressible "
+    "via acknowledged=frozenset({'random-permutation'}) if an informed caller "
+    "accepts the risk."
 )
 
 
@@ -284,9 +314,10 @@ def _walk_jaxpr_eqns(jaxpr: Any) -> list[Any]:
 
     Recursion is mandatory, not an optimisation: ``top_k`` inside a
     ``lax.scan`` is only visible one level down inside the scan's sub-jaxpr,
-    and ``jnp.argsort``'s ``sort`` primitive is only visible inside a nested
-    ``pjit`` sub-jaxpr -- it never appears at the top level. A top-level-only
-    walk finds neither and reports a false all-clear.
+    ``jnp.argsort``'s ``sort`` primitive is only visible inside a nested
+    ``pjit`` sub-jaxpr, and ``jax.random.permutation``'s ``_shuffle`` jit is
+    likewise never at the top level. A top-level-only walk finds none of
+    these and reports a false all-clear.
     """
     eqns: list[Any] = []
     for eqn in jaxpr.eqns:
@@ -329,6 +360,14 @@ def _op_blockers(abstract_inputs: Sequence[Any], fn: Callable[..., Any]) -> list
             blockers.append(
                 ExportBlocker(axis=name, rule=_SORT_STABILITY_RULE, detail=_SORT_STABILITY_DETAIL)
             )
+        elif name in {"jit", "pjit"} and eqn.params.get("name") == "_shuffle":
+            blockers.append(
+                ExportBlocker(
+                    axis=name,
+                    rule=_RANDOM_PERMUTATION_RULE,
+                    detail=_RANDOM_PERMUTATION_DETAIL,
+                )
+            )
     return blockers
 
 
@@ -366,8 +405,9 @@ def check_export_safety(
         fn: The callable being exported. Its closure-reachable leaves are scanned
             for dtype violations alongside ``abstract_inputs``, and its traced
             jaxpr (including nested sub-jaxprs, e.g. inside ``lax.scan`` or a
-            ``pjit``-wrapped ``argsort``) is scanned for unlegalizable ops and
-            sorts relying on stable tie-breaking.
+            ``pjit``-wrapped ``argsort`` or ``_shuffle``) is scanned for
+            unlegalizable ops, sorts relying on stable tie-breaking, and
+            ``jax.random.permutation``.
         target: The target being compiled for.
         request_features: Device features the caller will request, unlocking the
             target's optional dtypes.
@@ -423,7 +463,8 @@ def validate_export_safe(
             failure keep seeing one. Either way, the message lists every
             blocker found, across both rule families, not just the first.
         UnsupportedOperationError: If no dtype blocker is present but at least
-            one op blocker (``"unlegalizable-op"`` or ``"sort-stability"``) is.
+            one op blocker (``"unlegalizable-op"``, ``"sort-stability"``, or
+            ``"random-permutation"``) is.
     """
     validate_plan_topology(decisions, axis_boundaries, export_safe=True)
 

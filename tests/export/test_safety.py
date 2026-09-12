@@ -185,6 +185,26 @@ def _clean_fn(x):
     return jnp.sum(x * 2)
 
 
+def _permutation_fn(x):
+    return jax.random.permutation(jax.random.key(0), x)
+
+
+def _permutation_in_scan_fn(xs):
+    def body(carry, x):
+        return carry, jax.random.permutation(jax.random.key(0), x)
+
+    _, out = jax.lax.scan(body, None, xs)
+    return out
+
+
+def _permutation_in_jit_fn(x):
+    return jax.jit(lambda v: jax.random.permutation(jax.random.key(0), v))(x)
+
+
+def _argsort_bits_fn(x):
+    return x[jnp.argsort(jax.random.bits(jax.random.key(0), shape=x.shape))]
+
+
 class TestUnlegalizableOpBlocker:
     def test_top_k_is_refused_at_plan_time(self, plan):
         with pytest.raises(UnsupportedOperationError, match="top_k"):
@@ -251,6 +271,55 @@ class TestSortStabilityBlocker:
     def test_validate_raises_unsupported_operation_error_and_names_the_fix(self, plan):
         with pytest.raises(UnsupportedOperationError, match="tiebreak"):
             validate_export_safe(plan.decisions, {}, _OP_INPUT, _stable_argsort_fn, NATIVE)
+
+
+class TestRandomPermutationBlocker:
+    def test_permutation_produces_exactly_one_random_permutation_blocker(self, plan):
+        blockers = check_export_safety(plan.decisions, {}, _OP_INPUT, _permutation_fn, NATIVE)
+        perm = [b for b in blockers if b.rule == "random-permutation"]
+        assert len(perm) == 1
+
+    def test_argsort_of_random_bits_is_not_refused(self, plan):
+        """Over-refusal guard: the IREE-exact substitute must not match '_shuffle'."""
+        blockers = check_export_safety(plan.decisions, {}, _OP_INPUT, _argsort_bits_fn, NATIVE)
+        assert not any(b.rule == "random-permutation" for b in blockers)
+
+    def test_permutation_nested_in_a_scan_is_still_caught(self, plan):
+        """Regression test: a top-level-only jaxpr walk finds nothing here."""
+        blockers = check_export_safety(
+            plan.decisions, {}, _SCAN_INPUT, _permutation_in_scan_fn, NATIVE
+        )
+        assert any(b.rule == "random-permutation" for b in blockers)
+
+    def test_permutation_nested_in_a_jit_is_still_caught(self, plan):
+        blockers = check_export_safety(
+            plan.decisions, {}, _OP_INPUT, _permutation_in_jit_fn, NATIVE
+        )
+        assert any(b.rule == "random-permutation" for b in blockers)
+
+    def test_acknowledged_suppresses_random_permutation_not_unlegalizable_op(self, plan):
+        suppressed = check_export_safety(
+            plan.decisions,
+            {},
+            _OP_INPUT,
+            _permutation_fn,
+            NATIVE,
+            acknowledged=frozenset({"random-permutation"}),
+        )
+        assert not any(b.rule == "random-permutation" for b in suppressed)
+        still = check_export_safety(
+            plan.decisions,
+            {},
+            _OP_INPUT,
+            _top_k_fn,
+            NATIVE,
+            acknowledged=frozenset({"unlegalizable-op"}),
+        )
+        assert any(b.rule == "unlegalizable-op" for b in still)
+
+    def test_validate_raises_unsupported_operation_error_naming_the_rule(self, plan):
+        with pytest.raises(UnsupportedOperationError, match="random-permutation"):
+            validate_export_safe(plan.decisions, {}, _OP_INPUT, _permutation_fn, NATIVE)
 
 
 class TestOpBlockersDoNotOverreport:
