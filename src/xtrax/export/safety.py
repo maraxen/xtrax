@@ -6,9 +6,21 @@ delegate topology to ``xtrax.stages.topology.validate_plan_topology`` and let
 its ``PlanTopologyError`` propagate unwrapped -- topology violations are
 structural and are never demoted into a blocker list.
 
-Blockers cover the rules this module owns: dtypes a target's backend does not
-accept. They are collected rather than raised one at a time so a caller fixing
-a model sees every offending leaf at once.
+Blockers cover the rules this module owns:
+
+- ``"dtype"``: a leaf's dtype the target's backend does not accept.
+- ``"unlegalizable-op"``: an op that IREE's StableHLO importer rejects
+  outright, on every target -- currently ``jax.lax.top_k``, which lowers to a
+  ``stablehlo.composite`` wrapping ``chlo.top_k`` that the importer marks
+  explicitly illegal.
+- ``"sort-stability"``: a stable sort/argsort, whose tie-breaking order IREE
+  does not preserve relative to XLA. This is not a compile failure -- it
+  silently produces different index results on ties, invisible to a
+  float-tolerance parity check because the divergence lives entirely in
+  integer indices.
+
+They are collected rather than raised one at a time so a caller fixing a model
+sees every offending leaf/op at once.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -23,6 +35,7 @@ __all__ = [
     "DtypeNotSupportedError",
     "ExportBlocker",
     "ExportSafetyError",
+    "UnsupportedOperationError",
     "check_export_safety",
     "dtype_name",
     "find_bcoo_leaves",
@@ -40,6 +53,10 @@ class ExportSafetyError(Exception):
 
 class DtypeNotSupportedError(ExportSafetyError):
     """A leaf's dtype is not accepted by the requested target."""
+
+
+class UnsupportedOperationError(ExportSafetyError):
+    """A traced op cannot legalize, or relies on a guarantee IREE breaks."""
 
 
 @dataclass(frozen=True)
@@ -214,6 +231,119 @@ def _dtype_blockers(
     return blockers
 
 
+_UNLEGALIZABLE_OP_RULE = "unlegalizable-op"
+_SORT_STABILITY_RULE = "sort-stability"
+
+#: Rules a caller cannot suppress via ``acknowledged`` -- currently only
+#: unlegalizable ops, because acknowledging one does not make it compile; it
+#: only moves the identical failure later, into ``compile_for_target``.
+_UNSUPPRESSIBLE_RULES = frozenset({_UNLEGALIZABLE_OP_RULE})
+
+_TOP_K_DETAIL = (
+    "jax.lax.top_k cannot be legalized by IREE's StableHLO importer on any "
+    "target: it lowers to a stablehlo.composite wrapping chlo.top_k, which "
+    "the importer marks explicitly illegal. Replace it with "
+    "jnp.argsort(-x, axis=-1, stable=True)[..., :k] plus take_along_axis, "
+    "which compiles and is bit-exact on values and indices -- but that "
+    "replacement is itself a stable sort, so it inherits the sort-stability "
+    "problem below and needs the same tiebreak fix."
+)
+
+_SORT_STABILITY_DETAIL = (
+    "This sort relies on stable tie-breaking (is_stable=True), but IREE does "
+    "not honour JAX's documented stable-sort tie order -- ties can land at "
+    "different positions than XLA produces, and the divergence is carried "
+    "entirely by integer indices, so a float-tolerance parity check sees "
+    "bit-identical values and passes. Fold an explicit index tiebreak into "
+    "the sort key instead of relying on backend stability: sort "
+    "lexicographically on (-x, index) rather than sorting x alone."
+)
+
+
+def _sub_jaxprs(params: Mapping[str, Any]) -> list[Any]:
+    """Return every jaxpr-like object reachable from one eqn's params.
+
+    Covers both a lone value (``scan``'s ``jaxpr`` param) and a list/tuple of
+    values (some higher-order primitives carry more than one branch jaxpr).
+    Each candidate is treated as jaxpr-like if it exposes ``.eqns`` after
+    unwrapping ``.jaxpr`` -- which is a no-op for a plain ``Jaxpr`` and
+    unwraps a ``ClosedJaxpr`` down to the walkable core.
+    """
+    found: list[Any] = []
+    for value in params.values():
+        candidates = value if isinstance(value, (list, tuple)) else (value,)
+        for candidate in candidates:
+            inner = getattr(candidate, "jaxpr", candidate)
+            if hasattr(inner, "eqns"):
+                found.append(inner)
+    return found
+
+
+def _walk_jaxpr_eqns(jaxpr: Any) -> list[Any]:
+    """Return every equation in ``jaxpr``, recursing into nested sub-jaxprs.
+
+    Recursion is mandatory, not an optimisation: ``top_k`` inside a
+    ``lax.scan`` is only visible one level down inside the scan's sub-jaxpr,
+    and ``jnp.argsort``'s ``sort`` primitive is only visible inside a nested
+    ``pjit`` sub-jaxpr -- it never appears at the top level. A top-level-only
+    walk finds neither and reports a false all-clear.
+    """
+    eqns: list[Any] = []
+    for eqn in jaxpr.eqns:
+        eqns.append(eqn)
+        for sub in _sub_jaxprs(eqn.params):
+            eqns.extend(_walk_jaxpr_eqns(sub))
+    return eqns
+
+
+def _op_blockers(abstract_inputs: Sequence[Any], fn: Callable[..., Any]) -> list[ExportBlocker]:
+    """Collect blockers for ops IREE cannot legalize or cannot preserve.
+
+    Tracing failures here are swallowed rather than surfaced: a callable that
+    ``jax.make_jaxpr`` cannot trace is not something this gate could have
+    usefully judged anyway, and it will fail identically -- at export or
+    compile time, with a clearer error pointing at the actual call site --
+    whether or not this function ran. Swallowing the exception here does not
+    hide a real problem; it just declines to duplicate one that surfaces on
+    its own moments later.
+    """
+    try:
+        import jax
+    except ImportError:  # pragma: no cover - jax is a hard dependency
+        return []
+
+    try:
+        closed = jax.make_jaxpr(fn)(*abstract_inputs)
+    except Exception:  # noqa: BLE001 - see docstring: never masks a real failure
+        return []
+
+    top = getattr(closed, "jaxpr", closed)
+    blockers: list[ExportBlocker] = []
+    for eqn in _walk_jaxpr_eqns(top):
+        name = eqn.primitive.name
+        if name == "top_k":
+            blockers.append(
+                ExportBlocker(axis=name, rule=_UNLEGALIZABLE_OP_RULE, detail=_TOP_K_DETAIL)
+            )
+        elif name == "sort" and eqn.params.get("is_stable"):
+            blockers.append(
+                ExportBlocker(axis=name, rule=_SORT_STABILITY_RULE, detail=_SORT_STABILITY_DETAIL)
+            )
+    return blockers
+
+
+def _apply_acknowledged(
+    blockers: list[ExportBlocker], acknowledged: frozenset[str]
+) -> list[ExportBlocker]:
+    """Drop blockers whose rule is acknowledged, except unsuppressible ones.
+
+    ``"unlegalizable-op"`` is never suppressed here: the caller can pass it in
+    ``acknowledged`` and it will simply have no effect on that rule, because
+    the op cannot compile regardless of who has acknowledged it.
+    """
+    return [b for b in blockers if b.rule not in acknowledged or b.rule in _UNSUPPRESSIBLE_RULES]
+
+
 def check_export_safety(
     decisions: Sequence[AxisDecisionLike],
     axis_boundaries: Mapping[str, AxisBoundary],
@@ -222,8 +352,9 @@ def check_export_safety(
     target: Target,
     *,
     request_features: frozenset[str] = frozenset(),
+    acknowledged: frozenset[str] = frozenset(),
 ) -> list[ExportBlocker]:
-    """List every dtype blocker between this plan and the export boundary.
+    """List every blocker between this plan and the export boundary.
 
     Deliberately does not call ``validate_plan_topology``: topology violations
     always raise directly and are never converted into a blocker list.
@@ -233,16 +364,28 @@ def check_export_safety(
         axis_boundaries: Map of axis name -> AxisBoundary.
         abstract_inputs: Abstract inputs the callable will be traced with.
         fn: The callable being exported. Its closure-reachable leaves are scanned
-            for dtype violations alongside ``abstract_inputs``.
+            for dtype violations alongside ``abstract_inputs``, and its traced
+            jaxpr (including nested sub-jaxprs, e.g. inside ``lax.scan`` or a
+            ``pjit``-wrapped ``argsort``) is scanned for unlegalizable ops and
+            sorts relying on stable tie-breaking.
         target: The target being compiled for.
         request_features: Device features the caller will request, unlocking the
             target's optional dtypes.
+        acknowledged: Rule names to suppress from the returned list. Every rule
+            except ``"unlegalizable-op"`` is suppressible this way --
+            ``"unlegalizable-op"`` cannot compile at all, so acknowledging it
+            would only move the identical failure later, into
+            ``compile_for_target``.
 
     Returns:
-        Every blocker found, in discovery order. Empty means no dtype objection.
+        Every blocker found, in discovery order, minus any whose rule is in
+        ``acknowledged`` (except unsuppressible rules). Empty means no
+        objection.
     """
     del decisions, axis_boundaries
-    return _dtype_blockers(abstract_inputs, fn, target, request_features)
+    blockers = _dtype_blockers(abstract_inputs, fn, target, request_features)
+    blockers += _op_blockers(abstract_inputs, fn)
+    return _apply_acknowledged(blockers, acknowledged)
 
 
 def validate_export_safe(
@@ -253,6 +396,7 @@ def validate_export_safe(
     target: Target,
     *,
     request_features: frozenset[str] = frozenset(),
+    acknowledged: frozenset[str] = frozenset(),
 ) -> None:
     """Raise unless this plan can cross the export boundary for ``target``.
 
@@ -263,14 +407,23 @@ def validate_export_safe(
         fn: The callable being exported.
         target: The target being compiled for.
         request_features: Device features the caller will request.
+        acknowledged: Rule names to suppress. See ``check_export_safety``;
+            ``"unlegalizable-op"`` is not suppressible.
 
     Raises:
         PlanTopologyError: Propagated unwrapped from validate_plan_topology --
             including its MaterializeFuseConflictError,
             MaterializeWithoutSinkError, and MultipleMaterializeAxesError
             subclasses.
-        DtypeNotSupportedError: If any leaf's dtype is rejected by the target,
-            naming every offending leaf rather than only the first.
+        DtypeNotSupportedError: If any leaf's dtype is rejected by the target.
+            Takes precedence over UnsupportedOperationError below: if the
+            blocker list contains *any* dtype blocker, this is raised instead
+            of UnsupportedOperationError, even when op blockers are also
+            present -- so existing callers that only ever expected a dtype
+            failure keep seeing one. Either way, the message lists every
+            blocker found, across both rule families, not just the first.
+        UnsupportedOperationError: If no dtype blocker is present but at least
+            one op blocker (``"unlegalizable-op"`` or ``"sort-stability"``) is.
     """
     validate_plan_topology(decisions, axis_boundaries, export_safe=True)
 
@@ -281,8 +434,11 @@ def validate_export_safe(
         fn,
         target,
         request_features=request_features,
+        acknowledged=acknowledged,
     )
     if blockers:
-        detail = "\n".join(f"  - {b.axis}: {b.detail}" for b in blockers)
-        msg = f"{len(blockers)} dtype blocker(s) for target {target.name!r}:\n{detail}"
-        raise DtypeNotSupportedError(msg)
+        detail = "\n".join(f"  - {b.axis} ({b.rule}): {b.detail}" for b in blockers)
+        msg = f"{len(blockers)} export blocker(s) for target {target.name!r}:\n{detail}"
+        if any(b.rule == "dtype" for b in blockers):
+            raise DtypeNotSupportedError(msg)
+        raise UnsupportedOperationError(msg)
