@@ -57,6 +57,21 @@ Measured 260912 on iree-base-compiler / iree-base-runtime 3.11. Reproduces
 under both the partitionable and non-partitionable threefry lowerings, so it is
 not specific to ``jax_threefry_partitionable``.
 
+**Filed upstream as https://github.com/iree-org/iree/issues/24927.** Two further
+results were established for that report and are not re-measured here:
+
+* ``jax.export``'s ``Exported.call`` runs the SAME StableHLO module through XLA
+  and agrees with eager jax (0/16), while IREE disagrees (16/16). The module
+  handed to IREE is correct, so this is a compiler defect and not a bad export.
+* It is not backend-specific: the reference ``vmvx`` backend returns bit-identical
+  WRONG values to ``llvm-cpu``, with or without ``--iree-llvmcpu-target-cpu=host``
+  and with ``--iree-opt-const-eval=false``. That places it above backend codegen.
+
+The emitted StableHLO is integer arithmetic only -- xor / shift_left /
+shift_right_logical / add inside two ``stablehlo.while`` loops, with no
+``rng_bit_generator`` and no custom call -- so float reassociation is not an
+available explanation.
+
 Requires the `export` and `export-runtime` extras:
 
     uv run --extra export --extra export-runtime python \
