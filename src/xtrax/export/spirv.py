@@ -4,13 +4,21 @@ Extraction is implemented; validation is not, and deliberately so.
 
 Measured caveat, recorded here because it governs what this module can ever
 claim (see ``.praxia/docs/research/260901_webgpu-export-measurement-pass.md``):
-IREE's Vulkan HAL passes dispatch parameters through push constants, and push
-constants are not part of the W3C WebGPU feature set. A validator configured
-the way a browser is configured therefore rejects IREE's SPIR-V. A validation
-device must never be constructed with extra features enabled to get around
-that -- doing so produces a passing check that establishes nothing. That is why
-no ``validate_webgpu`` exists here and why no target is registered at
-``VerificationLevel.VALIDATED``.
+IREE's Vulkan HAL passes dispatch parameters through push constants, and a
+validator configured the way a browser is configured rejects IREE's SPIR-V for
+them. A validation device must never be constructed with extra features enabled
+to get around that -- doing so produces a passing check that establishes
+nothing. That is why no ``validate_webgpu`` exists here and why no target is
+registered at ``VerificationLevel.VALIDATED``.
+
+That rule stands, but note its original justification has expired. This
+docstring used to say push constants "are not part of the W3C WebGPU feature
+set"; as of ~May 2026 they are, standardised as Immediates and shipping in
+Chrome. The rule survives on narrower ground: wgpu's native-only ``immediates``
+device feature is not verified to be that standard feature, and a native
+validation device is not a browser in either case. So enabling features to turn
+the check green would still prove nothing about a browser -- which is the only
+thing the check would be read as claiming.
 
 This module holds no IREE import. It reads bytes IREE already wrote.
 """

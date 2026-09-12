@@ -198,9 +198,19 @@ WASM32 = Target(
 
 # Both SPIR-V targets are CODEGEN_ONLY. The spec originally registered
 # vulkan-spirv at VALIDATED behind a WebGPU shader-validity gate; that gate was
-# falsified before implementation (IREE's Vulkan HAL uses push constants, which
-# WebGPU has no capability for) and neither target is executed here, so
-# CODEGEN_ONLY is the whole of what compiling establishes.
+# falsified before implementation, because IREE's Vulkan HAL passes dispatch
+# parameters through push constants and naga rejected every module IREE emits.
+# Neither target is executed here, so CODEGEN_ONLY is the whole of what
+# compiling establishes.
+#
+# The original wording of this comment added "which WebGPU has no capability
+# for". That was true when written and is now false: WebGPU standardised push
+# constants as Immediates (gpuweb #5423, ~May 2026; setImmediateData() on
+# compute passes among others) and Chrome ships them unflagged around M149-150.
+# CODEGEN_ONLY is unchanged -- the level records that nothing here is executed,
+# which no upstream capability change affects. See
+# .praxia/docs/specs/260910_webgpu-export-route.md for the live gate (IREE's
+# webgpu-spirv backend is off in every published wheel, and iree#24650 is open).
 #
 # Their dtype envelope is _CODEGEN_DTYPES, the same as wasm32's. The spec gave
 # them a narrower, WebGPU-derived table ({f32, i32, bool} plus f16 behind a
