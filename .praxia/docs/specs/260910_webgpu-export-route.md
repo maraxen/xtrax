@@ -57,6 +57,38 @@ The current tree already encodes this correction. `VULKAN_SPIRV` and `METAL_SPIR
 extraction with no validator and says why (`src/xtrax/export/spirv.py:1-16`), and
 `docs/api/export.md:240-246` states the limitation in public docs.
 
+### Amendment (2026-09-11): the web platform gained push constants
+
+**Property 2 above rests on a premise that has since expired, and this spec must not be read
+as asserting it.** WebGPU standardised push constants as **Immediates**: [gpuweb PR
+#5423](https://github.com/gpuweb/gpuweb/pull/5423) merged (~May 2026), specifying
+`setImmediateData()` on render pass, **compute pass**, and render bundle encoders plus a
+WGSL `immediate` address space, and closing [gpuweb issue
+#75](https://github.com/gpuweb/gpuweb/issues/75) as superseded. Chrome ships it **unflagged**
+around M149-150 ([What's New in WebGPU
+149-150](https://developer.chrome.com/blog/new-in-webgpu-149-150), Intent to Ship
+2026-05-14). Feature-detect with
+`navigator.gpu.wgslLanguageFeatures.has('immediate_address_space')`. `maxImmediateSize` is
+**64 bytes** — unverified against what IREE's dispatches actually push, and the first thing
+to measure if this route is ever revived.
+
+So "push constants are not a WebGPU capability" — quoted above from the prior spec's VOID
+note, and true when written — **is no longer true of the web platform.** Three things are
+deliberately *not* claimed by this amendment:
+
+1. **wgpu's native-only `immediates` device feature is a distinct thing** from the standard
+   WebGPU/WGSL feature, and their correspondence is **unverified**. Do not collapse them.
+   Property 2's conclusion therefore survives on its own terms: requesting a native wgpu
+   device feature still does not demonstrate that a browser accepts the module, because a
+   native wgpu device is not a browser. Only its stated *reason* ("no browser offers it")
+   has expired.
+2. **Firefox and Safari status is unverified.**
+3. **Nothing here unblocks the route.** The live gate is upstream and is stated in R1 below;
+   this amendment narrows *why* R2 is refused, and changes no disposition in this spec.
+
+Recorded because the failure mode this spec exists to prevent is a future reader inheriting
+a stale premise as settled fact — the same failure the prior sprint made.
+
 ## Constraint governing every route
 
 **No artifact, test, docstring, CHANGELOG entry, or CI badge produced under this spec may
@@ -91,6 +123,16 @@ environment``. **That independently confirms this spec's central finding** -- pu
 constants are the blocker -- while reclassifying it from "no backend exists" to "a live
 bug in a backend that does". Engineering cost zero; agency zero; latency bounded by
 someone else's bug rather than unbounded.
+
+**#24650 is a configuration bug, not a missing web capability** (established 2026-09-11;
+see the amendment under "The falsified premise"). The language feature Tint says is "not
+allowed in the current environment" is now a *standard* WGSL feature that Chrome ships
+unflagged. So the issue is that Tint's environment disallows a feature the web platform
+has since gained -- which makes it a comparatively cheap upstream fix on an issue that,
+re-checked 2026-09-11, still has **zero comments**. This does not change R1's disposition
+or its trigger condition: the wheel gate above is independent of #24650, and both must
+clear. It does change the expected latency, and it identifies the single highest-leverage
+place to push if this route is ever wanted sooner.
 
 **Trigger condition.** `iree-compile --iree-hal-list-target-backends` lists a `webgpu`
 or `webgpu-spirv` backend. **Not met on the pinned toolchain, re-measured 260910:** the
@@ -144,10 +186,18 @@ is non-subsumption in both directions. `spirv-val` also rejects specification vi
 naga's front end normalizes away, so neither tool's verdict implies the other's, and R2 is
 not a strict superset of R2″.
 
-**What it cannot establish.** Anything about browsers. `immediates` is precisely the
-non-web extension — absent from the W3C WebGPU spec, so no browser offers it
-(`:51-53`). Enabling it makes the one capability that a browser refuses invisible to the
-check.
+**What it cannot establish.** Anything about browsers — but note the reason changed on
+2026-09-11; see the amendment under "The falsified premise". The original argument was that
+`immediates` is precisely the non-web extension, absent from the W3C WebGPU spec, so no
+browser offers it (`:51-53`). **That premise has expired**: WebGPU standardised push
+constants as Immediates and Chrome ships them unflagged, on compute passes included.
+
+What survives is narrower and sufficient. wgpu's native-only `immediates` device feature is
+not verified to be the same feature as the standard WGSL `immediate_address_space`, so
+enabling it proves nothing about the standard one; and a native wgpu device is not a browser
+regardless, so a green result here would still be a claim about naga's front end on this
+machine, not about any browser's acceptance. R2 remains refused — the "invisible capability"
+framing is simply no longer the reason.
 
 **Why this spec does not take R2.** The cost is a `wgpu` dependency (absent from
 `pyproject.toml` today), a Vulkan ICD apt step in CI, and a permanent naming hazard: the
