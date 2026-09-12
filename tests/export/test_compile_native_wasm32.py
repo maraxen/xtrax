@@ -191,6 +191,46 @@ class TestRunNativeVmfb:
             run_native_vmfb(artifact, function="absent")
 
 
+class TestRunNativeVmfbFlattensPytrees:
+    """A per-element input that is a multi-leaf pytree, not a single array.
+
+    ``jax.export`` flattens pytrees to leaves at the export boundary, so a
+    vmfb compiled from a step function taking a dict/tuple-shaped element has
+    one input per leaf, not one per element. Backlog #5091: passing the
+    pytree through unflattened raised, against the real IREE runtime,
+    ``INVALID_ARGUMENT; input list and function mismatch; expected 6
+    arguments but passed 1`` for a 6-leaf pytree. The fake runtime here can't
+    reproduce that IREE error, but it records the exact ``args`` tuple its
+    entry point received, which is the same arity the real runtime checks.
+    """
+
+    def test_dict_input_is_flattened_to_one_arg_per_leaf(self, fake_runtime, tmp_path):
+        artifact = tmp_path / "a.vmfb"
+        artifact.write_bytes(FAKE_VMFB)
+        fake_runtime["result"] = np.zeros((1,), dtype=np.float32)
+        pytree_input = {
+            "a": np.array([1.0], dtype=np.float32),
+            "b": np.array([2.0], dtype=np.float32),
+        }
+
+        run_native_vmfb(artifact, pytree_input)
+
+        assert len(fake_runtime["calls"][0]) == 2
+
+    def test_tuple_of_two_arrays_is_flattened(self, fake_runtime, tmp_path):
+        artifact = tmp_path / "a.vmfb"
+        artifact.write_bytes(FAKE_VMFB)
+        fake_runtime["result"] = np.zeros((1,), dtype=np.float32)
+        pytree_input = (
+            np.array([1.0], dtype=np.float32),
+            np.array([2.0], dtype=np.float32),
+        )
+
+        run_native_vmfb(artifact, pytree_input)
+
+        assert len(fake_runtime["calls"][0]) == 2
+
+
 class TestCompare:
     def test_identical_arrays_pass(self):
         a = np.ones((3, 2), dtype=np.float32)

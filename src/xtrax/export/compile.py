@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import jax
+
 from xtrax.export.spirv import spirv_binaries_in
 from xtrax.export.targets import Target
 
@@ -234,7 +236,10 @@ def run_native_vmfb(vmfb_path: Path, *args: Any, function: str = "main") -> Any:
 
     Args:
         vmfb_path: Path to a native vmfb.
-        *args: Concrete arguments to pass to the entry point.
+        *args: Concrete arguments to pass to the entry point. Any pytree
+            per-element input (e.g. a dict or tuple of arrays) is flattened
+            to its leaves before the call, to match the exported signature --
+            see the flattening note below.
         function: Entry point name within the module.
 
     Returns:
@@ -261,4 +266,12 @@ def run_native_vmfb(vmfb_path: Path, *args: Any, function: str = "main") -> Any:
     except (KeyError, AttributeError) as exc:
         msg = f"vmfb {vmfb_path.name} (module {vm_module.name!r}) has no entry point {function!r}."
         raise CompileError(msg) from exc
-    return entry(*args)
+
+    # jax.export flattens pytrees to leaves at the export boundary, so the
+    # vmfb's entry point has one input per leaf, not one per (possibly
+    # pytree-shaped) per-element argument. Flattening here, rather than at
+    # each call site, fixes every caller (parity and any direct caller)
+    # uniformly. It is a no-op for the already-flat case: jax.tree.leaves of
+    # a tuple of arrays is that same list of arrays. Ordering is safe because
+    # jax.export and jax.tree.leaves flatten in the same tree order.
+    return entry(*jax.tree.leaves(args))
