@@ -187,6 +187,14 @@ def compose_vmap_of_scan(
     success ``TestLiteralVmapOfScanOrdering::test_lane_independent_ordering_succeeds``
     certifies.
 
+    A materializing inner sink (``AxisBoundary.materialize=True``) is refused on
+    this route outright, at composition time rather than on first call: ``_lane``
+    discards the per-step ``ys`` and returns only the final carry, so the
+    materialize invariant (the per-step return value already equals what ``sink``
+    received) is false here even though ``validate_plan_topology`` cannot see far
+    enough to catch it. Batch ``scan_init`` to the outer axis instead, which
+    routes through the batched-shape recipe where the invariant holds.
+
     The inner axis's per-step ``xs`` on the literal-vmap route comes from the
     plan's own declared cardinality, since each lane scans the whole inner axis.
 
@@ -219,8 +227,11 @@ def compose_vmap_of_scan(
 
     Raises:
         ComposerError: If no initial carry is available.
-        MultiAxisCompositionError: If the outer axis carries a boundary, or if
-            the literal-vmap route hits the lane-dependent ordering restriction.
+        MultiAxisCompositionError: If the outer axis carries a boundary, if the
+            literal-vmap route hits the lane-dependent ordering restriction, or
+            if the literal-vmap route is selected with a materializing inner
+            sink (it would silently return the final carry, not the sunk
+            per-step values).
     """
     outer_strategy = getattr(outer_decision, "strategy", None)
     inner_strategy = getattr(inner_decision, "strategy", None)
@@ -275,6 +286,18 @@ def compose_vmap_of_scan(
             return _apply_fuse(ys, inner_boundary)
 
         return _run_batched
+
+    if inner_boundary is not None and inner_boundary.materialize:
+        inner_name = getattr(getattr(inner_decision, "spec", None), "name", "?")
+        msg = (
+            f"inner Scan axis {inner_name!r} declares a materializing sink, but this "
+            f"composition takes the literal-vmap route, which returns each lane's final "
+            f"carry rather than the per-step values the sink saw. materialize rests on "
+            f"the executor's per-step return value already equalling what sink receives "
+            f"(see AxisBoundary.materialize's docstring), and that does not hold on this "
+            f"route. Batch scan_init to the outer axis so the recommended recipe applies."
+        )
+        raise MultiAxisCompositionError(msg)
 
     def _run_literal_vmap(xs: Any) -> Any:
         inner_xs = jnp.arange(inner_n) if inner_n is not None else None
