@@ -9,6 +9,7 @@ import pytest
 from xtrax.export.safety import (
     DtypeNotSupportedError,
     ExportBlocker,
+    UnsupportedOperationError,
     check_export_safety,
     dtype_name,
     find_bcoo_leaves,
@@ -84,7 +85,7 @@ class TestDtypeGate:
         with pytest.raises(DtypeNotSupportedError) as excinfo:
             validate_export_safe(plan.decisions, {}, inputs, _sentinel_fn, NARROW)
         message = str(excinfo.value)
-        assert "2 dtype blocker" in message
+        assert "2 export blocker" in message
         assert "abstract_inputs[0]" in message
         assert "abstract_inputs[2]" in message
         assert "abstract_inputs[1]" not in message
@@ -149,3 +150,119 @@ class TestFindBcooLeaves:
         dense = jnp.eye(4, dtype=jnp.float32)
         tree = {"weight": BCOO.fromdense(dense)}
         assert find_bcoo_leaves(tree) == ["['weight']"]
+
+
+# ---------------------------------------------------------------------------
+# Op blockers: #5092 (unlegalizable top_k) and #5094 (sort-stability).
+# ---------------------------------------------------------------------------
+
+_OP_INPUT = [jax.ShapeDtypeStruct((8,), jnp.float32)]
+_SCAN_INPUT = [jax.ShapeDtypeStruct((3, 8), jnp.float32)]
+
+
+def _top_k_fn(x):
+    return jax.lax.top_k(x, 4)
+
+
+def _top_k_in_scan_fn(xs):
+    def body(carry, x):
+        vals, idx = jax.lax.top_k(x, 4)
+        return carry, (vals, idx)
+
+    _, out = jax.lax.scan(body, None, xs)
+    return out
+
+
+def _stable_argsort_fn(x):
+    return jnp.argsort(-x, axis=-1, stable=True)[..., :4]
+
+
+def _unstable_argsort_fn(x):
+    return jnp.argsort(x, stable=False)
+
+
+def _clean_fn(x):
+    return jnp.sum(x * 2)
+
+
+class TestUnlegalizableOpBlocker:
+    def test_top_k_is_refused_at_plan_time(self, plan):
+        with pytest.raises(UnsupportedOperationError, match="top_k"):
+            validate_export_safe(plan.decisions, {}, _OP_INPUT, _top_k_fn, NATIVE)
+
+    def test_top_k_nested_in_a_scan_is_still_caught(self, plan):
+        """Regression test: a top-level-only jaxpr walk finds nothing here."""
+        with pytest.raises(UnsupportedOperationError, match="top_k"):
+            validate_export_safe(plan.decisions, {}, _SCAN_INPUT, _top_k_in_scan_fn, NATIVE)
+
+    def test_check_export_safety_reports_the_rule(self, plan):
+        blockers = check_export_safety(plan.decisions, {}, _OP_INPUT, _top_k_fn, NATIVE)
+        assert any(b.rule == "unlegalizable-op" for b in blockers)
+
+    def test_acknowledging_unlegalizable_op_does_not_suppress_it(self, plan):
+        blockers = check_export_safety(
+            plan.decisions,
+            {},
+            _OP_INPUT,
+            _top_k_fn,
+            NATIVE,
+            acknowledged=frozenset({"unlegalizable-op"}),
+        )
+        assert any(b.rule == "unlegalizable-op" for b in blockers)
+        with pytest.raises(UnsupportedOperationError):
+            validate_export_safe(
+                plan.decisions,
+                {},
+                _OP_INPUT,
+                _top_k_fn,
+                NATIVE,
+                acknowledged=frozenset({"unlegalizable-op"}),
+            )
+
+
+class TestSortStabilityBlocker:
+    def test_stable_argsort_produces_a_sort_stability_blocker(self, plan):
+        blockers = check_export_safety(plan.decisions, {}, _OP_INPUT, _stable_argsort_fn, NATIVE)
+        assert any(b.rule == "sort-stability" for b in blockers)
+
+    def test_unstable_sort_produces_no_blocker(self, plan):
+        blockers = check_export_safety(plan.decisions, {}, _OP_INPUT, _unstable_argsort_fn, NATIVE)
+        assert blockers == []
+
+    def test_acknowledged_suppresses_sort_stability(self, plan):
+        blockers = check_export_safety(
+            plan.decisions,
+            {},
+            _OP_INPUT,
+            _stable_argsort_fn,
+            NATIVE,
+            acknowledged=frozenset({"sort-stability"}),
+        )
+        assert blockers == []
+        validate_export_safe(
+            plan.decisions,
+            {},
+            _OP_INPUT,
+            _stable_argsort_fn,
+            NATIVE,
+            acknowledged=frozenset({"sort-stability"}),
+        )
+
+    def test_validate_raises_unsupported_operation_error_and_names_the_fix(self, plan):
+        with pytest.raises(UnsupportedOperationError, match="tiebreak"):
+            validate_export_safe(plan.decisions, {}, _OP_INPUT, _stable_argsort_fn, NATIVE)
+
+
+class TestOpBlockersDoNotOverreport:
+    def test_a_clean_program_has_no_blockers(self, plan):
+        assert check_export_safety(plan.decisions, {}, _OP_INPUT, _clean_fn, NATIVE) == []
+        validate_export_safe(plan.decisions, {}, _OP_INPUT, _clean_fn, NATIVE)
+
+    def test_dtype_blocker_takes_precedence_in_the_raised_exception_type(self, plan):
+        """A dtype blocker alongside an op blocker still raises DtypeNotSupportedError."""
+        bad_dtype_input = [jax.ShapeDtypeStruct((8,), jnp.float64)]
+        with pytest.raises(DtypeNotSupportedError) as excinfo:
+            validate_export_safe(plan.decisions, {}, bad_dtype_input, _top_k_fn, NATIVE)
+        message = str(excinfo.value)
+        assert "dtype" in message
+        assert "unlegalizable-op" in message
