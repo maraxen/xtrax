@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -335,3 +337,128 @@ class TestOpBlockersDoNotOverreport:
         message = str(excinfo.value)
         assert "dtype" in message
         assert "unlegalizable-op" in message
+
+
+_KEY_INPUT = [jax.ShapeDtypeStruct((2,), jnp.uint32)]
+_KEY_ONE_LANE_INPUT = [jax.ShapeDtypeStruct((1, 2), jnp.uint32)]
+_KEY_FOUR_LANE_INPUT = [jax.ShapeDtypeStruct((4, 2), jnp.uint32)]
+
+_CONST_KEY = jnp.array([0, 0], dtype=jnp.uint32)
+
+
+def _bits_from_key_input(k):
+    return jax.random.bits(k, (8,), dtype=jnp.uint32)
+
+
+def _bits_vmapped(k):
+    return jax.vmap(lambda key: jax.random.bits(key, (8,), dtype=jnp.uint32))(k)
+
+
+def _bits_from_const_key(x):
+    """The exempt spelling: jaxpr-identical at the random_* level, but no input."""
+    return x + jax.random.bits(_CONST_KEY, x.shape, dtype=jnp.uint32).astype(x.dtype)
+
+
+def _split_from_key_input(k):
+    """Split alone emits no random_bits -- only random_wrap then random_unwrap."""
+    return jax.random.key_data(jax.random.split(jax.random.wrap_key_data(k), 2))
+
+
+def _bits_from_key_input_in_jit(k):
+    return jax.jit(lambda key: jax.random.bits(key, (8,), dtype=jnp.uint32))(k)
+
+
+def _unbatched_random_wrap_count(fn, abstract_inputs):
+    """Count random_wrap eqns producing a key with at most one lane.
+
+    Used to keep this rule's absence-assertions honest. ``_op_blockers``
+    swallows tracing failures and returns no blockers, so "no blocker of this
+    rule" is also what an untraceable program looks like. Asserting the
+    offending primitive IS present proves the only thing keeping a case clean
+    is the provenance test, not a silent trace failure.
+    """
+    closed = jax.make_jaxpr(fn)(*abstract_inputs)
+    count = 0
+    stack = [getattr(closed, "jaxpr", closed)]
+    while stack:
+        current = stack.pop()
+        for eqn in current.eqns:
+            if eqn.primitive.name == "random_wrap":
+                shape = getattr(getattr(eqn.outvars[0], "aval", None), "shape", None)
+                if shape is not None and math.prod(shape) <= 1:
+                    count += 1
+            for value in eqn.params.values():
+                for candidate in value if isinstance(value, (list, tuple)) else (value,):
+                    inner = getattr(candidate, "jaxpr", candidate)
+                    if hasattr(inner, "eqns"):
+                        stack.append(inner)
+    return count
+
+
+class TestUnbatchedThreefryKeyBlocker:
+    RULE = "unbatched-threefry-key"
+
+    def test_bare_key_input_is_refused(self, plan):
+        blockers = check_export_safety(plan.decisions, {}, _KEY_INPUT, _bits_from_key_input, NATIVE)
+        assert [b.rule for b in blockers if b.rule == self.RULE] == [self.RULE]
+
+    def test_one_lane_vmap_is_refused(self, plan):
+        """lanes=1 aborts exactly as the bare key does -- measured, not assumed."""
+        blockers = check_export_safety(
+            plan.decisions, {}, _KEY_ONE_LANE_INPUT, _bits_vmapped, NATIVE
+        )
+        assert any(b.rule == self.RULE for b in blockers)
+
+    def test_four_lane_vmap_is_not_refused(self, plan):
+        """Over-refusal guard: >=2 lanes is bit-exact through IREE and must pass.
+
+        The companion assertion proves this case traces and wraps a key at all,
+        so the clean result reflects the lane count rather than a program the
+        gate never managed to look at.
+        """
+        assert _unbatched_random_wrap_count(_bits_vmapped, _KEY_FOUR_LANE_INPUT) == 0
+        assert _unbatched_random_wrap_count(_bits_vmapped, _KEY_ONE_LANE_INPUT) == 1
+        blockers = check_export_safety(
+            plan.decisions, {}, _KEY_FOUR_LANE_INPUT, _bits_vmapped, NATIVE
+        )
+        assert not any(b.rule == self.RULE for b in blockers)
+
+    def test_constant_key_is_not_refused(self, plan):
+        """The load-bearing guard.
+
+        A constant key produces a jaxpr identical to the input-key case at the
+        random_* level, and stays exact through IREE even with const-eval
+        disabled. Matching the primitive alone would fire here and block a
+        working model; only the provenance test keeps this clean.
+        """
+        assert _unbatched_random_wrap_count(_bits_from_const_key, _OP_INPUT) == 1
+        blockers = check_export_safety(plan.decisions, {}, _OP_INPUT, _bits_from_const_key, NATIVE)
+        assert not any(b.rule == self.RULE for b in blockers)
+
+    def test_split_of_an_input_key_is_refused(self, plan):
+        """Split emits no random_bits, so a random_bits-keyed rule would miss it."""
+        blockers = check_export_safety(
+            plan.decisions, {}, _KEY_INPUT, _split_from_key_input, NATIVE
+        )
+        assert any(b.rule == self.RULE for b in blockers)
+
+    def test_nested_in_a_jit_is_still_caught(self, plan):
+        blockers = check_export_safety(
+            plan.decisions, {}, _KEY_INPUT, _bits_from_key_input_in_jit, NATIVE
+        )
+        assert any(b.rule == self.RULE for b in blockers)
+
+    def test_acknowledged_suppresses_it(self, plan):
+        suppressed = check_export_safety(
+            plan.decisions,
+            {},
+            _KEY_INPUT,
+            _bits_from_key_input,
+            NATIVE,
+            acknowledged=frozenset({"unbatched-threefry-key"}),
+        )
+        assert not any(b.rule == self.RULE for b in suppressed)
+
+    def test_validate_raises_and_names_a_workaround(self, plan):
+        with pytest.raises(UnsupportedOperationError, match="jax_threefry_partitionable"):
+            validate_export_safe(plan.decisions, {}, _KEY_INPUT, _bits_from_key_input, NATIVE)

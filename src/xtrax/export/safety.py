@@ -26,11 +26,19 @@ Blockers cover the rules this module owns:
   the defect is really the split-derived key, and a large enough program
   diverges on ``jnp.argsort(jax.random.bits(k1, ...))`` too, so a clean run of
   this rule does not certify a model's randomness. See its detail string.
+- ``"unbatched-threefry-key"``: threefry driven by a key that arrives as a
+  runtime input with at most one lane. Unlike the rules above this is not a
+  wrong answer but a hard abort at invocation -- IREE's HAL rejects the
+  command buffer with a bogus 2**39-ish length. A constant key is exempt and
+  two or more lanes are exempt, so the rule tests input provenance, not the
+  primitive alone. Suppressible, though suppressing it only passes the gate
+  and does not make the artifact runnable.
 
 They are collected rather than raised one at a time so a caller fixing a model
 sees every offending leaf/op at once.
 """
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -242,6 +250,7 @@ def _dtype_blockers(
 _UNLEGALIZABLE_OP_RULE = "unlegalizable-op"
 _SORT_STABILITY_RULE = "sort-stability"
 _RANDOM_PERMUTATION_RULE = "random-permutation"
+_UNBATCHED_THREEFRY_RULE = "unbatched-threefry-key"
 
 #: Rules a caller cannot suppress via ``acknowledged`` -- currently only
 #: unlegalizable ops, because acknowledging one does not make it compile; it
@@ -289,6 +298,38 @@ _RANDOM_PERMUTATION_DETAIL = (
     "accepts the risk."
 )
 
+_UNBATCHED_THREEFRY_DETAIL = (
+    "This program runs threefry on a key that arrives as a RUNTIME INPUT and "
+    "is un-batched (a scalar key<fry>[] or a single-lane key<fry>[1]). IREE "
+    "does not miscompile this -- it aborts at INVOCATION, before returning "
+    "anything, with a HAL command-buffer validation failure: "
+    "OUT_OF_RANGE, length=549755813960 against a 192-byte binding. The bogus "
+    "length is 2**39 plus a small offset that tracks the shape (2**39+200 for "
+    "a bare key, 2**39+224 for a one-lane vmap), so bit 39 is set spuriously "
+    "-- a width or sign confusion in a buffer-size computation rather than a "
+    "genuine overflow. "
+    "Measured 260913 on iree-base-compiler 3.11. The boundary is the LANE "
+    "COUNT, not the rank of the key input and not vmap-vs-not: an un-batched "
+    "draw fails from a (2,), a (1,2) and a (4,2) key input alike, a one-lane "
+    "vmap fails, and two or more lanes are bit-exact. The draw size is "
+    "irrelevant (2, 64 and 1024 all fail). It is not input marshalling -- a "
+    "(2,) uint32 passthrough and a hand-written xor/shift/add loop on the same "
+    "input are both exact -- and not backend codegen, since the reference vmvx "
+    "backend aborts identically. "
+    "A key BAKED IN as a constant is genuinely exempt, not merely "
+    "const-folded: it stays exact under --iree-opt-const-eval=false. That is "
+    "why this rule tests input provenance rather than matching the primitive "
+    "alone; the two spellings are otherwise jaxpr-identical. "
+    "Two workarounds, both measured: give the key two or more lanes (vmap the "
+    "draw over a (>=2, 2) key), or set jax_threefry_partitionable=False, which "
+    "was confirmed against a red control in the same process and changes the "
+    "emitted MLIR. The second narrows the defect to the partitionable threefry "
+    "lowering, and unlike #5093 this one does NOT reproduce under both "
+    "lowerings. This rule is suppressible via "
+    "acknowledged=frozenset({'unbatched-threefry-key'}); suppressing it does "
+    "not make the artifact runnable, it only lets a caller past the gate."
+)
+
 
 def _sub_jaxprs(params: Mapping[str, Any]) -> list[Any]:
     """Return every jaxpr-like object reachable from one eqn's params.
@@ -327,6 +368,67 @@ def _walk_jaxpr_eqns(jaxpr: Any) -> list[Any]:
     return eqns
 
 
+def _input_derived_var_ids(jaxpr: Any, seeded: frozenset[int]) -> set[int]:
+    """Return ``id()`` of every var transitively derived from a runtime input.
+
+    A forward taint pass, seeded with the ids of ``jaxpr``'s own input vars and
+    propagated through each equation to its outputs. Needed by the
+    ``"unbatched-threefry-key"`` rule, which must tell a key that arrives as a
+    runtime input (aborts the IREE runtime) from one baked in as a constant
+    (measured exact, even with const-eval disabled) -- two programs whose
+    jaxprs are otherwise identical at the ``random_*`` level.
+
+    Sub-jaxprs inherit taint only when the enclosing equation consumes a
+    tainted operand. Where the arities line up -- the ordinary ``jit``/``pjit``
+    case -- operands map to sub-inputs positionally and taint stays exact.
+    Where they do not, as for ``scan``'s const/carry/xs split, every sub-input
+    is tainted instead. That over-approximates: a constant key built inside a
+    ``scan`` that also consumes a tainted operand is flagged although it would
+    run. The bias is deliberate -- the failure being gated is a hard abort at
+    invocation, and this rule is suppressible -- but it is an over-approximation
+    and not a precise slice.
+
+    Identity is by ``id()``, which is sound only while the jaxpr is alive; the
+    caller holds it for the duration.
+
+    Args:
+        jaxpr: The jaxpr to taint.
+        seeded: ``id()`` of ``jaxpr.invars`` entries that are already tainted.
+
+    Returns:
+        The ``id()`` of every tainted var found at this level or below.
+    """
+    tainted: set[int] = set(seeded)
+    for eqn in jaxpr.eqns:
+        consumes_tainted = any(id(v) in tainted for v in eqn.invars)
+        for sub in _sub_jaxprs(eqn.params):
+            if not consumes_tainted:
+                continue
+            if len(sub.invars) == len(eqn.invars):
+                sub_seed = frozenset(
+                    id(inner)
+                    for inner, outer in zip(sub.invars, eqn.invars, strict=True)
+                    if id(outer) in tainted
+                )
+            else:
+                sub_seed = frozenset(id(inner) for inner in sub.invars)
+            tainted |= _input_derived_var_ids(sub, sub_seed)
+        if consumes_tainted:
+            tainted.update(id(v) for v in eqn.outvars)
+    return tainted
+
+
+def _is_unbatched_key(eqn: Any) -> bool:
+    """Whether a ``random_wrap`` equation produces a key with at most one lane.
+
+    ``key<fry>[]`` (a bare key input) and ``key<fry>[1]`` (a one-lane vmap)
+    both abort at invocation; ``key<fry>[2]`` and wider are bit-exact.
+    """
+    aval = getattr(eqn.outvars[0], "aval", None) if eqn.outvars else None
+    shape = getattr(aval, "shape", None)
+    return shape is not None and math.prod(shape) <= 1
+
+
 def _op_blockers(abstract_inputs: Sequence[Any], fn: Callable[..., Any]) -> list[ExportBlocker]:
     """Collect blockers for ops IREE cannot legalize or cannot preserve.
 
@@ -349,6 +451,7 @@ def _op_blockers(abstract_inputs: Sequence[Any], fn: Callable[..., Any]) -> list
         return []
 
     top = getattr(closed, "jaxpr", closed)
+    input_derived = _input_derived_var_ids(top, frozenset(id(v) for v in top.invars))
     blockers: list[ExportBlocker] = []
     for eqn in _walk_jaxpr_eqns(top):
         name = eqn.primitive.name
@@ -366,6 +469,18 @@ def _op_blockers(abstract_inputs: Sequence[Any], fn: Callable[..., Any]) -> list
                     axis=name,
                     rule=_RANDOM_PERMUTATION_RULE,
                     detail=_RANDOM_PERMUTATION_DETAIL,
+                )
+            )
+        elif (
+            name == "random_wrap"
+            and _is_unbatched_key(eqn)
+            and any(id(v) in input_derived for v in eqn.invars)
+        ):
+            blockers.append(
+                ExportBlocker(
+                    axis=name,
+                    rule=_UNBATCHED_THREEFRY_RULE,
+                    detail=_UNBATCHED_THREEFRY_DETAIL,
                 )
             )
     return blockers
