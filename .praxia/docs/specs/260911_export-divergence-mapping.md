@@ -3,7 +3,7 @@ title: Divergence mapping for exported artifacts
 description: A comparison ladder and a reusable fixture that localizes where a compiled artifact departs from production JAX, instead of reporting one scalar
 task_id: 260911_export-divergence-map
 status: ready
-revision: 4 (converged)
+revision: 5 (converged; currency + classifier fix)
 ---
 
 # Divergence mapping for exported artifacts
@@ -38,6 +38,33 @@ revision: 4 (converged)
 > failure. Also: the slice-subset check's three false-accept modes are now
 > stated, `probe_deps` is documented as configuration-dependent, and the last
 > task without a criterion has one.
+>
+> **Revision 5 (260914).** Pre-execution pass, against a staleness audit and a
+> second challenger round. Two classes of change.
+>
+> *Correctness.* Revision 4 restated `AMPLIFIED` and `ATTENUATED` in terms of the
+> severity ordinal it introduced, but left `INJECTED` and `CLEAN` phrased in terms
+> of bit-identity. Under the stated precedence that made **every** within-budget
+> float leaf with clean predecessors `INJECTED` — firing the "changed semantics
+> under lowering" signal on exactly the last-bit fusion noise §3.2's floor exists
+> to tolerate, and no criterion caught it. Both classes are now severity-phrased
+> and AC-19 pins the boundary. This is the revision-4 fix breaking a definition
+> the revision-4 fix did not revisit, which is the second time in this document's
+> history that a convergence pass introduced a defect of its own.
+>
+> *Currency.* The spec's motivating construct no longer exists. aminx PR #155
+> merged 33 seconds after this document's first commit; PR #156 then replaced the
+> measured `jnp.argsort(-x, stable=True)` form outright, and PR #157 applied the
+> same fix at a second site. §8's "file separately" recommendation — fold an index
+> tiebreak into the sort key — **is therefore already shipped, unconditionally, at
+> both sites**, which inverts AC-10's negative control from a fix to be applied
+> into the current behaviour of `main`. AC-10 is rewritten around the resulting
+> natural experiment. Every stale `file:line` citation is corrected, and T12 is
+> explicitly deferred out of the implementing sprint.
+>
+> Also: `run_ladder` and `budget_leaf` were pinned public surface that no task
+> owned and no module claimed (§6.0 now fixes both), and AC-3b was missing from
+> §7's self-described exhaustive mapping.
 
 ## 1. The problem, stated as a measurement failure
 
@@ -79,18 +106,36 @@ uv run --extra export --extra export-runtime python \
 
 ### 2.1 The construct measured
 
-M4's construct is verbatim `aminx/model/features.py:66` on branch
-`feat/xtrax-export-dogfood` (PR #155, **unmerged**; `main` still has the
-`jax.lax.top_k` wrapper):
+M4's construct is verbatim `aminx/model/features.py:66` **as it stood when the
+measurement was taken**, on branch `feat/xtrax-export-dogfood` (aminx PR #155).
+Revision 4 called that branch "unmerged" and said `main` still carried the
+`jax.lax.top_k` wrapper. Both statements expired almost immediately — see the
+currency note below the code block:
 
 ```python
 order = jnp.argsort(-x, axis=-1, stable=True)[..., :k]
 ```
 
-The branch matters and is stated because the two trees differ. `jax.lax.top_k`
-lowers to a `stablehlo.composite` that IREE rejects outright, so **among
-artifacts that compute their own kNN**, the argsort form is the only one that
-compiles.
+The branch mattered because the two trees differed. `jax.lax.top_k` lowers to a
+`stablehlo.composite` that IREE rejects outright, so **among artifacts that
+compute their own kNN**, the argsort form was the only one that compiled.
+
+> **Currency (verified 260914).** None of that describes aminx `main` any more.
+> PR #155 merged at 2026-09-11 17:04:36, thirty-three seconds after this
+> document's first commit; PR #156 (2026-09-12) then replaced the argsort form
+> entirely. Current `main` contains **neither** `jax.lax.top_k` **nor**
+> `jnp.argsort(..., stable=True)` as executable code — both survive only in a
+> docstring, named as rejected approaches. The live construct is
+> `src/aminx/model/features.py:90`:
+>
+> ```python
+> index = jax.lax.broadcasted_iota(jnp.int32, x.shape, x.ndim - 1)
+> _, order = jax.lax.sort((-x, index), dimension=-1, is_stable=False, num_keys=2)
+> ```
+>
+> M3/M4/M6 remain valid measurements **of IREE**, which is what they were taken
+> to establish; they are no longer measurements of any code aminx ships. What
+> that costs this spec is confined to AC-10, and is dealt with there.
 
 Revision 2 said "necessarily", which was too strong. There is a third path:
 `features.py:152` branches on `if rbf_features is not None`, setting
@@ -445,16 +490,27 @@ declares it per export.
 
 Classes:
 
-- **CLEAN** — within the §3.2 budget (float) or exact (discrete).
+- **CLEAN** — severity ≤ 1: within the §3.2 budget (float), or exact
+  (discrete). A severity-1 leaf is CLEAN, not a weak signal; tolerating last-bit
+  fusion noise is the entire purpose of the budget and its floor.
 - **AMPLIFIED** — some predecessor already diverged, and this probe's divergence
   is `>= ` that of every predecessor.
 - **ATTENUATED** — some predecessor diverged and this probe's is strictly
   smaller. Renormalizing operations do this routinely; aminx has a `LayerNorm`
   between `after_w_e` and `after_norm`. Revision 1 had no class for it and its
   classifier was undefined on that input.
-- **INJECTED** — **every** predecessor was bit-identical and this probe is not.
-  This is the signal: it names an operation that changed semantics under
-  lowering.
+- **INJECTED** — **every** predecessor is severity 0 and this probe is
+  **severity 2**. This is the signal: it names an operation that changed
+  semantics under lowering.
+
+  **Phrased in severity, deliberately.** Revisions 1–4 said "every predecessor
+  was bit-identical and this probe is not", which is a *severity ≥ 1* condition.
+  Since the precedence order evaluates `INJECTED` before `CLEAN`, that reading
+  classified every within-budget float leaf below a clean predecessor as an
+  operation that changed semantics under lowering — an `INJECTED` storm on
+  ordinary fusion noise, and precisely the outcome §3.2's `ULP_FLOOR` exists to
+  prevent. Revision 4 restated `AMPLIFIED` and `ATTENUATED` in severity terms
+  and did not revisit these two. AC-19 now pins the boundary.
 - **DISCRETE_FLIP** — an integer or bool leaf mismatched while every
   predecessor was bit-identical **on all leaves, discrete included**. Its own
   class because the float metrics read zero. A probe with an **empty**
@@ -505,6 +561,13 @@ one a float-only instrument cannot see.
 which revision 1 left with no operational meaning and which AC-3 could not test.
 
 ### 5.4 Instrumentation fidelity
+
+> **On "two-sided" (clarifying, revision 5).** The phrase describes what a
+> single symmetric check *catches*, not two code paths. Items 1-2 below specify
+> one instrumented-vs-uninstrumented comparison of the primary leaves; any
+> disagreement trips the guard, whichever direction produced it. No
+> direction-discriminating logic is expected, and AC-6's two fixtures exercise
+> the same branch.
 
 **The most serious threat to R3's validity.** Adding outputs changes DCE and
 fusion in both XLA and IREE. A probe that forces materialization can suppress
@@ -566,7 +629,7 @@ Three honest caveats, all of which revision 1 got wrong:
 - Sibling slices **overlap** (shared subexpressions belong to both), so slice
   deltas do not partition the module and do not sum to the total.
 - Counts are **static**. A 10-op `scan` body executing L times counts as 10
-  (`composer.py:274`), so the most heavily executed region can look like the
+  (`composer.py:285`; cited as `:274` before xtrax PR #150 shifted it), so the most heavily executed region can look like the
   best covered.
 - It measures the **instrumented** module's StableHLO, *before* IREE's own
   fusion and DCE — which is where the divergence lives.
@@ -585,8 +648,64 @@ tests/export/test_rings.py        # toolchain-gated + fake-injected
 ```
 
 Public surface: `LeafDivergence`, `ProbeReport`, `DivergenceClass`,
-`RingResult`, `compare_pytree`, `classify_probes`, `probe_resolution`,
-`run_ladder`. `compare` stays unchanged for the single-array parity path.
+`RingResult`, `Severity`, `budget_leaf`, `compare_pytree`, `classify_probes`,
+`probe_resolution`, `validate_probe_deps`, `run_ladder`. `compare` stays
+unchanged for the single-array parity path.
+
+### 6.0 Pinned interfaces
+
+These shapes are fixed **here** so that T1–T3b (`divergence.py`) and T4–T8b
+(`rings.py`) can be implemented in parallel without negotiating a contract
+mid-sprint. `divergence.py` owns every type below; `rings.py` imports them and
+redefines none.
+
+```python
+class Severity(IntEnum):          # §5.3
+    IDENTICAL = 0
+    WITHIN_BUDGET = 1
+    BEYOND_BUDGET = 2
+
+@dataclass(frozen=True)
+class LeafDivergence:
+    path: str                             # jax.tree_util.keystr of the leaf
+    dtype_class: Literal["float", "integer", "bool"]
+    severity: Severity
+    metrics: Mapping[str, float]          # §5.2 keys for this dtype_class
+    failed: bool                          # leaf shape/dtype mismatch (§5.2)
+    message: str | None
+
+@dataclass(frozen=True)
+class ProbeReport:
+    name: str
+    predecessors: tuple[str, ...]
+    leaves: tuple[LeafDivergence, ...]
+    severity: Severity                    # max over leaves
+    divergence_class: DivergenceClass
+
+@dataclass(frozen=True)
+class RingResult:
+    ring: Literal["R0", "R1", "R2a", "R2b", "R3"]
+    passed: bool
+    input_class: str                      # §6.2 label
+    in_contract: bool                     # §6.2 / AC-17
+    probes: tuple[ProbeReport, ...]
+    notes: tuple[str, ...]
+
+def budget_leaf(m_leaf_ulp: float) -> float: ...
+```
+
+**`budget_leaf` lives in `divergence.py`, not `rings.py`.** It is pure arithmetic
+over §3.2's formula, so putting it beside the classifier keeps one definition and
+keeps AC-12 ("imports nothing from `iree`") true. The division of labour is:
+`rings.py` (T5) *measures* `m_leaf` — which requires executing R2a — and calls
+`budget_leaf` on the result; `classify_probes` receives the resulting per-leaf
+budgets as an explicit `budgets: Mapping[str, float]` argument and never measures
+or derives one. A leaf absent from `budgets` is an error, not a default, for the
+same reason an undeclared `probe_deps` edge is.
+
+R2a itself runs **before any budget exists** and is therefore reported, never
+judged: it is the measurement that produces `m_leaf`, so gating it on a budget
+would be circular.
 
 ### 6.1 Probe declaration
 
@@ -636,32 +755,51 @@ swept.
 | T8 | §6.2 input-class generators | `rings.py` |
 | T9 | Pure-logic tests, no toolchain, ≥90% line / ≥80% branch | `test_divergence.py` |
 | T10 | Toolchain tests + fakes + `coverage_omit` entry | `test_rings.py` |
+| T8b | `run_ladder` — top-level orchestrator: `validate_probe_deps`, then §3.1 ring order, then `classify_probes` + `probe_resolution` | `rings.py` |
 | T11 | `docs/api/export.md` — the ladder and when to escalate | docs |
-| T12 | aminx dogfood (§9) | aminx PR |
+| T12 | aminx dogfood (§9) — **deferred out of this sprint** (§9) | aminx PR |
 
 Every task maps to at least one acceptance criterion and every criterion to a
-task: T1→AC-1/AC-13, T2→AC-3/4/5/14, T3→AC-9, T3b→AC-15, T4→AC-16, T5→AC-7/8,
-T6→AC-6, T7→AC-2, T8→AC-17, T9/T10→AC-12, T11→AC-18, T12→AC-10, and AC-11 is
-T4/T5's API surface. Revision 2 left T4 — the R0 gate and R1's `cpu_features`
-precondition, both normative — with no criterion at all, and AC-11 with no task.
+task: T1→AC-1/AC-13, T2→AC-3/AC-3b/4/5/14/AC-19, T3→AC-9, T3b→AC-15, T4→AC-16,
+T5→AC-7/8, T6→AC-6, T7→AC-2, T8→AC-17, T8b→AC-20, T9/T10→AC-12, T11→AC-18,
+T12→AC-10, and AC-11 is T4/T5's API surface. Revision 2 left T4 — the R0 gate and
+R1's `cpu_features` precondition, both normative — with no criterion at all, and
+AC-11 with no task. Revision 4 added AC-3b and omitted it from this list, which
+is the same defect one layer down; revision 5 adds it, plus T8b/AC-20 for the
+orchestrator that was pinned public surface owned by no task.
+
+**Sprint scope.** T1–T11 land in xtrax and are the implementing sprint. **T12 is
+deferred**: it is cross-repo, needs a real 110 MB checkpoint under a real IREE
+toolchain, and — per §9 — now requires swapping the `top_k` construct rather than
+adding a tiebreak. It is filed separately and AC-10 is not a merge gate for the
+xtrax sprint.
 
 ## 8. Consequences to file separately
 
 - **`check_export_safety` should flag stable-sort reliance.** M3/M4 show
   `jnp.argsort(stable=True)`, `jnp.sort` and `lax.sort_key_val` do not preserve
   XLA tie-breaking through IREE. Pairs with the unlegalizable-op work in #5092.
-- **aminx PR #155's `top_k` needs an explicit tiebreak.** The fix was necessary —
-  `lax.top_k` is uncompilable — but its correctness argument rests on stability
-  IREE does not provide. A deterministic index tiebreak folded into the sort key
-  (e.g. sort on `(-x, index)` lexicographically) removes the dependency entirely.
-  This is also the negative control AC-10 requires.
+- ~~**aminx PR #155's `top_k` needs an explicit tiebreak.**~~ **DONE — shipped
+  before this spec was ever executed (verified 260914).** The recommendation was
+  to fold a deterministic index tiebreak into the sort key, "e.g. sort on
+  `(-x, index)` lexicographically". aminx implemented exactly that, at **two**
+  sites, within 18 hours of this document's first commit:
+  `src/aminx/model/features.py:90` (PR #156) and
+  `src/aminx/utils/decoding_order.py:99-105` (PR #157, on the autoregressive
+  decode path, whose comment reads "Same fix as `model.features.top_k`
+  (PR #156)"). Both pass `is_stable=False` deliberately, stability having become
+  irrelevant once the index is a sort key. The consequence for this spec is that
+  AC-10's negative control is no longer a patch to apply — it is the behaviour of
+  `main`, which inverts the dogfood's construction.
 - **#5093 should be updated**, not closed: FMA is retired for the decoding-order
   leg only (§2.3); sort stability is a demonstrated mechanism whose applicability
   to that artifact is still unmeasured.
 
 ## 9. Dogfood on aminx
 
-aminx supplies the probes and the schema, so no model changes are needed:
+aminx supplies the probes and the schema, so no *production* model changes are
+needed — but see the control-pair note at the end of this section, which does
+require substituting one function at fixture level:
 
 - `features.py:109` `forward_edge_stages()` returns `ProteinEdgeStageTensors`,
   documented verbatim as *"Intermediate edge tensors for parity diagnosis"*.
@@ -686,14 +824,41 @@ aminx supplies the probes and the schema, so no model changes are needed:
 - `src/aminx/parity/evidence.py` already defines `EvidenceMetricRecord` /
   `EvidencePointRecord`; the fixture emits into that schema.
 
+**Line citations in this section were corrected 260914.** PR #155/#156 inserted a
+~44-line `top_k` function near the top of `features.py`, shifting everything
+below it: `forward_edge_stages` 109 → **153**, `node_features_out`
+79 → **105**, the edge-stage DAG 212-247 → **~208-286**, `edges_concat`
+242 → **268**, the three-way branch 152/158-162/182/202 →
+**178/188/208/228**. The *content* at every one of those sites is unchanged —
+field count, field names, types, and the DAG topology of §5.3 were all
+re-verified against `origin/main` and still hold. Only the pointers moved.
+
+**The control pair, restated (this is what changed).** AC-10 originally asked for
+`DISCRETE_FLIP` on today's model and its absence "after applying §8's tiebreak".
+The tiebreak is now unconditional on `main`, so that construction is
+unsatisfiable as written: there is nothing left to apply. What replaces it is
+strictly better, because both halves are now *real shipped code* rather than one
+real and one hypothetical:
+
+| leg | construct | expectation |
+|---|---|---|
+| **positive** | pre-#156 `jnp.argsort(-x, axis=-1, stable=True)[..., :k]`, substituted for `features.top_k` at fixture level | `DISCRETE_FLIP` on `neighbor_indices` under `symmetric_geometry` |
+| **negative** | current `main` — `lax.sort((-x, index), num_keys=2)` | **no** `DISCRETE_FLIP`, same input class |
+
+Substitution is a fixture-level monkeypatch of one function, not an edit to
+aminx's production source, which is what keeps §9's "no model changes" framing
+honest. The positive leg's construct is recoverable verbatim from aminx git
+history and must be quoted from there, not retyped.
+
 **Acceptance:** the ladder, run on the real `proteinmpnn_v_48_020` artifact under
-the §6.2 input classes, must report `DISCRETE_FLIP` on `neighbor_indices` for
-`symmetric_geometry` — the in-contract class. The `nominal` result is reported
-rather than asserted (AC-10). It must
-additionally *answer §2.3's open question*: whether the exported artifact
-computes its own kNN at all (§2.1's precomputed-features path contains no sort),
-and if it does, whether its reference input carries ties. Those are the two
-competing explanations for #5093, and the dogfood is what distinguishes them.
+the §6.2 input classes, must produce the two-leg result above. The `nominal`
+result is reported rather than asserted (AC-10). It must additionally *answer
+§2.3's open question*: whether the exported artifact computes its own kNN at all
+(§2.1's precomputed-features path contains no sort), and if it does, whether its
+reference input carries ties. Those are the two competing explanations for
+#5093 — and note that aminx having since removed the sort dependency makes the
+question **decidable rather than merely open**: if #5093 still reproduces on
+post-#156 `main`, sort stability was never its cause.
 
 ## 10. Acceptance criteria
 
@@ -733,12 +898,22 @@ competing explanations for #5093, and the dogfood is what distinguishes them.
   and confirming a single flipped index still fails.
 - **AC-9** `probe_resolution` reports `slice_delta` per declared edge and
   `unattributed_ops`, and its docstring states the three §5.5b caveats.
-- **AC-10** aminx dogfood: `DISCRETE_FLIP` on `neighbor_indices` under
-  `symmetric_geometry` (in-contract; revision 2 named the refused
-  `sub_k_neighbours` class here), and — the **negative control**, without which
-  this AC is unfalsifiable — **no** `DISCRETE_FLIP` under `symmetric_geometry`
-  after applying §8's explicit index tiebreak to the same model. A fixture that
-  hardcodes the expected answer passes the first clause and fails the second.
+- **AC-10** *(T12 — deferred out of the implementing sprint; not a merge gate
+  for T1–T11)* aminx dogfood, **two legs, both real code** (§9): `DISCRETE_FLIP`
+  on `neighbor_indices` under `symmetric_geometry` (in-contract; revision 2 named
+  the refused `sub_k_neighbours` class here) with the **pre-#156** `argsort`
+  construct substituted at fixture level, and — the **negative control**, without
+  which this AC is unfalsifiable — **no** `DISCRETE_FLIP` under the same input
+  class on **current `main`**, whose `(-x, index)` two-key sort already carries
+  the tiebreak. A fixture that hardcodes the expected answer passes the first
+  clause and fails the second.
+
+  Revision 4 worded the control as "after applying §8's explicit index tiebreak
+  to the same model". That is no longer constructible: the tiebreak shipped in
+  aminx PR #156/#157 and is unconditional, so there is no un-tiebroken model to
+  apply it to. The polarity is therefore inverted — `main` is the *negative*
+  leg — and the positive leg is obtained by substitution from git history rather
+  than by patching forward.
 
   **`nominal` is deliberately not asserted either way.** Whether the reference
   input carries ties is the open question of §2.3; asserting "no `DISCRETE_FLIP`
@@ -775,6 +950,19 @@ competing explanations for #5093, and the dogfood is what distinguishes them.
   the §5.5b caveats, and `just audit-narrative-docs` passes over it. T11 was the
   last task with no criterion — the same defect revision 3 fixed for T4, and
   worth fixing rather than exempting docs on principle.
+
+- **AC-19** The `INJECTED`/`CLEAN` boundary is asserted directly: a probe whose
+  leaves are **severity 1** (float divergence strictly inside `budget_leaf`) with
+  **all predecessors severity 0** classifies as `CLEAN`, and the same probe at
+  **severity 2** classifies as `INJECTED`. Both assertions are required — the
+  first alone is satisfied by a classifier that never emits `INJECTED`, and the
+  literal revision-4 reading fails it. Add the empty-predecessor case at severity
+  1, which must also be `CLEAN`.
+- **AC-20** `run_ladder` (T8b) refuses before executing anything when
+  `validate_probe_deps` rejects a declared edge, and on a well-formed input runs
+  the rungs in §3.1's order with R0 first; asserted on a fake whose rungs record
+  their invocation order. It is the only entry point AC-10 calls, so an
+  unexercised orchestrator would make the dogfood untestable.
 
 **Merge gate, not an acceptance criterion:** `just audit-deterministic` exits 0
 *and* its log contains no `FAILED` (the known audit-masking trap). It is
