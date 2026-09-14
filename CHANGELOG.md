@@ -7,8 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a10] - 2026-09-13
+
+Release theme: the export boundary now refuses, at plan time, the constructs
+measured to break through IREE — rather than letting them compile and diverge
+or abort. Four of the five rules below were found by measuring a real model's
+exported artifact against eager JAX, and two of them produce **no compile
+error and no exception**: the artifact runs and returns wrong integers, which a
+float-tolerance parity check reports as `max_abs_diff 0.0` and passes.
+
 ### Added
 
+- **Export-safety rule `"unlegalizable-op"`**: refuses `jax.lax.top_k`, which
+  IREE's StableHLO importer rejects outright on every target (it lowers to a
+  `stablehlo.composite` wrapping `chlo.top_k`, marked explicitly illegal). This
+  rule is **not** suppressible — no caller can accept a risk that is a hard
+  compile failure. The suggested replacement,
+  `jnp.argsort(-x, axis=-1, stable=True)[..., :k]`, itself trips the next rule.
+- **Export-safety rule `"sort-stability"`**: flags a stable sort/argsort, whose
+  tie order IREE does not preserve relative to XLA. Measured: an integer
+  `sort_key_val` with 64 slots and 4 distinct keys differs at **45 of 64**
+  positions. Nothing crashes and no float leaf changes, so a parity gate built
+  on float magnitude cannot see it at any tolerance. Fold an explicit index
+  tiebreak into the sort key rather than relying on backend stability.
+- **Export-safety rule `"random-permutation"`**: flags `jax.random.permutation`,
+  which IREE compiles into a valid but **wrong** permutation when the key is a
+  split half and the sibling half is also consumed — 248 of 256 positions
+  differ. Suppressible via `acknowledged`. It is **necessary but not
+  sufficient**: the underlying defect is the split-derived key, not the
+  permutation, so a clean run of this rule does not certify a model's
+  randomness. Reported upstream as
+  [iree-org/iree#24927](https://github.com/iree-org/iree/issues/24927).
+- **Export-safety rule `"unbatched-threefry-key"`**: flags threefry driven by a
+  key that arrives as a **runtime input** with at most one lane. Unlike the
+  rules above this is not a wrong answer but a **hard abort at invocation** —
+  IREE's HAL rejects the command buffer with a bogus `2**39`-ish length against
+  a 192-byte binding. The boundary is the lane count, not the rank of the key
+  input and not `vmap`-versus-not: an un-batched draw aborts from `(2,)`,
+  `(1,2)` and `(4,2)` inputs alike, one lane aborts, two or more is bit-exact.
+  A **constant** key is genuinely exempt (it stays exact under
+  `--iree-opt-const-eval=false`), so the rule tests input provenance rather
+  than matching the primitive alone. Two measured workarounds, both named in
+  the blocker text: give the key two or more lanes, or set
+  `jax_threefry_partitionable=False`. Reported upstream as
+  [iree-org/iree#24929](https://github.com/iree-org/iree/issues/24929).
 - **`xtrax.export.targets.NATIVE_PORTABLE`**: a fifth export target, `"native-portable"`,
   `EXECUTED` like `NATIVE` but compiled with a fixed `--iree-llvmcpu-target-cpu=x86-64-v2`
   baseline instead of `=host`, so the artifact runs on a recipient's CPU rather than only
@@ -25,6 +67,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pytree inputs are flattened at vmfb invocation.** `export_pipeline`'s
+  EXECUTED path passed a pytree straight to the runtime, which accepts only
+  flat arrays, so any model whose entry point takes a structured input failed
+  at invocation rather than at export — late, and with an error naming the
+  runtime instead of the call site.
+- **A materializing inner sink is refused on the literal-`vmap` route.**
+  `compose_vmap_of_scan`'s literal-`vmap` route discarded the materialized
+  `ys` and returned only the final carry, so a sink declared `materialize=True`
+  silently lost every value but the last. It now refuses rather than
+  under-reporting.
 - **`zarr_content_digest` now excludes provenance attrs by default**: run-ID,
   git SHA/branch/dirty, and creation timestamp are excluded from the digest
   unless explicitly included via the new `include_provenance=True` parameter
