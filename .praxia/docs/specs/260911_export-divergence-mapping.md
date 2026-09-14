@@ -3,7 +3,7 @@ title: Divergence mapping for exported artifacts
 description: A comparison ladder and a reusable fixture that localizes where a compiled artifact departs from production JAX, instead of reporting one scalar
 task_id: 260911_export-divergence-map
 status: ready
-revision: 5 (converged; currency + classifier fix)
+revision: 5.1 (converged; post-audit ordering + criterion strengthening)
 ---
 
 # Divergence mapping for exported artifacts
@@ -297,7 +297,22 @@ host-tuned codegen, which would report "no ISA divergence" for the wrong reason.
 
 Run R0, then the non-editing rings, then R3.
 
-The justification is **interpretability, not cost.** Revision 1 claimed cost
+**Within the non-editing rings, R2a runs first.** R2a is the measurement that
+produces `m_leaf`, and hence the per-leaf budgets every other float comparison
+is judged against (§3.2). Running R1 or R2b ahead of it would leave them with no
+calibrated budget at all, so the executed sequence is:
+
+```
+R0  →  R2a  →  R1  →  R2b  →  R3
+```
+
+The ring table in §3 lists R1 before R2a because that table is ordered by what
+each ring *varies* — it is descriptive, not an execution order. Revision 5 states
+the executed sequence here explicitly because AC-20's test was otherwise
+asserting the implementation's own choice back at itself, which cannot catch an
+ordering regression in either direction.
+
+The justification for R0-first and R3-last is **interpretability, not cost.** Revision 1 claimed cost
 ordering; that was false on this spec's own facts, since §9's aminx probes
 already exist and R3 there costs one export while R1 costs a recompile per
 target. The real argument is that **R3's result is uninterpretable until §5.4
@@ -898,6 +913,11 @@ post-#156 `main`, sort stability was never its cause.
   and confirming a single flipped index still fails.
 - **AC-9** `probe_resolution` reports `slice_delta` per declared edge and
   `unattributed_ops`, and its docstring states the three §5.5b caveats.
+  `unattributed_ops` must be asserted against a **known-shape graph at a concrete
+  value**, not merely `>= 0`: that bound is true by construction, since the
+  quantity is `total_ops - len(covered)` over a covered set that is structurally
+  a subset. Both degenerate implementations — attribute everything, attribute
+  nothing — satisfy `>= 0` and would otherwise ship.
 - **AC-10** *(T12 — deferred out of the implementing sprint; not a merge gate
   for T1–T11)* aminx dogfood, **two legs, both real code** (§9): `DISCRETE_FLIP`
   on `neighbor_indices` under `symmetric_geometry` (in-contract; revision 2 named
@@ -945,7 +965,11 @@ post-#156 `main`, sort stability was never its cause.
   the silent-fallback case `targets.py:155-165` documents.
 - **AC-17** Each §6.2 generator is labelled in the report with its
   in-contract/out-of-contract status, and `sub_k_neighbours` results are marked
-  out-of-contract so no verdict rests on them alone.
+  out-of-contract so no verdict rests on them alone. The label must be asserted
+  **at the report level** — a `RingResult` carrying `in_contract=False` — and not
+  only on the generator's own return value. `in_contract=True` is the field's
+  default, so a test suite that never drives the false case through a rung would
+  pass against a runner that dropped the label entirely.
 - **AC-18** `docs/api/export.md` documents the ladder, the escalation order, and
   the §5.5b caveats, and `just audit-narrative-docs` passes over it. T11 was the
   last task with no criterion — the same defect revision 3 fixed for T4, and
@@ -960,9 +984,12 @@ post-#156 `main`, sort stability was never its cause.
   1, which must also be `CLEAN`.
 - **AC-20** `run_ladder` (T8b) refuses before executing anything when
   `validate_probe_deps` rejects a declared edge, and on a well-formed input runs
-  the rungs in §3.1's order with R0 first; asserted on a fake whose rungs record
-  their invocation order. It is the only entry point AC-10 calls, so an
-  unexercised orchestrator would make the dogfood untestable.
+  the rungs in **exactly** the §3.1 executed sequence
+  `R0, R2a, R1, R2b, R3` (validation first); asserted on a fake whose rungs
+  record their invocation order. The sequence is quoted from §3.1 rather than
+  read off the implementation — a test that mirrors the code's own order proves
+  only that the code agrees with itself. It is the only entry point AC-10 calls,
+  so an unexercised orchestrator would make the dogfood untestable.
 
 **Merge gate, not an acceptance criterion:** `just audit-deterministic` exits 0
 *and* its log contains no `FAILED` (the known audit-masking trap). It is

@@ -593,6 +593,23 @@ class TestR3Probe:
 # T8b -- run_ladder orchestration (AC-20)
 # ---------------------------------------------------------------------------
 
+# SS3.1 (spec revision 5.1), quoted verbatim -- not read off the implementation:
+#
+#   "Within the non-editing rings, R2a runs first. R2a is the measurement that
+#   produces m_leaf, and hence the per-leaf budgets every other float
+#   comparison is judged against (SS3.2). Running R1 or R2b ahead of it would
+#   leave them with no calibrated budget at all, so the executed sequence is:
+#
+#   R0 -> R2a -> R1 -> R2b -> R3"
+#
+# The SS3 ring table lists R1 before R2a because that table is ordered by
+# what each ring *varies* (descriptive), not by execution order. Pinning the
+# sequence here as a named constant -- rather than inlining the literal list
+# at the assertion site -- makes its provenance explicit: a future reader can
+# tell the order is spec-pinned, not incidentally whatever the code happens
+# to do (AC-20).
+SPEC_3_1_EXECUTED_RUNG_ORDER: tuple[str, ...] = ("R0", "R2a", "R1", "R2b", "R3")
+
 
 class TestRunLadder:
     def test_refuses_before_executing_anything_when_validate_rejects(self):
@@ -671,8 +688,8 @@ class TestRunLadder:
             r2b=make_ring("R2b"),
             r3=make_ring("R3"),
         )
-        assert order == ["validate", "R0", "R2a", "R1", "R2b", "R3"]
-        assert [r.ring for r in results] == ["R0", "R2a", "R1", "R2b", "R3"]
+        assert order == ["validate", *SPEC_3_1_EXECUTED_RUNG_ORDER]
+        assert tuple(r.ring for r in results) == SPEC_3_1_EXECUTED_RUNG_ORDER
 
     def test_r0_gate_failure_skips_the_remaining_rungs_for_that_class(self):
         """AC-16, exercised through run_ladder: no other rung runs once R0 fails."""
@@ -742,6 +759,70 @@ class TestRunLadder:
             r0=fake_r0,
         )
         assert seen_classes == ["nominal"]
+
+    def test_ac17_sub_k_neighbours_label_survives_to_every_report_level_ring_result(self):
+        """AC-17: the in-contract label must be asserted at the REPORT level.
+
+        Every ``RingResult``-producing test elsewhere in this suite uses
+        ``in_contract=True``, the field's default -- so a runner that dropped
+        the label entirely (always defaulting to True) would still pass all
+        of them. This drives a real ``sub_k_neighbours``-labelled
+        ``InputClassResult`` (out-of-contract, AC-17) through ``run_ladder``
+        and checks the ``in_contract`` field on the resulting ``RingResult``s
+        themselves -- not just on the generator's own return value, which
+        ``TestInputClassGenerators.test_sub_k_neighbours_is_labelled_out_of_contract``
+        already covers.
+        """
+        ic = rings.sub_k_neighbours(64, k_neighbors=48)
+        assert ic.label == "sub_k_neighbours"
+        assert ic.in_contract is False
+
+        def fake_validate(*_args, **_kwargs):
+            pass
+
+        def make_ring(name):
+            def _fn(*_args, **kwargs):
+                return d.RingResult(
+                    ring=name,
+                    passed=True,
+                    input_class=kwargs["input_class"],
+                    in_contract=kwargs["in_contract"],
+                    probes=(),
+                    notes=(),
+                )
+
+            return _fn
+
+        def fake_r2a(fn, plan, ai, ci, **kwargs):  # noqa: ARG001
+            result = d.RingResult(
+                ring="R2a",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+            return result, {}
+
+        results = rings.run_ladder(
+            _bare_fn,
+            plan=None,
+            abstract_inputs=(),
+            concrete_inputs=(),
+            probe_deps={},
+            input_classes=(ic,),
+            eager_fn=lambda ci: None,
+            validate_fn=fake_validate,
+            r0=make_ring("R0"),
+            r1=make_ring("R1"),
+            r2a=fake_r2a,
+            r2b=make_ring("R2b"),
+            r3=make_ring("R3"),
+        )
+        assert results  # sanity: the ladder actually ran
+        for result in results:
+            assert result.input_class == "sub_k_neighbours"
+            assert result.in_contract is False
 
 
 # ---------------------------------------------------------------------------

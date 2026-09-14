@@ -570,8 +570,40 @@ class TestProbeResolution:
         result = d.probe_resolution(exported, deps, paths)
         assert set(result.slice_delta) == {"rbf->edges_concat", "encoded_positions->edges_concat"}
         assert all(v > 0 for v in result.slice_delta.values())
-        assert result.unattributed_ops >= 0
         assert result.total_ops > 0
+
+        # AC-9: `>= 0` is vacuous -- unattributed_ops = total_ops - len(covered)
+        # over a covered set that is structurally a subset, so it can never be
+        # negative. Both degenerate implementations (attribute everything ->
+        # always 0; attribute nothing -> always total_ops) satisfy `>= 0`.
+        #
+        # `_toy_dag_export`'s `neighbor_indices = jnp.argsort(x)` is declared
+        # as a probe (it has a `probe_result_paths` entry) but is never named
+        # as a predecessor or target of any `deps` edge, so its ops are
+        # structurally guaranteed to fall outside the union of slice deltas:
+        # this graph genuinely has both attributed ops (feeding the declared
+        # `rbf`/`encoded_positions` -> `edges_concat` edges) and unattributed
+        # ones (argsort's), which a real-value assertion needs in order to
+        # exercise both failure directions at once.
+        #
+        # An exact op count would be brittle across jax/stablehlo versions, so
+        # per AC-9's fallback this asserts the strict inequalities plus the
+        # identity `unattributed_ops == total_ops - len(union of slice
+        # deltas)`, with the union recomputed independently in the test (via
+        # the same `_compute_probe_slices` primitive `probe_resolution` itself
+        # calls, but re-aggregated here rather than trusting
+        # `probe_resolution`'s own bookkeeping of `covered`).
+        assert 0 < result.unattributed_ops < result.total_ops
+
+        slice_ops, total_ops = d._compute_probe_slices(exported, paths)
+        covered: set[int] = set()
+        for probe, preds in deps.items():
+            for pred in preds:
+                covered |= slice_ops[probe] - slice_ops[pred]
+        assert covered  # sanity: something is genuinely attributed
+        assert covered != set(range(total_ops))  # sanity: not everything is
+        assert result.total_ops == total_ops
+        assert result.unattributed_ops == total_ops - len(covered)
 
     def test_ac9_docstring_states_the_three_caveats(self):
         doc = d.probe_resolution.__doc__ or ""
