@@ -21,7 +21,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -107,6 +107,26 @@ class TestInputClassGenerators:
     def test_sub_k_neighbours_rejects_a_non_bucket_length(self):
         with pytest.raises(ValueError, match="bucket ladder"):
             rings.sub_k_neighbours(100, k_neighbors=48)
+
+
+class TestMagnitudeExtremesSubnormals:
+    def test_output_actually_contains_denormal_values(self):
+        """FINDING 6 (round 5): `finfo.tiny` is the smallest NORMAL float32,
+        not the smallest subnormal -- the class advertised as spanning
+        "float32 denormal" magnitudes previously drew from
+        ``[tiny, tiny * 1e4]``, an interval that contains NO subnormal values
+        at all, so it never stressed the reassociation cases it exists for.
+        """
+        result = rings.magnitude_extremes(64)
+        coords, _mask = result.concrete_inputs
+        magnitudes = np.abs(np.asarray(coords))
+        finfo = np.finfo(np.float32)
+        subnormal = magnitudes[(magnitudes > 0) & (magnitudes < finfo.tiny)]
+        assert subnormal.size > 0, (
+            "magnitude_extremes must actually draw some float32 SUBNORMAL "
+            "magnitudes (0 < |x| < finfo.tiny), not just values near the "
+            "smallest NORMAL float"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +376,10 @@ class TestR1TargetIsa:
     def test_interprets_legs_when_cpu_features_differ(
         self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
     ):
+        """The two legs must actually differ AND the portable leg must
+        positively declare the x86-64-v2 feature set (FINDING 1, round 5) --
+        an arbitrary differing string is no longer sufficient.
+        """
         monkeypatch.setattr(
             rings,
             "compile_for_target",
@@ -364,8 +388,10 @@ class TestR1TargetIsa:
             ),
         )
 
+        v2 = rings._X86_64_V2_FEATURE_STRING
+
         def fake_features(path: Path) -> str:
-            return {"native.vmfb": "AAA", "native-portable.vmfb": "BBB"}[path.name]
+            return {"native.vmfb": v2 + ",+avx2", "native-portable.vmfb": v2}[path.name]
 
         monkeypatch.setattr(rings, "_read_cpu_features", fake_features)
 
@@ -378,8 +404,43 @@ class TestR1TargetIsa:
         assert result.ring == "R1"
         assert result.passed is True
         assert result.probes == ()
-        assert any("AAA" in n for n in result.notes)
-        assert any("BBB" in n for n in result.notes)
+        assert any("avx2" in n for n in result.notes)
+        assert any(v2 in n for n in result.notes)
+
+    def test_refuses_when_portable_does_not_positively_declare_x86_64_v2(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """FINDING 1 (round 5): two DIFFERENT ``cpu_features`` strings is not
+        by itself proof of ISA divergence. On a non-x86-64 build host LLVM
+        warns-and-ignores the unknown ``x86-64-v2`` CPU flag, so
+        ``native-portable`` can carry a completely unrelated (e.g. arm64)
+        feature string that still differs from ``native``'s -- differing for
+        the WRONG reason. R1 must refuse unless ``native-portable`` actually
+        declares the x86-64-v2 set.
+        """
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(
+                path=Path(f"/fake/{target.name}.vmfb")
+            ),
+        )
+
+        def fake_features(path: Path) -> str:
+            return {"native.vmfb": "+neon,+fp-armv8", "native-portable.vmfb": "+neon"}[path.name]
+
+        monkeypatch.setattr(rings, "_read_cpu_features", fake_features)
+
+        def must_not_run(path: Path, *args, function="main"):
+            raise AssertionError("R1 ran the legs despite an unreliable cpu_features readback")
+
+        monkeypatch.setattr(rings, "run_native_vmfb", must_not_run)
+
+        result = rings.r1_target_isa(_bare_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+        assert result.ring == "R1"
+        assert result.passed is False
+        assert result.probes == ()
+        assert any("x86-64-v2" in n for n in result.notes)
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +513,90 @@ class TestR2aFusion:
         )
         assert budgets["probe1"] == pytest.approx(d.ULP_FLOOR)
         assert not any("skipped" in n for n in result.notes)
+
+
+class TestR2aFusionBareEagerFnAgainstNamedFn:
+    """FINDING 2 (round 5): a bare (unnamed) ``eager_fn`` return value must be
+    matched to ``fn``'s declared primary (DAG-sink) output by name, not
+    silently discarded while every real name falls back to the
+    ``disable_jit`` self-consistency check -- which measures the callable
+    under test against itself, never against the independent oracle.
+    """
+
+    def test_bare_eager_fn_is_matched_to_the_primary_sink_output(
+        self, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        def eager_fn(inputs):
+            (arr,) = inputs
+            # Deliberately WRONG for "final" by a large, easily-detected
+            # margin -- if the bare oracle is actually used to measure
+            # "final", this shows up as a real (non-floor) budget for it.
+            return jnp.stack([arr[i] + 1.0 + 0.01 for i in range(arr.shape[0])])
+
+        result, budgets = rings.r2a_fusion(
+            _named_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            eager_fn=eager_fn,
+            primary_names=frozenset({"final"}),
+        )
+        assert result.passed is True
+        assert "" not in budgets
+        assert not any("present on only one side" in n for n in result.notes)
+        assert "probe1" in budgets  # still filled via the disable_jit fallback
+        assert budgets["final"] > d.ULP_FLOOR, (
+            "the injected 0.01 offset in the bare eager_fn value must show up "
+            "as a real divergence for 'final' -- proving the bare value was "
+            "actually used as its independent oracle, not silently dropped"
+        )
+
+    def test_bare_eager_fn_with_no_primary_name_raises(self, toy_plan, toy_xs, toy_abstract_inputs):
+        """Without a single identified primary name, mapping a bare eager
+        value to one of ``fn``'s several named outputs is genuinely
+        ambiguous -- raise rather than guess.
+        """
+
+        def eager_fn(inputs):
+            (arr,) = inputs
+            return jnp.stack([arr[i] + 1.0 for i in range(arr.shape[0])])
+
+        with pytest.raises(ValueError, match="primary_names"):
+            rings.r2a_fusion(_named_fn, toy_plan, toy_abstract_inputs, (toy_xs,), eager_fn=eager_fn)
+
+
+class TestR2aFusionUnbudgetedFailedLeaf:
+    def test_a_shape_or_dtype_mismatch_fails_r2a_visibly_not_r3(
+        self, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """FINDING 3 (round 5): a shape mismatch between ``eager_fn`` and
+        ``fn``'s own jit'd output must be recorded as an R2a failure --
+        visibly, in R2a's own ``RingResult`` -- not left unbudgeted for R3 to
+        crash on, many rungs and several IREE compiles later.
+        """
+
+        def eager_fn(inputs):
+            (arr,) = inputs
+            # Wrong shape -- `_bare_fn` on toy_xs (shape (4, 2)) produces a
+            # (4, 2) jit result, so this is a genuine shape mismatch, not a
+            # measurable divergence. (A float64-vs-float32 dtype mismatch
+            # would be a cleaner reproducer, but this jax build has x64
+            # disabled, so an explicit `.astype(jnp.float64)` is silently
+            # truncated back to float32 -- verified empirically, not relying
+            # on documentation memory.)
+            return jnp.stack([arr[i] + 1.0 for i in range(arr.shape[0])]).reshape(-1)
+
+        result, budgets = rings.r2a_fusion(
+            _bare_fn, toy_plan, toy_abstract_inputs, (toy_xs,), eager_fn=eager_fn
+        )
+        assert result.ring == "R2a"
+        assert result.passed is False, (
+            "a leaf-level shape/dtype mismatch is knowable at R2a time and "
+            "must fail R2a visibly rather than silently continue with "
+            "passed=True and an incomplete budgets dict"
+        )
+        assert any("FAILED" in n for n in result.notes)
+        assert "" not in budgets
 
 
 # ---------------------------------------------------------------------------
@@ -1133,6 +1278,121 @@ class TestDefaultValidateMissingProbeName:
             rings._default_validate(_bare_fn, toy_plan, toy_abstract_inputs, None, None, bad_deps)
 
 
+class TestDefaultValidateProbeDepsSink:
+    """FINDING 4 (round 5): an empty or sinkless ``probe_deps`` used to be
+    caught only deep inside R3 (``r3_probe``'s own "no sink node" ``raise``),
+    after R0/R2a/R1/R2b had already compiled and run for every input class.
+    This is a declaration error, independent of ``fn`` -- checked before
+    tracing ``fn`` at all.
+    """
+
+    def test_empty_probe_deps_raises_before_any_rung(self, toy_plan, toy_abstract_inputs):
+        with pytest.raises(ValueError, match="sink"):
+            rings._default_validate(_bare_fn, toy_plan, toy_abstract_inputs, None, None, {})
+
+    def test_sinkless_probe_deps_raises_before_any_rung(self, toy_plan, toy_abstract_inputs):
+        bad_deps = {"a": ("b",), "b": ("a",)}
+        with pytest.raises(ValueError, match="sink"):
+            rings._default_validate(_named_fn, toy_plan, toy_abstract_inputs, None, None, bad_deps)
+
+    def test_a_general_cycle_with_a_valid_looking_sink_also_raises(
+        self, toy_plan, toy_abstract_inputs
+    ):
+        """A 3-node cycle plus an external sink has a non-empty sink set --
+        the no-sink check alone would miss it -- but is still an invalid DAG.
+        ``classify_probes``' own topological sort (``divergence.py``) only
+        catches this at the very end of R3; preflighted here instead.
+        """
+        bad_deps = {"a": ("b",), "b": ("c",), "c": ("a",), "sink": ("a",)}
+        with pytest.raises(ValueError, match="cycle"):
+            rings._default_validate(_named_fn, toy_plan, toy_abstract_inputs, None, None, bad_deps)
+
+    def test_run_ladder_refuses_empty_probe_deps_before_any_rung(
+        self, toy_plan, toy_abstract_inputs
+    ):
+        def must_not_run(*_args, **_kwargs):
+            raise AssertionError("a rung ran despite an empty probe_deps declaration")
+
+        with pytest.raises(ValueError, match="sink"):
+            rings.run_ladder(
+                _bare_fn,
+                plan=toy_plan,
+                abstract_inputs=toy_abstract_inputs,
+                concrete_inputs=(),
+                probe_deps={},
+                eager_fn=lambda ci: None,
+                r0=must_not_run,
+                r1=must_not_run,
+                r2a=must_not_run,
+                r2b=must_not_run,
+                r3=must_not_run,
+            )
+
+    def test_run_ladder_refuses_sinkless_probe_deps_before_any_rung(
+        self, toy_plan, toy_abstract_inputs
+    ):
+        def must_not_run(*_args, **_kwargs):
+            raise AssertionError("a rung ran despite a sinkless probe_deps declaration")
+
+        bad_deps = {"a": ("b",), "b": ("a",)}
+        with pytest.raises(ValueError, match="sink"):
+            rings.run_ladder(
+                _named_fn,
+                plan=toy_plan,
+                abstract_inputs=toy_abstract_inputs,
+                concrete_inputs=(),
+                probe_deps=bad_deps,
+                eager_fn=lambda ci: None,
+                r0=must_not_run,
+                r1=must_not_run,
+                r2a=must_not_run,
+                r2b=must_not_run,
+                r3=must_not_run,
+            )
+
+
+class TestRunLadderReplaysGuard:
+    """FINDING 5 (round 5): ``replays < 2`` used to pass R0's determinism gate
+    vacuously (``_replays_agree`` returns True for fewer than 2 replays, and
+    ``max(replays, 1)`` let a caller pass ``replays=0``), so every later rung
+    then trusted a gate that had tested nothing. This is a declaration error,
+    checked before ``validate_fn`` even runs.
+    """
+
+    @pytest.mark.parametrize("replays", [0, 1])
+    def test_r0_replay_gate_rejects_fewer_than_two_replays(
+        self, replays, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        with pytest.raises(ValueError, match="replays"):
+            rings.r0_replay_gate(
+                _bare_fn, toy_plan, toy_abstract_inputs, (toy_xs,), replays=replays
+            )
+
+    @pytest.mark.parametrize("replays", [0, 1])
+    def test_run_ladder_rejects_fewer_than_two_replays_before_any_rung(
+        self, replays, toy_plan, toy_abstract_inputs
+    ):
+        def must_not_run(*_args, **_kwargs):
+            raise AssertionError("a rung (or validate_fn) ran despite replays < 2")
+
+        with pytest.raises(ValueError, match="replays"):
+            rings.run_ladder(
+                _bare_fn,
+                plan=toy_plan,
+                abstract_inputs=toy_abstract_inputs,
+                concrete_inputs=(),
+                probe_deps={"a": ()},
+                eager_fn=lambda ci: None,
+                replays=replays,
+                validate_fn=must_not_run,
+                r0=must_not_run,
+                r1=must_not_run,
+                r2a=must_not_run,
+                r2b=must_not_run,
+                r3=must_not_run,
+            )
+
+
 # ---------------------------------------------------------------------------
 # T8b -- run_ladder orchestration (AC-20)
 # ---------------------------------------------------------------------------
@@ -1401,6 +1661,269 @@ class TestRunLadder:
         for result in results:
             assert result.input_class == "sub_k_neighbours"
             assert result.in_contract is False
+
+    def test_r2a_receives_primary_names_derived_from_probe_deps_sinks(
+        self, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """FINDING 2: ``run_ladder`` -- the only caller with access to both
+        ``probe_deps`` and R2a (which AC-11 forbids from taking
+        ``probe_deps`` directly) -- must derive the DAG-sink set and pass it
+        through as R2a's ``primary_names``.
+        """
+        seen: dict[str, Any] = {}
+
+        def fake_validate(*_args, **_kwargs):
+            pass
+
+        def fake_r2a(fn, plan, ai, ci, **kwargs):  # noqa: ARG001
+            seen["primary_names"] = kwargs.get("primary_names")
+            result = d.RingResult(
+                ring="R2a",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+            return result, {}
+
+        def make_ring(name):
+            def _fn(*_args, **kwargs):
+                return d.RingResult(
+                    ring=name,
+                    passed=True,
+                    input_class=kwargs["input_class"],
+                    in_contract=kwargs["in_contract"],
+                    probes=(),
+                    notes=(),
+                )
+
+            return _fn
+
+        rings.run_ladder(
+            _named_fn,
+            plan=toy_plan,
+            abstract_inputs=toy_abstract_inputs,
+            concrete_inputs=(toy_xs,),
+            probe_deps=_NAMED_PROBE_DEPS,
+            eager_fn=lambda ci: None,
+            validate_fn=fake_validate,
+            r0=make_ring("R0"),
+            r1=make_ring("R1"),
+            r2a=fake_r2a,
+            r2b=make_ring("R2b"),
+            r3=make_ring("R3"),
+        )
+        assert seen["primary_names"] == frozenset({"final"})
+
+
+class TestRunLadderLayer2RuntimeFailureCapture:
+    """The structural fix (260914 code review round 5): a rung that raises at
+    RUNTIME (not a declaration error caught by Layer 1 preflight) must not
+    discard every ``RingResult`` already produced. ``run_ladder`` records it
+    as a failed ``RingResult`` for that rung and continues -- mirroring how
+    an R0 gate failure already skips the remaining rungs for a class.
+    """
+
+    def _fake_ok(self, name):
+        def _fn(*_args, **kwargs):
+            return d.RingResult(
+                ring=name,
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+
+        return _fn
+
+    def test_a_genuine_r3_exception_is_captured_and_prior_results_survive(self, toy_plan):
+        def fake_validate(*_args, **_kwargs):
+            pass
+
+        def fake_r2a(fn, plan, ai, ci, **kwargs):  # noqa: ARG001
+            result = d.RingResult(
+                ring="R2a",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+            return result, {}
+
+        def broken_r3(*_args, **_kwargs):
+            msg = "simulated late IREE crash"
+            raise RuntimeError(msg)
+
+        results = rings.run_ladder(
+            _bare_fn,
+            plan=toy_plan,
+            abstract_inputs=(),
+            concrete_inputs=(),
+            probe_deps={"a": ()},
+            eager_fn=lambda ci: None,
+            validate_fn=fake_validate,
+            r0=self._fake_ok("R0"),
+            r1=self._fake_ok("R1"),
+            r2a=fake_r2a,
+            r2b=self._fake_ok("R2b"),
+            r3=broken_r3,
+        )
+        assert [r.ring for r in results] == ["R0", "R2a", "R1", "R2b", "R3"]
+        assert [r.passed for r in results[:4]] == [True, True, True, True], (
+            "every rung result produced BEFORE the crash must survive it"
+        )
+        r3_result = results[-1]
+        assert r3_result.passed is False
+        assert any("RuntimeError" in n for n in r3_result.notes)
+        assert any("simulated late IREE crash" in n for n in r3_result.notes)
+
+    def test_a_genuine_r2a_exception_is_captured_and_r0_survives(self, toy_plan):
+        def fake_validate(*_args, **_kwargs):
+            pass
+
+        def broken_r2a(*_args, **_kwargs):
+            msg = "simulated eager_fn blowup"
+            raise ValueError(msg)
+
+        # R3 must be SKIPPED when R2a did not pass: R2a produces the budgets R3
+        # classifies against, so running it would only surface a downstream
+        # MissingBudgetError that hides R2a as the real cause.
+        #
+        # Record calls rather than raising: run_ladder's Layer 2 catches
+        # Exception, and AssertionError is one, so a raising sentinel inside the
+        # rung loop is swallowed into a note and can never fail this test.
+        r3_calls: list[object] = []
+
+        def r3_recorder(*args, **kwargs):
+            r3_calls.append((args, kwargs))
+            return self._fake_ok("R3")(*args, **kwargs)
+
+        results = rings.run_ladder(
+            _bare_fn,
+            plan=toy_plan,
+            abstract_inputs=(),
+            concrete_inputs=(),
+            probe_deps={"a": ()},
+            eager_fn=lambda ci: None,
+            validate_fn=fake_validate,
+            r0=self._fake_ok("R0"),
+            r1=self._fake_ok("R1"),
+            r2a=broken_r2a,
+            r2b=self._fake_ok("R2b"),
+            r3=r3_recorder,
+        )
+        assert r3_calls == [], "R3 was invoked despite R2a failing"
+        rings_by_name = {r.ring: r for r in results}
+        assert rings_by_name["R0"].passed is True
+        assert rings_by_name["R2a"].passed is False
+        assert any("ValueError" in n for n in rings_by_name["R2a"].notes)
+        assert any("simulated eager_fn blowup" in n for n in rings_by_name["R2a"].notes)
+        # R1 and R2b treat budgets as advisory, so they still run on an R2a failure.
+        assert rings_by_name["R1"].passed is True
+        assert rings_by_name["R2b"].passed is True
+        # R3 requires complete budgets: it is recorded as skipped, naming R2a as the cause.
+        assert rings_by_name["R3"].passed is False
+        assert any("R2a" in n and "skipped" in n for n in rings_by_name["R3"].notes)
+        assert not any("MissingBudgetError" in n for n in rings_by_name["R3"].notes)
+
+    def test_r3_is_skipped_when_r2a_returns_failed_without_raising(self, toy_plan):
+        """The second way R2a fails: it returns ``passed=False`` (e.g. a leaf whose
+        shape/dtype differs between the oracle and jit) with INCOMPLETE budgets,
+        rather than raising. R3 must not run on those budgets either, or it fails
+        late with a MissingBudgetError on the unbudgeted leaf.
+        """
+
+        def fake_validate(*_args, **_kwargs):
+            pass
+
+        def r2a_returns_failed(*_args, **_kwargs):
+            result = rings.RingResult(
+                ring="R2a",
+                passed=False,
+                input_class="nominal",
+                in_contract=True,
+                probes=(),
+                notes=("FAILED leaf 'a': shape mismatch",),
+            )
+            return result, {}
+
+        # Record calls, never raise: Layer 2 would swallow an AssertionError.
+        r3_calls: list[object] = []
+
+        def r3_recorder(*args, **kwargs):
+            r3_calls.append((args, kwargs))
+            return self._fake_ok("R3")(*args, **kwargs)
+
+        results = rings.run_ladder(
+            _bare_fn,
+            plan=toy_plan,
+            abstract_inputs=(),
+            concrete_inputs=(),
+            probe_deps={"a": ()},
+            eager_fn=lambda ci: None,
+            validate_fn=fake_validate,
+            r0=self._fake_ok("R0"),
+            r1=self._fake_ok("R1"),
+            r2a=r2a_returns_failed,
+            r2b=self._fake_ok("R2b"),
+            r3=r3_recorder,
+        )
+        assert r3_calls == [], "R3 was invoked despite R2a returning passed=False"
+        rings_by_name = {r.ring: r for r in results}
+        assert rings_by_name["R2a"].passed is False
+        assert rings_by_name["R3"].passed is False
+        assert any("R2a" in n and "skipped" in n for n in rings_by_name["R3"].notes)
+        assert tuple(r.ring for r in results) == SPEC_3_1_EXECUTED_RUNG_ORDER
+
+    def test_keyboard_interrupt_is_never_swallowed(self, toy_plan):
+        def fake_validate(*_args, **_kwargs):
+            pass
+
+        def broken_r0(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            rings.run_ladder(
+                _bare_fn,
+                plan=toy_plan,
+                abstract_inputs=(),
+                concrete_inputs=(),
+                probe_deps={"a": ()},
+                eager_fn=lambda ci: None,
+                validate_fn=fake_validate,
+                r0=broken_r0,
+            )
+
+    def test_declaration_error_still_raises_through_validate_fn_not_captured(self, toy_plan):
+        """The Layer1/Layer2 boundary: a declaration error surfaced by
+        ``validate_fn`` must still propagate and abort the whole call --
+        Layer 2 must never turn it into a quiet failed ``RingResult``.
+        """
+
+        def broken_validate(*_args, **_kwargs):
+            raise d.ProbeDependencyError("p", "q", frozenset({1}), frozenset())
+
+        def must_not_run(*_args, **_kwargs):
+            raise AssertionError("a rung ran despite validate_fn rejecting the declaration")
+
+        with pytest.raises(d.ProbeDependencyError):
+            rings.run_ladder(
+                _bare_fn,
+                plan=toy_plan,
+                abstract_inputs=(),
+                concrete_inputs=(),
+                probe_deps={},
+                eager_fn=lambda ci: None,
+                validate_fn=broken_validate,
+                r0=must_not_run,
+                r1=must_not_run,
+                r2a=must_not_run,
+                r2b=must_not_run,
+                r3=must_not_run,
+            )
 
 
 # ---------------------------------------------------------------------------

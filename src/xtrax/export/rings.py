@@ -367,17 +367,31 @@ def magnitude_extremes(
 ) -> InputClassResult:
     """Coordinates spanning float32 denormal and near-overflow magnitudes.
 
-    Half the points sit near ``float32`` overflow (``~3e38``), half near the
-    smallest normal/denormal boundary (``~1e-38``), stressing reassociation
-    sensitivity (section 6.2). The mask is all-ones -- this class is
-    in-contract.
+    Half the points sit near ``float32`` overflow (``~3e38``), half span the
+    denormal range -- log-uniform between the smallest subnormal
+    (``~1.4e-45``) and ``1e4x`` the smallest normal (``~1e-38``), so the
+    class actually contains subnormal values rather than only clustering
+    near the normal/denormal boundary -- stressing reassociation sensitivity
+    (section 6.2). The mask is all-ones -- this class is in-contract.
     """
     _require_bucket_length(length)
     rng = np.random.default_rng(seed)
     finfo = np.finfo(np.float32)
     half = length // 2
     large = rng.uniform(finfo.max * 0.1, finfo.max * 0.9, size=(half, ndim))
-    small = rng.uniform(finfo.tiny, finfo.tiny * 1e4, size=(length - half, ndim))
+    # `finfo.tiny` is the smallest NORMAL float32 (~1.18e-38), not the
+    # smallest subnormal (~1.4e-45) -- `rng.uniform(finfo.tiny, ...)` can
+    # therefore never draw a genuine denormal value, even though the class
+    # is advertised as spanning "float32 denormal" magnitudes (finding 6,
+    # 260914 code review round 5; the same `tiny`-vs-`smallest_subnormal`
+    # confusion that broke the ULP metric in divergence.py). Drawing in LOG
+    # space between `smallest_subnormal` and `tiny * 1e4` -- rather than a
+    # straight `rng.uniform` over that huge dynamic range, which would
+    # sample almost entirely from the (far wider, in absolute terms) normal
+    # side -- guarantees genuine subnormal coverage.
+    log_lo = np.log(finfo.smallest_subnormal)
+    log_hi = np.log(finfo.tiny * 1e4)
+    small = np.exp(rng.uniform(log_lo, log_hi, size=(length - half, ndim)))
     signs = rng.choice([-1.0, 1.0], size=(length, ndim))
     coords = np.concatenate([large, small], axis=0) * signs
     coords_arr = jnp.asarray(coords, dtype=dtype)
@@ -499,14 +513,30 @@ def r0_replay_gate(
     Returns:
         A ``RingResult`` for ``"R0"`` with ``probes=()`` -- R0 has no probe
         concept, only a pass/fail gate.
+
+    Raises:
+        ValueError: ``replays < 2``. Determinism cannot be established from
+            fewer than 2 replays -- ``_replays_agree`` trivially returns
+            True for a single replay, and (before this check existed)
+            ``max(replays, 1)`` let a caller pass ``replays=0`` and still
+            get a "passing" gate that had tested nothing (finding 5, 260914
+            code review round 5). Raised before any compile.
     """
+    if replays < 2:
+        msg = (
+            f"replays must be >= 2 to detect nondeterminism; got {replays}. "
+            f"Fewer than 2 replays trivially 'passes' this gate having "
+            f"tested nothing."
+        )
+        raise ValueError(msg)
+
     callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
     compiled = compile_for_target(exported.mlir_module(), target)
 
     outputs = [
         list(_as_flat_sequence(run_native_vmfb(compiled.path, *concrete_inputs)))
-        for _ in range(max(replays, 1))
+        for _ in range(replays)
     ]
     passed, notes = _replays_agree(outputs)
     if not notes:
@@ -541,6 +571,38 @@ def _read_cpu_features(vmfb_path: Path) -> str:
     return match.group(1)
 
 
+# The complete x86-64-v2 feature set, as measured off a native-portable
+# artifact and quoted verbatim in targets.py / docs/api/export.md / the
+# shipped skill reference (same source as
+# tests/export/test_parity_multi_size.py's own `_V2_FEATURE_STRING`). Used
+# to POSITIVELY confirm a native-portable readback actually carries the
+# x86-64-v2 set, rather than merely differing from `native`'s -- see
+# `_declares_x86_64_v2` (finding 1, 260914 code review round 5).
+_X86_64_V2_FEATURE_STRING = (
+    "+cmov,+mmx,+popcnt,+sse,+sse2,+sse4.2,+cx16,+sahf,+cx8,+crc32,+x87,+fxsr"
+)
+_X86_64_V2_FEATURES: frozenset[str] = frozenset(
+    f.lstrip("+") for f in _X86_64_V2_FEATURE_STRING.split(",")
+)
+
+
+def _declares_x86_64_v2(features: str) -> bool:
+    """Whether a ``cpu_features`` readback positively declares the x86-64-v2 set.
+
+    Two DIFFERENT ``cpu_features`` strings is not by itself proof of ISA
+    divergence: on a non-x86-64 build host, LLVM warns-and-ignores an
+    unknown ``-mcpu=x86-64-v2`` target-feature request, so
+    ``native-portable`` can carry a completely unrelated (e.g. arm64)
+    feature string that still differs from ``native``'s -- differing for the
+    WRONG reason (finding 1, 260914 code review round 5). Only a portable
+    artifact that actually carries the x86-64-v2 set is trustworthy
+    evidence that the two legs' divergence reflects real ISA-dependent
+    codegen.
+    """
+    declared = frozenset(f.lstrip("+") for f in features.split(",") if f)
+    return _X86_64_V2_FEATURES <= declared
+
+
 def r1_target_isa(
     fn: Callable[..., Any],
     plan: Any,
@@ -561,7 +623,12 @@ def r1_target_isa(
     ``native-portable`` silently falls back to host-tuned codegen
     (``targets.py:155-165``), which would read as "no ISA divergence" for the
     wrong reason. Reading back real ``cpu_features`` (as
-    ``test_parity_multi_size.py`` already does) is what catches that.
+    ``test_parity_multi_size.py`` already does) is what catches that -- and a
+    bare "the two strings differ" check is not enough on its own (finding 1,
+    260914 code review round 5): the host-tuned fallback ALSO produces a
+    differing string, so this ring only trusts a difference once
+    ``native-portable`` positively declares the x86-64-v2 set
+    (``_declares_x86_64_v2``).
 
     Args:
         fn: Per-element function, run exactly as given (AC-11).
@@ -606,6 +673,27 @@ def r1_target_isa(
             ),
         )
 
+    if not _declares_x86_64_v2(portable_features):
+        return RingResult(
+            ring="R1",
+            passed=False,
+            input_class=input_class,
+            in_contract=in_contract,
+            probes=(),
+            notes=(
+                "R1 refuses to interpret: native and native-portable "
+                "cpu_features differ, but native-portable does not "
+                "positively declare the x86-64-v2 feature set. On a "
+                "non-x86-64 build host LLVM silently ignores the x86-64-v2 "
+                "target-feature request and native-portable falls back to "
+                "host-tuned codegen (targets.py:155-165) -- which reads as "
+                "'ISA divergence' for the wrong reason (finding 1, 260914 "
+                "code review round 5).",
+                f"native cpu_features={native_features!r}",
+                f"native-portable cpu_features={portable_features!r}",
+            ),
+        )
+
     native_out = _as_flat_sequence(run_native_vmfb(native.path, *concrete_inputs))
     portable_out = _as_flat_sequence(run_native_vmfb(portable.path, *concrete_inputs))
     native_structured = jax.tree_util.tree_unflatten(exported.out_tree, list(native_out))
@@ -639,6 +727,7 @@ def r2a_fusion(
     concrete_inputs: Sequence[Any],
     *,
     eager_fn: Callable[[Sequence[Any]], Any],
+    primary_names: frozenset[str] = frozenset(),
     boundaries: Mapping[str, Any] | None = None,
     scan_init: Any = None,
     input_class: str = "nominal",
@@ -672,6 +761,24 @@ def r2a_fusion(
             top-level name ``jit_result`` has but ``eager_fn`` omits is
             measured here too, using ``fn`` itself run eagerly (un-jitted),
             since no separate independent oracle is possible for a probe.
+            If ``eager_fn`` itself returns a bare (unnamed) value while
+            ``fn``'s output is named, that bare value is mapped onto
+            ``primary_names`` (below) rather than silently discarded as
+            "present on only one side" -- which used to make every real name
+            count as "missing from eager_fn" and get measured only via the
+            eager-fallback (jit-vs-itself) leg, never against the actual
+            independent oracle the caller supplied (finding 2, 260914 code
+            review round 5).
+        primary_names: The top-level name(s) of ``fn``'s output that a bare
+            (unnamed) ``eager_fn`` return value corresponds to -- normally
+            ``probe_deps``'s DAG sinks (see ``_sink_names``), which is what
+            ``run_ladder`` passes. AC-11 forbids this rung from taking
+            ``probe_deps`` directly, so the caller resolves the mapping.
+            Unused when ``eager_fn``'s return value is already named, or
+            when ``fn``'s own output has no named top level either. If
+            ``eager_fn`` returns bare AND ``fn``'s output is named, exactly
+            one name must be given here -- more than one is ambiguous (which
+            name the bare value belongs to cannot be inferred) and raises.
         boundaries: Passed through to ``build_traceable_callable``.
         scan_init: Passed through to ``build_traceable_callable``.
         input_class: Section 6.2 label. ``m_leaf`` is per ``(model,
@@ -683,7 +790,14 @@ def r2a_fusion(
         A ``(RingResult, budgets)`` pair. ``budgets`` maps
         ``budget_key(name, leaf.path)`` to ``budget_leaf(m_leaf)`` for every
         float leaf found; integer/bool leaves are absent (section 3.2:
-        calibration applies to float leaves only).
+        calibration applies to float leaves only). ``passed`` is ``False``
+        when any leaf comparison itself FAILED (a shape/dtype mismatch
+        between ``eager_fn`` and ``fn``'s jit'd output) -- that is a
+        structural error, knowable right here, not a magnitude this rung
+        judges (finding 3, 260914 code review round 5); it is still ``True``
+        whenever every leaf compared successfully, even for a leaf whose
+        divergence a later rung's calibrated budget would find excessive --
+        R2a itself never judges a float leaf's magnitude (section 6.0).
     """
     callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     eager_result = eager_fn(concrete_inputs)
@@ -691,6 +805,31 @@ def r2a_fusion(
 
     eager_by_name = dict(_top_level_items(eager_result))
     jit_by_name = _top_level_items(jit_result)
+
+    # `eager_fn`'s contract (see the docstring's `eager_fn`/`primary_names`
+    # note) is a bare value only when `fn`'s own output is ALSO bare -- a
+    # dict/NamedTuple `fn` output with a bare `eager_fn` is a structural
+    # mismatch, not "no probes to worry about". Left alone, every real name
+    # would count as "missing from eager_fn" below and get measured only
+    # against the jit-vs-itself fallback, silently discarding the only
+    # independent oracle in the whole rung (finding 2, 260914 code review
+    # round 5) -- including for the model's own TRUE output, not just its
+    # probes. Map the bare value onto the declared primary (sink) name(s)
+    # instead, so it is actually used as `primary_names`'s oracle.
+    eager_is_bare = set(eager_by_name) == {""}
+    jit_is_named = set(jit_by_name) != {""}
+    if eager_is_bare and jit_is_named:
+        if len(primary_names) != 1:
+            msg = (
+                f"eager_fn returned a bare (unnamed) value, but fn's output "
+                f"is named ({sorted(jit_by_name)}) and primary_names does "
+                f"not identify exactly one output to map it to (got "
+                f"{sorted(primary_names)}); the independent oracle cannot "
+                f"be matched to fn's outputs without this."
+            )
+            raise ValueError(msg)
+        (primary_name,) = primary_names
+        eager_by_name[primary_name] = eager_by_name.pop("")
 
     # `eager_fn` is documented as "the model applied directly" (section 5.1)
     # -- a real caller's oracle normally covers only the model's own true
@@ -732,6 +871,7 @@ def r2a_fusion(
 
     budgets: dict[str, float] = {}
     notes: list[str] = []
+    any_leaf_failed = False
     for name in names:
         if name not in eager_by_name or name not in jit_by_name:
             notes.append(f"{name!r}: present on only one side (eager vs jit) -- skipped")
@@ -740,7 +880,14 @@ def r2a_fusion(
         for leaf in leaves:
             key = budget_key(name, leaf.path)
             if leaf.failed:
+                # A shape/dtype mismatch between the eager oracle and fn's
+                # own jit'd output is knowable right here -- do not let it
+                # travel forward unbudgeted to R3, where it would surface
+                # many rungs (and several IREE compiles) later as a bare
+                # KeyError/MissingBudgetError, discarding everything in
+                # between (finding 3, 260914 code review round 5).
                 notes.append(f"{key}: FAILED ({leaf.message})")
+                any_leaf_failed = True
                 continue
             if leaf.dtype_class == "float":
                 m_leaf = float(leaf.metrics.get("max_ulp_diff", 0.0))
@@ -755,7 +902,7 @@ def r2a_fusion(
 
     result = RingResult(
         ring="R2a",
-        passed=True,
+        passed=not any_leaf_failed,
         input_class=input_class,
         in_contract=in_contract,
         probes=(),
@@ -870,6 +1017,50 @@ def _sink_names(probe_deps: Mapping[str, tuple[str, ...]]) -> frozenset[str]:
     """
     all_preds = {p for preds in probe_deps.values() for p in preds}
     return _all_probe_names(probe_deps) - all_preds
+
+
+def _probe_deps_cycle(probe_deps: Mapping[str, tuple[str, ...]]) -> str | None:
+    """DFS cycle detection over ``probe_deps``'s declared edges.
+
+    ``divergence.py``'s own cycle check (inside its private
+    ``_topological_order``, used by ``classify_probes``) only runs at the
+    very end of R3, after R0/R2a/R1/R2b have already compiled and run for
+    every input class -- so a genuinely cyclic declaration used to be caught
+    only there, discarding every result already produced (finding 4, 260914
+    code review round 5). This mirrors that same check so it can run in
+    preflight instead, before any rung.
+
+    Note that a plain "no sink node" check (``_sink_names`` returning empty)
+    does NOT subsume this: a cycle with an extra, unrelated sink node (e.g.
+    ``a -> b -> c -> a`` plus ``sink -> a``) has a perfectly valid-looking
+    non-empty sink set, yet is still an invalid DAG.
+
+    Returns:
+        The name of a probe involved in a cycle, or ``None`` if the
+        declared edges are acyclic.
+    """
+    visited: set[str] = set()
+    in_progress: set[str] = set()
+    found: list[str] = []
+
+    def _visit(name: str) -> bool:
+        if name in visited:
+            return False
+        if name in in_progress:
+            found.append(name)
+            return True
+        in_progress.add(name)
+        for pred in probe_deps.get(name, ()):
+            if _visit(pred):
+                return True
+        in_progress.discard(name)
+        visited.add(name)
+        return False
+
+    for name in _all_probe_names(probe_deps):
+        if _visit(name):
+            return found[0]
+    return None
 
 
 def _fidelity_holds(
@@ -1183,7 +1374,34 @@ def _default_validate(
     protect, so every skipped edge is surfaced via a visible ``UserWarning``
     naming both endpoints -- it is UNVALIDATED, not confirmed correct (finding
     3, 260914 code review round 3).
+
+    Before any of the above -- before ``fn`` is even traced -- ``probe_deps``
+    must have a well-formed DAG shape at all: at least one sink node (an
+    empty declaration, or one where every name is also someone else's
+    predecessor, has none) and no cycle. Both are structural properties of
+    ``probe_deps`` alone, independent of ``fn``, and both used to be caught
+    only deep inside R3 (a bare "no sink node" ``raise``, or
+    ``classify_probes``' own topological sort) -- after every earlier rung
+    had already compiled and run for every input class (finding 4, 260914
+    code review round 5).
     """
+    sinks = _sink_names(probe_deps)
+    if not sinks:
+        msg = (
+            "probe_deps has no sink node (it is empty, or every declared "
+            "name also appears as someone else's predecessor); cannot "
+            "derive a primary output for the section-5.4 fidelity check."
+        )
+        raise ValueError(msg)
+
+    cycle_name = _probe_deps_cycle(probe_deps)
+    if cycle_name is not None:
+        msg = (
+            f"probe_deps contains a cycle involving {cycle_name!r}; cannot "
+            f"derive a DAG order for probe classification."
+        )
+        raise ValueError(msg)
+
     full_callable = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     exported = jax.export.export(jax.jit(full_callable))(*abstract_inputs)
     probe_result_paths = _probe_result_paths(exported.out_tree)
@@ -1266,6 +1484,49 @@ def run_ladder(
     -- R0's own ``RingResult`` is still returned, so the gate failure is
     visible in the output.
 
+    **Two-layer failure handling (finding 1-6, 260914 code review round 5).**
+    Three rounds of prior review each fixed a single instance of the same
+    class of bug: a validation gap that let R0/R2a/R1/R2b compile and run to
+    completion, only for something LATE (typically deep inside R3) to raise
+    and discard every ``RingResult`` already produced. The root cause is
+    structural, not any one gap: this function used to have no ``try``/
+    ``except`` and no partial return, so ANY exception from ANY rung
+    propagated and discarded everything. Two layers close the class, not
+    just the latest instance of it:
+
+    - **Layer 1 (preflight, before R0).** A *declaration* error --
+      something wrong with the arguments to this call itself, knowable
+      without running ``fn`` on real data -- RAISES, unconditionally,
+      before any rung or compile. This function's own top raises for
+      ``replays < 2`` (finding 5); ``validate_fn`` (``_default_validate`` by
+      default) raises for an empty/sinkless/cyclic ``probe_deps`` (finding
+      4) and for a ``probe_deps`` name absent from ``fn``'s output (round 4
+      finding 2). These exceptions are never caught here -- they propagate
+      unmodified, exactly as AC-20 requires, so a typo or a malformed
+      declaration is never silently downgraded into a partial run.
+    - **Layer 2 (per rung, inside the per-class loop).** A genuine RUNTIME
+      failure -- one that could not have been known before actually
+      executing a rung (a toolchain crash, an IREE compile failure, an
+      unexpected shape at execution time) -- is caught individually around
+      each of R0/R2a/R1/R2b/R3 and converted into a ``RingResult`` for that
+      ring with ``passed=False`` and the exception's type and message in
+      ``notes``, instead of propagating and discarding every result already
+      produced for that (or an earlier) input class. Only ``Exception`` is
+      caught -- never ``BaseException`` -- so ``KeyboardInterrupt``/
+      ``SystemExit`` are never swallowed, and the notes always name the
+      exception's type, so a bug in the ladder's own code (e.g. a bad
+      keyword passed to a rung here) is still visible as a loud, identifiable
+      failure, never a silent one.
+
+    The two layers are deliberately NOT symmetric: Layer 1 must never be
+    weakened into a Layer-2-style caught-and-recorded failure, or AC-20's
+    "refuse before any toolchain work" guarantee is lost and a malformed
+    declaration becomes a quiet partial run instead of a hard error. Layer 1
+    checks run entirely before the per-class loop (this function's own
+    ``replays`` check, then ``validate_fn``); Layer 2's ``try``/``except``
+    blocks live only inside that loop, around the calls to ``r0``/``r2a``/
+    ``r1``/``r2b``/``r3`` themselves.
+
     Args:
         fn: The per-element function, run identically by every rung (section
             5.1: a probe is just an ordinary named output, there is no
@@ -1296,14 +1557,36 @@ def run_ladder(
         r3: Injection point for the R3 runner.
 
     Returns:
-        A flat tuple of every ``RingResult`` produced, in execution order.
+        A flat tuple of every ``RingResult`` produced, in execution order --
+        including a Layer-2-captured failure's synthetic ``RingResult`` for
+        the ring it happened in, and every ring's result produced before it.
 
     Raises:
+        ValueError: ``replays < 2`` (Layer 1: determinism cannot be
+            established from fewer than 2 replays; finding 5). Raised before
+            ``validate_fn`` is even called.
         Whatever ``validate_fn`` raises when a declared probe-DAG edge fails
-        the section-5.3 slice-subset check -- propagated unmodified, before
-        any rung executes.
+        the section-5.3 slice-subset check, or when ``probe_deps`` is
+        structurally invalid (Layer 1) -- propagated unmodified, before any
+        rung executes.
     """
+    if replays < 2:
+        msg = (
+            f"replays must be >= 2 to detect nondeterminism; got {replays}. "
+            f"Fewer than 2 replays trivially 'passes' the R0 gate having "
+            f"tested nothing."
+        )
+        raise ValueError(msg)
+
     validate_fn(fn, plan, abstract_inputs, boundaries, scan_init, probe_deps)
+
+    # R2a cannot take `probe_deps` directly (AC-11), so this is the only
+    # place that can resolve a bare `eager_fn` return value onto `fn`'s
+    # declared primary (sink) output -- see `r2a_fusion`'s own
+    # `primary_names` docstring (finding 2, 260914 code review round 5).
+    # Class-independent (the DAG shape does not vary by input class), so
+    # computed once, like `validate_fn`'s check above.
+    primary_names = _sink_names(probe_deps)
 
     classes = tuple(input_classes) or (
         InputClassResult(
@@ -1317,25 +1600,57 @@ def run_ladder(
     results: list[RingResult] = []
     for input_class in classes:
         ai, ci = input_class.abstract_inputs, input_class.concrete_inputs
+        label = input_class.label
+        in_contract = input_class.in_contract
         common = {
             "boundaries": boundaries,
             "scan_init": scan_init,
-            "input_class": input_class.label,
-            "in_contract": input_class.in_contract,
+            "input_class": label,
+            "in_contract": in_contract,
         }
 
         # target applies to R0 exactly as it does to R2b/R3 (finding 4,
         # 260914 code review): R0 is the ladder's hard validity gate, and it
         # must gate the SAME artifact the other toolchain-backed rungs judge
         # -- passing it here, not just to R2b/R3, keeps that true.
-        r0_result = r0(fn, plan, ai, ci, replays=replays, target=target, **common)
+        #
+        # Layer 2 (see this function's own docstring): a genuine RUNTIME
+        # failure from a rung is recorded as a failed `RingResult` for that
+        # ring instead of propagating and discarding every result already
+        # produced. `KeyboardInterrupt`/`SystemExit` are never caught, and
+        # the notes always carry the exception's type and message, so a bug
+        # in the ladder's own code is still loud, never silent.
+        try:
+            r0_result = r0(fn, plan, ai, ci, replays=replays, target=target, **common)
+        except Exception as exc:  # noqa: BLE001 - Layer 2, see docstring
+            r0_result = RingResult(
+                ring="R0",
+                passed=False,
+                input_class=label,
+                in_contract=in_contract,
+                probes=(),
+                notes=(f"R0 raised {type(exc).__name__}: {exc}",),
+            )
         results.append(r0_result)
         if not r0_result.passed:
             continue
 
         # R2a has no `target`: it compares eager JAX against `jax.jit`, never
         # compiling through IREE at all, so no compilation target applies.
-        r2a_result, budgets = r2a(fn, plan, ai, ci, eager_fn=eager_fn, **common)
+        try:
+            r2a_result, budgets = r2a(
+                fn, plan, ai, ci, eager_fn=eager_fn, primary_names=primary_names, **common
+            )
+        except Exception as exc:  # noqa: BLE001 - Layer 2, see docstring
+            r2a_result = RingResult(
+                ring="R2a",
+                passed=False,
+                input_class=label,
+                in_contract=in_contract,
+                probes=(),
+                notes=(f"R2a raised {type(exc).__name__}: {exc}",),
+            )
+            budgets = {}
         results.append(r2a_result)
 
         # R1 deliberately has no `target` either: its own two legs are the
@@ -1343,15 +1658,73 @@ def run_ladder(
         # codegen is the whole point of that comparison), so the ladder's
         # `target` parameter does not apply to it -- this is a deliberate
         # omission, not the same oversight as R0's (finding 4).
-        r1_result = r1(fn, plan, ai, ci, budgets=budgets, **common)
+        try:
+            r1_result = r1(fn, plan, ai, ci, budgets=budgets, **common)
+        except Exception as exc:  # noqa: BLE001 - Layer 2, see docstring
+            r1_result = RingResult(
+                ring="R1",
+                passed=False,
+                input_class=label,
+                in_contract=in_contract,
+                probes=(),
+                notes=(f"R1 raised {type(exc).__name__}: {exc}",),
+            )
         results.append(r1_result)
 
-        r2b_result = r2b(fn, plan, ai, ci, budgets=budgets, target=target, **common)
+        try:
+            r2b_result = r2b(fn, plan, ai, ci, budgets=budgets, target=target, **common)
+        except Exception as exc:  # noqa: BLE001 - Layer 2, see docstring
+            r2b_result = RingResult(
+                ring="R2b",
+                passed=False,
+                input_class=label,
+                in_contract=in_contract,
+                probes=(),
+                notes=(f"R2b raised {type(exc).__name__}: {exc}",),
+            )
         results.append(r2b_result)
 
-        r3_result = r3(
-            fn, plan, ai, ci, probe_deps, budgets, r0_result=r0_result, target=target, **common
-        )
+        # R3 classifies every probe against R2a's budgets, so it needs R2a to
+        # have PASSED -- not merely to have run. R2a fails two ways: it raises
+        # (budgets is then {}), or it returns passed=False with incomplete
+        # budgets (e.g. a leaf whose shape/dtype differs between the oracle and
+        # jit). Either way R3 would only surface a downstream MissingBudgetError
+        # on the unbudgeted leaf, recorded against R3 and hiding R2a as the real
+        # cause. R1 and R2b treat budgets as advisory, so they still run above.
+        if not r2a_result.passed:
+            r3_result = RingResult(
+                ring="R3",
+                passed=False,
+                input_class=label,
+                in_contract=in_contract,
+                probes=(),
+                notes=(
+                    "R3 skipped: R2a did not pass, so no complete per-leaf budgets "
+                    "exist to classify probes against. See R2a's notes for the cause.",
+                ),
+            )
+        else:
+            try:
+                r3_result = r3(
+                    fn,
+                    plan,
+                    ai,
+                    ci,
+                    probe_deps,
+                    budgets,
+                    r0_result=r0_result,
+                    target=target,
+                    **common,
+                )
+            except Exception as exc:  # noqa: BLE001 - Layer 2, see docstring
+                r3_result = RingResult(
+                    ring="R3",
+                    passed=False,
+                    input_class=label,
+                    in_contract=in_contract,
+                    probes=(),
+                    notes=(f"R3 raised {type(exc).__name__}: {exc}",),
+                )
         results.append(r3_result)
 
     return tuple(results)
