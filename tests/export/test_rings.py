@@ -19,6 +19,7 @@ Two kinds of test live here, per the module's own coverage split:
 from __future__ import annotations
 
 import inspect
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, NamedTuple
@@ -127,6 +128,58 @@ class TestMagnitudeExtremesSubnormals:
             "magnitudes (0 < |x| < finfo.tiny), not just values near the "
             "smallest NORMAL float"
         )
+
+
+class TestInputClassGeneratorsHonourCallerDtype:
+    """FINDING 3 (round 6): ``magnitude_extremes`` hardcoded
+    ``np.finfo(np.float32)`` to derive its near-overflow/near-denormal
+    magnitudes, then cast the result into whatever ``dtype`` the caller
+    actually asked for. For a narrower dtype (float16: max ~6.55e4 vs
+    float32's ~3.4e38) that cast silently overflows to ``inf`` and
+    underflows to exact ``0.0`` -- manufacturing non-finite/zero values in a
+    class still labelled ``in_contract=True``, which then reads as a model
+    divergence at R2a instead of a generator bug.
+    """
+
+    @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16, jnp.bfloat16])
+    def test_magnitude_extremes_output_is_finite_and_nonzero_in_the_requested_dtype(self, dtype):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            result = rings.magnitude_extremes(64, dtype=dtype)
+        coords, _mask = result.concrete_inputs
+        values = np.asarray(coords).astype(np.float64)
+        assert not np.any(np.isinf(values)), (
+            f"magnitude_extremes({dtype=}) produced inf -- its magnitudes were "
+            f"drawn from float32's own finfo regardless of the requested dtype"
+        )
+        assert not np.any(values == 0.0), (
+            f"magnitude_extremes({dtype=}) produced an exact zero -- underflow "
+            f"from casting float32-scaled magnitudes into a narrower dtype"
+        )
+
+    @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16, jnp.bfloat16])
+    def test_symmetric_geometry_and_sub_k_neighbours_do_not_overflow(self, dtype):
+        """The other section-6.2 generators do not derive magnitudes from a
+        hardcoded ``finfo`` at all, so they should already be safe for every
+        supported dtype -- this pins that down rather than assuming it.
+
+        Unlike ``magnitude_extremes``, an exact zero is NOT itself a defect
+        here: ``symmetric_geometry`` deliberately places the helix's off-axis
+        coordinate at 0 by construction ("extra dims beyond the helix axes
+        stay at 0, preserving exact ties" -- its own docstring), and
+        ``sub_k_neighbours`` draws from a standard normal that can
+        legitimately land near (if not exactly at) 0. Only non-finiteness --
+        the actual signature of a hardcoded-float32-finfo overflow -- would
+        indicate the same defect as ``magnitude_extremes``.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            sym = rings.symmetric_geometry(64, dtype=dtype)
+            sub = rings.sub_k_neighbours(64, k_neighbors=48, dtype=dtype)
+        for result in (sym, sub):
+            coords, _mask = result.concrete_inputs
+            values = np.asarray(coords).astype(np.float64)
+            assert not np.any(np.isinf(values)), f"{result.label}({dtype=}) produced inf"
 
 
 # ---------------------------------------------------------------------------
@@ -2103,6 +2156,198 @@ class TestRunLadder:
             r3=make_ring("R3"),
         )
         assert seen["primary_names"] == frozenset({"final"})
+
+
+class TestRunLadderValidatesPerInputClass:
+    """FINDING 5 (round 6): ``validate_fn`` used to be called ONCE, before the
+    per-class loop, against ``run_ladder``'s positional ``abstract_inputs`` --
+    never against any individual input class's own shapes. Every rung inside
+    the loop traces and compiles at ``input_class.abstract_inputs`` instead,
+    so with a bucket-ladder input class whose length differs from the
+    positional default (the NORMAL case, not an edge case -- see
+    ``BUCKET_LADDER``), the graph ``validate_fn`` certified was never the one
+    any rung actually ran.
+    """
+
+    def test_validate_fn_is_called_per_class_against_that_classs_own_shapes(self):
+        """``validate_fn`` must run once per input class, against THAT
+        class's own ``abstract_inputs`` -- never the outer positional
+        default -- and must precede every rung for that class (a
+        call-recording sentinel proves both the shapes and the ordering).
+        """
+        calls: list[tuple[str, Any]] = []
+
+        def recording_validate(_fn, _plan, ai, _boundaries, _scan_init, _probe_deps):
+            calls.append(("validate", ai))
+
+        def make_ring(name):
+            # `*args` because R3's positional signature differs from
+            # R0/R1/R2a/R2b's (it also takes `probe_deps`, `budgets`) --
+            # `ai` is the third positional argument for every rung, so
+            # indexing `args[2]` works uniformly for all of them.
+            def _fn(*args, **kwargs):
+                ai = args[2]
+                calls.append((name, ai))
+                return d.RingResult(
+                    ring=name,
+                    passed=True,
+                    input_class=kwargs["input_class"],
+                    in_contract=kwargs["in_contract"],
+                    probes=(),
+                    notes=(),
+                )
+
+            return _fn
+
+        def fake_r2a(*args, **kwargs):
+            ai = args[2]
+            calls.append(("R2a", ai))
+            result = d.RingResult(
+                ring="R2a",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+            return result, {}
+
+        class_a_ai = ("class-a-shape",)
+        class_b_ai = ("class-b-shape",)
+        outer_ai = ("outer-default-shape-never-used-by-any-class",)
+
+        classes = (
+            rings.InputClassResult(
+                label="a", in_contract=True, abstract_inputs=class_a_ai, concrete_inputs=()
+            ),
+            rings.InputClassResult(
+                label="b", in_contract=True, abstract_inputs=class_b_ai, concrete_inputs=()
+            ),
+        )
+
+        rings.run_ladder(
+            _bare_fn,
+            plan=None,
+            abstract_inputs=outer_ai,
+            concrete_inputs=(),
+            probe_deps={},
+            eager_fn=lambda ci: None,
+            input_classes=classes,
+            validate_fn=recording_validate,
+            r0=make_ring("R0"),
+            r1=make_ring("R1"),
+            r2a=fake_r2a,
+            r2b=make_ring("R2b"),
+            r3=make_ring("R3"),
+        )
+
+        assert calls == [
+            ("validate", class_a_ai),
+            ("R0", class_a_ai),
+            ("R2a", class_a_ai),
+            ("R1", class_a_ai),
+            ("R2b", class_a_ai),
+            ("R3", class_a_ai),
+            ("validate", class_b_ai),
+            ("R0", class_b_ai),
+            ("R2a", class_b_ai),
+            ("R1", class_b_ai),
+            ("R2b", class_b_ai),
+            ("R3", class_b_ai),
+        ], (
+            "validate_fn must run once per class, against that class's own "
+            "abstract_inputs, immediately before that class's own rungs"
+        )
+        assert not any(ai == outer_ai for _kind, ai in calls), (
+            "no validate_fn call (and no rung) should ever see the outer "
+            "positional abstract_inputs once input_classes overrides it"
+        )
+
+    def test_a_declaration_error_on_the_second_class_still_raises_uncaught(self):
+        """The per-class validate call must still be Layer 1, not Layer 2:
+        even once it has moved inside the per-class loop, a declaration
+        error must propagate unmodified -- never be caught by the
+        try/except that wraps the rungs -- and it must be checked before
+        the SECOND class's rungs specifically, not just the first's.
+        """
+        calls: list[str] = []
+
+        def validate_fails_on_second_class(_fn, _plan, ai, _boundaries, _scan_init, _probe_deps):
+            calls.append(f"validate:{ai}")
+            if ai == ("b",):
+                raise d.ProbeDependencyError("p", "q", frozenset({1}), frozenset())
+
+        def must_not_run_for_b(name):
+            # `*args`, not a fixed positional signature: R3's own positional
+            # signature differs from R0/R1/R2a/R2b's (see the sibling test's
+            # comment) -- `ai` is always the third positional argument.
+            def _fn(*args, **kwargs):
+                ai = args[2]
+                calls.append(f"{name}:{ai}")
+                if ai == ("b",):
+                    raise AssertionError(f"{name} ran for class b despite validate_fn rejecting it")
+                return d.RingResult(
+                    ring=name,
+                    passed=True,
+                    input_class=kwargs["input_class"],
+                    in_contract=kwargs["in_contract"],
+                    probes=(),
+                    notes=(),
+                )
+
+            return _fn
+
+        def fake_r2a(*args, **kwargs):
+            ai = args[2]
+            calls.append(f"R2a:{ai}")
+            if ai == ("b",):
+                raise AssertionError("R2a ran for class b despite validate_fn rejecting it")
+            result = d.RingResult(
+                ring="R2a",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+            return result, {}
+
+        classes = (
+            rings.InputClassResult(
+                label="a", in_contract=True, abstract_inputs=("a",), concrete_inputs=()
+            ),
+            rings.InputClassResult(
+                label="b", in_contract=True, abstract_inputs=("b",), concrete_inputs=()
+            ),
+        )
+
+        with pytest.raises(d.ProbeDependencyError):
+            rings.run_ladder(
+                _bare_fn,
+                plan=None,
+                abstract_inputs=("outer",),
+                concrete_inputs=(),
+                probe_deps={},
+                eager_fn=lambda ci: None,
+                input_classes=classes,
+                validate_fn=validate_fails_on_second_class,
+                r0=must_not_run_for_b("R0"),
+                r1=must_not_run_for_b("R1"),
+                r2a=fake_r2a,
+                r2b=must_not_run_for_b("R2b"),
+                r3=must_not_run_for_b("R3"),
+            )
+        # Class a's rungs did run (validation for 'a' passed); class b's
+        # validate call happened, then raised -- no class-b rung ran.
+        assert calls == [
+            "validate:('a',)",
+            "R0:('a',)",
+            "R2a:('a',)",
+            "R1:('a',)",
+            "R2b:('a',)",
+            "R3:('a',)",
+            "validate:('b',)",
+        ]
 
 
 class TestRunLadderLayer2RuntimeFailureCapture:

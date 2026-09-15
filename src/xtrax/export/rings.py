@@ -52,6 +52,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import ml_dtypes
 import numpy as np
 
 from xtrax.export.compile import compile_for_target, run_native_vmfb
@@ -366,30 +367,41 @@ def magnitude_extremes(
     dtype: Any = jnp.float32,
     seed: int = 0,
 ) -> InputClassResult:
-    """Coordinates spanning float32 denormal and near-overflow magnitudes.
+    """Coordinates spanning ``dtype``'s own denormal and near-overflow magnitudes.
 
-    Half the points sit near ``float32`` overflow (``~3e38``), half span the
-    denormal range -- log-uniform between the smallest subnormal
-    (``~1.4e-45``) and ``1e4x`` the smallest normal (``~1e-38``), so the
-    class actually contains subnormal values rather than only clustering
-    near the normal/denormal boundary -- stressing reassociation sensitivity
-    (section 6.2). The mask is all-ones -- this class is in-contract.
+    Half the points sit near ``dtype``'s own overflow boundary, half span
+    ``dtype``'s own denormal range -- log-uniform between its smallest
+    subnormal and ``1e4x`` its smallest normal, so the class actually
+    contains subnormal values rather than only clustering near the
+    normal/denormal boundary -- stressing reassociation sensitivity (section
+    6.2). The mask is all-ones -- this class is in-contract.
+
+    The generating ``finfo`` is derived from ``dtype`` itself (via
+    ``ml_dtypes.finfo``, which -- unlike ``np.finfo`` -- accepts
+    ``bfloat16`` directly) rather than hardcoded to ``float32``: a hardcoded
+    ``np.float32`` finfo, cast down into a narrower requested dtype such as
+    ``float16``, silently overflowed to ``inf`` and underflowed to exact
+    ``0.0`` (finding 3, 260914 code review round 6) -- manufacturing
+    non-finite/zero coordinates in a class still labelled ``in_contract=True``.
     """
     _require_bucket_length(length)
     rng = np.random.default_rng(seed)
-    finfo = np.finfo(np.float32)
+    finfo = ml_dtypes.finfo(dtype)
     half = length // 2
     large = rng.uniform(finfo.max * 0.1, finfo.max * 0.9, size=(half, ndim))
-    # `finfo.tiny` is the smallest NORMAL float32 (~1.18e-38), not the
-    # smallest subnormal (~1.4e-45) -- `rng.uniform(finfo.tiny, ...)` can
-    # therefore never draw a genuine denormal value, even though the class
-    # is advertised as spanning "float32 denormal" magnitudes (finding 6,
-    # 260914 code review round 5; the same `tiny`-vs-`smallest_subnormal`
-    # confusion that broke the ULP metric in divergence.py). Drawing in LOG
-    # space between `smallest_subnormal` and `tiny * 1e4` -- rather than a
-    # straight `rng.uniform` over that huge dynamic range, which would
-    # sample almost entirely from the (far wider, in absolute terms) normal
-    # side -- guarantees genuine subnormal coverage.
+    # `finfo.tiny` is the smallest NORMAL value for `dtype` (~1.18e-38 for
+    # float32), not the smallest subnormal (~1.4e-45 for float32) --
+    # `rng.uniform(finfo.tiny, ...)` can therefore never draw a genuine
+    # denormal value, even though the class is advertised as spanning
+    # "denormal" magnitudes (finding 6, 260914 code review round 5; the same
+    # `tiny`-vs-`smallest_subnormal` confusion that broke the ULP metric in
+    # divergence.py). Drawing in LOG space between `smallest_subnormal` and
+    # `tiny * 1e4` -- rather than a straight `rng.uniform` over that huge
+    # dynamic range, which would sample almost entirely from the (far wider,
+    # in absolute terms) normal side -- guarantees genuine subnormal
+    # coverage. `finfo` itself is derived from `dtype`, not hardcoded to
+    # float32 (finding 3, 260914 code review round 6), so this is genuinely
+    # `dtype`'s own subnormal range, not float32's cast down into it.
     log_lo = np.log(finfo.smallest_subnormal)
     log_hi = np.log(finfo.tiny * 1e4)
     small = np.exp(rng.uniform(log_lo, log_hi, size=(length - half, ndim)))
@@ -1628,16 +1640,24 @@ def run_ladder(
     propagated and discarded everything. Two layers close the class, not
     just the latest instance of it:
 
-    - **Layer 1 (preflight, before R0).** A *declaration* error --
-      something wrong with the arguments to this call itself, knowable
-      without running ``fn`` on real data -- RAISES, unconditionally,
-      before any rung or compile. This function's own top raises for
-      ``replays < 2`` (finding 5); ``validate_fn`` (``_default_validate`` by
-      default) raises for an empty/sinkless/cyclic ``probe_deps`` (finding
-      4) and for a ``probe_deps`` name absent from ``fn``'s output (round 4
-      finding 2). These exceptions are never caught here -- they propagate
-      unmodified, exactly as AC-20 requires, so a typo or a malformed
-      declaration is never silently downgraded into a partial run.
+    - **Layer 1 (preflight, before R0 for the class it applies to).** A
+      *declaration* error -- something wrong with the arguments to this call
+      itself, knowable without running ``fn`` on real data -- RAISES,
+      unconditionally, before any rung or compile for the class it concerns.
+      This function's own top raises for ``replays < 2`` (finding 5), once,
+      before the per-class loop even starts (it does not depend on any
+      class). ``validate_fn`` (``_default_validate`` by default) raises for
+      an empty/sinkless/cyclic ``probe_deps`` (finding 4) and for a
+      ``probe_deps`` name absent from ``fn``'s output (round 4 finding 2);
+      it is called once **per input class**, against that class's own
+      ``abstract_inputs`` (finding 5, round 6) -- not once, upfront, against
+      this function's positional ``abstract_inputs`` -- because every rung
+      traces and compiles at the class's own shapes, and a class whose
+      length differs from the positional default is the bucket ladder's
+      NORMAL case, not an edge case. These exceptions are never caught here
+      -- they propagate unmodified, exactly as AC-20 requires, so a typo or
+      a malformed declaration is never silently downgraded into a partial
+      run.
     - **Layer 2 (per rung, inside the per-class loop).** A genuine RUNTIME
       failure -- one that could not have been known before actually
       executing a rung (a toolchain crash, an IREE compile failure, an
@@ -1655,11 +1675,21 @@ def run_ladder(
     The two layers are deliberately NOT symmetric: Layer 1 must never be
     weakened into a Layer-2-style caught-and-recorded failure, or AC-20's
     "refuse before any toolchain work" guarantee is lost and a malformed
-    declaration becomes a quiet partial run instead of a hard error. Layer 1
-    checks run entirely before the per-class loop (this function's own
-    ``replays`` check, then ``validate_fn``); Layer 2's ``try``/``except``
-    blocks live only inside that loop, around the calls to ``r0``/``r2a``/
-    ``r1``/``r2b``/``r3`` themselves.
+    declaration becomes a quiet partial run instead of a hard error. This
+    function's own ``replays`` check runs once, entirely before the
+    per-class loop. ``validate_fn`` runs once per class, INSIDE the
+    per-class loop body -- but still strictly before that class's own
+    ``r0``/``r2a``/``r1``/``r2b``/``r3`` calls, and outside every one of
+    their ``try``/``except`` blocks, so it remains Layer 1 in effect: an
+    exception from it still propagates unmodified out of this function,
+    never downgraded into a ``RingResult``. The one behavioural
+    consequence of moving it into the loop: if input classes run in
+    sequence and an EARLIER class's rungs already executed before a LATER
+    class's ``validate_fn`` call raises, this function still has no
+    partial-return path for a Layer 1 failure, so the earlier class's
+    results are discarded along with everything else -- a declaration
+    error still aborts the whole call, just detected per class instead of
+    once upfront for every class combined.
 
     Args:
         fn: The per-element function, run identically by every rung (section
@@ -1712,8 +1742,6 @@ def run_ladder(
         )
         raise ValueError(msg)
 
-    validate_fn(fn, plan, abstract_inputs, boundaries, scan_init, probe_deps)
-
     # R2a cannot take `probe_deps` directly (AC-11), so this is the only
     # place that can resolve a bare `eager_fn` return value onto `fn`'s
     # declared primary (sink) output -- see `r2a_fusion`'s own
@@ -1742,6 +1770,22 @@ def run_ladder(
             "input_class": label,
             "in_contract": in_contract,
         }
+
+        # Layer 1, per class (finding 5, 260914 code review round 6):
+        # validate against THIS class's own `ai`, not the outer positional
+        # `abstract_inputs` -- every rung below traces and compiles at `ai`,
+        # so `ai` is the graph that must be certified. This call sits
+        # directly in the loop body, before the `try` blocks below start --
+        # it is NOT inside any Layer-2 try/except, so an exception here
+        # still propagates unmodified and aborts the whole call (AC-20),
+        # exactly as it did when it ran once before the loop. The one
+        # observable difference from the old single upfront call: if an
+        # EARLIER class's rungs already ran before a LATER class's
+        # validation raises, that earlier class's results are still
+        # discarded, because Layer 1 has no partial-return path -- a
+        # declaration error still aborts the entire ladder, it is just
+        # detected per class now instead of once for all classes combined.
+        validate_fn(fn, plan, ai, boundaries, scan_init, probe_deps)
 
         # target applies to R0 exactly as it does to R2b/R3 (finding 4,
         # 260914 code review): R0 is the ladder's hard validity gate, and it

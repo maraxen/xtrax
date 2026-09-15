@@ -17,11 +17,13 @@ parallel implementation of ``rings.py`` must agree with them:
 
 1. **Budget key convention.** :func:`classify_probes` looks up a float leaf's
    calibrated budget in its ``budgets: Mapping[str, float]`` argument under
-   the key ``f"{probe_name}{leaf.path}"`` (see :func:`budget_key`) -- e.g. a
-   probe whose value is a single array (``leaf.path == ""``) keys as the bare
-   probe name; a probe holding a nested structure keys as
-   ``"<probe_name><keystr path>"``. Whatever builds ``budgets`` (rings.py's R2a
-   measurement, per SS3.2/6.0) MUST use :func:`budget_key` to construct it.
+   the key :func:`budget_key` produces -- a probe whose value is a single
+   array (``leaf.path == ""``) keys as the bare probe name; a probe holding a
+   nested structure keys as ``"<probe_name><_BUDGET_KEY_SEP><keystr path>"``
+   (Finding 6: a separator, not bare concatenation, so the mapping stays
+   injective -- see :func:`budget_key`'s docstring). Whatever builds
+   ``budgets`` (rings.py's R2a measurement, per SS3.2/6.0) MUST use
+   :func:`budget_key` to construct it.
 2. **Division of labour between `compare_pytree` and `classify_probes`.**
    ``compare_pytree`` has no notion of a calibrated budget (SS6.0 pins that
    budgets are only known to ``classify_probes``, derived downstream of R2a).
@@ -253,55 +255,20 @@ def _dtype_class(dtype: np.dtype) -> Literal["float", "integer", "bool"]:
     raise ValueError(f"unsupported leaf dtype for divergence comparison: {dtype!r}")
 
 
-def _ulp_ordered(x: np.ndarray) -> np.ndarray:
-    """Map finite floats to a monotonic int64 ordering.
-
-    Standard bit-cast trick (Bruce Dawson, "Comparing Floating Point
-    Numbers"): reinterpret as an unsigned integer of the same width, then fold
-    the sign bit so ordering matches float ordering. Non-float32/64/16 dtypes
-    are upcast to float32 first.
-
-    **Not used to compute `max_ulp_diff` (see `_ulp_distance` instead).** The
-    natural way to turn this ordering into a magnitude -- subtracting two
-    ordered values -- overflows for float64: folding the sign bit needs
-    `half = 1 << 63`, which as `np.int64` wraps to a negative number, and
-    `full = 1 << 64` wraps to 0. A float64 sign flip then produced a
-    deeply negative "distance", which compared `<= budget` as true for any
-    budget and silently classified a genuine divergence as CLEAN. Kept here
-    (still exercised directly by tests) as a description of the classic
-    trick and because its per-width branching is otherwise correct; the
-    metric that actually needs an overflow-free magnitude uses
-    `_ulp_distance` below instead.
-    """
-    itemsize = x.dtype.itemsize
-    if itemsize == 2:
-        uint_dtype: type[np.unsignedinteger] = np.uint16
-    elif itemsize == 4:
-        uint_dtype = np.uint32
-    elif itemsize == 8:
-        uint_dtype = np.uint64
-    else:
-        x = x.astype(np.float32)
-        uint_dtype = np.uint32
-    nbits = np.dtype(uint_dtype).itemsize * 8
-    half = np.int64(1) << (nbits - 1)
-    full = np.int64(1) << nbits
-    bits = x.view(uint_dtype).astype(np.int64)
-    return np.where(bits < half, bits + half, full - bits)
-
-
 def _ulp_distance(exp: np.ndarray, act: np.ndarray) -> np.ndarray:
     """Overflow-free per-element ULP distance: ``|exp - act| /
     spacing(max(|exp|, |act|))``, evaluated in ``exp``/``act``'s own dtype
     -- falling back to ``spacing(min(|exp|, |act|))`` wherever the first
     scale is infinite (see Round-4 finding below).
 
-    Within one binade this counts representable steps exactly, matching
-    ``_ulp_ordered``'s bit-cast trick for same-width floats; across a binade
-    boundary or a sign change it reads correspondingly large -- which is
-    correct (a sign flip IS a huge divergence) -- and it can never be
-    negative, unlike an ``_ulp_ordered``-diff for float64 (see that
-    function's docstring for the overflow this replaces).
+    Within one binade this counts representable steps exactly, matching the
+    classic sign-bit-fold bit-cast trick for same-width floats (Finding 7:
+    that trick is preserved as a private ``_ulp_ordered`` helper in
+    ``tests/export/test_divergence.py``, not shipped here -- see its
+    docstring for the float64 overflow this function replaces); across a
+    binade boundary or a sign change ``_ulp_distance`` reads correspondingly
+    large -- which is correct (a sign flip IS a huge divergence) -- and it
+    can never be negative, unlike that bit-cast diff for float64.
 
     Evaluating ``np.spacing`` in the leaf's own dtype (rather than upcasting
     to float64 first) is also what makes this correct for bfloat16:
@@ -317,8 +284,9 @@ def _ulp_distance(exp: np.ndarray, act: np.ndarray) -> np.ndarray:
     """
     # No floor here (Finding 4): `np.spacing` never returns exactly 0 for any
     # finite input, including 0.0 itself, in every dtype this module supports
-    # (checked directly -- see `_ulp_ordered`'s docstring for the analogous
-    # per-width check). A `np.finfo(np.float64).tiny` floor was here
+    # (checked directly -- see the test suite's `_ulp_ordered` helper
+    # docstring for the analogous per-width check). A
+    # `np.finfo(np.float64).tiny` floor was here
     # previously to guard a division by zero that cannot occur; it instead
     # raised a genuine float64 subnormal step (`np.spacing` ~4.9e-324) up to
     # `tiny` (~2.2e-308, the smallest NORMAL float64) -- ~15 orders of
@@ -558,13 +526,39 @@ def budget_leaf(m_leaf_ulp: float) -> float:
     return max(ULP_FLOOR, SLACK * m_leaf_ulp)
 
 
+_BUDGET_KEY_SEP = "\x1f"
+"""Separator inserted between ``probe_name`` and a non-empty ``leaf_path`` in
+:func:`budget_key` (Finding 6). ASCII Unit Separator (0x1F) -- a control
+character reserved exactly for delimiting structured fields, so it is never
+emitted by ``jax.tree_util.keystr`` (whose alphabet for a non-empty path is
+limited to brackets, quotes, dots, digits, and the literal characters of
+dict keys/attrs/NamedTuple fields, all printable) and is not a character any
+ordinary probe name would contain. A bare concatenation collided a probe
+``"a"`` with leaf path ``"['b']"`` against a sibling top-level probe
+literally named ``"a['b']"`` whose own value is a single array (path
+``""``); inserting this separator before a non-empty path makes the two
+keys ``"a\\x1f['b']"`` and ``"a['b']"`` distinct.
+"""
+
+
 def budget_key(probe_name: str, leaf_path: str) -> str:
     """The key convention :func:`classify_probes` uses to look up a float
     leaf's calibrated budget in its ``budgets`` argument (see the module
     docstring's "Budget key convention" note). Exposed so a budget-producing
     caller (rings.py's R2a measurement) builds matching keys.
+
+    A probe whose value is a single leaf (``leaf_path == ""``) keys as the
+    bare probe name, unchanged from before Finding 6 -- there is nothing to
+    delimit, and every existing caller keying on ``probe_name`` alone for
+    such a leaf keeps working. A nested leaf's non-empty ``leaf_path``
+    (always starting with ``[`` or ``.``, per ``jax.tree_util.keystr``) is
+    joined to ``probe_name`` with :data:`_BUDGET_KEY_SEP` instead of bare
+    concatenation, so the mapping is injective (Finding 6): two distinct
+    ``(probe_name, leaf_path)`` pairs can no longer produce the same key.
     """
-    return f"{probe_name}{leaf_path}"
+    if not leaf_path:
+        return probe_name
+    return f"{probe_name}{_BUDGET_KEY_SEP}{leaf_path}"
 
 
 # --------------------------------------------------------------------------
@@ -655,18 +649,37 @@ def classify_probes(
     Precedence (first match wins): ``DISCRETE_FLIP``, ``INJECTED``,
     ``AMPLIFIED``, ``ATTENUATED``, ``CLEAN``.
 
-    - ``DISCRETE_FLIP``: an integer/bool leaf mismatched, and every
+    - ``DISCRETE_FLIP``: an integer/bool leaf mismatched (and did **not**
+      fail structurally -- see the Finding 4 note below), and every
       predecessor was severity 0 on *all* leaves, discrete included (an empty
       predecessor set counts as satisfying this by rule).
-    - ``INJECTED``: every predecessor is severity 0, and this probe is
-      severity 2 (**not** "severity >= 1" -- that phrasing made every
-      within-budget float leaf below a clean predecessor read as an injected
-      semantic change, exactly the outcome the SS3.2 floor exists to prevent).
-    - ``AMPLIFIED``: some predecessor is above severity 0, and this probe's
-      severity is ``>=`` every predecessor's.
-    - ``ATTENUATED``: some predecessor is above severity 0, and this probe's
-      severity is strictly below the predecessor max.
+    - ``INJECTED``: every predecessor is severity 0, this probe is severity 2
+      (**not** "severity >= 1" -- that phrasing made every within-budget
+      float leaf below a clean predecessor read as an injected semantic
+      change, exactly the outcome the SS3.2 floor exists to prevent), and no
+      leaf on this probe failed structurally (Finding 4, below).
+    - ``AMPLIFIED``: this probe has a non-``IDENTICAL`` severity, and either
+      some predecessor is above severity 0 with this probe's severity ``>=``
+      every predecessor's, **or** a leaf on this probe failed structurally
+      while every predecessor was clean (Finding 4: treated as severity
+      rising off a clean-predecessor baseline of ``IDENTICAL``).
+    - ``ATTENUATED``: some predecessor is above severity 0 (and no leaf on
+      this probe failed structurally), and this probe's severity is strictly
+      below the predecessor max.
     - ``CLEAN``: severity <= 1 and none of the above.
+
+    **Finding 4 -- a structurally failed leaf is not a value flip.** A leaf
+    with ``failed=True`` (shape/dtype mismatch, ``metrics={}``) never had an
+    element-wise comparison run, so it cannot support ``DISCRETE_FLIP`` or
+    ``INJECTED``'s claim that specific values were compared and diverged --
+    those two classes exclude any probe with a failed leaf outright,
+    regardless of predecessor cleanliness. Such a probe is not reported
+    CLEAN either (the comparison genuinely could not be performed): it falls
+    through to the same severity-ordinal AMPLIFIED/ATTENUATED machinery every
+    other probe uses, comparing against ``IDENTICAL`` when predecessors were
+    otherwise clean. The leaf's own ``failed=True`` and empty ``metrics``
+    remain visible on :attr:`ProbeReport.leaves` regardless of the class this
+    produces.
 
     Args:
         probes: Probe name -> that probe's leaves, as produced by
@@ -696,24 +709,48 @@ def classify_probes(
         preds = probe_deps.get(name, ())
         leaves = tuple(_resolve_leaf_severity(name, leaf, budgets) for leaf in probes[name])
         severity = max((leaf.severity for leaf in leaves), default=Severity.IDENTICAL)
+        # Finding 4: a leaf with `failed=True` (shape/dtype mismatch, empty
+        # `metrics`) never had an element-wise comparison run, so it cannot
+        # support `discrete_mismatch`'s claim that specific index/bool values
+        # were compared and differed -- excluded here regardless of
+        # dtype_class.
         discrete_mismatch = any(
-            leaf.dtype_class in ("integer", "bool") and leaf.severity != Severity.IDENTICAL
+            leaf.dtype_class in ("integer", "bool")
+            and leaf.severity != Severity.IDENTICAL
+            and not leaf.failed
             for leaf in leaves
         )
+        any_leaf_failed = any(leaf.failed for leaf in leaves)
 
         pred_severities = [reports[pred].severity for pred in preds]
         all_predecessors_clean = not pred_severities or all(
             s == Severity.IDENTICAL for s in pred_severities
         )
         max_pred_severity = max(pred_severities) if pred_severities else Severity.IDENTICAL
+        # Finding 4: DISCRETE_FLIP and INJECTED are both "value-flip" claims
+        # -- they assert a specific value-level narrative (an exact-match
+        # index/bool flip, or a measured semantic change) that a leaf whose
+        # comparison never ran cannot support. A probe with any such failed
+        # leaf is excluded from both regardless of `all_predecessors_clean`,
+        # and instead falls through to the plain severity-ordinal
+        # AMPLIFIED/ATTENUATED comparison below (against a clean-predecessor
+        # baseline of IDENTICAL when nothing upstream actually diverged) --
+        # not CLEAN, since the comparison genuinely could not be performed,
+        # and not a sixth DivergenceClass member (see this sprint's fixer
+        # report for the escalation this decision avoided).
+        value_flip_eligible = all_predecessors_clean and not any_leaf_failed
 
-        if discrete_mismatch and all_predecessors_clean:
+        if discrete_mismatch and value_flip_eligible:
             divergence_class = DivergenceClass.DISCRETE_FLIP
-        elif all_predecessors_clean and severity == Severity.BEYOND_BUDGET:
+        elif value_flip_eligible and severity == Severity.BEYOND_BUDGET:
             divergence_class = DivergenceClass.INJECTED
-        elif not all_predecessors_clean and severity >= max_pred_severity:
+        elif (
+            not value_flip_eligible
+            and severity > Severity.IDENTICAL
+            and severity >= max_pred_severity
+        ):
             divergence_class = DivergenceClass.AMPLIFIED
-        elif not all_predecessors_clean and severity < max_pred_severity:
+        elif not value_flip_eligible and severity < max_pred_severity:
             divergence_class = DivergenceClass.ATTENUATED
         else:
             divergence_class = DivergenceClass.CLEAN

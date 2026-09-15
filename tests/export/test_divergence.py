@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from collections import namedtuple
 from pathlib import Path
 
 import jax
@@ -17,6 +18,41 @@ import numpy as np
 import pytest
 
 from xtrax.export import divergence as d
+
+
+def _ulp_ordered(x: np.ndarray) -> np.ndarray:
+    """Map finite floats to a monotonic int64 ordering.
+
+    Finding 7: this is the classic bit-cast trick (Bruce Dawson, "Comparing
+    Floating Point Numbers") -- reinterpret as an unsigned integer of the
+    same width, then fold the sign bit so ordering matches float ordering.
+    Relocated here from ``xtrax.export.divergence`` (round 1's own bug):
+    the natural way to turn this ordering into a magnitude -- subtracting
+    two ordered values -- overflows for float64 (folding the sign bit needs
+    ``half = 1 << 63``, which as ``np.int64`` wraps negative, and
+    ``full = 1 << 64`` wraps to 0), yielding a negative "distance" that
+    compares ``<= budget`` as true for any budget. Nothing in the shipped
+    module uses this any more (``_ulp_distance`` replaced it) -- kept here,
+    private to the test suite, purely to document the trick and exercise its
+    per-width branching; it must never be reintroduced as an importable
+    helper in ``divergence.py``.
+    """
+    itemsize = x.dtype.itemsize
+    if itemsize == 2:
+        uint_dtype: type[np.unsignedinteger] = np.uint16
+    elif itemsize == 4:
+        uint_dtype = np.uint32
+    elif itemsize == 8:
+        uint_dtype = np.uint64
+    else:
+        x = x.astype(np.float32)
+        uint_dtype = np.uint32
+    nbits = np.dtype(uint_dtype).itemsize * 8
+    half = np.int64(1) << (nbits - 1)
+    full = np.int64(1) << nbits
+    bits = x.view(uint_dtype).astype(np.int64)
+    return np.where(bits < half, bits + half, full - bits)
+
 
 # --------------------------------------------------------------------------
 # AC-12: purity
@@ -176,8 +212,8 @@ class TestComparePytree:
         """`_ulp_ordered`'s itemsize == 2 branch (float16 view)."""
         base = np.array([1.0, -2.0], dtype=np.float16)
         nudged = np.nextafter(base, np.float16(np.inf))
-        ordered_base = d._ulp_ordered(base)
-        ordered_nudged = d._ulp_ordered(nudged)
+        ordered_base = _ulp_ordered(base)
+        ordered_nudged = _ulp_ordered(nudged)
         assert np.all(np.abs(ordered_nudged - ordered_base) == 1)
 
     def test_float64_leaf_max_ulp_diff(self):
@@ -197,8 +233,8 @@ class TestComparePytree:
         for dtype in (np.float32, np.float64):
             base = np.array([1.0, -2.0], dtype=dtype)
             nudged = np.nextafter(base, dtype(np.inf))
-            ordered_base = d._ulp_ordered(base)
-            ordered_nudged = d._ulp_ordered(nudged)
+            ordered_base = _ulp_ordered(base)
+            ordered_nudged = _ulp_ordered(nudged)
             assert ordered_base.dtype == np.int64
             assert np.all(np.abs(ordered_nudged - ordered_base) == 1)
 
@@ -208,7 +244,7 @@ class TestComparePytree:
         to float32 rather than left unhandled.
         """
         x = np.array([1.0, 2.5], dtype=np.longdouble)
-        ordered = d._ulp_ordered(x)
+        ordered = _ulp_ordered(x)
         assert ordered.dtype == np.int64
         assert ordered.shape == x.shape
 
@@ -904,7 +940,115 @@ class TestClassifyProbes:
 
     def test_budget_key_convention(self):
         assert d.budget_key("rbf", "") == "rbf"
-        assert d.budget_key("rbf", "['weights']") == "rbf['weights']"
+        assert d.budget_key("rbf", "['weights']") == f"rbf{d._BUDGET_KEY_SEP}['weights']"
+
+
+# --------------------------------------------------------------------------
+# Finding 4 (MEDIUM): a structurally FAILED leaf (shape/dtype mismatch, empty
+# metrics) must not be reported as a value-level divergence -- DISCRETE_FLIP
+# and INJECTED both assert a specific value-level narrative that a comparison
+# which never ran cannot support.
+# --------------------------------------------------------------------------
+
+
+def _failed_leaf(dtype_class: str) -> d.LeafDivergence:
+    return d.LeafDivergence(
+        path="",
+        dtype_class=dtype_class,
+        severity=d.Severity.BEYOND_BUDGET,
+        metrics={},
+        failed=True,
+        message="leaf shape/dtype mismatch at '': expected shape=(4,), actual shape=(8,)",
+    )
+
+
+class TestFinding4StructuralFailureIsNotAValueFlip:
+    def test_structurally_failed_integer_leaf_with_clean_predecessors_is_not_discrete_flip(self):
+        """A shape/dtype-mismatched INTEGER leaf (e.g. IREE returns a probe's
+        index array as shape (8,) where jit returned (4,)) has severity
+        BEYOND_BUDGET and empty metrics -- no element-wise comparison ran, so
+        this must not be reported as DISCRETE_FLIP (which asserts specific
+        index values flipped while predecessors stayed bit-identical).
+        """
+        probes = {"probe": (_failed_leaf("integer"),)}
+        (report,) = d.classify_probes(probes, probe_deps={}, budgets={})
+        assert report.divergence_class != d.DivergenceClass.DISCRETE_FLIP
+        assert report.divergence_class != d.DivergenceClass.CLEAN
+        assert report.leaves[0].failed is True
+        assert report.leaves[0].metrics == {}
+
+    def test_structurally_failed_float_leaf_with_clean_predecessors_is_not_injected(self):
+        """The float analogue of the same structural failure (e.g. int64 vs
+        int32 for an integer leaf, or a shape mismatch on a float leaf) must
+        not be reported as INJECTED -- that class asserts a genuine
+        value-level semantic change was measured, which an empty-metrics
+        comparison cannot support either.
+        """
+        probes = {"probe": (_failed_leaf("float"),)}
+        (report,) = d.classify_probes(probes, probe_deps={}, budgets={})
+        assert report.divergence_class != d.DivergenceClass.INJECTED
+        assert report.divergence_class != d.DivergenceClass.CLEAN
+        assert report.leaves[0].failed is True
+        assert report.leaves[0].metrics == {}
+
+    def test_structurally_failed_leaf_classifies_amplified_against_clean_predecessors(self):
+        """Design decision (see the fixer report): a structurally failed leaf
+        is excluded from the DISCRETE_FLIP/INJECTED "value-flip" predicates
+        and falls through to the plain severity-ordinal comparison instead,
+        with a clean-predecessor baseline of IDENTICAL -- landing on
+        AMPLIFIED (severity rose relative to that baseline), not a new
+        DivergenceClass member.
+        """
+        probes = {"probe": (_failed_leaf("integer"),)}
+        (report,) = d.classify_probes(probes, probe_deps={}, budgets={})
+        assert report.divergence_class == d.DivergenceClass.AMPLIFIED
+
+    def test_structurally_failed_leaf_alongside_a_diverged_predecessor_still_amplifies(self):
+        """A failed leaf combined with an already-diverged predecessor must
+        keep going through the ordinary severity-ordinal AMPLIFIED/ATTENUATED
+        comparison (this path was never gated on the value-flip predicates,
+        so it must not regress)."""
+        probes = {
+            "pred": (_float_leaf(severity=d.Severity.BEYOND_BUDGET, max_ulp_diff=1000.0),),
+            "probe": (_failed_leaf("integer"),),
+        }
+        deps = {"probe": ("pred",)}
+        budgets = {d.budget_key("pred", ""): 4.0}
+        reports = d.classify_probes(probes, deps, budgets)
+        by_name = {r.name: r for r in reports}
+        assert by_name["probe"].divergence_class == d.DivergenceClass.AMPLIFIED
+
+
+# --------------------------------------------------------------------------
+# Finding 6 (LOW): `budget_key` must be injective. Bare concatenation
+# (`f"{probe_name}{leaf_path}"`) collides a probe "a" with leaf path "['b']"
+# against a sibling top-level probe literally named "a['b']" whose own value
+# is a single array (path "").
+# --------------------------------------------------------------------------
+
+
+class TestFinding6BudgetKeyCollision:
+    def test_sibling_probe_named_after_a_subscripted_path_does_not_collide(self):
+        assert d.budget_key("a", "['b']") != d.budget_key("a['b']", "")
+
+    def test_budget_key_is_injective_across_dict_sequence_and_namedtuple_path_shapes(self):
+        """Round-trip: distinct (probe, path) pairs, with paths drawn from
+        every keystr shape this module must support (dict key, sequence
+        index, nested dict, NamedTuple field, and the bare "" leaf path),
+        never collide -- including when a probe name itself looks like a
+        keystr path (the collision case above).
+        """
+        NT = namedtuple("NT", ["x", "y"])
+        tree = {"a": [1, 2, {"b": 3}], "c": NT(4, 5), "d": 6}
+        paths = [
+            jax.tree_util.keystr(path) for path, _ in jax.tree_util.tree_flatten_with_path(tree)[0]
+        ]
+        paths.append("")  # a probe whose own value is a single leaf
+        probe_names = ["a", "a['b']", "c", "c.x", "probe", "d"]
+
+        pairs = [(probe, path) for probe in probe_names for path in paths]
+        keys = [d.budget_key(probe, path) for probe, path in pairs]
+        assert len(set(keys)) == len(pairs)
 
 
 # --------------------------------------------------------------------------
