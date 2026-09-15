@@ -915,6 +915,105 @@ class TestR3ProbeOverAScanPlan:
         assert all(p.divergence_class == d.DivergenceClass.CLEAN for p in result.probes)
 
 
+class TestR2aFusionScanEagerFallback:
+    """FINDING 3 (round 4): R2a's "eager" fallback for a probe `eager_fn`
+    omits is not actually eager for a Scan-based composition.
+
+    `lax.scan` always compiles its whole body into a single XLA computation
+    -- even outside `jax.jit` -- so a naive un-jitted call to the composed
+    callable traces the transition's Python body exactly ONCE (at trace
+    time), not once per step. Proven with a Python-level side effect: under
+    genuinely eager (per-step) execution an N-step scan runs the transition
+    body N times in the Python interpreter; under compiled scan (jit OR a
+    naive un-jitted call) it runs once.
+    """
+
+    def test_naive_unjitted_call_traces_the_scan_body_once_not_once_per_step(self):
+        """Establishes the bug is real, independent of r2a_fusion, before
+        trusting any assertion about r2a_fusion's own behavior.
+        """
+        step_n = 4
+        calls: list[int] = []
+
+        def transition(carry, x):
+            calls.append(1)
+            carry = carry + x
+            return carry, carry
+
+        plan = _scan_plan(lane_n=1, step_n=step_n)
+        init = jnp.zeros((1,), dtype=jnp.float32)
+        xs = jnp.arange(step_n, dtype=jnp.float32)
+        callable_ = build_traceable_callable(transition, plan, None, scan_init=init)
+
+        calls.clear()
+        callable_(xs)
+        assert len(calls) == 1, (
+            "a naive un-jitted call to a Scan-composed callable is expected to "
+            "trace the transition body once (lax.scan compiles regardless of "
+            "jax.jit) -- if this fails, lax.scan's behavior in this jax "
+            "version has changed and FINDING 3 needs re-evaluating"
+        )
+
+        calls.clear()
+        with jax.disable_jit():
+            callable_(xs)
+        assert len(calls) == step_n, (
+            "jax.disable_jit() is expected to force lax.scan to execute its "
+            "body once per step in the Python interpreter in this jax "
+            "version -- if this fails, disable_jit does not achieve true "
+            "eager execution for scan and FINDING 3's fix is unsound"
+        )
+
+    def test_fallback_eager_leg_executes_the_scan_body_once_per_step(self):
+        """`r2a_fusion`'s own fallback (for a probe `eager_fn` omits) must
+        use the genuinely-eager (per-step) leg, not the compiled-in-disguise
+        naive un-jitted call.
+        """
+        step_n = 4
+        calls: list[int] = []
+
+        def transition(carry, x):
+            calls.append(1)
+            carry = carry + x
+            y = {"probe1": carry * 2.0, "final": carry + 1.0}
+            return carry, y
+
+        plan = _scan_plan(lane_n=1, step_n=step_n)
+        init = jnp.zeros((1,), dtype=jnp.float32)
+        xs = jnp.arange(step_n, dtype=jnp.float32)
+
+        def eager_fn(_inputs):
+            # Omits BOTH "probe1" and "final" -- like a real caller's
+            # model-level oracle that knows nothing about this pipeline's
+            # internal probes -- so R2a's fallback covers the whole output
+            # in a single un-jitted call (rings.py's `missing_from_eager_fn`
+            # branch).
+            return {}
+
+        calls.clear()
+        result, budgets = rings.r2a_fusion(
+            transition,
+            plan,
+            [jax.ShapeDtypeStruct(xs.shape, xs.dtype)],
+            (xs,),
+            eager_fn=eager_fn,
+            scan_init=init,
+        )
+
+        # One trace from `jax.jit(callable_)(*concrete_inputs)` (rings.py's
+        # own jit leg) plus, if the fallback is genuinely eager, one Python
+        # call per scan step.
+        assert len(calls) == 1 + step_n, (
+            f"expected 1 (jit trace) + {step_n} (per-step eager fallback) = "
+            f"{1 + step_n} transition calls, got {len(calls)} -- the eager "
+            f"fallback is compiling the scan body instead of running it "
+            f"per-step"
+        )
+        assert result.passed is True
+        assert "probe1" in budgets
+        assert "final" in budgets
+
+
 def _nested_probe_fn(x):
     """A probe (`pair`) whose own value is a nested pytree, not a single array."""
     return {"pair": (x, x * 2.0), "final": x + 1.0}
@@ -965,6 +1064,73 @@ class TestDefaultValidateNestedProbe:
         bad_deps = {"pair": (), "unrelated": (), "final": ("pair", "unrelated")}
         with pytest.raises(d.ProbeDependencyError):
             rings._default_validate(fn, toy_plan, toy_abstract_inputs, None, None, bad_deps)
+
+
+class TestDefaultValidateMissingProbeName:
+    """FINDING 2 (round 4): a typo'd/stale ``probe_deps`` name must not fall
+    into the same "nested pytree, skip and warn" bucket as a genuine
+    nested-pytree probe -- ``_unvalidatable_probe_deps`` used to catch BOTH
+    with one check, so a name absent from ``fn``'s output entirely only
+    surfaced later, as a bare ``KeyError`` deep inside R3 (~rings.py:1052),
+    after R0/R2a/R1/R2b had already compiled and run in full (AC-20: the
+    ladder must refuse before any toolchain work when the declared DAG is
+    invalid).
+    """
+
+    def test_a_name_absent_from_fns_output_raises_before_any_rung(
+        self, toy_plan, toy_abstract_inputs
+    ):
+        # "final" is a typo/stale entry: `_named_fn` only ever returns
+        # "probe1" and "final" -- not "finale".
+        bad_deps = {"probe1": (), "finale": ("probe1",)}
+        with pytest.raises(ValueError, match="finale"):
+            rings._default_validate(_named_fn, toy_plan, toy_abstract_inputs, None, None, bad_deps)
+
+    def test_the_raised_message_lists_the_names_that_do_exist(self, toy_plan, toy_abstract_inputs):
+        bad_deps = {"probe1": (), "finale": ("probe1",)}
+        with pytest.raises(ValueError, match="probe1"):
+            rings._default_validate(_named_fn, toy_plan, toy_abstract_inputs, None, None, bad_deps)
+
+    def test_refuses_before_any_toolchain_backed_rung_via_run_ladder(
+        self, toy_plan, toy_abstract_inputs
+    ):
+        """AC-20, end to end: a stale probe name must make `run_ladder`
+        refuse before R0/R2a/R1/R2b/R3 ever run, exactly like a genuine
+        `ProbeDependencyError` does (`TestRunLadder.
+        test_refuses_before_executing_anything_when_validate_rejects`).
+        """
+
+        def must_not_run(*_args, **_kwargs):
+            raise AssertionError("a rung ran despite an undeclared probe name")
+
+        bad_deps = {"probe1": (), "finale": ("probe1",)}
+        with pytest.raises(ValueError, match="finale"):
+            rings.run_ladder(
+                _named_fn,
+                plan=toy_plan,
+                abstract_inputs=toy_abstract_inputs,
+                concrete_inputs=(),
+                probe_deps=bad_deps,
+                eager_fn=lambda ci: None,
+                r0=must_not_run,
+                r1=must_not_run,
+                r2a=must_not_run,
+                r2b=must_not_run,
+                r3=must_not_run,
+            )
+
+    def test_bare_output_with_nonempty_probe_deps_raises_with_a_named_top_level_message(
+        self, toy_plan, toy_abstract_inputs
+    ):
+        """`_bare_fn` returns a single array -- no named top level at all.
+        Declaring any probe against it (bare or not) must raise a message
+        that says probes require named top-level outputs, not the generic
+        "hold a nested pytree" wording used for a genuine nested-pytree
+        probe.
+        """
+        bad_deps = {"probe1": ()}
+        with pytest.raises(ValueError, match="named top-level"):
+            rings._default_validate(_bare_fn, toy_plan, toy_abstract_inputs, None, None, bad_deps)
 
 
 # ---------------------------------------------------------------------------

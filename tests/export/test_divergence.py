@@ -399,6 +399,192 @@ class TestFinding4MaxRelDiffSubnormalMasking:
 
 
 # --------------------------------------------------------------------------
+# Round-4 finding (HIGH): `_ulp_distance` reads IDENTICAL at a float's own
+# `max` (`np.spacing(finfo.max)` is `inf`, so `diff / inf == 0`). This is the
+# fourth round a point fix landed on `_ulp_distance` (round 1: int64
+# bit-cast overflow; round 3: a `finfo.tiny` clamp), each opening the next
+# hole at a different edge of the float domain. This section sweeps the
+# WHOLE domain via an edge-value grid instead of one reported point (a
+# throwaway control script, not committed, reintroduced both historical
+# formulas and confirmed this sweep fails against each).
+# --------------------------------------------------------------------------
+
+_EDGE_WIDTHS = (np.float16, np.float32, np.float64, "bfloat16")
+
+
+def _edge_grid(width):
+    """Edge-value grid spanning a float dtype's whole representable range:
+    zero, its negation, a subnormal ladder, tiny/-tiny, +-1, a large normal,
+    +-max, the step just inside +-max, and the non-finite markers.
+    """
+    if width == "bfloat16":
+        import ml_dtypes
+
+        fi = ml_dtypes.finfo(ml_dtypes.bfloat16)
+        subnormal = float(fi.smallest_subnormal)
+        tiny = float(fi.tiny)
+        big_max = float(fi.max)
+        base = jnp.array(
+            [
+                0.0,
+                -0.0,
+                subnormal,
+                -subnormal,
+                subnormal * 4.0,
+                -subnormal * 4.0,
+                tiny,
+                -tiny,
+                1.0,
+                -1.0,
+                1000.0,
+                big_max,
+                -big_max,
+                np.inf,
+                -np.inf,
+                np.nan,
+            ],
+            dtype=jnp.bfloat16,
+        )
+        zero_bf = jnp.array(0.0, dtype=jnp.bfloat16)
+        near_max = jnp.nextafter(jnp.array(big_max, dtype=jnp.bfloat16), zero_bf)
+        neg_near_max = jnp.nextafter(jnp.array(-big_max, dtype=jnp.bfloat16), zero_bf)
+        grid = jnp.concatenate([base, near_max.reshape(1), neg_near_max.reshape(1)])
+        return np.asarray(grid)
+
+    dtype = width
+    fi = np.finfo(dtype)
+    near_max = np.nextafter(dtype(fi.max), dtype(0.0))
+    neg_near_max = np.nextafter(dtype(-fi.max), dtype(0.0))
+    values = [
+        dtype(0.0),
+        dtype(-0.0),
+        dtype(fi.smallest_subnormal),
+        dtype(-fi.smallest_subnormal),
+        dtype(fi.smallest_subnormal * 4.0),
+        dtype(-fi.smallest_subnormal * 4.0),
+        dtype(fi.tiny),
+        dtype(-fi.tiny),
+        dtype(1.0),
+        dtype(-1.0),
+        dtype(1000.0),
+        dtype(fi.max),
+        dtype(-fi.max),
+        near_max,
+        neg_near_max,
+        dtype(np.inf),
+        dtype(-np.inf),
+        dtype(np.nan),
+    ]
+    return np.array(values, dtype=dtype)
+
+
+def _numerically_equal(e, a) -> bool:  # noqa: ANN001
+    ef = float(e)
+    af = float(a)
+    if np.isnan(ef) and np.isnan(af):
+        return True
+    return ef == af
+
+
+class TestUlpDistanceDomainSweep:
+    """Finding (round 4): sweeps the full cross product of an edge-value grid
+    against itself, per float width, and checks every pair against I1-I4
+    (see the dispatch prompt) through the real `_compare_leaf` entry point --
+    not a reimplementation of the classification logic.
+    """
+
+    @pytest.mark.parametrize("width", _EDGE_WIDTHS)
+    def test_every_pair_in_the_grid_obeys_the_ulp_distance_invariants(self, width):
+        grid = _edge_grid(width)
+        n = grid.shape[0]
+        for i in range(n):
+            for j in range(n):
+                e = grid[i : i + 1]
+                a = grid[j : j + 1]
+                leaf = d._compare_leaf("x", e, a)
+                ulp = leaf.metrics["max_ulp_diff"]
+                equal = _numerically_equal(grid[i], grid[j])
+
+                # I1: never negative.
+                assert ulp >= 0.0, (width, grid[i], grid[j], ulp)
+                # I2: never NaN.
+                assert ulp == ulp, (width, grid[i], grid[j], ulp)  # noqa: PLR0124
+
+                if equal:
+                    # I3 (forward): numerically equal -> ulp == 0 and IDENTICAL.
+                    assert ulp == 0.0, (width, grid[i], grid[j], ulp)
+                    assert leaf.severity == d.Severity.IDENTICAL, (width, grid[i], grid[j])
+                else:
+                    # I3 (reverse) / I4: not equal -> ulp > 0, never IDENTICAL,
+                    # and a non-finite pair is routed through the non-finite
+                    # counter rather than measured as if it were finite.
+                    both_finite = np.isfinite(grid[i]) and np.isfinite(grid[j])
+                    if both_finite:
+                        assert ulp > 0.0, (width, grid[i], grid[j], ulp)
+                    else:
+                        n_mismatch = leaf.metrics["n_nonfinite_mismatch"]
+                        assert n_mismatch == 1.0, (width, grid[i], grid[j])
+                    assert leaf.severity != d.Severity.IDENTICAL, (width, grid[i], grid[j])
+
+    @pytest.mark.parametrize("width", _EDGE_WIDTHS)
+    def test_a_single_representable_step_still_measures_close_to_one_ulp(self, width):
+        """I5: the metric must MEASURE a one-step nudge, not just flag it --
+        checked at an ordinary magnitude and at the `max` domain edge, where
+        the round-4 bug made the measurement collapse to 0.0.
+        """
+        grid = _edge_grid(width)
+        by_value = {float(v): v for v in grid}
+        one = by_value[1.0]
+        big_max = max((v for v in grid if np.isfinite(v)), key=lambda v: float(v))
+        near_max = sorted((v for v in grid if np.isfinite(v)), key=lambda v: float(v))[-2]
+
+        one_inf = np.array(np.inf, dtype=one.dtype)
+        one_nudged = np.array([np.nextafter(one, one_inf)])
+        ulp_at_one = d._ulp_distance(np.array([one]), one_nudged)
+        assert ulp_at_one[0] == pytest.approx(1.0, rel=1e-2)
+
+        ulp_at_max = d._ulp_distance(np.array([big_max]), np.array([near_max]))
+        assert np.isfinite(ulp_at_max[0])
+        assert ulp_at_max[0] == pytest.approx(1.0, rel=1e-2)
+
+    @pytest.mark.parametrize("width", _EDGE_WIDTHS)
+    def test_a_known_multiple_of_spacing_measures_as_that_multiple_in_the_subnormal_range(
+        self, width
+    ):
+        """I6, added after the control below showed I4's bare ``ulp > 0.0``
+        is too weak to catch round 3's actual defect: round 3's bug didn't
+        make the subnormal-range metric exactly 0 (a bare ``> 0`` check
+        passes it), it made a real divergence read as a *tiny, wrong*
+        nonzero number (~6.6e-16 instead of 3.0, measured against this exact
+        pair via the control script). The grid's `subnormal` and
+        `mid_subnormal` values are constructed as an exact 4x multiple of
+        each other, entirely inside the subnormal range where `np.spacing`
+        is constant (`== smallest_subnormal`) -- so the TRUE distance is
+        exactly 3 representable steps, and the metric must land there, not
+        just land above zero.
+        """
+        grid = _edge_grid(width)
+        positive_finite = (v for v in grid if np.isfinite(v) and float(v) > 0.0)
+        finite_sorted = sorted(positive_finite, key=lambda v: float(v))
+        subnormal, mid_subnormal = finite_sorted[0], finite_sorted[1]
+        assert float(mid_subnormal) == pytest.approx(4.0 * float(subnormal), rel=1e-6)
+
+        ulp = d._ulp_distance(np.array([subnormal]), np.array([mid_subnormal]))
+        assert ulp[0] == pytest.approx(3.0, rel=1e-3)
+
+    @pytest.mark.parametrize("width", _EDGE_WIDTHS)
+    def test_domain_sweep_is_silent_no_runtime_warnings(self, width):
+        import warnings
+
+        grid = _edge_grid(width)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            for i in range(grid.shape[0]):
+                for j in range(grid.shape[0]):
+                    d._compare_leaf("x", grid[i : i + 1], grid[j : j + 1])
+
+
+# --------------------------------------------------------------------------
 # budget_leaf -- AC-7
 # --------------------------------------------------------------------------
 

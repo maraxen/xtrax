@@ -292,7 +292,9 @@ def _ulp_ordered(x: np.ndarray) -> np.ndarray:
 
 def _ulp_distance(exp: np.ndarray, act: np.ndarray) -> np.ndarray:
     """Overflow-free per-element ULP distance: ``|exp - act| /
-    spacing(max(|exp|, |act|))``, evaluated in ``exp``/``act``'s own dtype.
+    spacing(max(|exp|, |act|))``, evaluated in ``exp``/``act``'s own dtype
+    -- falling back to ``spacing(min(|exp|, |act|))`` wherever the first
+    scale is infinite (see Round-4 finding below).
 
     Within one binade this counts representable steps exactly, matching
     ``_ulp_ordered``'s bit-cast trick for same-width floats; across a binade
@@ -322,9 +324,59 @@ def _ulp_distance(exp: np.ndarray, act: np.ndarray) -> np.ndarray:
     # `tiny` (~2.2e-308, the smallest NORMAL float64) -- ~15 orders of
     # magnitude too coarse, which read a divergence billions of
     # representable steps wide as ~0.0045 ULP, well within any real budget.
-    scale = np.spacing(np.maximum(np.abs(exp), np.abs(act))).astype(np.float64)
-    diff = np.abs(exp.astype(np.float64) - act.astype(np.float64))
-    return diff / scale
+    abs_exp = np.abs(exp)
+    abs_act = np.abs(act)
+    hi = np.maximum(abs_exp, abs_act)
+    lo = np.minimum(abs_exp, abs_act)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        # `diff`'s own subtraction can overflow for a float64 pair at
+        # opposite extremes (e.g. `-finfo.max` vs `+finfo.max`) -- silenced
+        # here for the same "overflow is a legitimate answer" reason as
+        # everything else in this block.
+        diff = np.abs(exp.astype(np.float64) - act.astype(np.float64))
+        # Round-4 finding (HIGH): at a leaf's OWN dtype `max` (or a sign
+        # flip spanning +-max), `np.spacing(hi)` is `inf` -- the next
+        # representable value would overflow the dtype's range, and IEEE
+        # 754 defines the spacing at the top of the range as infinite. The
+        # old bare `diff / spacing(hi)` then read `finite / inf == 0.0`,
+        # silently classifying a divergence as large as `2 * finfo.max`
+        # (~3.4e38 for float32) as bit-identical. `finfo.max` is a realistic
+        # value here, not a contrived one -- it is a common masked-distance
+        # fill, and float16 activations routinely saturate at 65504.
+        #
+        # Falling back to `spacing(lo)` when `spacing(hi)` is infinite
+        # recovers a genuine measurement for the specific case that matters
+        # most: `hi` sitting exactly at the dtype's `max` with `lo` an
+        # ordinary in-range value (e.g. `nextafter(max, 0)` one step below
+        # `max`, or a small `lo` far below it) -- `spacing(lo)` is always
+        # finite there, so a one-step nudge at the top of the range still
+        # measures ~1 ULP instead of collapsing to 0 (Finding 1) or flipping
+        # to an opaque `inf` (which would erase the magnitude information
+        # that motivated `_ulp_distance` over ``_ulp_ordered`` in the first
+        # place). The fallback only leaves a leaf unmeasurable when BOTH
+        # `hi` and `lo` sit at that same infinite-spacing edge (`lo == hi ==
+        # max`, e.g. `-max` vs `+max`) -- there is no finite scale left to
+        # fall back to, and that pair genuinely is the largest possible
+        # divergence at that magnitude.
+        scale_hi = np.spacing(hi).astype(np.float64)
+        scale_lo = np.spacing(lo).astype(np.float64)
+        scale = np.where(np.isfinite(scale_hi), scale_hi, scale_lo)
+        # `diff` can independently overflow to `inf` too, but only when
+        # `exp`/`act` are themselves float64 (the only width this module
+        # upcasts *from* float64, so nothing else can produce an
+        # unrepresentable subtraction here) -- e.g. `-finfo.max - finfo.max`
+        # overflows float64's own range. `inf / inf` is `nan`, which I2
+        # forbids outright, so both the "scale still infinite after the
+        # fallback" and the "diff overflowed" cases are folded into the same
+        # explicit "unmeasurable, but genuinely divergent" branch: `inf`,
+        # never `nan`. `errstate` suppresses the resulting overflow/invalid
+        # warnings -- they fire on every leaf at this domain edge, which is
+        # signal-free noise once the branch below already accounts for them
+        # (the round-3 errstate precedent for the `max_rel_diff`
+        # zero-reference case, below).
+        ratio = diff / scale
+        measurable = np.isfinite(diff) & np.isfinite(scale)
+        return np.where(diff == 0.0, 0.0, np.where(measurable, ratio, np.inf))
 
 
 def _float_metrics(exp: np.ndarray, act: np.ndarray) -> dict[str, float]:
@@ -339,7 +391,17 @@ def _float_metrics(exp: np.ndarray, act: np.ndarray) -> dict[str, float]:
     if np.any(both_finite):
         ef = exp[both_finite]
         af = act[both_finite]
-        abs_diff = np.abs(ef.astype(np.float64) - af.astype(np.float64))
+        # A float64 pair at opposite extremes (e.g. `-finfo.max` vs
+        # `+finfo.max`) overflows this subtraction to `inf` -- both `ef` and
+        # `af` are individually finite (that's what put them in this
+        # branch), the SUBTRACTION is what cannot be represented. `inf` is
+        # the legitimate reading (the true distance genuinely exceeds
+        # float64's range), the same "overflow is a correct answer, not an
+        # accident" precedent as `max_rel_diff`'s zero-reference division
+        # below -- silenced here for the identical reason: a warning per
+        # such leaf is noise, not signal (round-4 finding).
+        with np.errstate(over="ignore"):
+            abs_diff = np.abs(ef.astype(np.float64) - af.astype(np.float64))
         max_abs_diff = float(np.max(abs_diff))
         # Unlike `_ulp_distance`'s scale (see Finding 4's fix above), `ef`
         # genuinely can be exactly 0.0 here, so a floor is still needed to

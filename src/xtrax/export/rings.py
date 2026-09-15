@@ -703,9 +703,28 @@ def r2a_fusion(
     # rather than silently skipping the name here and letting it surface,
     # many rungs later, as a `MissingBudgetError` deep inside R3 -- after
     # every compile has already run (finding 5, 260914 code review).
+    #
+    # A plain un-jitted call is NOT actually eager for a Scan (or
+    # Vmap-over-Scan) composition: `lax.scan` always compiles its own body
+    # into one XLA computation regardless of an enclosing `jax.jit`, and
+    # worse, when called with the same abstract shapes `jax.jit(callable_)`
+    # was just traced with (immediately above), JAX's own trace cache serves
+    # the identical jaxpr without re-invoking `fn` at all -- verified
+    # empirically (this jax version) with a Python-level call counter: 0
+    # additional Python calls, not even 1. Either way this "eager" leg would
+    # silently become jit-vs-jit (or literally the same artifact vs itself),
+    # so every probe measured through it reads m_leaf == 0 and gets the bare
+    # ULP floor budget instead of one calibrated against real fusion
+    # sensitivity -- read later as false BEYOND_BUDGET noise (finding 3,
+    # 260914 code review round 4). `jax.disable_jit()` bypasses both the
+    # compilation and the trace cache and forces `lax.scan` to execute its
+    # body once per step in the Python interpreter -- verified empirically,
+    # do not rely on documentation memory, jax versions have changed this
+    # before.
     missing_from_eager_fn = jit_by_name.keys() - eager_by_name.keys()
     if missing_from_eager_fn:
-        raw_eager_by_name = _top_level_items(callable_(*concrete_inputs))
+        with jax.disable_jit():
+            raw_eager_by_name = _top_level_items(callable_(*concrete_inputs))
         for name in missing_from_eager_fn:
             eager_by_name[name] = raw_eager_by_name[name]
 
@@ -1092,9 +1111,47 @@ def _unvalidatable_probe_deps(
     common case (see its own docstring). This is a *structural* gap, not a
     violated dependency, so it is kept separate from the slice-subset check
     itself.
+
+    Callers must first rule out a name that is not a top-level output name at
+    ALL (see ``_missing_probe_names``) -- that is a different failure mode
+    (a typo'd/stale ``probe_deps`` entry, never confirmed-nested) and must
+    raise immediately rather than fall into this warn-and-skip bucket
+    (finding 2, 260914 code review round 4).
     """
     all_names = frozenset(probe_deps) | {p for preds in probe_deps.values() for p in preds}
     return all_names - frozenset(probe_result_paths)
+
+
+def _top_level_output_names(out_tree: Any) -> frozenset[str]:
+    """The top-level names of ``fn``'s output pytree, from a traced ``out_tree``.
+
+    Unlike ``_probe_result_paths`` (which only resolves a name whose OWN
+    value is a single array), this reflects every top-level name regardless
+    of what its value holds -- including a name whose value is itself a
+    nested pytree, e.g. ``"pair": (a, b)`` -- so it can tell "declared name
+    absent entirely" (a typo/stale entry) apart from "declared name present
+    but nested" (see ``_unvalidatable_probe_deps``). A structure with no
+    named top level (a bare array or plain tuple) is reported as the single
+    implicit name ``""``, matching ``_top_level_items``'s own convention.
+    """
+    placeholder = jax.tree_util.tree_unflatten(out_tree, [0] * out_tree.num_leaves)
+    return frozenset(_top_level_items(placeholder))
+
+
+def _missing_probe_names(
+    probe_deps: Mapping[str, tuple[str, ...]], top_level_names: frozenset[str]
+) -> frozenset[str]:
+    """Declared probe names that are not top-level names of ``fn``'s output at all.
+
+    This is the typo/stale-entry case: a name that never appears in ``fn``'s
+    output pytree under any form, as opposed to a name that appears but
+    holds a nested pytree (``_unvalidatable_probe_deps``'s job). Conflating
+    the two used to let a bad name reach ``run_ladder`` unrejected, since the
+    generic "nested, skip and warn" path only warns; every rung then ran to
+    completion before a plain ``KeyError`` in R3 lost every earlier result
+    (finding 2, 260914 code review round 4).
+    """
+    return _all_probe_names(probe_deps) - top_level_names
 
 
 def _default_validate(
@@ -1110,6 +1167,13 @@ def _default_validate(
     Deliberately touches only ``jax.export`` (no IREE) -- ``validate_probe_deps``
     must refuse before any toolchain-backed rung runs at all (AC-20).
 
+    A declared name that is not a top-level output name of ``fn`` AT ALL --
+    a typo, a stale ``probe_deps`` entry, or ``probe_deps`` naming probes
+    against an output with no named top level -- raises immediately
+    (``ValueError``), before any nested-pytree handling below even runs
+    (finding 2, 260914 code review round 4). This is distinct from, and
+    checked before, the nested-pytree case:
+
     An edge touching a nested-pytree-valued probe (no single ``result_info``
     string -- see ``_unvalidatable_probe_deps``) is skipped here rather than
     turned into a hard refusal for the whole ladder: R3 itself already treats
@@ -1123,6 +1187,23 @@ def _default_validate(
     full_callable = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     exported = jax.export.export(jax.jit(full_callable))(*abstract_inputs)
     probe_result_paths = _probe_result_paths(exported.out_tree)
+    top_level_names = _top_level_output_names(exported.out_tree)
+
+    missing = _missing_probe_names(probe_deps, top_level_names)
+    if missing:
+        if top_level_names == frozenset({""}):
+            msg = (
+                f"probe_deps declares probe(s) {sorted(missing)}, but fn's output has "
+                f"no named top level (a bare array or plain tuple) -- probes require "
+                f"named top-level outputs (a dict or NamedTuple)."
+            )
+        else:
+            msg = (
+                f"probe_deps declares probe(s) {sorted(missing)} that are not "
+                f"top-level names in fn's output; available top-level name(s): "
+                f"{sorted(top_level_names)}."
+            )
+        raise ValueError(msg)
 
     unresolved = _unvalidatable_probe_deps(probe_deps, probe_result_paths)
     if unresolved:
