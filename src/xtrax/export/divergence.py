@@ -34,8 +34,6 @@ parallel implementation of ``rings.py`` must agree with them:
    criterion is exact-match with no budget, ever.
 """
 
-from __future__ import annotations
-
 import dataclasses
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -315,8 +313,16 @@ def _ulp_distance(exp: np.ndarray, act: np.ndarray) -> np.ndarray:
     division are done in float64, for a leaf whose own dtype cannot
     represent the ratio.
     """
+    # No floor here (Finding 4): `np.spacing` never returns exactly 0 for any
+    # finite input, including 0.0 itself, in every dtype this module supports
+    # (checked directly -- see `_ulp_ordered`'s docstring for the analogous
+    # per-width check). A `np.finfo(np.float64).tiny` floor was here
+    # previously to guard a division by zero that cannot occur; it instead
+    # raised a genuine float64 subnormal step (`np.spacing` ~4.9e-324) up to
+    # `tiny` (~2.2e-308, the smallest NORMAL float64) -- ~15 orders of
+    # magnitude too coarse, which read a divergence billions of
+    # representable steps wide as ~0.0045 ULP, well within any real budget.
     scale = np.spacing(np.maximum(np.abs(exp), np.abs(act))).astype(np.float64)
-    scale = np.maximum(scale, np.finfo(np.float64).tiny)
     diff = np.abs(exp.astype(np.float64) - act.astype(np.float64))
     return diff / scale
 
@@ -335,8 +341,23 @@ def _float_metrics(exp: np.ndarray, act: np.ndarray) -> dict[str, float]:
         af = act[both_finite]
         abs_diff = np.abs(ef.astype(np.float64) - af.astype(np.float64))
         max_abs_diff = float(np.max(abs_diff))
-        denom = np.maximum(np.abs(ef.astype(np.float64)), np.finfo(np.float64).tiny)
-        max_rel_diff = float(np.max(abs_diff / denom))
+        # Unlike `_ulp_distance`'s scale (see Finding 4's fix above), `ef`
+        # genuinely can be exactly 0.0 here, so a floor is still needed to
+        # avoid a literal division by zero -- but the same audit finding
+        # applies: `np.finfo(np.float64).tiny` (smallest NORMAL float64,
+        # ~2.2e-308) floors a real, nonzero, *subnormal* `ef` far above its
+        # true magnitude, masking a genuine large relative divergence the
+        # same way it masked `_ulp_distance`'s scale. `smallest_subnormal`
+        # (~4.9e-324) is the true minimum positive float64 magnitude, so it
+        # only guards the literal-zero case without distorting any subnormal
+        # `ef` that is merely small.
+        denom = np.maximum(np.abs(ef.astype(np.float64)), np.finfo(np.float64).smallest_subnormal)
+        # An exact-zero reference with a nonzero actual has unbounded relative
+        # error, so this division legitimately overflows to inf. That is the
+        # correct reading, not an accident, and must not surface as a
+        # RuntimeWarning on every leaf whose reference is zero.
+        with np.errstate(over="ignore", divide="ignore"):
+            max_rel_diff = float(np.max(abs_diff / denom))
         max_ulp_diff = float(np.max(_ulp_distance(ef, af)))
     else:
         max_abs_diff = 0.0
@@ -651,7 +672,7 @@ def classify_probes(
 # --------------------------------------------------------------------------
 
 
-def _module_entry_func(module: mlir_ir.Module) -> Any:  # noqa: ANN401
+def _module_entry_func(module: "mlir_ir.Module") -> Any:  # noqa: ANN401
     from jaxlib.mlir import ir as mlir_ir_rt
 
     funcs = [op for op in module.body.operations if op.operation.name == "func.func"]

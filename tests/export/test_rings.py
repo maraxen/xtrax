@@ -680,6 +680,292 @@ class TestR3Probe:
         assert {p.name for p in result.probes} == {"neighbor_indices", "rbf", "final"}
         assert all(p.divergence_class == d.DivergenceClass.CLEAN for p in result.probes)
 
+    def test_report_order_does_not_depend_on_all_probe_names_iteration_order(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """FINDING 5 (round 3): R3's probe report order must not depend on
+        `PYTHONHASHSEED`.
+
+        `probe_leaves` used to be filled by iterating `_all_probe_names`'s
+        return value directly -- a `frozenset[str]`, whose iteration order
+        depends on Python's per-process string hash randomization -- and
+        `classify_probes` preserves whatever order it was built in (its own
+        docstring: "in probes' iteration order"). Two different (but
+        set-equal) orderings of the same probe names, forced here by
+        monkeypatching `_all_probe_names`, must not change the resulting
+        report order.
+        """
+
+        class _ReversedIterationOrder(frozenset):
+            def __iter__(self):
+                return reversed(list(super().__iter__()))
+
+        names = {"neighbor_indices", "rbf", "final"}
+        forward = frozenset(names)
+        backward = _ReversedIterationOrder(names)
+        assert tuple(forward) != tuple(backward), (
+            "test fixture bug: the two orderings must actually differ"
+        )
+
+        primary_fn = rings._primary_only(_chain_fn, frozenset({"neighbor_indices", "rbf"}))
+        primary_flat = _flatten_for(primary_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+        full_flat = _flatten_for(_chain_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+
+        def _run(order_value):
+            call_paths = [Path("/fake/primary.vmfb"), Path("/fake/full.vmfb")]
+            compile_calls = iter(call_paths)
+            monkeypatch.setattr(
+                rings,
+                "compile_for_target",
+                lambda mlir, target, out_path=None: SimpleNamespace(path=next(compile_calls)),
+            )
+            outputs = {call_paths[0]: tuple(primary_flat), call_paths[1]: tuple(full_flat)}
+            monkeypatch.setattr(
+                rings, "run_native_vmfb", lambda path, *a, function="main": outputs[path]
+            )
+            monkeypatch.setattr(rings, "_all_probe_names", lambda probe_deps: order_value)
+
+            r0_result = d.RingResult(
+                ring="R0",
+                passed=True,
+                input_class="nominal",
+                in_contract=True,
+                probes=(),
+                notes=(),
+            )
+            result = rings.r3_probe(
+                _chain_fn,
+                toy_plan,
+                toy_abstract_inputs,
+                (toy_xs,),
+                _CHAIN_PROBE_DEPS,
+                budgets={},
+                r0_result=r0_result,
+            )
+            return tuple(p.name for p in result.probes)
+
+        order_a = _run(forward)
+        order_b = _run(backward)
+        assert order_a == order_b, (
+            f"probe report order depends on _all_probe_names' own iteration "
+            f"order: {order_a} != {order_b}"
+        )
+
+
+def _aux_fn(x):
+    """Round-3 FINDING 2 reproducer: an undeclared top-level output (`aux`)
+    alongside a two-probe chain.
+    """
+    return {
+        "final": x + 1.0,
+        "aux": x * 3.0,
+        "rbf": x * 2.0,
+        "neighbor_indices": x,
+    }
+
+
+_AUX_PROBE_DEPS = {"rbf": ("neighbor_indices",), "final": ("rbf",)}
+
+
+class TestR3ProbeUndeclaredOutputFidelityFilter:
+    def test_undeclared_output_does_not_crash_the_fidelity_check(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """FINDING 2 (round 3): `primary_actual` and `instrumented_primary` must
+        use the SAME name filter.
+
+        `primary_actual` keeps every top-level name NOT in `strip_names` (so
+        an undeclared output like `aux` -- never mentioned in `probe_deps` at
+        all -- stays); `instrumented_primary` used to keep only names IN
+        `sinks`, dropping `aux`. `_compare_by_name` then raised a top-level
+        name mismatch (`only in expected=['aux']`) after both artifacts had
+        already compiled and run.
+        """
+        primary_fn = rings._primary_only(_aux_fn, frozenset({"neighbor_indices", "rbf"}))
+        primary_flat = _flatten_for(primary_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+        full_flat = _flatten_for(_aux_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+
+        call_paths = [Path("/fake/primary.vmfb"), Path("/fake/full.vmfb")]
+        compile_calls = iter(call_paths)
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(path=next(compile_calls)),
+        )
+        outputs = {call_paths[0]: tuple(primary_flat), call_paths[1]: tuple(full_flat)}
+        monkeypatch.setattr(
+            rings, "run_native_vmfb", lambda path, *a, function="main": outputs[path]
+        )
+
+        r0_result = d.RingResult(
+            ring="R0", passed=True, input_class="nominal", in_contract=True, probes=(), notes=()
+        )
+        result = rings.r3_probe(
+            _aux_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            _AUX_PROBE_DEPS,
+            budgets={},
+            r0_result=r0_result,
+        )
+        assert result.ring == "R3"
+        assert result.passed is True
+        # `aux` is undeclared -- neither a probe nor a sink -- and correctly
+        # absent from the classified probe report; only the declared names
+        # are classified.
+        assert {p.name for p in result.probes} == {"neighbor_indices", "rbf", "final"}
+        assert all(p.divergence_class == d.DivergenceClass.CLEAN for p in result.probes)
+
+
+def _scan_plan(lane_n: int, step_n: int):
+    """A real Vmap-over-Scan plan (the certified two-axis shape)."""
+    from xtrax.tiling.plan import AxisDecision, AxisSpec
+    from xtrax.tiling.strategy import Scan, Vmap
+
+    class _Plan:
+        def __init__(self, decisions):
+            self.decisions = decisions
+
+    return _Plan(
+        [
+            AxisDecision(
+                spec=AxisSpec(name="lane", cardinality=lane_n, default_batch_size=0),
+                batch_size=0,
+                reasoning="rings test fixture",
+                strategy=Vmap(),
+            ),
+            AxisDecision(
+                spec=AxisSpec(name="step", cardinality=step_n, default_batch_size=0),
+                batch_size=0,
+                reasoning="rings test fixture",
+                strategy=Scan(init=None),
+            ),
+        ]
+    )
+
+
+def _scan_transition(carry, x):
+    """A Scan transition returning `(carry, y)`, with named probes inside `y`."""
+    carry = carry + x
+    y = {"probe1": carry * 2.0, "final": carry + 1.0}
+    return carry, y
+
+
+_SCAN_PROBE_DEPS = {"probe1": (), "final": ("probe1",)}
+
+
+class TestR3ProbeOverAScanPlan:
+    def test_runs_over_a_real_vmap_of_scan_plan(self, monkeypatch):
+        """FINDING 1 (round 3): R3 must not crash on a Scan-based plan.
+
+        `_primary_only` used to wrap the per-element `fn` BEFORE it went into
+        `build_traceable_callable`. For a Scan axis -- including this
+        certified Vmap-over-Scan shape -- `fn` is a TRANSITION returning
+        `(carry, y)`, not a plain per-element function; stripping its return
+        value turns that 2-tuple into a one-key dict `{"": (carry, y)}`,
+        which the composer's own `_batched_transition` then fails to unpack
+        as `carry, y = fn(carry, x)` (composer.py:276) -- at TRACE time,
+        before IREE ever runs. The strip must happen on the COMPOSED
+        callable's own output instead, after `build_traceable_callable` has
+        already folded the scan.
+        """
+        plan = _scan_plan(lane_n=2, step_n=3)
+        init = jnp.zeros((2,), dtype=jnp.float32)
+        xs = jnp.arange(3, dtype=jnp.float32)
+        abstract_inputs = [jax.ShapeDtypeStruct(xs.shape, xs.dtype)]
+
+        # Build the expected fixture values by composing FIRST, then
+        # stripping the composed callable's own output -- the fix under
+        # test, used correctly here to produce the ground truth this
+        # reproducer checks r3_probe against.
+        full_callable = build_traceable_callable(_scan_transition, plan, None, scan_init=init)
+        primary_callable = rings._primary_only(full_callable, frozenset({"probe1"}))
+        primary_flat = list(jax.tree_util.tree_leaves(jax.jit(primary_callable)(xs)))
+        full_flat = list(jax.tree_util.tree_leaves(jax.jit(full_callable)(xs)))
+
+        call_paths = [Path("/fake/primary.vmfb"), Path("/fake/full.vmfb")]
+        compile_calls = iter(call_paths)
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(path=next(compile_calls)),
+        )
+        outputs = {call_paths[0]: tuple(primary_flat), call_paths[1]: tuple(full_flat)}
+        monkeypatch.setattr(
+            rings, "run_native_vmfb", lambda path, *a, function="main": outputs[path]
+        )
+
+        r0_result = d.RingResult(
+            ring="R0", passed=True, input_class="nominal", in_contract=True, probes=(), notes=()
+        )
+        result = rings.r3_probe(
+            _scan_transition,
+            plan,
+            abstract_inputs,
+            (xs,),
+            _SCAN_PROBE_DEPS,
+            budgets={},
+            r0_result=r0_result,
+            scan_init=init,
+        )
+        assert result.ring == "R3"
+        assert result.passed is True
+        assert {p.name for p in result.probes} == {"probe1", "final"}
+        assert all(p.divergence_class == d.DivergenceClass.CLEAN for p in result.probes)
+
+
+def _nested_probe_fn(x):
+    """A probe (`pair`) whose own value is a nested pytree, not a single array."""
+    return {"pair": (x, x * 2.0), "final": x + 1.0}
+
+
+_NESTED_PROBE_DEPS = {"pair": (), "final": ("pair",)}
+
+
+class TestDefaultValidateNestedProbe:
+    def test_nested_pytree_probe_does_not_refuse_validation(self, toy_plan, toy_abstract_inputs):
+        """FINDING 3 (round 3): a nested-pytree-valued probe must not make the
+        AC-20 validation gate refuse the WHOLE ladder outright.
+
+        `_probe_result_paths` only resolves a probe whose value is a single
+        array (``len(path) <= 1``, its own docstring) -- a probe like
+        ``"pair": (a, b)`` has two leaves at path length 2 each, so it gets
+        no entry at all. ``validate_probe_deps`` then raises
+        ``"probe_result_paths is missing an entry for 'pair' or 'final'"``
+        before ANY rung runs, even though R3 itself treats the identical gap
+        as best-effort (it catches ``probe_resolution``'s equivalent
+        ``ValueError`` and only downgrades to a note).
+        """
+        # Must not raise -- this is the validation gate's job, and a
+        # structural "no single result path" gap is not a violated
+        # dependency.
+        rings._default_validate(
+            _nested_probe_fn, toy_plan, toy_abstract_inputs, None, None, _NESTED_PROBE_DEPS
+        )
+
+    def test_the_unvalidated_edge_is_reported_visibly(self, toy_plan, toy_abstract_inputs):
+        """The skip must be visible, not silent -- a warning naming the edge."""
+        with pytest.warns(UserWarning, match="pair"):
+            rings._default_validate(
+                _nested_probe_fn, toy_plan, toy_abstract_inputs, None, None, _NESTED_PROBE_DEPS
+            )
+
+    def test_a_resolvable_edge_is_still_actually_validated(self, toy_plan, toy_abstract_inputs):
+        """The nested-probe skip must not blind validation to a REAL bad edge
+        among the resolvable (single-array) probes.
+        """
+
+        def fn(x):
+            # "final" is declared to depend on "unrelated", but does not --
+            # a genuine slice-subset violation among ordinary (non-nested)
+            # probes, which must still be caught.
+            return {"pair": (x, x * 2.0), "unrelated": x * 0.0, "final": x + 1.0}
+
+        bad_deps = {"pair": (), "unrelated": (), "final": ("pair", "unrelated")}
+        with pytest.raises(d.ProbeDependencyError):
+            rings._default_validate(fn, toy_plan, toy_abstract_inputs, None, None, bad_deps)
+
 
 # ---------------------------------------------------------------------------
 # T8b -- run_ladder orchestration (AC-20)

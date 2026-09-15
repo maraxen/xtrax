@@ -41,10 +41,9 @@ exercised there against fakes standing in for ``compile_for_target`` and
 ``run_native_vmfb``.
 """
 
-from __future__ import annotations
-
 import re
 import subprocess
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -821,6 +820,24 @@ def _all_probe_names(probe_deps: Mapping[str, tuple[str, ...]]) -> frozenset[str
     return frozenset(probe_deps) | preds
 
 
+def _probe_iteration_order(probe_deps: Mapping[str, tuple[str, ...]]) -> tuple[str, ...]:
+    """A deterministic order over every declared probe name (see ``_all_probe_names``).
+
+    ``_all_probe_names`` returns a ``frozenset``, whose iteration order
+    depends on Python's per-process string hash randomization
+    (``PYTHONHASHSEED``) -- building a dict (or anything order-sensitive) by
+    iterating it directly makes the result differ run to run, for a tool
+    whose first rung (R0) is itself a determinism gate (finding 5, 260914
+    code review round 3). Declaration order (``probe_deps``'s own key order,
+    which the caller wrote) is used first; any probe that appears only as
+    somebody else's predecessor -- never its own ``probe_deps`` key, e.g. a
+    DAG source per spec SS6.1 -- is appended afterward in sorted order.
+    """
+    declared = tuple(probe_deps)
+    remaining = sorted(_all_probe_names(probe_deps) - frozenset(declared))
+    return declared + tuple(remaining)
+
+
 def _sink_names(probe_deps: Mapping[str, tuple[str, ...]]) -> frozenset[str]:
     """DAG sinks: declared probe names that are never anyone else's predecessor.
 
@@ -958,23 +975,48 @@ def r3_probe(
         raise ValueError(msg)
     all_probes = _all_probe_names(probe_deps)
     strip_names = all_probes - sinks
-    primary_fn = _primary_only(fn, strip_names)
 
-    # Uninstrumented artifact: only the sink (true primary) output(s).
-    primary_callable = build_traceable_callable(primary_fn, plan, boundaries, scan_init=scan_init)
+    # Instrumented artifact: fn as given -- primary output(s) plus every
+    # declared probe. Composed ONCE; the primary (uninstrumented) view below
+    # is derived from this same composed callable, not from a second
+    # composition of a pre-stripped `fn`.
+    full_callable = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
+
+    # Uninstrumented artifact: only the sink (true primary) output(s). The
+    # strip is applied to the COMPOSED callable's own output, never to `fn`
+    # before composition -- for a Scan axis (including the certified
+    # Vmap-over-Scan shape), `fn` is the per-step TRANSITION returning
+    # `(carry, y)`, not a plain per-element function. Stripping `fn`'s return
+    # value pre-composition turns that 2-tuple into a one-key dict, which the
+    # composer's own internal transition wrapper then fails to unpack as
+    # `carry, y = fn(carry, x)` -- at trace time, before IREE ever runs
+    # (finding 1, 260914 code review round 3). The probe names live inside
+    # the composed callable's output (`y`, stacked across scan steps), which
+    # only exists after `build_traceable_callable` has already folded the
+    # scan -- so stripping must happen after composition, on `full_callable`
+    # itself.
+    primary_callable = _primary_only(full_callable, strip_names)
     primary_exported = jax.export.export(jax.jit(primary_callable))(*abstract_inputs)
     primary_compiled = compile_for_target(primary_exported.mlir_module(), target)
     primary_flat = _as_flat_sequence(run_native_vmfb(primary_compiled.path, *concrete_inputs))
     primary_actual = jax.tree_util.tree_unflatten(primary_exported.out_tree, list(primary_flat))
 
-    # Instrumented artifact: fn as given -- primary output(s) plus every
-    # declared probe.
-    full_callable = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     full_exported = jax.export.export(jax.jit(full_callable))(*abstract_inputs)
     full_compiled = compile_for_target(full_exported.mlir_module(), target)
     full_flat = _as_flat_sequence(run_native_vmfb(full_compiled.path, *concrete_inputs))
     full_by_name = recover_probe_names(full_exported.out_tree, full_flat)
-    instrumented_primary = {name: value for name, value in full_by_name.items() if name in sinks}
+    # Same filter as `primary_callable`/`primary_actual` above (`_primary_only`
+    # keeps every name NOT in `strip_names`) -- filtering by `name in sinks`
+    # here instead silently dropped any undeclared top-level output (one that
+    # is neither a declared probe nor a sink) from this side only, while it
+    # stayed on `primary_actual`'s side, so `_compare_by_name` raised a
+    # top-level name mismatch after both artifacts had already compiled and
+    # run (finding 2, 260914 code review round 3). Deriving the filter once
+    # and applying it to both sides is what keeps them from drifting apart
+    # again.
+    instrumented_primary = {
+        name: value for name, value in full_by_name.items() if name not in strip_names
+    }
 
     fidelity_leaves_by_name = _compare_by_name(primary_actual, instrumented_primary)
     holds, problems = _fidelity_holds(fidelity_leaves_by_name, budgets)
@@ -1002,7 +1044,7 @@ def r3_probe(
     expected_by_name = _top_level_items(jit_full_result)
 
     probe_leaves: dict[str, tuple[LeafDivergence, ...]] = {}
-    for name in all_probes:
+    for name in _probe_iteration_order(probe_deps):
         if name not in full_by_name or name not in expected_by_name:
             msg = (
                 f"probe {name!r} is declared in probe_deps but was not found in fn's output pytree."
@@ -1040,6 +1082,21 @@ def r3_probe(
 # ---------------------------------------------------------------------------
 
 
+def _unvalidatable_probe_deps(
+    probe_deps: Mapping[str, tuple[str, ...]], probe_result_paths: Mapping[str, str]
+) -> frozenset[str]:
+    """Declared probe names with no single ``result_info`` string to validate against.
+
+    A probe whose own value is a nested pytree (more than one leaf) has no
+    single-array result path -- ``_probe_result_paths`` only resolves that
+    common case (see its own docstring). This is a *structural* gap, not a
+    violated dependency, so it is kept separate from the slice-subset check
+    itself.
+    """
+    all_names = frozenset(probe_deps) | {p for preds in probe_deps.values() for p in preds}
+    return all_names - frozenset(probe_result_paths)
+
+
 def _default_validate(
     fn: Callable[..., Any],
     plan: Any,
@@ -1052,11 +1109,45 @@ def _default_validate(
 
     Deliberately touches only ``jax.export`` (no IREE) -- ``validate_probe_deps``
     must refuse before any toolchain-backed rung runs at all (AC-20).
+
+    An edge touching a nested-pytree-valued probe (no single ``result_info``
+    string -- see ``_unvalidatable_probe_deps``) is skipped here rather than
+    turned into a hard refusal for the whole ladder: R3 itself already treats
+    the identical gap as best-effort (it catches ``probe_resolution``'s
+    equivalent ``ValueError`` and only downgrades to a note, never refusing).
+    A silent skip would hide exactly the probes this validation exists to
+    protect, so every skipped edge is surfaced via a visible ``UserWarning``
+    naming both endpoints -- it is UNVALIDATED, not confirmed correct (finding
+    3, 260914 code review round 3).
     """
     full_callable = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     exported = jax.export.export(jax.jit(full_callable))(*abstract_inputs)
     probe_result_paths = _probe_result_paths(exported.out_tree)
-    validate_probe_deps(exported, probe_deps, probe_result_paths)
+
+    unresolved = _unvalidatable_probe_deps(probe_deps, probe_result_paths)
+    if unresolved:
+        skipped_edges = sorted(
+            f"{pred}->{probe}"
+            for probe, preds in probe_deps.items()
+            for pred in preds
+            if probe in unresolved or pred in unresolved
+        )
+        warnings.warn(
+            f"probe_deps edge(s) {skipped_edges} could not be validated (AC-15 "
+            f"slice-subset check): probe(s) {sorted(unresolved)} hold a nested "
+            f"pytree with no single jax.result_info string. These edges are "
+            f"UNVALIDATED, not confirmed correct.",
+            stacklevel=2,
+        )
+        validatable_deps = {
+            probe: tuple(pred for pred in preds if pred not in unresolved)
+            for probe, preds in probe_deps.items()
+            if probe not in unresolved
+        }
+    else:
+        validatable_deps = dict(probe_deps)
+
+    validate_probe_deps(exported, validatable_deps, probe_result_paths)
 
 
 def run_ladder(

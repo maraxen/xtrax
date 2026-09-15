@@ -298,6 +298,107 @@ class TestFinding6Bfloat16Support:
 
 
 # --------------------------------------------------------------------------
+# Code-review finding 4 (LOW): `_ulp_distance`'s `np.finfo(np.float64).tiny`
+# floor raises a genuine float64 subnormal step by ~15 orders of magnitude
+# (`tiny` is the smallest NORMAL float64, ~2.2e-308; subnormal spacing is
+# ~4.9e-324), masking a real divergence as within any sane budget.
+# --------------------------------------------------------------------------
+
+
+class TestFinding4SubnormalDivergenceMasking:
+    def test_float64_subnormal_divergence_is_not_masked_by_the_tiny_floor(self):
+        """`compare_pytree(0.0, 1e-310)` in float64: 1e-310 is subnormal, so
+        `np.spacing` at that magnitude is the (also subnormal) ~4.9e-324 step
+        -- the true ULP distance is billions of representable steps, not the
+        ~0.0045 a `tiny`-floored scale produces (measured in code review).
+        """
+        expected = np.array([0.0], dtype=np.float64)
+        actual = np.array([1e-310], dtype=np.float64)
+        (leaf,) = d.compare_pytree({"x": expected}, {"x": actual})
+        assert leaf.dtype_class == "float"
+        # Enormously beyond ULP_FLOOR (4.0) -- not the ~0.0045 the bug produced.
+        assert leaf.metrics["max_ulp_diff"] > 1000.0
+
+    def test_float64_subnormal_divergence_classifies_beyond_budget(self):
+        """Same magnitude, run through `classify_probes` with a budget that
+        is generous (1000x the floor) but still far below the true ULP
+        distance -- must classify BEYOND_BUDGET, not WITHIN_BUDGET.
+        """
+        expected = np.array([0.0], dtype=np.float64)
+        actual = np.array([1e-310], dtype=np.float64)
+        leaves = d.compare_pytree({"x": expected}, {"x": actual})
+        probes = {"probe": leaves}
+        budgets = {d.budget_key("probe", leaf.path): 1000.0 for leaf in leaves}
+        (report,) = d.classify_probes(probes, probe_deps={}, budgets=budgets)
+        assert report.severity == d.Severity.BEYOND_BUDGET
+        assert report.divergence_class == d.DivergenceClass.INJECTED
+
+    def test_float32_subnormal_divergence_stays_correct(self):
+        """float32 was never affected by the bug (its own subnormal spacing,
+        ~1e-45, is already far above float64's `tiny` floor, so `np.maximum`
+        picked the real scale even before the fix) -- pinned here as a
+        regression guard for both widths against the same fix.
+        """
+        expected = np.array([0.0], dtype=np.float32)
+        # largest representable float32 subnormal: one step below the
+        # smallest normal.
+        actual = np.nextafter(np.finfo(np.float32).tiny, np.float32(0.0), dtype=np.float32).reshape(
+            1
+        )
+        (leaf,) = d.compare_pytree({"x": expected}, {"x": actual})
+        assert leaf.dtype_class == "float"
+        assert leaf.metrics["max_ulp_diff"] == pytest.approx(8_388_607.0, rel=1e-6)
+
+    def test_bfloat16_subnormal_leaf_still_does_not_raise(self):
+        """`np.finfo` does not accept the raw `ml_dtypes.bfloat16` dtype at
+        all (``ValueError: data type dtype(bfloat16) not compatible with
+        finfo``) -- removing the `np.finfo(np.float64).tiny` floor must not
+        introduce any dtype-specific `finfo` call on the leaf's own dtype, so
+        a bf16 subnormal comparison must keep working exactly as before.
+        """
+        base = jnp.array([0.0], dtype=jnp.bfloat16)
+        nudged = jnp.nextafter(base, jnp.array(np.inf, dtype=jnp.bfloat16))
+        (leaf,) = d.compare_pytree({"x": base}, {"x": nudged})
+        assert leaf.dtype_class == "float"
+        assert leaf.failed is False
+        assert leaf.metrics["max_ulp_diff"] == pytest.approx(1.0, rel=1e-3)
+
+
+class TestFinding4MaxRelDiffSubnormalMasking:
+    """Same defect class in `_float_metrics`'s `max_rel_diff` denominator,
+    which also floors with `np.finfo(np.float64).tiny` -- audited per
+    Finding 4's instruction to check every other `finfo(...).tiny` floor.
+    """
+
+    def test_subnormal_expected_leaf_relative_diff_is_not_masked(self):
+        """`ef = 1e-310` (subnormal, nonzero) with a real divergence at
+        `af = 1e-300`: the true relative difference is ``~1e10``. The
+        `tiny`-floored denominator instead reports ``~4.5e7`` -- over two
+        orders of magnitude too small, the same masking defect as Finding 4.
+        """
+        expected = np.array([1e-310], dtype=np.float64)
+        actual = np.array([1e-300], dtype=np.float64)
+        (leaf,) = d.compare_pytree({"x": expected}, {"x": actual})
+        assert leaf.metrics["max_rel_diff"] > 1e9
+
+    def test_exact_zero_expected_leaf_relative_diff_is_unbounded_without_warning(self):
+        """`ef == 0.0` exactly is the real (non-subnormal) case the floor
+        exists for. Relative error against an exact-zero reference with a
+        nonzero actual is unbounded, so the metric must read ``inf`` -- and
+        must do so silently, since a zero reference is an ordinary input and a
+        RuntimeWarning per such leaf would be noise.
+        """
+        import warnings
+
+        expected = np.array([0.0], dtype=np.float64)
+        actual = np.array([1.0], dtype=np.float64)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            (leaf,) = d.compare_pytree({"x": expected}, {"x": actual})
+        assert leaf.metrics["max_rel_diff"] == float("inf")
+
+
+# --------------------------------------------------------------------------
 # budget_leaf -- AC-7
 # --------------------------------------------------------------------------
 
