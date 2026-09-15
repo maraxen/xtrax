@@ -668,7 +668,11 @@ def r2a_fusion(
         eager_fn: An independently-computed oracle over ``concrete_inputs`` --
             the model applied directly, not through the composed/jitted
             callable under test. Same contract as ``export_pipeline``'s
-            ``reference_fn`` (``xtrax.export.parity``).
+            ``reference_fn`` (``xtrax.export.parity``). Normally covers only
+            the model's true output(s), not pipeline-internal probes -- any
+            top-level name ``jit_result`` has but ``eager_fn`` omits is
+            measured here too, using ``fn`` itself run eagerly (un-jitted),
+            since no separate independent oracle is possible for a probe.
         boundaries: Passed through to ``build_traceable_callable``.
         scan_init: Passed through to ``build_traceable_callable``.
         input_class: Section 6.2 label. ``m_leaf`` is per ``(model,
@@ -686,8 +690,26 @@ def r2a_fusion(
     eager_result = eager_fn(concrete_inputs)
     jit_result = jax.jit(callable_)(*concrete_inputs)
 
-    eager_by_name = _top_level_items(eager_result)
+    eager_by_name = dict(_top_level_items(eager_result))
     jit_by_name = _top_level_items(jit_result)
+
+    # `eager_fn` is documented as "the model applied directly" (section 5.1)
+    # -- a real caller's oracle normally covers only the model's own true
+    # output(s), not pipeline-internal probes. A probe absent from it must
+    # still get a budget: no separate "independent oracle" is possible for a
+    # pipeline intermediate, so measure it the same way every other name
+    # here is measured -- eager `fn` (via `callable_`, un-jitted) against
+    # `jax.jit(callable_)`, exactly the eager-vs-jit fusion sensitivity R2a
+    # exists to produce a budget for. This closes the coverage gap up front,
+    # rather than silently skipping the name here and letting it surface,
+    # many rungs later, as a `MissingBudgetError` deep inside R3 -- after
+    # every compile has already run (finding 5, 260914 code review).
+    missing_from_eager_fn = jit_by_name.keys() - eager_by_name.keys()
+    if missing_from_eager_fn:
+        raw_eager_by_name = _top_level_items(callable_(*concrete_inputs))
+        for name in missing_from_eager_fn:
+            eager_by_name[name] = raw_eager_by_name[name]
+
     names = sorted(eager_by_name.keys() | jit_by_name.keys())
 
     budgets: dict[str, float] = {}
@@ -782,16 +804,36 @@ def r2b_lowering(
 # ---------------------------------------------------------------------------
 
 
+def _all_probe_names(probe_deps: Mapping[str, tuple[str, ...]]) -> frozenset[str]:
+    """Every declared probe name -- a ``probe_deps`` key OR a predecessor value.
+
+    A **source** probe with no predecessors of its own -- declared purely as
+    someone else's predecessor, e.g. spec SS6.1's own example,
+    ``{"rbf": ("neighbor_indices",), ...}`` -- is never a dict key.
+    Restricting "every probe name" to ``probe_deps.keys()`` therefore silently
+    drops it from the probe set entirely. Every place in this module that
+    needs "every declared probe name" -- R3's strip set, its per-probe
+    classification input, and ``_sink_names``'s DAG-sink computation -- derives
+    it from here once, rather than re-deriving ``.keys()`` ad hoc (finding 2,
+    260914 code review).
+    """
+    preds = {p for preds in probe_deps.values() for p in preds}
+    return frozenset(probe_deps) | preds
+
+
 def _sink_names(probe_deps: Mapping[str, tuple[str, ...]]) -> frozenset[str]:
-    """DAG sinks: ``probe_deps`` keys that are never anyone else's predecessor.
+    """DAG sinks: declared probe names that are never anyone else's predecessor.
 
     This module's derivation of "primary" leaves for the section-5.4 fidelity
     check -- the model's own true output(s) (e.g. aminx's ``final``, per the
     section-5.3 DAG diagram), as opposed to intermediates declared purely to
-    be inspected.
+    be inspected. Derived over the full probe-name union (``_all_probe_names``),
+    not just ``probe_deps`` keys, so a source probe declared only as a
+    predecessor is correctly excluded here whenever it has a successor (it is
+    only a sink if nothing depends on it).
     """
     all_preds = {p for preds in probe_deps.values() for p in preds}
-    return frozenset(probe_deps) - all_preds
+    return _all_probe_names(probe_deps) - all_preds
 
 
 def _fidelity_holds(
@@ -914,7 +956,8 @@ def r3_probe(
             "section-5.4 fidelity check."
         )
         raise ValueError(msg)
-    strip_names = frozenset(probe_deps) - sinks
+    all_probes = _all_probe_names(probe_deps)
+    strip_names = all_probes - sinks
     primary_fn = _primary_only(fn, strip_names)
 
     # Uninstrumented artifact: only the sink (true primary) output(s).
@@ -959,7 +1002,7 @@ def r3_probe(
     expected_by_name = _top_level_items(jit_full_result)
 
     probe_leaves: dict[str, tuple[LeafDivergence, ...]] = {}
-    for name in probe_deps:
+    for name in all_probes:
         if name not in full_by_name or name not in expected_by_name:
             msg = (
                 f"probe {name!r} is declared in probe_deps but was not found in fn's output pytree."
@@ -1109,14 +1152,25 @@ def run_ladder(
             "in_contract": input_class.in_contract,
         }
 
-        r0_result = r0(fn, plan, ai, ci, replays=replays, **common)
+        # target applies to R0 exactly as it does to R2b/R3 (finding 4,
+        # 260914 code review): R0 is the ladder's hard validity gate, and it
+        # must gate the SAME artifact the other toolchain-backed rungs judge
+        # -- passing it here, not just to R2b/R3, keeps that true.
+        r0_result = r0(fn, plan, ai, ci, replays=replays, target=target, **common)
         results.append(r0_result)
         if not r0_result.passed:
             continue
 
+        # R2a has no `target`: it compares eager JAX against `jax.jit`, never
+        # compiling through IREE at all, so no compilation target applies.
         r2a_result, budgets = r2a(fn, plan, ai, ci, eager_fn=eager_fn, **common)
         results.append(r2a_result)
 
+        # R1 deliberately has no `target` either: its own two legs are the
+        # FIXED pair `NATIVE` vs `NATIVE_PORTABLE` (isolating ISA-dependent
+        # codegen is the whole point of that comparison), so the ladder's
+        # `target` parameter does not apply to it -- this is a deliberate
+        # omission, not the same oversight as R0's (finding 4).
         r1_result = r1(fn, plan, ai, ci, budgets=budgets, **common)
         results.append(r1_result)
 

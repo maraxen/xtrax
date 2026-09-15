@@ -241,7 +241,14 @@ class ProbeDependencyError(ValueError):
 def _dtype_class(dtype: np.dtype) -> Literal["float", "integer", "bool"]:
     if dtype == np.bool_:
         return "bool"
-    if np.issubdtype(dtype, np.floating):
+    # `np.issubdtype(bfloat16, np.floating)` is False -- ml_dtypes registers
+    # bfloat16 as a `void`-kind extension dtype, not a numpy floating
+    # subtype -- even though xtrax explicitly supports bf16 output
+    # (`_CODEGEN_DTYPES` in targets.py). Checked by name rather than
+    # importing ml_dtypes, since every numpy-facing operation this module
+    # needs (isfinite, isnan, ==, abs, spacing, astype) is already correctly
+    # registered on it via its ufunc overloads.
+    if np.issubdtype(dtype, np.floating) or dtype.name == "bfloat16":
         return "float"
     if np.issubdtype(dtype, np.integer):
         return "integer"
@@ -249,15 +256,24 @@ def _dtype_class(dtype: np.dtype) -> Literal["float", "integer", "bool"]:
 
 
 def _ulp_ordered(x: np.ndarray) -> np.ndarray:
-    """Map finite floats to a monotonic int64 ordering, for ULP-distance math.
+    """Map finite floats to a monotonic int64 ordering.
 
     Standard bit-cast trick (Bruce Dawson, "Comparing Floating Point
     Numbers"): reinterpret as an unsigned integer of the same width, then fold
     the sign bit so ordering matches float ordering. Non-float32/64/16 dtypes
-    (e.g. bfloat16) are upcast to float32 first -- the ULP distance is then
-    approximate (float32 ULP, not the original dtype's), which is adequate for
-    this module's purpose (a coarse-vs-fine comparison against a budget), and
-    is noted here rather than silently assumed.
+    are upcast to float32 first.
+
+    **Not used to compute `max_ulp_diff` (see `_ulp_distance` instead).** The
+    natural way to turn this ordering into a magnitude -- subtracting two
+    ordered values -- overflows for float64: folding the sign bit needs
+    `half = 1 << 63`, which as `np.int64` wraps to a negative number, and
+    `full = 1 << 64` wraps to 0. A float64 sign flip then produced a
+    deeply negative "distance", which compared `<= budget` as true for any
+    budget and silently classified a genuine divergence as CLEAN. Kept here
+    (still exercised directly by tests) as a description of the classic
+    trick and because its per-width branching is otherwise correct; the
+    metric that actually needs an overflow-free magnitude uses
+    `_ulp_distance` below instead.
     """
     itemsize = x.dtype.itemsize
     if itemsize == 2:
@@ -276,6 +292,35 @@ def _ulp_ordered(x: np.ndarray) -> np.ndarray:
     return np.where(bits < half, bits + half, full - bits)
 
 
+def _ulp_distance(exp: np.ndarray, act: np.ndarray) -> np.ndarray:
+    """Overflow-free per-element ULP distance: ``|exp - act| /
+    spacing(max(|exp|, |act|))``, evaluated in ``exp``/``act``'s own dtype.
+
+    Within one binade this counts representable steps exactly, matching
+    ``_ulp_ordered``'s bit-cast trick for same-width floats; across a binade
+    boundary or a sign change it reads correspondingly large -- which is
+    correct (a sign flip IS a huge divergence) -- and it can never be
+    negative, unlike an ``_ulp_ordered``-diff for float64 (see that
+    function's docstring for the overflow this replaces).
+
+    Evaluating ``np.spacing`` in the leaf's own dtype (rather than upcasting
+    to float64 first) is also what makes this correct for bfloat16:
+    bfloat16 shares float32's exponent range with far fewer mantissa bits,
+    so its representable step at a given magnitude is much coarser than
+    float64's -- upcasting before computing spacing would measure the
+    float64 grid's spacing instead of bfloat16's, misreading a last-bit
+    bfloat16 nudge as an enormous distance. ``np.spacing`` is dtype-aware
+    for every width this module supports, including registered extension
+    types like ``ml_dtypes.bfloat16`` -- only the final subtraction and
+    division are done in float64, for a leaf whose own dtype cannot
+    represent the ratio.
+    """
+    scale = np.spacing(np.maximum(np.abs(exp), np.abs(act))).astype(np.float64)
+    scale = np.maximum(scale, np.finfo(np.float64).tiny)
+    diff = np.abs(exp.astype(np.float64) - act.astype(np.float64))
+    return diff / scale
+
+
 def _float_metrics(exp: np.ndarray, act: np.ndarray) -> dict[str, float]:
     exp_finite = np.isfinite(exp)
     act_finite = np.isfinite(act)
@@ -292,7 +337,7 @@ def _float_metrics(exp: np.ndarray, act: np.ndarray) -> dict[str, float]:
         max_abs_diff = float(np.max(abs_diff))
         denom = np.maximum(np.abs(ef.astype(np.float64)), np.finfo(np.float64).tiny)
         max_rel_diff = float(np.max(abs_diff / denom))
-        max_ulp_diff = float(np.max(np.abs(_ulp_ordered(ef) - _ulp_ordered(af))))
+        max_ulp_diff = float(np.max(_ulp_distance(ef, af)))
     else:
         max_abs_diff = 0.0
         max_rel_diff = 0.0
@@ -462,20 +507,20 @@ def _topological_order(
     visited: set[str] = set()
     in_progress: set[str] = set()
 
-    def visit(name: str) -> None:
+    def _visit(name: str) -> None:
         if name in visited:
             return
         if name in in_progress:
             raise ValueError(f"probe_deps contains a cycle involving {name!r}")
         in_progress.add(name)
         for pred in probe_deps.get(name, ()):
-            visit(pred)
+            _visit(pred)
         in_progress.discard(name)
         visited.add(name)
         order.append(name)
 
     for name in names:
-        visit(name)
+        _visit(name)
     return order
 
 
@@ -649,31 +694,108 @@ def _all_function_ops(func_op: Any) -> list[Any]:  # noqa: ANN401
     return all_ops
 
 
-def _backward_slice_ops(value: Any) -> set[Any]:  # noqa: ANN401
+def _all_module_ops(module: Any) -> list[Any]:  # noqa: ANN401
+    """Every operation across every ``func.func`` in ``module`` (including
+    nested region bodies), each counted once.
+
+    Covers not just the entry function's own body but every function
+    reachable via a ``call`` -- a probe's backward slice can cross into a
+    callee (Finding 3 / T3), so ``op_index`` must have an entry for any op
+    that walk might visit, not just ``main``'s own ops.
+    """
+    ops: list[Any] = []
+    for op in module.body.operations:
+        if op.operation.name != "func.func":
+            continue
+        ops.extend(_all_function_ops(op))
+    return ops
+
+
+def _call_callee_sym_name(op: Any) -> str | None:  # noqa: ANN401
+    """The callee symbol name if ``op`` is a ``func.call``, else ``None``."""
+    if op.operation.name != "func.call":
+        return None
+    from jaxlib.mlir import ir as mlir_ir_rt
+
+    return mlir_ir_rt.FlatSymbolRefAttr(op.operation.attributes["callee"]).value
+
+
+def _resolve_func_by_sym_name(module: Any, sym_name: str) -> Any:  # noqa: ANN401
+    """Look up a ``func.func`` in ``module`` by its ``sym_name`` attribute --
+    the same resolution :func:`_module_entry_func` does for ``main``, reused
+    here to follow a ``call @callee`` edge.
+    """
+    from jaxlib.mlir import ir as mlir_ir_rt
+
+    for op in module.body.operations:
+        if op.operation.name != "func.func":
+            continue
+        name_attr = mlir_ir_rt.StringAttr(op.operation.attributes["sym_name"])
+        if name_attr.value == sym_name:
+            return op
+    raise ValueError(
+        f"call references callee {sym_name!r}, but no func.func with that sym_name "
+        "exists in the module"
+    )
+
+
+def _backward_slice_ops(value: Any, module: Any) -> set[Any]:  # noqa: ANN401
     """All operations transitively needed to compute ``value``.
 
-    A def-use walk over operands, stopping at block arguments (the function's
-    own inputs). When a visited op has regions (e.g. a loop), every op nested
-    inside those regions is included too, since the op's result depends on
-    its whole body.
+    A def-use walk over operands, stopping at block arguments (the owning
+    function's own inputs). When a visited op has regions (e.g. a loop),
+    every op nested inside those regions is included too, since the op's
+    result depends on its whole body.
+
+    When the walk reaches a value produced by a ``func.call`` (e.g. a
+    nested ``jax.jit`` or an equinox ``filter_jit`` inner call, which both
+    lower to a ``call`` into a separate ``func.func``), it additionally
+    resolves the callee by ``sym_name`` and continues the walk from the
+    callee's own return operand matching that value's result index -- so
+    two outputs of the *same* call (e.g. probes ``a`` and ``b`` where
+    ``b`` further transforms ``a`` inside the callee) still get distinct
+    slices, instead of both collapsing to the bare call op with zero delta
+    between them. Reached via the bulk "nested op in a visited op's region"
+    path (e.g. a ``call`` inside a ``stablehlo.while`` body), where no
+    single result value drives inclusion, every one of that call's results
+    is followed conservatively -- consistent with that path's existing
+    "the whole body is needed" over-approximation.
     """
     from jaxlib.mlir import ir as mlir_ir_rt
 
     visited: set[Any] = set()
+    followed_call_results: set[tuple[Any, int]] = set()
     stack = [value]
     while stack:
         v = stack.pop()
         if isinstance(v, mlir_ir_rt.BlockArgument):
             continue
         op = v.owner
-        if op in visited:
-            continue
-        visited.add(op)
-        for nested in _all_ops_in_region_tree(op):
-            if nested not in visited:
-                visited.add(nested)
-                stack.extend(nested.operands)
-        stack.extend(op.operands)
+        if op not in visited:
+            visited.add(op)
+            for nested in _all_ops_in_region_tree(op):
+                if nested not in visited:
+                    visited.add(nested)
+                    stack.extend(nested.operands)
+                    if _call_callee_sym_name(nested) is not None:
+                        stack.extend(nested.results)
+            stack.extend(op.operands)
+
+        callee_name = _call_callee_sym_name(op)
+        if callee_name is not None:
+            result_index = v.result_number
+            follow_key = (op, result_index)
+            if follow_key not in followed_call_results:
+                followed_call_results.add(follow_key)
+                callee_func = _resolve_func_by_sym_name(module, callee_name)
+                callee_returns = _entry_block_ops(callee_func)[-1].operands
+                if result_index >= len(callee_returns):
+                    raise ValueError(
+                        f"call @{callee_name} result {result_index} has no matching "
+                        f"return operand ({len(callee_returns)} returned)"
+                    )
+                stack.append(callee_returns[result_index])
+
     return visited
 
 
@@ -708,7 +830,7 @@ def _compute_probe_slices(
         func_op = _module_entry_func(module)
         result_infos = _result_info_strings(func_op)
         operands = list(_entry_block_ops(func_op)[-1].operands)
-        all_ops = _all_function_ops(func_op)
+        all_ops = _all_module_ops(module)
         op_index = {op: i for i, op in enumerate(all_ops)}
 
         slices: dict[str, frozenset[int]] = {}
@@ -720,7 +842,7 @@ def _compute_probe_slices(
                     f"no return operand with jax.result_info == {target!r} for probe "
                     f"{name!r}; available result_info strings: {result_infos}"
                 ) from None
-            ops = _backward_slice_ops(operands[idx])
+            ops = _backward_slice_ops(operands[idx], module)
             slices[name] = frozenset(op_index[op] for op in ops)
 
         return slices, len(all_ops)

@@ -265,6 +265,19 @@ def _named_fn(x):
 _NAMED_PROBE_DEPS = {"probe1": (), "final": ("probe1",)}
 
 
+def _chain_fn(x):
+    """Mirrors spec SS6.1's own example shape: a SOURCE probe
+    (`neighbor_indices`) that appears ONLY as somebody else's predecessor --
+    never as its own `probe_deps` key.
+    """
+    return {"neighbor_indices": x, "rbf": x * 2.0, "final": x + 1.0}
+
+
+# Same shape as spec SS6.1's `{"rbf": ("neighbor_indices",), ...}`:
+# "neighbor_indices" has no entry of its own in this mapping.
+_CHAIN_PROBE_DEPS = {"rbf": ("neighbor_indices",), "final": ("rbf",)}
+
+
 # ---------------------------------------------------------------------------
 # T4 -- R0 gate (AC-16)
 # ---------------------------------------------------------------------------
@@ -408,6 +421,37 @@ class TestR2aFusion:
         assert budgets["probe1"] == pytest.approx(d.ULP_FLOOR)
         assert budgets["final"] == pytest.approx(d.ULP_FLOOR)
         assert d.budget_key("final", "") == "final"
+
+    def test_a_probe_eager_fn_omits_still_gets_a_budget(
+        self, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """FINDING 5: `eager_fn` is documented as "the model applied directly"
+        (section 5.1) -- a real caller's oracle normally covers only the true
+        model output(s), not pipeline-internal probes. A probe name absent
+        from it must not be silently skipped (leaving it with no budget, so a
+        later non-identical R3 leaf raises `MissingBudgetError`/`KeyError`
+        only after every compile has already run) -- R2a must measure it too,
+        by running the SAME callable eagerly (un-jitted) itself, since no
+        separate "independent oracle" is possible for a pipeline
+        intermediate.
+        """
+
+        def eager_fn(inputs):
+            (arr,) = inputs
+            # Only "final" -- omits "probe1" entirely, exactly like a real
+            # caller's model-level reference implementation would.
+            return {"final": jnp.stack([arr[i] + 1.0 for i in range(arr.shape[0])])}
+
+        result, budgets = rings.r2a_fusion(
+            _named_fn, toy_plan, toy_abstract_inputs, (toy_xs,), eager_fn=eager_fn
+        )
+        assert result.passed is True
+        assert "probe1" in budgets, (
+            "probe1 was absent from eager_fn's output but must still receive "
+            "a calibrated budget -- R2a must not silently skip it"
+        )
+        assert budgets["probe1"] == pytest.approx(d.ULP_FLOOR)
+        assert not any("skipped" in n for n in result.notes)
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +632,54 @@ class TestR3Probe:
                 r0_result=r0_result,
             )
 
+    def test_source_probe_declared_only_as_a_predecessor_is_not_dropped(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """FINDING 2: spec SS6.1's own `probe_deps` shape must not crash R3.
+
+        `neighbor_indices` is a source probe with no predecessors of its own
+        -- it appears ONLY as `rbf`'s predecessor, so it is never a
+        `probe_deps` key. The probe set R3 strips/classifies over must be the
+        union of the mapping's keys and every predecessor name, not just the
+        keys -- otherwise `neighbor_indices` is never stripped from the
+        "uninstrumented" (primary-only) view, `_compare_by_name` raises a
+        top-level name mismatch, and (if that were bypassed) `classify_probes`
+        would separately raise on an "undeclared predecessor".
+        """
+        primary_fn = rings._primary_only(_chain_fn, frozenset({"neighbor_indices", "rbf"}))
+        primary_flat = _flatten_for(primary_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+        full_flat = _flatten_for(_chain_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+
+        call_paths = [Path("/fake/primary.vmfb"), Path("/fake/full.vmfb")]
+        compile_calls = iter(call_paths)
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(path=next(compile_calls)),
+        )
+        outputs = {call_paths[0]: tuple(primary_flat), call_paths[1]: tuple(full_flat)}
+        monkeypatch.setattr(
+            rings, "run_native_vmfb", lambda path, *a, function="main": outputs[path]
+        )
+
+        r0_result = d.RingResult(
+            ring="R0", passed=True, input_class="nominal", in_contract=True, probes=(), notes=()
+        )
+        result = rings.r3_probe(
+            _chain_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            _CHAIN_PROBE_DEPS,
+            budgets={},
+            r0_result=r0_result,
+        )
+        assert result.ring == "R3"
+        assert result.passed is True
+        # The source probe must appear in the report, not be silently dropped.
+        assert {p.name for p in result.probes} == {"neighbor_indices", "rbf", "final"}
+        assert all(p.divergence_class == d.DivergenceClass.CLEAN for p in result.probes)
+
 
 # ---------------------------------------------------------------------------
 # T8b -- run_ladder orchestration (AC-20)
@@ -759,6 +851,40 @@ class TestRunLadder:
             r0=fake_r0,
         )
         assert seen_classes == ["nominal"]
+
+    def test_r0_receives_run_ladders_target(self):
+        """FINDING 4: the docstring says target is "used by R0-R3" -- R0's own
+        call must receive it, not silently fall back to its NATIVE default
+        while R2b/R3 compile a different target.
+        """
+        seen_targets = []
+
+        def fake_validate(*_args, **_kwargs):
+            pass
+
+        def fake_r0(fn, plan, ai, ci, *, target=rings.NATIVE, **kwargs):  # noqa: ARG001
+            seen_targets.append(target)
+            return d.RingResult(
+                ring="R0",
+                passed=False,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+
+        rings.run_ladder(
+            _bare_fn,
+            plan=None,
+            abstract_inputs=(),
+            concrete_inputs=(),
+            probe_deps={},
+            eager_fn=lambda ci: None,
+            validate_fn=fake_validate,
+            r0=fake_r0,
+            target=rings.NATIVE_PORTABLE,
+        )
+        assert seen_targets == [rings.NATIVE_PORTABLE]
 
     def test_ac17_sub_k_neighbours_label_survives_to_every_report_level_ring_result(self):
         """AC-17: the in-contract label must be asserted at the REPORT level.

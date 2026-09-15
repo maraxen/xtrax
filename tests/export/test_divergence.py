@@ -188,6 +188,20 @@ class TestComparePytree:
         assert leaf.dtype_class == "float"
         assert leaf.metrics["max_ulp_diff"] == 1.0
 
+    def test_ulp_ordered_float32_and_float64_width_branches(self):
+        """`_ulp_ordered`'s itemsize == 4 and itemsize == 8 branches -- no
+        longer reached via `_float_metrics` (which now uses `_ulp_distance`
+        instead, see Finding 1's fix), so covered directly here to keep the
+        function's own per-width branching tested, per its docstring.
+        """
+        for dtype in (np.float32, np.float64):
+            base = np.array([1.0, -2.0], dtype=dtype)
+            nudged = np.nextafter(base, dtype(np.inf))
+            ordered_base = d._ulp_ordered(base)
+            ordered_nudged = d._ulp_ordered(nudged)
+            assert ordered_base.dtype == np.int64
+            assert np.all(np.abs(ordered_nudged - ordered_base) == 1)
+
     def test_ulp_ordered_falls_back_to_float32_for_an_unrecognised_width(self):
         """`_ulp_ordered`'s else branch: a float width that is not 2/4/8
         bytes (e.g. ``np.longdouble``, 16 bytes on this platform) is upcast
@@ -197,6 +211,90 @@ class TestComparePytree:
         ordered = d._ulp_ordered(x)
         assert ordered.dtype == np.int64
         assert ordered.shape == x.shape
+
+
+# --------------------------------------------------------------------------
+# Code-review finding 1 (CRITICAL): float64 sign flips must not read as
+# negative/CLEAN -- `_ulp_ordered`'s int64 bit-cast arithmetic overflows at
+# the 8-byte width (`half = np.int64(1) << 63` wraps negative, `full =
+# np.int64(1) << 64` wraps to 0).
+# --------------------------------------------------------------------------
+
+
+class TestFinding1UlpDistanceOverflow:
+    @pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
+    def test_sign_flip_max_ulp_diff_is_never_negative(self, dtype):
+        """A sign flip is the largest possible divergence a leaf can have --
+        `max_ulp_diff` must read as a large positive number, never negative,
+        for every float width (only float64 overflowed, but all three are
+        parametrized so the width that broke is not the only one covered).
+        """
+        a = np.array([1.0, 2.5, 3.0], dtype=dtype)
+        (leaf,) = d.compare_pytree({"x": a}, {"x": -a})
+        assert leaf.metrics["max_ulp_diff"] >= 0.0
+        assert leaf.metrics["max_ulp_diff"] == leaf.metrics["max_ulp_diff"]  # not NaN
+
+    def test_float64_sign_flip_does_not_classify_within_budget_or_clean(self):
+        """CRITICAL reproduction: `compare_pytree(a, -a)` for a float64 `a`
+        must not classify WITHIN_BUDGET/CLEAN. Before the fix, `max_ulp_diff`
+        read as ~-9.22e18 (negative, from int64 overflow), which compared
+        `<= budget` as true for any budget -- silently hiding a sign flip.
+        """
+        a = np.array([1.0, 2.5, 3.0], dtype=np.float64)
+        leaves = d.compare_pytree(a, -a)
+        probes = {"probe": leaves}
+        budgets = {d.budget_key("probe", leaf.path): d.budget_leaf(0.0) for leaf in leaves}
+        (report,) = d.classify_probes(probes, probe_deps={}, budgets=budgets)
+        assert report.severity == d.Severity.BEYOND_BUDGET
+        assert report.divergence_class == d.DivergenceClass.INJECTED
+        assert report.divergence_class != d.DivergenceClass.CLEAN
+
+    def test_plus_zero_vs_minus_zero_is_a_deliberate_identical_decision(self):
+        """+0.0 and -0.0 are numerically equal, so this module deliberately
+        classifies them severity IDENTICAL (not a divergence) -- asserted
+        explicitly rather than left to accident.
+        """
+        a = np.array([0.0, 1.0], dtype=np.float64)
+        b = np.array([-0.0, 1.0], dtype=np.float64)
+        (leaf,) = d.compare_pytree({"x": a}, {"x": b})
+        assert leaf.metrics["max_ulp_diff"] == 0.0
+        assert leaf.severity == d.Severity.IDENTICAL
+
+
+# --------------------------------------------------------------------------
+# Code-review finding 6 (LOW): bfloat16 leaves must not crash compare_pytree.
+# --------------------------------------------------------------------------
+
+
+class TestFinding6Bfloat16Support:
+    def test_bfloat16_leaf_does_not_raise_and_classifies_as_float(self):
+        """`np.issubdtype(bfloat16, np.floating)` is False (ml_dtypes
+        registers bfloat16 as a `void`-kind extension type), so
+        `_dtype_class` raised "unsupported leaf dtype" for any bf16 output --
+        even though xtrax explicitly supports bf16 (`_CODEGEN_DTYPES` in
+        targets.py). numpy has no native bfloat16; the real form is a jax
+        array with `dtype=jnp.bfloat16`, and `np.asarray` on it yields an
+        ndarray whose dtype is `ml_dtypes.bfloat16` (itemsize 2, kind 'V').
+        """
+        a = jnp.array([1.0, 2.0], dtype=jnp.bfloat16)
+        (leaf,) = d.compare_pytree({"x": a}, {"x": a})
+        assert leaf.dtype_class == "float"
+        assert leaf.failed is False
+        assert leaf.severity == d.Severity.IDENTICAL
+
+    def test_bfloat16_ulp_distance_uses_bfloat16s_own_spacing_not_float16s(self):
+        """bfloat16 shares float32's exponent range with far fewer mantissa
+        bits than float16, so float16's spacing would badly misjudge a bf16
+        divergence if the itemsize == 2 branch conflated the two (they share
+        itemsize). A single-step `nextafter` nudge at a magnitude where
+        bf16 and float16 spacing differ a lot (100.0: bf16 spacing ~0.5,
+        float16 spacing ~0.0625) must read as ~1 ULP, not ~8.
+        """
+        base = jnp.array([100.0], dtype=jnp.bfloat16)
+        nudged = jnp.nextafter(base, jnp.array(np.inf, dtype=jnp.bfloat16))
+        (leaf,) = d.compare_pytree({"x": base}, {"x": nudged})
+        assert leaf.dtype_class == "float"
+        assert leaf.metrics["max_ulp_diff"] == pytest.approx(1.0, rel=1e-3)
 
 
 # --------------------------------------------------------------------------
@@ -651,6 +749,89 @@ class TestProbeResolution:
 
         result = d.probe_resolution(exported, {}, paths)
         assert result.total_ops > 0
+
+
+def _nested_jit_export() -> tuple[object, dict[str, str]]:
+    """The code review's exact reproducer: a `@jax.jit`-wrapped inner
+    function (mirroring an equinox `filter_jit` inner call, per Finding 3)
+    computes two outputs where `b` genuinely depends on `a` --
+    `a = sin(x)`, `b = cos(sin(x))`. Exported under an outer `jax.jit`, the
+    inner call lowers to a separate `func.func` plus a `func.call` at the
+    outer level (verified against the real StableHLO), so both `a` and `b`
+    are results of the SAME call op.
+    """
+
+    def inner(x: jax.Array) -> tuple[jax.Array, jax.Array]:
+        s = jnp.sin(x)
+        return s, jnp.cos(s)
+
+    def f(x: jax.Array) -> dict[str, jax.Array]:
+        a, b = jax.jit(inner)(x)
+        return {"a": a, "b": b}
+
+    exported = jexport.export(jax.jit(f))(jnp.zeros((4,), jnp.float32))
+    paths = {"a": "result['a']", "b": "result['b']"}
+    return exported, paths
+
+
+class TestFinding3NestedJitCallBoundary:
+    def test_wrong_edge_through_nested_jit_callee_is_rejected(self):
+        """Finding 3 (HIGH): before the fix, `_backward_slice_ops` stopped
+        at the `func.call` op itself (never followed into the callee), so
+        `slice(a)` and `slice(b)` both collapsed to the single shared call
+        op -- making a declared edge in EITHER direction pass the
+        slice-subset check vacuously. Declaring the WRONG direction (`a`
+        depends on `b`, when actually `b` depends on `a`) must be rejected.
+        """
+        exported, paths = _nested_jit_export()
+        wrong_deps = {"a": ("b",)}
+        with pytest.raises(d.ProbeDependencyError):
+            d.validate_probe_deps(exported, wrong_deps, paths)
+
+    def test_genuine_edge_through_nested_jit_callee_is_accepted(self):
+        """The other half: the TRUE edge (b depends on a) must be accepted,
+        and slice_delta must be non-zero -- proving the slice now actually
+        distinguishes `a` and `b` instead of both reading as the bare call
+        op with zero delta.
+        """
+        exported, paths = _nested_jit_export()
+        deps = {"b": ("a",)}
+        assert d.validate_probe_deps(exported, deps, paths) is None
+
+        result = d.probe_resolution(exported, deps, paths)
+        assert result.slice_delta["a->b"] > 0
+
+    def test_probe_resolution_over_a_multi_func_module_with_a_loop_still_holds(self):
+        """Regression guard: the pre-existing fori_loop/call-inside-while
+        test (`TestProbeResolution`) must still behave the same now that
+        call-following also applies inside bulk region-included ops.
+        """
+
+        def f(x: jax.Array) -> dict[str, jax.Array]:
+            def body(_i: jax.Array, val: jax.Array) -> jax.Array:
+                return val + x
+
+            total = jax.lax.fori_loop(0, 3, body, jnp.zeros_like(x))
+            return {"total": total, "x2": x * 2.0}
+
+        exported = jexport.export(jax.jit(f))(jnp.zeros((4,), jnp.float32))
+        paths = {"total": "result['total']", "x2": "result['x2']"}
+        deps = {"x2": ("total",)}
+        with pytest.raises(d.ProbeDependencyError):
+            d.validate_probe_deps(exported, deps, paths)
+        result = d.probe_resolution(exported, {}, paths)
+        assert result.total_ops > 0
+
+    def test_resolve_func_by_sym_name_raises_for_an_unknown_callee(self):
+        from jaxlib.mlir import ir as mlir_ir
+        from jaxlib.mlir.dialects import stablehlo as mlir_stablehlo
+
+        exported, _paths = _nested_jit_export()
+        with mlir_ir.Context() as ctx:
+            mlir_stablehlo.register_dialect(ctx)
+            module = exported.mlir_module(serialized=False)
+            with pytest.raises(ValueError, match="does_not_exist"):
+                d._resolve_func_by_sym_name(module, "does_not_exist")
 
 
 class TestValidateProbeDeps:
