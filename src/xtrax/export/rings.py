@@ -41,6 +41,7 @@ exercised there against fakes standing in for ``compile_for_target`` and
 ``run_native_vmfb``.
 """
 
+import math
 import re
 import subprocess
 import warnings
@@ -646,6 +647,11 @@ def r1_target_isa(
         A ``RingResult`` for ``"R1"``. ``passed=False`` when the
         ``cpu_features`` precondition fails -- the ring refuses to interpret
         its legs, per AC-16 -- rather than reporting a false "no divergence".
+        Also ``False`` when a leg was interpreted but any leaf comparison
+        itself FAILED (a shape/dtype mismatch between ``native`` and
+        ``native-portable``) -- consistent with R2a and R2b, which treat the
+        identical condition the same way (round 6 finding 4, 260914 code
+        review).
     """
     callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
@@ -707,7 +713,12 @@ def r1_target_isa(
     )
     return RingResult(
         ring="R1",
-        passed=True,
+        # A structurally FAILED leaf (shape/dtype mismatch between native
+        # and native-portable) must fail R1 the same way R2a already fails
+        # on the identical condition -- not report passed=True with the
+        # only sign being a "FAILED" string buried in `notes` (round 6
+        # finding 4, 260914 code review).
+        passed=not _any_leaf_failed(leaves_by_name),
         input_class=input_class,
         in_contract=in_contract,
         probes=(),
@@ -718,6 +729,113 @@ def r1_target_isa(
 # ---------------------------------------------------------------------------
 # T5 -- R2a / R2b + section 3.2 budget derivation
 # ---------------------------------------------------------------------------
+
+
+def _any_leaf_failed(leaves_by_name: Mapping[str, tuple[LeafDivergence, ...]]) -> bool:
+    """Whether any leaf across any name FAILED (a shape/dtype mismatch).
+
+    A structural failure is knowable right here, not a magnitude any ring
+    judges -- shared by R1 and R2b so both report ``passed=False`` over a
+    FAILED leaf the same way R2a already does, rather than a caller having
+    to notice a "FAILED" string buried in ``notes`` (round 6 finding 4,
+    260914 code review).
+    """
+    return any(leaf.failed for leaves in leaves_by_name.values() for leaf in leaves)
+
+
+def _coerce_like_parity(value: Any) -> Any:  # noqa: ANN401
+    """Coerce a pytree exactly as ``parity.compare`` coerces its reference
+    argument, applied leaf by leaf.
+
+    ``parity.compare`` normalizes via ``np.asarray(jnp.asarray(expected))``
+    -- under this build's disabled x64, ``jnp.asarray`` silently narrows a
+    float64 leaf to float32 *before* any comparison happens.
+    ``compare_pytree``'s own leaf coercion (``np.asarray(expected_leaf)``,
+    in ``divergence._compare_leaf``) does not go through ``jnp`` at all, so
+    it never observes that narrowing -- a caller's float64 NumPy oracle
+    reads as a dtype mismatch on every leaf, FAILING R2a entirely (round 6
+    finding 2, 260914 code review). Applying ``parity.compare``'s own
+    formula here, per leaf, is what makes ``r2a_fusion``'s ``eager_fn``
+    docstring claim -- "same contract as ``export_pipeline``'s
+    ``reference_fn``" -- literally true rather than aspirational.
+    """
+    return jax.tree_util.tree_map(lambda leaf: np.asarray(jnp.asarray(leaf)), value)
+
+
+def _resolve_oracle_by_name(
+    eager_result: Any,
+    jit_by_name: Mapping[str, Any],
+    primary_names: frozenset[str],
+) -> dict[str, Any]:
+    """Normalize ``eager_fn``'s return value onto ``fn``'s own top-level
+    output names -- the one boundary every ``r2a_fusion`` oracle case routes
+    through (round 6, 260914 code review).
+
+    Three prior rounds each patched a single oracle-shape case (a bare value
+    against a named ``fn``, round 5; a named-but-mismatched value, round 6
+    finding 1; a float64 NumPy value, round 6 finding 2) and each patch left
+    the next case open -- the same shape as the ULP metric bugs, which only
+    converged once point fixes were replaced by one invariant. This is that
+    invariant for the oracle: every case funnels through here exactly once,
+    and every returned name is guaranteed to be one ``fn`` actually
+    produced, or this function raises -- never a silent drop.
+
+    Rules (mirrors ``r2a_fusion``'s ``eager_fn``/``primary_names``
+    docstring):
+
+    - A bare (unnamed) oracle against a NAMED ``fn`` output is mapped onto
+      the single entry in ``primary_names`` -- ambiguous (raises) unless
+      exactly one name is given.
+    - A bare oracle against a bare ``fn`` output is used as-is (both use the
+      single ``""`` entry).
+    - Every other oracle name is expected to be a SUBSET of ``fn``'s own
+      top-level names: the oracle legitimately covers only the model's true
+      output(s), never pipeline-internal probes -- ``r2a_fusion``'s own
+      ``disable_jit`` fallback fills every name the oracle omits.
+    - Any oracle name that is NOT one of ``fn``'s outputs is a caller error,
+      not a name to silently discard: raises, naming the unmatched name(s)
+      and ``fn``'s actual output names, so the mismatch is obvious instead
+      of the oracle quietly measuring nothing against itself (round 6
+      finding 1).
+
+    Every value in the returned mapping is coerced via
+    ``_coerce_like_parity`` before ``compare_pytree`` ever sees it (round 6
+    finding 2).
+
+    Raises:
+        ValueError: A bare oracle can't be matched to exactly one primary
+            name, or an oracle name is not among ``fn``'s own output names.
+    """
+    oracle_by_name = _top_level_items(eager_result)
+    oracle_is_bare = set(oracle_by_name) == {""}
+    jit_is_named = set(jit_by_name) != {""}
+
+    if oracle_is_bare and jit_is_named:
+        if len(primary_names) != 1:
+            msg = (
+                f"eager_fn returned a bare (unnamed) value, but fn's output "
+                f"is named ({sorted(jit_by_name)}) and primary_names does "
+                f"not identify exactly one output to map it to (got "
+                f"{sorted(primary_names)}); the independent oracle cannot "
+                f"be matched to fn's outputs without this."
+            )
+            raise ValueError(msg)
+        (primary_name,) = primary_names
+        oracle_by_name = {primary_name: oracle_by_name[""]}
+
+    unmatched = oracle_by_name.keys() - jit_by_name.keys()
+    if unmatched:
+        msg = (
+            f"eager_fn returned name(s) {sorted(unmatched)} that are not "
+            f"among fn's own top-level output names {sorted(jit_by_name)}; "
+            f"the independent oracle does not correspond to fn's outputs, "
+            f"so it cannot be silently dropped -- that would measure the "
+            f"mismatched name only against fn's own jit'd output (never an "
+            f"independent oracle) and report a spurious pass."
+        )
+        raise ValueError(msg)
+
+    return {name: _coerce_like_parity(value) for name, value in oracle_by_name.items()}
 
 
 def r2a_fusion(
@@ -756,19 +874,24 @@ def r2a_fusion(
         eager_fn: An independently-computed oracle over ``concrete_inputs`` --
             the model applied directly, not through the composed/jitted
             callable under test. Same contract as ``export_pipeline``'s
-            ``reference_fn`` (``xtrax.export.parity``). Normally covers only
-            the model's true output(s), not pipeline-internal probes -- any
+            ``reference_fn`` (``xtrax.export.parity``) -- including
+            ``parity.compare``'s own ``np.asarray(jnp.asarray(...))``
+            coercion, applied here via ``_coerce_like_parity`` (round 6
+            finding 2, 260914 code review), so a float64 NumPy oracle is not
+            read as a dtype mismatch on every leaf. Normally covers only the
+            model's true output(s), not pipeline-internal probes -- any
             top-level name ``jit_result`` has but ``eager_fn`` omits is
             measured here too, using ``fn`` itself run eagerly (un-jitted),
             since no separate independent oracle is possible for a probe.
-            If ``eager_fn`` itself returns a bare (unnamed) value while
-            ``fn``'s output is named, that bare value is mapped onto
-            ``primary_names`` (below) rather than silently discarded as
-            "present on only one side" -- which used to make every real name
-            count as "missing from eager_fn" and get measured only via the
-            eager-fallback (jit-vs-itself) leg, never against the actual
-            independent oracle the caller supplied (finding 2, 260914 code
-            review round 5).
+            Every other shape (bare vs. named, named-but-mismatched, ...)
+            is resolved by ``_resolve_oracle_by_name`` -- see its docstring
+            for the full rule set. In particular, an oracle name that is
+            not one of ``fn``'s own top-level output names now RAISES
+            rather than being silently discarded as "present on only one
+            side" (round 6 finding 1, 260914 code review) -- that used to
+            leave the mismatched name completely unmeasured while every
+            real name fell back to the jit-vs-itself leg and reported a
+            spurious pass.
         primary_names: The top-level name(s) of ``fn``'s output that a bare
             (unnamed) ``eager_fn`` return value corresponds to -- normally
             ``probe_deps``'s DAG sinks (see ``_sink_names``), which is what
@@ -792,44 +915,29 @@ def r2a_fusion(
         float leaf found; integer/bool leaves are absent (section 3.2:
         calibration applies to float leaves only). ``passed`` is ``False``
         when any leaf comparison itself FAILED (a shape/dtype mismatch
-        between ``eager_fn`` and ``fn``'s jit'd output) -- that is a
-        structural error, knowable right here, not a magnitude this rung
-        judges (finding 3, 260914 code review round 5); it is still ``True``
-        whenever every leaf compared successfully, even for a leaf whose
-        divergence a later rung's calibrated budget would find excessive --
-        R2a itself never judges a float leaf's magnitude (section 6.0).
+        between ``eager_fn`` and ``fn``'s jit'd output; finding 3, 260914
+        code review round 5) or when a leaf's measured divergence is
+        non-finite (round 6 finding 3, 260914 code review -- an unbounded
+        eager-vs-jit divergence is a real divergence, not fusion
+        sensitivity to calibrate a budget against, and ``budget_leaf`` would
+        otherwise turn it into an infinite tolerance). Both are structural
+        problems knowable right here, not a magnitude this rung judges; it
+        is still ``True`` whenever every leaf compared successfully with a
+        finite measurement, even for a leaf whose divergence a later rung's
+        calibrated budget would find excessive -- R2a itself never judges a
+        float leaf's magnitude (section 6.0).
     """
     callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     eager_result = eager_fn(concrete_inputs)
     jit_result = jax.jit(callable_)(*concrete_inputs)
 
-    eager_by_name = dict(_top_level_items(eager_result))
     jit_by_name = _top_level_items(jit_result)
-
-    # `eager_fn`'s contract (see the docstring's `eager_fn`/`primary_names`
-    # note) is a bare value only when `fn`'s own output is ALSO bare -- a
-    # dict/NamedTuple `fn` output with a bare `eager_fn` is a structural
-    # mismatch, not "no probes to worry about". Left alone, every real name
-    # would count as "missing from eager_fn" below and get measured only
-    # against the jit-vs-itself fallback, silently discarding the only
-    # independent oracle in the whole rung (finding 2, 260914 code review
-    # round 5) -- including for the model's own TRUE output, not just its
-    # probes. Map the bare value onto the declared primary (sink) name(s)
-    # instead, so it is actually used as `primary_names`'s oracle.
-    eager_is_bare = set(eager_by_name) == {""}
-    jit_is_named = set(jit_by_name) != {""}
-    if eager_is_bare and jit_is_named:
-        if len(primary_names) != 1:
-            msg = (
-                f"eager_fn returned a bare (unnamed) value, but fn's output "
-                f"is named ({sorted(jit_by_name)}) and primary_names does "
-                f"not identify exactly one output to map it to (got "
-                f"{sorted(primary_names)}); the independent oracle cannot "
-                f"be matched to fn's outputs without this."
-            )
-            raise ValueError(msg)
-        (primary_name,) = primary_names
-        eager_by_name[primary_name] = eager_by_name.pop("")
+    # Every oracle shape (bare, subset-of-names, exact-names, a mismatched
+    # name, float64 NumPy, ...) routes through this one boundary -- see its
+    # own docstring (round 6, 260914 code review: three prior rounds each
+    # patched a single case here and each patch left the next one open).
+    # Raises rather than silently dropping an unmatched oracle name.
+    eager_by_name = _resolve_oracle_by_name(eager_result, jit_by_name, primary_names)
 
     # `eager_fn` is documented as "the model applied directly" (section 5.1)
     # -- a real caller's oracle normally covers only the model's own true
@@ -891,6 +999,25 @@ def r2a_fusion(
                 continue
             if leaf.dtype_class == "float":
                 m_leaf = float(leaf.metrics.get("max_ulp_diff", 0.0))
+                if not math.isfinite(m_leaf):
+                    # A non-finite `m_leaf` (e.g. `+finfo.max` eager vs
+                    # `-finfo.max` jit) is a genuine unbounded divergence,
+                    # not fusion sensitivity to calibrate a budget against
+                    # (round 6 finding 3, 260914 code review): `budget_leaf`
+                    # would otherwise return `inf`, granting this leaf
+                    # unconditional tolerance forever after. Recorded as a
+                    # failed measurement -- same treatment as a shape/dtype
+                    # FAILED leaf just above, and for the same reason: R2a
+                    # cannot produce a complete, trustworthy budget map for
+                    # this input class, so it must not report passed=True
+                    # with an incomplete one.
+                    notes.append(
+                        f"{key}: m_leaf={m_leaf!r} ULP is non-finite -- no "
+                        f"bounded budget can be derived; recorded as a "
+                        f"failed measurement, not an infinite tolerance"
+                    )
+                    any_leaf_failed = True
+                    continue
                 budget = budget_leaf(m_leaf)
                 budgets[key] = budget
                 notes.append(f"{key}: m_leaf={m_leaf:.6g} ULP -> budget={budget:.6g} ULP")
@@ -943,7 +1070,11 @@ def r2b_lowering(
         in_contract: AC-17 label.
 
     Returns:
-        A ``RingResult`` for ``"R2b"``.
+        A ``RingResult`` for ``"R2b"``. ``passed`` is ``False`` when any
+        leaf comparison itself FAILED (a shape/dtype mismatch between the
+        ``jit`` and IREE legs) -- consistent with R2a and R1, which treat
+        the identical condition the same way (round 6 finding 4, 260914
+        code review).
     """
     callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
@@ -956,7 +1087,10 @@ def r2b_lowering(
     leaves_by_name = _compare_by_name(jit_result, iree_structured)
     return RingResult(
         ring="R2b",
-        passed=True,
+        # See R1's identical comment (round 6 finding 4): a structurally
+        # FAILED leaf must fail this ring, not just appear as a "FAILED"
+        # string buried in `notes`.
+        passed=not _any_leaf_failed(leaves_by_name),
         input_class=input_class,
         in_contract=in_contract,
         probes=(),

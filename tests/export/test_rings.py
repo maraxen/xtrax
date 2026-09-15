@@ -442,6 +442,43 @@ class TestR1TargetIsa:
         assert result.probes == ()
         assert any("x86-64-v2" in n for n in result.notes)
 
+    def test_a_structurally_failed_leaf_fails_r1_not_just_the_note(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """ROUND 6 finding 4: R2a already reports ``passed=False`` over a
+        FAILED leaf (a shape/dtype mismatch). R1 used to report
+        ``passed=True`` over the identical condition, with the only sign a
+        "FAILED" string buried in ``notes``.
+        """
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(
+                path=Path(f"/fake/{target.name}.vmfb")
+            ),
+        )
+        v2 = rings._X86_64_V2_FEATURE_STRING
+
+        def fake_features(path: Path) -> str:
+            return {"native.vmfb": v2 + ",+avx2", "native-portable.vmfb": v2}[path.name]
+
+        monkeypatch.setattr(rings, "_read_cpu_features", fake_features)
+
+        def fake_run(path: Path, *args, function="main"):
+            if path.name == "native.vmfb":
+                return jnp.ones((4, 2), dtype=jnp.float32)
+            return jnp.ones((4, 3), dtype=jnp.float32)  # shape mismatch
+
+        monkeypatch.setattr(rings, "run_native_vmfb", fake_run)
+
+        result = rings.r1_target_isa(_bare_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+        assert result.ring == "R1"
+        assert result.passed is False, (
+            "a structurally FAILED leaf (shape mismatch) must fail R1, not "
+            "just appear as a 'FAILED' string buried in notes"
+        )
+        assert any("FAILED" in n for n in result.notes)
+
 
 # ---------------------------------------------------------------------------
 # T5 -- R2a fusion + section 3.2 budget derivation
@@ -599,6 +636,331 @@ class TestR2aFusionUnbudgetedFailedLeaf:
         assert "" not in budgets
 
 
+class TestR2aFusionOracleNameMismatch:
+    """ROUND 6 finding 1: an oracle whose names don't match ``fn``'s outputs
+    must not be silently discarded via the "present on only one side" skip
+    -- that used to measure every real name jit-vs-itself and report a
+    spurious pass while the independent oracle went completely unused.
+    """
+
+    def test_mismatched_oracle_name_raises_naming_both_sides(
+        self, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        def eager_fn(inputs):
+            (arr,) = inputs
+            # Named, but NEITHER name fn actually produces ("probe1",
+            # "final") -- and offset by +100.0 so a silent jit-vs-itself
+            # fallback would be trivially distinguishable from using this.
+            return {"out": jnp.stack([arr[i] + 100.0 for i in range(arr.shape[0])])}
+
+        with pytest.raises(ValueError) as excinfo:
+            rings.r2a_fusion(
+                _named_fn,
+                toy_plan,
+                toy_abstract_inputs,
+                (toy_xs,),
+                eager_fn=eager_fn,
+                primary_names=frozenset({"final"}),
+            )
+        msg = str(excinfo.value)
+        assert "out" in msg, "the unmatched oracle name must be named in the error"
+        assert "final" in msg and "probe1" in msg, (
+            "fn's actual output names must be listed so the mismatch is obvious"
+        )
+
+
+class TestRunLadderR2aOracleNameMismatchSkipsR3Visibly:
+    """ROUND 6 finding 1, at the ``run_ladder`` level: the raise from
+    ``r2a_fusion`` is Layer 2 (runtime -- calling ``eager_fn`` requires
+    actually running it), so ``run_ladder`` must catch it, record it loudly
+    in R2a's own notes, and skip R3 -- never raise it up and discard every
+    other result already produced.
+    """
+
+    def test_r2a_fails_visibly_and_r3_is_skipped_not_invoked(
+        self, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        def eager_fn(inputs):
+            (arr,) = inputs
+            return {"out": jnp.stack([arr[i] + 100.0 for i in range(arr.shape[0])])}
+
+        # Record calls in a list -- NEVER raise from a rung sentinel.
+        # `run_ladder`'s Layer 2 catches `Exception` (including
+        # `AssertionError`) around each rung call, so a raising sentinel is
+        # silently swallowed into a note and can never fail this test (the
+        # exact trap the previous round's vacuous test fell into).
+        calls: list[str] = []
+
+        def fake_validate(*_args, **_kwargs):
+            calls.append("validate")
+
+        def make_ring(name):
+            def _fn(*_args, **kwargs):
+                calls.append(name)
+                return d.RingResult(
+                    ring=name,
+                    passed=True,
+                    input_class=kwargs["input_class"],
+                    in_contract=kwargs["in_contract"],
+                    probes=(),
+                    notes=(),
+                )
+
+            return _fn
+
+        def fake_r3(*_args, **kwargs):
+            calls.append("R3")
+            return d.RingResult(
+                ring="R3",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+
+        results = rings.run_ladder(
+            _named_fn,
+            plan=toy_plan,
+            abstract_inputs=toy_abstract_inputs,
+            concrete_inputs=(toy_xs,),
+            probe_deps=_NAMED_PROBE_DEPS,
+            eager_fn=eager_fn,
+            validate_fn=fake_validate,
+            r0=make_ring("R0"),
+            r1=make_ring("R1"),
+            r2b=make_ring("R2b"),
+            r3=fake_r3,
+        )
+
+        r2a_result = next(r for r in results if r.ring == "R2a")
+        assert r2a_result.passed is False
+        assert any("out" in n and "raised" in n for n in r2a_result.notes)
+
+        r3_result = next(r for r in results if r.ring == "R3")
+        assert r3_result.passed is False
+        assert any("R2a did not pass" in n for n in r3_result.notes)
+        assert "R3" not in calls, "R3 must not run when R2a's oracle names are mismatched"
+
+
+class TestR2aFusionFloat64Oracle:
+    """ROUND 6 finding 2: ``parity.compare`` coerces its reference via
+    ``np.asarray(jnp.asarray(expected))`` -- narrowing float64 to float32
+    under this build's disabled x64. ``compare_pytree``'s own leaf coercion
+    does not go through ``jnp`` at all, so a raw float64 NumPy oracle used
+    to read as a dtype mismatch on EVERY leaf, failing R2a entirely.
+    """
+
+    def test_float64_numpy_oracle_is_coerced_not_rejected(
+        self, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        def eager_fn(inputs):
+            (arr,) = inputs
+            # A real caller's oracle: numerically correct, plain NumPy
+            # float64 -- NOT pre-narrowed to float32 by the caller.
+            return np.asarray(arr, dtype=np.float64) + 1.0
+
+        result, budgets = rings.r2a_fusion(
+            _bare_fn, toy_plan, toy_abstract_inputs, (toy_xs,), eager_fn=eager_fn
+        )
+        assert result.passed is True, result.notes
+        assert not any("FAILED" in n for n in result.notes)
+        assert "" in budgets
+        assert budgets[""] == pytest.approx(d.ULP_FLOOR)
+
+
+class TestRunLadderR2aFloat64OracleDoesNotSkipR3:
+    """ROUND 6 finding 2, at the ``run_ladder`` level -- the regression the
+    orchestrator chain introduced: R2a `passed=False` on every leaf of a
+    correct float64 oracle used to disable R3 for the ENTIRE input class.
+    Proven closed at the ladder level, not only inside R2a.
+    """
+
+    def test_r3_runs_when_r2a_oracle_is_float64_numpy(self, toy_plan, toy_xs, toy_abstract_inputs):
+        def eager_fn(inputs):
+            (arr,) = inputs
+            return np.asarray(arr, dtype=np.float64) + 1.0
+
+        # Record calls in a list -- never raise from a rung sentinel (see
+        # TestRunLadderR2aOracleNameMismatchSkipsR3Visibly's docstring).
+        calls: list[str] = []
+
+        def fake_validate(*_args, **_kwargs):
+            calls.append("validate")
+
+        def make_ring(name):
+            def _fn(*_args, **kwargs):
+                calls.append(name)
+                return d.RingResult(
+                    ring=name,
+                    passed=True,
+                    input_class=kwargs["input_class"],
+                    in_contract=kwargs["in_contract"],
+                    probes=(),
+                    notes=(),
+                )
+
+            return _fn
+
+        def fake_r3(*_args, **kwargs):
+            calls.append("R3")
+            return d.RingResult(
+                ring="R3",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+
+        results = rings.run_ladder(
+            _bare_fn,
+            plan=toy_plan,
+            abstract_inputs=toy_abstract_inputs,
+            concrete_inputs=(toy_xs,),
+            probe_deps={},
+            eager_fn=eager_fn,
+            validate_fn=fake_validate,
+            r0=make_ring("R0"),
+            r1=make_ring("R1"),
+            r2b=make_ring("R2b"),
+            r3=fake_r3,
+        )
+
+        r2a_result = next(r for r in results if r.ring == "R2a")
+        assert r2a_result.passed is True, r2a_result.notes
+        assert "R3" in calls, (
+            "R3 must run when R2a's oracle is a correct float64 NumPy array -- "
+            "not be skipped because compare_pytree read a dtype mismatch on "
+            "every leaf (round 6 finding 2)"
+        )
+
+
+class TestR2aFusionNonFiniteMeasurement:
+    """ROUND 6 finding 3: a non-finite ``m_leaf`` (eager ``+finfo.max`` vs
+    jit ``-finfo.max``) must not become an infinite budget -- that would
+    grant this leaf unconditional tolerance forever after, not calibrate
+    against genuine fusion sensitivity.
+    """
+
+    def test_infinite_ulp_distance_does_not_produce_an_infinite_budget(
+        self, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        fmax = float(np.finfo(np.float32).max)
+
+        def neg_max_fn(x):
+            return -jnp.full_like(x, fmax)
+
+        def eager_fn(inputs):
+            (arr,) = inputs
+            return jnp.full(arr.shape, fmax, dtype=jnp.float32)
+
+        result, budgets = rings.r2a_fusion(
+            neg_max_fn, toy_plan, toy_abstract_inputs, (toy_xs,), eager_fn=eager_fn
+        )
+        assert not budgets, (
+            f"a non-finite measurement must not be granted a budget at all -- got {budgets}"
+        )
+        assert result.passed is False, (
+            "R2a cannot produce a complete, trustworthy budget map when a "
+            "leaf's divergence is unbounded; it must report the failure, "
+            "not silently grant infinite tolerance"
+        )
+        assert any("non-finite" in n for n in result.notes)
+
+
+class TestResolveOracleByNameInvariant:
+    """ROUND 6 structural fix: every oracle shape must either have every
+    leaf reach ``compare_pytree`` or make ``_resolve_oracle_by_name`` raise
+    -- never silently drop a name. Analogue of the ULP metric invariant
+    sweep: point fixes for bare/named-mismatch/float64 each left the next
+    case open, so this tests the one boundary they were replaced by,
+    directly, across every oracle shape at once.
+    """
+
+    @pytest.mark.parametrize(
+        "eager_result, jit_by_name, primary_names",
+        [
+            pytest.param(jnp.ones((2,)), {"": jnp.zeros((2,))}, frozenset(), id="bare-bare"),
+            pytest.param(
+                jnp.ones((2,)),
+                {"probe1": jnp.zeros((2,)), "final": jnp.zeros((2,))},
+                frozenset({"final"}),
+                id="bare-onto-named-primary",
+            ),
+            pytest.param(
+                {"final": jnp.ones((2,))},
+                {"probe1": jnp.zeros((2,)), "final": jnp.zeros((2,))},
+                frozenset({"final"}),
+                id="subset-of-names",
+            ),
+            pytest.param(
+                {"probe1": jnp.ones((2,)), "final": jnp.ones((2,))},
+                {"probe1": jnp.zeros((2,)), "final": jnp.zeros((2,))},
+                frozenset({"final"}),
+                id="exact-names",
+            ),
+            pytest.param(
+                {"final": np.ones((2,), dtype=np.float64)},
+                {"probe1": jnp.zeros((2,)), "final": jnp.zeros((2,))},
+                frozenset({"final"}),
+                id="float64-numpy",
+            ),
+            pytest.param(
+                {"final": jnp.ones((2,), dtype=jnp.float32)},
+                {"probe1": jnp.zeros((2,)), "final": jnp.zeros((2,))},
+                frozenset({"final"}),
+                id="float32-jax",
+            ),
+            pytest.param(
+                {"final": (jnp.ones((2,)), jnp.zeros((2,)))},
+                {"probe1": jnp.zeros((2,)), "final": jnp.zeros((2,))},
+                frozenset({"final"}),
+                id="nested-pytree-value",
+            ),
+            pytest.param(
+                {"final": jnp.ones((2,), dtype=jnp.bfloat16)},
+                {"probe1": jnp.zeros((2,)), "final": jnp.zeros((2,), dtype=jnp.bfloat16)},
+                frozenset({"final"}),
+                id="bfloat16",
+            ),
+            pytest.param(
+                {"final": jnp.ones((2,)), "probe1": jnp.zeros((2,)), "extra": jnp.ones((2,))},
+                {"probe1": jnp.zeros((2,)), "final": jnp.zeros((2,))},
+                frozenset({"final"}),
+                id="extra-unmatched-name-must-raise",
+            ),
+        ],
+    )
+    def test_every_oracle_leaf_reaches_the_boundary_or_it_raises(
+        self, eager_result, jit_by_name, primary_names
+    ):
+        raw_oracle_names = set(rings._top_level_items(eager_result))
+        if raw_oracle_names == {""} and set(jit_by_name) != {""}:
+            expected_names = set(primary_names) if len(primary_names) == 1 else None
+        else:
+            expected_names = raw_oracle_names
+
+        try:
+            resolved = rings._resolve_oracle_by_name(eager_result, jit_by_name, primary_names)
+        except ValueError:
+            return  # raising is an acceptable outcome -- never a silent drop
+
+        assert expected_names is not None
+        assert set(resolved) == expected_names, (
+            "every oracle-declared name must reach the boundary unchanged; "
+            f"got {set(resolved)}, expected {expected_names}"
+        )
+
+    def test_mismatched_name_raises_rather_than_drops(self):
+        with pytest.raises(ValueError, match="final"):
+            rings._resolve_oracle_by_name(
+                {"out": jnp.ones((2,))},
+                {"probe1": jnp.zeros((2,)), "final": jnp.zeros((2,))},
+                frozenset({"final"}),
+            )
+
+
 # ---------------------------------------------------------------------------
 # T5 -- R2b lowering
 # ---------------------------------------------------------------------------
@@ -623,6 +985,32 @@ class TestR2bLowering:
         assert result.passed is True
         assert result.probes == ()
         assert len(result.notes) == 1
+
+    def test_a_structurally_failed_leaf_fails_r2b_not_just_the_note(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """ROUND 6 finding 4: see ``TestR1TargetIsa``'s identically-named
+        test's docstring -- same inconsistency, same fix.
+        """
+        fake_path = Path("/fake/r2b.vmfb")
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(path=fake_path),
+        )
+        monkeypatch.setattr(
+            rings,
+            "run_native_vmfb",
+            lambda path, *a, function="main": jnp.zeros((4, 3), dtype=jnp.float32),
+        )
+
+        result = rings.r2b_lowering(_bare_fn, toy_plan, toy_abstract_inputs, (toy_xs,), budgets={})
+        assert result.ring == "R2b"
+        assert result.passed is False, (
+            "a structurally FAILED leaf (shape mismatch) must fail R2b, not "
+            "just appear as a 'FAILED' string buried in notes"
+        )
+        assert any("FAILED" in n for n in result.notes)
 
 
 # ---------------------------------------------------------------------------
