@@ -65,9 +65,9 @@ from xtrax.export.compile import compile_for_target, run_native_vmfb
 from xtrax.export.composer import build_traceable_callable
 from xtrax.export.divergence import (
     LeafDivergence,
-    MissingBudgetError,
     ProbeReport,
     RingResult,
+    _unbudgeted_probes,
     budget_key,
     budget_leaf,
     classify_probes,
@@ -639,6 +639,11 @@ def _classify_rung_probes(
     ``classify_probes`` reports in ``probes`` from those same leaves. It never
     re-runs ``fn`` and never changes which leaves were compared.
 
+    Classification is **per probe** (260915 code review): one probe with a
+    diverged float leaf and no calibrated budget for it must not erase every
+    other probe's class. Only that probe, and any probe that transitively
+    depends on it, is omitted -- everything else is classified normally.
+
     Args:
         ring: The calling rung's name (``"R1"`` or ``"R2b"``), used only to
             label a "not classified" note.
@@ -655,27 +660,29 @@ def _classify_rung_probes(
         unchanged from before revision 6, so a direct call to either rung
         without ``probe_deps`` keeps its existing behaviour exactly.
 
-        ``((), (note,))`` when classification could not run at all:
+        ``((), (note,))`` when a declared probe name (``_probe_iteration_order
+        (probe_deps)``, the same declaration-then-sorted order R3 uses) is
+        absent from ``leaves_by_name`` -- this rung's own comparison never
+        produced a leaf set for it, so there is nothing to classify at all.
+        Not raised: ``run_ladder``'s Layer 1 ``_default_validate`` already
+        rejects a ``probe_deps`` name absent from ``fn``'s own output before
+        any rung runs, so a name reaching here missing from
+        ``leaves_by_name`` is not that failure mode, and raising here would
+        be caught by Layer 2 and lose this rung's other notes.
 
-        - A declared probe name (``_probe_iteration_order(probe_deps)``,
-          the same declaration-then-sorted order R3 uses) is absent from
-          ``leaves_by_name`` -- this rung's own comparison never produced a
-          leaf set for it, so there is nothing to classify. Not raised:
-          ``run_ladder``'s Layer 1 ``_default_validate`` already rejects a
-          ``probe_deps`` name absent from ``fn``'s own output before any
-          rung runs, so a name reaching here missing from ``leaves_by_name``
-          is not that failure mode, and raising here would be caught by
-          Layer 2 and lose this rung's other notes.
-        - ``classify_probes`` raises ``MissingBudgetError`` -- a diverged
-          float leaf has no calibrated budget (typically because R2a itself
-          did not pass for this input class; see R2a's own notes for why).
-          Only ``MissingBudgetError`` is caught; a ``ValueError`` from a
-          cyclic or unknown probe name is a declaration error that
-          ``run_ladder``'s Layer 1 preflight (``_default_validate``) already
-          rejects before any rung runs, so it is allowed to propagate here
-          rather than being silently downgraded to a note.
-
-        Otherwise, ``(probes, ())`` -- one ``ProbeReport`` per declared name.
+        Otherwise, ``(probes, notes)``: ``probes`` holds one ``ProbeReport``
+        per **classifiable** declared probe, in declaration order. A probe is
+        excluded from ``probes`` iff it has a diverged float leaf with no
+        entry in ``budgets`` for it (per :func:`_unbudgeted_probes`), or it
+        transitively depends -- via a declared ``probe_deps`` edge -- on a
+        probe that is excluded for either reason; every other declared probe
+        is classified. When any probe is excluded, ``notes`` names the
+        unbudgeted probes and (when non-empty) their dependents; a
+        cyclic or unknown probe name in ``probe_deps`` is a declaration error
+        that ``run_ladder``'s Layer 1 preflight (``_default_validate``)
+        already rejects before any rung runs, so ``classify_probes`` raising
+        ``ValueError`` for either is allowed to propagate here rather than
+        being silently downgraded to a note.
     """
     if probe_deps is None:
         return (), ()
@@ -691,18 +698,55 @@ def _classify_rung_probes(
         return (), (note,)
 
     resolved_budgets: Mapping[str, float] = budgets if budgets is not None else {}
-    try:
-        probes = classify_probes(
-            {name: leaves_by_name[name] for name in names}, probe_deps, resolved_budgets
-        )
-    except MissingBudgetError as exc:
+    named = {name: leaves_by_name[name] for name in names}
+    unbudgeted = _unbudgeted_probes(named, resolved_budgets)
+
+    # A descendant of an unbudgeted probe cannot itself be honestly
+    # classified: its class depends on `max_pred_severity`, which is
+    # unresolved for an unbudgeted predecessor (its float leaf could still
+    # land WITHIN_BUDGET or BEYOND_BUDGET once a real budget exists) -- so
+    # e.g. AMPLIFIED vs ATTENUATED is undecidable. Grown to a fixpoint over
+    # `probe_deps`'s declared edges, since a blocked probe can itself have
+    # further descendants.
+    blocked = set(unbudgeted)
+    changed = True
+    while changed:
+        changed = False
+        for name in names:
+            if name in blocked:
+                continue
+            if any(pred in blocked for pred in probe_deps.get(name, ())):
+                blocked.add(name)
+                changed = True
+
+    classifiable = [name for name in names if name not in blocked]
+    classifiable_set = set(classifiable)
+    # Every predecessor of a classifiable probe is itself classifiable, by
+    # construction of `blocked` above -- `sub_deps` never references a name
+    # missing from `classifiable`.
+    sub_deps = {k: v for k, v in probe_deps.items() if k in classifiable_set}
+    probes = (
+        classify_probes({name: named[name] for name in classifiable}, sub_deps, resolved_budgets)
+        if classifiable
+        else ()
+    )
+
+    notes: tuple[str, ...] = ()
+    if blocked:
+        dependents = sorted(blocked - unbudgeted)
         note = (
-            f"{ring} probes not classified: {exc}. R2a produced no budget for "
-            f"that leaf (see R2a's notes), so float severity cannot be "
-            f"resolved."
+            f"{ring} probes not classified: {sorted(unbudgeted)} have a diverged "
+            f"float leaf with no R2a budget (see R2a's notes)"
         )
-        return (), (note,)
-    return probes, ()
+        if dependents:
+            note += (
+                f"; {dependents} depend on them, so their class against an "
+                f"unresolved predecessor severity is undecidable"
+            )
+        note += ". Every other probe is classified."
+        notes = (note,)
+
+    return probes, notes
 
 
 def r1_target_isa(
@@ -754,8 +798,11 @@ def r1_target_isa(
             (section 3.2: a fusion-sensitivity budget is not a bound on
             ISA-dependent codegen). Included in ``notes`` where a matching
             key exists, and consulted when classifying a diverged float leaf
-            in ``probes`` (a leaf with no matching budget is reported
-            unclassified, not defaulted).
+            in ``probes``: a probe with such a leaf and no matching budget,
+            and any probe that transitively depends on it, is omitted from
+            ``probes`` and named in a note -- every other declared probe is
+            still classified (260915 code review; see
+            ``_classify_rung_probes``).
         probe_deps: The declared probe DAG (section 5.3), or ``None`` (the
             default) to skip classification entirely -- ``probes`` is then
             ``()``, unchanged from before revision 6. When given, every
@@ -770,11 +817,12 @@ def r1_target_isa(
 
     Returns:
         A ``RingResult`` for ``"R1"``. ``probes`` holds one ``ProbeReport``
-        per ``probe_deps`` entry when classification ran, else ``()`` --
-        see ``passed``'s note above and ``_classify_rung_probes`` for when
-        classification is skipped (no ``probe_deps``) or fails advisorily
-        (a name absent from this rung's own leaves, or a diverged float leaf
-        with no matching budget).
+        per classifiable declared name when classification ran, in
+        declaration order -- see ``passed``'s note above and
+        ``_classify_rung_probes`` for when classification is skipped
+        entirely (no ``probe_deps``, or a name absent from this rung's own
+        leaves) versus per-probe (a diverged float leaf with no matching
+        budget omits that probe and its dependents, not every probe).
     """
     callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
@@ -1206,6 +1254,11 @@ def r2b_lowering(
         abstract_inputs: Abstract inputs to trace with.
         concrete_inputs: Concrete inputs to run both legs with.
         budgets: Per-leaf budgets from R2a for this ``(model, input_class)``.
+            A probe with a diverged float leaf and no matching budget, and
+            any probe that transitively depends on it, is omitted from
+            ``probes`` and named in a note -- every other declared probe is
+            still classified (260915 code review; see
+            ``_classify_rung_probes``).
         probe_deps: The declared probe DAG (section 5.3), or ``None`` (the
             default) to skip classification entirely -- ``probes`` is then
             ``()``, unchanged from before revision 6. When given, every
@@ -1220,11 +1273,12 @@ def r2b_lowering(
 
     Returns:
         A ``RingResult`` for ``"R2b"``. ``probes`` holds one ``ProbeReport``
-        per ``probe_deps`` entry when classification ran, else ``()`` -- see
-        ``passed``'s note above and ``_classify_rung_probes`` for when
-        classification is skipped (no ``probe_deps``) or fails advisorily
-        (a name absent from this rung's own leaves, or a diverged float leaf
-        with no matching budget).
+        per classifiable declared name when classification ran, in
+        declaration order -- see ``passed``'s note above and
+        ``_classify_rung_probes`` for when classification is skipped
+        entirely (no ``probe_deps``, or a name absent from this rung's own
+        leaves) versus per-probe (a diverged float leaf with no matching
+        budget omits that probe and its dependents, not every probe).
     """
     callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
@@ -1988,8 +2042,11 @@ def run_ladder(
         # runs or compares, only what `probes` reports from leaves each rung
         # already computes for its own `passed`. `budgets` is still advisory
         # for both (a fusion/lowering budget is not authoritative here) --
-        # they still run and classify below when it is complete for a given
-        # leaf, and record an unclassified note (not a raise) when it is not.
+        # they still run and classify below, per probe (260915 code review):
+        # a probe whose own diverged float leaf has no matching budget, and
+        # any probe that transitively depends on it, is omitted and named in
+        # a note (never a raise); every OTHER declared probe is still
+        # classified normally.
         try:
             r1_result = r1(fn, plan, ai, ci, budgets=budgets, probe_deps=probe_deps, **common)
         except Exception as exc:  # noqa: BLE001 - Layer 2, see docstring
@@ -2025,8 +2082,10 @@ def run_ladder(
         # jit). Either way R3 would only surface a downstream MissingBudgetError
         # on the unbudgeted leaf, recorded against R3 and hiding R2a as the real
         # cause. R1 and R2b treat budgets as advisory, so they still run and
-        # classify above whenever a leaf's own budget is complete, recording
-        # an unclassified note (never a raise) for any that is not.
+        # classify above per probe (260915 code review): a probe with an
+        # unbudgeted diverged float leaf, and its dependents, are omitted and
+        # named in a note (never a raise); every other declared probe is
+        # still classified.
         if not r2a_result.passed:
             r3_result = RingResult(
                 ring="R3",

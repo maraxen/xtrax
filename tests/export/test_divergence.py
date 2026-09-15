@@ -1369,3 +1369,96 @@ class TestSeverityOrdering:
             "ATTENUATED",
             "CLEAN",
         }
+
+
+# --------------------------------------------------------------------------
+# 260915 code review: _unbudgeted_probes / _leaf_needs_budget -- the shared
+# predicate that lets rings.py's `_classify_rung_probes` drop only the
+# probe(s) actually missing a budget instead of the whole rung's `probes`.
+# --------------------------------------------------------------------------
+
+
+class TestUnbudgetedProbes:
+    def test_diverged_float_without_budget_is_included(self):
+        probes = {"probe": (_float_leaf(severity=d.Severity.BEYOND_BUDGET, max_ulp_diff=10.0),)}
+        assert d._unbudgeted_probes(probes, budgets={}) == frozenset({"probe"})
+
+    def test_diverged_float_with_matching_budget_is_excluded(self):
+        probes = {"probe": (_float_leaf(severity=d.Severity.BEYOND_BUDGET, max_ulp_diff=10.0),)}
+        assert d._unbudgeted_probes(probes, budgets={"probe": 4.0}) == frozenset()
+
+    def test_identical_float_without_budget_is_excluded(self):
+        """Bit-identity is a measured fact, not something a budget defaults --
+        same reasoning as `_resolve_leaf_severity`'s own early return.
+        """
+        probes = {"probe": (_float_leaf(severity=d.Severity.IDENTICAL),)}
+        assert d._unbudgeted_probes(probes, budgets={}) == frozenset()
+
+    def test_failed_float_leaf_without_budget_is_excluded(self):
+        """A structurally FAILED leaf never had an element-wise comparison
+        run, so SS3.2 gives it no budget to apply -- same as
+        `_resolve_leaf_severity`'s `leaf.failed` guard.
+        """
+        probes = {"probe": (_failed_leaf("float"),)}
+        assert d._unbudgeted_probes(probes, budgets={}) == frozenset()
+
+    def test_diverged_integer_without_budget_is_excluded(self):
+        """SS3.2: the discrete criterion is exact-match with no budget, ever."""
+        probes = {"probe": (_int_leaf(mismatched=True),)}
+        assert d._unbudgeted_probes(probes, budgets={}) == frozenset()
+
+    def test_nested_leaf_path_is_honoured_via_budget_key(self):
+        leaf = _float_leaf(severity=d.Severity.BEYOND_BUDGET, max_ulp_diff=10.0, path="['weights']")
+        probes = {"probe": (leaf,)}
+        # A budget keyed on the bare probe name (wrong key for a nested leaf)
+        # does not satisfy this leaf's actual `budget_key("probe",
+        # "['weights']")` key -- still reported unbudgeted.
+        assert d._unbudgeted_probes(probes, budgets={"probe": 4.0}) == frozenset({"probe"})
+        # Keyed correctly via `budget_key`, the same leaf is satisfied.
+        correct_key = d.budget_key("probe", "['weights']")
+        assert d._unbudgeted_probes(probes, budgets={correct_key: 4.0}) == frozenset()
+
+    def test_multiple_probes_only_the_unbudgeted_one_is_reported(self):
+        probes = {
+            "clean": (_float_leaf(severity=d.Severity.IDENTICAL),),
+            "unbudgeted": (_float_leaf(severity=d.Severity.BEYOND_BUDGET, max_ulp_diff=10.0),),
+            "budgeted": (_float_leaf(severity=d.Severity.BEYOND_BUDGET, max_ulp_diff=1.0),),
+        }
+        budgets = {"budgeted": 4.0}
+        assert d._unbudgeted_probes(probes, budgets) == frozenset({"unbudgeted"})
+
+
+class TestLeafNeedsBudgetParity:
+    """Pins the shared-predicate invariant: `_resolve_leaf_severity` and
+    `_unbudgeted_probes` must never disagree on which leaves require a
+    calibrated budget, since both are defined in terms of
+    `_leaf_needs_budget`.
+    """
+
+    @pytest.mark.parametrize(
+        "leaf",
+        [
+            _float_leaf(severity=d.Severity.BEYOND_BUDGET, max_ulp_diff=10.0),
+            _float_leaf(severity=d.Severity.IDENTICAL),
+            _failed_leaf("float"),
+            _int_leaf(mismatched=True),
+            _int_leaf(mismatched=False),
+            _float_leaf(severity=d.Severity.BEYOND_BUDGET, max_ulp_diff=10.0, path="['weights']"),
+        ],
+        ids=[
+            "diverged-float",
+            "identical-float",
+            "failed-float",
+            "diverged-integer",
+            "identical-integer",
+            "diverged-float-nested-path",
+        ],
+    )
+    def test_resolve_leaf_severity_raises_iff_leaf_needs_budget(self, leaf):
+        needs_budget = d._leaf_needs_budget(leaf)
+        if needs_budget:
+            with pytest.raises(d.MissingBudgetError):
+                d._resolve_leaf_severity("probe", leaf, budgets={})
+        else:
+            # Must not raise even though `budgets` is empty.
+            d._resolve_leaf_severity("probe", leaf, budgets={})

@@ -1246,36 +1246,47 @@ class TestR1AndR2bProbeClassification:
     def test_r2b_diverged_float_leaf_with_no_budget_is_reported_unclassified(
         self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
     ):
-        """A diverged FLOAT leaf with ``budgets={}`` must not raise -- it is
-        reported as unclassified (``probes == ()``, a note naming the
-        reason), and ``passed`` (structural) stays True.
+        """A diverged FLOAT probe with ``budgets={}`` must not raise -- it is
+        omitted from ``probes`` and named in a note, and ``passed``
+        (structural) stays True. 260915 code review: this must be PER PROBE,
+        not all-or-nothing -- an independent, budget-free sibling probe
+        (``probe1``, unperturbed and with no predecessor of its own) is still
+        classified even though ``final`` (which depends on it) is not.
         """
+        # `jax.tree_util` flattens dict-output pytrees in sorted-key order,
+        # so `_named_fn`'s `{"probe1": ..., "final": ...}` flattens as
+        # (final, probe1) -- confirmed directly, not assumed.
+        final_true, probe1_true = _flatten_for(_named_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+        final_perturbed = final_true + 1.0  # genuine (non-identical) float divergence
+
         fake_path = Path("/fake/r2b_unbudgeted.vmfb")
         monkeypatch.setattr(
             rings,
             "compile_for_target",
             lambda mlir, target, out_path=None: SimpleNamespace(path=fake_path),
         )
-        # `_bare_fn` returns `x + 1.0`; an all-zeros IREE leg is a genuine
-        # (non-identical) float divergence, which is exactly what needs a
-        # budget to classify.
         monkeypatch.setattr(
             rings,
             "run_native_vmfb",
-            lambda path, *a, function="main": jnp.zeros((4, 2), dtype=jnp.float32),
+            lambda path, *a, function="main": (final_perturbed, probe1_true),
         )
 
         result = rings.r2b_lowering(
-            _bare_fn,
+            _named_fn,
             toy_plan,
             toy_abstract_inputs,
             (toy_xs,),
             budgets={},
-            probe_deps={"": ()},
+            probe_deps=_NAMED_PROBE_DEPS,
         )
         assert result.passed is True, "passed is structural; an unbudgeted probe must not fail it"
-        assert result.probes == ()
-        assert any("probes not classified" in n for n in result.notes)
+        assert {p.name for p in result.probes} == {"probe1"}, (
+            "final is unbudgeted and omitted, but probe1 (no predecessor of "
+            "its own) does not depend on it and must still be classified"
+        )
+        probe1_report = next(p for p in result.probes if p.name == "probe1")
+        assert probe1_report.divergence_class == d.DivergenceClass.CLEAN
+        assert any("probes not classified" in n and "final" in n for n in result.notes)
 
     def test_r1_refusal_path_with_probe_deps_never_runs_the_legs(
         self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
@@ -1390,6 +1401,132 @@ class TestR1AndR2bProbeClassification:
         assert out_probe.divergence_class == d.DivergenceClass.ATTENUATED, (
             "a bit-identical (severity 0) leaf below a severity-2 predecessor is ATTENUATED"
         )
+
+    def test_r2b_unbudgeted_float_probe_does_not_suppress_independent_discrete_flip(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """260915 code review headline: one diverged float probe (``out``)
+        with no R2a budget must not erase every other probe's class. ``idx``
+        has no predecessor relationship to ``out`` (``out`` depends on
+        ``idx``, the reverse of what would be needed to block it), so its
+        DISCRETE_FLIP must survive ``out`` being unbudgeted -- the all-or-
+        nothing ``except MissingBudgetError`` this replaces would instead
+        have reported ``probes=()`` and ``passed=True``, silently dropping
+        the flipped index.
+        """
+        idx_true, out_true = _flatten_for(
+            _idx_and_float_fn, toy_plan, toy_abstract_inputs, (toy_xs,)
+        )
+        idx_corrupt = _flip_half(idx_true)
+        out_perturbed = out_true + 1.0  # genuine float divergence; no budget for it
+
+        fake_path = Path("/fake/r2b_unbudgeted_and_flip.vmfb")
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(path=fake_path),
+        )
+        monkeypatch.setattr(
+            rings,
+            "run_native_vmfb",
+            lambda path, *a, function="main": (idx_corrupt, out_perturbed),
+        )
+
+        result = rings.r2b_lowering(
+            _idx_and_float_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            budgets={},
+            probe_deps=_IDX_FLOAT_PROBE_DEPS,
+        )
+        assert result.passed is True, "passed is structural -- an unbudgeted probe must not fail it"
+        assert {p.name for p in result.probes} == {"idx"}, (
+            "out is unbudgeted and omitted, but idx does not depend on out "
+            "and must still be classified"
+        )
+        idx_probe = next(p for p in result.probes if p.name == "idx")
+        assert idx_probe.divergence_class == d.DivergenceClass.DISCRETE_FLIP
+        assert any("probes not classified" in n and "out" in n for n in result.notes)
+
+
+class TestClassifyRungProbesPerProbeUnbudgeted:
+    """Unit-level coverage of ``rings._classify_rung_probes``'s per-probe
+    blocking (260915 code review), with hand-built ``LeafDivergence`` tuples
+    -- no JAX trace, no fake compile/run.
+    """
+
+    def test_unbudgeted_probe_and_its_descendant_are_omitted_others_survive(self):
+        """``a`` (float, diverged, no budget) blocks itself and its
+        dependent ``b`` (b depends on a); ``c`` (an independent diverged
+        integer) and ``d`` (a budgeted, within-budget float) are unrelated
+        to ``a`` and must still be classified, in declaration order.
+        """
+        a_leaf = d.LeafDivergence(
+            path="",
+            dtype_class="float",
+            severity=d.Severity.BEYOND_BUDGET,
+            metrics={
+                "max_abs_diff": 1.0,
+                "max_rel_diff": 1.0,
+                "max_ulp_diff": 100.0,
+                "n_nonfinite_mismatch": 0.0,
+            },
+            failed=False,
+            message=None,
+        )
+        b_leaf = d.LeafDivergence(
+            path="",
+            dtype_class="integer",
+            severity=d.Severity.IDENTICAL,
+            metrics={
+                "exact_match_fraction": 1.0,
+                "first_mismatch_index": -1.0,
+                "n_mismatched": 0.0,
+            },
+            failed=False,
+            message=None,
+        )
+        c_leaf = d.LeafDivergence(
+            path="",
+            dtype_class="integer",
+            severity=d.Severity.BEYOND_BUDGET,
+            metrics={
+                "exact_match_fraction": 0.0,
+                "first_mismatch_index": 0.0,
+                "n_mismatched": 1.0,
+            },
+            failed=False,
+            message=None,
+        )
+        d_leaf = d.LeafDivergence(
+            path="",
+            dtype_class="float",
+            severity=d.Severity.BEYOND_BUDGET,
+            metrics={
+                "max_abs_diff": 0.01,
+                "max_rel_diff": 0.01,
+                "max_ulp_diff": 2.0,
+                "n_nonfinite_mismatch": 0.0,
+            },
+            failed=False,
+            message=None,
+        )
+        leaves_by_name = {"a": (a_leaf,), "b": (b_leaf,), "c": (c_leaf,), "d": (d_leaf,)}
+        probe_deps = {"a": (), "b": ("a",), "c": (), "d": ()}
+        budgets = {"d": d.ULP_FLOOR}  # 2.0 <= 4.0 -> WITHIN_BUDGET; a has no entry at all
+
+        probes, notes = rings._classify_rung_probes("R2b", leaves_by_name, probe_deps, budgets)
+
+        assert [p.name for p in probes] == ["c", "d"], (
+            "a is unbudgeted, b depends on a -- both omitted; c and d are "
+            "unrelated to a and must be classified, in declaration order"
+        )
+        c_report = next(p for p in probes if p.name == "c")
+        assert c_report.divergence_class == d.DivergenceClass.DISCRETE_FLIP
+        assert len(notes) == 1
+        assert "'a'" in notes[0], "note must name the unbudgeted probe"
+        assert "'b'" in notes[0], "note must name the dependent probe"
 
 
 class TestRunLadderForwardsProbeDepsToR1AndR2b:

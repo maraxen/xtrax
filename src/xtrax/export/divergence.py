@@ -604,6 +604,17 @@ def _topological_order(
     return order
 
 
+def _leaf_needs_budget(leaf: LeafDivergence) -> bool:
+    """True iff ``leaf`` is a non-identical float leaf that needs a
+    calibrated budget to resolve (SS3.2, SS6.0).
+
+    Shared by :func:`_resolve_leaf_severity` (its early-return guard) and
+    :func:`_unbudgeted_probes`, so the two can never drift apart on what
+    "needs a budget" means.
+    """
+    return not leaf.failed and leaf.dtype_class == "float" and leaf.severity != Severity.IDENTICAL
+
+
 def _resolve_leaf_severity(
     probe_name: str, leaf: LeafDivergence, budgets: Mapping[str, float]
 ) -> LeafDivergence:
@@ -616,7 +627,7 @@ def _resolve_leaf_severity(
     WITHIN_BUDGET vs BEYOND_BUDGET, and its absence from ``budgets`` is an
     error (SS6.0).
     """
-    if leaf.failed or leaf.dtype_class != "float" or leaf.severity == Severity.IDENTICAL:
+    if not _leaf_needs_budget(leaf):
         return leaf
 
     key = budget_key(probe_name, leaf.path)
@@ -635,6 +646,26 @@ def _resolve_leaf_severity(
     else:
         new_severity = Severity.BEYOND_BUDGET
     return dataclasses.replace(leaf, severity=new_severity)
+
+
+def _unbudgeted_probes(
+    probes: Mapping[str, tuple[LeafDivergence, ...]], budgets: Mapping[str, float]
+) -> frozenset[str]:
+    """Names in ``probes`` having any leaf that needs a budget it doesn't have.
+
+    A probe belongs to the result iff at least one of its leaves satisfies
+    :func:`_leaf_needs_budget` and :func:`budget_key` for that leaf is absent
+    from ``budgets`` -- i.e. classifying that probe alone (not necessarily its
+    dependents) would raise :class:`MissingBudgetError`.
+    """
+    return frozenset(
+        name
+        for name, leaves in probes.items()
+        if any(
+            _leaf_needs_budget(leaf) and budget_key(name, leaf.path) not in budgets
+            for leaf in leaves
+        )
+    )
 
 
 def classify_probes(
@@ -681,7 +712,12 @@ def classify_probes(
     of the five value-level classes can honestly describe such a probe, so it
     is always ``UNCOMPARABLE``, checked first and independent of
     predecessors. The leaf's own ``failed=True`` and empty ``metrics``
-    remain visible on :attr:`ProbeReport.leaves` regardless.
+    remain visible on :attr:`ProbeReport.leaves` regardless. A structural leaf
+    mismatch is itself a divergence of the upstream artifact and counts as
+    severity 2 (SS5.3's severity table), so descendants of an
+    ``UNCOMPARABLE`` probe are classified against it as a genuinely diverged
+    predecessor; ``UNCOMPARABLE`` describes the probe's own leaves, not its
+    relation to predecessors.
 
     Args:
         probes: Probe name -> that probe's leaves, as produced by

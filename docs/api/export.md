@@ -330,8 +330,9 @@ just `passed`:
 any(p.divergence_class != DivergenceClass.CLEAN for r in results for p in r.probes)
 ```
 
-When R2a's budgets are incomplete, R1 and R2b leave `probes` empty and say so
-in `notes` — `passed` is unaffected either way.
+When R2a's budgets are incomplete, R1 and R2b omit only the affected probe (and
+anything that depends on it) from `probes` and say so in `notes` — every other
+declared probe is still classified, and `passed` is unaffected either way.
 
 ### Declared dependencies
 

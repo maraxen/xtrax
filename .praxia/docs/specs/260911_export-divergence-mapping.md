@@ -3,7 +3,7 @@ title: Divergence mapping for exported artifacts
 description: A comparison ladder and a reusable fixture that localizes where a compiled artifact departs from production JAX, instead of reporting one scalar
 task_id: 260911_export-divergence-map
 status: ready
-revision: 6 (260915; R1/R2b probe population (#5210b) + UNCOMPARABLE class (#5209))
+revision: 7 (260915; R1/R2b probe population (#5210b) + UNCOMPARABLE class (#5209) + per-probe budget handling)
 ---
 
 # Divergence mapping for exported artifacts
@@ -76,8 +76,9 @@ revision: 6 (260915; R1/R2b probe population (#5210b) + UNCOMPARABLE class (#520
 > populate `probes`. `r1_target_isa` and `r2b_lowering` gain a keyword
 > `probe_deps` (default `None`); when given, they run `classify_probes` over the
 > leaves they already compare, against R2a's budgets, and return the reports.
-> Incomplete budgets leave `probes == ()` with a note, and never raise; R1's
-> refusal paths keep `probes == ()` unconditionally. `run_ladder` passes
+> Incomplete budgets are handled per probe, never raise (revision 7 fixed this
+> from an initial all-or-nothing `probes == ()`, see below); R1's refusal
+> paths keep `probes == ()` unconditionally. `run_ladder` passes
 > `probe_deps` to both. §3.2's "advisory on R2b" now has an operational meaning
 > (§3.2, §6.0, AC-21). Option (a) — making `passed` fail on beyond-budget
 > divergence — was rejected: it would make R2b's budget authoritative,
@@ -90,6 +91,25 @@ revision: 6 (260915; R1/R2b probe population (#5210b) + UNCOMPARABLE class (#520
 > INJECTED, AMPLIFIED, ATTENUATED, CLEAN` — first, because `DISCRETE_FLIP` and
 > `INJECTED` would assert a value comparison that never ran and `CLEAN` would
 > assert an agreement that was never checked (§5.3, AC-22).
+>
+> **Revision 7 (260915).** A code-review fix to revision 6's own #5210(b),
+> caught before merge: `rings.py`'s `_classify_rung_probes` classified all of a
+> rung's declared probes in a single `classify_probes` call and caught
+> `MissingBudgetError` for the **whole rung**, so one diverged float probe
+> with no R2a budget erased every other probe's class — including an
+> unrelated integer probe's genuine `DISCRETE_FLIP`, which is exactly the
+> signal revision 6 exists to surface. Fixed to be per-probe: a probe with a
+> diverged float leaf and no matching budget, and any probe that
+> transitively depends on it (its class would rest on that unresolved
+> predecessor severity), are omitted from `probes` and named in a note; every
+> other declared probe is still classified. `divergence.py` gained a shared
+> predicate, `_leaf_needs_budget`, used by both `_resolve_leaf_severity` (so
+> the two can never drift) and a new `_unbudgeted_probes` helper that
+> `rings.py` calls to compute the per-rung blocked set. No change to
+> `classify_probes`'s own classification rules or to any already-passing
+> AC — this only stops `rings.py` from discarding classifiable probes
+> alongside an unrelated unbudgeted one. AC-21 (below) restates the affected
+> assertion; §6.0's per-rung table is updated to match.
 
 ## 1. The problem, stated as a measurement failure
 
@@ -776,8 +796,8 @@ stated below:
 |---|---|---|
 | R0 | the replay agrees with itself | never |
 | R2a | the measurement completed over comparable leaves (reported, never judged — see above) | never |
-| R1 | the `cpu_features` precondition held **and** every leaf was comparable across both legs — not that the legs agree | when `probe_deps` given and R2a's budgets are complete |
-| R2b | every leaf was comparable across both legs — not that they agree | when `probe_deps` given and R2a's budgets are complete |
+| R1 | the `cpu_features` precondition held **and** every leaf was comparable across both legs — not that the legs agree | when `probe_deps` given, per probe (260915: a probe with a diverged float leaf and no matching R2a budget, and its dependents, are omitted; every other declared probe is classified) |
+| R2b | every leaf was comparable across both legs — not that they agree | when `probe_deps` given, per probe (260915: a probe with a diverged float leaf and no matching R2a budget, and its dependents, are omitted; every other declared probe is classified) |
 | R3 | R0 passed, the §5.4 fidelity precondition held, and a probe map was emitted | always |
 
 So a same-shape, same-dtype int32 index leaf with half its entries flipped
@@ -1063,16 +1083,24 @@ post-#156 `main`, sort stability was never its cause.
   read off the implementation — a test that mirrors the code's own order proves
   only that the code agrees with itself. It is the only entry point AC-10 calls,
   so an unexercised orchestrator would make the dogfood untestable.
-- **AC-21** *(revision 6, #5210)* R1 and R2b populate `probes` when given
-  `probe_deps`. Asserted with a fake leg returning a same-shape, same-dtype
-  int32 index array with half its entries wrong: `passed is True` **and** the
-  index probe in `probes` is `DISCRETE_FLIP`. The same fake run without
-  `probe_deps` yields `probes == ()` — the control that shows `passed` alone is
-  blind to the divergence, which is the defect this decision exists to close.
-  Also asserted: incomplete R2a budgets (a float leaf with no entry) leave
-  `probes == ()` with a note explaining why, do not raise, and do not change
-  `passed`; and `run_ladder` forwards `probe_deps` to both `r1_target_isa` and
-  `r2b_lowering`.
+- **AC-21** *(revision 6, #5210; per-probe budget handling added 260915)* R1
+  and R2b populate `probes` when given `probe_deps`. Asserted with a fake leg
+  returning a same-shape, same-dtype int32 index array with half its entries
+  wrong: `passed is True` **and** the index probe in `probes` is
+  `DISCRETE_FLIP`. The same fake run without `probe_deps` yields
+  `probes == ()` — the control that shows `passed` alone is blind to the
+  divergence, which is the defect this decision exists to close. Also
+  asserted: an incomplete R2a budget is handled **per probe**, not
+  all-or-nothing — a probe with a diverged float leaf and no matching budget
+  entry, and any probe that transitively depends on it, are omitted from
+  `probes` and named in a note explaining why; every other declared probe is
+  still classified normally; neither omission raises or changes `passed`. The
+  review scenario that pins this: a fake leg where an unbudgeted float probe
+  (`out`) diverges *and*, independently, a same-shape int32 index probe
+  (`idx`, not a dependent of `out`) has half its entries flipped —
+  `idx` must still classify `DISCRETE_FLIP` in `probes`, unsuppressed by
+  `out` being unbudgeted. `run_ladder` forwards `probe_deps` to both
+  `r1_target_isa` and `r2b_lowering`.
 - **AC-22** *(revision 6, #5209)* `UNCOMPARABLE` is produced for: a probe with
   one failed leaf and otherwise-clean predecessors; a probe with a failed leaf
   and an **empty** predecessor set; and a probe with a failed leaf below a
