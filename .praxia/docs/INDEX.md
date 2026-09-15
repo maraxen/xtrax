@@ -1,4 +1,4 @@
-# wt-20260901-174237 Internal Docs
+# wt-5109 Internal Docs
 
 ## Daily
 
@@ -18,6 +18,8 @@
 
 ## Specs
 - [260911_export-divergence-mapping](specs/260911_export-divergence-mapping.md) — A comparison ladder and a reusable fixture that localizes where a compiled artifact departs from production JAX, instead of reporting one scalar
+- [260910_compilable-boundaries](specs/260910_compilable-boundaries.md) — Spec for an effect-classification scheme over Fuse/Tap/Sink and the 7 training Callback hooks — SplitTap makes taps exportable structurally, the DedupGather and Vmap-over-Scan boundary holes are closed by refusal, and JAX's anonymous host_callbacks refusal gains a named xtrax error
+- [260910_webgpu-export-route](specs/260910_webgpu-export-route.md) — Re-specification of WebGPU for xtrax.export after AC-8 was falsified — four mutually-exclusive routes, a recommendation (R2″) that adds structural SPIR-V validation without moving any verification level, and a TD-WGPU debt register
 - [260901_xtrax-export-webgpu](specs/260901_xtrax-export-webgpu.md) — Spec for src/xtrax/export/ — native/wasm32/vulkan-spirv/metal-spirv targets, wgpu/naga WebGPU-validity gate, three-PR rollout
 - [260825_hmw-give-xtrax-a-runtime-compute-reuse-c](specs/260825_hmw-give-xtrax-a-runtime-compute-reuse-c.md)
 - [260825_jax-optimizing-skill-scope](specs/260825_jax-optimizing-skill-scope.md)
@@ -65,6 +67,7 @@
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [260914_browser-inference-routes-jaxjs-jax2onnx](research/260914_browser-inference-routes-jaxjs-jax2onnx.md) — Measured coverage of the non-IREE browser paths — jax-js is a reimplementation not a converter, jax2onnx takes Equinox directly and covers every primitive aminx needs, but ONNX mandates int64 TopK indices which ORT Web's WebGPU EP does not support
 - [260901_webgpu-export-measurement-pass](research/260901_webgpu-export-measurement-pass.md) — Empirical de-risking of the xtrax.export spec before implementation — pins resolve, but AC-8's WebGPU-validity gate is falsified by IREE's push-constant ABI
 - [260825_cse-recon](research/260825_cse-recon.md)
 - [260825_jax-cse-ecosystem](research/260825_jax-cse-ecosystem.md)
