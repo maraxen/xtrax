@@ -52,7 +52,6 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
-import ml_dtypes
 import numpy as np
 
 from xtrax.export.compile import compile_for_target, run_native_vmfb
@@ -377,8 +376,9 @@ def magnitude_extremes(
     6.2). The mask is all-ones -- this class is in-contract.
 
     The generating ``finfo`` is derived from ``dtype`` itself (via
-    ``ml_dtypes.finfo``, which -- unlike ``np.finfo`` -- accepts
-    ``bfloat16`` directly) rather than hardcoded to ``float32``: a hardcoded
+    ``jnp.finfo``, which -- unlike ``np.finfo`` -- accepts ``bfloat16``
+    directly, and which needs no dependency this package does not already
+    declare) rather than hardcoded to ``float32``: a hardcoded
     ``np.float32`` finfo, cast down into a narrower requested dtype such as
     ``float16``, silently overflowed to ``inf`` and underflowed to exact
     ``0.0`` (finding 3, 260914 code review round 6) -- manufacturing
@@ -386,7 +386,7 @@ def magnitude_extremes(
     """
     _require_bucket_length(length)
     rng = np.random.default_rng(seed)
-    finfo = ml_dtypes.finfo(dtype)
+    finfo = jnp.finfo(dtype)
     half = length // 2
     large = rng.uniform(finfo.max * 0.1, finfo.max * 0.9, size=(half, ndim))
     # `finfo.tiny` is the smallest NORMAL value for `dtype` (~1.18e-38 for
