@@ -944,10 +944,11 @@ class TestClassifyProbes:
 
 
 # --------------------------------------------------------------------------
-# Finding 4 (MEDIUM): a structurally FAILED leaf (shape/dtype mismatch, empty
-# metrics) must not be reported as a value-level divergence -- DISCRETE_FLIP
-# and INJECTED both assert a specific value-level narrative that a comparison
-# which never ran cannot support.
+# Finding 4 / #5209-#5210: a structurally FAILED leaf (shape/dtype mismatch,
+# empty metrics) must not be reported as any value-level divergence class --
+# DISCRETE_FLIP, INJECTED, CLEAN, and AMPLIFIED all assert something about a
+# comparison that never ran. It is always UNCOMPARABLE, checked first and
+# independent of predecessors.
 # --------------------------------------------------------------------------
 
 
@@ -962,8 +963,8 @@ def _failed_leaf(dtype_class: str) -> d.LeafDivergence:
     )
 
 
-class TestFinding4StructuralFailureIsNotAValueFlip:
-    def test_structurally_failed_integer_leaf_with_clean_predecessors_is_not_discrete_flip(self):
+class TestFinding4StructuralFailureIsUncomparable:
+    def test_structurally_failed_integer_leaf_with_clean_predecessors_is_uncomparable(self):
         """A shape/dtype-mismatched INTEGER leaf (e.g. IREE returns a probe's
         index array as shape (8,) where jit returned (4,)) has severity
         BEYOND_BUDGET and empty metrics -- no element-wise comparison ran, so
@@ -972,42 +973,29 @@ class TestFinding4StructuralFailureIsNotAValueFlip:
         """
         probes = {"probe": (_failed_leaf("integer"),)}
         (report,) = d.classify_probes(probes, probe_deps={}, budgets={})
-        assert report.divergence_class != d.DivergenceClass.DISCRETE_FLIP
-        assert report.divergence_class != d.DivergenceClass.CLEAN
+        assert report.divergence_class == d.DivergenceClass.UNCOMPARABLE
         assert report.leaves[0].failed is True
         assert report.leaves[0].metrics == {}
 
-    def test_structurally_failed_float_leaf_with_clean_predecessors_is_not_injected(self):
-        """The float analogue of the same structural failure (e.g. int64 vs
-        int32 for an integer leaf, or a shape mismatch on a float leaf) must
-        not be reported as INJECTED -- that class asserts a genuine
-        value-level semantic change was measured, which an empty-metrics
-        comparison cannot support either.
+    def test_structurally_failed_float_leaf_empty_predecessors_is_uncomparable(self):
+        """The float analogue of the same structural failure, with an empty
+        predecessor set (not just clean predecessors) -- must not be
+        reported as INJECTED, which asserts a genuine value-level semantic
+        change was measured, or DISCRETE_FLIP.
         """
         probes = {"probe": (_failed_leaf("float"),)}
         (report,) = d.classify_probes(probes, probe_deps={}, budgets={})
-        assert report.divergence_class != d.DivergenceClass.INJECTED
-        assert report.divergence_class != d.DivergenceClass.CLEAN
+        assert report.divergence_class == d.DivergenceClass.UNCOMPARABLE
         assert report.leaves[0].failed is True
         assert report.leaves[0].metrics == {}
 
-    def test_structurally_failed_leaf_classifies_amplified_against_clean_predecessors(self):
-        """Design decision (see the fixer report): a structurally failed leaf
-        is excluded from the DISCRETE_FLIP/INJECTED "value-flip" predicates
-        and falls through to the plain severity-ordinal comparison instead,
-        with a clean-predecessor baseline of IDENTICAL -- landing on
-        AMPLIFIED (severity rose relative to that baseline), not a new
-        DivergenceClass member.
-        """
-        probes = {"probe": (_failed_leaf("integer"),)}
-        (report,) = d.classify_probes(probes, probe_deps={}, budgets={})
-        assert report.divergence_class == d.DivergenceClass.AMPLIFIED
-
-    def test_structurally_failed_leaf_alongside_a_diverged_predecessor_still_amplifies(self):
+    def test_structurally_failed_leaf_with_diverged_predecessor_is_uncomparable_not_amplified(
+        self,
+    ):
         """A failed leaf combined with an already-diverged predecessor must
-        keep going through the ordinary severity-ordinal AMPLIFIED/ATTENUATED
-        comparison (this path was never gated on the value-flip predicates,
-        so it must not regress)."""
+        still classify UNCOMPARABLE -- AMPLIFIED would assert upstream
+        divergence explains this probe's state, which a never-run comparison
+        cannot support either."""
         probes = {
             "pred": (_float_leaf(severity=d.Severity.BEYOND_BUDGET, max_ulp_diff=1000.0),),
             "probe": (_failed_leaf("integer"),),
@@ -1016,7 +1004,72 @@ class TestFinding4StructuralFailureIsNotAValueFlip:
         budgets = {d.budget_key("pred", ""): 4.0}
         reports = d.classify_probes(probes, deps, budgets)
         by_name = {r.name: r for r in reports}
+        assert by_name["probe"].divergence_class == d.DivergenceClass.UNCOMPARABLE
+
+    def test_failed_leaf_and_genuine_discrete_mismatch_on_another_leaf_is_uncomparable(self):
+        """A probe with one failed leaf AND a second, genuinely-compared
+        integer leaf that mismatched must still classify UNCOMPARABLE --
+        precedence: UNCOMPARABLE is checked before DISCRETE_FLIP."""
+        mismatched_integer = d.LeafDivergence(
+            path="['b']",
+            dtype_class="integer",
+            severity=d.Severity.BEYOND_BUDGET,
+            metrics={"exact_match_fraction": 0.5, "first_mismatch_index": 0.0, "n_mismatched": 1.0},
+            failed=False,
+            message=None,
+        )
+        probes = {"probe": (_failed_leaf("integer"), mismatched_integer)}
+        (report,) = d.classify_probes(probes, probe_deps={}, budgets={})
+        assert report.divergence_class == d.DivergenceClass.UNCOMPARABLE
+
+    def test_descendant_of_uncomparable_probe_with_genuine_mismatch_is_amplified(self):
+        """A descendant probe with a genuine (non-failed) integer mismatch,
+        whose sole predecessor is UNCOMPARABLE, must classify AMPLIFIED --
+        not DISCRETE_FLIP, since its predecessor is not clean."""
+        mismatched_integer = d.LeafDivergence(
+            path="",
+            dtype_class="integer",
+            severity=d.Severity.BEYOND_BUDGET,
+            metrics={"exact_match_fraction": 0.5, "first_mismatch_index": 0.0, "n_mismatched": 1.0},
+            failed=False,
+            message=None,
+        )
+        probes = {
+            "pred": (_failed_leaf("integer"),),
+            "probe": (mismatched_integer,),
+        }
+        deps = {"probe": ("pred",)}
+        reports = d.classify_probes(probes, deps, budgets={})
+        by_name = {r.name: r for r in reports}
+        assert by_name["pred"].divergence_class == d.DivergenceClass.UNCOMPARABLE
         assert by_name["probe"].divergence_class == d.DivergenceClass.AMPLIFIED
+
+    def test_descendant_of_uncomparable_probe_bit_identical_is_attenuated(self):
+        """A bit-identical descendant of an UNCOMPARABLE predecessor must
+        classify ATTENUATED under the existing severity rule (0 < 2) -- the
+        predecessor's BEYOND_BUDGET severity still propagates even though its
+        divergence_class is UNCOMPARABLE, not AMPLIFIED."""
+        identical_leaf = d.LeafDivergence(
+            path="",
+            dtype_class="integer",
+            severity=d.Severity.IDENTICAL,
+            metrics={
+                "exact_match_fraction": 1.0,
+                "first_mismatch_index": -1.0,
+                "n_mismatched": 0.0,
+            },
+            failed=False,
+            message=None,
+        )
+        probes = {
+            "pred": (_failed_leaf("integer"),),
+            "probe": (identical_leaf,),
+        }
+        deps = {"probe": ("pred",)}
+        reports = d.classify_probes(probes, deps, budgets={})
+        by_name = {r.name: r for r in reports}
+        assert by_name["pred"].divergence_class == d.DivergenceClass.UNCOMPARABLE
+        assert by_name["probe"].divergence_class == d.DivergenceClass.ATTENUATED
 
 
 # --------------------------------------------------------------------------
@@ -1307,8 +1360,9 @@ class TestSeverityOrdering:
     def test_severity_is_ordered(self):
         assert d.Severity.IDENTICAL < d.Severity.WITHIN_BUDGET < d.Severity.BEYOND_BUDGET
 
-    def test_divergence_class_has_exactly_five_members(self):
+    def test_divergence_class_has_exactly_six_members(self):
         assert {c.value for c in d.DivergenceClass} == {
+            "UNCOMPARABLE",
             "DISCRETE_FLIP",
             "INJECTED",
             "AMPLIFIED",

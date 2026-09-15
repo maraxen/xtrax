@@ -3,7 +3,7 @@ title: Divergence mapping for exported artifacts
 description: A comparison ladder and a reusable fixture that localizes where a compiled artifact departs from production JAX, instead of reporting one scalar
 task_id: 260911_export-divergence-map
 status: ready
-revision: 5.1 (converged; post-audit ordering + criterion strengthening)
+revision: 6 (260915; R1/R2b probe population (#5210b) + UNCOMPARABLE class (#5209))
 ---
 
 # Divergence mapping for exported artifacts
@@ -65,6 +65,31 @@ revision: 5.1 (converged; post-audit ordering + criterion strengthening)
 > Also: `run_ladder` and `budget_leaf` were pinned public surface that no task
 > owned and no module claimed (§6.0 now fixes both), and AC-3b was missing from
 > §7's self-described exhaustive mapping.
+>
+> **Revision 6 (260915).** Two decisions, taken by the user against backlog
+> #5210 and #5209, closing a gap the dogfood's own instrument exposed: a caller
+> doing `all(r.passed for r in results)` concluded "no divergence" for exactly
+> the integer-index flip this document exists to catch.
+>
+> **#5210, option (b).** `RingResult.passed` stays structural for R1 and R2b —
+> precondition-held-and-comparable, never value agreement — but both rungs now
+> populate `probes`. `r1_target_isa` and `r2b_lowering` gain a keyword
+> `probe_deps` (default `None`); when given, they run `classify_probes` over the
+> leaves they already compare, against R2a's budgets, and return the reports.
+> Incomplete budgets leave `probes == ()` with a note, and never raise; R1's
+> refusal paths keep `probes == ()` unconditionally. `run_ladder` passes
+> `probe_deps` to both. §3.2's "advisory on R2b" now has an operational meaning
+> (§3.2, §6.0, AC-21). Option (a) — making `passed` fail on beyond-budget
+> divergence — was rejected: it would make R2b's budget authoritative,
+> contradicting §3.2's own argument that a bound on fusion sensitivity is not a
+> bound on lowering fidelity.
+>
+> **#5209.** A sixth class, `UNCOMPARABLE`: any probe with a structurally failed
+> leaf (shape/dtype mismatch, `metrics={}`) classifies `UNCOMPARABLE` regardless
+> of predecessors, and precedence becomes `UNCOMPARABLE, DISCRETE_FLIP,
+> INJECTED, AMPLIFIED, ATTENUATED, CLEAN` — first, because `DISCRETE_FLIP` and
+> `INJECTED` would assert a value comparison that never ran and `CLEAN` would
+> assert an agreement that was never checked (§5.3, AC-22).
 
 ## 1. The problem, stated as a measurement failure
 
@@ -358,7 +383,11 @@ the correct denomination; `SLACK * m_leaf` is likewise compared in ULP.
   reassociation alone would be granted a budget that could mask a genuine 1e-3
   mis-lowering. R2a and R2b are therefore always **reported separately**, and
   the budget is advisory on R2b rather than authoritative. Stated plainly so
-  nobody mistakes it for soundness.
+  nobody mistakes it for soundness. Operationally (#5210, revision 6):
+  `r2b_lowering`'s `passed` never gates on a probe's classification — it stays
+  a comparability judgment — while its `probes`, when `probe_deps` is given,
+  report the classes computed against R2a's budgets for anyone who reads past
+  `passed`. The budget shapes what gets reported, never what gets returned.
 - **`m_leaf` is per `(model, input_class)`** and must be re-derived under each
   stratification, since fusion sensitivity is input-dependent.
 
@@ -505,6 +534,14 @@ declares it per export.
 
 Classes:
 
+- **UNCOMPARABLE** *(revision 6, #5209)* — the probe has at least one leaf with
+  `failed=True` (§5.2's leaf mismatch: shape or dtype differ, no element-wise
+  comparison ran, `metrics={}`), regardless of predecessors. `DISCRETE_FLIP` and
+  `INJECTED` would assert a value comparison that never happened; `CLEAN` would
+  assert an agreement that was never checked. A failed leaf is severity 2
+  (§5.3's severity table), so a probe downstream of an `UNCOMPARABLE` probe
+  cannot itself be `DISCRETE_FLIP` or `INJECTED` on that account — it can only
+  be `AMPLIFIED`, `ATTENUATED`, or `UNCOMPARABLE` in its own right.
 - **CLEAN** — severity ≤ 1: within the §3.2 budget (float), or exact
   (discrete). A severity-1 leaf is CLEAN, not a weak signal; tolerating last-bit
   fusion noise is the entire purpose of the budget and its floor.
@@ -532,6 +569,9 @@ Classes:
   predecessor set and a mismatched discrete leaf is `DISCRETE_FLIP` by rule,
   stated explicitly rather than falling out of quantification over an empty set
   — this is the aminx case, since `neighbor_indices` is the first thing computed.
+  This applies only when the comparison ran and the leaf mismatched; a discrete
+  leaf that failed structurally (shape/dtype mismatch) makes the probe `UNCOMPARABLE`
+  instead, which precedence evaluates first.
 
   The "discrete included" clause is load-bearing. Revision 2 quantified only over
   predecessors' *float* leaves, so a downstream probe merely **inheriting** an
@@ -556,7 +596,7 @@ Every leaf therefore carries an ordinal **severity**, which *is* comparable:
 |---|---|
 | 0 | bit-identical |
 | 1 | diverged but within budget — float leaves only, since discrete has no budget (§3.2) |
-| 2 | beyond budget, or any discrete mismatch |
+| 2 | beyond budget, any discrete mismatch, or a structurally failed leaf (`failed=True`, §5.2) |
 
 A probe's severity is the max over its leaves; `max`-over-predecessors is taken
 on severity. Magnitude comparisons (`max_ulp_diff`, `n_mismatched`) are used only
@@ -566,11 +606,16 @@ predecessor's with at least one predecessor above 0; `ATTENUATED` means strictly
 below the predecessor max.
 
 **Precedence.** A probe may qualify under more than one class — typically float
-divergence beyond budget *and* a discrete mismatch. Evaluate in this order and
-take the first match: `DISCRETE_FLIP`, `INJECTED`, `AMPLIFIED`, `ATTENUATED`,
-`CLEAN`. Discrete outranks float because a flipped index is a semantic change
-while a float excursion may be tolerable, and because the discrete signal is the
-one a float-only instrument cannot see.
+divergence beyond budget *and* a discrete mismatch, or (revision 6) a
+structurally failed leaf alongside a genuine discrete mismatch on another leaf.
+Evaluate in this order and take the first match: `UNCOMPARABLE`,
+`DISCRETE_FLIP`, `INJECTED`, `AMPLIFIED`, `ATTENUATED`, `CLEAN`. `UNCOMPARABLE`
+goes first because it is the only class that reflects the absence of a
+comparison rather than its outcome — every class after it presupposes that an
+element-wise comparison actually ran, which a failed leaf makes false regardless
+of what any other leaf on the same probe shows. Discrete outranks float because
+a flipped index is a semantic change while a float excursion may be tolerable,
+and because the discrete signal is the one a float-only instrument cannot see.
 
 "Amplified" is defined by the `>=` comparison above, not by the word "smoothly",
 which revision 1 left with no operational meaning and which AC-3 could not test.
@@ -722,6 +767,28 @@ R2a itself runs **before any budget exists** and is therefore reported, never
 judged: it is the measurement that produces `m_leaf`, so gating it on a budget
 would be circular.
 
+**What `passed` means, per rung** *(revision 6, #5210)*. `passed` is
+structural at every rung — it records that a comparison ran and its
+precondition (if any) held — and never records value agreement beyond what is
+stated below:
+
+| rung | `passed` means | populates `probes`? |
+|---|---|---|
+| R0 | the replay agrees with itself | never |
+| R2a | the measurement completed over comparable leaves (reported, never judged — see above) | never |
+| R1 | the `cpu_features` precondition held **and** every leaf was comparable across both legs — not that the legs agree | when `probe_deps` given and R2a's budgets are complete |
+| R2b | every leaf was comparable across both legs — not that they agree | when `probe_deps` given and R2a's budgets are complete |
+| R3 | R0 passed, the §5.4 fidelity precondition held, and a probe map was emitted | always |
+
+So a same-shape, same-dtype int32 index leaf with half its entries flipped
+gives `passed=True` at R1 and R2b: nothing above checks value equality on that
+leaf, only that it exists and lines up structurally. The divergence itself
+shows up only in `probes`, classified `DISCRETE_FLIP` or worse. `r1_target_isa`
+and `r2b_lowering` signatures both gain a `probe_deps: Mapping[str, tuple[str,
+...]] | None = None` keyword (§6.1); when it is omitted, `probes == ()`
+unconditionally, the same as R0 and R2a. `run_ladder` always passes
+`probe_deps` through to both.
+
 ### 6.1 Probe declaration
 
 ```python
@@ -760,7 +827,7 @@ swept.
 | # | Task | Deliverable |
 |---|---|---|
 | T1 | `compare_pytree` + dtype-aware `LeafDivergence`, per-leaf failure records | `divergence.py` |
-| T2 | `classify_probes` over a declared DAG, max-over-predecessors, 5 classes | `divergence.py` |
+| T2 | `classify_probes` over a declared DAG, max-over-predecessors, 6 classes | `divergence.py` |
 | T3 | `probe_resolution` — backward-slice deltas from `mlir_module(serialized=False)` | `divergence.py` |
 | T3b | `validate_probe_deps` — slice-subset check on every declared edge (§5.3) | `divergence.py` |
 | T4 | R0 gate + R1 (two legs, `cpu_features` precondition) | `rings.py` |
@@ -773,11 +840,12 @@ swept.
 | T8b | `run_ladder` — top-level orchestrator: `validate_probe_deps`, then §3.1 ring order, then `classify_probes` + `probe_resolution` | `rings.py` |
 | T11 | `docs/api/export.md` — the ladder and when to escalate | docs |
 | T12 | aminx dogfood (§9) — **deferred out of this sprint** (§9) | aminx PR |
+| T13 | *(revision 6)* `probe_deps` keyword on R1/R2b + `UNCOMPARABLE` classification | `divergence.py` + `rings.py` |
 
 Every task maps to at least one acceptance criterion and every criterion to a
 task: T1→AC-1/AC-13, T2→AC-3/AC-3b/4/5/14/AC-19, T3→AC-9, T3b→AC-15, T4→AC-16,
 T5→AC-7/8, T6→AC-6, T7→AC-2, T8→AC-17, T8b→AC-20, T9/T10→AC-12, T11→AC-18,
-T12→AC-10, and AC-11 is T4/T5's API surface. Revision 2 left T4 — the R0 gate and
+T12→AC-10, T13→AC-21/AC-22, and AC-11 is T4/T5's API surface. Revision 2 left T4 — the R0 gate and
 R1's `cpu_features` precondition, both normative — with no criterion at all, and
 AC-11 with no task. Revision 4 added AC-3b and omitted it from this list, which
 is the same defect one layer down; revision 5 adds it, plus T8b/AC-20 for the
@@ -941,10 +1009,15 @@ post-#156 `main`, sort stability was never its cause.
   and would invert it — a true positive would read as a fixture failure whose
   obvious remedy is to perturb the input until it passes. The `nominal` result is
   **reported, not asserted**.
-- **AC-11** R0/R1/R2 runners accept no probe argument — an **API-surface** claim,
-  not a guarantee. Since a probe is an ordinary pytree entry (§5.1), nothing
-  type-level distinguishes an instrumented callable from a plain one, so a caller
-  can still pass one. Stated at its true strength rather than implying more.
+- **AC-11** R0 and R2a runners accept no probe argument at all. R1 and R2b
+  accept `probe_deps` (revision 6, #5210) **solely as classification
+  metadata**: it selects what `classify_probes` reports in `probes`, never
+  what `fn` computes — both rungs run `fn` exactly as given and edit no
+  program output, same as before revision 6. This is an **API-surface**
+  claim, not a guarantee: since a probe is an ordinary pytree entry (§5.1),
+  nothing type-level distinguishes an instrumented callable from a plain one,
+  so a caller can still pass one. Stated at its true strength rather than
+  implying more.
 - **AC-12** `divergence.py` imports nothing from `iree` (asserted by test) and
   reaches ≥90% line / ≥80% branch under `tier1_core` with no export extra.
 - **AC-13** A **treedef** mismatch raises `ProbeStructureError` naming both
@@ -990,6 +1063,25 @@ post-#156 `main`, sort stability was never its cause.
   read off the implementation — a test that mirrors the code's own order proves
   only that the code agrees with itself. It is the only entry point AC-10 calls,
   so an unexercised orchestrator would make the dogfood untestable.
+- **AC-21** *(revision 6, #5210)* R1 and R2b populate `probes` when given
+  `probe_deps`. Asserted with a fake leg returning a same-shape, same-dtype
+  int32 index array with half its entries wrong: `passed is True` **and** the
+  index probe in `probes` is `DISCRETE_FLIP`. The same fake run without
+  `probe_deps` yields `probes == ()` — the control that shows `passed` alone is
+  blind to the divergence, which is the defect this decision exists to close.
+  Also asserted: incomplete R2a budgets (a float leaf with no entry) leave
+  `probes == ()` with a note explaining why, do not raise, and do not change
+  `passed`; and `run_ladder` forwards `probe_deps` to both `r1_target_isa` and
+  `r2b_lowering`.
+- **AC-22** *(revision 6, #5209)* `UNCOMPARABLE` is produced for: a probe with
+  one failed leaf and otherwise-clean predecessors; a probe with a failed leaf
+  and an **empty** predecessor set; and a probe with a failed leaf below a
+  predecessor that itself diverged. A probe with both a failed leaf and a
+  genuine discrete mismatch on a different leaf resolves to `UNCOMPARABLE` by
+  precedence, not `DISCRETE_FLIP`. A descendant of an `UNCOMPARABLE` probe
+  that itself has a genuine discrete mismatch (no failed leaf of its own) is
+  `AMPLIFIED`, not `DISCRETE_FLIP` — it inherits the predecessor's severity-2
+  status, it does not inherit a value comparison that never ran.
 
 **Merge gate, not an acceptance criterion:** `just audit-deterministic` exits 0
 *and* its log contains no `FAILED` (the known audit-masking trap). It is
@@ -1007,3 +1099,4 @@ this feature works, so it is listed here rather than above.
 | R1 legs silently identical on a non-x86-64 host | `cpu_features` readback precondition (§3) |
 | Declared probe DAG is wrong or incomplete | `unattributed_ops` surfaces unreachable regions; an undeclared dep is an error, not a default |
 | §2.3's open question quietly forgotten | §9 acceptance requires the dogfood to answer it |
+| Caller reads `passed` as "no divergence" *(revision 6, #5210)* | §6.0's per-rung `passed` table states what each rung's `passed` actually means; R1/R2b populate `probes` when given `probe_deps`, so the divergence is visible to anything that reads past `passed`; AC-21 |

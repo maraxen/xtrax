@@ -88,10 +88,13 @@ class Severity(IntEnum):
 
 
 class DivergenceClass(StrEnum):
-    """The five per-probe classes of SS5.3, in the precedence order they are
+    """The six per-probe classes of SS5.3, in the precedence order they are
     evaluated (:func:`classify_probes` takes the first match).
     """
 
+    UNCOMPARABLE = "UNCOMPARABLE"
+    """At least one leaf of this probe could not be compared element-wise
+    (shape/dtype mismatch), so no value-level class can be asserted."""
     DISCRETE_FLIP = "DISCRETE_FLIP"
     INJECTED = "INJECTED"
     AMPLIFIED = "AMPLIFIED"
@@ -646,40 +649,39 @@ def classify_probes(
     over a DAG the caller declares via ``probe_deps`` -- dataflow edges cannot
     be recovered from a flat output tuple, so there is no inference fallback.
 
-    Precedence (first match wins): ``DISCRETE_FLIP``, ``INJECTED``,
-    ``AMPLIFIED``, ``ATTENUATED``, ``CLEAN``.
+    Precedence (first match wins): ``UNCOMPARABLE``, ``DISCRETE_FLIP``,
+    ``INJECTED``, ``AMPLIFIED``, ``ATTENUATED``, ``CLEAN``.
 
-    - ``DISCRETE_FLIP``: an integer/bool leaf mismatched (and did **not**
-      fail structurally -- see the Finding 4 note below), and every
+    - ``UNCOMPARABLE``: any leaf on this probe has ``failed=True``
+      (shape/dtype mismatch, ``metrics={}``), regardless of predecessor
+      cleanliness (Finding 4/#5209 -- see below). ``severity`` still takes the
+      ``max`` over this probe's leaves as usual (``BEYOND_BUDGET`` for a
+      failed leaf), so a descendant of an ``UNCOMPARABLE`` probe sees a
+      diverged predecessor and cannot itself claim ``DISCRETE_FLIP`` or
+      ``INJECTED``.
+    - ``DISCRETE_FLIP``: an integer/bool leaf mismatched, and every
       predecessor was severity 0 on *all* leaves, discrete included (an empty
       predecessor set counts as satisfying this by rule).
-    - ``INJECTED``: every predecessor is severity 0, this probe is severity 2
-      (**not** "severity >= 1" -- that phrasing made every within-budget
-      float leaf below a clean predecessor read as an injected semantic
-      change, exactly the outcome the SS3.2 floor exists to prevent), and no
-      leaf on this probe failed structurally (Finding 4, below).
-    - ``AMPLIFIED``: this probe has a non-``IDENTICAL`` severity, and either
-      some predecessor is above severity 0 with this probe's severity ``>=``
-      every predecessor's, **or** a leaf on this probe failed structurally
-      while every predecessor was clean (Finding 4: treated as severity
-      rising off a clean-predecessor baseline of ``IDENTICAL``).
-    - ``ATTENUATED``: some predecessor is above severity 0 (and no leaf on
-      this probe failed structurally), and this probe's severity is strictly
-      below the predecessor max.
+    - ``INJECTED``: every predecessor is severity 0, and this probe is
+      severity 2 (**not** "severity >= 1" -- that phrasing made every
+      within-budget float leaf below a clean predecessor read as an injected
+      semantic change, exactly the outcome the SS3.2 floor exists to
+      prevent).
+    - ``AMPLIFIED``: some predecessor is above severity 0, and this probe's
+      severity is ``>=`` every predecessor's.
+    - ``ATTENUATED``: some predecessor is above severity 0, and this probe's
+      severity is strictly below the predecessor max.
     - ``CLEAN``: severity <= 1 and none of the above.
 
-    **Finding 4 -- a structurally failed leaf is not a value flip.** A leaf
-    with ``failed=True`` (shape/dtype mismatch, ``metrics={}``) never had an
-    element-wise comparison run, so it cannot support ``DISCRETE_FLIP`` or
-    ``INJECTED``'s claim that specific values were compared and diverged --
-    those two classes exclude any probe with a failed leaf outright,
-    regardless of predecessor cleanliness. Such a probe is not reported
-    CLEAN either (the comparison genuinely could not be performed): it falls
-    through to the same severity-ordinal AMPLIFIED/ATTENUATED machinery every
-    other probe uses, comparing against ``IDENTICAL`` when predecessors were
-    otherwise clean. The leaf's own ``failed=True`` and empty ``metrics``
-    remain visible on :attr:`ProbeReport.leaves` regardless of the class this
-    produces.
+    **Finding 4 / #5209 -- a structurally failed leaf is not a value-level
+    claim of any kind.** A leaf with ``failed=True`` never had an
+    element-wise comparison run: ``DISCRETE_FLIP``/``INJECTED`` would assert
+    a comparison that never happened, ``CLEAN`` would assert agreement, and
+    ``AMPLIFIED`` would assert upstream divergence that need not exist. None
+    of the five value-level classes can honestly describe such a probe, so it
+    is always ``UNCOMPARABLE``, checked first and independent of
+    predecessors. The leaf's own ``failed=True`` and empty ``metrics``
+    remain visible on :attr:`ProbeReport.leaves` regardless.
 
     Args:
         probes: Probe name -> that probe's leaves, as produced by
@@ -709,48 +711,33 @@ def classify_probes(
         preds = probe_deps.get(name, ())
         leaves = tuple(_resolve_leaf_severity(name, leaf, budgets) for leaf in probes[name])
         severity = max((leaf.severity for leaf in leaves), default=Severity.IDENTICAL)
-        # Finding 4: a leaf with `failed=True` (shape/dtype mismatch, empty
-        # `metrics`) never had an element-wise comparison run, so it cannot
-        # support `discrete_mismatch`'s claim that specific index/bool values
-        # were compared and differed -- excluded here regardless of
-        # dtype_class.
+        any_leaf_failed = any(leaf.failed for leaf in leaves)
         discrete_mismatch = any(
-            leaf.dtype_class in ("integer", "bool")
-            and leaf.severity != Severity.IDENTICAL
-            and not leaf.failed
+            leaf.dtype_class in ("integer", "bool") and leaf.severity != Severity.IDENTICAL
             for leaf in leaves
         )
-        any_leaf_failed = any(leaf.failed for leaf in leaves)
 
         pred_severities = [reports[pred].severity for pred in preds]
         all_predecessors_clean = not pred_severities or all(
             s == Severity.IDENTICAL for s in pred_severities
         )
         max_pred_severity = max(pred_severities) if pred_severities else Severity.IDENTICAL
-        # Finding 4: DISCRETE_FLIP and INJECTED are both "value-flip" claims
-        # -- they assert a specific value-level narrative (an exact-match
-        # index/bool flip, or a measured semantic change) that a leaf whose
-        # comparison never ran cannot support. A probe with any such failed
-        # leaf is excluded from both regardless of `all_predecessors_clean`,
-        # and instead falls through to the plain severity-ordinal
-        # AMPLIFIED/ATTENUATED comparison below (against a clean-predecessor
-        # baseline of IDENTICAL when nothing upstream actually diverged) --
-        # not CLEAN, since the comparison genuinely could not be performed,
-        # and not a sixth DivergenceClass member (see this sprint's fixer
-        # report for the escalation this decision avoided).
-        value_flip_eligible = all_predecessors_clean and not any_leaf_failed
 
-        if discrete_mismatch and value_flip_eligible:
+        # Finding 4 / #5209/#5210: a failed leaf is checked first,
+        # independent of predecessors -- see the docstring's Finding 4 note.
+        if any_leaf_failed:
+            divergence_class = DivergenceClass.UNCOMPARABLE
+        elif discrete_mismatch and all_predecessors_clean:
             divergence_class = DivergenceClass.DISCRETE_FLIP
-        elif value_flip_eligible and severity == Severity.BEYOND_BUDGET:
+        elif all_predecessors_clean and severity == Severity.BEYOND_BUDGET:
             divergence_class = DivergenceClass.INJECTED
         elif (
-            not value_flip_eligible
+            not all_predecessors_clean
             and severity > Severity.IDENTICAL
             and severity >= max_pred_severity
         ):
             divergence_class = DivergenceClass.AMPLIFIED
-        elif not value_flip_eligible and severity < max_pred_severity:
+        elif not all_predecessors_clean and severity < max_pred_severity:
             divergence_class = DivergenceClass.ATTENUATED
         else:
             divergence_class = DivergenceClass.CLEAN
