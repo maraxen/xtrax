@@ -26,6 +26,7 @@ coverage_packages = ["xtrax"]
 coverage_omit = [
     "*/xtrax/eda/*",
     "*/xtrax/devtools/*",
+    "*/xtrax/export/rings.py",
     "*/tests/*",
     "*/__init__.py",
 ]

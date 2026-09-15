@@ -237,6 +237,118 @@ transition that gets exported. `Scan.transition` is read only by the eager
 `xtrax.tiling.dispatch` path and is never consulted here. Setting both means the
 exported artifact can differ from what an eager run of the same plan does.
 
+## Divergence mapping
+
+`xtrax.export.parity.compare` reduces a comparison to one scalar,
+`max_abs_diff`, over one array. That answers *is it correct*. Divergence
+mapping answers a different question: *where did it stop being correct*.
+Both ship, and neither replaces the other — for a divergence carried
+entirely by integer indices with every float leaf bit-identical, `compare`
+reports `max_abs_diff = 0.0` and passes. It has not lost resolution; it read
+zero, because the bug lives on a dtype it does not measure.
+
+### The comparison ladder
+
+A **ring** is a controlled comparison with exactly one independent variable
+and a shared reference input: both sides are the same computation, so a
+disagreement is attributable to the varied axis and nothing else.
+
+| | Varies | Edits program outputs | Isolates |
+|---|---|---|---|
+| **R0** *(gate, not a ring)* | — replay, same artifact | no | runtime nondeterminism |
+| **R1 Target** | target CPU: `NATIVE` vs `NATIVE_PORTABLE` | no | ISA-dependent codegen |
+| **R2a Fusion** | eager vs `jit` — same compiler, different graph | no | the model's own fusion sensitivity |
+| **R2b Lowering** | `jit` XLA vs IREE — same graph, different backend | no | export/lowering fidelity |
+| **R3 Probe** | cut depth — named intermediates as extra outputs | **yes** | spatial onset inside the model |
+
+**R0 is not a ring.** Replaying one artifact on one input varies nothing.
+It is the ladder's validity gate: if the system is nondeterministic, no
+ring's disagreement localizes to anything, so R0 runs first and gates every
+other rung.
+
+**R1 has two executable legs, not three.** `WASM32` is `CODEGEN_ONLY` (see
+above) — a ring needs two runnable sides, so wasm32 cannot be a leg.
+
+Input class (`nominal`, `symmetric_geometry`, `magnitude_extremes`,
+`sub_k_neighbours`, …) is not a peer rung. It is a stratification variable
+applied to R1/R2/R3 — each generator is labelled in the report with whether
+it is in contract, so no verdict rests on an out-of-contract class alone.
+
+### Escalation order
+
+Run R0, then the non-editing rings (R2a, R1, R2b), then R3 last.
+
+The ordering is about interpretability, not cost. R3's result is
+uninterpretable until the section-5.4 fidelity precondition passes, because
+instrumenting a program changes its own fusion decisions — adding outputs
+changes DCE and fusion in both XLA and IREE, and a probe that forces
+materialization can suppress the very fusion that caused the divergence
+being investigated. A rung that edits what the program returns must
+therefore come after every rung that does not. `run_ladder` enforces this
+order and refuses to run R3 at all when R0 has failed or the fidelity check
+inside R3 trips.
+
+A probe is not a `Tap` or a materializing `sink` — the boundary machinery
+described above does not apply here. A probe is simply a named entry in the
+step function's own return pytree; nothing about the export boundary needs
+to change to add one.
+
+### The tolerance budget is a heuristic, not an error bound
+
+```
+budget_leaf = max(ULP_FLOOR, SLACK * m_leaf)   # ULP_FLOOR = 4 ULP, SLACK = 4.0
+```
+
+`m_leaf` is R2a's measured eager-vs-`jit` divergence for a float leaf. The
+floor exists so that a model whose fusion is a no-op — `eager == jit`
+bit-identical, the ordinary case — does not get budget 0 and fail on a
+single last-bit difference; the calibration then adapts the budget upward
+for models with genuine fusion sensitivity.
+
+A bound on fusion sensitivity is not a bound on lowering fidelity — they are
+different failure surfaces measured in the same units. R2a and R2b are
+therefore always reported separately, and the budget is advisory on R2b
+rather than authoritative.
+
+**Calibration applies to float leaves only.** Integer and bool leaves are
+judged by exact match, and no measurement loosens that. The budget is
+deliberately inert for the bug class this tooling exists to catch: an index
+divergence is either an exact match or a `DISCRETE_FLIP`, never a matter of
+degree.
+
+### Declared dependencies
+
+`probe_deps` names each probe's immediate predecessors, and classification
+(`CLEAN`, `AMPLIFIED`, `ATTENUATED`, `INJECTED`, `DISCRETE_FLIP`) is always
+against the worst predecessor. It is supplied by the caller, not inferred:
+dataflow edges cannot be recovered from a flat output tuple, so an
+undeclared dependency is an error rather than a default. It is also a
+property of the exported *configuration*, not of the model — a plan with an
+optional input branch can drop an edge entirely, so the same model can
+legitimately need two different `probe_deps` mappings across two exports.
+
+`validate_probe_deps` checks every declared edge before `run_ladder` runs
+anything: for `p -> q`, the ops needed for `p` (its backward slice) must be a
+subset of the ops needed for `q`. This is a cheap guard against the likeliest
+authoring error — writing a DAG by hand and drawing an edge that is not
+actually there — not a proof that the declared graph is complete. It has
+three known blind spots:
+
+- a **transitive** edge `p -> r` passes when the true dependency is
+  `p -> q -> r`;
+- a **passthrough** probe with an empty slice is a subset of everything, so
+  an edge into it always passes regardless of whether it is real;
+- a **missing** edge is invisible to a check that only validates edges that
+  were declared.
+
+`probe_resolution` reuses the same backward slices to report `slice_delta`
+per declared edge, as a heuristic proxy for localization resolution rather
+than a bound on it: sibling slices overlap and do not partition the module,
+a loop body executing many times counts its ops once rather than once per
+iteration, and the count is taken from the instrumented module's StableHLO
+before IREE's own fusion and DCE — the stage where the divergence actually
+lives.
+
 ## WebGPU
 
 Not currently reachable through IREE. IREE's `webgpu-spirv` backend exists
