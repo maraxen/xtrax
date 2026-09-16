@@ -14,16 +14,23 @@ rung receives the *same* ``fn``; what varies is whether that rung reads every
 name in its output or only some:
 
 - R0/R1/R2a/R2b run ``fn`` exactly as given and compare (or replay) its whole
-  output. Per AC-11 they take no ``probe_deps``/``probes`` argument at all --
-  "nothing type-level distinguishes an instrumented callable from a plain
-  one" (spec AC-11), so if the caller passes a probe-carrying ``fn``, these
-  rungs simply treat every entry as an ordinary leaf.
-- R3 is the only rung that receives ``probe_deps`` and therefore knows which
-  top-level names are probes. It derives the model's true ("primary")
-  output(s) as the **DAG sinks** of ``probe_deps`` -- the names that are never
-  anyone else's declared predecessor -- and builds a second, filtered
-  callable returning only those, to run the section-5.4 fidelity precondition
-  before trusting anything else it measures.
+  output; none of them edit what ``fn`` computes, and none derive a
+  "primary-only" view of it.
+- R0 and R2a accept no probe argument at all (AC-11). R1 and R2b optionally
+  accept ``probe_deps`` (revision 6, spec AC-11, backlog #5210) **solely as
+  classification metadata**: when given, it selects what ``classify_probes``
+  reports in ``probes`` from leaves each rung already computed for its own
+  comparison -- it never changes what ``fn`` computes or which leaves are
+  compared. Omitted (``None``, the default), both rungs behave exactly as
+  before revision 6: ``probes=()``. Either way, "nothing type-level
+  distinguishes an instrumented callable from a plain one" (spec AC-11), so a
+  caller can still pass a probe-carrying ``fn`` to any rung.
+- R3 is the only rung that *derives* anything from ``probe_deps`` beyond
+  classification: it uses the **DAG sinks** of ``probe_deps`` -- the names
+  that are never anyone else's declared predecessor -- to build a second,
+  filtered callable returning only the model's true ("primary") output(s), to
+  run the section-5.4 fidelity precondition before trusting anything else it
+  measures. R1/R2b never strip or filter ``fn``'s output this way.
 
 **Budget keying (divergence.py's own module docstring).** ``classify_probes``
 looks up a float leaf's calibrated budget under
@@ -58,7 +65,9 @@ from xtrax.export.compile import compile_for_target, run_native_vmfb
 from xtrax.export.composer import build_traceable_callable
 from xtrax.export.divergence import (
     LeafDivergence,
+    ProbeReport,
     RingResult,
+    _unbudgeted_probes,
     budget_key,
     budget_leaf,
     classify_probes,
@@ -616,6 +625,130 @@ def _declares_x86_64_v2(features: str) -> bool:
     return _X86_64_V2_FEATURES <= declared
 
 
+def _classify_rung_probes(
+    ring: str,
+    leaves_by_name: Mapping[str, tuple[LeafDivergence, ...]],
+    probe_deps: Mapping[str, tuple[str, ...]] | None,
+    budgets: Mapping[str, float] | None,
+) -> tuple[tuple[ProbeReport, ...], tuple[str, ...]]:
+    """Classify leaves R1/R2b already computed, against a caller-declared probe DAG.
+
+    Shared by ``r1_target_isa`` and ``r2b_lowering`` (revision 6, spec AC-11,
+    backlog #5210): both rungs already compute a full ``leaves_by_name`` for
+    their own structural comparison (``passed``) -- this only decides what
+    ``classify_probes`` reports in ``probes`` from those same leaves. It never
+    re-runs ``fn`` and never changes which leaves were compared.
+
+    Classification is **per probe** (260915 code review): one probe with a
+    diverged float leaf and no calibrated budget for it must not erase every
+    other probe's class. Only that probe, and any probe that transitively
+    depends on it, is omitted -- everything else is classified normally.
+
+    Args:
+        ring: The calling rung's name (``"R1"`` or ``"R2b"``), used only to
+            label a "not classified" note.
+        leaves_by_name: This rung's own per-name comparison, from
+            ``_compare_by_name`` -- classification never re-derives leaves.
+        probe_deps: The caller-declared probe DAG, or ``None`` to opt out of
+            classification entirely (the pre-revision-6 behaviour).
+        budgets: Per-leaf budgets, normally from R2a. Treated as ``{}`` when
+            ``None`` (an integer/bool-only probe DAG needs no budget at all;
+            a missing float budget is caught below, not here).
+
+    Returns:
+        ``((), ())`` when ``probe_deps`` is ``None`` -- ``probes=()``,
+        unchanged from before revision 6, so a direct call to either rung
+        without ``probe_deps`` keeps its existing behaviour exactly.
+
+        ``((), (note,))`` when a declared probe name (``_probe_iteration_order
+        (probe_deps)``, the same declaration-then-sorted order R3 uses) is
+        absent from ``leaves_by_name`` -- this rung's own comparison never
+        produced a leaf set for it, so there is nothing to classify at all.
+        Not raised: ``run_ladder``'s Layer 1 ``_default_validate`` already
+        rejects a ``probe_deps`` name absent from ``fn``'s own output before
+        any rung runs, so a name reaching here missing from
+        ``leaves_by_name`` is not that failure mode, and raising here would
+        be caught by Layer 2 and lose this rung's other notes.
+
+        Otherwise, ``(probes, notes)``: ``probes`` holds one ``ProbeReport``
+        per **classifiable** declared probe, in declaration order. A probe is
+        excluded from ``probes`` iff it has a diverged float leaf with no
+        entry in ``budgets`` for it (per :func:`_unbudgeted_probes`), or it
+        transitively depends -- via a declared ``probe_deps`` edge -- on a
+        probe that is excluded for either reason; every other declared probe
+        is classified. When any probe is excluded, ``notes`` names the
+        unbudgeted probes and (when non-empty) their dependents; a
+        cyclic or unknown probe name in ``probe_deps`` is a declaration error
+        that ``run_ladder``'s Layer 1 preflight (``_default_validate``)
+        already rejects before any rung runs, so ``classify_probes`` raising
+        ``ValueError`` for either is allowed to propagate here rather than
+        being silently downgraded to a note.
+    """
+    if probe_deps is None:
+        return (), ()
+
+    names = _probe_iteration_order(probe_deps)
+    missing = [name for name in names if name not in leaves_by_name]
+    if missing:
+        note = (
+            f"{ring} probes not classified: probe_deps name(s) {missing} are "
+            f"absent from this rung's own leaves; nothing to classify them "
+            f"against."
+        )
+        return (), (note,)
+
+    resolved_budgets: Mapping[str, float] = budgets if budgets is not None else {}
+    named = {name: leaves_by_name[name] for name in names}
+    unbudgeted = _unbudgeted_probes(named, resolved_budgets)
+
+    # A descendant of an unbudgeted probe cannot itself be honestly
+    # classified: its class depends on `max_pred_severity`, which is
+    # unresolved for an unbudgeted predecessor (its float leaf could still
+    # land WITHIN_BUDGET or BEYOND_BUDGET once a real budget exists) -- so
+    # e.g. AMPLIFIED vs ATTENUATED is undecidable. Grown to a fixpoint over
+    # `probe_deps`'s declared edges, since a blocked probe can itself have
+    # further descendants.
+    blocked = set(unbudgeted)
+    changed = True
+    while changed:
+        changed = False
+        for name in names:
+            if name in blocked:
+                continue
+            if any(pred in blocked for pred in probe_deps.get(name, ())):
+                blocked.add(name)
+                changed = True
+
+    classifiable = [name for name in names if name not in blocked]
+    classifiable_set = set(classifiable)
+    # Every predecessor of a classifiable probe is itself classifiable, by
+    # construction of `blocked` above -- `sub_deps` never references a name
+    # missing from `classifiable`.
+    sub_deps = {k: v for k, v in probe_deps.items() if k in classifiable_set}
+    probes = (
+        classify_probes({name: named[name] for name in classifiable}, sub_deps, resolved_budgets)
+        if classifiable
+        else ()
+    )
+
+    notes: tuple[str, ...] = ()
+    if blocked:
+        dependents = sorted(blocked - unbudgeted)
+        note = (
+            f"{ring} probes not classified: {sorted(unbudgeted)} have a diverged "
+            f"float leaf with no R2a budget (see R2a's notes)"
+        )
+        if dependents:
+            note += (
+                f"; {dependents} depend on them, so their class against an "
+                f"unresolved predecessor severity is undecidable"
+            )
+        note += ". Every other probe is classified."
+        notes = (note,)
+
+    return probes, notes
+
+
 def r1_target_isa(
     fn: Callable[..., Any],
     plan: Any,
@@ -623,6 +756,7 @@ def r1_target_isa(
     concrete_inputs: Sequence[Any],
     *,
     budgets: Mapping[str, float] | None = None,
+    probe_deps: Mapping[str, tuple[str, ...]] | None = None,
     boundaries: Mapping[str, Any] | None = None,
     scan_init: Any = None,
     input_class: str = "nominal",
@@ -643,27 +777,52 @@ def r1_target_isa(
     ``native-portable`` positively declares the x86-64-v2 set
     (``_declares_x86_64_v2``).
 
+    ``passed`` reports whether this rung completed a structural comparison
+    over comparable leaves -- it never reflects whether the two legs' *values*
+    agree, and it never consults ``probes``. Concretely: ``passed=False`` when
+    the ``cpu_features`` precondition fails (the ring refuses to interpret its
+    legs at all, per AC-16) or when an interpreted leaf comparison itself
+    FAILED (a shape/dtype mismatch between ``native`` and ``native-portable``,
+    consistent with R2a/R2b -- round 6 finding 4, 260914 code review); it is
+    still ``True`` when the legs were successfully compared and every leaf
+    diverges arbitrarily in *value* -- including a flipped integer index. That
+    value-level divergence is reported per probe in ``probes`` (revision 6,
+    spec AC-11, backlog #5210), not folded into ``passed``.
+
     Args:
         fn: Per-element function, run exactly as given (AC-11).
         plan: A BatchPlan.
         abstract_inputs: Abstract inputs to trace with.
         concrete_inputs: Concrete inputs to execute both legs with.
-        budgets: Per-leaf budgets from R2a, if available -- advisory only,
-            included in ``notes`` where a matching key exists.
+        budgets: Per-leaf budgets from R2a, if available -- advisory only
+            (section 3.2: a fusion-sensitivity budget is not a bound on
+            ISA-dependent codegen). Included in ``notes`` where a matching
+            key exists, and consulted when classifying a diverged float leaf
+            in ``probes``: a probe with such a leaf and no matching budget,
+            and any probe that transitively depends on it, is omitted from
+            ``probes`` and named in a note -- every other declared probe is
+            still classified (260915 code review; see
+            ``_classify_rung_probes``).
+        probe_deps: The declared probe DAG (section 5.3), or ``None`` (the
+            default) to skip classification entirely -- ``probes`` is then
+            ``()``, unchanged from before revision 6. When given, every
+            declared name is classified from the SAME native-vs-portable
+            leaves this rung already computed for ``passed`` -- classifying
+            never changes what is run or compared. See
+            ``_classify_rung_probes``.
         boundaries: Passed through to ``build_traceable_callable``.
         scan_init: Passed through to ``build_traceable_callable``.
         input_class: Section 6.2 label.
         in_contract: AC-17 label.
 
     Returns:
-        A ``RingResult`` for ``"R1"``. ``passed=False`` when the
-        ``cpu_features`` precondition fails -- the ring refuses to interpret
-        its legs, per AC-16 -- rather than reporting a false "no divergence".
-        Also ``False`` when a leg was interpreted but any leaf comparison
-        itself FAILED (a shape/dtype mismatch between ``native`` and
-        ``native-portable``) -- consistent with R2a and R2b, which treat the
-        identical condition the same way (round 6 finding 4, 260914 code
-        review).
+        A ``RingResult`` for ``"R1"``. ``probes`` holds one ``ProbeReport``
+        per classifiable declared name when classification ran, in
+        declaration order -- see ``passed``'s note above and
+        ``_classify_rung_probes`` for when classification is skipped
+        entirely (no ``probe_deps``, or a name absent from this rung's own
+        leaves) versus per-probe (a diverged float leaf with no matching
+        budget omits that probe and its dependents, not every probe).
     """
     callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
@@ -718,10 +877,12 @@ def r1_target_isa(
     portable_structured = jax.tree_util.tree_unflatten(exported.out_tree, list(portable_out))
 
     leaves_by_name = _compare_by_name(native_structured, portable_structured)
+    probes, probe_notes = _classify_rung_probes("R1", leaves_by_name, probe_deps, budgets)
     notes = (
         f"native cpu_features={native_features!r}",
         f"native-portable cpu_features={portable_features!r}",
         *_format_named_leaf_notes(leaves_by_name, budgets),
+        *probe_notes,
     )
     return RingResult(
         ring="R1",
@@ -729,11 +890,13 @@ def r1_target_isa(
         # and native-portable) must fail R1 the same way R2a already fails
         # on the identical condition -- not report passed=True with the
         # only sign being a "FAILED" string buried in `notes` (round 6
-        # finding 4, 260914 code review).
+        # finding 4, 260914 code review). `passed` never consults `probes`
+        # (see this function's own docstring) -- a flipped index is visible
+        # only in `probes`, never in `passed`.
         passed=not _any_leaf_failed(leaves_by_name),
         input_class=input_class,
         in_contract=in_contract,
-        probes=(),
+        probes=probes,
         notes=notes,
     )
 
@@ -1057,6 +1220,7 @@ def r2b_lowering(
     concrete_inputs: Sequence[Any],
     *,
     budgets: Mapping[str, float],
+    probe_deps: Mapping[str, tuple[str, ...]] | None = None,
     target: Target = NATIVE,
     boundaries: Mapping[str, Any] | None = None,
     scan_init: Any = None,
@@ -1067,7 +1231,22 @@ def r2b_lowering(
 
     ``budgets`` (from R2a) is **advisory here, not authoritative** (section
     3.2): a bound on fusion sensitivity is not a bound on lowering fidelity.
-    R2a and R2b are always reported separately for exactly this reason.
+    R2a and R2b are always reported separately for exactly this reason. That
+    same advisory relationship is what "advisory on R2b" (spec section 3.2)
+    means operationally when ``probe_deps`` is given: a probe's class is
+    computed against R2a's budgets and reported in ``probes``, not folded
+    into this rung's own authoritative ``passed`` (see below).
+
+    ``passed`` reports whether this rung completed a structural comparison
+    over comparable leaves -- it never reflects whether the two legs' *values*
+    agree, and it never consults ``probes``. Concretely: ``passed`` is
+    ``False`` only when a leaf comparison itself FAILED (a shape/dtype
+    mismatch between the ``jit`` and IREE legs, consistent with R2a/R1 --
+    round 6 finding 4, 260914 code review); it is still ``True`` when every
+    leaf compared successfully and diverges arbitrarily in *value* --
+    including a flipped integer index. That value-level divergence is
+    reported per probe in ``probes`` (revision 6, spec AC-11, backlog #5210),
+    not folded into ``passed``.
 
     Args:
         fn: Per-element function, run exactly as given (AC-11).
@@ -1075,6 +1254,17 @@ def r2b_lowering(
         abstract_inputs: Abstract inputs to trace with.
         concrete_inputs: Concrete inputs to run both legs with.
         budgets: Per-leaf budgets from R2a for this ``(model, input_class)``.
+            A probe with a diverged float leaf and no matching budget, and
+            any probe that transitively depends on it, is omitted from
+            ``probes`` and named in a note -- every other declared probe is
+            still classified (260915 code review; see
+            ``_classify_rung_probes``).
+        probe_deps: The declared probe DAG (section 5.3), or ``None`` (the
+            default) to skip classification entirely -- ``probes`` is then
+            ``()``, unchanged from before revision 6. When given, every
+            declared name is classified from the SAME jit-vs-IREE leaves
+            this rung already computed for ``passed`` -- classifying never
+            changes what is run or compared. See ``_classify_rung_probes``.
         target: Compilation target for the IREE leg.
         boundaries: Passed through to ``build_traceable_callable``.
         scan_init: Passed through to ``build_traceable_callable``.
@@ -1082,11 +1272,13 @@ def r2b_lowering(
         in_contract: AC-17 label.
 
     Returns:
-        A ``RingResult`` for ``"R2b"``. ``passed`` is ``False`` when any
-        leaf comparison itself FAILED (a shape/dtype mismatch between the
-        ``jit`` and IREE legs) -- consistent with R2a and R1, which treat
-        the identical condition the same way (round 6 finding 4, 260914
-        code review).
+        A ``RingResult`` for ``"R2b"``. ``probes`` holds one ``ProbeReport``
+        per classifiable declared name when classification ran, in
+        declaration order -- see ``passed``'s note above and
+        ``_classify_rung_probes`` for when classification is skipped
+        entirely (no ``probe_deps``, or a name absent from this rung's own
+        leaves) versus per-probe (a diverged float leaf with no matching
+        budget omits that probe and its dependents, not every probe).
     """
     callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
     exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
@@ -1097,16 +1289,19 @@ def r2b_lowering(
     iree_structured = jax.tree_util.tree_unflatten(exported.out_tree, list(iree_out))
 
     leaves_by_name = _compare_by_name(jit_result, iree_structured)
+    probes, probe_notes = _classify_rung_probes("R2b", leaves_by_name, probe_deps, budgets)
     return RingResult(
         ring="R2b",
         # See R1's identical comment (round 6 finding 4): a structurally
         # FAILED leaf must fail this ring, not just appear as a "FAILED"
-        # string buried in `notes`.
+        # string buried in `notes`. `passed` never consults `probes` (see
+        # this function's own docstring) -- a flipped index is visible only
+        # in `probes`, never in `passed`.
         passed=not _any_leaf_failed(leaves_by_name),
         input_class=input_class,
         in_contract=in_contract,
-        probes=(),
-        notes=_format_named_leaf_notes(leaves_by_name, budgets),
+        probes=probes,
+        notes=(*_format_named_leaf_notes(leaves_by_name, budgets), *probe_notes),
     )
 
 
@@ -1702,7 +1897,12 @@ def run_ladder(
             validation.
         concrete_inputs: Default concrete inputs, paired with
             ``abstract_inputs``.
-        probe_deps: The declared probe DAG (section 5.3).
+        probe_deps: The declared probe DAG (section 5.3). Forwarded to R1 and
+            R2b as classification metadata too (revision 6, spec AC-11,
+            backlog #5210) -- populating their own ``probes`` from leaves
+            they already compute, never changing what either runs -- as well
+            as to R3, which additionally derives its primary-only view from
+            it (see ``fn`` above).
         input_classes: Section 6.2 stratification. Defaults to a single
             ``nominal`` class built from ``abstract_inputs``/``concrete_inputs``.
         eager_fn: An independently-computed oracle over concrete inputs, for
@@ -1836,8 +2036,19 @@ def run_ladder(
         # codegen is the whole point of that comparison), so the ladder's
         # `target` parameter does not apply to it -- this is a deliberate
         # omission, not the same oversight as R0's (finding 4).
+        #
+        # `probe_deps` is forwarded to R1/R2b too (revision 6, spec AC-11,
+        # backlog #5210): unlike R3, this never changes what either rung
+        # runs or compares, only what `probes` reports from leaves each rung
+        # already computes for its own `passed`. `budgets` is still advisory
+        # for both (a fusion/lowering budget is not authoritative here) --
+        # they still run and classify below, per probe (260915 code review):
+        # a probe whose own diverged float leaf has no matching budget, and
+        # any probe that transitively depends on it, is omitted and named in
+        # a note (never a raise); every OTHER declared probe is still
+        # classified normally.
         try:
-            r1_result = r1(fn, plan, ai, ci, budgets=budgets, **common)
+            r1_result = r1(fn, plan, ai, ci, budgets=budgets, probe_deps=probe_deps, **common)
         except Exception as exc:  # noqa: BLE001 - Layer 2, see docstring
             r1_result = RingResult(
                 ring="R1",
@@ -1850,7 +2061,9 @@ def run_ladder(
         results.append(r1_result)
 
         try:
-            r2b_result = r2b(fn, plan, ai, ci, budgets=budgets, target=target, **common)
+            r2b_result = r2b(
+                fn, plan, ai, ci, budgets=budgets, probe_deps=probe_deps, target=target, **common
+            )
         except Exception as exc:  # noqa: BLE001 - Layer 2, see docstring
             r2b_result = RingResult(
                 ring="R2b",
@@ -1868,7 +2081,11 @@ def run_ladder(
         # budgets (e.g. a leaf whose shape/dtype differs between the oracle and
         # jit). Either way R3 would only surface a downstream MissingBudgetError
         # on the unbudgeted leaf, recorded against R3 and hiding R2a as the real
-        # cause. R1 and R2b treat budgets as advisory, so they still run above.
+        # cause. R1 and R2b treat budgets as advisory, so they still run and
+        # classify above per probe (260915 code review): a probe with an
+        # unbudgeted diverged float leaf, and its dependents, are omitted and
+        # named in a note (never a raise); every other declared probe is
+        # still classified.
         if not r2a_result.passed:
             r3_result = RingResult(
                 ring="R3",

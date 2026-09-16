@@ -268,22 +268,36 @@ class TestProbeResultPaths:
 
 
 # ---------------------------------------------------------------------------
-# AC-11 -- R0/R1/R2 runners accept no probe argument (API-surface claim)
+# AC-11 -- probe-argument API surface (revision 6, backlog #5210)
 # ---------------------------------------------------------------------------
 
 
-class TestAC11NoProbeArgumentOnR0R1R2:
-    @pytest.mark.parametrize(
-        "fn",
-        [rings.r0_replay_gate, rings.r1_target_isa, rings.r2a_fusion, rings.r2b_lowering],
-    )
-    def test_signature_has_no_probe_shaped_parameter(self, fn):
+class TestAC11ProbeArgumentSurface:
+    """AC-11 (revision 6): R0 and R2a accept no probe-shaped argument at all.
+    R1 and R2b accept ``probe_deps`` solely as classification metadata --
+    populating ``probes`` from leaves each already computes, never changing
+    what either runs. R3 remains the only rung that *derives* anything from
+    ``probe_deps`` beyond classification (its primary-only view).
+    """
+
+    @pytest.mark.parametrize("fn", [rings.r0_replay_gate, rings.r2a_fusion])
+    def test_r0_and_r2a_have_no_probe_shaped_parameter(self, fn):
         params = list(inspect.signature(fn).parameters)
         assert not any("probe" in name for name in params), (
             f"{fn.__name__} has a probe-shaped parameter: {params}"
         )
 
-    def test_r3_is_the_one_exception(self):
+    @pytest.mark.parametrize("fn", [rings.r1_target_isa, rings.r2b_lowering])
+    def test_r1_and_r2b_accept_probe_deps_defaulting_to_no_classification(self, fn):
+        params = inspect.signature(fn).parameters
+        assert "probe_deps" in params, f"{fn.__name__} must accept probe_deps (revision 6)"
+        assert params["probe_deps"].default is None, (
+            f"{fn.__name__}'s probe_deps must default to None -- omitting it must reproduce "
+            f"the pre-revision-6 behaviour (probes=()) exactly"
+        )
+        assert params["probe_deps"].kind == inspect.Parameter.KEYWORD_ONLY
+
+    def test_r3_still_requires_probe_deps_positionally(self):
         params = list(inspect.signature(rings.r3_probe).parameters)
         assert "probe_deps" in params
 
@@ -336,6 +350,21 @@ def _named_fn(x):
 
 
 _NAMED_PROBE_DEPS = {"probe1": (), "final": ("probe1",)}
+
+
+def _idx_and_float_fn(x):
+    """A two-name dict-output per-element function carrying ONE integer leaf
+    and one float leaf: `idx` (int32, no preds) -> `out` (float, depends on
+    idx). Used by the R1/R2b probe-classification tests (backlog #5210) to
+    exercise the exact motivating shape -- a same-shape, same-dtype int32
+    index leaf that can be half-flipped without becoming a structural
+    (shape/dtype) failure.
+    """
+    idx = jnp.arange(x.shape[0], dtype=jnp.int32)
+    return {"idx": idx, "out": x + 1.0}
+
+
+_IDX_FLOAT_PROBE_DEPS = {"idx": (), "out": ("idx",)}
 
 
 def _chain_fn(x):
@@ -1074,6 +1103,515 @@ class TestR2bLowering:
 def _flatten_for(fn, plan, abstract_inputs, concrete_inputs):
     callable_ = build_traceable_callable(fn, plan, None)
     return list(jax.tree_util.tree_leaves(jax.jit(callable_)(*concrete_inputs)))
+
+
+def _flip_half(arr: jax.Array) -> jax.Array:
+    """Same shape/dtype as ``arr``, with exactly half its flat entries changed.
+
+    Used to build a same-shape, same-dtype int32 leg that is a genuine VALUE
+    divergence -- never a structural (shape/dtype) failure, which is a
+    different, already-covered code path (``_any_leaf_failed``).
+    """
+    np_arr = np.asarray(arr)
+    flat = np_arr.reshape(-1).copy()
+    half = flat.shape[0] // 2
+    assert half > 0, "fixture must produce a non-empty leaf to flip"
+    flat[:half] = flat[:half] + 1
+    return jnp.asarray(flat.reshape(np_arr.shape), dtype=np_arr.dtype)
+
+
+class TestR1AndR2bProbeClassification:
+    """Backlog #5210 option (b): ``passed`` stays purely structural on R1/R2b
+    (it never consults ``probes``); ``probes`` now carries the value-level
+    signal by classifying leaves each rung already computes, via
+    ``probe_deps``. Never asserts anything about ``UNCOMPARABLE`` or a
+    failed-leaf classification -- that is owned by a concurrent
+    ``divergence.py`` change, not this one.
+    """
+
+    def test_r2b_headline_index_flip_is_discrete_flip_but_passed_stays_true(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """The exact motivating case from #5210: a same-shape, same-dtype
+        int32 index leaf with HALF its entries wrong must surface as
+        ``DISCRETE_FLIP`` in ``probes`` -- ``passed`` alone is blind to it.
+        """
+        idx_true, out_true = _flatten_for(
+            _idx_and_float_fn, toy_plan, toy_abstract_inputs, (toy_xs,)
+        )
+        idx_corrupt = _flip_half(idx_true)
+
+        fake_path = Path("/fake/r2b_idx_flip.vmfb")
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(path=fake_path),
+        )
+        monkeypatch.setattr(
+            rings, "run_native_vmfb", lambda path, *a, function="main": (idx_corrupt, out_true)
+        )
+
+        # A complete budget for every float leaf, keyed the same way R2a
+        # would (``out``'s own value is a single array, so `leaf.path == ""`
+        # and it keys as the bare probe name).
+        budgets = {d.budget_key("out", ""): d.ULP_FLOOR}
+
+        result = rings.r2b_lowering(
+            _idx_and_float_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            budgets=budgets,
+            probe_deps=_IDX_FLOAT_PROBE_DEPS,
+        )
+        assert result.passed is True, (
+            "passed is structural -- a value-level index flip must not fail it"
+        )
+        idx_probe = next(p for p in result.probes if p.name == "idx")
+        assert idx_probe.divergence_class == d.DivergenceClass.DISCRETE_FLIP
+
+        # Without probe_deps, passed is unchanged but probes is blind to the
+        # IDENTICAL divergence -- this is the headline point of the whole
+        # change: passed alone cannot see it, probes is what carries the
+        # signal.
+        result_no_probes = rings.r2b_lowering(
+            _idx_and_float_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            budgets=budgets,
+        )
+        assert result_no_probes.passed is True
+        assert result_no_probes.probes == ()
+
+    def test_r1_headline_index_flip_is_discrete_flip_but_passed_stays_true(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """Same headline case as R2b's sibling test, for R1's native-vs-
+        native-portable legs (cpu_features fakes as in
+        ``TestR1TargetIsa.test_interprets_legs_when_cpu_features_differ``).
+        """
+        idx_true, out_true = _flatten_for(
+            _idx_and_float_fn, toy_plan, toy_abstract_inputs, (toy_xs,)
+        )
+        idx_corrupt = _flip_half(idx_true)
+
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(
+                path=Path(f"/fake/{target.name}.vmfb")
+            ),
+        )
+        v2 = rings._X86_64_V2_FEATURE_STRING
+
+        def fake_features(path: Path) -> str:
+            return {"native.vmfb": v2 + ",+avx2", "native-portable.vmfb": v2}[path.name]
+
+        monkeypatch.setattr(rings, "_read_cpu_features", fake_features)
+
+        def fake_run(path: Path, *args, function="main"):
+            if path.name == "native.vmfb":
+                return (idx_true, out_true)
+            return (idx_corrupt, out_true)
+
+        monkeypatch.setattr(rings, "run_native_vmfb", fake_run)
+
+        budgets = {d.budget_key("out", ""): d.ULP_FLOOR}
+
+        result = rings.r1_target_isa(
+            _idx_and_float_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            budgets=budgets,
+            probe_deps=_IDX_FLOAT_PROBE_DEPS,
+        )
+        assert result.passed is True, (
+            "passed is structural -- a value-level index flip must not fail it"
+        )
+        idx_probe = next(p for p in result.probes if p.name == "idx")
+        assert idx_probe.divergence_class == d.DivergenceClass.DISCRETE_FLIP
+
+        result_no_probes = rings.r1_target_isa(
+            _idx_and_float_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            budgets=budgets,
+        )
+        assert result_no_probes.passed is True
+        assert result_no_probes.probes == ()
+
+    def test_r2b_diverged_float_leaf_with_no_budget_is_reported_unclassified(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """A diverged FLOAT probe with ``budgets={}`` must not raise -- it is
+        omitted from ``probes`` and named in a note, and ``passed``
+        (structural) stays True. 260915 code review: this must be PER PROBE,
+        not all-or-nothing -- an independent, budget-free sibling probe
+        (``probe1``, unperturbed and with no predecessor of its own) is still
+        classified even though ``final`` (which depends on it) is not.
+        """
+        # `jax.tree_util` flattens dict-output pytrees in sorted-key order,
+        # so `_named_fn`'s `{"probe1": ..., "final": ...}` flattens as
+        # (final, probe1) -- confirmed directly, not assumed.
+        final_true, probe1_true = _flatten_for(_named_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+        final_perturbed = final_true + 1.0  # genuine (non-identical) float divergence
+
+        fake_path = Path("/fake/r2b_unbudgeted.vmfb")
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(path=fake_path),
+        )
+        monkeypatch.setattr(
+            rings,
+            "run_native_vmfb",
+            lambda path, *a, function="main": (final_perturbed, probe1_true),
+        )
+
+        result = rings.r2b_lowering(
+            _named_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            budgets={},
+            probe_deps=_NAMED_PROBE_DEPS,
+        )
+        assert result.passed is True, "passed is structural; an unbudgeted probe must not fail it"
+        assert {p.name for p in result.probes} == {"probe1"}, (
+            "final is unbudgeted and omitted, but probe1 (no predecessor of "
+            "its own) does not depend on it and must still be classified"
+        )
+        probe1_report = next(p for p in result.probes if p.name == "probe1")
+        assert probe1_report.divergence_class == d.DivergenceClass.CLEAN
+        assert any("probes not classified" in n and "final" in n for n in result.notes)
+
+    def test_r1_refusal_path_with_probe_deps_never_runs_the_legs(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """R1's cpu_features precondition must still gate everything, even
+        with ``probe_deps`` given: ``probes == ()``, ``passed`` is False, and
+        the legs are never executed (recorded in a list, never a raising
+        sentinel -- see this module's Layer-2-swallows-AssertionError note
+        elsewhere in this file).
+        """
+        calls: list[str] = []
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(
+                path=Path(f"/fake/{target.name}.vmfb")
+            ),
+        )
+        monkeypatch.setattr(rings, "_read_cpu_features", lambda path: "same-features")
+
+        def record_run(path, *a, function="main"):
+            calls.append(str(path))
+            return jnp.zeros((4, 2), dtype=jnp.float32)
+
+        monkeypatch.setattr(rings, "run_native_vmfb", record_run)
+
+        result = rings.r1_target_isa(
+            _idx_and_float_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            probe_deps=_IDX_FLOAT_PROBE_DEPS,
+        )
+        assert result.passed is False
+        assert result.probes == ()
+        assert calls == [], "R1's refusal path must never execute either leg"
+
+    def test_r2b_identical_legs_every_probe_is_clean(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        jit_flat = _flatten_for(_idx_and_float_fn, toy_plan, toy_abstract_inputs, (toy_xs,))
+        fake_path = Path("/fake/r2b_clean.vmfb")
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(path=fake_path),
+        )
+        monkeypatch.setattr(
+            rings, "run_native_vmfb", lambda path, *a, function="main": tuple(jit_flat)
+        )
+
+        budgets = {d.budget_key("out", ""): d.ULP_FLOOR}
+        result = rings.r2b_lowering(
+            _idx_and_float_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            budgets=budgets,
+            probe_deps=_IDX_FLOAT_PROBE_DEPS,
+        )
+        assert result.passed is True
+        assert {p.name for p in result.probes} == {"idx", "out"}
+        assert all(p.divergence_class == d.DivergenceClass.CLEAN for p in result.probes)
+
+    def test_r2b_structurally_failed_leaf_is_uncomparable_and_fails_passed(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """AC-22 and AC-21: a structurally failed leaf (shape/dtype mismatch)
+        makes the probe UNCOMPARABLE, evaluated first in precedence. A
+        bit-identical float leaf below an UNCOMPARABLE predecessor (severity 2)
+        reads as ATTENUATED, not DISCRETE_FLIP or INJECTED.
+        """
+        idx_true, out_true = _flatten_for(
+            _idx_and_float_fn, toy_plan, toy_abstract_inputs, (toy_xs,)
+        )
+        # Return idx with one extra row (shape mismatch: (4, 2) -> (5, 2)).
+        idx_failed = jnp.concatenate([idx_true, jnp.array([[99, 99]], dtype=jnp.int32)], axis=0)
+
+        fake_path = Path("/fake/r2b_idx_shape_fail.vmfb")
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(path=fake_path),
+        )
+        monkeypatch.setattr(
+            rings, "run_native_vmfb", lambda path, *a, function="main": (idx_failed, out_true)
+        )
+
+        budgets = {d.budget_key("out", ""): d.ULP_FLOOR}
+
+        result = rings.r2b_lowering(
+            _idx_and_float_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            budgets=budgets,
+            probe_deps=_IDX_FLOAT_PROBE_DEPS,
+        )
+        assert result.passed is False, "a structurally failed leaf (shape mismatch) must fail R2b"
+        idx_probe = next(p for p in result.probes if p.name == "idx")
+        assert idx_probe.divergence_class == d.DivergenceClass.UNCOMPARABLE, (
+            "a leaf with shape/dtype mismatch must classify UNCOMPARABLE, not a value-level class"
+        )
+        out_probe = next(p for p in result.probes if p.name == "out")
+        assert out_probe.divergence_class != d.DivergenceClass.DISCRETE_FLIP, (
+            "the downstream float probe cannot inherit the integer predecessor's "
+            "UNCOMPARABLE as a DISCRETE_FLIP"
+        )
+        assert out_probe.divergence_class != d.DivergenceClass.INJECTED, (
+            "the downstream float probe is bit-identical, not injected"
+        )
+        assert out_probe.divergence_class == d.DivergenceClass.ATTENUATED, (
+            "a bit-identical (severity 0) leaf below a severity-2 predecessor is ATTENUATED"
+        )
+
+    def test_r2b_unbudgeted_float_probe_does_not_suppress_independent_discrete_flip(
+        self, monkeypatch, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """260915 code review headline: one diverged float probe (``out``)
+        with no R2a budget must not erase every other probe's class. ``idx``
+        has no predecessor relationship to ``out`` (``out`` depends on
+        ``idx``, the reverse of what would be needed to block it), so its
+        DISCRETE_FLIP must survive ``out`` being unbudgeted -- the all-or-
+        nothing ``except MissingBudgetError`` this replaces would instead
+        have reported ``probes=()`` and ``passed=True``, silently dropping
+        the flipped index.
+        """
+        idx_true, out_true = _flatten_for(
+            _idx_and_float_fn, toy_plan, toy_abstract_inputs, (toy_xs,)
+        )
+        idx_corrupt = _flip_half(idx_true)
+        out_perturbed = out_true + 1.0  # genuine float divergence; no budget for it
+
+        fake_path = Path("/fake/r2b_unbudgeted_and_flip.vmfb")
+        monkeypatch.setattr(
+            rings,
+            "compile_for_target",
+            lambda mlir, target, out_path=None: SimpleNamespace(path=fake_path),
+        )
+        monkeypatch.setattr(
+            rings,
+            "run_native_vmfb",
+            lambda path, *a, function="main": (idx_corrupt, out_perturbed),
+        )
+
+        result = rings.r2b_lowering(
+            _idx_and_float_fn,
+            toy_plan,
+            toy_abstract_inputs,
+            (toy_xs,),
+            budgets={},
+            probe_deps=_IDX_FLOAT_PROBE_DEPS,
+        )
+        assert result.passed is True, "passed is structural -- an unbudgeted probe must not fail it"
+        assert {p.name for p in result.probes} == {"idx"}, (
+            "out is unbudgeted and omitted, but idx does not depend on out "
+            "and must still be classified"
+        )
+        idx_probe = next(p for p in result.probes if p.name == "idx")
+        assert idx_probe.divergence_class == d.DivergenceClass.DISCRETE_FLIP
+        assert any("probes not classified" in n and "out" in n for n in result.notes)
+
+
+class TestClassifyRungProbesPerProbeUnbudgeted:
+    """Unit-level coverage of ``rings._classify_rung_probes``'s per-probe
+    blocking (260915 code review), with hand-built ``LeafDivergence`` tuples
+    -- no JAX trace, no fake compile/run.
+    """
+
+    def test_unbudgeted_probe_and_its_descendant_are_omitted_others_survive(self):
+        """``a`` (float, diverged, no budget) blocks itself and its
+        dependent ``b`` (b depends on a); ``c`` (an independent diverged
+        integer) and ``d`` (a budgeted, within-budget float) are unrelated
+        to ``a`` and must still be classified, in declaration order.
+        """
+        a_leaf = d.LeafDivergence(
+            path="",
+            dtype_class="float",
+            severity=d.Severity.BEYOND_BUDGET,
+            metrics={
+                "max_abs_diff": 1.0,
+                "max_rel_diff": 1.0,
+                "max_ulp_diff": 100.0,
+                "n_nonfinite_mismatch": 0.0,
+            },
+            failed=False,
+            message=None,
+        )
+        b_leaf = d.LeafDivergence(
+            path="",
+            dtype_class="integer",
+            severity=d.Severity.IDENTICAL,
+            metrics={
+                "exact_match_fraction": 1.0,
+                "first_mismatch_index": -1.0,
+                "n_mismatched": 0.0,
+            },
+            failed=False,
+            message=None,
+        )
+        c_leaf = d.LeafDivergence(
+            path="",
+            dtype_class="integer",
+            severity=d.Severity.BEYOND_BUDGET,
+            metrics={
+                "exact_match_fraction": 0.0,
+                "first_mismatch_index": 0.0,
+                "n_mismatched": 1.0,
+            },
+            failed=False,
+            message=None,
+        )
+        d_leaf = d.LeafDivergence(
+            path="",
+            dtype_class="float",
+            severity=d.Severity.BEYOND_BUDGET,
+            metrics={
+                "max_abs_diff": 0.01,
+                "max_rel_diff": 0.01,
+                "max_ulp_diff": 2.0,
+                "n_nonfinite_mismatch": 0.0,
+            },
+            failed=False,
+            message=None,
+        )
+        leaves_by_name = {"a": (a_leaf,), "b": (b_leaf,), "c": (c_leaf,), "d": (d_leaf,)}
+        probe_deps = {"a": (), "b": ("a",), "c": (), "d": ()}
+        budgets = {"d": d.ULP_FLOOR}  # 2.0 <= 4.0 -> WITHIN_BUDGET; a has no entry at all
+
+        probes, notes = rings._classify_rung_probes("R2b", leaves_by_name, probe_deps, budgets)
+
+        assert [p.name for p in probes] == ["c", "d"], (
+            "a is unbudgeted, b depends on a -- both omitted; c and d are "
+            "unrelated to a and must be classified, in declaration order"
+        )
+        c_report = next(p for p in probes if p.name == "c")
+        assert c_report.divergence_class == d.DivergenceClass.DISCRETE_FLIP
+        assert len(notes) == 1
+        assert "'a'" in notes[0], "note must name the unbudgeted probe"
+        assert "'b'" in notes[0], "note must name the dependent probe"
+
+
+class TestRunLadderForwardsProbeDepsToR1AndR2b:
+    def test_run_ladder_forwards_probe_deps_by_identity(
+        self, toy_plan, toy_xs, toy_abstract_inputs
+    ):
+        """``run_ladder`` must forward its own ``probe_deps`` to R1 and R2b
+        by identity -- call-recording fakes capture the kwarg, never a
+        raising sentinel (Layer 2 would swallow it).
+        """
+        seen: dict[str, Any] = {}
+
+        def fake_validate(*_args, **_kwargs):
+            pass
+
+        def fake_r0(*_args, **kwargs):
+            return d.RingResult(
+                ring="R0",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+
+        def fake_r2a(fn, plan, ai, ci, **kwargs):  # noqa: ARG001
+            result = d.RingResult(
+                ring="R2a",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+            return result, {}
+
+        def fake_r1(*_args, **kwargs):
+            seen["r1_probe_deps"] = kwargs.get("probe_deps")
+            return d.RingResult(
+                ring="R1",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+
+        def fake_r2b(*_args, **kwargs):
+            seen["r2b_probe_deps"] = kwargs.get("probe_deps")
+            return d.RingResult(
+                ring="R2b",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+
+        def fake_r3(*_args, **kwargs):
+            return d.RingResult(
+                ring="R3",
+                passed=True,
+                input_class=kwargs["input_class"],
+                in_contract=kwargs["in_contract"],
+                probes=(),
+                notes=(),
+            )
+
+        rings.run_ladder(
+            _named_fn,
+            plan=toy_plan,
+            abstract_inputs=toy_abstract_inputs,
+            concrete_inputs=(toy_xs,),
+            probe_deps=_NAMED_PROBE_DEPS,
+            eager_fn=lambda ci: None,
+            validate_fn=fake_validate,
+            r0=fake_r0,
+            r1=fake_r1,
+            r2a=fake_r2a,
+            r2b=fake_r2b,
+            r3=fake_r3,
+        )
+
+        assert seen["r1_probe_deps"] is _NAMED_PROBE_DEPS
+        assert seen["r2b_probe_deps"] is _NAMED_PROBE_DEPS
 
 
 class TestR3Probe:

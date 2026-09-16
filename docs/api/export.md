@@ -316,13 +316,35 @@ deliberately inert for the bug class this tooling exists to catch: an index
 divergence is either an exact match or a `DISCRETE_FLIP`, never a matter of
 degree.
 
+### Reading a `RingResult`
+
+`passed` records that a rung's comparison completed over comparable leaves —
+for R1, also that its CPU-feature precondition held — never that the two sides
+agree. Divergence is reported per probe in `probes`, classified against R2a's
+budgets. R1, R2b and R3 populate `probes` when given `probe_deps` (`run_ladder`
+always passes it); R0 and R2a never do. So a flipped index can show up as a
+`DISCRETE_FLIP` probe on a rung whose `passed` is `True` — check `probes`, not
+just `passed`:
+
+```python
+any(p.divergence_class != DivergenceClass.CLEAN for r in results for p in r.probes)
+```
+
+When R2a's budgets are incomplete, R1 and R2b omit only the affected probe (and
+anything that depends on it) from `probes` and say so in `notes` — every other
+declared probe is still classified, and `passed` is unaffected either way.
+
 ### Declared dependencies
 
 `probe_deps` names each probe's immediate predecessors, and classification
-(`CLEAN`, `AMPLIFIED`, `ATTENUATED`, `INJECTED`, `DISCRETE_FLIP`) is always
-against the worst predecessor. It is supplied by the caller, not inferred:
-dataflow edges cannot be recovered from a flat output tuple, so an
-undeclared dependency is an error rather than a default. It is also a
+(`CLEAN`, `AMPLIFIED`, `ATTENUATED`, `INJECTED`, `DISCRETE_FLIP`,
+`UNCOMPARABLE`) is always against the worst predecessor. `UNCOMPARABLE` is a
+probe with a leaf whose shape or dtype differs between the two sides: no
+element-wise comparison ran, and probes downstream of it are never labelled
+`INJECTED` or `DISCRETE_FLIP`, since that would assert a comparison that never
+happened. It is supplied by the caller, not inferred: dataflow edges cannot be
+recovered from a flat output tuple, so an undeclared dependency is an error
+rather than a default. It is also a
 property of the exported *configuration*, not of the model — a plan with an
 optional input branch can drop an edge entirely, so the same model can
 legitimately need two different `probe_deps` mappings across two exports.
