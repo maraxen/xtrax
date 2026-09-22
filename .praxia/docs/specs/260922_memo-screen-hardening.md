@@ -351,3 +351,16 @@ spec is FINAL.
 - #5231: S-4, in scope (T3).
 - #5233: N5 trace/eager divergence.
 - #5234: N3 banned-primitive list audit.
+
+## 11. Implementation record
+
+| Task | Commit | Evidence (orchestrator re-ran) |
+|---|---|---|
+| T1 #5216 | `1c3e4f8` | AC-9/AC-10 red on `b85e1e5`, green on branch; AC-11 green on both (pin). |
+| T2 #5214/#5215 | `38dccfa` | 20 of 23 `TestPerSignatureScreen` tests red on `b85e1e5`; the 3 green are the pins AC-5e/AC-7/AC-8b. 23/23 green on branch. The first (Haiku) fixer stalled with tests only; a Sonnet fixer implemented it and corrected 4 defective draft tests, AC-5e among them (it had asserted the opposite of the spec). |
+| T3 #5231 | `57b8863` | AC-14 and AC-15 red on `b85e1e5` with a false `MemoStalenessError`; green on branch. |
+| T4 docs | `1dede55`, `e3498d0` | The second commit removed a prompt instruction that had leaked into the docs and corrected a wrong trace/eager example. |
+| Audit gaps | `e999bdc` | The Sonnet mutation audit found 4 surviving mutations, all test gaps: non-latching refusal, a confounded AC-6, the STATIC trace bound, and the `build_key` digest and container type in the token. One new test per gap; the orchestrator re-verified F1 and F3b red under their mutations. |
+
+Follow-ups filed during the sprint: #5233 (N5), #5234 (N3), #5240 (all-default wrap-time
+comment; NaN static-key collapse).
