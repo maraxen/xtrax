@@ -1322,3 +1322,104 @@ class TestDeferredScreen:
         assert wrapped._memo_core.screen_latched_error is None
         with pytest.raises(MemoImpurityError):
             wrapped(x)  # re-screens after rewrap and fails again
+
+
+class TestSpotCheckReplay:
+    """T3 §3.6 (#5231): spot-check replay uses this call's own args and kwargs.
+
+    AC-14, AC-15: kwargs-faithful spot-check replay, no races.
+    """
+
+    def test_ac14_kwarg_spot_check_replay(self):
+        """AC-14: f(x, *, scale=1.0) called twice with scale=3.0 hits without staleness."""
+
+        def f(x, *, scale=1.0):
+            return x * scale
+
+        wrapped = memoize_jaxpr(f, policy=MemoPolicy(spot_check_every=1))
+        x = jnp.ones((4,), jnp.float32)
+
+        # First call: miss
+        result1 = wrapped(x, scale=3.0)
+        np.testing.assert_allclose(result1, x * 3.0)
+
+        # Second call: hit + spot-check (should NOT raise MemoStalenessError)
+        result2 = wrapped(x, scale=3.0)
+        np.testing.assert_allclose(result2, x * 3.0)
+        assert wrapped._memo_core.stats.hits == 1
+        assert wrapped._memo_core.stats.spot_check_mismatches == 0
+
+    def test_ac15_deterministic_race_spot_check(self, monkeypatch):
+        """AC-15: deterministic race test, no sleeps.
+
+        Thread 1 calls f(A) (spot-checked hit), blocks on build_key patch until
+        Thread 2 completes f(B) call. Assert thread 1 gets no staleness error.
+        """
+        import threading
+
+        def fn(x):
+            return x * 2.0
+
+        A = jnp.ones((4,), jnp.float32)
+        B = jnp.full((4,), 2.0, jnp.float32)
+
+        wrapped = memoize_jaxpr(fn, policy=MemoPolicy(spot_check_every=1))
+        core = wrapped._memo_core
+
+        # Warm up: f(A) is a miss
+        wrapped(A)
+        assert core.stats.misses == 1
+
+        # Monkeypatch build_key to block on first detection of A
+        orig_build_key = core.build_key
+        entered = threading.Event()
+        release = threading.Event()
+        detected_a = {"count": 0}
+
+        def patched_build_key(*a, **k):
+            # Detect A: check if A is in the args tuple
+            for arg_container in a:
+                if isinstance(arg_container, tuple):
+                    for elem in arg_container:
+                        if elem is A:
+                            detected_a["count"] += 1
+                            if detected_a["count"] == 1:
+                                # First detection of A: signal and wait
+                                entered.set()
+                                release.wait(timeout=10)
+                            break
+            return orig_build_key(*a, **k)
+
+        monkeypatch.setattr(core, "build_key", patched_build_key)
+
+        # Thread 1: call wrapped(A) (hit + spot-check)
+        t1_result = {}
+        t1_error = {}
+
+        def thread1_target():
+            try:
+                t1_result["value"] = wrapped(A)
+            except Exception as exc:
+                t1_error["exc"] = exc
+
+        t1 = threading.Thread(target=thread1_target)
+        t1.start()
+
+        # Wait for t1 to enter the patched build_key
+        assert entered.wait(timeout=10), "Thread 1 did not enter build_key patch"
+
+        # Main thread: call wrapped(B) to completion
+        result_b = wrapped(B)
+        np.testing.assert_allclose(result_b, B * 2.0)
+
+        # Release thread 1
+        release.set()
+
+        # Join thread 1 with timeout
+        t1.join(timeout=10)
+        assert not t1.is_alive(), "Thread 1 hung (deadlock detected)"
+
+        # Assert thread 1 succeeded
+        assert "exc" not in t1_error, f"Thread 1 raised: {t1_error.get('exc')}"
+        assert "value" in t1_result
+        np.testing.assert_allclose(t1_result["value"], A * 2.0)

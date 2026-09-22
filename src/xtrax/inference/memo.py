@@ -697,7 +697,7 @@ class _MemoCore:
                 value = None
         if do_spot:
             # calls counter incremented inside _maybe_spot_check_unlocked
-            self._maybe_spot_check_unlocked(key)
+            self._maybe_spot_check_unlocked(key, args, kwargs)
             return value
         self.stats.misses += 1
 
@@ -760,7 +760,7 @@ class _MemoCore:
                 stacklevel=2,
             )
 
-    def _maybe_spot_check_unlocked(self, key: str) -> None:
+    def _maybe_spot_check_unlocked(self, key: str, args: tuple, kwargs: dict) -> None:
         with self.lock:
             if self.stats.spot_check_mismatches > 0:
                 raise MemoStalenessError("spot_check_mismatches > 0: poisoned until .memo_reset()")
@@ -769,13 +769,8 @@ class _MemoCore:
                 return
             cached_value = entry.value
         # Recompute OUTSIDE the lock via UNWRAPPED fn (fresh closure read).
-        # Spot-check uses the SAME key => same inputs; we must recompute from
-        # stored args. We deliberately store nothing beyond the value, so
-        # spot-check replays only when the wrapper was given inputs; therefore
-        # we stash the latest args on the core at call time.
-        if self._last_args is None:
-            return
-        fresh = self.fn(*self._last_args)
+        # Replay uses this call's own (args, kwargs) (#5231).
+        fresh = self.fn(*args, **kwargs)
         jax.block_until_ready(fresh)
         cached_flat = jax.tree_util.tree_leaves(cached_value)
         fresh_flat = jax.tree_util.tree_leaves(fresh)
@@ -794,8 +789,6 @@ class _MemoCore:
                     "computation. Entry evicted; counter poisoned until "
                     ".memo_reset()."
                 )
-
-    _last_args: tuple | None = None
 
     def reset(self) -> None:
         with self.lock:
@@ -905,7 +898,6 @@ def memoize_jaxpr(
 
         @functools_wraps(f)
         def _wrapped(*args: Any, **kwargs: Any) -> Any:
-            core._last_args = args
             result = core.call(*args, **kwargs)
             stats_holder["snapshot"] = dict(core.stats.as_dict())
             return result
