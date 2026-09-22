@@ -356,7 +356,8 @@ would still miss constvars.
 
 - A function that consults the value of an array argument in Python (branching
   on it, boolean indexing, `np.asarray`) raises `MemoKeyUnsupportedLeafError`.
-- Other errors raised while tracing propagate unchanged.
+- `TypeError`s raised while tracing surface as `MemoKeyUnsupportedLeafError`
+  (chained to the original); other errors propagate unchanged.
 
 **Latch.** A screen rejection on any signature latches the wrapper, and every
 later call raises until `.memo_rewrap()`.

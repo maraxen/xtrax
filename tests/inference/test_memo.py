@@ -771,7 +771,7 @@ class TestPerSignatureScreen:
     """
 
     # AC-1: #5214 — shape-dependent donation is re-screened per call signature
-    def test_ac1_shape_dependent_donation_not_rescreened(self):
+    def test_ac1_shape_dependent_donation_rescreened(self):
         def f(x):
             if x.shape[0] > 4:
                 return jax.jit(lambda y: y * 2, donate_argnums=0)(x)
@@ -785,7 +785,7 @@ class TestPerSignatureScreen:
             wrapped(jnp.ones((8,), jnp.float32))  # 2nd call: shape (8,), should raise
 
     # AC-2: Purity screen also re-screened per signature (shape-dependent impurity)
-    def test_ac2_shape_dependent_impurity_not_rescreened(self):
+    def test_ac2_shape_dependent_impurity_rescreened(self):
         def f(x):
             if x.shape[0] > 4:
                 return x + jax.random.uniform(jax.random.key(0), x.shape)
@@ -797,7 +797,7 @@ class TestPerSignatureScreen:
             wrapped(jnp.ones((8,), jnp.float32))  # Second shape: impure, raises MemoImpurityError
 
     # AC-3: #5215 — kwargs are traced, kwargs-dependent donation is screened
-    def test_ac3_kwarg_dependent_donation_not_traced(self):
+    def test_ac3_kwarg_dependent_donation_traced(self):
         def f(x, *, fast=False):
             if fast:
                 return jax.jit(lambda y: y * 2, donate_argnums=0)(x)
@@ -1602,3 +1602,266 @@ class TestSpotCheckReplay:
         assert "exc" not in t1_error, f"Thread 1 raised: {t1_error.get('exc')}"
         assert "value" in t1_result
         np.testing.assert_allclose(t1_result["value"], A * 2.0)
+
+
+class TestCodeReviewFixes:
+    """/code-review findings on PR #159 (spec 260922_memo-screen-hardening),
+    fixed CR-1 .. CR-6. See docs/api/inference.md and memo.py comments tagged
+    CR-N for the corresponding fix."""
+
+    # -- CR-1: string/bytes leaf digests are not injective -----------------
+
+    def test_cr1_string_leaf_digest_injective(self):
+        """`_leaf_digest`'s old `b"str:" + enc` (no length) let two calls with
+        different string args alias onto the same digest stream when their
+        concatenation matches: digest("a") + digest("str:b") == digest("astr:")
+        + digest("b"). `g`'s traced program (two array outputs) does not
+        depend on `a`/`b` at all — they are only used as PYTHON DICT KEYS in
+        the return value — so the screen digest is identical for both calls
+        and the collision, if any, is entirely `build_key`'s leaf-digest bug.
+        Length-prefixing fixes it: both calls miss, and the second call's
+        returned dict has ITS OWN keys, not the first call's.
+        """
+
+        def g(x, a, b):
+            return {a: x, b: x * 3}
+
+        wrapped = memoize_jaxpr(g)
+        x = jnp.ones((3,), jnp.float32)
+
+        r1 = wrapped(x, "a", "str:b")
+        r2 = wrapped(x, "astr:", "b")
+
+        stats = wrapped.memo_get_stats()
+        assert stats["misses"] == 2, "colliding digest would serve call 2 from call 1's cache (hit)"
+        assert stats["hits"] == 0
+        assert sorted(r1.keys()) == ["a", "str:b"]
+        assert sorted(r2.keys()) == ["astr:", "b"], "call 2 must return ITS OWN keys, not call 1's"
+
+    def test_cr1_bytes_leaf_digest_injective(self):
+        """Same collision shape as test_cr1_string_leaf_digest_injective, for
+        `bytes` leaves: the old unprefixed `b"bytes:" + leaf` scheme aliases
+        `enc(b"a") + enc(b"bytes:b")` with `enc(b"abytes:") + enc(b"b")`
+        (both concatenate to `b"bytes:abytes:bytes:b"`)."""
+
+        def g(x, a, b):
+            return {a: x, b: x * 3}
+
+        wrapped = memoize_jaxpr(g)
+        x = jnp.ones((3,), jnp.float32)
+
+        r1 = wrapped(x, b"a", b"bytes:b")
+        r2 = wrapped(x, b"abytes:", b"b")
+
+        stats = wrapped.memo_get_stats()
+        assert stats["misses"] == 2
+        assert stats["hits"] == 0
+        assert sorted(r1.keys()) == [b"a", b"bytes:b"]
+        assert sorted(r2.keys()) == [b"abytes:", b"b"]
+
+    def test_cr1_static_exact_token_already_injective_by_comment(self):
+        """Pin: `_static_exact_token` is unchanged (per CR-1's instruction not
+        to touch it) — its result is embedded as one element of a
+        structurally-compared tuple descriptor, never concatenated into a
+        flat byte stream, so it needs no length prefix. Confirmed here by
+        checking two leaves whose encodings would alias under naive
+        concatenation still produce DIFFERENT descriptors (they always did;
+        this pins that `_classify_leaf`, unlike the old `_leaf_digest`, was
+        never the source of the CR-1 collision)."""
+        from xtrax.inference.memo import _classify_leaf
+
+        _, desc_a = _classify_leaf("a", "ABSTRACT")
+        _, desc_b = _classify_leaf("astr:", "ABSTRACT")
+        assert desc_a != desc_b
+
+    # -- CR-2: spot-check hit path never increments stats.calls -------------
+
+    def test_cr2_spot_check_hit_counts_call(self):
+        """1 miss + 8 identical hits, `spot_check_every=3`. Derivation of the
+        expected `stats["calls"]` from the counter semantics (memo.py
+        `call()`): `next_call_number = self.stats.calls + 1` is checked
+        `% 3 == 0`, evaluated freshly BEFORE each hit's own increment:
+
+            call 1 (miss):            calls 0 -> 1
+            call 2 (hit #1): next=2,  2%3 != 0            -> calls 1 -> 2
+            call 3 (hit #2): next=3,  3%3 == 0  spot-check -> calls 2 -> 3
+            call 4 (hit #3): next=4,  4%3 != 0            -> calls 3 -> 4
+            call 5 (hit #4): next=5,  5%3 != 0            -> calls 4 -> 5
+            call 6 (hit #5): next=6,  6%3 == 0  spot-check -> calls 5 -> 6
+            call 7 (hit #6): next=7,  7%3 != 0            -> calls 6 -> 7
+            call 8 (hit #7): next=8,  8%3 != 0            -> calls 7 -> 8
+            call 9 (hit #8): next=9,  9%3 == 0  spot-check -> calls 8 -> 9
+
+        So `stats["calls"] == 9` (every call, hit or miss, counted exactly
+        once), with exactly 3 spot-checks among the 8 hits. Each spot-check
+        recomputes via the unwrapped `fn`, so concrete (non-Tracer) `fn`
+        executions == 1 miss + 3 spot-check recomputes == 4.
+        """
+        calls = {"concrete": 0}
+
+        def f(x):
+            if not isinstance(x, jax.core.Tracer):
+                calls["concrete"] += 1
+            return x * 2
+
+        wrapped = memoize_jaxpr(f, policy=MemoPolicy(spot_check_every=3))
+        x = jnp.ones((3,), jnp.float32)
+
+        wrapped(x)  # miss
+        for _ in range(8):
+            wrapped(x)  # hits, some spot-checked
+
+        stats = wrapped.memo_get_stats()
+        assert stats["calls"] == 9
+        assert calls["concrete"] == 4
+
+    def test_cr2_spot_check_entry_evicted_still_counts_call(self):
+        """The early-return path in `_maybe_spot_check_unlocked` (the entry
+        was evicted from the cache between the hit lookup and the recompute)
+        must still count the call. Force eviction via `max_entries=1`: a
+        second signature's miss evicts the first signature's only entry, so a
+        third call that hits the (stale) key for the first entry finds it
+        already gone."""
+
+        def f(x):
+            return x * 2
+
+        wrapped = memoize_jaxpr(f, policy=MemoPolicy(max_entries=1, spot_check_every=1))
+        x = jnp.ones((3,), jnp.float32)
+        y = jnp.ones((5,), jnp.float32)
+
+        wrapped(x)  # miss, caches x's entry
+        core = wrapped._memo_core
+        digest = core._ensure_screened((x,), {})
+        key_x = core.build_key(digest, (x,), {})
+
+        wrapped(y)  # miss on a DIFFERENT shape -> evicts x's entry (max_entries=1)
+        assert key_x not in core.cache
+
+        calls_before = wrapped.memo_get_stats()["calls"]
+        core._maybe_spot_check_unlocked(key_x, (x,), {})  # entry gone -> early return
+        assert wrapped.memo_get_stats()["calls"] == calls_before + 1
+
+    # -- CR-3: donation site wrapped_input_leaf_indices with static leaves --
+
+    def test_cr3_donation_index_maps_through_static_leaves(self):
+        """`d(flag, x)` holds `flag` (a bool) static (D-2), so only `x` is
+        traced and `closed.jaxpr.invars` has length 1 — its sole invar is `x`,
+        the flat leaf at index 1 (flag is index 0). The old identity mapping
+        reported the donated invar's own position (0) as if it were the
+        wrapped call's flat leaf index; the fix maps invar index 0 through
+        `traced_positions` (which is `(1,)`) to the correct flat leaf index 1.
+        """
+
+        from xtrax.inference.memo import MemoDonationError
+
+        def d(flag, x):
+            return jax.jit(lambda y: y * 2, donate_argnums=0)(x)
+
+        wrapped = memoize_jaxpr(d)
+        x = jnp.ones((3,), jnp.float32)
+        with pytest.raises(MemoDonationError) as exc_info:
+            wrapped(True, x)
+        assert exc_info.value.sites[0][3] == (1,)
+
+    def test_cr3_donation_index_arrays_only_unaffected(self):
+        """Regression: when every leaf is an array (nothing held static),
+        `traced_positions` is the identity permutation, so `j == leaf index`
+        exactly as before CR-3. Pins that the existing array-only donation
+        index tests (TestDonation) keep their old assertions unchanged."""
+        from xtrax.inference.memo import MemoDonationError
+
+        def f(p, y):
+            a, b = p
+            return a + b + y
+
+        wrapped = memoize_jaxpr(jax.jit(f, donate_argnums=1))
+        with pytest.raises(MemoDonationError) as exc_info:
+            wrapped((jnp.ones((4,)), jnp.ones((4,))), jnp.ones((4,)))
+        assert exc_info.value.sites[0][3] == (2,)
+
+    # -- CR-4: IndexError classification is too broad ------------------------
+
+    def test_cr4_plain_indexerror_propagates_unchanged(self):
+        """A user function indexing a plain Python TUPLE out of range (a real
+        bug, unrelated to consulting an array's value) must surface as a bare
+        `IndexError`, not be misreported as
+        `MemoKeyUnsupportedLeafError` ("consults the value of an array
+        argument"). Array-only args, so there is no STATIC retry to muddy the
+        classification."""
+
+        def ib(x, xs):
+            return x + xs[5]
+
+        wrapped = memoize_jaxpr(ib)
+        x = jnp.ones((3,), jnp.float32)
+        xs = (jnp.ones((3,), jnp.float32), jnp.ones((3,), jnp.float32))
+        with pytest.raises(IndexError) as exc_info:
+            wrapped(x, xs)
+        assert not isinstance(exc_info.value, MemoKeyUnsupportedLeafError)
+        assert "tuple index out of range" in str(exc_info.value)
+
+    def test_cr4_boolean_indexing_still_classified(self):
+        """AC-8 regression: `x[x > 0]` (JAX boolean/nonconcrete indexing) must
+        still raise `MemoKeyUnsupportedLeafError` — this is
+        `jax.errors.NonConcreteBooleanIndexError`, the narrowed subclass CR-4
+        keeps classified, not a plain `IndexError`."""
+
+        def f(x):
+            return x[x > 0]
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+        with pytest.raises(MemoKeyUnsupportedLeafError) as exc_info:
+            wrapped(x)
+        assert "value of an array argument" in str(exc_info.value)
+
+    # -- CR-5: the fallback discards the ABSTRACT exception -------------------
+
+    def test_cr5_abstract_failure_kept_as_note_on_static_failure(self):
+        """An `int` arg forces the ABSTRACT->STATIC fallback (§3.1). The body
+        raises `ValueError("boom")` UNCONDITIONALLY, so both the ABSTRACT and
+        the STATIC trace attempts fail with it. The STATIC failure is what
+        propagates (retry policy unchanged); CR-5 additionally attaches a
+        note recording that the ABSTRACT attempt failed first, so that
+        information is not silently discarded."""
+
+        def f(x, n):
+            raise ValueError("boom")
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((3,), jnp.float32)
+        with pytest.raises(ValueError) as exc_info:
+            wrapped(x, 5)
+        notes = list(getattr(exc_info.value, "__notes__", []))
+        assert any("ABSTRACT-mode trace failed first" in n and "boom" in n for n in notes), notes
+
+    # -- CR-6: the x64 toggle reuses a stale digest/key -----------------------
+
+    def test_cr6_x64_toggle_forces_new_key(self):
+        """`jnp.asarray(x) * 1.0` genuinely depends on the live x64 setting
+        (a `np.float64` input truncates to float32 output with x64 disabled,
+        stays float64 with it enabled). Calling the SAME signature once
+        outside and once inside an `enable_x64()` context must MISS both
+        times (not reuse the pre-toggle digest/key), and the inside result's
+        dtype must reflect x64 being live."""
+
+        def f(x):
+            return jnp.asarray(x) * 1.0
+
+        wrapped = memoize_jaxpr(f)
+        x = np.ones((3,), np.float64)
+
+        r_outside = wrapped(x)
+        assert r_outside.dtype == np.float32
+
+        x64_ctx = jax.enable_x64 if hasattr(jax, "enable_x64") else None
+        if x64_ctx is None:
+            pytest.skip("jax.enable_x64 context manager unavailable in this jax version")
+        with x64_ctx():
+            r_inside = wrapped(x)
+            assert r_inside.dtype == np.float64
+
+        stats = wrapped.memo_get_stats()
+        assert stats["misses"] == 2, "x64 toggle must force a fresh trace/key, not reuse the entry"
+        assert stats["hits"] == 0

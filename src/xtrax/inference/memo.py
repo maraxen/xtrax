@@ -142,10 +142,15 @@ def _leaf_digest(leaf: Any, sink: hashlib._Hash) -> None:
         sink.update(f"|wt={bool(weak)}".encode())
         return
     if isinstance(leaf, bytes):
-        sink.update(b"bytes:" + leaf)
+        # CR-1: length-prefixed so back-to-back leaf digests in one stream
+        # (build_key has no separator between leaves) cannot alias across a
+        # boundary, e.g. digest("a")+digest("str:b") == digest("astr:")+digest("b")
+        # under the old unprefixed scheme.
+        sink.update(b"bytes:%d:" % len(leaf) + leaf)
         return
     if isinstance(leaf, str):
-        sink.update(b"str:" + leaf.encode("utf-8", "surrogatepass"))
+        enc = leaf.encode("utf-8", "surrogatepass")
+        sink.update(b"str:%d:" % len(enc) + enc)
         return
     if isinstance(leaf, (int, float, bool)):
         sink.update(f"{type(leaf).__name__}({leaf!r})".encode())
@@ -218,7 +223,16 @@ def _fits_default_int(value: int) -> bool:
 
 def _static_exact_token(leaf: Any) -> str | bytes:
     """Exact-value token for a leaf that is always held static (spec §3.1
-    item 3): repr() for numbers, exact (unnormalized) bytes for str/bytes."""
+    item 3): repr() for numbers, exact (unnormalized) bytes for str/bytes.
+
+    CR-1: unlike `_leaf_digest`, this does NOT need a length prefix. Its
+    result is always embedded as one element of a Python tuple descriptor
+    (`("static", type_name, exact_value_token)`), which is itself one element
+    of the larger `descriptors` tuple compared/hashed as a structured Python
+    object (never concatenated into a flat byte/string stream). Tuple
+    equality is positional and structural, so two different leaves can never
+    alias into the same descriptor regardless of their encoded length.
+    """
     if isinstance(leaf, str):
         return leaf.encode("utf-8", "surrogatepass")
     if isinstance(leaf, bytes):
@@ -271,11 +285,18 @@ def _classify_leaf(leaf: Any, mode: str) -> tuple[str, tuple]:
 
 def _mode_token(
     leaves: list, treedef: Any, mode: str
-) -> tuple[tuple[str, Any, tuple], tuple[int, ...], bool]:
+) -> tuple[tuple[str, Any, tuple, bool], tuple[int, ...], bool]:
     """Classify every leaf under `mode` and return `(token, traced_positions,
     has_dyn)`. `traced_positions` is which flat-leaf indices get traced by
     `_trace_closed`: array leaves always; traceable scalars ("dyn") only in
-    ABSTRACT mode (spec §3.1 "ABSTRACT/STATIC mode" paragraphs)."""
+    ABSTRACT mode (spec §3.1 "ABSTRACT/STATIC mode" paragraphs).
+
+    CR-6: the token carries `bool(jax.config.jax_enable_x64)`, read per call.
+    Without it, toggling the x64 flag between calls of the SAME signature
+    reused the screened-signature table entry from before the toggle (the
+    digest lookup never re-traces), serving a stale digest/key pair keyed to
+    the wrong dtype's traced program.
+    """
     kinds: list[str] = []
     descriptors: list[tuple] = []
     for leaf in leaves:
@@ -285,7 +306,8 @@ def _mode_token(
     traced_kinds = ("arr", "dyn") if mode == "ABSTRACT" else ("arr",)
     traced = tuple(i for i, k in enumerate(kinds) if k in traced_kinds)
     tag = "A" if mode == "ABSTRACT" else "S"
-    token = (tag, treedef, tuple(descriptors))
+    x64 = bool(jax.config.jax_enable_x64)
+    token = (tag, treedef, tuple(descriptors), x64)
     has_dyn = any(k == "dyn" for k in kinds)
     return token, traced, has_dyn
 
@@ -311,16 +333,25 @@ def _raise_classified(exc: Exception) -> NoReturn:
     """Classify a failed FINAL trace (spec §3.1 "Classification of a failed
     final trace"): STATIC mode, or ABSTRACT mode when there are no traceable
     scalars. Raises `MemoKeyUnsupportedLeafError` chained `from exc`, or
-    re-raises `exc` unchanged."""
-    if isinstance(
-        exc,
-        (
-            jax.errors.ConcretizationTypeError,
-            jax.errors.TracerIntegerConversionError,
-            jax.errors.TracerArrayConversionError,
-            IndexError,
-        ),
-    ):
+    re-raises `exc` unchanged.
+
+    CR-4: bare `IndexError` was too broad — a user function indexing a plain
+    Python tuple/list out of range (a real bug, nothing to do with an array
+    argument's value) was misreported as "consults the value of an array
+    argument". The array-value idiom that legitimately raises an `IndexError`
+    subclass is boolean indexing (`x[x > 0]`), which JAX raises as
+    `jax.errors.NonConcreteBooleanIndexError` specifically — narrow the check
+    to that. Any other `IndexError` falls through to the final `raise exc`
+    below and propagates unchanged.
+    """
+    classified: tuple[type[Exception], ...] = (
+        jax.errors.ConcretizationTypeError,
+        jax.errors.TracerIntegerConversionError,
+        jax.errors.TracerArrayConversionError,
+    )
+    if hasattr(jax.errors, "NonConcreteBooleanIndexError"):
+        classified = (*classified, jax.errors.NonConcreteBooleanIndexError)
+    if isinstance(exc, classified):
         raise MemoKeyUnsupportedLeafError(
             "Function consults the value of an array argument in Python "
             "(branching, indexing, or conversion), which cannot be screened."
@@ -410,22 +441,42 @@ def _eqn_label(eqn) -> str:
     return eqn.primitive.name
 
 
-def _wrapped_leaf_indices(eqn, operand_indices: tuple[int, ...], closed_invars) -> tuple[int, ...]:
+def _wrapped_leaf_indices(
+    eqn,
+    operand_indices: tuple[int, ...],
+    closed_invars,
+    invar_to_leaf: tuple[int, ...] | None = None,
+) -> tuple[int, ...]:
     """Identity lookup only (not provenance tracing): for each donated
     operand of a TOP-LEVEL equation, find `j` such that the operand var IS
-    (identity) `closed_invars[j]` — an index into the flattened pytree leaves
-    of the wrapped function's positional args."""
+    (identity) `closed_invars[j]` — an index into `closed.jaxpr.invars`.
+
+    CR-3: `closed.jaxpr.invars` corresponds only to the TRACED flat leaves
+    (`traced_positions` from `_mode_token`/`_trace_closed`), not to every
+    flattened `(args, kwargs)` leaf, whenever some leaves are held static
+    (bool/enum/str/bytes leaves, or scalars in STATIC mode). `invar_to_leaf`
+    maps invar index `j` -> the true flat leaf index (`traced_positions[j]`).
+    `None` means identity (every leaf was traced, e.g. an arrays-only call),
+    which keeps `j == leaf index` and leaves existing array-only callers
+    unaffected.
+    """
     out: list[int] = []
     for i in operand_indices:
         operand = eqn.invars[i]
         for j, invar in enumerate(closed_invars):
             if operand is invar:
-                out.append(j)
+                out.append(invar_to_leaf[j] if invar_to_leaf is not None else j)
                 break
     return tuple(out)
 
 
-def _eqn_donation_sites(eqn, path: str, top_level: bool, closed_invars) -> list[_DonationSite]:
+def _eqn_donation_sites(
+    eqn,
+    path: str,
+    top_level: bool,
+    closed_invars,
+    invar_to_leaf: tuple[int, ...] | None = None,
+) -> list[_DonationSite]:
     """Both donation carriers (D3, P5): `donated_invars` (jit/pjit/scan/...)
     and `device_put`'s `copy_semantics` DONATE_INPUT element. Duck-typed on
     `.name` — the private `ArrayCopySemantics` type is never imported."""
@@ -435,7 +486,9 @@ def _eqn_donation_sites(eqn, path: str, top_level: bool, closed_invars) -> list[
     if donated_invars:
         idxs = tuple(i for i, d in enumerate(donated_invars) if d)
         if idxs:
-            wrapped = _wrapped_leaf_indices(eqn, idxs, closed_invars) if top_level else ()
+            wrapped = (
+                _wrapped_leaf_indices(eqn, idxs, closed_invars, invar_to_leaf) if top_level else ()
+            )
             sites.append((path, "donated_invars", idxs, wrapped))
 
     copy_semantics = eqn.params.get("copy_semantics")
@@ -444,7 +497,9 @@ def _eqn_donation_sites(eqn, path: str, top_level: bool, closed_invars) -> list[
             i for i, cs in enumerate(copy_semantics) if getattr(cs, "name", None) == "DONATE_INPUT"
         )
         if idxs:
-            wrapped = _wrapped_leaf_indices(eqn, idxs, closed_invars) if top_level else ()
+            wrapped = (
+                _wrapped_leaf_indices(eqn, idxs, closed_invars, invar_to_leaf) if top_level else ()
+            )
             sites.append((path, "copy_semantics", idxs, wrapped))
 
     return sites
@@ -466,11 +521,17 @@ def _donation_message(sites: tuple[_DonationSite, ...]) -> str:
     )
 
 
-def _screen_donation(closed) -> None:
+def _screen_donation(closed, invar_to_leaf: tuple[int, ...] | None = None) -> None:
     """Collect ALL donation-hazard sites (both carriers, at any depth), then
     raise once (§3.3 "conservative" rule). Traversal walks with an explicit
     stack via `_iter_subjaxprs` exclusively, so it covers tuple/list-valued
-    params generically and has no depth cap."""
+    params generically and has no depth cap.
+
+    CR-3: `invar_to_leaf` (typically the caller's `traced_positions`) maps a
+    top-level invar index to the true flat `(args, kwargs)` leaf index, for
+    callers that traced fewer leaves than the flattened arg count (D-2
+    static leaves). `None` (the default) keeps the old identity mapping.
+    """
     sites: list[_DonationSite] = []
     closed_invars = closed.jaxpr.invars
     stack: list[tuple[Any, str, bool]] = [(closed.jaxpr, "jaxpr", True)]
@@ -478,7 +539,11 @@ def _screen_donation(closed) -> None:
         jaxpr_obj, jaxpr_path, top_level = stack.pop()
         for eqn in jaxpr_obj.eqns:
             eqn_path = f"{jaxpr_path}.{_eqn_label(eqn)}"
-            sites.extend(_eqn_donation_sites(eqn, eqn_path, top_level, closed_invars))
+            sites.extend(
+                _eqn_donation_sites(
+                    eqn, eqn_path, top_level, closed_invars, invar_to_leaf if top_level else None
+                )
+            )
             for param_name, param_val in eqn.params.items():
                 for sub_path, sub_jaxpr in _iter_subjaxprs(param_val, param_name):
                     stack.append((sub_jaxpr, f"{eqn_path}.{sub_path}", False))
@@ -557,10 +622,20 @@ class _MemoCore:
         *,
         came_from_fallback: bool,
         abstract_token: tuple,
+        abstract_exc: Exception | None = None,
     ) -> str:
         """§3.2 step 3: resolve via the STATIC token, tracing/screening on a
         miss. Only inserts `abstract_token -> _NEEDS_STATIC` if this call was
-        reached via step 2's ABSTRACT-trace fallback (`came_from_fallback`)."""
+        reached via step 2's ABSTRACT-trace fallback (`came_from_fallback`).
+
+        CR-5: `abstract_exc`, when this call came from the ABSTRACT-trace
+        fallback, is the ABSTRACT-mode failure that triggered the retry. If
+        the STATIC retry ALSO fails, that failure otherwise fully discards
+        the ABSTRACT exception (§3.1's fallback rule retries on ANY
+        exception, so the two failures can be unrelated bugs). We attach it
+        as a note on the STATIC-mode exception before classifying/raising it,
+        so it stays visible instead of vanishing.
+        """
         static_token, static_traced, _ = _mode_token(leaves, treedef, "STATIC")
 
         with self.lock:
@@ -577,10 +652,15 @@ class _MemoCore:
         try:
             closed = _trace_closed(self.fn, leaves, treedef, static_traced)
         except Exception as exc:
+            if abstract_exc is not None:
+                exc.add_note(
+                    "ABSTRACT-mode trace failed first: "
+                    f"{type(abstract_exc).__name__}: {abstract_exc}"
+                )
             _raise_classified(exc)  # never returns; no insert (§3.2 step 5)
 
         _screen_jaxpr(closed)
-        _screen_donation(closed)
+        _screen_donation(closed, static_traced)  # CR-3: invars == static_traced positions
         digest = _program_digest(closed)
         with self.lock:
             self._insert(static_token, digest)
@@ -616,12 +696,16 @@ class _MemoCore:
         except Exception as exc:
             if has_dyn:
                 return self._resolve_static(
-                    leaves, treedef, came_from_fallback=True, abstract_token=abstract_token
+                    leaves,
+                    treedef,
+                    came_from_fallback=True,
+                    abstract_token=abstract_token,
+                    abstract_exc=exc,
                 )
             _raise_classified(exc)  # never returns; no insert (§3.2 step 5)
 
         _screen_jaxpr(closed)
-        _screen_donation(closed)
+        _screen_donation(closed, abstract_traced)  # CR-3: invars == abstract_traced positions
         digest = _program_digest(closed)
         with self.lock:
             self._insert(abstract_token, digest)
@@ -629,13 +713,20 @@ class _MemoCore:
 
     def build_key(self, digest: str, args: tuple, kwargs: dict) -> str:
         """Hash the digest THIS CALL resolved via `_ensure_screened`, then the
-        structure, leaf digests, salt and stamp (spec §3.2). Runs outside
-        `self.lock`, exactly as on main."""
+        structure, leaf digests, x64 flag, salt and stamp (spec §3.2). Runs
+        outside `self.lock`, exactly as on main.
+
+        CR-6: `jax.config.jax_enable_x64` is folded in, read per call, so a
+        cache entry stored under one x64 setting is never served to a call
+        made under the other (arrays digest their own concrete dtype, but a
+        Python scalar's OUTPUT dtype under x64 does not show up anywhere else
+        in the key)."""
         h = hashlib.sha256()
         h.update(digest.encode())
         h.update(repr(_structure_token(args, kwargs)).encode())
         for leaf in _pytree_leaves(args, kwargs):
             _leaf_digest(leaf, h)
+        h.update(f"|x64={bool(jax.config.jax_enable_x64)}".encode())
         h.update(self.policy.salt.encode())
         h.update(self.stamp.encode())
         return h.hexdigest()
@@ -696,7 +787,9 @@ class _MemoCore:
                 do_spot = False
                 value = None
         if do_spot:
-            # calls counter incremented inside _maybe_spot_check_unlocked
+            # CR-2: calls counter is incremented exactly once inside
+            # _maybe_spot_check_unlocked (both the ok and mismatch paths, and
+            # the entry-evicted-before-recompute early return).
             self._maybe_spot_check_unlocked(key, args, kwargs)
             return value
         self.stats.misses += 1
@@ -766,6 +859,9 @@ class _MemoCore:
                 raise MemoStalenessError("spot_check_mismatches > 0: poisoned until .memo_reset()")
             entry = self.cache.get(key)
             if entry is None:
+                # CR-2: this call was still counted, even though the entry
+                # was evicted out from under it before the recompute.
+                self.stats.calls += 1
                 return
             cached_value = entry.value
         # Recompute OUTSIDE the lock via UNWRAPPED fn (fresh closure read).
@@ -779,6 +875,9 @@ class _MemoCore:
             for c, f in zip(cached_flat, fresh_flat)
         )
         with self.lock:
+            # CR-2: a spot-checked hit is still a call, exactly once, whether
+            # it matches or mismatches.
+            self.stats.calls += 1
             if not ok:
                 self.stats.spot_check_mismatches += 1
                 evicted = self.cache.pop(key, None)
