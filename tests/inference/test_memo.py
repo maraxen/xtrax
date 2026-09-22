@@ -226,8 +226,11 @@ class TestCaching:
         f1(x)  # ensures program digest + stamp materialized
         f2 = memoize_jaxpr(fn_a, policy=MemoPolicy(_stamp_override="stamp-2"))
         f2(x)
-        k1 = f1._memo_core.build_key((x,), {})
-        k2 = f2._memo_core.build_key((x,), {})
+        # Get digest by calling _ensure_screened
+        digest1 = f1._memo_core._ensure_screened((x,), {})
+        digest2 = f2._memo_core._ensure_screened((x,), {})
+        k1 = f1._memo_core.build_key(digest1, (x,), {})
+        k2 = f2._memo_core.build_key(digest2, (x,), {})
         assert k1 != k2
 
     def test_ac17_python_float_value_discriminates(self):
@@ -761,24 +764,14 @@ class TestDonation:
         assert wrapped(x) is wrapped(x)  # both hits: same cached object
 
 
-class TestDonationFailOpen:
-    """T1 §3.3: the two documented, unfixed fail-open admission paths.
+class TestPerSignatureScreen:
+    """T2 §3.1-3.3, 3.5, 3.7: Per-signature screening with ABSTRACT and STATIC modes.
 
-    #5214 and #5215 are NOT fixed in this sprint (§3.4 "Not in T1"); these
-    tests PIN the fail-open behaviour with a strict xfail so a future fix (or
-    accidental regression that starts catching them) is visible either way
-    (AC-15, AC-16).
+    AC-1..AC-8b, AC-12, AC-13, AC-13b.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=pytest.fail.Exception,
-        reason="#5214: the screen runs once, keyed off the first call's abstract "
-        "signature; a shape-dependent donation on a later call is not re-screened.",
-    )
-    def test_ac15_shape_dependent_donation_not_rescreened(self):
-        from xtrax.inference.memo import MemoDonationError
-
+    # AC-1: #5214 — shape-dependent donation is re-screened per call signature
+    def test_ac1_shape_dependent_donation_not_rescreened(self):
         def f(x):
             if x.shape[0] > 4:
                 return jax.jit(lambda y: y * 2, donate_argnums=0)(x)
@@ -786,26 +779,418 @@ class TestDonationFailOpen:
 
         wrapped = memoize_jaxpr(f)
         wrapped(jnp.ones((4,), jnp.float32))  # 1st call: shape (4,), no donation
-        with pytest.raises(MemoDonationError):
-            wrapped(jnp.ones((8,), jnp.float32))  # 2nd call: shape (8,), donates
-
-    @pytest.mark.xfail(
-        strict=True,
-        raises=pytest.fail.Exception,
-        reason="#5215: the screen traces probe(*args) only, never kwargs; a "
-        "donation gated on a kwarg is never observed by the screen.",
-    )
-    def test_ac16_kwarg_dependent_donation_not_traced(self):
         from xtrax.inference.memo import MemoDonationError
 
+        with pytest.raises(MemoDonationError):
+            wrapped(jnp.ones((8,), jnp.float32))  # 2nd call: shape (8,), should raise
+
+    # AC-2: Purity screen also re-screened per signature (shape-dependent impurity)
+    def test_ac2_shape_dependent_impurity_not_rescreened(self):
+        def f(x):
+            if x.shape[0] > 4:
+                return x + jax.random.uniform(jax.random.key(0), x.shape)
+            return x * 2
+
+        wrapped = memoize_jaxpr(f)
+        wrapped(jnp.ones((4,), jnp.float32))  # First shape: admitted
+        with pytest.raises(MemoImpurityError):
+            wrapped(jnp.ones((8,), jnp.float32))  # Second shape: impure, raises MemoImpurityError
+
+    # AC-3: #5215 — kwargs are traced, kwargs-dependent donation is screened
+    def test_ac3_kwarg_dependent_donation_not_traced(self):
         def f(x, *, fast=False):
             if fast:
                 return jax.jit(lambda y: y * 2, donate_argnums=0)(x)
             return x * 2
 
         wrapped = memoize_jaxpr(f)
+        # Call without fast=True first
+        wrapped(jnp.ones((4,), jnp.float32), fast=False)
+        from xtrax.inference.memo import MemoDonationError
+
+        # Now with fast=True, should raise because donation is detected
         with pytest.raises(MemoDonationError):
             wrapped(jnp.ones((4,), jnp.float32), fast=True)
+
+    # AC-4: #5215 — kwargs-dependent impurity is screened
+    def test_ac4_kwarg_dependent_impurity(self):
+        def f(x, *, fast=False):
+            if fast:
+                return x + jax.random.uniform(jax.random.key(0), x.shape)
+            return x * 2
+
+        wrapped = memoize_jaxpr(f)
+        # First call admitted with fast=False
+        wrapped(jnp.ones((4,), jnp.float32), fast=False)
+        assert wrapped._memo_core.screen_latched_error is None
+        # Hit repeat
+        wrapped(jnp.ones((4,), jnp.float32), fast=False)
+        # Call with fast=True should raise impurity
+        with pytest.raises(MemoImpurityError):
+            wrapped(jnp.ones((4,), jnp.float32), fast=True)
+        # Afterwards, even fast=False should raise (latched)
+        with pytest.raises(MemoImpurityError):
+            wrapped(jnp.ones((4,), jnp.float32), fast=False)
+
+    # AC-5: STATIC fallback for Python int branches
+    @pytest.mark.parametrize(
+        "branch_expr,desc",
+        [
+            ("n > 1", "(a) if n > 1"),
+            ("sum(range(n))", "(b) sum(range(n))"),
+            ("jnp.zeros(n).shape[0]", "(c) jnp.zeros(n)"),
+            ("x[:n]", "(d) x[:n]"),
+        ],
+    )
+    def test_ac5_static_fallback_python_int_branches(self, branch_expr, desc):
+        """STATIC fallback allows Python int branches (AC-5a-d).
+
+        Each variant does 3 calls: (n=A), (n=A) again, (n=B). The positive
+        assertion is admission with the RIGHT hit/miss shape (same n hits,
+        different n misses) — never main's exception type (spec AC-5).
+        """
+        if branch_expr == "x[:n]":
+            # x[:n] indexing
+            def f(x, n):
+                return x[:n]
+
+            wrapped = memoize_jaxpr(f)
+            x = jnp.arange(10, dtype=jnp.float32)
+            wrapped(x, 3)  # First call with n=3: miss
+            wrapped(x, 3)  # Hit with same n
+            wrapped(x, 5)  # Miss with different n
+        elif branch_expr == "sum(range(n))":
+            # range(n)
+            def f(x, n):
+                s = sum(range(n))
+                return x + jnp.float32(s)
+
+            wrapped = memoize_jaxpr(f)
+            x = jnp.ones((4,), jnp.float32)
+            wrapped(x, 2)
+            wrapped(x, 2)
+            wrapped(x, 3)
+        elif branch_expr == "jnp.zeros(n).shape[0]":
+            # jnp.zeros(n) with traced n
+            def f(x, n):
+                z = jnp.zeros(n)
+                return x + jnp.float32(z.shape[0])
+
+            wrapped = memoize_jaxpr(f)
+            x = jnp.ones((4,), jnp.float32)
+            wrapped(x, 3)
+            wrapped(x, 3)
+            wrapped(x, 5)
+        else:  # "n > 1"
+
+            def f(x, n):
+                if n > 1:
+                    return x * 2
+                return x
+
+            wrapped = memoize_jaxpr(f)
+            x = jnp.ones((4,), jnp.float32)
+            wrapped(x, 2)  # n > 1
+            wrapped(x, 2)  # Hit
+            wrapped(x, 3)  # Miss
+
+        # Same n hits, different n misses — the AC-5 positive shape.
+        assert wrapped._memo_core.stats.hits == 1, desc
+        assert wrapped._memo_core.stats.misses == 2, desc
+        assert wrapped._memo_core.stats.calls == 3, desc
+
+    # AC-5e: OverflowError propagates unchanged (not relabeled, not swallowed).
+    # x + n with n = 2**40 overflows int32 during promotion, in BOTH the
+    # eager call and the STATIC-mode trace (measured 260922, spec §3.1) — this
+    # is a pin, not a "fails on main" control (see evidence discipline table).
+    def test_ac5e_overflow_error_propagates(self):
+        def f(x, n):
+            return x + n
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+        with pytest.raises(OverflowError):
+            wrapped(x, 2**40)
+        # Not relabeled as MemoKeyUnsupportedLeafError, and not swallowed:
+        # the eager function itself raises the SAME exception type.
+        with pytest.raises(OverflowError):
+            f(x, 2**40)
+
+    # AC-5f: Impurity in STATIC mode (int value selects impure branch)
+    def test_ac5f_impurity_in_static_mode(self):
+        def f(x, n):
+            if n > 3:
+                return x + jax.random.uniform(jax.random.key(0), x.shape)
+            return x * 2
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+        with pytest.raises(MemoImpurityError):
+            wrapped(x, 5)  # n > 3, so impure
+
+    # AC-5g: G4 — in-range ints share one ABSTRACT trace, out-of-range triggers STATIC
+    def test_ac5g_g4_fits_default_int(self):
+        """Fit-range ints share traces; out-of-range triggers STATIC."""
+        from xtrax.inference.memo import _classify_leaf
+
+        # Verify _fits_default_int behavior directly.
+        large_int = 2**40
+        small_int = 2**30
+        kind, descriptor = _classify_leaf(large_int, mode="ABSTRACT")
+        assert kind == "dyn"
+        # fits_default_int should be False for 2**40
+        assert descriptor == ("dyn", "int", False)
+
+        kind, descriptor = _classify_leaf(small_int, mode="ABSTRACT")
+        assert descriptor == ("dyn", "int", True)
+
+        # Behavioral half of AC-5g: g(x, 2**40) is admitted via STATIC mode
+        # (its own ABSTRACT token, distinct from in-range ints — §3.1 item 2),
+        # then g(x, 3) and g(x, 4) — both in-range — share ONE ABSTRACT trace.
+        trace_count = {"count": 0}
+
+        def g(x, n):
+            if isinstance(n, jax.core.Tracer):
+                trace_count["count"] += 1
+            return x + (n % 7)
+
+        wrapped = memoize_jaxpr(g)
+        x = jnp.ones((4,), jnp.float32)
+        wrapped(x, 2**40)  # admitted via STATIC mode fallback
+        wrapped(x, 3)  # ABSTRACT mode: traces
+        wrapped(x, 4)  # same ABSTRACT token as n=3: no retrace
+        assert trace_count["count"] == 1
+
+    # AC-6: String arguments are memoizable, NFC and NFD forms are distinct
+    def test_ac6_string_keys_exact(self):
+        def f(x, s):
+            return x * jnp.float32(len(s))
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+
+        # NFC form
+        s_nfc = "é"  # precomposed
+        wrapped(x, s_nfc)
+        assert wrapped._memo_core.stats.calls == 1
+
+        # Hit with same form
+        wrapped(x, s_nfc)
+        assert wrapped._memo_core.stats.calls == 2
+
+        # NFD form (decomposed)
+        s_nfd = "é"  # decomposed
+        wrapped(x, s_nfd)
+        # Should be a miss (distinct key from NFC)
+        assert wrapped._memo_core.stats.calls == 3
+        assert wrapped._memo_core.stats.misses == 2
+
+    # AC-6b: Bytes arguments are memoizable
+    def test_ac6b_bytes_keys_exact(self):
+        def f(x, b):
+            return x * jnp.float32(len(b))
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+
+        wrapped(x, b"\xff")
+        assert wrapped._memo_core.stats.calls == 1
+        wrapped(x, b"\xff")
+        assert wrapped._memo_core.stats.calls == 2
+
+    # AC-7: G4 — float scalars trace once per ABSTRACT signature, not per value
+    # AC-7: G4 — float scalars trace once per ABSTRACT signature, not per value
+    def test_ac7_g4_float_scalars_single_trace(self):
+        """Five distinct float values share one trace (same program digest)."""
+        trace_count = {"count": 0}
+
+        def f(x, s):
+            # Count when s is a Tracer (i.e., during tracing)
+            if isinstance(s, jax.core.Tracer):
+                trace_count["count"] += 1
+            return x * s
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+
+        # All different float values
+        for s in [1.0, 2.0, 3.0, 4.0, 5.0]:
+            wrapped(x, s)
+
+        # Should trace only once (all share ABSTRACT signature, same program digest)
+        # Each call is a cache miss (different keys), but only 1 trace happened
+        assert trace_count["count"] == 1
+
+    def test_ac7b_bool_static_d2(self):
+        def f(x, flag):
+            if flag is True:
+                return x + jax.random.uniform(jax.random.key(0), x.shape)
+            return x * 2
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+
+        # flag=False first (admitted)
+        wrapped(x, False)
+        assert wrapped._memo_core.screen_latched_error is None
+
+        # flag=True (impurity detected)
+        with pytest.raises(MemoImpurityError):
+            wrapped(x, True)
+
+        # flag=False again (latched error)
+        with pytest.raises(MemoImpurityError):
+            wrapped(x, False)
+
+    # AC-7c: D-2 — enum-like int subclasses are held static
+    def test_ac7c_enum_static_d2(self):
+        from enum import IntEnum
+
+        class Mode(IntEnum):
+            A = 1
+            B = 2
+
+        def f(x, mode):
+            if mode is Mode.B:
+                return x + jax.random.uniform(jax.random.key(0), x.shape)
+            return x * 2
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+
+        # Mode.A first (admitted)
+        wrapped(x, Mode.A)
+        assert wrapped._memo_core.screen_latched_error is None
+
+        # Mode.B (impurity detected)
+        with pytest.raises(MemoImpurityError):
+            wrapped(x, Mode.B)
+
+    # AC-8: Array-value refusal in three forms
+    @pytest.mark.parametrize(
+        "body,idiom",
+        [
+            ("if x[0] > 0: return x + 1", "indexing"),
+            ("return x[x > 0]", "boolean indexing"),
+            ("return np.asarray(x)", "np.asarray conversion"),
+        ],
+    )
+    def test_ac8_array_value_refusal(self, body, idiom):
+        """Array value refusal in three forms."""
+        if idiom == "indexing":
+
+            def f(x):
+                if x[0] > 0:
+                    return x + 1
+                return x
+        elif idiom == "boolean indexing":
+
+            def f(x):
+                return x[x > 0]
+        else:  # np.asarray conversion
+
+            def f(x):
+                return np.asarray(x)
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+        with pytest.raises(MemoKeyUnsupportedLeafError) as exc_info:
+            wrapped(x)
+        assert "value of an array argument" in str(exc_info.value)
+
+    # AC-8b: Non-classified exceptions propagate unchanged
+    def test_ac8b_unclassified_exception_propagates(self):
+        def f(x):
+            raise ZeroDivisionError("test error")
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+        with pytest.raises(ZeroDivisionError, match="test error"):
+            wrapped(x)
+
+    # AC-12: Latch is global (all signatures see latched error)
+    def test_ac12_latch_across_signatures(self):
+        def f(x, fast=False):
+            if fast:
+                return x + jax.random.uniform(jax.random.key(0), x.shape)
+            return x * 2
+
+        wrapped = memoize_jaxpr(f)
+        x1 = jnp.ones((4,), jnp.float32)
+        x2 = jnp.ones((8,), jnp.float32)
+
+        # Admit signature 1
+        wrapped(x1, fast=False)
+        # Reject signature 2
+        with pytest.raises(MemoImpurityError):
+            wrapped(x2, fast=True)
+        # Signature 1 should now be latched
+        with pytest.raises(MemoImpurityError):
+            wrapped(x1, fast=False)
+        # Clear latch
+        wrapped.memo_rewrap()
+        # Signature 1 should work again
+        wrapped(x1, fast=False)
+
+    # AC-13: Table eviction (LRU)
+    def test_ac13_table_eviction(self, monkeypatch):
+        import xtrax.inference.memo as memo_module
+
+        monkeypatch.setattr(memo_module, "_MAX_SCREENED_SIGNATURES", 2)
+
+        # Tracer-only counter (AC-13's "and an evicted shape re-traces
+        # (counter)" clause) — a size-bound check alone can't distinguish
+        # real LRU eviction from a no-op that happens to never grow.
+        trace_count = {"count": 0}
+
+        def f(x):
+            if isinstance(x, jax.core.Tracer):
+                trace_count["count"] += 1
+            return x * 2
+
+        wrapped = memoize_jaxpr(f)
+
+        # Shape (2,): traced and cached
+        wrapped(jnp.ones((2,)))
+        assert trace_count["count"] == 1
+        assert len(wrapped._memo_core._screened) <= 2
+
+        # Shape (3,): traced and cached
+        wrapped(jnp.ones((3,)))
+        assert trace_count["count"] == 2
+        assert len(wrapped._memo_core._screened) <= 2
+
+        # Shape (4,): traced and cached, evicts (2,)
+        wrapped(jnp.ones((4,)))
+        assert trace_count["count"] == 3
+        assert len(wrapped._memo_core._screened) <= 2
+
+        # Shape (2,) again: evicted, so it MUST re-trace (proves eviction
+        # actually happened, not just that the table never grew).
+        wrapped(jnp.ones((2,)))
+        assert trace_count["count"] == 4
+        assert len(wrapped._memo_core._screened) <= 2
+
+    # AC-13b: Container type matters (np.ndarray vs jax.Array)
+    def test_ac13b_container_type_in_key(self):
+        def f(x):
+            return x * 2
+
+        wrapped = memoize_jaxpr(f)
+
+        # np.ndarray
+        arr_np = np.ones((4,), dtype=np.float32)
+        wrapped(arr_np)
+        np_call_count = wrapped._memo_core.stats.calls
+
+        # jax.Array (should be a miss, distinct from np.ndarray)
+        arr_jax = jnp.ones((4,), dtype=jnp.float32)
+        wrapped(arr_jax)
+        jax_call_count = wrapped._memo_core.stats.calls
+
+        # They should be distinct entries
+        assert jax_call_count > np_call_count
+        assert wrapped._memo_core.stats.misses == 2
 
 
 class TestDonationDocs:

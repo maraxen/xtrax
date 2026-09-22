@@ -6,14 +6,20 @@ DETECTABLE violations (stateful primitives, host callbacks, unkeyed random
 usage). Documented blind spots: out-of-trace closure state, time/I/O, objects
 with unstable traced representations.
 
-Cache key (spec §4.2.2):
-    (program_digest, pytree structure, per-leaf digests, salt, environment stamp)
-- program_digest = sha256(normalized str(ClosedJaxpr) + folded const values in
-  ascending const-var order). str() is deterministic but NOT injective over
-  array constants; const folding closes that hole (OBJ-R2-02).
+Cache key (spec 260922 §3.1-§3.3):
+    (screen_digest, pytree structure, per-leaf digests, salt, environment stamp)
+- screen_digest is resolved PER CALL SIGNATURE (shape/dtype/treedef/kwargs, not
+  just the first call's) by `_MemoCore._ensure_screened`, which traces and
+  screens (purity + donation) either in ABSTRACT mode (array leaves AND
+  exact-`int`/`float` scalars traced abstractly) or, on a fallback, in STATIC
+  mode (scalars held static; only arrays traced). `bool`/enum/`str`/`bytes`
+  leaves are always held static. screen_digest itself is
+  sha256(normalized str(ClosedJaxpr) + folded const values in ascending
+  const-var order) — see `_program_digest`.
 - leaf digests reuse update_array_digest's canonicalize+tobytes core plus a
-  weak_type/dtype extension; Python scalars digest via (type-tag, repr);
-  strings NFC-normalized; anything else -> MemoKeyUnsupportedLeafError.
+  container-type/weak_type/dtype extension; Python scalars digest via
+  (type-tag, repr); `str`/`bytes` digest exactly (no normalization); anything
+  else -> MemoKeyUnsupportedLeafError.
 - environment stamp bounds RNG-implementation and autotune/atomics drift.
 
 Async safety: block_on_miss=True (default) blocks outputs before store;
@@ -27,12 +33,11 @@ from __future__ import annotations
 
 import hashlib
 import threading
-import unicodedata
 import warnings
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, cast, overload
+from typing import Any, NoReturn, Protocol, cast, overload
 
 import jax
 import numpy as np
@@ -52,6 +57,10 @@ __all__ = [
 
 _STAMP_OVERRIDE_ENV = "XTRAX_MEMO_STAMP_OVERRIDE"
 _WARMUP_CALLS = 8
+# Bound on _MemoCore._screened (spec §3.2). Read through the module global at
+# USE TIME (never captured into __init__ or a default arg), so a test can
+# `monkeypatch.setattr(memo_module, "_MAX_SCREENED_SIGNATURES", N)`.
+_MAX_SCREENED_SIGNATURES = 1024
 
 
 # ---------------------------------------------------------------------------
@@ -114,23 +123,29 @@ def _environment_stamp() -> str:
 
 
 def _leaf_digest(leaf: Any, sink: hashlib._Hash) -> None:
-    """Fold one pytree leaf into the digest stream (spec §4.2.2 item 3)."""
+    """Fold one pytree leaf into the digest stream (spec §3.3).
+
+    Arrays fold the container type before the dtype (D-4, AC-13b), so an
+    `np.ndarray` and an equal `jax.Array` digest differently. `str`/`bytes`
+    digest EXACTLY, with no Unicode normalization (D-3, AC-6/AC-6b).
+    """
     if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
         # House primitive core (zarr_integrity.update_array_digest recipe):
-        # canonicalize then C-order bytes.
+        # container type, then canonicalize + C-order bytes.
         arr = np.asarray(leaf)
         canon = np.ascontiguousarray(arr)
+        sink.update(type(leaf).__qualname__.encode())
         sink.update(canon.dtype.name.encode())
         sink.update(repr(canon.shape).encode())
         sink.update(canon.tobytes(order="C"))
         weak = getattr(leaf, "weak_type", False)
         sink.update(f"|wt={bool(weak)}".encode())
         return
-    if isinstance(leaf, (str, bytes)):
-        tag = "bytes" if isinstance(leaf, bytes) else "str"
-        val = leaf.decode("utf-8", "surrogatepass") if isinstance(leaf, bytes) else leaf
-        norm = unicodedata.normalize("NFC", val)
-        sink.update(f"{tag}:{norm}".encode("utf-8", "surrogatepass"))
+    if isinstance(leaf, bytes):
+        sink.update(b"bytes:" + leaf)
+        return
+    if isinstance(leaf, str):
+        sink.update(b"str:" + leaf.encode("utf-8", "surrogatepass"))
         return
     if isinstance(leaf, (int, float, bool)):
         sink.update(f"{type(leaf).__name__}({leaf!r})".encode())
@@ -171,6 +186,151 @@ def _pytree_leaves(args: tuple, kwargs: dict) -> list:
 def _structure_token(args: tuple, kwargs: dict) -> tuple:
     structure = jax.tree_util.tree_structure((args, kwargs))
     return (structure,)
+
+
+# ---------------------------------------------------------------------------
+# Per-signature leaf classification and trace modes (spec §3.1)
+# ---------------------------------------------------------------------------
+
+
+# Sentinels for the `_MemoCore._screened` table (spec §3.2). `_NEEDS_STATIC`
+# is a persisted table VALUE (an ABSTRACT token whose trace needs STATIC
+# fallback); `_MISSING` is only ever a local `dict.get` default and never
+# stored, so the two are never confused.
+class _NeedsStaticType:
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debug aid only
+        return "_NEEDS_STATIC"
+
+
+_NEEDS_STATIC = _NeedsStaticType()
+_MISSING = object()
+
+
+def _fits_default_int(value: int) -> bool:
+    """True iff `value` lies in the range of the canonical default int dtype
+    (spec §3.1 item 2, G4/OBJ-R2-01). Read at use time, not cached, since
+    `jax.dtypes.canonicalize_dtype` depends on the live x64 setting."""
+    info = np.iinfo(jax.dtypes.canonicalize_dtype(np.int64))
+    return info.min <= value <= info.max
+
+
+def _static_exact_token(leaf: Any) -> str | bytes:
+    """Exact-value token for a leaf that is always held static (spec §3.1
+    item 3): repr() for numbers, exact (unnormalized) bytes for str/bytes."""
+    if isinstance(leaf, str):
+        return leaf.encode("utf-8", "surrogatepass")
+    if isinstance(leaf, bytes):
+        return leaf
+    return repr(leaf)
+
+
+def _classify_leaf(leaf: Any, mode: str) -> tuple[str, tuple]:
+    """Classify one flattened `(args, kwargs)` leaf for a screened-signature
+    token (spec §3.1, in order):
+
+    1. **arr** — has `.shape` and `.dtype` (covers numpy scalars, `jax.Array`,
+       `np.ndarray`, `np.bool_`, ...). Always traced.
+    2. **dyn** — `type(leaf) is float` or `type(leaf) is int` (EXACT type
+       check, so `bool`/enum/numpy-scalar subclasses never land here). Traced
+       in ABSTRACT mode; held static in STATIC mode.
+    3. **static** — any other `bool`/`int`/`float`/`str`/`bytes` instance.
+       Always held static (D-2).
+    4. anything else raises `MemoKeyUnsupportedLeafError` before tracing.
+
+    `mode` ("ABSTRACT" or "STATIC") only changes the descriptor for a "dyn"
+    leaf; `kind` itself is mode-independent, so a caller can determine
+    "has a traceable scalar" from either mode's classification.
+
+    Returns `(kind, descriptor)`.
+    """
+    if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
+        return "arr", (
+            "arr",
+            type(leaf).__qualname__,
+            tuple(leaf.shape),
+            np.dtype(leaf.dtype).name,
+            bool(getattr(leaf, "weak_type", False)),
+        )
+    if type(leaf) is float:
+        if mode == "ABSTRACT":
+            return "dyn", ("dyn", "float")
+        return "dyn", ("static", "float", repr(leaf))
+    if type(leaf) is int:
+        if mode == "ABSTRACT":
+            return "dyn", ("dyn", "int", _fits_default_int(leaf))
+        return "dyn", ("static", "int", repr(leaf))
+    if isinstance(leaf, (bool, int, float, str, bytes)):
+        return "static", ("static", type(leaf).__qualname__, _static_exact_token(leaf))
+    raise MemoKeyUnsupportedLeafError(
+        f"Unsupported pytree leaf type {type(leaf).__name__!r} for memo key; "
+        "admission restricted to arrays, scalars, bools and strings."
+    )
+
+
+def _mode_token(
+    leaves: list, treedef: Any, mode: str
+) -> tuple[tuple[str, Any, tuple], tuple[int, ...], bool]:
+    """Classify every leaf under `mode` and return `(token, traced_positions,
+    has_dyn)`. `traced_positions` is which flat-leaf indices get traced by
+    `_trace_closed`: array leaves always; traceable scalars ("dyn") only in
+    ABSTRACT mode (spec §3.1 "ABSTRACT/STATIC mode" paragraphs)."""
+    kinds: list[str] = []
+    descriptors: list[tuple] = []
+    for leaf in leaves:
+        kind, descriptor = _classify_leaf(leaf, mode)
+        kinds.append(kind)
+        descriptors.append(descriptor)
+    traced_kinds = ("arr", "dyn") if mode == "ABSTRACT" else ("arr",)
+    traced = tuple(i for i, k in enumerate(kinds) if k in traced_kinds)
+    tag = "A" if mode == "ABSTRACT" else "S"
+    token = (tag, treedef, tuple(descriptors))
+    has_dyn = any(k == "dyn" for k in kinds)
+    return token, traced, has_dyn
+
+
+def _trace_closed(fn: Callable, leaves: list, treedef: Any, traced_positions: tuple[int, ...]):
+    """Trace `fn` with only `traced_positions` abstracted; every other leaf
+    stays closed-over as its concrete Python value (spec §3.1 "The trace
+    calls a probe that takes only the traced leaves"). Raises whatever
+    `jax.make_jaxpr` raises, uncaught — the caller wraps this call alone in
+    try/except so screen errors are never mistaken for trace failures."""
+
+    def probe(*traced_vals: Any) -> Any:
+        full = list(leaves)
+        for pos, val in zip(traced_positions, traced_vals):
+            full[pos] = val
+        a, k = jax.tree_util.tree_unflatten(treedef, full)
+        return fn(*a, **k)
+
+    return jax.make_jaxpr(probe)(*(leaves[p] for p in traced_positions))
+
+
+def _raise_classified(exc: Exception) -> NoReturn:
+    """Classify a failed FINAL trace (spec §3.1 "Classification of a failed
+    final trace"): STATIC mode, or ABSTRACT mode when there are no traceable
+    scalars. Raises `MemoKeyUnsupportedLeafError` chained `from exc`, or
+    re-raises `exc` unchanged."""
+    if isinstance(
+        exc,
+        (
+            jax.errors.ConcretizationTypeError,
+            jax.errors.TracerIntegerConversionError,
+            jax.errors.TracerArrayConversionError,
+            IndexError,
+        ),
+    ):
+        raise MemoKeyUnsupportedLeafError(
+            "Function consults the value of an array argument in Python "
+            "(branching, indexing, or conversion), which cannot be screened."
+        ) from exc
+    if isinstance(exc, TypeError):
+        raise MemoKeyUnsupportedLeafError(
+            "Argument cannot be traced as an abstract array (unsupported "
+            f"leaf type for memo keys): {exc}"
+        ) from exc
+    raise exc
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +529,9 @@ class _MemoCore:
         self.lock = threading.Lock()
         self.cache: OrderedDict[str, _MemoEntry] = OrderedDict()
         self.stats = MemoStats()
-        self.program_digest: str | None = None
+        # Screened-signature table (spec §3.2): token -> digest, or
+        # _NEEDS_STATIC while only the ABSTRACT attempt has been resolved.
+        self._screened: OrderedDict[tuple, str | _NeedsStaticType] = OrderedDict()
         self.stamp: str = (
             policy._stamp_override if policy._stamp_override is not None else _environment_stamp()
         )
@@ -379,29 +541,98 @@ class _MemoCore:
 
     # -- key handling ------------------------------------------------------
 
-    def _ensure_program(self, args: tuple) -> None:
-        if self.program_digest is None:
+    def _insert(self, token: tuple, value: str | _NeedsStaticType) -> None:
+        """Insert/refresh `token -> value` and evict LRU-oldest past the
+        module cap (spec §3.2). Caller must hold `self.lock`. The cap is read
+        as the bare module global on every call, so a test can monkeypatch it."""
+        self._screened[token] = value
+        self._screened.move_to_end(token)
+        while len(self._screened) > _MAX_SCREENED_SIGNATURES:
+            self._screened.popitem(last=False)
 
-            def probe(*a):  # trace-only; no concrete execution of user code paths
-                return self.fn(*a)
+    def _resolve_static(
+        self,
+        leaves: list,
+        treedef: Any,
+        *,
+        came_from_fallback: bool,
+        abstract_token: tuple,
+    ) -> str:
+        """§3.2 step 3: resolve via the STATIC token, tracing/screening on a
+        miss. Only inserts `abstract_token -> _NEEDS_STATIC` if this call was
+        reached via step 2's ABSTRACT-trace fallback (`came_from_fallback`)."""
+        static_token, static_traced, _ = _mode_token(leaves, treedef, "STATIC")
 
-            try:
-                closed = jax.make_jaxpr(probe)(*args)
-            except TypeError as exc:
-                raise MemoKeyUnsupportedLeafError(
-                    "Argument cannot be traced as an abstract array (unsupported "
-                    f"leaf type for memo keys): {exc}"
-                ) from exc
-            _screen_jaxpr(closed)
-            _screen_donation(closed)
-            self.program_digest = _program_digest(closed)
+        with self.lock:
+            sval = self._screened.get(static_token, _MISSING)
+            if sval is not _MISSING:
+                self._screened.move_to_end(static_token)
 
-    def build_key(self, args: tuple, kwargs: dict) -> str:
-        assert self.program_digest is not None, (
-            "build_key requires _ensure_program to have run first"
-        )
+        if sval is not _MISSING:
+            if came_from_fallback:
+                with self.lock:
+                    self._insert(abstract_token, _NEEDS_STATIC)
+            return cast(str, sval)
+
+        try:
+            closed = _trace_closed(self.fn, leaves, treedef, static_traced)
+        except Exception as exc:
+            _raise_classified(exc)  # never returns; no insert (§3.2 step 5)
+
+        _screen_jaxpr(closed)
+        _screen_donation(closed)
+        digest = _program_digest(closed)
+        with self.lock:
+            self._insert(static_token, digest)
+            if came_from_fallback:
+                self._insert(abstract_token, _NEEDS_STATIC)
+        return digest
+
+    def _ensure_screened(self, args: tuple, kwargs: dict) -> str:
+        """Resolve the digest for THIS call's signature (spec §3.2),
+        screening it (purity + donation) if this is the first time this
+        signature has been seen. Locked lookups/inserts; tracing and
+        screening always run unlocked. Returns the digest read/produced;
+        never re-reads the table afterward (a concurrent eviction could
+        remove the entry)."""
+        leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))
+        abstract_token, abstract_traced, has_dyn = _mode_token(leaves, treedef, "ABSTRACT")
+
+        with self.lock:
+            val = self._screened.get(abstract_token, _MISSING)
+            if val is not _MISSING:
+                self._screened.move_to_end(abstract_token)
+
+        if val is not _MISSING and val is not _NEEDS_STATIC:
+            return cast(str, val)
+        if val is _NEEDS_STATIC:
+            return self._resolve_static(
+                leaves, treedef, came_from_fallback=False, abstract_token=abstract_token
+            )
+
+        # ABSTRACT miss: trace outside the lock.
+        try:
+            closed = _trace_closed(self.fn, leaves, treedef, abstract_traced)
+        except Exception as exc:
+            if has_dyn:
+                return self._resolve_static(
+                    leaves, treedef, came_from_fallback=True, abstract_token=abstract_token
+                )
+            _raise_classified(exc)  # never returns; no insert (§3.2 step 5)
+
+        _screen_jaxpr(closed)
+        _screen_donation(closed)
+        digest = _program_digest(closed)
+        with self.lock:
+            self._insert(abstract_token, digest)
+        return digest
+
+    def build_key(self, digest: str, args: tuple, kwargs: dict) -> str:
+        """Hash the digest THIS CALL resolved via `_ensure_screened`, then the
+        structure, leaf digests, salt and stamp (spec §3.2). Runs outside
+        `self.lock`, exactly as on main."""
         h = hashlib.sha256()
-        h.update(self.program_digest.encode())
+        h.update(digest.encode())
         h.update(repr(_structure_token(args, kwargs)).encode())
         for leaf in _pytree_leaves(args, kwargs):
             _leaf_digest(leaf, h)
@@ -436,14 +667,14 @@ class _MemoCore:
                 raise MemoStalenessError("spot_check_mismatches > 0: poisoned until .memo_reset()")
         t0 = time.perf_counter()
         try:
-            self._ensure_program(args)
+            digest = self._ensure_screened(args, kwargs)
         except MemoImpurityError as exc:
             with self.lock:
                 self.screen_latched_error = exc  # latch (OBJ-R2-08)
             raise
         hash_seconds = time.perf_counter() - t0
 
-        key = self.build_key(args, kwargs)
+        key = self.build_key(digest, args, kwargs)
 
         with self.lock:
             entry = self.cache.get(key)
@@ -665,7 +896,7 @@ def memoize_jaxpr(
         # Zero-arg (or all-default) callables can be screened at wrap time:
         if not inspect.signature(f).parameters:
             try:
-                core._ensure_program(())
+                core._ensure_screened((), {})
             except MemoImpurityError:
                 # AC-9: bare `raise` preserves the exact exception type
                 # (e.g. MemoDonationError), rather than downcasting to the
