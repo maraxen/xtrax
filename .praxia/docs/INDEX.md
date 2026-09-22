@@ -1,4 +1,4 @@
-# wt-5109 Internal Docs
+# ring-probes Internal Docs
 
 ## Daily
 
@@ -17,6 +17,7 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [260922_conformance-residuals](specs/260922_conformance-residuals.md) — Two items the converged 260825 spec requires but PR #104 did not ship, the synthesizer row-identity unsoundness found while specifying them, and the verified CI-gate bug #5205
 - [260911_export-divergence-mapping](specs/260911_export-divergence-mapping.md) — A comparison ladder and a reusable fixture that localizes where a compiled artifact departs from production JAX, instead of reporting one scalar
 - [260910_compilable-boundaries](specs/260910_compilable-boundaries.md) — Spec for an effect-classification scheme over Fuse/Tap/Sink and the 7 training Callback hooks — SplitTap makes taps exportable structurally, the DedupGather and Vmap-over-Scan boundary holes are closed by refusal, and JAX's anonymous host_callbacks refusal gains a named xtrax error
 - [260910_webgpu-export-route](specs/260910_webgpu-export-route.md) — Re-specification of WebGPU for xtrax.export after AC-8 was falsified — four mutually-exclusive routes, a recommendation (R2″) that adds structural SPIR-V validation without moving any verification level, and a TD-WGPU debt register
@@ -67,6 +68,7 @@
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [260922_conformance-residuals-probes](research/260922_conformance-residuals-probes.md) — Measured JAX 0.11.1 / numpy 2.5.1 CPU behaviours behind spec 260922_conformance-residuals §1.1 — donation carriers in jaxprs, synthesizer row-identity unsoundness, byte bitcasts, and which host-transfer oracles work on CPU
 - [260914_browser-inference-routes-jaxjs-jax2onnx](research/260914_browser-inference-routes-jaxjs-jax2onnx.md) — Measured coverage of the non-IREE browser paths — jax-js is a reimplementation not a converter, jax2onnx takes Equinox directly and covers every primitive aminx needs, but ONNX mandates int64 TopK indices which ORT Web's WebGPU EP does not support
 - [260901_webgpu-export-measurement-pass](research/260901_webgpu-export-measurement-pass.md) — Empirical de-risking of the xtrax.export spec before implementation — pins resolve, but AC-8's WebGPU-validity gate is falsified by IREE's push-constant ABI
 - [260825_cse-recon](research/260825_cse-recon.md)

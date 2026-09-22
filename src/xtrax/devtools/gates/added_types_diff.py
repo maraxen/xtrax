@@ -51,8 +51,9 @@ class _PublicFunctionCollector(cst.CSTVisitor):
         qualname = ".".join([*self.class_stack, name])
         self.functions[qualname] = node
 
-    def visit_FunctionDef(self, node: cst.FunctionDef) -> None:
+    def visit_FunctionDef(self, node: cst.FunctionDef) -> bool:
         self._record(node)
+        return False
 
 
 def _collect_public_functions(

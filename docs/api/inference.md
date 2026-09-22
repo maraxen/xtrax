@@ -307,6 +307,65 @@ Lower-level function that synthesizes `AxisSpec` objects from abstract inputs. C
 - Axes with overrides: role = KNOWN
 - Axes without overrides: role = UNKNOWN
 
+## Value memoization (`memoize_jaxpr`)
+
+```python
+from xtrax.inference import MemoPolicy, memoize_jaxpr
+```
+
+`memoize_jaxpr` wraps a pure, JAX-traceable callable with a content-keyed
+value cache. Admission is opt-in purity *attestation*: at wrap time (for
+zero-parameter callables) or on the first call (otherwise), the function is
+traced once with `jax.make_jaxpr` and screened for detectably-impure
+primitives and for donation markers, before any concrete execution.
+
+**Donation is rejected, unconditionally.** `memoize_jaxpr` never admits a
+function whose traced jaxpr carries a donation marker, at any depth — this
+covers both `donate_argnums`/`donate_argnames` (visible as a `True` in a
+`donated_invars` equation param) and `jax.device_put(x, donate=True)`
+(visible as a `DONATE_INPUT` element of a `device_put` equation's
+`copy_semantics` param). The walk recurses into every nested jaxpr reachable
+from an equation's params — `jit`/`pjit`, `lax.cond` branches, `lax.scan`
+bodies, `lax.while_loop`, `custom_jvp`/`custom_vjp` — with no depth cap.
+
+Rejection raises `MemoDonationError` (a `MemoImpurityError` subclass), whose
+`.sites` attribute lists every offending site. **This is deliberately
+conservative and over-rejects**: even donation of a value that is purely
+*internal* to the wrapped function (never visible to the caller) is rejected,
+because provenance-tracing which donations are caller-visible would need a
+per-primitive map from sub-jaxpr invars to outer vars that can fail open, and
+would still miss constvars.
+
+**Two fail-open admission paths are documented, not fixed, in this release:**
+
+- **#5214 — the screen runs once.** Admission is keyed off the *first* call's
+  abstract signature only; a function whose donation depends on shape (or on
+  a Python branch over static structure) that only manifests on a *later*
+  call with a different signature is not re-screened.
+- **#5215 — the screen never traces kwargs.** Only `probe(*args)` is traced;
+  a function that donates only when a keyword argument takes a particular
+  value (e.g. `fn(x, *, fast=False)` donating only when `fast=True`) is never
+  observed by the screen.
+
+Neither is fixed in this release: fixing either would change the admission
+machinery or the cache key.
+
+**Output aliasing and `copy_on_return`.** By default (`copy_on_return=False`,
+the default), a cache hit returns the cached object **by identity**, and a
+miss returns whatever the wrapped function returned, which may itself alias
+one of the caller's input arguments (exactly as the unwrapped function
+would). **Unless `copy_on_return=True`, do not donate or `.delete()` a value
+returned by a memoized function, nor an argument whose value the wrapped
+function may return unchanged** (e.g. `lambda x: x`) — doing so can corrupt
+the cache entry for every future call with that key.
+
+Setting `MemoPolicy(copy_on_return=True)` makes every hit (plain or
+spot-checked) return a fresh, independent copy of the cached value, and the
+store itself always keeps a defensive copy separate from whatever a miss
+returns to the caller — so the caller is always free to mutate/delete/donate
+whatever `memoize_jaxpr` hands back. Only `jax.Array`/`np.ndarray` leaves are
+copied; other leaves (immutable Python scalars, strings) are returned as-is.
+
 ## Deferred and TBD Features
 
 ### Tier-2 (Future): Concrete Axis Roles

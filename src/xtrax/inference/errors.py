@@ -15,6 +15,7 @@ __all__ = [
     "AmbiguousAxisError",
     "AxisRole",
     "CseTraceError",
+    "MemoDonationError",
     "MemoImpurityError",
     "MemoKeyUnsupportedLeafError",
     "MemoMultiDeviceError",
@@ -48,6 +49,40 @@ class StructureMismatchError(XtraxInferenceError):
 
 class MemoImpurityError(XtraxInferenceError):
     """Static screen detected a likely-impure function at admission."""
+
+
+class MemoDonationError(MemoImpurityError):
+    """Static screen detected donation markers in the traced jaxpr (spec §4.2 item 6).
+
+    A subclass of ``MemoImpurityError`` so the wrap-time/first-call latch and
+    ``memo_rewrap()`` machinery, and any existing ``except MemoImpurityError``
+    caller, keep working unchanged, while remaining distinguishable by type.
+
+    ``sites`` is a tuple of
+    ``(path, carrier, eqn_operand_indices, wrapped_input_leaf_indices)``
+    entries, one per donation-carrying equation/carrier pair found during the
+    recursive jaxpr walk:
+
+    - ``path``: human-readable location of the offending equation (dotted/
+      bracketed trail through nested jaxprs, e.g. ``branches[1]``).
+    - ``carrier``: ``"donated_invars"`` or ``"copy_semantics"``.
+    - ``eqn_operand_indices``: flattened operand positions *within that
+      equation* that carry the donation marker (not argnums of the wrapped
+      function).
+    - ``wrapped_input_leaf_indices``: for top-level equations only, the index
+      ``j`` such that the donated operand *is* (identity) the wrapped
+      function's ``j``-th flattened positional-arg pytree leaf. Empty for
+      nested equations (identity lookup, not provenance tracing).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        sites: tuple[tuple[str, str, tuple[int, ...], tuple[int, ...]], ...],
+    ) -> None:
+        super().__init__(message)
+        self.sites = sites
 
 
 class MemoMultiDeviceError(XtraxInferenceError):
