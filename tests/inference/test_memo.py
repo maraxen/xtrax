@@ -1194,13 +1194,24 @@ class TestPerSignatureScreen:
 
 
 class TestDonationDocs:
-    def test_ac17_docs_mention_donation_and_fail_open_ids(self):
+    def test_ac17_docs_mention_donation_and_screen_ids(self):
         import re
         from pathlib import Path
 
         docs_path = Path(__file__).resolve().parents[2] / "docs" / "api" / "inference.md"
         content = docs_path.read_text()
-        for pattern in (r"memoize_jaxpr", r"donat", r"#5214", r"#5215"):
+        patterns = (
+            r"memoize_jaxpr",
+            r"donat",
+            r"#5214",
+            r"#5215",
+            r"#5216",
+            r"#5231",
+            r"#5233",
+            r"STATIC",
+            r"ABSTRACT",
+        )
+        for pattern in patterns:
             assert re.search(pattern, content), f"missing {pattern!r} in docs/api/inference.md"
 
 
