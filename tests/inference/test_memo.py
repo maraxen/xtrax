@@ -4,6 +4,7 @@ and spec 260922 §3 donation, both directions (AC-1 to AC-17)."""
 from __future__ import annotations
 
 import jax
+import jax.lax as lax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -93,6 +94,93 @@ class TestAdmission:
         monkeypatch.setenv("XTRAX_MEMO_STAMP_OVERRIDE", "1")
         p = MemoPolicy(_stamp_override="test-stamp")
         assert p._stamp_override == "test-stamp"
+
+
+class TestPurityWalk:
+    """AC-9, AC-10, AC-11: purity screen walks every sub-jaxpr with no depth cap."""
+
+    def test_ac9_cond_branch_random_rejected(self):
+        """AC-9: random draw inside lax.cond branch raises MemoImpurityError."""
+
+        def f(p, x):
+            return lax.cond(
+                p,
+                lambda y: y + jax.random.uniform(jax.random.key(0), y.shape),
+                lambda y: y,
+                x,
+            )
+
+        wrapped = memoize_jaxpr(f)
+        with pytest.raises(MemoImpurityError, match=r"branches\["):
+            wrapped(jnp.array(True), jnp.ones((4,), jnp.float32))
+
+    def test_ac10_deeply_nested_jit_random_rejected(self):
+        """AC-10: random draw nested inside 10 levels of jax.jit raises MemoImpurityError.
+
+        Verifies that the screen traversal has no depth cap, and that the nesting
+        is real (each level is a distinct wrapper).
+        """
+
+        def base(y):
+            return y + jax.random.uniform(jax.random.key(0), y.shape)
+
+        # Build 10 levels of jit, each explicitly wrapping the previous
+        g = base
+        for _ in range(10):
+
+            def wrap(inner):
+                return jax.jit(lambda y: inner(y) * 1.0)
+
+            g = wrap(g)
+
+        # Verify nesting is real: check that jax.make_jaxpr shows depth >= 9
+        x = jnp.ones((4,), jnp.float32)
+        jaxpr = jax.make_jaxpr(g)(x)
+
+        # Count nesting depth by walking the params
+        def count_nesting_depth(jaxpr_obj, depth=0):
+            max_depth = depth
+            for eqn in jaxpr_obj.eqns:
+                for param_val in eqn.params.values():
+                    if hasattr(param_val, "eqns"):
+                        max_depth = max(max_depth, count_nesting_depth(param_val, depth + 1))
+            return max_depth
+
+        nesting = count_nesting_depth(jaxpr.jaxpr)
+        assert nesting >= 9, f"Expected nesting >= 9, got {nesting}"
+
+        wrapped = memoize_jaxpr(g)
+        with pytest.raises(MemoImpurityError):
+            wrapped(x)
+
+    def test_ac11_while_loop_random_rejected(self):
+        """AC-11: random draw inside lax.while_loop body raises MemoImpurityError."""
+
+        def f(x):
+            def cond_fn(carry):
+                return carry < 5
+
+            def body_fn(carry):
+                return carry + 1 + jax.random.uniform(jax.random.key(0), ())
+
+            return lax.while_loop(cond_fn, body_fn, x)
+
+        wrapped = memoize_jaxpr(f)
+        with pytest.raises(MemoImpurityError):
+            wrapped(jnp.array(0.0))
+
+    def test_ac11_scan_random_rejected(self):
+        """AC-11: random draw inside lax.scan body raises MemoImpurityError."""
+
+        def f(x):
+            def body_fn(carry, inp):
+                return carry + inp + jax.random.uniform(jax.random.key(0), ()), None
+
+            return lax.scan(body_fn, jnp.array(0.0), x)[0]
+
+        wrapped = memoize_jaxpr(f)
+        with pytest.raises(MemoImpurityError):
+            wrapped(jnp.ones((4,), jnp.float32))
 
 
 class TestCaching:
@@ -374,10 +462,9 @@ class TestDonation:
 
     def test_ac4_naive_getattr_walker_misses_cond_branches(self, monkeypatch):
         """Red control (#5216): a walker using getattr(param, "eqns") alone
-        (mirroring _screen_jaxpr's own traversal) never descends into the
-        tuple-valued `branches` param, so it misses the donation entirely.
-        Demonstrates that recursing into tuple/list values (_iter_subjaxprs)
-        is load-bearing for AC-4.
+        (the OLD _screen_jaxpr strategy) never descends into the tuple-valued
+        `branches` param, so it misses the donation entirely. Demonstrates that
+        recursing into tuple/list values (_iter_subjaxprs) is load-bearing for AC-4.
         """
         import xtrax.inference.memo as m
 

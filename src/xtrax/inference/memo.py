@@ -189,29 +189,31 @@ _RANDOM_PRIMITIVES = {"random_bits", "threefry2x32_p", "rng_bit_generator", "ran
 
 
 def _screen_jaxpr(closed) -> None:
-    """Raise MemoImpurityError on detectably impure primitives."""
+    """Raise MemoImpurityError on detectably impure primitives. Traversal walks
+    with an explicit stack via _iter_subjaxprs exclusively, covering tuple/list-
+    valued params generically and with no depth cap."""
     banned = _STATEFUL_PRIMITIVES | _CALLBACK_PRIMITIVES | _RANDOM_PRIMITIVES
 
-    def _walk(eqns, depth: int = 0) -> None:
-        if depth > 8:  # bounded recursion guard
-            return
-        for eqn in eqns:
+    offenders: list[tuple[str, str]] = []  # (primitive_name, path) pairs
+    stack: list[tuple[Any, str]] = [(closed.jaxpr, "jaxpr")]
+    while stack:
+        jaxpr_obj, jaxpr_path = stack.pop()
+        for eqn in jaxpr_obj.eqns:
+            eqn_path = f"{jaxpr_path}.{_eqn_label(eqn)}"
             name = eqn.primitive.name
             if name in banned:
-                offenders.append(name)
-            for param_val in eqn.params.values():
-                sub_eqns = getattr(param_val, "eqns", None)
-                if sub_eqns:
-                    _walk(sub_eqns, depth + 1)
-
-    offenders: list[str] = []
-    _walk(closed.jaxpr.eqns)
+                offenders.append((name, eqn_path))
+            for param_name, param_val in eqn.params.items():
+                for sub_path, sub_jaxpr in _iter_subjaxprs(param_val, param_name):
+                    stack.append((sub_jaxpr, f"{eqn_path}.{sub_path}"))
     if offenders:
+        names = sorted(set(name for name, _ in offenders))
+        paths = ", ".join(path for _, path in offenders)
         raise MemoImpurityError(
             f"Function rejected by purity screen: stateful/callback/random "
-            f"primitives present: {sorted(set(offenders))}. If you believe this "
+            f"primitives present: {names}. If you believe this "
             "function is pure, restructure to avoid these primitives; wrapping "
-            "is the purity attestation."
+            f"is the purity attestation.\nPaths: {paths}"
         )
 
 
@@ -227,9 +229,9 @@ def _iter_subjaxprs(value: Any, path: str = ""):
     exposing ``.eqns``) reachable from ``value``, recursing into tuple/list
     values (e.g. ``lax.cond``'s ``branches``) with NO depth cap.
 
-    Contrast ``_screen_jaxpr``'s own ``getattr(param, "eqns")`` walk, which
-    only checks the param value itself (missing tuple-valued params like
-    `branches`) and silently stops past depth 8 (#5216) — not reused here.
+    Shared traversal used by both _screen_jaxpr and _screen_donation to cover
+    tuple/list-valued params generically (e.g. lax.cond's branches) while
+    respecting structural nesting at any depth.
     """
     stack: list[tuple[str, Any]] = [(path, value)]
     while stack:
