@@ -1215,6 +1215,174 @@ class TestDonationDocs:
             assert re.search(pattern, content), f"missing {pattern!r} in docs/api/inference.md"
 
 
+class TestAuditGaps:
+    """Audit gap tests F1-F5: non-latching refusal, exact string keys, STATIC trace bound,
+    digest and container-type tokens."""
+
+    def test_f1_classification_failure_no_latch(self):
+        """F1: a classification failure (MemoKeyUnsupportedLeafError) must not
+        latch the screen error. After the unsupported leaf raises, the next call
+        with a supported leaf should succeed (screen_latched_error is None)."""
+        wrapped = memoize_jaxpr(lambda x: x * 2.0)
+
+        # First call with unsupported leaf type (set is not supported)
+        with pytest.raises(MemoKeyUnsupportedLeafError):
+            wrapped({1, 2})
+
+        # Verify that the error did NOT latch
+        assert wrapped._memo_core.screen_latched_error is None
+
+        # Next call with a valid supported leaf should succeed
+        x = jnp.ones((3,), jnp.float32)
+        result = wrapped(x)
+        np.testing.assert_allclose(result, x * 2.0)
+
+    def test_f2_string_keys_not_normalized(self):
+        """F2: exact string keys are not confounded by Unicode normalization.
+        Two Unicode forms of 'é' (NFC precomposed vs NFD decomposed) are treated
+        as distinct cache keys even when they don't affect the traced program."""
+        import unicodedata
+
+        def f(x, s):
+            # String s does NOT affect the traced program (not used in computation)
+            return x * 2.0
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+
+        # NFC form (precomposed): U+00E9
+        s_nfc = "é"  # decomposed: e + combining acute
+        s_nfc = unicodedata.normalize("NFC", s_nfc)  # now precomposed
+        result1 = wrapped(x, s_nfc)
+
+        # NFD form (decomposed): e + combining acute accent
+        s_nfd = "é"  # already decomposed
+        assert s_nfc != s_nfd, "Test setup: NFC and NFD forms must be distinct"
+        assert unicodedata.normalize("NFC", s_nfc) == unicodedata.normalize("NFC", s_nfd), (
+            "Test setup: both should normalize to same NFC form"
+        )
+        result2 = wrapped(x, s_nfd)
+        stats2 = wrapped.memo_get_stats()
+
+        # Both calls should be misses (distinct string keys)
+        assert stats2["misses"] == 2, "Both calls should miss (different string keys)"
+        assert stats2["hits"] == 0, "No hits expected (each string form is unique)"
+        np.testing.assert_allclose(result1, x * 2.0)
+        np.testing.assert_allclose(result2, x * 2.0)
+
+    def test_f3_static_fallback_trace_bounded(self):
+        """F3: the STATIC-fallback path is trace-bounded (G4). Repeated calls
+        with fresh but equal arrays and the same static int value should not
+        retrace beyond the first failure + STATIC retry."""
+        trace_count = {"count": 0}
+
+        def f(x, n):
+            if isinstance(x, jax.core.Tracer):
+                trace_count["count"] += 1
+            # Python int branch forces STATIC mode
+            if n > 1:
+                return x * 2.0
+            return x
+
+        wrapped = memoize_jaxpr(f)
+
+        # First call with n=3: ABSTRACT fails, STATIC succeeds, trace count = 1 or 2
+        x1 = jnp.ones((4,), jnp.float32)
+        wrapped(x1, 3)
+        trace_count_after_first = trace_count["count"]
+        assert trace_count_after_first > 0, "First call should trace"
+
+        # Second and third calls with fresh but equal arrays, same n=3
+        # Should hit the STATIC cache, no re-tracing
+        x2 = jnp.ones((4,), jnp.float32)
+        wrapped(x2, 3)
+        trace_count_after_second = trace_count["count"]
+        assert trace_count_after_second == trace_count_after_first, "Second call should not retrace"
+
+        x3 = jnp.ones((4,), jnp.float32)
+        wrapped(x3, 3)
+        trace_count_after_third = trace_count["count"]
+        assert trace_count_after_third == trace_count_after_first, "Third call should not retrace"
+
+        # Call with a different static value n=5
+        # ABSTRACT token is already _NEEDS_STATIC, so no ABSTRACT retry, just one more STATIC trace
+        x4 = jnp.ones((4,), jnp.float32)
+        wrapped(x4, 5)
+        trace_count_after_new_n = trace_count["count"]
+        assert trace_count_after_new_n == trace_count_after_first + 1, (
+            "New static value should cause exactly one more trace (STATIC only, no ABSTRACT retry)"
+        )
+
+    def test_f4_build_key_depends_on_digest(self):
+        """F4: build_key depends on the digest. Two different digests should
+        produce different keys for the same args."""
+
+        def f(x):
+            return x * 2.0
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+
+        # Trigger a call to populate the core state
+        wrapped(x)
+        core = wrapped._memo_core
+
+        # Call _ensure_screened to get a digest
+        digest_a = core._ensure_screened((x,), {})
+
+        # Build keys with different digests
+        key_a = core.build_key(digest_a, (x,), {})
+        key_b = core.build_key("different_digest_hash", (x,), {})
+
+        # Keys must differ because digests differ
+        assert key_a != key_b, "Different digests must produce different keys"
+
+    def test_f5_container_type_in_token(self):
+        """F5: container type (np.ndarray vs jax.Array) is in the signature
+        token, not only in the leaf digest. Different container types must
+        trace separately."""
+        from xtrax.inference.memo import _classify_leaf
+
+        # Direct classification test: np.ndarray and jax.Array have different descriptors
+        np_arr = np.ones((3,), dtype=np.float32)
+        jax_arr = jnp.ones((3,), dtype=jnp.float32)
+
+        np_kind, np_descriptor = _classify_leaf(np_arr, "ABSTRACT")
+        jax_kind, jax_descriptor = _classify_leaf(jax_arr, "ABSTRACT")
+
+        # Both are "arr" kind, but descriptors must differ (container type is different)
+        assert np_kind == "arr" and jax_kind == "arr"
+        assert np_descriptor != jax_descriptor, (
+            "np.ndarray and jax.Array must have different descriptors (container type differs)"
+        )
+
+        # Behavioral test: traced calls with different container types
+        trace_count = {"count": 0}
+
+        def f(x):
+            if isinstance(x, jax.core.Tracer):
+                trace_count["count"] += 1
+            return x * 2.0
+
+        wrapped = memoize_jaxpr(f)
+
+        # Call with np.ndarray
+        np_arr1 = np.ones((4,), dtype=np.float32)
+        wrapped(np_arr1)
+        trace_count_after_np = trace_count["count"]
+        assert trace_count_after_np > 0, "First call with np.ndarray should trace"
+
+        # Call with jax.Array of same shape/dtype
+        jax_arr1 = jnp.ones((4,), dtype=jnp.float32)
+        wrapped(jax_arr1)
+        trace_count_after_jax = trace_count["count"]
+
+        # Must trace twice (tokens differ due to container type)
+        assert trace_count_after_jax == 2, (
+            "np.ndarray and jax.Array must trace separately (different container types)"
+        )
+
+
 class TestSeamLint:
     def test_ac12_seam_lint_flags_guarded_evaluate_wrapping(self):
         """AST lint test (alias-resolving) flags memoizing guarded_evaluate."""
