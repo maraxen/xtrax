@@ -315,9 +315,12 @@ from xtrax.inference import MemoPolicy, memoize_jaxpr
 
 `memoize_jaxpr` wraps a pure, JAX-traceable callable with a content-keyed
 value cache. Admission is opt-in purity *attestation*: at wrap time (for
-zero-parameter callables) or on the first call (otherwise), the function is
-traced once with `jax.make_jaxpr` and screened for detectably-impure
+zero-parameter callables) or on the first call with each new call signature
+(otherwise), the function is traced and screened for detectably-impure
 primitives and for donation markers, before any concrete execution.
+A signature is the argument tree structure, including kwargs, plus each
+array's container type, shape, dtype and weak type, and each static scalar's
+exact value.
 
 **Donation is rejected, unconditionally.** `memoize_jaxpr` never admits a
 function whose traced jaxpr carries a donation marker, at any depth — this
@@ -326,7 +329,8 @@ covers both `donate_argnums`/`donate_argnames` (visible as a `True` in a
 (visible as a `DONATE_INPUT` element of a `device_put` equation's
 `copy_semantics` param). The walk recurses into every nested jaxpr reachable
 from an equation's params — `jit`/`pjit`, `lax.cond` branches, `lax.scan`
-bodies, `lax.while_loop`, `custom_jvp`/`custom_vjp` — with no depth cap.
+bodies, `lax.while_loop`, `custom_jvp`/`custom_vjp` — with no depth cap. The purity
+screen uses the same walk.
 
 Rejection raises `MemoDonationError` (a `MemoImpurityError` subclass), whose
 `.sites` attribute lists every offending site. **This is deliberately
@@ -336,19 +340,49 @@ because provenance-tracing which donations are caller-visible would need a
 per-primitive map from sub-jaxpr invars to outer vars that can fail open, and
 would still miss constvars.
 
-**Two fail-open admission paths are documented, not fixed, in this release:**
+**Screening modes.**
 
-- **#5214 — the screen runs once.** Admission is keyed off the *first* call's
-  abstract signature only; a function whose donation depends on shape (or on
-  a Python branch over static structure) that only manifests on a *later*
-  call with a different signature is not re-screened.
-- **#5215 — the screen never traces kwargs.** Only `probe(*args)` is traced;
-  a function that donates only when a keyword argument takes a particular
-  value (e.g. `fn(x, *, fast=False)` donating only when `fast=True`) is never
-  observed by the screen.
+- ABSTRACT mode (tried first): arrays, and plain `int`/`float` arguments, are
+  traced abstractly, so one trace covers every value.
+- `bool`, enum and other `int`/`float` subclasses, `str` and `bytes` are always
+  held static.
+- If the abstract trace fails and a plain scalar is present, STATIC mode
+  re-traces with the scalars held static. That costs one trace per distinct
+  scalar value.
+- A Python int outside the default int range gets its own signature, so it never
+  forces STATIC mode on in-range ints.
 
-Neither is fixed in this release: fixing either would change the admission
-machinery or the cache key.
+**Refusals.**
+
+- A function that consults the value of an array argument in Python (branching
+  on it, boolean indexing, `np.asarray`) raises `MemoKeyUnsupportedLeafError`.
+- `TypeError`s raised while tracing surface as `MemoKeyUnsupportedLeafError`
+  (chained to the original); other errors propagate unchanged.
+
+**Latch.** A screen rejection on any signature latches the wrapper, and every
+later call raises until `.memo_rewrap()`.
+
+**Keys.** String and bytes arguments key on their exact bytes (no Unicode
+normalization). `np.ndarray` and `jax.Array` inputs with equal values are
+distinct keys.
+
+**Spot checks** replay the call's own positional and keyword arguments.
+
+**Blind spots (not screened):**
+
+- out-of-trace impurity: closure state, time, I/O;
+- `custom_vjp` `bwd` and `custom_jvp` rule callables;
+- trace/eager divergence (#5233): a cache miss runs the function eagerly, so a
+  path chosen by identity or type checks (`isinstance(n, int)` on a plain `int`
+  traced abstractly, `isinstance(x, jax.core.Tracer)`, `np.ndarray` vs `jax.Array`
+  checks) or by catching `ConcretizationTypeError` can differ from the screened
+  trace;
+- `np.bool_` and numpy-scalar enums are array leaves traced abstractly, so the
+  static rule for `bool` does not cover `x is np.True_`.
+
+**Fixed in this release:** per-signature screening (#5214), kwargs traced
+(#5215), uncapped purity walk (#5216), and kwarg-faithful spot-check replay
+(#5231).
 
 **Output aliasing and `copy_on_return`.** By default (`copy_on_return=False`,
 the default), a cache hit returns the cached object **by identity**, and a
