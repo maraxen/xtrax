@@ -318,6 +318,9 @@ value cache. Admission is opt-in purity *attestation*: at wrap time (for
 zero-parameter callables) or on the first call with each new call signature
 (otherwise), the function is traced and screened for detectably-impure
 primitives and for donation markers, before any concrete execution.
+A signature is the argument tree structure, including kwargs, plus each
+array's container type, shape, dtype and weak type, and each static scalar's
+exact value.
 
 **Donation is rejected, unconditionally.** `memoize_jaxpr` never admits a
 function whose traced jaxpr carries a donation marker, at any depth — this
@@ -348,7 +351,6 @@ would still miss constvars.
   scalar value.
 - A Python int outside the default int range gets its own signature, so it never
   forces STATIC mode on in-range ints.
-- Use the literal words ABSTRACT and STATIC.
 
 **Refusals.**
 
@@ -356,27 +358,22 @@ would still miss constvars.
   on it, boolean indexing, `np.asarray`) raises `MemoKeyUnsupportedLeafError`.
 - Other errors raised while tracing propagate unchanged.
 
-**Latch.**
+**Latch.** A screen rejection on any signature latches the wrapper, and every
+later call raises until `.memo_rewrap()`.
 
-A screen rejection on any signature latches the wrapper, and every later call
-raises until `.memo_rewrap()`.
+**Keys.** String and bytes arguments key on their exact bytes (no Unicode
+normalization). `np.ndarray` and `jax.Array` inputs with equal values are
+distinct keys.
 
-**Keys.**
-
-String and bytes arguments key on their exact bytes (no Unicode normalization).
-`np.ndarray` and `jax.Array` inputs with equal values are distinct keys.
-
-**Spot checks**
-
-replay the call's own positional and keyword arguments.
+**Spot checks** replay the call's own positional and keyword arguments.
 
 **Blind spots (not screened):**
 
 - out-of-trace impurity: closure state, time, I/O;
 - `custom_vjp` `bwd` and `custom_jvp` rule callables;
 - trace/eager divergence (#5233): a cache miss runs the function eagerly, so a
-  path chosen by identity or type checks (`x is True` on a value traced
-  abstractly, `isinstance(x, jax.core.Tracer)`, `np.ndarray` vs `jax.Array`
+  path chosen by identity or type checks (`isinstance(n, int)` on a plain `int`
+  traced abstractly, `isinstance(x, jax.core.Tracer)`, `np.ndarray` vs `jax.Array`
   checks) or by catching `ConcretizationTypeError` can differ from the screened
   trace;
 - `np.bool_` and numpy-scalar enums are array leaves traced abstractly, so the
