@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`xtrax.tiling.dedup_synthesis.verify_dedup_spec`**: checks a `DedupSpec`'s
+  row-identity claim (spec §4.3/§10.2-10.3, backlog #5172). Every row is
+  compared **bitwise, per leaf, in native byte layout** against its claimed
+  canonical row — the same byte definition `synthesize_dedup_spec` uses, so
+  the two functions cannot drift. A mismatch in *any* leaf fails the row
+  (union semantics); `DedupSpecVerificationError.first_bad_row`/`n_bad`/
+  `leaf_index` describe the first failure. Structural checks (array type,
+  integer dtype, `k`/length/bounds) run first, entirely on host, before any
+  device→host transfer; the row check then moves exactly one `(N, L)` boolean
+  mismatch mask (`N * L` bytes). Checks row-equality only (claim i); the
+  numeric compute-equivalence claim (ii, "does re-running `fn` on the deduped
+  rows reproduce `fn`'s full output") needs `fn` and is follow-up #5217.
+- **`xtrax.inference` donation rejection, both directions**: `memoize_jaxpr`
+  now rejects, at admission, any wrapped function whose traced jaxpr carries a
+  donation marker on any equation at any nesting depth — `jit`/`pjit`
+  `donate_argnums`/`donate_argnames`, and `device_put(..., donate=True)` via
+  its `copy_semantics` operand. Previously only the output side was half-built
+  and the input side was entirely unchecked (`test_donation_rejected_at_wrap`
+  asserted an unrelated policy field and never exercised donation). New
+  `MemoDonationError(MemoImpurityError)`, exported from
+  `xtrax.inference.errors.__all__` and `xtrax.inference`, carries a structured
+  `.sites` tuple naming each offending equation, its carrier
+  (`"donated_invars"`/`"copy_semantics"`), and — for top-level equations —
+  which flattened input leaf it aliases. Two known fail-open admission paths
+  are not fixed (the screen runs once, keyed off the first call's shape, and
+  never traces kwargs) and are pinned with strict `xfail` markers citing
+  #5214/#5215.
+
+### Fixed
+
+- **`synthesize_dedup_spec` row identity is now exact native bytes per leaf**,
+  not numpy-float equality over a promoted, dtype-concatenated view (spec
+  §4.3/§5, backlog #5172). The predecessor's `jnp.concatenate` of raw leaves
+  silently merged rows that are not the same bits:
+  - `+0.0`/`-0.0` compared equal (`np.unique(axis=0)` merges signed zeros) —
+    they are now distinct, so `k` may rise, possibly past `max_unique_k`
+    (turning a `"synthesized"` result into `"k_over_limit"`).
+  - Mixed-dtype leaves (e.g. an int32 leaf beside a float32 leaf) were
+    promoted to a common floating dtype before comparison, silently
+    collapsing distinct integers (`2**24` and `2**24+1` compared equal).
+  - A numpy int64/float64 leaf was truncated to int32/float32 by the implicit
+    `jnp.moveaxis` conversion under x64-off, silently merging wide values.
+  - `axis != 0` read the wrong dimension for `N` (`stacked.shape[axis]` on an
+    already batch-first array), producing a spurious `ValueError` or a
+    garbage duplication ratio; `axis != 0` now works correctly.
+  - `transfer_bytes_spent`/`k_bucket_bytes` now report true per-leaf byte
+    widths instead of the promoted-dtype width (e.g. an int8 leaf beside a
+    float32 leaf now counts 5 bytes/row, not the promoted 8).
+  - Bitwise-identical NaN rows now deduplicate (`k` may fall), which is also
+    now sound rather than an artifact of promotion.
+  - Typed PRNG key leaves are now refused with `DedupSynthesisUnsupportedError`
+    naming `jax.random.key_data`, where they used to raise a raw `TypeError`
+    from deep inside JAX. Sub-byte integer leaves (int2/int4/uint2/uint4) are
+    compared exactly after a lossless widening `astype`; sub-byte float leaves
+    (float4/float6) are refused rather than silently widened through a lossy
+    numeric conversion.
+  Every change is in the sound direction (see risk table, spec §12); none is a
+  regression. `tests/tiling/test_dedup_synthesis.py` (PR #104) passes
+  unmodified against the new implementation.
+- **`added-types-diff` gate no longer trips on nested `def`s** (backlog #5205,
+  verified live on PR #156's `visit` closure inside `_topological_order`):
+  `_PublicFunctionCollector.visit_FunctionDef` now stops descending into
+  function bodies after recording a public-named def, so a nested def is
+  never mis-reported as "unable to locate callable", and no longer silently
+  overwrites a same-named top-level def's entry in the gate's base/head maps
+  — previously this could either spuriously flag an unrelated top-level def
+  as changed, or, more seriously, hide a real signature change to it (both
+  base and head maps held the unchanged nested def under that key). A
+  factory pattern (`foo = _make_foo()` with a nested `def foo`) is now
+  invisible to the gate rather than accidentally loud; covering assigned
+  callables would be a gate feature, not this fix.
+
 ## [0.4.0a10] - 2026-09-13
 
 Release theme: the export boundary now refuses, at plan time, the constructs
