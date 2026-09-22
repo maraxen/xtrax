@@ -1,12 +1,12 @@
 ---
 title: memoize_jaxpr screen hardening
 description: 'Per-signature purity/donation screening with static non-array leaves and kwargs, uncapped sub-jaxpr traversal for the impurity screen, and kwarg-faithful spot-check replay (#5214, #5215, #5216)'
-status: draft
+status: FINAL r3 — adversarially converged (round 2 ACCEPT-WITH-CONDITIONS, all conditions folded in)
 task_id: 260922_memo-screen-hardening
 date: '260922'
 backlog_ids: '5214, 5215, 5216, 5231'
-adversarial_review: 'r1 REVISE (1 BLOCKER, 2 MAJOR in scope + 1 MAJOR, 4 MINOR) — dispositions §8'
-revision: 2
+adversarial_review: 'r1 REVISE; r2 ACCEPT-WITH-CONDITIONS (1 MAJOR, 4 MINOR), folded into r3 — dispositions §8'
+revision: 3
 ---
 # memoize_jaxpr screen hardening
 
@@ -16,6 +16,7 @@ revision: 2
 |---|---|---|
 | r1 | 260922 | Initial draft. Probes P1-P4 measured before drafting. |
 | r2 | 260922 | Challenger round 1 returned REVISE; every objection was accepted (§8). The main changes: <br>- The ABSTRACT→STATIC fallback retries on **any** exception when a traced scalar is present (the BLOCKER). The r1 exception-taxonomy premise is false in JAX 0.11.1. <br>- `bool` scalars and scalars whose type is not exactly `int`/`float` are always held static. <br>- String and bytes keys are exact; the NFC normalization, which caused collisions, is removed. <br>- The leaf container type enters the token and the key. <br>- G1 is reworded to claim only trace-visible paths. <br>- N5 is filed as #5233 and N3 as #5234. Probes P5-P11 are added. |
+| r3 | 260922 | Challenger round 2 returned ACCEPT-WITH-CONDITIONS, and every condition is folded in (§8 round 2):<br>- The traceable-int descriptor carries `fits_default_int`, which fixes the G4 regression from value-dependent overflow (OBJ-R2-01). AC-5g is added.<br>- AC-5(d)'s red-control text is corrected.<br>- AC-7b/7c call order is fixed.<br>- The AC-15 recipe is pinned, and the rule that `build_key` runs unlocked is stated.<br>- Step 3 looks up the STATIC token before tracing. |
 
 ## 1. Context
 
@@ -115,7 +116,12 @@ Flatten `(args, kwargs)` with `jax.tree_util.tree_flatten`. Classify each leaf i
    `("arr", type(leaf).__qualname__, shape, dtype.name, weak_type)`. The container type is
    included per D-4.
 2. **Traceable scalar:** `type(leaf) is int` or `type(leaf) is float`, using an **exact** type
-   check. Its descriptor in ABSTRACT mode is `("dyn", "int" | "float")`.
+   check. Its descriptor in ABSTRACT mode is `("dyn", "float")` for a float and
+   `("dyn", "int", fits_default_int)` for an int. `fits_default_int` is True iff the value
+   lies in the range of `jax.dtypes.canonicalize_dtype(np.int64)`, which is int32 unless x64
+   is enabled; it is read at use time. An out-of-range int therefore gets its **own**
+   ABSTRACT token. Its value-dependent `OverflowError` records `_NeedsStatic` only under that
+   token, so in-range ints keep ABSTRACT mode (OBJ-R2-01, G4).
 3. **Static scalar:** every other instance of `bool`, `int`, `float`, `str` or `bytes`. That
    covers `bool`, `IntEnum`, other `int`/`float` subclasses, `str` and `bytes`. The leaf is
    **always** held static (D-2), with descriptor `("static", type(leaf).__qualname__,
@@ -181,7 +187,9 @@ str | _NeedsStatic]`. The resolution and screening function is
    - On success, run both screens. If they pass, insert `abstract_token → digest` and return
      the digest.
    - On failure, apply the §3.1 fallback rule.
-3. Trace in STATIC mode outside the lock and run both screens. **Only if both pass**, insert
+3. Build the STATIC token and look it up under the lock first (OBJ-R2-05). On a hit, insert
+   `abstract_token → _NeedsStatic` if we came from step 2, then return the digest. On a
+   miss, trace in STATIC mode outside the lock and run both screens. **Only if both pass**, insert
    `static_token → digest` and, if we came from step 2's fallback, `abstract_token →
    _NeedsStatic`. Both inserts happen under one lock acquisition.
    - Rule: **nothing is inserted until a screen has passed for some mode.**
@@ -194,6 +202,8 @@ str | _NeedsStatic]`. The resolution and screening function is
 - The table is bounded by the module constant `_MAX_SCREENED_SIGNATURES = 1024`. It is read
   **at use time** as a module global, never captured in `__init__` or a default argument, so
   that AC-13 can monkeypatch it. Eviction is LRU, and costs only a re-trace.
+- Neither tracing nor `build_key` ever runs under `self.lock` (OBJ-R2-04). `build_key` is
+  called outside the lock, exactly as on main (`memo.py:444`).
 - Tracing never holds the lock. Two threads racing on one new signature both trace, which is
   idempotent.
 - `build_key(digest, args, kwargs)` hashes **the digest returned by `_ensure_screened` for
@@ -255,14 +265,15 @@ All tests go in `tests/inference/test_memo.py`.
 | AC-2 | #5214 purity twin: a shape-dependent `uniform` draw on the second shape raises `MemoImpurityError`, and it is exactly that type, not `MemoDonationError`. | fails on main |
 | AC-3 | #5215: `test_ac16_kwarg_dependent_donation_not_traced` has its xfail removed and passes. | xfail strict on main |
 | AC-4 | #5215 purity twin: `f(x, *, fast=False)` whose `fast=True` path draws. `f(x)` is admitted and hits on repeat. `f(x, fast=True)` raises `MemoImpurityError`. Afterwards `f(x)` raises the latched error. | fails on main |
-| AC-5 | STATIC fallback: each of these is memoizable with `n` a Python `int` (same `n` hits, different `n` misses), and each fails on main with `MemoKeyUnsupportedLeafError`: (a) `if n > 1`; (b) `sum(range(n))`; (c) `jnp.zeros(n)`; (d) `x[:n]`. | fails on main (P5) |
+| AC-5 | STATIC fallback: each of these is memoizable with `n` a Python `int` (same `n` hits, different `n` misses), (a) `if n > 1`; (b) `sum(range(n))`; (c) `jnp.zeros(n)`; (d) `x[:n]`. The positive tests assert only admission, never main's exception type. | fails on main: (a)-(c) with `MemoKeyUnsupportedLeafError`, (d) with a raw `IndexError` (main catches only `TypeError`) |
+| AC-5g | G4 under overflow (OBJ-R2-01): `g(x, n) = x + (n % 7)`. Call `g(x, 2**40)` first; it is admitted via STATIC mode. Then `g(x, 3)` and `g(x, 4)` share **one** ABSTRACT trace, checked with the tracer-only counter. | mutation: drop `fits_default_int` from the descriptor → in-range calls trace per value |
 | AC-5e | `f(x, n)` computing `x + n` with `n = 2**40` raises `OverflowError` unchanged, the same exception the eager call raises (measured 260922: eager and STATIC-traced both overflow). It is not relabelled as `MemoKeyUnsupportedLeafError` and not swallowed. OBJ-R1-01 proposed "memoizable" here; that is false, since the eager call itself overflows. | pin (§3.1 "propagates unchanged") |
 | AC-5f | An impure branch selected in STATIC mode by an int value is rejected: `if n > 3: <uniform draw>` with `n=5` raises `MemoImpurityError`. | fails on main |
 | AC-6 | `str`: a positional string argument is memoizable. The NFC `"é"` and NFD `"é"` forms are **distinct** keys, so both calls miss. | fails on main (P4, P8) |
 | AC-6b | `bytes`: `b"\xff"` as an argument is memoizable. | fails on main (P9) |
 | AC-7 | G4: a function `x * s` with float `s`, called with 5 distinct float values, traces **once**. Count traces with a tracer-only counter, as in `_counting_fn`. | mutation: route every scalar to STATIC → 5 traces |
-| AC-7b | D-2: a `bool` leaf is held static. `f(x, flag)` using `if flag is True: <uniform draw>` raises `MemoImpurityError` for `flag=True`, while `flag=False` is admitted. | fails on main (P6) |
-| AC-7c | D-2: an `IntEnum` leaf is held static. `mode is Mode.B` selecting a draw raises `MemoImpurityError`. | fails on main |
+| AC-7b | D-2: a `bool` leaf is held static. `f(x, flag)` using `if flag is True: <uniform draw>` is called in a **fixed order**: `flag=False` first (admitted and cached), then `flag=True` (raises `MemoImpurityError`), then `flag=False` (raises the latched error, §3.5). | fails on main (P6) |
+| AC-7c | D-2: an `IntEnum` leaf is held static. `mode is Mode.B` selecting a draw is called in a fixed order: `Mode.A` first (admitted), then `Mode.B` (raises `MemoImpurityError`). | fails on main |
 | AC-8 | Array-value refusal: `if x[0] > 0`, `x[x > 0]` and `np.asarray(x)` inside the function each raise `MemoKeyUnsupportedLeafError`, and the message contains `value of an array argument`. | message assertion (new wording) |
 | AC-8b | A non-classified exception propagates unchanged: a function that raises `ZeroDivisionError` during tracing surfaces `ZeroDivisionError`. | pin |
 | AC-9 | #5216: a draw inside a `lax.cond` branch raises `MemoImpurityError`, and the message contains `branches[`. | fails on main |
@@ -272,8 +283,9 @@ All tests go in `tests/inference/test_memo.py`.
 | AC-13 | Table bound: with `_MAX_SCREENED_SIGNATURES` monkeypatched to 2, cycling 3 shapes never grows the table past 2, and an evicted shape re-traces (counter). | mutation: no eviction |
 | AC-13b | Container type: an `np.ndarray` leaf, then an equal `jax.Array` leaf: both miss. | fails on main (P10) |
 | AC-14 | #5231: `f(x, *, scale=1.0)` returning `x * scale`, with `spot_check_every=1`, and two calls `f(x, scale=3.0)`: no `MemoStalenessError`, and the hit returns `x * 3`. | fails on main (false staleness) |
-| AC-15 | #5231 race, behavioural and deterministic (no sleeps). Monkeypatch the instance's `build_key` to block on a `threading.Event` for inputs A. Thread 1 calls `f(A)`, a spot-checked hit, and blocks. Thread 2 calls `f(B)` to completion. Release thread 1. Assert thread 1 gets no `MemoStalenessError` and returns A's value. With a timeout join, the test must not hang on failure. | fails on main (shared `_last_args`) |
-| AC-16 | Docs (`docs/api/inference.md`): the "fail-open admission paths" block becomes a "Fixed" note naming #5214, #5215, #5216 and #5231. The docs describe: <br>- ABSTRACT/STATIC modes and D-2; <br>- the STATIC retrace cost; <br>- the array-value refusal; <br>- exact string keys; <br>- blind spots N1, N2 and N5, with N5's idioms listed and #5233 named. <br>`test_ac17` also requires `#5216`, `#5233` and `STATIC`. | doc test |
+| AC-15 | #5231 race, behavioural and deterministic (no sleeps). Use `spot_check_every=1`. Warm up with `f(A)`, a miss that caches A. Monkeypatch the core instance's `build_key` with a `*a, **k` passthrough, so that it works against both main's `build_key(args, kwargs)` and the new `build_key(digest, args, kwargs)`. The patch identifies A by identity (`any(v is A for v in a)` over the args tuples it receives) and blocks on a `threading.Event` **once only**, so the warm-up does not block. Thread 1 calls `f(A)`, a spot-checked hit, and blocks. Thread 2 calls `f(B)` to completion. Release thread 1. Assert thread 1 gets no `MemoStalenessError` and returns A's value. With a timeout join, the test must not hang on failure. | fails on main (shared `_last_args`) |
+| AC-16 | Docs (`docs/api/inference.md`): the "fail-open admission paths" block becomes a "Fixed" note naming #5214, #5215, #5216 and #5231. The docs describe: <br>- ABSTRACT/STATIC modes and D-2; <br>- the STATIC retrace cost; <br>- the array-value refusal; <br>- exact string keys; <br>- blind spots N1, N2 and N5, with N5's idioms listed and #5233 named;
+- `np.bool_` and numpy-scalar enums, which are array leaves traced abstractly, so D-2 does not cover `x is np.True_`. <br>`test_ac17` also requires `#5216`, `#5233` and `STATIC`. | doc test |
 | AC-17 | No regressions: `uv run --extra dev pytest tests/inference -q` passes. This is a narrow run; the whole suite is never run locally. | — |
 
 ## 5. Tasks (sequential fixers, one worktree)
@@ -320,6 +332,19 @@ Order: T1 → T2 → T3 → T4, one commit each. After each commit the orchestra
 | OBJ-R1-07 | MINOR | **Accepted.** AC-15 is now a deterministic behavioural race test. |
 | OBJ-R1-08 | MINOR | **Accepted.** The N5 wording is corrected. |
 | OD-1 | ruling | **Carve-out accepted on the challenger's conditions:** (a) G1 reworded; (b) D-2 adopted; (c) AC-16 lists the N5 idioms; (d) filed as #5233. |
+
+### Round 2 (challenger, Opus): ACCEPT-WITH-CONDITIONS
+
+| Obj | Sev | Disposition |
+|---|---|---|
+| OBJ-R2-01 | MAJOR | **Accepted.** `fits_default_int` added to the int descriptor (§3.1). AC-5g added. |
+| OBJ-R2-02 | MINOR | **Accepted.** AC-5 red-control text corrected. |
+| OBJ-R2-03 | MINOR | **Accepted.** AC-7b/7c call order fixed. The `np.bool_` gap is added to the N5 docs list (AC-16). |
+| OBJ-R2-04 | MINOR | **Accepted.** The AC-15 recipe is pinned, and `build_key` running outside the lock is stated (§3.2). |
+| OBJ-R2-05 | MINOR | **Accepted.** Step 3 looks up the STATIC token first. |
+
+Convergence: round 2 had no BLOCKER, and every condition is a text change folded in here. The
+spec is FINAL.
 
 ## 10. Follow-ups filed
 
