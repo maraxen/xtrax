@@ -38,6 +38,7 @@ import jax
 import numpy as np
 
 from xtrax.inference.errors import (
+    MemoDonationError,
     MemoImpurityError,
     MemoKeyUnsupportedLeafError,
     MemoMultiDeviceError,
@@ -215,6 +216,115 @@ def _screen_jaxpr(closed) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Donation screen (spec §3.3/§3.4)
+# ---------------------------------------------------------------------------
+
+_DonationSite = tuple[str, str, tuple[int, ...], tuple[int, ...]]
+
+
+def _iter_subjaxprs(value: Any, path: str = ""):
+    """Yield (path, subjaxpr) for every subjaxpr-like object (anything
+    exposing ``.eqns``) reachable from ``value``, recursing into tuple/list
+    values (e.g. ``lax.cond``'s ``branches``) with NO depth cap.
+
+    Contrast ``_screen_jaxpr``'s own ``getattr(param, "eqns")`` walk, which
+    only checks the param value itself (missing tuple-valued params like
+    `branches`) and silently stops past depth 8 (#5216) — not reused here.
+    """
+    stack: list[tuple[str, Any]] = [(path, value)]
+    while stack:
+        p, v = stack.pop()
+        if hasattr(v, "eqns"):
+            yield p, v
+        elif isinstance(v, (tuple, list)):
+            for i, item in enumerate(v):
+                stack.append((f"{p}[{i}]" if p else f"[{i}]", item))
+
+
+def _eqn_label(eqn) -> str:
+    name = eqn.params.get("name")
+    if name:
+        return f"{eqn.primitive.name}[name={name}]"
+    return eqn.primitive.name
+
+
+def _wrapped_leaf_indices(eqn, operand_indices: tuple[int, ...], closed_invars) -> tuple[int, ...]:
+    """Identity lookup only (not provenance tracing): for each donated
+    operand of a TOP-LEVEL equation, find `j` such that the operand var IS
+    (identity) `closed_invars[j]` — an index into the flattened pytree leaves
+    of the wrapped function's positional args."""
+    out: list[int] = []
+    for i in operand_indices:
+        operand = eqn.invars[i]
+        for j, invar in enumerate(closed_invars):
+            if operand is invar:
+                out.append(j)
+                break
+    return tuple(out)
+
+
+def _eqn_donation_sites(eqn, path: str, top_level: bool, closed_invars) -> list[_DonationSite]:
+    """Both donation carriers (D3, P5): `donated_invars` (jit/pjit/scan/...)
+    and `device_put`'s `copy_semantics` DONATE_INPUT element. Duck-typed on
+    `.name` — the private `ArrayCopySemantics` type is never imported."""
+    sites: list[_DonationSite] = []
+
+    donated_invars = eqn.params.get("donated_invars")
+    if donated_invars:
+        idxs = tuple(i for i, d in enumerate(donated_invars) if d)
+        if idxs:
+            wrapped = _wrapped_leaf_indices(eqn, idxs, closed_invars) if top_level else ()
+            sites.append((path, "donated_invars", idxs, wrapped))
+
+    copy_semantics = eqn.params.get("copy_semantics")
+    if copy_semantics:
+        idxs = tuple(
+            i for i, cs in enumerate(copy_semantics) if getattr(cs, "name", None) == "DONATE_INPUT"
+        )
+        if idxs:
+            wrapped = _wrapped_leaf_indices(eqn, idxs, closed_invars) if top_level else ()
+            sites.append((path, "copy_semantics", idxs, wrapped))
+
+    return sites
+
+
+def _donation_message(sites: tuple[_DonationSite, ...]) -> str:
+    lines = [
+        f"  - {path} (carrier={carrier}, eqn_operand_indices={op_idx}, "
+        f"wrapped_input_leaf_indices={leaf_idx})"
+        for path, carrier, op_idx, leaf_idx in sites
+    ]
+    return (
+        "Function rejected by donation screen (spec §4.2 item 6): "
+        "memoize_jaxpr never admits a function whose traced jaxpr carries a "
+        "donation marker, at any depth. Sites:\n"
+        + "\n".join(lines)
+        + "\nRemedy: remove donate_argnums/donate_argnames/device_put(donate=True) "
+        "from functions wrapped by memoize_jaxpr (spec §4.2 item 6)."
+    )
+
+
+def _screen_donation(closed) -> None:
+    """Collect ALL donation-hazard sites (both carriers, at any depth), then
+    raise once (§3.3 "conservative" rule). Traversal walks with an explicit
+    stack via `_iter_subjaxprs` exclusively, so it covers tuple/list-valued
+    params generically and has no depth cap."""
+    sites: list[_DonationSite] = []
+    closed_invars = closed.jaxpr.invars
+    stack: list[tuple[Any, str, bool]] = [(closed.jaxpr, "jaxpr", True)]
+    while stack:
+        jaxpr_obj, jaxpr_path, top_level = stack.pop()
+        for eqn in jaxpr_obj.eqns:
+            eqn_path = f"{jaxpr_path}.{_eqn_label(eqn)}"
+            sites.extend(_eqn_donation_sites(eqn, eqn_path, top_level, closed_invars))
+            for param_name, param_val in eqn.params.items():
+                for sub_path, sub_jaxpr in _iter_subjaxprs(param_val, param_name):
+                    stack.append((sub_jaxpr, f"{eqn_path}.{sub_path}", False))
+    if sites:
+        raise MemoDonationError(_donation_message(tuple(sites)), sites=tuple(sites))
+
+
+# ---------------------------------------------------------------------------
 # Wrapper
 # ---------------------------------------------------------------------------
 
@@ -281,6 +391,7 @@ class _MemoCore:
                     f"leaf type for memo keys): {exc}"
                 ) from exc
             _screen_jaxpr(closed)
+            _screen_donation(closed)
             self.program_digest = _program_digest(closed)
 
     def build_key(self, args: tuple, kwargs: dict) -> str:
@@ -364,7 +475,12 @@ class _MemoCore:
         ready = self.policy.block_on_miss
         op_seconds = time.perf_counter() - op_start
 
-        stored_value = _maybe_copy(raw_out, self.policy.copy_on_return)
+        # OBJ-R1-01/R1-13 (§3.4): the store keeps today's protection (a
+        # defensive copy when copy_on_return=True), but the MISS return is
+        # raw_out itself — not the cached object — so it may alias the
+        # caller's argument exactly as the unwrapped fn would, and no
+        # second copy is made.
+        stored_value = _copy_array_leaves(raw_out) if self.policy.copy_on_return else raw_out
         with self.lock:
             self._store(key, _MemoEntry(value=stored_value, ready=ready))
             self.stats.cum_hash_seconds += hash_seconds
@@ -372,7 +488,7 @@ class _MemoCore:
             self.stats.calls += 1
             self._maybe_warn_slow()
 
-        return stored_value
+        return raw_out
 
     # -- helpers -----------------------------------------------------------
 
@@ -380,6 +496,12 @@ class _MemoCore:
         if not entry.ready:
             jax.block_until_ready(entry.value)
             entry.ready = True
+        # OBJ-R1-01 (§3.4): a hit — plain or spot-checked — returns a
+        # defensive copy when copy_on_return=True, so a consumer that
+        # donates/.delete()s the returned value cannot corrupt the cache
+        # entry. Default (False): unchanged, identity return.
+        if self.policy.copy_on_return:
+            return _copy_array_leaves(entry.value)
         return entry.value
 
     def _record_op_time(self, t0: float) -> None:
@@ -475,10 +597,17 @@ def _numeric_equal(a: Any, b: Any, rtol: float, atol: float) -> bool:
         return a is b
 
 
-def _maybe_copy(out: Any, copy_on_return: bool) -> Any:
-    if not copy_on_return:
-        return out
-    return jax.tree_util.tree_map(lambda x: x.copy(), out)
+def _copy_array_leaves(value: Any) -> Any:
+    """Copy `jax.Array`/`np.ndarray` leaves only (spec §3.4, AC-13). Other
+    leaves are immutable Python scalars or strings and are returned as-is —
+    calling `.copy()` on them would raise `AttributeError`."""
+
+    def _copy_leaf(x: Any) -> Any:
+        if isinstance(x, (jax.Array, np.ndarray)):
+            return x.copy()
+        return x
+
+    return jax.tree_util.tree_map(_copy_leaf, value)
 
 
 class MemoizedCallable(Protocol):
@@ -535,8 +664,11 @@ def memoize_jaxpr(
         if not inspect.signature(f).parameters:
             try:
                 core._ensure_program(())
-            except MemoImpurityError as exc:
-                raise MemoImpurityError(str(exc)) from exc
+            except MemoImpurityError:
+                # AC-9: bare `raise` preserves the exact exception type
+                # (e.g. MemoDonationError), rather than downcasting to the
+                # base class.
+                raise
 
         @functools_wraps(f)
         def _wrapped(*args: Any, **kwargs: Any) -> Any:
