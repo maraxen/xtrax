@@ -577,3 +577,35 @@ class TestAC48Guards:
 
         with pytest.raises(TypeError):
             _host_leaf_row_bytes(jnp.zeros((3, 1)), 0, 3, "plain")
+
+
+class TestPerLeafAxisValidation:
+    """Regression: a later leaf with fewer dims than the first must raise
+    ValueError (not IndexError) when axis is validated only against the
+    first leaf's ndim (found by /code-review on PR #158)."""
+
+    def test_synthesize_second_leaf_fewer_dims_raises_valueerror(self):
+        with pytest.raises(ValueError, match="out of range"):
+            synthesize_dedup_spec([np.ones((4, 3)), np.ones(4)], axis=1, threshold=0.1)
+
+    def test_synthesize_second_leaf_scalar_raises_valueerror(self):
+        with pytest.raises(ValueError, match="out of range"):
+            synthesize_dedup_spec([np.ones((4, 3)), np.float32(1)], axis=0, threshold=0.1)
+
+    def test_verify_second_leaf_fewer_dims_raises_valueerror(self):
+        # verify_dedup_spec calls the shared _validate_batch_leaves before any
+        # structural check on spec, so a trivially valid DedupSpec sized to
+        # the first leaf's N (axis=1 -> N=3) suffices; its content is never
+        # reached.
+        dummy_spec = DedupSpec(
+            axis_name="batch", unique_indices=np.arange(3), index_map=np.arange(3), k=3
+        )
+        with pytest.raises(ValueError, match="out of range"):
+            verify_dedup_spec(dummy_spec, [np.ones((4, 3)), np.ones(4)], axis=1)
+
+    def test_verify_second_leaf_scalar_raises_valueerror(self):
+        dummy_spec = DedupSpec(
+            axis_name="batch", unique_indices=np.arange(4), index_map=np.arange(4), k=4
+        )
+        with pytest.raises(ValueError, match="out of range"):
+            verify_dedup_spec(dummy_spec, [np.ones((4, 3)), np.float32(1)], axis=0)

@@ -498,6 +498,8 @@ def _validate_batch_leaves(
 
     # Verify all have same batch dimension N.
     for i, leaf in enumerate(leaves_list):
+        if axis < 0 or axis >= leaf.ndim:
+            raise ValueError(f"axis={axis} out of range for array with ndim={leaf.ndim}")
         if leaf.shape[axis] != N:
             raise ValueError(
                 f"batch_leaves[{i}] has batch dimension {leaf.shape[axis]} but expected {N}"
