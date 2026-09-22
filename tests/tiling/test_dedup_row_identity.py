@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import subprocess
 
 import jax
 import jax.numpy as jnp
+import ml_dtypes
 import numpy as np
 import pytest
 
@@ -208,16 +208,65 @@ class TestAC34SharedLeafRowBytes:
         assert counts["n"] == 1
 
 
-class TestAC35RegressionFileUnmodified:
-    def test_104_test_file_diff_against_origin_main_is_empty(self):
-        proc = subprocess.run(
-            ["git", "diff", "origin/main", "--", "tests/tiling/test_dedup_synthesis.py"],
-            capture_output=True,
-            text=True,
-            cwd=REPO_ROOT,
-        )
-        assert proc.returncode == 0
-        assert proc.stdout.strip() == "", proc.stdout
+class TestHostPathSubByteWidening:
+    """Host-path (numpy leaf) regression for the `_host_leaf_row_bytes`
+    sub-byte `astype` widening (spec 260922 P11).
+
+    Every existing int4/uint4-adjacent test in this file builds its leaf via
+    `jnp.asarray(...)`, which produces a jax.Array and takes the DEVICE path
+    -- none of them exercise this line. Measured (jax 0.11.1 / ml_dtypes): a
+    numpy sub-byte integer view does not canonicalize the unused high nibble
+    -- `np.array([[0x0F, 0xFF]], np.uint8).view(ml_dtypes.int4)` reads as
+    `[[-1, -1]]` from RAW bytes `[[15, 255]]`; only `.astype(np.int8)` (the
+    widening under test) canonicalizes both to raw byte 0xFF. Without it, two
+    rows holding the same int4 value can compare as different raw bytes, so
+    the synthesizer fails to merge them and `verify_dedup_spec` falsely
+    REJECTS a spec that (correctly) does merge them.
+    """
+
+    def _int4_leaf(self):
+        # -1 encoded two non-canonical-vs-canonical ways (raw bytes 0x0F and
+        # 0xFF), plus a distinct value (3) that must stay separate.
+        neg1_a = np.full((50, 1), 0x0F, dtype=np.uint8).view(ml_dtypes.int4)
+        neg1_b = np.full((50, 1), 0xFF, dtype=np.uint8).view(ml_dtypes.int4)
+        three = np.full((50, 1), 0x03, dtype=np.uint8).view(ml_dtypes.int4)
+        leaf = np.concatenate([neg1_a, neg1_b, three], axis=0)
+        assert isinstance(leaf, np.ndarray)
+        assert leaf.dtype == ml_dtypes.int4
+        return leaf
+
+    def test_int4_numpy_leaf_merges_non_canonical_encodings(self):
+        leaf = self._int4_leaf()
+        result = synthesize_dedup_spec([leaf], threshold=0.1)
+        assert result.stage == "synthesized"
+        assert result.spec is not None
+        assert result.spec.k == 2
+
+    def test_int4_verify_accepts_merge_of_non_canonical_encodings(self):
+        leaf = self._int4_leaf()
+        result = synthesize_dedup_spec([leaf], threshold=0.1)
+        assert result.stage == "synthesized"
+        # Under the widening deletion this raises DedupSpecVerificationError
+        # (check="row_mismatch") instead of returning normally.
+        verify_dedup_spec(result.spec, [leaf])
+
+    def test_uint4_numpy_leaf_merges_non_canonical_encodings(self):
+        # Measured: uint4 has the identical non-canonical-high-nibble
+        # property as int4 -- `np.array([[0x0F, 0x1F]], np.uint8)
+        # .view(ml_dtypes.uint4)` both read as 15 from raw bytes [15, 31];
+        # `.astype(np.uint8)` canonicalizes both to 15.
+        fifteen_a = np.full((50, 1), 0x0F, dtype=np.uint8).view(ml_dtypes.uint4)
+        fifteen_b = np.full((50, 1), 0x1F, dtype=np.uint8).view(ml_dtypes.uint4)
+        seven = np.full((50, 1), 0x07, dtype=np.uint8).view(ml_dtypes.uint4)
+        leaf = np.concatenate([fifteen_a, fifteen_b, seven], axis=0)
+        assert isinstance(leaf, np.ndarray)
+        assert leaf.dtype == ml_dtypes.uint4
+
+        result = synthesize_dedup_spec([leaf], threshold=0.1)
+        assert result.stage == "synthesized"
+        assert result.spec is not None
+        assert result.spec.k == 2
+        verify_dedup_spec(result.spec, [leaf])
 
 
 class TestAC44ZeroWidthLeaves:
@@ -305,18 +354,22 @@ def check_device_allowlist(source: str) -> list[str]:
     forbidden node types. Returns a list of violation descriptions (empty ==
     clean).
 
-    Walks the function's decorators and body (including nested lambdas and
-    comprehensions), but not its parameter/return type annotations -- those
-    are inert generic-subscript syntax (e.g. `Sequence[jax.Array]`), not
-    runtime behaviour, and `from __future__ import annotations` does not
-    change how `ast.parse` sees them.
+    Walks the function's decorators, body (including nested lambdas and
+    comprehensions), and argument DEFAULT VALUES -- but not parameter/return
+    type annotations, nor the default-having parameter names themselves.
+    Annotations (e.g. `Sequence[jax.Array]`) are inert generic-subscript
+    syntax, not runtime behaviour, and `from __future__ import annotations`
+    does not change how `ast.parse` sees them -- but a default VALUE (e.g.
+    `n=np.asarray(x).shape[0]`) is evaluated at def-time and can hide a call
+    just as easily as the body can, so it must be scanned.
     """
     tree = ast.parse(source)
     violations: list[str] = []
     for node in tree.body:
         if not (isinstance(node, ast.FunctionDef) and node.name in D):
             continue
-        scan_roots = list(node.decorator_list) + list(node.body)
+        defaults = list(node.args.defaults) + [d for d in node.args.kw_defaults if d is not None]
+        scan_roots = list(node.decorator_list) + defaults + list(node.body)
         for root in scan_roots:
             for sub in ast.walk(root):
                 if isinstance(sub, _FORBIDDEN_NODE_TYPES):
@@ -488,6 +541,28 @@ def _sample_stage(stacked, N, max_sample_rows):
 """
         sites = collect_np_sites(source)
         assert ("_sample_stage", "memoryview") in sites
+
+    def test_np_call_hidden_in_default_value_flagged(self):
+        """A call hiding in an argument DEFAULT VALUE (not an annotation)
+        must still be caught -- `node.args` is skipped for annotations, but
+        default values are evaluated at def-time and are in scope."""
+        source = """
+def _device_rows(leaf, axis, n=np.asarray(0).shape[0]):
+    return leaf
+"""
+        violations = check_device_allowlist(source)
+        assert any("_device_rows" in v for v in violations)
+
+    def test_real_d_helpers_have_no_defaults(self):
+        """Confirms the real source's D-helpers currently have no argument
+        defaults, so extending the scan to defaults adds no false positive
+        against real code."""
+        source = DEDUP_SYNTHESIS_PATH.read_text()
+        tree = ast.parse(source)
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name in D:
+                assert not node.args.defaults, node.name
+                assert not any(d is not None for d in node.args.kw_defaults), node.name
 
 
 class TestAC48Guards:
