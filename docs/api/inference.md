@@ -329,11 +329,13 @@ covers both `donate_argnums`/`donate_argnames` (visible as a `True` in a
 (visible as a `DONATE_INPUT` element of a `device_put` equation's
 `copy_semantics` param). The walk recurses into every nested jaxpr reachable
 from an equation's params — `jit`/`pjit`, `lax.cond` branches, `lax.scan`
-bodies, `lax.while_loop`, `custom_jvp`/`custom_vjp` — with no depth cap. The purity
-screen uses the same walk.
+bodies, `lax.while_loop`, `custom_jvp`/`custom_vjp` — with no depth cap. Both
+screens run in one walk.
 
 Rejection raises `MemoDonationError` (a `MemoImpurityError` subclass), whose
-`.sites` attribute lists every offending site. **This is deliberately
+`.sites` attribute lists every offending site. A function that also contains
+an impure primitive raises `MemoImpurityError` for the impurity. **This is
+deliberately
 conservative and over-rejects**: even donation of a value that is purely
 *internal* to the wrapped function (never visible to the caller) is rejected,
 because provenance-tracing which donations are caller-visible would need a
@@ -363,8 +365,9 @@ would still miss constvars.
 later call raises until `.memo_rewrap()`.
 
 **Keys.** String and bytes arguments key on their exact bytes (no Unicode
-normalization). `np.ndarray` and `jax.Array` inputs with equal values are
-distinct keys.
+normalization). Python `float` arguments key on their exact value; a NaN keys
+on its bit pattern, so NaNs with different payloads are distinct keys.
+`np.ndarray` and `jax.Array` inputs with equal values are distinct keys.
 
 **Spot checks** replay the call's own positional and keyword arguments.
 

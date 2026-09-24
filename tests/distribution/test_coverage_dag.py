@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -11,18 +12,50 @@ from unittest.mock import patch
 import pytest
 
 from scripts.audit_coverage_dag import (
+    ENFORCEMENT_RECIPES,
     CoverageDag,
     Tier,
     TierResult,
     audit_coverage_dag,
     build_state_payload,
     evaluate_enforce,
+    format_verdict,
     load_coverage_dag,
     select_tiers,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "distribution" / "coverage_dag.toml"
+
+
+def _discover_enforce_recipes(justfile_text: str) -> set[tuple[str, str]]:
+    """Discover all (tier, recipe_name) pairs from audit_coverage_dag.py --enforce lines.
+
+    Parses Justfile text and extracts recipes that run audit_coverage_dag.py with
+    --enforce <tier>. Returns a set of (tier, recipe_name) tuples representing all
+    discovered enforcement recipes, regardless of whether they are in ENFORCEMENT_RECIPES.
+    """
+    result = set()
+    lines = justfile_text.splitlines()
+    current_recipe = None
+
+    for i, line in enumerate(lines):
+        # Check if this line is a recipe header (no leading whitespace, matches pattern)
+        if not line or line[0] in (" ", "\t"):
+            # Indented line - part of recipe body
+            if current_recipe and "audit_coverage_dag.py" in line:
+                # Look for --enforce <tier> pattern
+                match = re.search(r"--enforce\s+(\S+)", line)
+                if match:
+                    tier = match.group(1)
+                    result.add((tier, current_recipe))
+        else:
+            # Non-indented line - check if it's a recipe header
+            header_match = re.match(r"^([A-Za-z0-9_-]+)\s*:(?!=)", line)
+            if header_match:
+                current_recipe = header_match.group(1)
+
+    return result
 
 
 def _write_contract(repo_root: Path) -> Path:
@@ -384,3 +417,432 @@ def test_load_coverage_dag_rejects_missing_tiers(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="at least one"):
         load_coverage_dag(config_path)
+
+
+def test_main_report_only_labels_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """AC-1: Report-only run with failures labels them in the verdict."""
+    config_path = _write_contract(tmp_path)
+
+    def fake_audit(**kwargs):  # noqa: ANN003
+        result = TierResult(
+            tier_id="tier1_core",
+            measure_coverage=True,
+            line_pct=78.5,
+            branch_pct=66.9,
+            tests_run=824,
+            tests_failed=19,
+            pytest_exit_code=1,
+        )
+        state_path = tmp_path / ".praxia" / "coverage_last_measured.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}", encoding="utf-8")
+        return True, (result,), []
+
+    monkeypatch.setattr("scripts.audit_coverage_dag.audit_coverage_dag", fake_audit)
+
+    from scripts.audit_coverage_dag import main
+
+    exit_code = main(
+        [
+            "--root",
+            str(tmp_path),
+            "--config",
+            str(config_path),
+            "--tier",
+            "tier1_core",
+        ]
+    )
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    assert not any(line.startswith("PASS") for line in captured.out.splitlines())
+    assert (
+        "REPORT (non-blocking): coverage DAG -- 19 test failures in tier1_core "
+        "(pytest exit 1); enforcement lives in just audit-coverage-tier1"
+    ) in captured.out
+
+
+def test_main_report_only_no_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """AC-2: Report-only run with no failures."""
+    config_path = _write_contract(tmp_path)
+
+    def fake_audit(**kwargs):  # noqa: ANN003
+        result = TierResult(
+            tier_id="tier1_core",
+            measure_coverage=True,
+            line_pct=90.0,
+            branch_pct=80.0,
+            tests_run=824,
+            tests_failed=0,
+            pytest_exit_code=0,
+        )
+        state_path = tmp_path / ".praxia" / "coverage_last_measured.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}", encoding="utf-8")
+        return True, (result,), []
+
+    monkeypatch.setattr("scripts.audit_coverage_dag.audit_coverage_dag", fake_audit)
+
+    from scripts.audit_coverage_dag import main
+
+    exit_code = main(
+        [
+            "--root",
+            str(tmp_path),
+            "--config",
+            str(config_path),
+            "--tier",
+            "tier1_core",
+        ]
+    )
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    assert "REPORT (non-blocking): coverage DAG -- no test failures in tier1_core" in captured.out
+    assert not any(line.startswith("PASS") for line in captured.out.splitlines())
+
+
+def test_main_report_only_nonzero_exit_counts_as_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """AC-3: Nonzero pytest exit (e.g. collection error) counts as failure."""
+    config_path = _write_contract(tmp_path)
+
+    def fake_audit(**kwargs):  # noqa: ANN003
+        result = TierResult(
+            tier_id="tier1_core",
+            measure_coverage=True,
+            line_pct=90.0,
+            branch_pct=80.0,
+            tests_run=0,
+            tests_failed=0,
+            pytest_exit_code=2,
+        )
+        state_path = tmp_path / ".praxia" / "coverage_last_measured.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}", encoding="utf-8")
+        return True, (result,), []
+
+    monkeypatch.setattr("scripts.audit_coverage_dag.audit_coverage_dag", fake_audit)
+
+    from scripts.audit_coverage_dag import main
+
+    exit_code = main(
+        [
+            "--root",
+            str(tmp_path),
+            "--config",
+            str(config_path),
+            "--tier",
+            "tier1_core",
+        ]
+    )
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    assert (
+        "REPORT (non-blocking): coverage DAG -- 0 test failures in tier1_core "
+        "(pytest exit 2); enforcement lives in just audit-coverage-tier1"
+    ) in captured.out
+
+
+def test_format_verdict_joins_multiple_failures() -> None:
+    """AC-4: format_verdict joins multiple tier failures with pipes."""
+    tier0_result = TierResult(
+        tier_id="tier0_audit",
+        measure_coverage=False,
+        line_pct=None,
+        branch_pct=None,
+        tests_run=10,
+        tests_failed=2,
+        pytest_exit_code=1,
+    )
+    tier1_result = TierResult(
+        tier_id="tier1_core",
+        measure_coverage=True,
+        line_pct=78.5,
+        branch_pct=66.9,
+        tests_run=824,
+        tests_failed=19,
+        pytest_exit_code=1,
+    )
+
+    verdict = format_verdict(
+        (tier0_result, tier1_result),
+        enforce_tier=None,
+        passed=True,
+    )
+    expected = (
+        "REPORT (non-blocking): coverage DAG -- "
+        "2 test failures in tier0_audit (pytest exit 1); not enforced by any recipe | "
+        "19 test failures in tier1_core (pytest exit 1); "
+        "enforcement lives in just audit-coverage-tier1"
+    )
+    assert verdict == expected
+
+
+def test_format_verdict_raises_on_enforce_fail() -> None:
+    """AC-4: format_verdict raises ValueError when enforce_tier is set and passed=False."""
+    result = TierResult(
+        tier_id="tier1_core",
+        measure_coverage=True,
+        line_pct=78.5,
+        branch_pct=66.9,
+        tests_run=824,
+        tests_failed=11,
+        pytest_exit_code=1,
+    )
+    with pytest.raises(ValueError, match="enforce-fail is reported on stderr"):
+        format_verdict((result,), enforce_tier="tier1_core", passed=False)
+
+
+def test_main_enforce_fail_reports_on_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """AC-5a: Enforce failure is reported on stderr."""
+    config_path = _write_contract(tmp_path)
+
+    def fake_audit(**kwargs):  # noqa: ANN003
+        result = TierResult(
+            tier_id="tier1_core",
+            measure_coverage=True,
+            line_pct=78.5,
+            branch_pct=66.9,
+            tests_run=824,
+            tests_failed=11,
+            pytest_exit_code=1,
+        )
+        state_path = tmp_path / ".praxia" / "coverage_last_measured.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}", encoding="utf-8")
+        return False, (result,), ["pytest failed (11 failures, exit 1)"]
+
+    monkeypatch.setattr("scripts.audit_coverage_dag.audit_coverage_dag", fake_audit)
+
+    from scripts.audit_coverage_dag import main
+
+    exit_code = main(
+        [
+            "--root",
+            str(tmp_path),
+            "--config",
+            str(config_path),
+            "--tier",
+            "tier1_core",
+            "--enforce",
+            "tier1_core",
+        ]
+    )
+    assert exit_code == 1
+
+    captured = capsys.readouterr()
+    assert "FAIL: coverage DAG enforce" in captured.err
+
+
+def test_main_enforce_pass_no_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """AC-5b: Enforce pass with no failures prints PASS: coverage DAG enforce."""
+    config_path = _write_contract(tmp_path)
+
+    def fake_audit(**kwargs):  # noqa: ANN003
+        result = TierResult(
+            tier_id="tier1_core",
+            measure_coverage=True,
+            line_pct=95.0,
+            branch_pct=85.0,
+            tests_run=824,
+            tests_failed=0,
+            pytest_exit_code=0,
+        )
+        state_path = tmp_path / ".praxia" / "coverage_last_measured.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}", encoding="utf-8")
+        return True, (result,), []
+
+    monkeypatch.setattr("scripts.audit_coverage_dag.audit_coverage_dag", fake_audit)
+
+    from scripts.audit_coverage_dag import main
+
+    exit_code = main(
+        [
+            "--root",
+            str(tmp_path),
+            "--config",
+            str(config_path),
+            "--tier",
+            "tier1_core",
+            "--enforce",
+            "tier1_core",
+        ]
+    )
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    assert "PASS: coverage DAG enforce" in captured.out
+
+
+def test_main_enforce_pass_with_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """AC-5c: Enforce pass with observed failures (not enforced tier) prints REPORT not enforced."""
+    config_path = _write_contract(tmp_path)
+
+    def fake_audit(**kwargs):  # noqa: ANN003
+        result = TierResult(
+            tier_id="tier0_audit",
+            measure_coverage=False,
+            line_pct=None,
+            branch_pct=None,
+            tests_run=10,
+            tests_failed=2,
+            pytest_exit_code=1,
+        )
+        state_path = tmp_path / ".praxia" / "coverage_last_measured.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text("{}", encoding="utf-8")
+        return True, (result,), []
+
+    monkeypatch.setattr("scripts.audit_coverage_dag.audit_coverage_dag", fake_audit)
+
+    from scripts.audit_coverage_dag import main
+
+    exit_code = main(
+        [
+            "--root",
+            str(tmp_path),
+            "--config",
+            str(config_path),
+            "--tier",
+            "tier0_audit",
+            "--enforce",
+            "tier0_audit",
+        ]
+    )
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    assert (
+        "REPORT (not enforced): coverage DAG --enforce tier0_audit -- "
+        "2 test failures in tier0_audit (pytest exit 1); not enforced by any recipe"
+    ) in captured.out
+    assert not any(line.startswith("PASS") for line in captured.out.splitlines())
+
+
+def test_main_enforce_unknown_tier_usage_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """AC-5d: --enforce with unknown tier is a usage error (exits 1, stderr FAIL)."""
+    config_path = _write_contract(tmp_path)
+
+    def fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("pytest should not run for unknown enforce tier")
+
+    monkeypatch.setattr("scripts.audit_coverage_dag.run_tier_pytest", fake_run)
+
+    from scripts.audit_coverage_dag import main
+
+    exit_code = main(
+        [
+            "--root",
+            str(tmp_path),
+            "--config",
+            str(config_path),
+            "--tier",
+            "tier1_core",
+            "--enforce",
+            "",
+        ]
+    )
+    assert exit_code == 1
+
+    captured = capsys.readouterr()
+    assert "FAIL: coverage DAG enforce" in captured.err
+    assert "unknown enforce tier" in captured.err
+    assert not any(line.startswith("PASS") for line in captured.out.splitlines())
+
+
+def test_enforcement_recipes_consistency() -> None:
+    """AC-6: ENFORCEMENT_RECIPES constant has expected value."""
+    assert ENFORCEMENT_RECIPES == {
+        "tier1_core": "audit-coverage-tier1",
+        "tier2_eda": "audit-coverage-tier2",
+        "tier4_controller": "audit-coverage-tier4",
+    }
+
+
+def test_justfile_recipes_match_enforcement() -> None:
+    """AC-6: Justfile enforcement recipes match ENFORCEMENT_RECIPES (bidirectional)."""
+    justfile = ROOT / "Justfile"
+    justfile_text = justfile.read_text(encoding="utf-8")
+
+    discovered = _discover_enforce_recipes(justfile_text)
+    expected = set(ENFORCEMENT_RECIPES.items())
+
+    # Assert set equality (both directions)
+    assert discovered == expected, (
+        f"Justfile enforcement recipes mismatch:\n"
+        f"Expected: {expected}\n"
+        f"Discovered: {discovered}\n"
+        f"Missing from Justfile: {expected - discovered}\n"
+        f"Unexpected in Justfile: {discovered - expected}"
+    )
+
+
+def test_ci_yml_includes_enforcement_recipes() -> None:
+    """AC-6: Every recipe in ENFORCEMENT_RECIPES appears in .github/workflows/ci.yml."""
+    ci_yml = ROOT / ".github" / "workflows" / "ci.yml"
+    ci_text = ci_yml.read_text(encoding="utf-8")
+
+    for recipe in ENFORCEMENT_RECIPES.values():
+        pattern = f"just {recipe}"
+        assert pattern in ci_text, f"Recipe 'just {recipe}' not found in ci.yml"
+
+
+def test_discover_enforce_recipes_detects_unmapped_recipe() -> None:
+    """Positive control: _discover_enforce_recipes detects unmapped recipes."""
+    synthetic_justfile = textwrap.dedent("""
+        audit-coverage-tier1:
+            uv run python scripts/audit_coverage_dag.py --tier tier1_core --enforce tier1_core
+
+        audit-coverage-tier2:
+            uv run python scripts/audit_coverage_dag.py --tier tier2_eda --enforce tier2_eda
+
+        audit-coverage-tier9:
+            uv run python scripts/audit_coverage_dag.py --tier tier9_x --enforce tier9_x
+
+        audit-coverage-dag-all:
+            uv run python scripts/audit_coverage_dag.py --all-tiers
+    """).strip()
+
+    discovered = _discover_enforce_recipes(synthetic_justfile)
+    expected = set(ENFORCEMENT_RECIPES.items())
+
+    # The synthetic Justfile should NOT match expected (it has an extra recipe)
+    assert discovered != expected
+
+    # The discovered set should include the three real ones plus the synthetic tier9
+    assert ("tier1_core", "audit-coverage-tier1") in discovered
+    assert ("tier2_eda", "audit-coverage-tier2") in discovered
+    assert ("tier9_x", "audit-coverage-tier9") in discovered
+
+    # The report-only line (no --enforce) should contribute nothing
+    assert len(discovered) == 3  # Only the three --enforce lines

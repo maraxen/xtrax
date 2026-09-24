@@ -1,0 +1,625 @@
+[sprint]
+sprint_id = "260923_5035-audit-labels-memo-followups"
+name = "Audit gate truth-in-labeling and memoize_jaxpr review follow-ups"
+description = "#5035 coverage-DAG verdict labels; #5241 memo pins, walker merge, single flatten, cached int bounds; #5240 wrap-time comment + NaN bit-pattern keys; docs."
+context = """
+Converged spec 260923_5035-audit-labels-memo-followups.md (adversarial round 2 ACCEPT/high; user approved at Gate 1). Base 49f3def.
+"""
+max_fix_retries = 1
+worktree_shadow_mode = false
+
+[[tracks]]
+id = "T1"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "5035"
+phase_name = "T1 \u2014 Coverage-DAG verdict labels (#5035)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+sprint_id: 260923_5035-audit-labels-memo-followups
+Workspace: /home/marielle/projects/xtrax/.claude/worktrees/ring-probes (a git worktree; branch autoloop/260807_autonomous-dev-loop). Work ONLY in this directory; do not cd elsewhere.
+Spec (read-only for you, converged and approved): /home/marielle/projects/xtrax/.claude/worktrees/ring-probes/.praxia/docs/specs/260923_5035-audit-labels-memo-followups.md
+Rules: never run the whole test suite (only the narrow Gate commands below); always `uv run --extra dev ...`; never `git add -A` or `git add .` (stage the named files only); no `git stash`; never push; do not edit the spec; do not touch files outside this task's Files list. Before committing, run `git status --short` and confirm only your task's files are staged.
+Shared instructions from the spec's Fixer Tasks section:
+Order: T1 is independent. After it, T2 (pins) → T3 (baseline measurement) → T4 → T5 → T6 → T7 → T8. Use one commit per task. Before every commit, run `git status --short` and confirm that only the task's `Files:` changed. Do not stage `.praxia/` files. Cap threads for every pytest call: `export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4`.
+
+=== Your task: T1 — Coverage-DAG verdict labels (#5035) ===
+1. In `scripts/audit_coverage_dag.py`, add a module constant after `DEFAULT_TIER`: `ENFORCEMENT_RECIPES: dict[str, str] = {"tier1_core": "audit-coverage-tier1", "tier2_eda": "audit-coverage-tier2", "tier4_controller": "audit-coverage-tier4"}`.
+2. Add `def _failure_segment(result: TierResult) -> str`. It returns `f"{result.tests_failed} test failures in {result.tier_id} (pytest exit {result.pytest_exit_code}); "` followed by either `f"enforcement lives in just {ENFORCEMENT_RECIPES[result.tier_id]}"` when the tier is in the mapping, or `"not enforced by any recipe"` when it is not.
+3. Add `def format_verdict(results: tuple[TierResult, ...], *, enforce_tier: str | None, passed: bool) -> str`. It returns the stdout verdict line and never returns `None`. The enforce-FAIL case is handled in `main` before it is called; if called with `enforce_tier is not None and not passed` it raises `ValueError("format_verdict: enforce-fail is reported on stderr by main")`. Set `failing = [r for r in results if r.tests_failed > 0 or r.pytest_exit_code != 0]`. Then:
+   - if `enforce_tier is None` and `failing` is non-empty: `"REPORT (non-blocking): coverage DAG -- " + " | ".join(_failure_segment(r) for r in failing)`;
+   - if `enforce_tier is None` and `failing` is empty: `"REPORT (non-blocking): coverage DAG -- no test failures in " + ", ".join(r.tier_id for r in results)`;
+   - if `enforce_tier is not None` and `not passed`: raise `ValueError` (above);
+   - if `enforce_tier is not None`, `passed`, and `failing` is non-empty: `f"REPORT (not enforced): coverage DAG --enforce {enforce_tier} -- " + " | ".join(...)`;
+   - otherwise: `"PASS: coverage DAG enforce"`.
+4. Replace `main()`'s verdict block (:469-480). Change the enforce-fail guard from the truthy `if args.enforce and not passed` to `if args.enforce is not None and not passed`; its body stays exactly as it is (stderr `FAIL: coverage DAG enforce` plus the failure list, return 1). Otherwise `print(format_verdict(results, enforce_tier=args.enforce, passed=passed))` and return 0. Exit codes are identical to today in every branch with one recorded exception: `--enforce ''` is a usage error and now exits 1 (stderr `FAIL: coverage DAG enforce` and `  - unknown enforce tier: ''`), exactly like any other unknown enforce tier; on `49f3def` it printed `PASS: coverage DAG enforce` and exited 0. See ODQ-2 and AC-7.
+5. In `tests/distribution/test_coverage_dag.py`, import `ENFORCEMENT_RECIPES` and `format_verdict`. Leave every existing test unmodified, including `test_main_report_only_exits_zero_with_mocks` (mock stays at `tests_failed=11`) and `test_main_enforce_exits_nonzero_when_below_floor`. Add NEW tests only:
+   - `test_main_report_only_labels_failures` for AC-1 (mock `tests_failed=19`, `pytest_exit_code=1`, with `capsys`);
+   - AC-2 and AC-3 via `main` with a monkeypatched `audit_coverage_dag` and `capsys`;
+   - AC-4 as a direct `format_verdict` call, plus `pytest.raises(ValueError)` for `format_verdict(..., enforce_tier="tier1_core", passed=False)`;
+   - AC-5 a (`test_main_enforce_fail_reports_on_stderr`, same mock as the existing enforce test), b and c via `main` with a monkeypatched `audit_coverage_dag`; AC-5 d via `main` with `audit_coverage_dag` unmocked and `run_tier_pytest` monkeypatched to raise `AssertionError`;
+   - AC-6.
+   - For AC-6, read `ROOT / "Justfile"`. A recipe header is a line matching `^([A-Za-z0-9_-]+)\\s*:(?!=)` with no leading whitespace. For each indented body line containing `audit_coverage_dag.py` and matching `--enforce\\s+(\\S+)`, record `(tier, current_recipe)`. Assert that the set equals `set(ENFORCEMENT_RECIPES.items())`. Then assert that `f"just {recipe}"` is in `(ROOT / ".github/workflows/ci.yml").read_text()` for every recipe.
+6. Confirm red-on-main for the new AC-1/AC-2/AC-3/AC-5c/AC-5d assertions by reasoning, not by checkout: `49f3def` prints `PASS: coverage DAG report-only (non-blocking)` and `PASS: coverage DAG enforce` on those paths, and AC-5d exits 0 there. State this in the commit message, including the `--enforce ''` exit-code exception.
+
+Files: `scripts/audit_coverage_dag.py` (modify), `tests/distribution/test_coverage_dag.py` (modify)
+
+Gate:
+```
+uv run --extra dev pytest tests/distribution/test_coverage_dag.py -q
+uv run --extra dev ruff check scripts/audit_coverage_dag.py tests/distribution/test_coverage_dag.py
+uv run --extra dev ruff format --check scripts/audit_coverage_dag.py tests/distribution/test_coverage_dag.py
+git diff 49f3def --stat -- Justfile .github/workflows/ci.yml   # must print nothing
+```
+
+Scope estimate: ~40 LOC script, ~140 LOC tests.
+
+Commit (required): stage exactly the files in this task's Files list and commit on branch autoloop/260807_autonomous-dev-loop with a conventional message `fix: <summary> (#5035, T1)`, ending with these two lines:
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018esyRmJWqdg6DeJvgPrc2K
+Then report: the commit SHA, the full Gate output (every command, pass/fail), and anything you could not do.
+"""
+reviewer_prompt = """
+1. Run the task Gate exactly and require every command to pass:
+uv run --extra dev pytest tests/distribution/test_coverage_dag.py -q
+uv run --extra dev ruff check scripts/audit_coverage_dag.py tests/distribution/test_coverage_dag.py
+uv run --extra dev ruff format --check scripts/audit_coverage_dag.py tests/distribution/test_coverage_dag.py
+git diff 49f3def --stat -- Justfile .github/workflows/ci.yml   # must print nothing
+
+2. `git show --stat HEAD` touches only this task's Files list; no whole-suite runs were used.
+
+3. - **AC-1 (backlog a, b, c).** A NEW test, `test_main_report_only_labels_failures` (the existing `test_main_report_only_exits_zero_with_mocks` stays unmodified, mock at `tests_failed=11`). Report-only run with failures, using a mocked `audit_coverage_dag` that returns `tier1_core` with `tests_failed=19` and `pytest_exit_code=1`:
+  - `main([... "--tier", "tier1_core"])` returns 0.
+  - The captured stdout contains no line starting with `PASS`.
+  - The captured stdout contains exactly this line: `REPORT (non-blocking): coverage DAG -- 19 test failures in tier1_core (pytest exit 1); enforcement lives in just audit-coverage-tier1`.
+
+  Red on `49f3def` (prints `PASS: coverage DAG report-only (non-blocking)`).
+
+4. - **AC-2.** Report-only run with no failures (`tests_failed=0`, `pytest_exit_code=0`):
+  - `main` returns 0.
+  - The stdout line is exactly `REPORT (non-blocking): coverage DAG -- no test failures in tier1_core`.
+  - No stdout line starts with `PASS`.
+
+  Red on `49f3def`.
+
+5. - **AC-3.** A nonzero pytest exit with `tests_failed=0` (for example a collection error, exit 2) counts as observed failure. The line reads `REPORT (non-blocking): coverage DAG -- 0 test failures in tier1_core (pytest exit 2); enforcement lives in just audit-coverage-tier1`. Red on `49f3def`.
+
+6. - **AC-4.** `format_verdict` with several results joins the failure segments with ` | ` in results order and leaves clean tiers out of the segment list.
+  - A failing tier with no enforcing recipe (`tier0_audit`) renders as `2 test failures in tier0_audit (pytest exit 1); not enforced by any recipe`.
+  - Example: `tier0_audit` failed 2 / exit 1 and `tier1_core` failed 19 / exit 1 give `REPORT (non-blocking): coverage DAG -- 2 test failures in tier0_audit (pytest exit 1); not enforced by any recipe | 19 test failures in tier1_core (pytest exit 1); enforcement lives in just audit-coverage-tier1`.
+
+  Red on `49f3def` (ImportError).
+
+7. - **AC-5.** Enforce-mode exit codes do not change, except the single usage-error exception in sub-case d:
+  - a. The existing `test_main_enforce_exits_nonzero_when_below_floor` stays unmodified and still returns 1. A NEW `capsys` test, `test_main_enforce_fail_reports_on_stderr`, uses the same mock (`evaluate_enforce` over `tier1_core` failed 11 / exit 1, returning `(False, (result,), list(result.enforce_failures))`) and asserts `main` returns 1 and captured stderr contains `FAIL: coverage DAG enforce`.
+  - b. An enforce run that passes with no observed failures still prints `PASS: coverage DAG enforce` and returns 0.
+  - c. An enforce run with `passed=True` but failures observed returns 0. Its stdout line is `REPORT (not enforced): coverage DAG --enforce tier0_audit -- 2 test failures in tier0_audit (pytest exit 1); not enforced by any recipe`, and no stdout line starts with `PASS`. The test mocks `--enforce tier0_audit --tier tier0_audit`, with `tier0_audit` failed 2 / exit 1.
+  - d. `main(["--root", str(tmp_path), "--config", str(config_path), "--tier", "tier1_core", "--enforce", ""])` with `audit_coverage_dag` NOT mocked (its unknown-tier branch at :380-381 returns `(False, (), ["unknown enforce tier: ''"])` before any pytest run; the test monkeypatches `scripts.audit_coverage_dag.run_tier_pytest` to raise `AssertionError` as a guard) returns 1. Captured stderr contains `unknown enforce tier`. No stdout line equals `None` and no stdout line starts with `PASS`.
+
+  Sub-cases c and d are red on `49f3def`: c prints `PASS: coverage DAG enforce` (:479); d skips the truthy guard at :469 (`''` is falsy), fails `args.enforce is None` at :475, and prints `PASS: coverage DAG enforce` with exit 0.
+
+8. - **AC-6.** Module constant `ENFORCEMENT_RECIPES` equals `{"tier1_core": "audit-coverage-tier1", "tier2_eda": "audit-coverage-tier2", "tier4_controller": "audit-coverage-tier4"}`. Two consistency checks run against the real files:
+  - A test parses `Justfile` and finds every recipe whose body invokes `audit_coverage_dag.py` with `--enforce <tier>`. The set of `(tier, recipe)` pairs equals `ENFORCEMENT_RECIPES.items()`.
+  - For every value in `ENFORCEMENT_RECIPES`, `.github/workflows/ci.yml` contains `just <recipe>`.
+
+  Red on `49f3def` (ImportError).
+
+9. - **AC-7.** Blocking layering is unchanged. The single exit-code exception: `--enforce ''` is a usage error and now exits 1, exactly like any other unknown enforce tier (`--enforce foo` already exits 1 through the same :380-381 path). No Justfile recipe or ci.yml step passes an empty `--enforce`, and every report-only exit code is unchanged.
+  - `git diff 49f3def -- Justfile .github/workflows/ci.yml` is empty. This is a gate command, not a unit test, because CI has no `49f3def`-relative ref guarantee.
+  - Every pre-existing test in `tests/distribution/test_coverage_dag.py` passes unmodified. New assertions go in new tests only.
+"""
+return_key = "T1_5035"
+
+[[tracks]]
+id = "T2"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "5241"
+phase_name = "T2 \u2014 Pin memo behaviour before refactoring (#5241 preconditions)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+sprint_id: 260923_5035-audit-labels-memo-followups
+Workspace: /home/marielle/projects/xtrax/.claude/worktrees/ring-probes (a git worktree; branch autoloop/260807_autonomous-dev-loop). Work ONLY in this directory; do not cd elsewhere.
+Spec (read-only for you, converged and approved): /home/marielle/projects/xtrax/.claude/worktrees/ring-probes/.praxia/docs/specs/260923_5035-audit-labels-memo-followups.md
+Rules: never run the whole test suite (only the narrow Gate commands below); always `uv run --extra dev ...`; never `git add -A` or `git add .` (stage the named files only); no `git stash`; never push; do not edit the spec; do not touch files outside this task's Files list. Before committing, run `git status --short` and confirm only your task's files are staged.
+Shared instructions from the spec's Fixer Tasks section:
+Order: T1 is independent. After it, T2 (pins) → T3 (baseline measurement) → T4 → T5 → T6 → T7 → T8. Use one commit per task. Before every commit, run `git status --short` and confirm that only the task's `Files:` changed. Do not stage `.praxia/` files. Cap threads for every pytest call: `export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4`.
+
+=== Your task: T2 — Pin memo behaviour before refactoring (#5241 preconditions) ===
+1. Append `class TestSprint260923Pins:` at the end of `tests/inference/test_memo.py`. Add AC-8 as a test. The wrapped function is `f(x): return jax.jit(lambda y: y * 2, donate_argnums=0)(x) + jax.random.uniform(jax.random.key(0), x.shape)`, called with `x = jnp.ones((4,), jnp.float32)`. Assert `type(exc_info.value) is MemoImpurityError`, `"purity screen" in str(...)`, `"donation screen" not in str(...)`, and the latch.
+2. Add AC-9. Define module-level test helpers `_reference_screen_jaxpr(closed)` and `_reference_screen_donation(closed, invar_to_leaf)` as verbatim copies of `49f3def`'s `memo.py` lines 382-408 and 524-551. Also copy verbatim, test-locally, the helpers they call: `_iter_subjaxprs` (:418-434), `_eqn_label` (:437-441), `_wrapped_leaf_indices` (:444-470), `_eqn_donation_sites` (:473-505), `_donation_message` (:508-521) and the `_DonationSite` alias (:415). Prefix every copied name with `_ref` (for example `_ref_eqn_label`) and rewrite only the internal call sites to the prefixed names; leave every other character unchanged. Import from `xtrax.inference.memo` / `xtrax.inference.errors` only the three primitive sets (`_STATEFUL_PRIMITIVES`, `_CALLBACK_PRIMITIVES`, `_RANDOM_PRIMITIVES`) and the error classes `MemoImpurityError`, `MemoDonationError`. Add `_reference_screen(closed, traced)`, which runs purity first and then donation, and returns the raised exception, or `None`. For F_don also assert `str(exc).startswith("Function rejected by donation screen (spec §4.2 item 6): ")`. Build `closed` with `leaves, treedef = jax.tree_util.tree_flatten((args, {}))` and `closed = memo._trace_closed(f, leaves, treedef, tuple(range(len(leaves))))`. Compare against the exception from `memoize_jaxpr(f)(*args)`: same `type` (`is`), same `str`, and for donation the same `.sites`. The fixtures, all arrays-only so every leaf is traced:
+   - F_imp: `f(p, x)` returns `jax.jit(lambda z: z + jax.random.uniform(jax.random.key(1), z.shape))(lax.cond(p, lambda y: y + jax.random.uniform(jax.random.key(0), y.shape), lambda y: y, x))`, called with `(jnp.array(True), jnp.ones((4,), jnp.float32))`. This gives several offenders at nested paths.
+   - F_don: `f(x)`: `a = jax.jit(lambda y: y * 2, donate_argnums=0)(x)`, then `b = jax.device_put(a, donate=True)`, then return `jax.jit(lambda z: jax.jit(lambda w: w + 1, donate_argnums=0)(z))(b)`. This gives both carriers, top-level and nested.
+   - F_both: the AC-8 function.
+3. Add AC-10. Define `_reference_leaf_digest(leaf, sink)` as a verbatim copy of `49f3def`'s `_leaf_digest` (memo.py:125-161), importing only `MemoKeyUnsupportedLeafError` live. Do NOT import `memo._leaf_digest` into the reference: T7 edits it, and a live import would let AC-10 move with the change it is meant to guard. Define `_reference_build_key(core, digest, args, kwargs)` as a verbatim copy of `49f3def`'s `build_key` body (:724-732). Inline `_structure_token`/`_pytree_leaves` as `repr((jax.tree_util.tree_structure((args, kwargs)),))` and `jax.tree_util.tree_leaves((args, kwargs))`, and call `_reference_leaf_digest` per leaf.
+   - Fixtures, using `def g(*args, **kwargs): return args[0] * 1.0` wrapped with `MemoPolicy(salt="s1")`:
+     - `(np.ones((3,), np.float32),)`;
+     - `(jnp.ones((2, 2), jnp.float32), 3, 2.5, -0.0, True, "é", b"\\x00")`;
+     - `(jnp.ones((2,), jnp.float32),)` with kwargs `{"a": [jnp.zeros((2,)), 1], "b": {"c": "s"}}`.
+   - For each fixture, compute `digest = core._ensure_screened(args, kwargs)` and assert `core.build_key(digest, args, kwargs) == _reference_build_key(...)`. Then call `wrapped(*args, **kwargs)` on a fresh wrapper and assert that the reference key (computed from that wrapper's core) is in `core.cache`.
+4. Add AC-11: `_fits_default_int` boundaries with x64 off, and inside `with jax.enable_x64():` (skip that half with `pytest.skip` if `not hasattr(jax, "enable_x64")`, matching `test_cr6_x64_toggle_forces_new_key`).
+5. Add AC-18's golden leaf digests as `test_golden_leaf_digests`, parametrized over the six `(leaf, preimage)` rows in AC-18 plus a 64-char hex literal per row. Copy each hex literal verbatim from AC-18's table (measured on `49f3def`); do not recompute it. For each row assert: `hashlib.sha256(preimage).hexdigest() == hex_literal`; live `memo._leaf_digest(leaf, h)` gives `h.hexdigest() == hex_literal`; `_reference_leaf_digest` gives the same. Use `(1e300, b"float(1e+300)")` exactly (Python's `repr(1e300)` is `'1e+300'`).
+6. Run the class. Every test must PASS on the current tree, because these are pins. If any fails, stop and report: it means the reference copy is not verbatim or the fixture assumption is wrong. Do not edit `memo.py`.
+
+Files: `tests/inference/test_memo.py` (modify)
+
+Gate:
+```
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "TestSprint260923Pins"
+uv run --extra dev ruff check tests/inference/test_memo.py
+uv run --extra dev ruff format --check tests/inference/test_memo.py
+git diff --stat -- src/   # must print nothing
+```
+
+Scope estimate: ~330 LOC tests (including ~110 LOC of verbatim reference copies).
+
+Orchestrator notes from adversarial round 2 (binding; they refine the steps above):
+- (R2-C1) The spec's Risks row says 'T2 step 5' but means step 6 (run the class; every pin must PASS on the untouched 49f3def memo.py; stop and report on any failure).
+- (R2-C2) Prefix EVERY reference to a copied name with `_ref`, INCLUDING type annotations (`list[_DonationSite]` -> `list[_ref_DonationSite]`), not only call sites. Add stdlib imports `from typing import Any` and `import hashlib`; import `MemoDonationError`. The spec-given names `_reference_screen_jaxpr`, `_reference_screen_donation`, `_reference_screen`, `_reference_leaf_digest`, `_reference_build_key` are exempt from the `_ref_` prefix rule. (`struct` is only needed in T7.)
+- (O1) Running `ruff format` on the reference copies is permitted; line wrapping it introduces (e.g. the `_ref_wrapped_leaf_indices(...)` lines copied from memo.py:490/:501, >100 columns after prefixing) is NOT a verbatim violation. Tokens must stay identical apart from the `_ref` renames.
+
+Commit (required): stage exactly the files in this task's Files list and commit on branch autoloop/260807_autonomous-dev-loop with a conventional message `test: <summary> (#5241, T2)`, ending with these two lines:
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018esyRmJWqdg6DeJvgPrc2K
+Then report: the commit SHA, the full Gate output (every command, pass/fail), and anything you could not do.
+"""
+reviewer_prompt = """
+1. Run the task Gate exactly and require every command to pass:
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "TestSprint260923Pins"
+uv run --extra dev ruff check tests/inference/test_memo.py
+uv run --extra dev ruff format --check tests/inference/test_memo.py
+git diff --stat -- src/   # must print nothing
+
+2. `git show --stat HEAD` touches only this task's Files list; no whole-suite runs were used.
+
+3. - **AC-8 (pin).** A program with both hazards raises exactly `MemoImpurityError`. The fixture is `f(x) = jax.jit(lambda y: y * 2, donate_argnums=0)(x) + jax.random.uniform(jax.random.key(0), x.shape)`, called with a `(4,)` float32 array.
+  - `type(exc) is MemoImpurityError`, so it is not `MemoDonationError`.
+  - `str(exc)` contains `"purity screen"` and does not contain `"donation screen"`.
+  - The wrapper is latched: `screen_latched_error is not None`, and a second call raises the same type.
+
+4. - **AC-9 (pin).** Screen-output equivalence. For each fixture F_imp, F_don and F_both (defined in T2), the exception raised by `memoize_jaxpr(f)(*args)` matches the reference screen. The reference is a test-local verbatim copy of `49f3def`'s `_screen_jaxpr` followed by `_screen_donation`, together with test-local verbatim copies of the five helpers they call: `_iter_subjaxprs` (:418-434), `_eqn_label` (:437-441), `_wrapped_leaf_indices` (:444-470), `_eqn_donation_sites` (:473-505) and `_donation_message` (:508-521), plus the `_DonationSite` alias (:415). Only the three primitive sets (`_STATEFUL_PRIMITIVES`, `_CALLBACK_PRIMITIVES`, `_RANDOM_PRIMITIVES`) and the error classes (`MemoImpurityError`, `MemoDonationError`) are imported live, so a T4 edit to any helper body cannot move the oracle with it. It is applied to the closed jaxpr from `memo._trace_closed(f, leaves, treedef, traced_positions)`, where `traced_positions` is all leaf indices.
+  - The exception type is the same (checked with `is`).
+  - `str(exc)` is identical.
+  - For `MemoDonationError`, `exc.sites` is identical.
+  - For F_don, additionally `str(exc).startswith("Function rejected by donation screen (spec §4.2 item 6): ")` (literal from memo.py:515), so a shared drift in message wording is caught even if reference and live code agreed.
+
+5. - **AC-10 (pin).** Key equivalence. For the T2 key fixture set, two keys equal `_reference_build_key(core, digest, args, kwargs)`, a test-local verbatim copy of `49f3def`'s `build_key` algorithm that reads `core.policy.salt` and `core.stamp`. Its per-leaf digest is `_reference_leaf_digest`, a test-local verbatim copy of `49f3def`'s `_leaf_digest` (memo.py:125-161), NOT the live `memo._leaf_digest` (which T7 edits); only `MemoKeyUnsupportedLeafError` is imported live:
+  - `core.build_key(digest, args, kwargs)`;
+  - the key that `call()` actually stores, checked as `ref_key in core.cache` after one `wrapped(*args, **kwargs)`.
+
+  The fixture set contains no NaN.
+
+6. - **AC-11 (pin).** `_fits_default_int` boundaries under both x64 settings:
+  - x64 off: True for `2**31 - 1` and `-2**31`; False for `2**31` and `-2**31 - 1`.
+  - Inside `with jax.enable_x64():`: True for `2**31` and `2**63 - 1`; False for `2**63` and `-2**63 - 1`.
+
+7. - **AC-18 (pin).** Non-NaN float keys are unchanged:
+  - `_classify_leaf(1.5, "STATIC") == ("dyn", ("static", "float", "1.5"))`.
+  - `_classify_leaf(-0.0, "STATIC") != _classify_leaf(0.0, "STATIC")`.
+  - Golden leaf digests, landed in T2 (so they pass on `49f3def`) and still passing after T7. For each `(leaf, preimage)` below, `h = hashlib.sha256(); memo._leaf_digest(leaf, h)` gives `h.hexdigest() == hashlib.sha256(preimage).hexdigest()`, and the frozen `_reference_leaf_digest` gives the same. The preimage is `f"{type(leaf).__name__}({leaf!r})".encode()` per memo.py:155-156 (no prefix, no separator; `bool` reaches that branch with `__name__ == "bool"`). T2 also writes each expected 64-char hexdigest into the test as a string literal, computed once on `49f3def` and asserted equal to `hashlib.sha256(preimage).hexdigest()`:
+
+    | leaf | preimage (literal) | sha256 hexdigest (measured on `49f3def`) |
+    |---|---|---|
+    | `2.5` | `b"float(2.5)"` | `9fc15d7f6df8db99bc0dcde0447c9bf5ed6bc2aaccf3f4cfd46a28d4b9f72d98` |
+    | `-0.0` | `b"float(-0.0)"` | `9494dcf6094b912eff00023aaee43d28149697b0be0765cd0e091cad8323e21e` |
+    | `1e300` | `b"float(1e+300)"` | `361300e047c47d05ece511ef57c019d3c57f58cdafe81273922b1867ebeb431e` |
+    | `5e-324` | `b"float(5e-324)"` | `cd705304fa1f0663015d3bb87b4d645c4d8ea0f4d162f46f385e274d6b8d9ce9` |
+    | `3` | `b"int(3)"` | `3038d0e4056117cc63ca144b5436861036059825628dddffee5a4c3c0250d829` |
+    | `True` | `b"bool(True)"` | `8fe0a14cc6b15c2a958819427d423b6ac1ea2b67fbb074167c1de6582629156c` |
+
+    The hexdigests were measured by running live `memo._leaf_digest` on `49f3def`; all six matched `hashlib.sha256(preimage)`. T2 copies these literals rather than recomputing them.
+
+  - AC-10 (with the frozen `_reference_leaf_digest` copy) still passes after T7.
+
+**Docs and whole-file gates**
+"""
+return_key = "T2_5241"
+
+[[tracks]]
+id = "T3"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "5241"
+phase_name = "T3 \u2014 Hit-loop timing script and baseline (#5241 measurement)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+sprint_id: 260923_5035-audit-labels-memo-followups
+Workspace: /home/marielle/projects/xtrax/.claude/worktrees/ring-probes (a git worktree; branch autoloop/260807_autonomous-dev-loop). Work ONLY in this directory; do not cd elsewhere.
+Spec (read-only for you, converged and approved): /home/marielle/projects/xtrax/.claude/worktrees/ring-probes/.praxia/docs/specs/260923_5035-audit-labels-memo-followups.md
+Rules: never run the whole test suite (only the narrow Gate commands below); always `uv run --extra dev ...`; never `git add -A` or `git add .` (stage the named files only); no `git stash`; never push; do not edit the spec; do not touch files outside this task's Files list. Before committing, run `git status --short` and confirm only your task's files are staged.
+Shared instructions from the spec's Fixer Tasks section:
+Order: T1 is independent. After it, T2 (pins) → T3 (baseline measurement) → T4 → T5 → T6 → T7 → T8. Use one commit per task. Before every commit, run `git status --short` and confirm that only the task's `Files:` changed. Do not stage `.praxia/` files. Cap threads for every pytest call: `export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4`.
+
+=== Your task: T3 — Hit-loop timing script and baseline (#5241 measurement) ===
+1. Create `scripts/prof_memo_hit_loop.py`, following the `scripts/prof_stage1_*.py` header style: docstring with purpose and usage, `argparse`, `logging`.
+   - Arguments: `--calls` (default 2000), `--repeats` (default 5), `--n-scalars` (default 4).
+   - It wraps `f(x, *s) = x * 2.0 + sum(s)` with `x = np.ones((8,), np.float32)` and `s = tuple(range(n_scalars))` as plain ints, then makes one warm-up miss.
+2. For each repeat, the script times three loops with `time.perf_counter()`:
+   - (a) `--calls` hits via `wrapped(x, *s)`, giving `per_call_us`;
+   - (b) `--calls` direct `core.build_key(digest, (x, *s), {})` calls, giving `key_us`;
+   - (c) `--calls` direct `core._ensure_screened((x, *s), {})` calls, giving `screen_us`.
+
+   It then prints the median per-call microseconds as exactly one stdout line: `per_call_us=<.2f> key_us=<.2f> screen_us=<.2f>`. It asserts `wrapped.memo_get_stats()["hits"] == repeats * calls` before printing, as a control that loop (a) really hit.
+3. Run it on the current (pre-refactor) tree and put the printed line in the commit message as `baseline (49f3def memo.py): <line>`.
+
+Files: `scripts/prof_memo_hit_loop.py` (create)
+
+Gate:
+```
+uv run --extra dev python scripts/prof_memo_hit_loop.py --calls 200 --repeats 3
+uv run --extra dev ruff check scripts/prof_memo_hit_loop.py
+uv run --extra dev ruff format --check scripts/prof_memo_hit_loop.py
+```
+
+Scope estimate: ~70 LOC.
+
+Orchestrator notes from adversarial round 2 (binding; they refine the steps above):
+- (R2-C4) `key_us` and `screen_us` time backward-compatible entry points that each flatten (args, kwargs) themselves; after T5 they no longer sum to `per_call_us`. Record the baseline so each column can later be compared only against its own T3 baseline.
+
+Commit (required): stage exactly the files in this task's Files list and commit on branch autoloop/260807_autonomous-dev-loop with a conventional message `perf: <summary> (#5241, T3)`, ending with these two lines:
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018esyRmJWqdg6DeJvgPrc2K
+Then report: the commit SHA, the full Gate output (every command, pass/fail), and anything you could not do.
+"""
+reviewer_prompt = """
+1. Run the task Gate exactly and require every command to pass:
+uv run --extra dev python scripts/prof_memo_hit_loop.py --calls 200 --repeats 3
+uv run --extra dev ruff check scripts/prof_memo_hit_loop.py
+uv run --extra dev ruff format --check scripts/prof_memo_hit_loop.py
+
+2. `git show --stat HEAD` touches only this task's Files list; no whole-suite runs were used.
+
+3. - **AC-15.** `scripts/prof_memo_hit_loop.py` exists and runs to exit 0. It prints one line matching `^per_call_us=\\d+(\\.\\d+)? key_us=\\d+(\\.\\d+)? screen_us=\\d+(\\.\\d+)?$`. The T3 commit message records the baseline line and the T5 commit message records the after line. There is no numeric threshold: this is a maintainability change with no correctness impact, and wall-clock noise on a shared box makes a threshold flaky.
+"""
+return_key = "T3_5241"
+
+[[tracks]]
+id = "T4"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "5241"
+phase_name = "T4 \u2014 Merge the purity and donation walkers (#5241 item 3)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+sprint_id: 260923_5035-audit-labels-memo-followups
+Workspace: /home/marielle/projects/xtrax/.claude/worktrees/ring-probes (a git worktree; branch autoloop/260807_autonomous-dev-loop). Work ONLY in this directory; do not cd elsewhere.
+Spec (read-only for you, converged and approved): /home/marielle/projects/xtrax/.claude/worktrees/ring-probes/.praxia/docs/specs/260923_5035-audit-labels-memo-followups.md
+Rules: never run the whole test suite (only the narrow Gate commands below); always `uv run --extra dev ...`; never `git add -A` or `git add .` (stage the named files only); no `git stash`; never push; do not edit the spec; do not touch files outside this task's Files list. Before committing, run `git status --short` and confirm only your task's files are staged.
+Shared instructions from the spec's Fixer Tasks section:
+Order: T1 is independent. After it, T2 (pins) → T3 (baseline measurement) → T4 → T5 → T6 → T7 → T8. Use one commit per task. Before every commit, run `git status --short` and confirm that only the task's `Files:` changed. Do not stage `.praxia/` files. Cap threads for every pytest call: `export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4`.
+
+=== Your task: T4 — Merge the purity and donation walkers (#5241 item 3) ===
+1. In `src/xtrax/inference/memo.py`, add `def _screen_program(closed, invar_to_leaf: tuple[int, ...] | None = None) -> None` in place of `_screen_jaxpr` (:382-408) and `_screen_donation` (:524-551). It does one explicit-stack walk:
+   - Seed the stack with `[(closed.jaxpr, "jaxpr", True)]`.
+   - For each popped `(jaxpr_obj, jaxpr_path, top_level)`, loop over `for eqn in jaxpr_obj.eqns:` and compute `eqn_path = f"{jaxpr_path}.{_eqn_label(eqn)}"`.
+   - If `eqn.primitive.name` is in the banned set, append `(name, eqn_path)` to `offenders`.
+   - Extend `sites` with `_eqn_donation_sites(eqn, eqn_path, top_level, closed_invars, invar_to_leaf if top_level else None)`.
+   - Push sub-jaxprs via `_iter_subjaxprs(param_val, param_name)` as `(sub_jaxpr, f"{eqn_path}.{sub_path}", False)`, in the same param order as today.
+   - After the walk, if `offenders` is non-empty, raise `MemoImpurityError` with the message text copied character-for-character from :401-408. Otherwise, if `sites` is non-empty, raise `MemoDonationError(_donation_message(tuple(sites)), sites=tuple(sites))`.
+2. Replace the two call pairs, :662-663 and :707-708, with `_screen_program(closed, static_traced)` and `_screen_program(closed, abstract_traced)`, and keep the `# CR-3` comments. Delete `_screen_jaxpr` and `_screen_donation`. Update `_iter_subjaxprs`'s docstring ("Shared traversal used by both ...") to name `_screen_program`. Move the section header comment so that the impurity sets, the helpers and `_screen_program` read in dependency order. Do not rename any other helper.
+3. Run `grep -cE 'for \\w+ in \\w+\\.eqns' src/xtrax/inference/memo.py` and confirm it prints `1` (it prints `2` on `49f3def`). Then run the gate. AC-8 and AC-9 (T2) must pass unchanged. They are the proof that the raise order, the messages and `.sites` are identical.
+
+Files: `src/xtrax/inference/memo.py` (modify)
+
+Gate:
+```
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "TestSprint260923Pins or TestDonation or TestPurityWalk or TestPerSignatureScreen or TestCodeReviewFixes or TestAdmission or TestDeferredScreen"
+uv run --extra dev ty check src/
+uv run --extra dev ruff check src/xtrax/inference/memo.py
+uv run --extra dev ruff format --check src/xtrax/inference/memo.py
+```
+
+Scope estimate: net −25 LOC.
+
+Commit (required): stage exactly the files in this task's Files list and commit on branch autoloop/260807_autonomous-dev-loop with a conventional message `fix: <summary> (#5241, T4)`, ending with these two lines:
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018esyRmJWqdg6DeJvgPrc2K
+Then report: the commit SHA, the full Gate output (every command, pass/fail), and anything you could not do.
+"""
+reviewer_prompt = """
+1. Run the task Gate exactly and require every command to pass:
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "TestSprint260923Pins or TestDonation or TestPurityWalk or TestPerSignatureScreen or TestCodeReviewFixes or TestAdmission or TestDeferredScreen"
+uv run --extra dev ty check src/
+uv run --extra dev ruff check src/xtrax/inference/memo.py
+uv run --extra dev ruff format --check src/xtrax/inference/memo.py
+
+2. `git show --stat HEAD` touches only this task's Files list; no whole-suite runs were used.
+
+3. - **AC-8 (pin).** A program with both hazards raises exactly `MemoImpurityError`. The fixture is `f(x) = jax.jit(lambda y: y * 2, donate_argnums=0)(x) + jax.random.uniform(jax.random.key(0), x.shape)`, called with a `(4,)` float32 array.
+  - `type(exc) is MemoImpurityError`, so it is not `MemoDonationError`.
+  - `str(exc)` contains `"purity screen"` and does not contain `"donation screen"`.
+  - The wrapper is latched: `screen_latched_error is not None`, and a second call raises the same type.
+
+4. - **AC-9 (pin).** Screen-output equivalence. For each fixture F_imp, F_don and F_both (defined in T2), the exception raised by `memoize_jaxpr(f)(*args)` matches the reference screen. The reference is a test-local verbatim copy of `49f3def`'s `_screen_jaxpr` followed by `_screen_donation`, together with test-local verbatim copies of the five helpers they call: `_iter_subjaxprs` (:418-434), `_eqn_label` (:437-441), `_wrapped_leaf_indices` (:444-470), `_eqn_donation_sites` (:473-505) and `_donation_message` (:508-521), plus the `_DonationSite` alias (:415). Only the three primitive sets (`_STATEFUL_PRIMITIVES`, `_CALLBACK_PRIMITIVES`, `_RANDOM_PRIMITIVES`) and the error classes (`MemoImpurityError`, `MemoDonationError`) are imported live, so a T4 edit to any helper body cannot move the oracle with it. It is applied to the closed jaxpr from `memo._trace_closed(f, leaves, treedef, traced_positions)`, where `traced_positions` is all leaf indices.
+  - The exception type is the same (checked with `is`).
+  - `str(exc)` is identical.
+  - For `MemoDonationError`, `exc.sites` is identical.
+  - For F_don, additionally `str(exc).startswith("Function rejected by donation screen (spec §4.2 item 6): ")` (literal from memo.py:515), so a shared drift in message wording is caught even if reference and live code agreed.
+"""
+return_key = "T4_5241"
+
+[[tracks]]
+id = "T5"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "5241"
+phase_name = "T5 \u2014 Flatten once per call and cache int bounds (#5241 items 1-2)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+sprint_id: 260923_5035-audit-labels-memo-followups
+Workspace: /home/marielle/projects/xtrax/.claude/worktrees/ring-probes (a git worktree; branch autoloop/260807_autonomous-dev-loop). Work ONLY in this directory; do not cd elsewhere.
+Spec (read-only for you, converged and approved): /home/marielle/projects/xtrax/.claude/worktrees/ring-probes/.praxia/docs/specs/260923_5035-audit-labels-memo-followups.md
+Rules: never run the whole test suite (only the narrow Gate commands below); always `uv run --extra dev ...`; never `git add -A` or `git add .` (stage the named files only); no `git stash`; never push; do not edit the spec; do not touch files outside this task's Files list. Before committing, run `git status --short` and confirm only your task's files are staged.
+Shared instructions from the spec's Fixer Tasks section:
+Order: T1 is independent. After it, T2 (pins) → T3 (baseline measurement) → T4 → T5 → T6 → T7 → T8. Use one commit per task. Before every commit, run `git status --short` and confirm that only the task's `Files:` changed. Do not stage `.praxia/` files. Cap threads for every pytest call: `export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4`.
+
+=== Your task: T5 — Flatten once per call and cache int bounds (#5241 items 1-2) ===
+1. Add module constants `_INT32_INFO = np.iinfo(np.int32)` and `_INT64_INFO = np.iinfo(np.int64)`. Change the signature to `_fits_default_int(value: int, x64: bool | None = None) -> bool`: if `x64 is None`, read `bool(jax.config.jax_enable_x64)`; then use `_INT64_INFO` if `x64` else `_INT32_INFO`. Update the docstring: the default int dtype is int64 under x64 and int32 otherwise, which is what `canonicalize_dtype(np.int64)` returns.
+2. Give `_classify_leaf` a keyword parameter `x64: bool | None = None` and pass it to `_fits_default_int` (keep the existing positional and keyword `mode` callers working). In `_mode_token`, read `x64 = bool(jax.config.jax_enable_x64)` once at the top, pass `x64=x64` to every `_classify_leaf` call, and use that same `x64` in the token.
+3. Split `_ensure_screened`:
+   - Move its body from :679 onward into `def _ensure_screened_flat(self, leaves: list, treedef: Any) -> str`.
+   - Reduce `_ensure_screened(self, args, kwargs) -> str` to `leaves, treedef = jax.tree_util.tree_flatten((args, kwargs)); return self._ensure_screened_flat(leaves, treedef)`.
+   - Change the signature to `build_key(self, digest, args, kwargs, *, leaves: list | None = None, treedef: Any = None) -> str`. If either is `None`, compute `leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))`. Hash `repr((treedef,))` where `repr(_structure_token(args, kwargs))` was hashed, and iterate `leaves`. Every other line stays byte-for-byte the same.
+4. In `call()`, flatten once, immediately after `t0 = time.perf_counter()` (:759) and before the existing `try`: `leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))`. This keeps the flatten inside the `t0`..`hash_seconds` region it occupies today (via `_ensure_screened` :678), so `cum_hash_seconds` and `_maybe_warn_slow` accounting do not shift (ODQ-13). Call `digest = self._ensure_screened_flat(leaves, treedef)` inside the existing try, and `key = self.build_key(digest, args, kwargs, leaves=leaves, treedef=treedef)`. Keep `args` and `kwargs` positional, because the race test scans positional tuples. Delete `_pytree_leaves` and `_structure_token` if `grep -n "_pytree_leaves\\|_structure_token" src tests` shows no other user.
+5. Add AC-13 and AC-14 to `TestSprint260923Pins`, or to a new `class TestSprint260923HotPath:` after it. Use `monkeypatch.setattr(jax.tree_util, "tree_flatten", counting_wrapper(orig))` and the same for the other two, and `monkeypatch.setattr(jax.dtypes, "canonicalize_dtype", ...)`. Install the patches only after the warm-up call.
+6. Run `scripts/prof_memo_hit_loop.py` with defaults. Put `after: <line>` and the T3 baseline line in the commit message.
+
+Files: `src/xtrax/inference/memo.py` (modify), `tests/inference/test_memo.py` (modify)
+
+Gate:
+```
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "TestSprint260923Pins or TestSprint260923HotPath or TestCostAdvisory"
+uv run --extra dev pytest tests/inference/test_memo.py -q
+uv run --extra dev python scripts/prof_memo_hit_loop.py
+uv run --extra dev ty check src/
+uv run --extra dev ruff check src/xtrax/inference/memo.py tests/inference/test_memo.py
+uv run --extra dev ruff format --check src/xtrax/inference/memo.py tests/inference/test_memo.py
+```
+
+Scope estimate: ~40 LOC src, ~60 LOC tests.
+
+Orchestrator notes from adversarial round 2 (binding; they refine the steps above):
+- (R2-C4) `key_us` and `screen_us` time backward-compatible entry points that each flatten themselves; after T5 they no longer sum to `per_call_us`. Compare each column only against its own T3 baseline, and say so in the commit message.
+
+Commit (required): stage exactly the files in this task's Files list and commit on branch autoloop/260807_autonomous-dev-loop with a conventional message `fix: <summary> (#5241, T5)`, ending with these two lines:
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018esyRmJWqdg6DeJvgPrc2K
+Then report: the commit SHA, the full Gate output (every command, pass/fail), and anything you could not do.
+"""
+reviewer_prompt = """
+1. Run the task Gate exactly and require every command to pass:
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "TestSprint260923Pins or TestSprint260923HotPath or TestCostAdvisory"
+uv run --extra dev pytest tests/inference/test_memo.py -q
+uv run --extra dev python scripts/prof_memo_hit_loop.py
+uv run --extra dev ty check src/
+uv run --extra dev ruff check src/xtrax/inference/memo.py tests/inference/test_memo.py
+uv run --extra dev ruff format --check src/xtrax/inference/memo.py tests/inference/test_memo.py
+
+2. `git show --stat HEAD` touches only this task's Files list; no whole-suite runs were used.
+
+3. - **AC-13.** Flatten once per call. Setup: after one warm-up miss on `f(x) = x * 2.0` with `x = np.ones((4,), np.float32)`, the test monkeypatches `jax.tree_util.tree_flatten`, `jax.tree_util.tree_leaves` and `jax.tree_util.tree_structure` with counting pass-through wrappers. Then one cache hit (`copy_on_return=False`, `spot_check_every=0`) records `tree_flatten == 1`, `tree_leaves == 0` and `tree_structure == 0`. Red on `49f3def` (`tree_structure == 1`, `tree_leaves == 1`).
+
+4. - **AC-14.** Cached int bounds. Setup: after one warm-up miss on `f(x, n) = x + n` with `x = np.ones((4,), np.float32)` and `n = 3`, the test monkeypatches `jax.dtypes.canonicalize_dtype` with a counting pass-through wrapper. Then one cache hit on `(x, 3)` records zero `canonicalize_dtype` calls. Red on `49f3def`. AC-11 still passes.
+"""
+return_key = "T5_5241"
+
+[[tracks]]
+id = "T6"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "5240"
+phase_name = "T6 \u2014 Correct the wrap-time screening comment and pin all-default deferral (#5240 item 1)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+sprint_id: 260923_5035-audit-labels-memo-followups
+Workspace: /home/marielle/projects/xtrax/.claude/worktrees/ring-probes (a git worktree; branch autoloop/260807_autonomous-dev-loop). Work ONLY in this directory; do not cd elsewhere.
+Spec (read-only for you, converged and approved): /home/marielle/projects/xtrax/.claude/worktrees/ring-probes/.praxia/docs/specs/260923_5035-audit-labels-memo-followups.md
+Rules: never run the whole test suite (only the narrow Gate commands below); always `uv run --extra dev ...`; never `git add -A` or `git add .` (stage the named files only); no `git stash`; never push; do not edit the spec; do not touch files outside this task's Files list. Before committing, run `git status --short` and confirm only your task's files are staged.
+Shared instructions from the spec's Fixer Tasks section:
+Order: T1 is independent. After it, T2 (pins) → T3 (baseline measurement) → T4 → T5 → T6 → T7 → T8. Use one commit per task. Before every commit, run `git status --short` and confirm that only the task's `Files:` changed. Do not stage `.praxia/` files. Cap threads for every pytest call: `export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4`.
+
+=== Your task: T6 — Correct the wrap-time screening comment and pin all-default deferral (#5240 item 1) ===
+1. In `_wrap` (memo.py, `# Zero-arg (or all-default) ...` at :988), replace the comment with: `# Wrap-time screening runs only for zero-parameter callables: their only possible call signature is ((), {}), so this is exactly the first call's screen. Callables with parameters (defaulted or not) are screened per signature on first call.` Do not change the `if` condition or the try/except.
+2. Add AC-16's two pin tests (`def f(*, a=1.0)` and `def g(x=1.0)`) to `TestSprint260923Pins`. Each asserts that wrapping does not raise, that `screen_latched_error is None`, that the first no-argument call raises `MemoImpurityError`, and that the error latches.
+3. Run `grep -n "all-default" src/xtrax/inference/memo.py` and confirm that it prints nothing.
+
+Files: `src/xtrax/inference/memo.py` (modify), `tests/inference/test_memo.py` (modify)
+
+Gate:
+```
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "TestSprint260923Pins or TestAdmission or TestDeferredScreen"
+uv run --extra dev ruff check src/xtrax/inference/memo.py tests/inference/test_memo.py
+uv run --extra dev ruff format --check src/xtrax/inference/memo.py tests/inference/test_memo.py
+```
+
+Scope estimate: ~5 LOC src, ~35 LOC tests.
+
+Commit (required): stage exactly the files in this task's Files list and commit on branch autoloop/260807_autonomous-dev-loop with a conventional message `fix: <summary> (#5240, T6)`, ending with these two lines:
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018esyRmJWqdg6DeJvgPrc2K
+Then report: the commit SHA, the full Gate output (every command, pass/fail), and anything you could not do.
+"""
+reviewer_prompt = """
+1. Run the task Gate exactly and require every command to pass:
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "TestSprint260923Pins or TestAdmission or TestDeferredScreen"
+uv run --extra dev ruff check src/xtrax/inference/memo.py tests/inference/test_memo.py
+uv run --extra dev ruff format --check src/xtrax/inference/memo.py tests/inference/test_memo.py
+
+2. `git show --stat HEAD` touches only this task's Files list; no whole-suite runs were used.
+
+3. - **AC-16 (pin + comment).**
+  - `grep -n "all-default" src/xtrax/inference/memo.py` prints nothing.
+  - The `_wrap` comment states that wrap-time screening runs only for zero-parameter callables, because their only possible call signature is `((), {})`.
+  - Pin tests: for `def f(*, a=1.0)` and for `def g(x=1.0)`, each body returning `jax.random.uniform(jax.random.key(0), (4,)) * a` (or `* x`), `memoize_jaxpr(f)` returns without raising and `screen_latched_error is None`. The first call `f()` raises `MemoImpurityError` and latches.
+"""
+return_key = "T6_5240"
+
+[[tracks]]
+id = "T7"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "5240"
+phase_name = "T7 \u2014 Key Python-float NaNs by bit pattern (#5240 item 2)"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+sprint_id: 260923_5035-audit-labels-memo-followups
+Workspace: /home/marielle/projects/xtrax/.claude/worktrees/ring-probes (a git worktree; branch autoloop/260807_autonomous-dev-loop). Work ONLY in this directory; do not cd elsewhere.
+Spec (read-only for you, converged and approved): /home/marielle/projects/xtrax/.claude/worktrees/ring-probes/.praxia/docs/specs/260923_5035-audit-labels-memo-followups.md
+Rules: never run the whole test suite (only the narrow Gate commands below); always `uv run --extra dev ...`; never `git add -A` or `git add .` (stage the named files only); no `git stash`; never push; do not edit the spec; do not touch files outside this task's Files list. Before committing, run `git status --short` and confirm only your task's files are staged.
+Shared instructions from the spec's Fixer Tasks section:
+Order: T1 is independent. After it, T2 (pins) → T3 (baseline measurement) → T4 → T5 → T6 → T7 → T8. Use one commit per task. Before every commit, run `git status --short` and confirm that only the task's `Files:` changed. Do not stage `.praxia/` files. Cap threads for every pytest call: `export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4`.
+
+=== Your task: T7 — Key Python-float NaNs by bit pattern (#5240 item 2) ===
+1. In `memo.py`, `import math` and `import struct` at the top. Add `def _float_token(value: float) -> str`, which returns `"nan:" + struct.pack("<d", value).hex()` if `math.isnan(value)`, else `repr(value)`. Its docstring should say that `repr` is exact for every non-NaN double but maps all NaN payloads to `'nan'`.
+2. Use `_float_token` in exactly three places:
+   - In `_classify_leaf`'s STATIC float branch (:273), `("static", "float", _float_token(leaf))`.
+   - In `_static_exact_token` (:224-240), return `_float_token(leaf)` when `isinstance(leaf, float)`, else `repr(leaf)`. Add one docstring line.
+   - In `_leaf_digest`'s scalar branch (:155-157), use `f"{type(leaf).__name__}({_float_token(leaf)})"` when `isinstance(leaf, float)`, else the existing `f"{type(leaf).__name__}({leaf!r})"`. The non-NaN bytes stay identical.
+3. Add AC-17 items 1-3 (including the `struct.pack` control assertion and the `class F(float)` subclass item in both `"ABSTRACT"` and `"STATIC"`) and AC-18's two `_classify_leaf` bullets in a new `class TestSprint260923NanKeys:`. Do not touch T2's `test_golden_leaf_digests` or `_reference_leaf_digest`; confirm they and AC-10 still pass.
+
+Files: `src/xtrax/inference/memo.py` (modify), `tests/inference/test_memo.py` (modify)
+
+Gate:
+```
+uv run --extra dev pytest tests/inference/test_memo.py -q
+uv run --extra dev ty check src/
+uv run --extra dev ruff check src/xtrax/inference/memo.py tests/inference/test_memo.py
+uv run --extra dev ruff format --check src/xtrax/inference/memo.py tests/inference/test_memo.py
+```
+
+Scope estimate: ~15 LOC src, ~45 LOC tests.
+
+Commit (required): stage exactly the files in this task's Files list and commit on branch autoloop/260807_autonomous-dev-loop with a conventional message `fix: <summary> (#5240, T7)`, ending with these two lines:
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018esyRmJWqdg6DeJvgPrc2K
+Then report: the commit SHA, the full Gate output (every command, pass/fail), and anything you could not do.
+"""
+reviewer_prompt = """
+1. Run the task Gate exactly and require every command to pass:
+uv run --extra dev pytest tests/inference/test_memo.py -q
+uv run --extra dev ty check src/
+uv run --extra dev ruff check src/xtrax/inference/memo.py tests/inference/test_memo.py
+uv run --extra dev ruff format --check src/xtrax/inference/memo.py tests/inference/test_memo.py
+
+2. `git show --stat HEAD` touches only this task's Files list; no whole-suite runs were used.
+
+3. - **AC-10 (pin).** Key equivalence. For the T2 key fixture set, two keys equal `_reference_build_key(core, digest, args, kwargs)`, a test-local verbatim copy of `49f3def`'s `build_key` algorithm that reads `core.policy.salt` and `core.stamp`. Its per-leaf digest is `_reference_leaf_digest`, a test-local verbatim copy of `49f3def`'s `_leaf_digest` (memo.py:125-161), NOT the live `memo._leaf_digest` (which T7 edits); only `MemoKeyUnsupportedLeafError` is imported live:
+  - `core.build_key(digest, args, kwargs)`;
+  - the key that `call()` actually stores, checked as `ref_key in core.cache` after one `wrapped(*args, **kwargs)`.
+
+  The fixture set contains no NaN.
+
+4. - **AC-17.** NaN payloads are distinct keys. Let `nan_a = struct.unpack("<d", bytes.fromhex("000000000000f87f"))[0]` and `nan_b = struct.unpack("<d", bytes.fromhex("010000000000f87f"))[0]`. The test first asserts `struct.pack("<d", nan_a) != struct.pack("<d", nan_b)` as a control.
+  1. `_classify_leaf(nan_a, "STATIC") != _classify_leaf(nan_b, "STATIC")`.
+  2. With `f(x, s) = x * s` and `x = jnp.ones((4,), jnp.float32)`, calling `f(x, nan_a)`, then `f(x, nan_b)`, then `f(x, nan_a)` gives stats `misses == 2` and `hits == 1`.
+  3. Float subclass, which fails `type(leaf) is float` (:270) and reaches `_static_exact_token` via :278-279 in both modes: with test-local `class F(float): pass`, `_classify_leaf(F(nan_a), "ABSTRACT") != _classify_leaf(F(nan_b), "ABSTRACT")` and `_classify_leaf(F(nan_a), "STATIC") != _classify_leaf(F(nan_b), "STATIC")`.
+
+  All three are red on `49f3def` (items 1 and 3 compare equal because `repr` of every NaN, including `float.__repr__` on a subclass, is `'nan'`; item 2 gives `misses == 1`).
+
+5. - **AC-18 (pin).** Non-NaN float keys are unchanged:
+  - `_classify_leaf(1.5, "STATIC") == ("dyn", ("static", "float", "1.5"))`.
+  - `_classify_leaf(-0.0, "STATIC") != _classify_leaf(0.0, "STATIC")`.
+  - Golden leaf digests, landed in T2 (so they pass on `49f3def`) and still passing after T7. For each `(leaf, preimage)` below, `h = hashlib.sha256(); memo._leaf_digest(leaf, h)` gives `h.hexdigest() == hashlib.sha256(preimage).hexdigest()`, and the frozen `_reference_leaf_digest` gives the same. The preimage is `f"{type(leaf).__name__}({leaf!r})".encode()` per memo.py:155-156 (no prefix, no separator; `bool` reaches that branch with `__name__ == "bool"`). T2 also writes each expected 64-char hexdigest into the test as a string literal, computed once on `49f3def` and asserted equal to `hashlib.sha256(preimage).hexdigest()`:
+
+    | leaf | preimage (literal) | sha256 hexdigest (measured on `49f3def`) |
+    |---|---|---|
+    | `2.5` | `b"float(2.5)"` | `9fc15d7f6df8db99bc0dcde0447c9bf5ed6bc2aaccf3f4cfd46a28d4b9f72d98` |
+    | `-0.0` | `b"float(-0.0)"` | `9494dcf6094b912eff00023aaee43d28149697b0be0765cd0e091cad8323e21e` |
+    | `1e300` | `b"float(1e+300)"` | `361300e047c47d05ece511ef57c019d3c57f58cdafe81273922b1867ebeb431e` |
+    | `5e-324` | `b"float(5e-324)"` | `cd705304fa1f0663015d3bb87b4d645c4d8ea0f4d162f46f385e274d6b8d9ce9` |
+    | `3` | `b"int(3)"` | `3038d0e4056117cc63ca144b5436861036059825628dddffee5a4c3c0250d829` |
+    | `True` | `b"bool(True)"` | `8fe0a14cc6b15c2a958819427d423b6ac1ea2b67fbb074167c1de6582629156c` |
+
+    The hexdigests were measured by running live `memo._leaf_digest` on `49f3def`; all six matched `hashlib.sha256(preimage)`. T2 copies these literals rather than recomputing them.
+
+  - AC-10 (with the frozen `_reference_leaf_digest` copy) still passes after T7.
+
+**Docs and whole-file gates**
+"""
+return_key = "T7_5240"
+
+[[tracks]]
+id = "T8"
+is_research = false
+worktree = false
+skip_worktree = false
+
+[[tracks.items]]
+backlog_id = "5240"
+phase_name = "T8 \u2014 Docs: NaN keys and the both-hazards error"
+fixer_prompt = """
+task_id: 260807_autonomous-dev-loop
+sprint_id: 260923_5035-audit-labels-memo-followups
+Workspace: /home/marielle/projects/xtrax/.claude/worktrees/ring-probes (a git worktree; branch autoloop/260807_autonomous-dev-loop). Work ONLY in this directory; do not cd elsewhere.
+Spec (read-only for you, converged and approved): /home/marielle/projects/xtrax/.claude/worktrees/ring-probes/.praxia/docs/specs/260923_5035-audit-labels-memo-followups.md
+Rules: never run the whole test suite (only the narrow Gate commands below); always `uv run --extra dev ...`; never `git add -A` or `git add .` (stage the named files only); no `git stash`; never push; do not edit the spec; do not touch files outside this task's Files list. Before committing, run `git status --short` and confirm only your task's files are staged.
+Shared instructions from the spec's Fixer Tasks section:
+Order: T1 is independent. After it, T2 (pins) → T3 (baseline measurement) → T4 → T5 → T6 → T7 → T8. Use one commit per task. Before every commit, run `git status --short` and confirm that only the task's `Files:` changed. Do not stage `.praxia/` files. Cap threads for every pytest call: `export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4`.
+
+=== Your task: T8 — Docs: NaN keys and the both-hazards error ===
+1. In `docs/api/inference.md`, **Keys** paragraph (:365-367), insert after the first sentence: `Python \\`float\\` arguments key on their exact value; a NaN keys on its bit pattern, so NaNs with different payloads are distinct keys.`
+2. In the donation section, after the sentence ending "lists every offending site." (:335-336), add: `A function that also contains an impure primitive raises \\`MemoImpurityError\\` for the impurity.` Change "The purity screen uses the same walk." (:332-333) to "Both screens run in one walk."
+3. Keep the public-docs voice: terse, state mechanisms directly, no projected misconceptions, no new status section. Do not touch the "Fixed in this release" line.
+
+Files: `docs/api/inference.md` (modify)
+
+Gate:
+```
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "docs"
+uv run --extra dev pytest tests/distribution/test_narrative_docs.py -q
+uv run --extra dev python scripts/audit_narrative_docs.py
+grep -n "bit pattern" docs/api/inference.md
+```
+
+Scope estimate: ~4 lines.
+
+Commit (required): stage exactly the files in this task's Files list and commit on branch autoloop/260807_autonomous-dev-loop with a conventional message `docs: <summary> (#5240, T8)`, ending with these two lines:
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018esyRmJWqdg6DeJvgPrc2K
+Then report: the commit SHA, the full Gate output (every command, pass/fail), and anything you could not do.
+"""
+reviewer_prompt = """
+1. Run the task Gate exactly and require every command to pass:
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "docs"
+uv run --extra dev pytest tests/distribution/test_narrative_docs.py -q
+uv run --extra dev python scripts/audit_narrative_docs.py
+grep -n "bit pattern" docs/api/inference.md
+
+2. `git show --stat HEAD` touches only this task's Files list; no whole-suite runs were used.
+
+3. - **AC-19.** `docs/api/inference.md` states two things, and `test_ac17_docs_mention_donation_and_screen_ids` still passes:
+  - (a) in the **Keys** paragraph, that a Python `float` NaN keys on its bit pattern: `grep -n "bit pattern" docs/api/inference.md` matches a line in the Keys paragraph;
+  - (b) that a function with both an impure primitive and a donation marker raises `MemoImpurityError`.
+
+4. - **AC-20.** Whole-file checks are green on the final branch:
+  - `uv run --extra dev pytest tests/inference/test_memo.py -q`;
+  - `uv run --extra dev pytest tests/distribution/test_coverage_dag.py -q`;
+  - `uv run --extra dev ty check src/`;
+  - `ruff check` and `ruff format --check` on every touched file.
+"""
+return_key = "T8_5240"
+
+[orchestration]
+sequential = ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8"]
+concurrent = []

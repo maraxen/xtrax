@@ -32,6 +32,8 @@ Spot-checking recomputes via the UNWRAPPED callable and compares numerically
 from __future__ import annotations
 
 import hashlib
+import math
+import struct
 import threading
 import warnings
 from collections import OrderedDict
@@ -61,6 +63,9 @@ _WARMUP_CALLS = 8
 # USE TIME (never captured into __init__ or a default arg), so a test can
 # `monkeypatch.setattr(memo_module, "_MAX_SCREENED_SIGNATURES", N)`.
 _MAX_SCREENED_SIGNATURES = 1024
+# Cached int bounds (T5 optimization)
+_INT32_INFO = np.iinfo(np.int32)
+_INT64_INFO = np.iinfo(np.int64)
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +127,18 @@ def _environment_stamp() -> str:
     )
 
 
+def _float_token(value: float) -> str:
+    """Exact-value token for a float leaf: repr() for non-NaN values, bit pattern for NaN.
+
+    repr() is exact (shortest round-trip) for every non-NaN double, but maps all NaN
+    payloads to 'nan'. For NaN values, we key on the bit pattern to distinguish different
+    NaN payloads.
+    """
+    if math.isnan(value):
+        return "nan:" + struct.pack("<d", value).hex()
+    return repr(value)
+
+
 def _leaf_digest(leaf: Any, sink: hashlib._Hash) -> None:
     """Fold one pytree leaf into the digest stream (spec §3.3).
 
@@ -153,7 +170,10 @@ def _leaf_digest(leaf: Any, sink: hashlib._Hash) -> None:
         sink.update(b"str:%d:" % len(enc) + enc)
         return
     if isinstance(leaf, (int, float, bool)):
-        sink.update(f"{type(leaf).__name__}({leaf!r})".encode())
+        if isinstance(leaf, float):
+            sink.update(f"{type(leaf).__name__}({_float_token(leaf)})".encode())
+        else:
+            sink.update(f"{type(leaf).__name__}({leaf!r})".encode())
         return
     raise MemoKeyUnsupportedLeafError(
         f"Unsupported pytree leaf type {type(leaf).__name__!r} for memo key; "
@@ -184,15 +204,6 @@ def _program_digest(closed) -> str:
     return h.hexdigest()
 
 
-def _pytree_leaves(args: tuple, kwargs: dict) -> list:
-    return jax.tree_util.tree_leaves((args, kwargs))
-
-
-def _structure_token(args: tuple, kwargs: dict) -> tuple:
-    structure = jax.tree_util.tree_structure((args, kwargs))
-    return (structure,)
-
-
 # ---------------------------------------------------------------------------
 # Per-signature leaf classification and trace modes (spec §3.1)
 # ---------------------------------------------------------------------------
@@ -213,17 +224,21 @@ _NEEDS_STATIC = _NeedsStaticType()
 _MISSING = object()
 
 
-def _fits_default_int(value: int) -> bool:
+def _fits_default_int(value: int, x64: bool | None = None) -> bool:
     """True iff `value` lies in the range of the canonical default int dtype
-    (spec §3.1 item 2, G4/OBJ-R2-01). Read at use time, not cached, since
-    `jax.dtypes.canonicalize_dtype` depends on the live x64 setting."""
-    info = np.iinfo(jax.dtypes.canonicalize_dtype(np.int64))
+    (spec §3.1 item 2, G4/OBJ-R2-01). If `x64` is None, reads the live x64 setting;
+    the default int dtype is int64 under x64 and int32 otherwise, which is what
+    `canonicalize_dtype(np.int64)` returns."""
+    if x64 is None:
+        x64 = bool(jax.config.jax_enable_x64)
+    info = _INT64_INFO if x64 else _INT32_INFO
     return info.min <= value <= info.max
 
 
 def _static_exact_token(leaf: Any) -> str | bytes:
     """Exact-value token for a leaf that is always held static (spec §3.1
-    item 3): repr() for numbers, exact (unnormalized) bytes for str/bytes.
+    item 3): repr() for numbers (except NaN floats which use bit pattern),
+    exact (unnormalized) bytes for str/bytes.
 
     CR-1: unlike `_leaf_digest`, this does NOT need a length prefix. Its
     result is always embedded as one element of a Python tuple descriptor
@@ -237,10 +252,12 @@ def _static_exact_token(leaf: Any) -> str | bytes:
         return leaf.encode("utf-8", "surrogatepass")
     if isinstance(leaf, bytes):
         return leaf
+    if isinstance(leaf, float):
+        return _float_token(leaf)
     return repr(leaf)
 
 
-def _classify_leaf(leaf: Any, mode: str) -> tuple[str, tuple]:
+def _classify_leaf(leaf: Any, mode: str, x64: bool | None = None) -> tuple[str, tuple]:
     """Classify one flattened `(args, kwargs)` leaf for a screened-signature
     token (spec §3.1, in order):
 
@@ -270,10 +287,10 @@ def _classify_leaf(leaf: Any, mode: str) -> tuple[str, tuple]:
     if type(leaf) is float:
         if mode == "ABSTRACT":
             return "dyn", ("dyn", "float")
-        return "dyn", ("static", "float", repr(leaf))
+        return "dyn", ("static", "float", _float_token(leaf))
     if type(leaf) is int:
         if mode == "ABSTRACT":
-            return "dyn", ("dyn", "int", _fits_default_int(leaf))
+            return "dyn", ("dyn", "int", _fits_default_int(leaf, x64=x64))
         return "dyn", ("static", "int", repr(leaf))
     if isinstance(leaf, (bool, int, float, str, bytes)):
         return "static", ("static", type(leaf).__qualname__, _static_exact_token(leaf))
@@ -297,16 +314,16 @@ def _mode_token(
     digest lookup never re-traces), serving a stale digest/key pair keyed to
     the wrong dtype's traced program.
     """
+    x64 = bool(jax.config.jax_enable_x64)
     kinds: list[str] = []
     descriptors: list[tuple] = []
     for leaf in leaves:
-        kind, descriptor = _classify_leaf(leaf, mode)
+        kind, descriptor = _classify_leaf(leaf, mode, x64=x64)
         kinds.append(kind)
         descriptors.append(descriptor)
     traced_kinds = ("arr", "dyn") if mode == "ABSTRACT" else ("arr",)
     traced = tuple(i for i, k in enumerate(kinds) if k in traced_kinds)
     tag = "A" if mode == "ABSTRACT" else "S"
-    x64 = bool(jax.config.jax_enable_x64)
     token = (tag, treedef, tuple(descriptors), x64)
     has_dyn = any(k == "dyn" for k in kinds)
     return token, traced, has_dyn
@@ -379,35 +396,6 @@ _CALLBACK_PRIMITIVES = {
 _RANDOM_PRIMITIVES = {"random_bits", "threefry2x32_p", "rng_bit_generator", "random_seed"}
 
 
-def _screen_jaxpr(closed) -> None:
-    """Raise MemoImpurityError on detectably impure primitives. Traversal walks
-    with an explicit stack via _iter_subjaxprs exclusively, covering tuple/list-
-    valued params generically and with no depth cap."""
-    banned = _STATEFUL_PRIMITIVES | _CALLBACK_PRIMITIVES | _RANDOM_PRIMITIVES
-
-    offenders: list[tuple[str, str]] = []  # (primitive_name, path) pairs
-    stack: list[tuple[Any, str]] = [(closed.jaxpr, "jaxpr")]
-    while stack:
-        jaxpr_obj, jaxpr_path = stack.pop()
-        for eqn in jaxpr_obj.eqns:
-            eqn_path = f"{jaxpr_path}.{_eqn_label(eqn)}"
-            name = eqn.primitive.name
-            if name in banned:
-                offenders.append((name, eqn_path))
-            for param_name, param_val in eqn.params.items():
-                for sub_path, sub_jaxpr in _iter_subjaxprs(param_val, param_name):
-                    stack.append((sub_jaxpr, f"{eqn_path}.{sub_path}"))
-    if offenders:
-        names = sorted(set(name for name, _ in offenders))
-        paths = ", ".join(path for _, path in offenders)
-        raise MemoImpurityError(
-            f"Function rejected by purity screen: stateful/callback/random "
-            f"primitives present: {names}. If you believe this "
-            "function is pure, restructure to avoid these primitives; wrapping "
-            f"is the purity attestation.\nPaths: {paths}"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Donation screen (spec §3.3/§3.4)
 # ---------------------------------------------------------------------------
@@ -420,9 +408,9 @@ def _iter_subjaxprs(value: Any, path: str = ""):
     exposing ``.eqns``) reachable from ``value``, recursing into tuple/list
     values (e.g. ``lax.cond``'s ``branches``) with NO depth cap.
 
-    Shared traversal used by both _screen_jaxpr and _screen_donation to cover
-    tuple/list-valued params generically (e.g. lax.cond's branches) while
-    respecting structural nesting at any depth.
+    Shared traversal used by _screen_program to cover tuple/list-valued params
+    generically (e.g. lax.cond's branches) while respecting structural nesting
+    at any depth.
     """
     stack: list[tuple[str, Any]] = [(path, value)]
     while stack:
@@ -521,24 +509,34 @@ def _donation_message(sites: tuple[_DonationSite, ...]) -> str:
     )
 
 
-def _screen_donation(closed, invar_to_leaf: tuple[int, ...] | None = None) -> None:
-    """Collect ALL donation-hazard sites (both carriers, at any depth), then
-    raise once (§3.3 "conservative" rule). Traversal walks with an explicit
-    stack via `_iter_subjaxprs` exclusively, so it covers tuple/list-valued
-    params generically and has no depth cap.
+def _screen_program(closed, invar_to_leaf: tuple[int, ...] | None = None) -> None:
+    """Screen a closed jaxpr for impurity and donation hazards in one walk.
+
+    Raises MemoImpurityError if the program contains detectably impure primitives
+    (stateful, callback, or unkeyed random). Raises MemoDonationError if it contains
+    donation markers at any depth. Traversal walks with an explicit stack via
+    `_iter_subjaxprs` exclusively, so it covers tuple/list-valued params generically
+    and has no depth cap.
 
     CR-3: `invar_to_leaf` (typically the caller's `traced_positions`) maps a
     top-level invar index to the true flat `(args, kwargs)` leaf index, for
     callers that traced fewer leaves than the flattened arg count (D-2
     static leaves). `None` (the default) keeps the old identity mapping.
     """
+    banned = _STATEFUL_PRIMITIVES | _CALLBACK_PRIMITIVES | _RANDOM_PRIMITIVES
+
+    offenders: list[tuple[str, str]] = []  # (primitive_name, path) pairs
     sites: list[_DonationSite] = []
     closed_invars = closed.jaxpr.invars
     stack: list[tuple[Any, str, bool]] = [(closed.jaxpr, "jaxpr", True)]
+
     while stack:
         jaxpr_obj, jaxpr_path, top_level = stack.pop()
         for eqn in jaxpr_obj.eqns:
             eqn_path = f"{jaxpr_path}.{_eqn_label(eqn)}"
+            name = eqn.primitive.name
+            if name in banned:
+                offenders.append((name, eqn_path))
             sites.extend(
                 _eqn_donation_sites(
                     eqn, eqn_path, top_level, closed_invars, invar_to_leaf if top_level else None
@@ -547,6 +545,16 @@ def _screen_donation(closed, invar_to_leaf: tuple[int, ...] | None = None) -> No
             for param_name, param_val in eqn.params.items():
                 for sub_path, sub_jaxpr in _iter_subjaxprs(param_val, param_name):
                     stack.append((sub_jaxpr, f"{eqn_path}.{sub_path}", False))
+
+    if offenders:
+        names = sorted(set(name for name, _ in offenders))
+        paths = ", ".join(path for _, path in offenders)
+        raise MemoImpurityError(
+            f"Function rejected by purity screen: stateful/callback/random "
+            f"primitives present: {names}. If you believe this "
+            "function is pure, restructure to avoid these primitives; wrapping "
+            f"is the purity attestation.\nPaths: {paths}"
+        )
     if sites:
         raise MemoDonationError(_donation_message(tuple(sites)), sites=tuple(sites))
 
@@ -659,8 +667,7 @@ class _MemoCore:
                 )
             _raise_classified(exc)  # never returns; no insert (§3.2 step 5)
 
-        _screen_jaxpr(closed)
-        _screen_donation(closed, static_traced)  # CR-3: invars == static_traced positions
+        _screen_program(closed, static_traced)  # CR-3: invars == static_traced positions
         digest = _program_digest(closed)
         with self.lock:
             self._insert(static_token, digest)
@@ -668,14 +675,13 @@ class _MemoCore:
                 self._insert(abstract_token, _NEEDS_STATIC)
         return digest
 
-    def _ensure_screened(self, args: tuple, kwargs: dict) -> str:
+    def _ensure_screened_flat(self, leaves: list, treedef: Any) -> str:
         """Resolve the digest for THIS call's signature (spec §3.2),
         screening it (purity + donation) if this is the first time this
-        signature has been seen. Locked lookups/inserts; tracing and
-        screening always run unlocked. Returns the digest read/produced;
-        never re-reads the table afterward (a concurrent eviction could
-        remove the entry)."""
-        leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))
+        signature has been seen. Takes pre-flattened leaves and treedef.
+        Locked lookups/inserts; tracing and screening always run unlocked.
+        Returns the digest read/produced; never re-reads the table afterward
+        (a concurrent eviction could remove the entry)."""
         abstract_token, abstract_traced, has_dyn = _mode_token(leaves, treedef, "ABSTRACT")
 
         with self.lock:
@@ -704,27 +710,49 @@ class _MemoCore:
                 )
             _raise_classified(exc)  # never returns; no insert (§3.2 step 5)
 
-        _screen_jaxpr(closed)
-        _screen_donation(closed, abstract_traced)  # CR-3: invars == abstract_traced positions
+        _screen_program(closed, abstract_traced)  # CR-3: invars == abstract_traced positions
         digest = _program_digest(closed)
         with self.lock:
             self._insert(abstract_token, digest)
         return digest
 
-    def build_key(self, digest: str, args: tuple, kwargs: dict) -> str:
+    def _ensure_screened(self, args: tuple, kwargs: dict) -> str:
+        """Resolve the digest for THIS call's signature (spec §3.2),
+        screening it (purity + donation) if this is the first time this
+        signature has been seen. Locked lookups/inserts; tracing and
+        screening always run unlocked. Returns the digest read/produced;
+        never re-reads the table afterward (a concurrent eviction could
+        remove the entry)."""
+        leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))
+        return self._ensure_screened_flat(leaves, treedef)
+
+    def build_key(
+        self,
+        digest: str,
+        args: tuple,
+        kwargs: dict,
+        *,
+        leaves: list | None = None,
+        treedef: Any = None,
+    ) -> str:
         """Hash the digest THIS CALL resolved via `_ensure_screened`, then the
         structure, leaf digests, x64 flag, salt and stamp (spec §3.2). Runs
         outside `self.lock`, exactly as on main.
+
+        If leaves and treedef are provided, uses them; otherwise computes them
+        via tree_flatten.
 
         CR-6: `jax.config.jax_enable_x64` is folded in, read per call, so a
         cache entry stored under one x64 setting is never served to a call
         made under the other (arrays digest their own concrete dtype, but a
         Python scalar's OUTPUT dtype under x64 does not show up anywhere else
         in the key)."""
+        if leaves is None or treedef is None:
+            leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))
         h = hashlib.sha256()
         h.update(digest.encode())
-        h.update(repr(_structure_token(args, kwargs)).encode())
-        for leaf in _pytree_leaves(args, kwargs):
+        h.update(repr((treedef,)).encode())
+        for leaf in leaves:
             _leaf_digest(leaf, h)
         h.update(f"|x64={bool(jax.config.jax_enable_x64)}".encode())
         h.update(self.policy.salt.encode())
@@ -757,15 +785,16 @@ class _MemoCore:
             if self.stats.spot_check_mismatches > 0:
                 raise MemoStalenessError("spot_check_mismatches > 0: poisoned until .memo_reset()")
         t0 = time.perf_counter()
+        leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))
         try:
-            digest = self._ensure_screened(args, kwargs)
+            digest = self._ensure_screened_flat(leaves, treedef)
         except MemoImpurityError as exc:
             with self.lock:
                 self.screen_latched_error = exc  # latch (OBJ-R2-08)
             raise
         hash_seconds = time.perf_counter() - t0
 
-        key = self.build_key(digest, args, kwargs)
+        key = self.build_key(digest, args, kwargs, leaves=leaves, treedef=treedef)
 
         with self.lock:
             entry = self.cache.get(key)
@@ -985,7 +1014,10 @@ def memoize_jaxpr(
 
         core = _MemoCore(f, pol)
         stats_holder: dict[str, Any] = {}
-        # Zero-arg (or all-default) callables can be screened at wrap time:
+        # Wrap-time screening runs only for zero-parameter callables: their only
+        # possible call signature is ((), {}), so this is exactly the first call's
+        # screen. Callables with parameters (defaulted or not) are screened per
+        # signature on first call.
         if not inspect.signature(f).parameters:
             try:
                 core._ensure_screened((), {})

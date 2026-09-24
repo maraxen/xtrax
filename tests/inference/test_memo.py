@@ -3,13 +3,19 @@ and spec 260922 §3 donation, both directions (AC-1 to AC-17)."""
 
 from __future__ import annotations
 
+import hashlib
+import math
+from typing import Any
+
 import jax
 import jax.lax as lax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from xtrax.inference import memo
 from xtrax.inference.memo import (
+    MemoDonationError,
     MemoImpurityError,
     MemoKeyUnsupportedLeafError,
     MemoMultiDeviceError,
@@ -1865,3 +1871,742 @@ class TestCodeReviewFixes:
         stats = wrapped.memo_get_stats()
         assert stats["misses"] == 2, "x64 toggle must force a fresh trace/key, not reuse the entry"
         assert stats["hits"] == 0
+
+
+# Reference helpers for AC-9: verbatim copies from 49f3def memo.py with _ref prefix
+_ref_DonationSite = tuple[str, str, tuple[int, ...], tuple[int, ...]]
+
+
+def _ref_iter_subjaxprs(value: Any, path: str = ""):
+    """Yield (path, subjaxpr) for every subjaxpr-like object (anything
+    exposing ``.eqns``) reachable from ``value``, recursing into tuple/list
+    values (e.g. ``lax.cond``'s ``branches``) with NO depth cap.
+
+    Shared traversal used by both _screen_jaxpr and _screen_donation to cover
+    tuple/list-valued params generically (e.g. lax.cond's branches) while
+    respecting structural nesting at any depth.
+    """
+    stack: list[tuple[str, Any]] = [(path, value)]
+    while stack:
+        p, v = stack.pop()
+        if hasattr(v, "eqns"):
+            yield p, v
+        elif isinstance(v, (tuple, list)):
+            for i, item in enumerate(v):
+                stack.append((f"{p}[{i}]" if p else f"[{i}]", item))
+
+
+def _ref_eqn_label(eqn) -> str:
+    name = eqn.params.get("name")
+    if name:
+        return f"{eqn.primitive.name}[name={name}]"
+    return eqn.primitive.name
+
+
+def _ref_wrapped_leaf_indices(
+    eqn,
+    operand_indices: tuple[int, ...],
+    closed_invars,
+    invar_to_leaf: tuple[int, ...] | None = None,
+) -> tuple[int, ...]:
+    """Identity lookup only (not provenance tracing): for each donated
+    operand of a TOP-LEVEL equation, find `j` such that the operand var IS
+    (identity) `closed_invars[j]` — an index into `closed.jaxpr.invars`.
+
+    CR-3: `closed.jaxpr.invars` corresponds only to the TRACED flat leaves
+    (`traced_positions` from `_mode_token`/`_trace_closed`), not to every
+    flattened `(args, kwargs)` leaf, whenever some leaves are held static
+    (bool/enum/str/bytes leaves, or scalars in STATIC mode). `invar_to_leaf`
+    maps invar index `j` -> the true flat leaf index (`traced_positions[j]`).
+    `None` means identity (every leaf was traced, e.g. an arrays-only call),
+    which keeps `j == leaf index` and leaves existing array-only callers
+    unaffected.
+    """
+    out: list[int] = []
+    for i in operand_indices:
+        operand = eqn.invars[i]
+        for j, invar in enumerate(closed_invars):
+            if operand is invar:
+                out.append(invar_to_leaf[j] if invar_to_leaf is not None else j)
+                break
+    return tuple(out)
+
+
+def _ref_eqn_donation_sites(
+    eqn,
+    path: str,
+    top_level: bool,
+    closed_invars,
+    invar_to_leaf: tuple[int, ...] | None = None,
+) -> list[_ref_DonationSite]:
+    """Both donation carriers (D3, P5): `donated_invars` (jit/pjit/scan/...)
+    and `device_put`'s `copy_semantics` DONATE_INPUT element. Duck-typed on
+    `.name` — the private `ArrayCopySemantics` type is never imported."""
+    sites: list[_ref_DonationSite] = []
+
+    donated_invars = eqn.params.get("donated_invars")
+    if donated_invars:
+        idxs = tuple(i for i, d in enumerate(donated_invars) if d)
+        if idxs:
+            wrapped = (
+                _ref_wrapped_leaf_indices(eqn, idxs, closed_invars, invar_to_leaf)
+                if top_level
+                else ()
+            )
+            sites.append((path, "donated_invars", idxs, wrapped))
+
+    copy_semantics = eqn.params.get("copy_semantics")
+    if copy_semantics:
+        idxs = tuple(
+            i for i, cs in enumerate(copy_semantics) if getattr(cs, "name", None) == "DONATE_INPUT"
+        )
+        if idxs:
+            wrapped = (
+                _ref_wrapped_leaf_indices(eqn, idxs, closed_invars, invar_to_leaf)
+                if top_level
+                else ()
+            )
+            sites.append((path, "copy_semantics", idxs, wrapped))
+
+    return sites
+
+
+def _ref_donation_message(sites: tuple[_ref_DonationSite, ...]) -> str:
+    lines = [
+        f"  - {path} (carrier={carrier}, eqn_operand_indices={op_idx}, "
+        f"wrapped_input_leaf_indices={leaf_idx})"
+        for path, carrier, op_idx, leaf_idx in sites
+    ]
+    return (
+        "Function rejected by donation screen (spec §4.2 item 6): "
+        "memoize_jaxpr never admits a function whose traced jaxpr carries a "
+        "donation marker, at any depth. Sites:\n"
+        + "\n".join(lines)
+        + "\nRemedy: remove donate_argnums/donate_argnames/device_put(donate=True) "
+        "from functions wrapped by memoize_jaxpr (spec §4.2 item 6)."
+    )
+
+
+def _reference_screen_jaxpr(closed) -> None:
+    """Raise MemoImpurityError on detectably impure primitives. Traversal walks
+    with an explicit stack via _iter_subjaxprs exclusively, covering tuple/list-
+    valued params generically and with no depth cap."""
+    banned = memo._STATEFUL_PRIMITIVES | memo._CALLBACK_PRIMITIVES | memo._RANDOM_PRIMITIVES
+
+    offenders: list[tuple[str, str]] = []  # (primitive_name, path) pairs
+    stack: list[tuple[Any, str]] = [(closed.jaxpr, "jaxpr")]
+    while stack:
+        jaxpr_obj, jaxpr_path = stack.pop()
+        for eqn in jaxpr_obj.eqns:
+            eqn_path = f"{jaxpr_path}.{_ref_eqn_label(eqn)}"
+            name = eqn.primitive.name
+            if name in banned:
+                offenders.append((name, eqn_path))
+            for param_name, param_val in eqn.params.items():
+                for sub_path, sub_jaxpr in _ref_iter_subjaxprs(param_val, param_name):
+                    stack.append((sub_jaxpr, f"{eqn_path}.{sub_path}"))
+    if offenders:
+        names = sorted(set(name for name, _ in offenders))
+        paths = ", ".join(path for _, path in offenders)
+        raise MemoImpurityError(
+            f"Function rejected by purity screen: stateful/callback/random "
+            f"primitives present: {names}. If you believe this "
+            "function is pure, restructure to avoid these primitives; wrapping "
+            f"is the purity attestation.\nPaths: {paths}"
+        )
+
+
+def _reference_screen_donation(closed, invar_to_leaf: tuple[int, ...] | None = None) -> None:
+    """Collect ALL donation-hazard sites (both carriers, at any depth), then
+    raise once (§3.3 "conservative" rule). Traversal walks with an explicit
+    stack via `_iter_subjaxprs` exclusively, so it covers tuple/list-valued
+    params generically and has no depth cap.
+
+    CR-3: `invar_to_leaf` (typically the caller's `traced_positions`) maps a
+    top-level invar index to the true flat `(args, kwargs)` leaf index, for
+    callers that traced fewer leaves than the flattened arg count (D-2
+    static leaves). `None` (the default) keeps the old identity mapping.
+    """
+    sites: list[_ref_DonationSite] = []
+    closed_invars = closed.jaxpr.invars
+    stack: list[tuple[Any, str, bool]] = [(closed.jaxpr, "jaxpr", True)]
+    while stack:
+        jaxpr_obj, jaxpr_path, top_level = stack.pop()
+        for eqn in jaxpr_obj.eqns:
+            eqn_path = f"{jaxpr_path}.{_ref_eqn_label(eqn)}"
+            sites.extend(
+                _ref_eqn_donation_sites(
+                    eqn,
+                    eqn_path,
+                    top_level,
+                    closed_invars,
+                    invar_to_leaf if top_level else None,
+                )
+            )
+            for param_name, param_val in eqn.params.items():
+                for sub_path, sub_jaxpr in _ref_iter_subjaxprs(param_val, param_name):
+                    stack.append((sub_jaxpr, f"{eqn_path}.{sub_path}", False))
+    if sites:
+        raise MemoDonationError(_ref_donation_message(tuple(sites)), sites=tuple(sites))
+
+
+def _reference_screen(closed, traced):
+    """Run purity screen first, then donation screen. Return the raised
+    exception or None."""
+    try:
+        _reference_screen_jaxpr(closed)
+        _reference_screen_donation(closed, traced)
+    except (MemoImpurityError, MemoDonationError) as exc:
+        return exc
+    return None
+
+
+# Reference helpers for AC-10: verbatim copy of _leaf_digest from memo.py:125-161
+def _reference_leaf_digest(leaf: Any, sink: hashlib._Hash) -> None:
+    """Fold one pytree leaf into the digest stream (spec §3.3).
+
+    Arrays fold the container type before the dtype (D-4, AC-13b), so an
+    `np.ndarray` and an equal `jax.Array` digest differently. `str`/`bytes`
+    digest EXACTLY, with no Unicode normalization (D-3, AC-6/AC-6b).
+    """
+    if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
+        # House primitive core (zarr_integrity.update_array_digest recipe):
+        # container type, then canonicalize + C-order bytes.
+        arr = np.asarray(leaf)
+        canon = np.ascontiguousarray(arr)
+        sink.update(type(leaf).__qualname__.encode())
+        sink.update(canon.dtype.name.encode())
+        sink.update(repr(canon.shape).encode())
+        sink.update(canon.tobytes(order="C"))
+        weak = getattr(leaf, "weak_type", False)
+        sink.update(f"|wt={bool(weak)}".encode())
+        return
+    if isinstance(leaf, bytes):
+        # CR-1: length-prefixed so back-to-back leaf digests in one stream
+        # (build_key has no separator between leaves) cannot alias across a
+        # boundary, e.g. digest("a")+digest("str:b") == digest("astr:")+digest("b")
+        # under the old unprefixed scheme.
+        sink.update(b"bytes:%d:" % len(leaf) + leaf)
+        return
+    if isinstance(leaf, str):
+        enc = leaf.encode("utf-8", "surrogatepass")
+        sink.update(b"str:%d:" % len(enc) + enc)
+        return
+    if isinstance(leaf, (int, float, bool)):
+        sink.update(f"{type(leaf).__name__}({leaf!r})".encode())
+        return
+    raise MemoKeyUnsupportedLeafError(
+        f"Unsupported pytree leaf type {type(leaf).__name__!r} for memo key; "
+        "admission restricted to arrays, scalars, bools and strings."
+    )
+
+
+def _reference_build_key(core, digest, args, kwargs):
+    """Verbatim copy of build_key body from memo.py:724-732, inlining
+    _structure_token and _pytree_leaves."""
+    h = hashlib.sha256()
+    h.update(digest.encode())
+    h.update(repr((jax.tree_util.tree_structure((args, kwargs)),)).encode())
+    for leaf in jax.tree_util.tree_leaves((args, kwargs)):
+        _reference_leaf_digest(leaf, h)
+    h.update(f"|x64={bool(jax.config.jax_enable_x64)}".encode())
+    h.update(core.policy.salt.encode())
+    h.update(core.stamp.encode())
+    return h.hexdigest()
+
+
+class TestSprint260923Pins:
+    """AC-8 through AC-11 and AC-18: pins on memo.py:49f3def."""
+
+    def test_ac8_both_hazards_raises_impurity_first(self):
+        """AC-8: program with both hazards raises MemoImpurityError exactly."""
+
+        def f(x):
+            return jax.jit(lambda y: y * 2, donate_argnums=0)(x) + jax.random.uniform(
+                jax.random.key(0), x.shape
+            )
+
+        wrapped = memoize_jaxpr(f)
+        x = jnp.ones((4,), jnp.float32)
+        with pytest.raises(MemoImpurityError) as exc_info:
+            wrapped(x)
+
+        # type is exactly MemoImpurityError, not MemoDonationError
+        assert type(exc_info.value) is MemoImpurityError
+        # message contains purity screen, not donation screen
+        assert "purity screen" in str(exc_info.value)
+        assert "donation screen" not in str(exc_info.value)
+        # wrapper is latched
+        assert wrapped._memo_core.screen_latched_error is not None
+        # second call raises same type
+        with pytest.raises(MemoImpurityError):
+            wrapped(x)
+
+    def test_ac9_f_imp_screen_equivalence(self):
+        """AC-9: reference screen output matches live screen for F_imp."""
+
+        def f(p, x):
+            def body(y):
+                return y + jax.random.uniform(jax.random.key(0), y.shape)
+
+            return jax.jit(lambda z: z + jax.random.uniform(jax.random.key(1), z.shape))(
+                lax.cond(p, body, lambda y: y, x)
+            )
+
+        args = (jnp.array(True), jnp.ones((4,), jnp.float32))
+        leaves, treedef = jax.tree_util.tree_flatten((args, {}))
+        closed = memo._trace_closed(f, leaves, treedef, tuple(range(len(leaves))))
+
+        # Live call
+        wrapped = memoize_jaxpr(f)
+        live_exc = None
+        try:
+            wrapped(*args)
+        except (MemoImpurityError, MemoDonationError) as e:
+            live_exc = e
+
+        # Reference screen
+        ref_exc = _reference_screen(closed, tuple(range(len(leaves))))
+
+        assert live_exc is not None and ref_exc is not None
+        assert type(live_exc) is type(ref_exc)
+        assert str(live_exc) == str(ref_exc)
+
+    def test_ac9_f_don_screen_equivalence(self):
+        """AC-9: reference screen output matches live screen for F_don."""
+
+        def f(x):
+            a = jax.jit(lambda y: y * 2, donate_argnums=0)(x)
+            b = jax.device_put(a, donate=True)
+            return jax.jit(lambda z: jax.jit(lambda w: w + 1, donate_argnums=0)(z))(b)
+
+        args = (jnp.ones((4,), jnp.float32),)
+        leaves, treedef = jax.tree_util.tree_flatten((args, {}))
+        closed = memo._trace_closed(f, leaves, treedef, tuple(range(len(leaves))))
+
+        # Live call
+        wrapped = memoize_jaxpr(f)
+        live_exc = None
+        try:
+            wrapped(*args)
+        except (MemoImpurityError, MemoDonationError) as e:
+            live_exc = e
+
+        # Reference screen
+        ref_exc = _reference_screen(closed, tuple(range(len(leaves))))
+
+        assert live_exc is not None and ref_exc is not None
+        assert type(live_exc) is type(ref_exc)
+        assert str(live_exc) == str(ref_exc)
+        if isinstance(live_exc, MemoDonationError):
+            assert live_exc.sites == ref_exc.sites
+            assert str(live_exc).startswith(
+                "Function rejected by donation screen (spec §4.2 item 6): "
+            )
+
+    def test_ac9_f_both_screen_equivalence(self):
+        """AC-9: reference screen output matches live screen for F_both."""
+
+        def f(x):
+            return jax.jit(lambda y: y * 2, donate_argnums=0)(x) + jax.random.uniform(
+                jax.random.key(0), x.shape
+            )
+
+        args = (jnp.ones((4,), jnp.float32),)
+        leaves, treedef = jax.tree_util.tree_flatten((args, {}))
+        closed = memo._trace_closed(f, leaves, treedef, tuple(range(len(leaves))))
+
+        # Live call
+        wrapped = memoize_jaxpr(f)
+        live_exc = None
+        try:
+            wrapped(*args)
+        except (MemoImpurityError, MemoDonationError) as e:
+            live_exc = e
+
+        # Reference screen
+        ref_exc = _reference_screen(closed, tuple(range(len(leaves))))
+
+        assert live_exc is not None and ref_exc is not None
+        assert type(live_exc) is type(ref_exc)
+        assert str(live_exc) == str(ref_exc)
+
+    def test_ac10_key_equivalence_fixture1(self):
+        """AC-10: key equivalence for fixture 1."""
+
+        def g(*args, **kwargs):
+            return args[0] * 1.0
+
+        wrapped = memoize_jaxpr(g, policy=MemoPolicy(salt="s1"))
+        core = wrapped._memo_core
+
+        args = (np.ones((3,), np.float32),)
+        kwargs = {}
+        digest = core._ensure_screened(args, kwargs)
+
+        # Test that reference key equals live key
+        ref_key = _reference_build_key(core, digest, args, kwargs)
+        live_key = core.build_key(digest, args, kwargs)
+        assert ref_key == live_key
+
+        # Test that key is in cache after one call
+        wrapped(*args, **kwargs)
+        assert ref_key in core.cache
+
+    def test_ac10_key_equivalence_fixture2(self):
+        """AC-10: key equivalence for fixture 2."""
+
+        def g(*args, **kwargs):
+            return args[0] * 1.0
+
+        wrapped = memoize_jaxpr(g, policy=MemoPolicy(salt="s1"))
+        core = wrapped._memo_core
+
+        args = (jnp.ones((2, 2), jnp.float32), 3, 2.5, -0.0, True, "é", b"\x00")
+        kwargs = {}
+        digest = core._ensure_screened(args, kwargs)
+
+        ref_key = _reference_build_key(core, digest, args, kwargs)
+        live_key = core.build_key(digest, args, kwargs)
+        assert ref_key == live_key
+
+        wrapped(*args, **kwargs)
+        assert ref_key in core.cache
+
+    def test_ac10_key_equivalence_fixture3(self):
+        """AC-10: key equivalence for fixture 3."""
+
+        def g(*args, **kwargs):
+            return args[0] * 1.0
+
+        wrapped = memoize_jaxpr(g, policy=MemoPolicy(salt="s1"))
+        core = wrapped._memo_core
+
+        args = (jnp.ones((2,), jnp.float32),)
+        kwargs = {"a": [jnp.zeros((2,)), 1], "b": {"c": "s"}}
+        digest = core._ensure_screened(args, kwargs)
+
+        ref_key = _reference_build_key(core, digest, args, kwargs)
+        live_key = core.build_key(digest, args, kwargs)
+        assert ref_key == live_key
+
+        wrapped(*args, **kwargs)
+        assert ref_key in core.cache
+
+    def test_ac11_fits_default_int_x64_off(self):
+        """AC-11: _fits_default_int boundaries with x64 off."""
+        # x64 off: default is int32
+        assert memo._fits_default_int(2**31 - 1) is True
+        assert memo._fits_default_int(-(2**31)) is True
+        assert memo._fits_default_int(2**31) is False
+        assert memo._fits_default_int(-(2**31) - 1) is False
+
+    def test_ac11_fits_default_int_x64_on(self):
+        """AC-11: _fits_default_int boundaries with x64 on."""
+        x64_ctx = jax.enable_x64 if hasattr(jax, "enable_x64") else None
+        if x64_ctx is None:
+            pytest.skip("jax.enable_x64 context manager unavailable in this jax version")
+
+        with x64_ctx():
+            # x64 on: default is int64
+            assert memo._fits_default_int(2**31) is True
+            assert memo._fits_default_int(2**63 - 1) is True
+            assert memo._fits_default_int(2**63) is False
+            assert memo._fits_default_int(-(2**63) - 1) is False
+
+    def test_golden_leaf_digests(self):
+        """AC-18: golden leaf digests are unchanged."""
+        fixtures = [
+            (
+                2.5,
+                b"float(2.5)",
+                "9fc15d7f6df8db99bc0dcde0447c9bf5ed6bc2aaccf3f4cfd46a28d4b9f72d98",
+            ),
+            (
+                -0.0,
+                b"float(-0.0)",
+                "9494dcf6094b912eff00023aaee43d28149697b0be0765cd0e091cad8323e21e",
+            ),
+            (
+                1e300,
+                b"float(1e+300)",
+                "361300e047c47d05ece511ef57c019d3c57f58cdafe81273922b1867ebeb431e",
+            ),
+            (
+                5e-324,
+                b"float(5e-324)",
+                "cd705304fa1f0663015d3bb87b4d645c4d8ea0f4d162f46f385e274d6b8d9ce9",
+            ),
+            (
+                3,
+                b"int(3)",
+                "3038d0e4056117cc63ca144b5436861036059825628dddffee5a4c3c0250d829",
+            ),
+            (
+                True,
+                b"bool(True)",
+                "8fe0a14cc6b15c2a958819427d423b6ac1ea2b67fbb074167c1de6582629156c",
+            ),
+        ]
+
+        for leaf, preimage, expected_hex in fixtures:
+            # Verify preimage hash matches expected hex
+            assert hashlib.sha256(preimage).hexdigest() == expected_hex
+
+            # Verify live memo._leaf_digest gives same hex
+            h = hashlib.sha256()
+            memo._leaf_digest(leaf, h)
+            assert h.hexdigest() == expected_hex
+
+            # Verify reference leaf digest gives same hex
+            h_ref = hashlib.sha256()
+            _reference_leaf_digest(leaf, h_ref)
+            assert h_ref.hexdigest() == expected_hex
+
+    def test_ac16_keyword_only_default_pin(self):
+        """AC-16: keyword-only parameter with default is screened on first call, not wrap time."""
+
+        def f(*, a=1.0):
+            return jax.random.uniform(jax.random.key(0), (4,)) * a
+
+        # Wrapping should not raise
+        wrapped = memoize_jaxpr(f)
+
+        # screen_latched_error should be None (not screened at wrap time)
+        assert wrapped._memo_core.screen_latched_error is None
+
+        # First call with no arguments should raise MemoImpurityError
+        with pytest.raises(MemoImpurityError):
+            wrapped()
+
+        # Error should latch: second call also raises
+        assert wrapped._memo_core.screen_latched_error is not None
+        with pytest.raises(MemoImpurityError):
+            wrapped()
+
+    def test_ac16_positional_default_pin(self):
+        """AC-16: positional parameter with default is screened on first call, not wrap time."""
+
+        def g(x=1.0):
+            return jax.random.uniform(jax.random.key(0), (4,)) * x
+
+        # Wrapping should not raise
+        wrapped = memoize_jaxpr(g)
+
+        # screen_latched_error should be None (not screened at wrap time)
+        assert wrapped._memo_core.screen_latched_error is None
+
+        # First call with no arguments should raise MemoImpurityError
+        with pytest.raises(MemoImpurityError):
+            wrapped()
+
+        # Error should latch: second call also raises
+        assert wrapped._memo_core.screen_latched_error is not None
+        with pytest.raises(MemoImpurityError):
+            wrapped()
+
+
+def counting_wrapper(orig):
+    """Counting wrapper that increments a counter when called."""
+    count = {"value": 0}
+
+    def wrapper(*args, **kwargs):
+        count["value"] += 1
+        return orig(*args, **kwargs)
+
+    wrapper._count = count
+    return wrapper
+
+
+class TestSprint260923HotPath:
+    """AC-13 and AC-14: tree flattening and int bounds caching optimizations."""
+
+    def test_ac13_flatten_once_per_call(self, monkeypatch):
+        """AC-13: Flatten once per call (not three times: flatten, leaves, structure)."""
+
+        def f(x):
+            return x * 2.0
+
+        wrapped = memoize_jaxpr(f, policy=MemoPolicy(copy_on_return=False, spot_check_every=0))
+        x = np.ones((4,), np.float32)
+
+        # Warm-up miss
+        wrapped(x)
+
+        # Install counting wrappers after warm-up
+        orig_flatten = jax.tree_util.tree_flatten
+        orig_leaves = jax.tree_util.tree_leaves
+        orig_structure = jax.tree_util.tree_structure
+
+        flatten_wrapper = counting_wrapper(orig_flatten)
+        leaves_wrapper = counting_wrapper(orig_leaves)
+        structure_wrapper = counting_wrapper(orig_structure)
+
+        monkeypatch.setattr(jax.tree_util, "tree_flatten", flatten_wrapper)
+        monkeypatch.setattr(jax.tree_util, "tree_leaves", leaves_wrapper)
+        monkeypatch.setattr(jax.tree_util, "tree_structure", structure_wrapper)
+
+        # One cache hit
+        result = wrapped(x)
+
+        # Verify result is correct
+        assert result.shape == x.shape
+        assert np.allclose(result, x * 2.0)
+
+        # Verify call counts: flatten==1, leaves==0, structure==0
+        assert flatten_wrapper._count["value"] == 1
+        assert leaves_wrapper._count["value"] == 0
+        assert structure_wrapper._count["value"] == 0
+
+    def test_ac14_cached_int_bounds(self, monkeypatch):
+        """AC-14: Cached int bounds — canonicalize_dtype not called on hit."""
+
+        def f(x, n):
+            return x + n
+
+        wrapped = memoize_jaxpr(f, policy=MemoPolicy(copy_on_return=False, spot_check_every=0))
+        x = np.ones((4,), np.float32)
+        n = 3
+
+        # Warm-up miss
+        wrapped(x, n)
+
+        # Install counting wrapper for canonicalize_dtype after warm-up
+        orig_canonicalize = jax.dtypes.canonicalize_dtype
+        canonicalize_wrapper = counting_wrapper(orig_canonicalize)
+        monkeypatch.setattr(jax.dtypes, "canonicalize_dtype", canonicalize_wrapper)
+
+        # One cache hit on (x, 3)
+        result = wrapped(x, n)
+
+        # Verify result is correct
+        assert result.shape == x.shape
+        assert np.allclose(result, x + n)
+
+        # Verify canonicalize_dtype was NOT called during the cache hit
+        # (already cached during classification in _mode_token)
+        assert canonicalize_wrapper._count["value"] == 0
+
+
+class TestSprint260923NanKeys:
+    """AC-17 and AC-18: NaN payloads are distinct keys; non-NaN floats unchanged."""
+
+    def test_ac17_nan_payloads_distinct_static_mode(self):
+        """AC-17 item 1: NaN payloads with different bits give different static tokens."""
+        import struct
+
+        # Control: assert the two NaN bit patterns are different
+        nan_a = struct.unpack("<d", bytes.fromhex("000000000000f87f"))[0]
+        nan_b = struct.unpack("<d", bytes.fromhex("010000000000f87f"))[0]
+        assert struct.pack("<d", nan_a) != struct.pack("<d", nan_b)
+
+        # Both are NaN
+        assert math.isnan(nan_a)
+        assert math.isnan(nan_b)
+
+        # _classify_leaf should return different descriptors in STATIC mode
+        desc_a = memo._classify_leaf(nan_a, "STATIC")
+        desc_b = memo._classify_leaf(nan_b, "STATIC")
+        assert desc_a != desc_b
+
+    def test_ac17_nan_payloads_cache_misses(self):
+        """AC-17 item 2: Different NaN payloads cause cache misses, not hits."""
+        import struct
+
+        nan_a = struct.unpack("<d", bytes.fromhex("000000000000f87f"))[0]
+        nan_b = struct.unpack("<d", bytes.fromhex("010000000000f87f"))[0]
+        assert struct.pack("<d", nan_a) != struct.pack("<d", nan_b)
+
+        def f(x, s):
+            return x * s
+
+        wrapped = memoize_jaxpr(f, policy=MemoPolicy(copy_on_return=False, spot_check_every=0))
+        x = jnp.ones((4,), jnp.float32)
+
+        # First call with nan_a
+        wrapped(x, nan_a)
+
+        # Second call with nan_b (different NaN payload)
+        wrapped(x, nan_b)
+
+        # Third call with nan_a again (should hit)
+        wrapped(x, nan_a)
+
+        # Check stats
+        stats = wrapped.memo_get_stats()
+        assert stats["misses"] == 2, f"Expected 2 misses, got {stats['misses']}"
+        assert stats["hits"] == 1, f"Expected 1 hit, got {stats['hits']}"
+
+    def test_ac17_nan_payloads_float_subclass(self):
+        """AC-17 item 3: Float subclass NaN payloads are distinct in both modes."""
+        import struct
+
+        class F(float):
+            pass
+
+        nan_a = F(struct.unpack("<d", bytes.fromhex("000000000000f87f"))[0])
+        nan_b = F(struct.unpack("<d", bytes.fromhex("010000000000f87f"))[0])
+        assert struct.pack("<d", float(nan_a)) != struct.pack("<d", float(nan_b))
+
+        # In ABSTRACT mode, float subclass goes through _static_exact_token
+        desc_a_abs = memo._classify_leaf(nan_a, "ABSTRACT")
+        desc_b_abs = memo._classify_leaf(nan_b, "ABSTRACT")
+        assert desc_a_abs != desc_b_abs
+
+        # In STATIC mode, float subclass also goes through _static_exact_token
+        desc_a_stat = memo._classify_leaf(nan_a, "STATIC")
+        desc_b_stat = memo._classify_leaf(nan_b, "STATIC")
+        assert desc_a_stat != desc_b_stat
+
+    def test_ac18_non_nan_floats_unchanged(self):
+        """AC-18: Non-NaN float classifications are unchanged."""
+        # Classification for 1.5 in STATIC mode
+        desc = memo._classify_leaf(1.5, "STATIC")
+        assert desc == ("dyn", ("static", "float", "1.5"))
+
+        # -0.0 and 0.0 should differ
+        desc_neg_zero = memo._classify_leaf(-0.0, "STATIC")
+        desc_pos_zero = memo._classify_leaf(0.0, "STATIC")
+        assert desc_neg_zero != desc_pos_zero
+
+    def test_ac18_golden_leaf_digests(self):
+        """AC-18: Golden leaf digests from T2 still pass with NaN keying."""
+        # Test data from AC-18 table
+        test_cases = [
+            (
+                2.5,
+                b"float(2.5)",
+                "9fc15d7f6df8db99bc0dcde0447c9bf5ed6bc2aaccf3f4cfd46a28d4b9f72d98",
+            ),
+            (
+                -0.0,
+                b"float(-0.0)",
+                "9494dcf6094b912eff00023aaee43d28149697b0be0765cd0e091cad8323e21e",
+            ),
+            (
+                1e300,
+                b"float(1e+300)",
+                "361300e047c47d05ece511ef57c019d3c57f58cdafe81273922b1867ebeb431e",
+            ),
+            (
+                5e-324,
+                b"float(5e-324)",
+                "cd705304fa1f0663015d3bb87b4d645c4d8ea0f4d162f46f385e274d6b8d9ce9",
+            ),
+            (3, b"int(3)", "3038d0e4056117cc63ca144b5436861036059825628dddffee5a4c3c0250d829"),
+            (
+                True,
+                b"bool(True)",
+                "8fe0a14cc6b15c2a958819427d423b6ac1ea2b67fbb074167c1de6582629156c",
+            ),
+        ]
+
+        for leaf, preimage, expected_hexdigest in test_cases:
+            # Verify preimage matches expected hash
+            computed_hash = hashlib.sha256(preimage).hexdigest()
+            assert computed_hash == expected_hexdigest, f"Preimage hash mismatch for {leaf}"
+
+            # Verify live _leaf_digest gives the same hash
+            h = hashlib.sha256()
+            memo._leaf_digest(leaf, h)
+            assert h.hexdigest() == expected_hexdigest, f"Live _leaf_digest mismatch for {leaf}"
