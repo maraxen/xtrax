@@ -61,6 +61,9 @@ _WARMUP_CALLS = 8
 # USE TIME (never captured into __init__ or a default arg), so a test can
 # `monkeypatch.setattr(memo_module, "_MAX_SCREENED_SIGNATURES", N)`.
 _MAX_SCREENED_SIGNATURES = 1024
+# Cached int bounds (T5 optimization)
+_INT32_INFO = np.iinfo(np.int32)
+_INT64_INFO = np.iinfo(np.int64)
 
 
 # ---------------------------------------------------------------------------
@@ -184,15 +187,6 @@ def _program_digest(closed) -> str:
     return h.hexdigest()
 
 
-def _pytree_leaves(args: tuple, kwargs: dict) -> list:
-    return jax.tree_util.tree_leaves((args, kwargs))
-
-
-def _structure_token(args: tuple, kwargs: dict) -> tuple:
-    structure = jax.tree_util.tree_structure((args, kwargs))
-    return (structure,)
-
-
 # ---------------------------------------------------------------------------
 # Per-signature leaf classification and trace modes (spec §3.1)
 # ---------------------------------------------------------------------------
@@ -213,11 +207,14 @@ _NEEDS_STATIC = _NeedsStaticType()
 _MISSING = object()
 
 
-def _fits_default_int(value: int) -> bool:
+def _fits_default_int(value: int, x64: bool | None = None) -> bool:
     """True iff `value` lies in the range of the canonical default int dtype
-    (spec §3.1 item 2, G4/OBJ-R2-01). Read at use time, not cached, since
-    `jax.dtypes.canonicalize_dtype` depends on the live x64 setting."""
-    info = np.iinfo(jax.dtypes.canonicalize_dtype(np.int64))
+    (spec §3.1 item 2, G4/OBJ-R2-01). If `x64` is None, reads the live x64 setting;
+    the default int dtype is int64 under x64 and int32 otherwise, which is what
+    `canonicalize_dtype(np.int64)` returns."""
+    if x64 is None:
+        x64 = bool(jax.config.jax_enable_x64)
+    info = _INT64_INFO if x64 else _INT32_INFO
     return info.min <= value <= info.max
 
 
@@ -240,7 +237,7 @@ def _static_exact_token(leaf: Any) -> str | bytes:
     return repr(leaf)
 
 
-def _classify_leaf(leaf: Any, mode: str) -> tuple[str, tuple]:
+def _classify_leaf(leaf: Any, mode: str, x64: bool | None = None) -> tuple[str, tuple]:
     """Classify one flattened `(args, kwargs)` leaf for a screened-signature
     token (spec §3.1, in order):
 
@@ -273,7 +270,7 @@ def _classify_leaf(leaf: Any, mode: str) -> tuple[str, tuple]:
         return "dyn", ("static", "float", repr(leaf))
     if type(leaf) is int:
         if mode == "ABSTRACT":
-            return "dyn", ("dyn", "int", _fits_default_int(leaf))
+            return "dyn", ("dyn", "int", _fits_default_int(leaf, x64=x64))
         return "dyn", ("static", "int", repr(leaf))
     if isinstance(leaf, (bool, int, float, str, bytes)):
         return "static", ("static", type(leaf).__qualname__, _static_exact_token(leaf))
@@ -297,16 +294,16 @@ def _mode_token(
     digest lookup never re-traces), serving a stale digest/key pair keyed to
     the wrong dtype's traced program.
     """
+    x64 = bool(jax.config.jax_enable_x64)
     kinds: list[str] = []
     descriptors: list[tuple] = []
     for leaf in leaves:
-        kind, descriptor = _classify_leaf(leaf, mode)
+        kind, descriptor = _classify_leaf(leaf, mode, x64=x64)
         kinds.append(kind)
         descriptors.append(descriptor)
     traced_kinds = ("arr", "dyn") if mode == "ABSTRACT" else ("arr",)
     traced = tuple(i for i, k in enumerate(kinds) if k in traced_kinds)
     tag = "A" if mode == "ABSTRACT" else "S"
-    x64 = bool(jax.config.jax_enable_x64)
     token = (tag, treedef, tuple(descriptors), x64)
     has_dyn = any(k == "dyn" for k in kinds)
     return token, traced, has_dyn
@@ -658,14 +655,13 @@ class _MemoCore:
                 self._insert(abstract_token, _NEEDS_STATIC)
         return digest
 
-    def _ensure_screened(self, args: tuple, kwargs: dict) -> str:
+    def _ensure_screened_flat(self, leaves: list, treedef: Any) -> str:
         """Resolve the digest for THIS call's signature (spec §3.2),
         screening it (purity + donation) if this is the first time this
-        signature has been seen. Locked lookups/inserts; tracing and
-        screening always run unlocked. Returns the digest read/produced;
-        never re-reads the table afterward (a concurrent eviction could
-        remove the entry)."""
-        leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))
+        signature has been seen. Takes pre-flattened leaves and treedef.
+        Locked lookups/inserts; tracing and screening always run unlocked.
+        Returns the digest read/produced; never re-reads the table afterward
+        (a concurrent eviction could remove the entry)."""
         abstract_token, abstract_traced, has_dyn = _mode_token(leaves, treedef, "ABSTRACT")
 
         with self.lock:
@@ -700,20 +696,43 @@ class _MemoCore:
             self._insert(abstract_token, digest)
         return digest
 
-    def build_key(self, digest: str, args: tuple, kwargs: dict) -> str:
+    def _ensure_screened(self, args: tuple, kwargs: dict) -> str:
+        """Resolve the digest for THIS call's signature (spec §3.2),
+        screening it (purity + donation) if this is the first time this
+        signature has been seen. Locked lookups/inserts; tracing and
+        screening always run unlocked. Returns the digest read/produced;
+        never re-reads the table afterward (a concurrent eviction could
+        remove the entry)."""
+        leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))
+        return self._ensure_screened_flat(leaves, treedef)
+
+    def build_key(
+        self,
+        digest: str,
+        args: tuple,
+        kwargs: dict,
+        *,
+        leaves: list | None = None,
+        treedef: Any = None,
+    ) -> str:
         """Hash the digest THIS CALL resolved via `_ensure_screened`, then the
         structure, leaf digests, x64 flag, salt and stamp (spec §3.2). Runs
         outside `self.lock`, exactly as on main.
+
+        If leaves and treedef are provided, uses them; otherwise computes them
+        via tree_flatten.
 
         CR-6: `jax.config.jax_enable_x64` is folded in, read per call, so a
         cache entry stored under one x64 setting is never served to a call
         made under the other (arrays digest their own concrete dtype, but a
         Python scalar's OUTPUT dtype under x64 does not show up anywhere else
         in the key)."""
+        if leaves is None or treedef is None:
+            leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))
         h = hashlib.sha256()
         h.update(digest.encode())
-        h.update(repr(_structure_token(args, kwargs)).encode())
-        for leaf in _pytree_leaves(args, kwargs):
+        h.update(repr((treedef,)).encode())
+        for leaf in leaves:
             _leaf_digest(leaf, h)
         h.update(f"|x64={bool(jax.config.jax_enable_x64)}".encode())
         h.update(self.policy.salt.encode())
@@ -746,15 +765,16 @@ class _MemoCore:
             if self.stats.spot_check_mismatches > 0:
                 raise MemoStalenessError("spot_check_mismatches > 0: poisoned until .memo_reset()")
         t0 = time.perf_counter()
+        leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))
         try:
-            digest = self._ensure_screened(args, kwargs)
+            digest = self._ensure_screened_flat(leaves, treedef)
         except MemoImpurityError as exc:
             with self.lock:
                 self.screen_latched_error = exc  # latch (OBJ-R2-08)
             raise
         hash_seconds = time.perf_counter() - t0
 
-        key = self.build_key(digest, args, kwargs)
+        key = self.build_key(digest, args, kwargs, leaves=leaves, treedef=treedef)
 
         with self.lock:
             entry = self.cache.get(key)

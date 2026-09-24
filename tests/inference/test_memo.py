@@ -2361,3 +2361,85 @@ class TestSprint260923Pins:
             h_ref = hashlib.sha256()
             _reference_leaf_digest(leaf, h_ref)
             assert h_ref.hexdigest() == expected_hex
+
+
+def counting_wrapper(orig):
+    """Counting wrapper that increments a counter when called."""
+    count = {"value": 0}
+
+    def wrapper(*args, **kwargs):
+        count["value"] += 1
+        return orig(*args, **kwargs)
+
+    wrapper._count = count
+    return wrapper
+
+
+class TestSprint260923HotPath:
+    """AC-13 and AC-14: tree flattening and int bounds caching optimizations."""
+
+    def test_ac13_flatten_once_per_call(self, monkeypatch):
+        """AC-13: Flatten once per call (not three times: flatten, leaves, structure)."""
+
+        def f(x):
+            return x * 2.0
+
+        wrapped = memoize_jaxpr(f, policy=MemoPolicy(copy_on_return=False, spot_check_every=0))
+        x = np.ones((4,), np.float32)
+
+        # Warm-up miss
+        wrapped(x)
+
+        # Install counting wrappers after warm-up
+        orig_flatten = jax.tree_util.tree_flatten
+        orig_leaves = jax.tree_util.tree_leaves
+        orig_structure = jax.tree_util.tree_structure
+
+        flatten_wrapper = counting_wrapper(orig_flatten)
+        leaves_wrapper = counting_wrapper(orig_leaves)
+        structure_wrapper = counting_wrapper(orig_structure)
+
+        monkeypatch.setattr(jax.tree_util, "tree_flatten", flatten_wrapper)
+        monkeypatch.setattr(jax.tree_util, "tree_leaves", leaves_wrapper)
+        monkeypatch.setattr(jax.tree_util, "tree_structure", structure_wrapper)
+
+        # One cache hit
+        result = wrapped(x)
+
+        # Verify result is correct
+        assert result.shape == x.shape
+        assert np.allclose(result, x * 2.0)
+
+        # Verify call counts: flatten==1, leaves==0, structure==0
+        assert flatten_wrapper._count["value"] == 1
+        assert leaves_wrapper._count["value"] == 0
+        assert structure_wrapper._count["value"] == 0
+
+    def test_ac14_cached_int_bounds(self, monkeypatch):
+        """AC-14: Cached int bounds — canonicalize_dtype not called on hit."""
+
+        def f(x, n):
+            return x + n
+
+        wrapped = memoize_jaxpr(f, policy=MemoPolicy(copy_on_return=False, spot_check_every=0))
+        x = np.ones((4,), np.float32)
+        n = 3
+
+        # Warm-up miss
+        wrapped(x, n)
+
+        # Install counting wrapper for canonicalize_dtype after warm-up
+        orig_canonicalize = jax.dtypes.canonicalize_dtype
+        canonicalize_wrapper = counting_wrapper(orig_canonicalize)
+        monkeypatch.setattr(jax.dtypes, "canonicalize_dtype", canonicalize_wrapper)
+
+        # One cache hit on (x, 3)
+        result = wrapped(x, n)
+
+        # Verify result is correct
+        assert result.shape == x.shape
+        assert np.allclose(result, x + n)
+
+        # Verify canonicalize_dtype was NOT called during the cache hit
+        # (already cached during classification in _mode_token)
+        assert canonicalize_wrapper._count["value"] == 0
