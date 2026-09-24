@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -25,6 +26,36 @@ from scripts.audit_coverage_dag import (
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "distribution" / "coverage_dag.toml"
+
+
+def _discover_enforce_recipes(justfile_text: str) -> set[tuple[str, str]]:
+    """Discover all (tier, recipe_name) pairs from audit_coverage_dag.py --enforce lines.
+
+    Parses Justfile text and extracts recipes that run audit_coverage_dag.py with
+    --enforce <tier>. Returns a set of (tier, recipe_name) tuples representing all
+    discovered enforcement recipes, regardless of whether they are in ENFORCEMENT_RECIPES.
+    """
+    result = set()
+    lines = justfile_text.splitlines()
+    current_recipe = None
+
+    for i, line in enumerate(lines):
+        # Check if this line is a recipe header (no leading whitespace, matches pattern)
+        if not line or line[0] in (" ", "\t"):
+            # Indented line - part of recipe body
+            if current_recipe and "audit_coverage_dag.py" in line:
+                # Look for --enforce <tier> pattern
+                match = re.search(r"--enforce\s+(\S+)", line)
+                if match:
+                    tier = match.group(1)
+                    result.add((tier, current_recipe))
+        else:
+            # Non-indented line - check if it's a recipe header
+            header_match = re.match(r"^([A-Za-z0-9_-]+)\s*:(?!=)", line)
+            if header_match:
+                current_recipe = header_match.group(1)
+
+    return result
 
 
 def _write_contract(repo_root: Path) -> Path:
@@ -758,44 +789,22 @@ def test_enforcement_recipes_consistency() -> None:
     }
 
 
-def test_justfile_recipes_match_enforcement(tmp_path: Path) -> None:
-    """AC-6: Every (tier, recipe) in ENFORCEMENT_RECIPES appears in Justfile."""
+def test_justfile_recipes_match_enforcement() -> None:
+    """AC-6: Justfile enforcement recipes match ENFORCEMENT_RECIPES (bidirectional)."""
     justfile = ROOT / "Justfile"
     justfile_text = justfile.read_text(encoding="utf-8")
 
-    for tier, recipe in ENFORCEMENT_RECIPES.items():
-        # Look for the recipe header
-        import re
+    discovered = _discover_enforce_recipes(justfile_text)
+    expected = set(ENFORCEMENT_RECIPES.items())
 
-        pattern = rf"^{re.escape(recipe)}\s*:(?!=)"
-        matches = [line for line in justfile_text.splitlines() if re.match(pattern, line)]
-        assert matches, f"Recipe '{recipe}' not found in Justfile"
-
-        # Check that the recipe body contains --enforce for this tier
-        recipe_section = None
-        found = False
-        for i, line in enumerate(justfile_text.splitlines()):
-            if re.match(pattern, line):
-                recipe_section = i
-                break
-
-        if recipe_section is not None:
-            # Look for the next recipe header to find the end of this recipe
-            end = len(justfile_text.splitlines())
-            for j in range(recipe_section + 1, len(justfile_text.splitlines())):
-                if re.match(r"^[A-Za-z0-9_-]+\s*:(?!=)", justfile_text.splitlines()[j]):
-                    end = j
-                    break
-
-            # Check recipe body for audit_coverage_dag with --enforce
-            recipe_body = "\n".join(justfile_text.splitlines()[recipe_section + 1 : end])
-            if "audit_coverage_dag.py" in recipe_body:
-                pattern_enforce = rf"--enforce\s+{re.escape(tier)}"
-                assert re.search(pattern_enforce, recipe_body), (
-                    f"Recipe '{recipe}' does not contain '--enforce {tier}' call"
-                )
-                found = True
-        assert found, f"Recipe '{recipe}' does not contain audit_coverage_dag.py"
+    # Assert set equality (both directions)
+    assert discovered == expected, (
+        f"Justfile enforcement recipes mismatch:\n"
+        f"Expected: {expected}\n"
+        f"Discovered: {discovered}\n"
+        f"Missing from Justfile: {expected - discovered}\n"
+        f"Unexpected in Justfile: {discovered - expected}"
+    )
 
 
 def test_ci_yml_includes_enforcement_recipes() -> None:
@@ -806,3 +815,34 @@ def test_ci_yml_includes_enforcement_recipes() -> None:
     for recipe in ENFORCEMENT_RECIPES.values():
         pattern = f"just {recipe}"
         assert pattern in ci_text, f"Recipe 'just {recipe}' not found in ci.yml"
+
+
+def test_discover_enforce_recipes_detects_unmapped_recipe() -> None:
+    """Positive control: _discover_enforce_recipes detects unmapped recipes."""
+    synthetic_justfile = textwrap.dedent("""
+        audit-coverage-tier1:
+            uv run python scripts/audit_coverage_dag.py --tier tier1_core --enforce tier1_core
+
+        audit-coverage-tier2:
+            uv run python scripts/audit_coverage_dag.py --tier tier2_eda --enforce tier2_eda
+
+        audit-coverage-tier9:
+            uv run python scripts/audit_coverage_dag.py --tier tier9_x --enforce tier9_x
+
+        audit-coverage-dag-all:
+            uv run python scripts/audit_coverage_dag.py --all-tiers
+    """).strip()
+
+    discovered = _discover_enforce_recipes(synthetic_justfile)
+    expected = set(ENFORCEMENT_RECIPES.items())
+
+    # The synthetic Justfile should NOT match expected (it has an extra recipe)
+    assert discovered != expected
+
+    # The discovered set should include the three real ones plus the synthetic tier9
+    assert ("tier1_core", "audit-coverage-tier1") in discovered
+    assert ("tier2_eda", "audit-coverage-tier2") in discovered
+    assert ("tier9_x", "audit-coverage-tier9") in discovered
+
+    # The report-only line (no --enforce) should contribute nothing
+    assert len(discovered) == 3  # Only the three --enforce lines
