@@ -19,6 +19,11 @@ from xtrax.devtools.gates.test_rigor import parse_coverage_json, parse_pytest_su
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "distribution" / "coverage_dag.toml"
 DEFAULT_TIER = "tier1_core"
+ENFORCEMENT_RECIPES: dict[str, str] = {
+    "tier1_core": "audit-coverage-tier1",
+    "tier2_eda": "audit-coverage-tier2",
+    "tier4_controller": "audit-coverage-tier4",
+}
 
 
 @dataclass(frozen=True)
@@ -367,6 +372,50 @@ def print_results_table(results: tuple[TierResult, ...]) -> None:
         )
 
 
+def _failure_segment(result: TierResult) -> str:
+    """Format a single tier's failure info for verdict output."""
+    segment = (
+        f"{result.tests_failed} test failures in {result.tier_id} "
+        f"(pytest exit {result.pytest_exit_code}); "
+    )
+    if result.tier_id in ENFORCEMENT_RECIPES:
+        segment += f"enforcement lives in just {ENFORCEMENT_RECIPES[result.tier_id]}"
+    else:
+        segment += "not enforced by any recipe"
+    return segment
+
+
+def format_verdict(
+    results: tuple[TierResult, ...],
+    *,
+    enforce_tier: str | None,
+    passed: bool,
+) -> str:
+    """Format the verdict line for output."""
+    if enforce_tier is not None and not passed:
+        raise ValueError("format_verdict: enforce-fail is reported on stderr by main")
+
+    failing = [r for r in results if r.tests_failed > 0 or r.pytest_exit_code != 0]
+
+    if enforce_tier is None:
+        if failing:
+            return "REPORT (non-blocking): coverage DAG -- " + " | ".join(
+                _failure_segment(r) for r in failing
+            )
+        else:
+            return "REPORT (non-blocking): coverage DAG -- no test failures in " + ", ".join(
+                r.tier_id for r in results
+            )
+
+    # enforce_tier is not None and passed is True
+    if failing:
+        return f"REPORT (not enforced): coverage DAG --enforce {enforce_tier} -- " + " | ".join(
+            _failure_segment(r) for r in failing
+        )
+    else:
+        return "PASS: coverage DAG enforce"
+
+
 def audit_coverage_dag(
     *,
     root: Path,
@@ -466,17 +515,13 @@ def main(argv: list[str] | None = None) -> int:
     state_path = root / dag.state_path
     print(f"state: {state_path.relative_to(root)}")
 
-    if args.enforce and not passed:
+    if args.enforce is not None and not passed:
         print("FAIL: coverage DAG enforce", file=sys.stderr)
         for failure in failures:
             print(f"  - {failure}", file=sys.stderr)
         return 1
 
-    if args.enforce is None:
-        print("PASS: coverage DAG report-only (non-blocking)")
-        return 0
-
-    print("PASS: coverage DAG enforce")
+    print(format_verdict(results, enforce_tier=args.enforce, passed=passed))
     return 0
 
 
