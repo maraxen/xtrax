@@ -32,6 +32,8 @@ Spot-checking recomputes via the UNWRAPPED callable and compares numerically
 from __future__ import annotations
 
 import hashlib
+import math
+import struct
 import threading
 import warnings
 from collections import OrderedDict
@@ -125,6 +127,18 @@ def _environment_stamp() -> str:
     )
 
 
+def _float_token(value: float) -> str:
+    """Exact-value token for a float leaf: repr() for non-NaN values, bit pattern for NaN.
+
+    repr() is exact (shortest round-trip) for every non-NaN double, but maps all NaN
+    payloads to 'nan'. For NaN values, we key on the bit pattern to distinguish different
+    NaN payloads.
+    """
+    if math.isnan(value):
+        return "nan:" + struct.pack("<d", value).hex()
+    return repr(value)
+
+
 def _leaf_digest(leaf: Any, sink: hashlib._Hash) -> None:
     """Fold one pytree leaf into the digest stream (spec §3.3).
 
@@ -156,7 +170,10 @@ def _leaf_digest(leaf: Any, sink: hashlib._Hash) -> None:
         sink.update(b"str:%d:" % len(enc) + enc)
         return
     if isinstance(leaf, (int, float, bool)):
-        sink.update(f"{type(leaf).__name__}({leaf!r})".encode())
+        if isinstance(leaf, float):
+            sink.update(f"{type(leaf).__name__}({_float_token(leaf)})".encode())
+        else:
+            sink.update(f"{type(leaf).__name__}({leaf!r})".encode())
         return
     raise MemoKeyUnsupportedLeafError(
         f"Unsupported pytree leaf type {type(leaf).__name__!r} for memo key; "
@@ -220,7 +237,8 @@ def _fits_default_int(value: int, x64: bool | None = None) -> bool:
 
 def _static_exact_token(leaf: Any) -> str | bytes:
     """Exact-value token for a leaf that is always held static (spec §3.1
-    item 3): repr() for numbers, exact (unnormalized) bytes for str/bytes.
+    item 3): repr() for numbers (except NaN floats which use bit pattern),
+    exact (unnormalized) bytes for str/bytes.
 
     CR-1: unlike `_leaf_digest`, this does NOT need a length prefix. Its
     result is always embedded as one element of a Python tuple descriptor
@@ -234,6 +252,8 @@ def _static_exact_token(leaf: Any) -> str | bytes:
         return leaf.encode("utf-8", "surrogatepass")
     if isinstance(leaf, bytes):
         return leaf
+    if isinstance(leaf, float):
+        return _float_token(leaf)
     return repr(leaf)
 
 
@@ -267,7 +287,7 @@ def _classify_leaf(leaf: Any, mode: str, x64: bool | None = None) -> tuple[str, 
     if type(leaf) is float:
         if mode == "ABSTRACT":
             return "dyn", ("dyn", "float")
-        return "dyn", ("static", "float", repr(leaf))
+        return "dyn", ("static", "float", _float_token(leaf))
     if type(leaf) is int:
         if mode == "ABSTRACT":
             return "dyn", ("dyn", "int", _fits_default_int(leaf, x64=x64))

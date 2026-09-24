@@ -4,6 +4,7 @@ and spec 260922 §3 donation, both directions (AC-1 to AC-17)."""
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Any
 
 import jax
@@ -2485,3 +2486,127 @@ class TestSprint260923HotPath:
         # Verify canonicalize_dtype was NOT called during the cache hit
         # (already cached during classification in _mode_token)
         assert canonicalize_wrapper._count["value"] == 0
+
+
+class TestSprint260923NanKeys:
+    """AC-17 and AC-18: NaN payloads are distinct keys; non-NaN floats unchanged."""
+
+    def test_ac17_nan_payloads_distinct_static_mode(self):
+        """AC-17 item 1: NaN payloads with different bits give different static tokens."""
+        import struct
+
+        # Control: assert the two NaN bit patterns are different
+        nan_a = struct.unpack("<d", bytes.fromhex("000000000000f87f"))[0]
+        nan_b = struct.unpack("<d", bytes.fromhex("010000000000f87f"))[0]
+        assert struct.pack("<d", nan_a) != struct.pack("<d", nan_b)
+
+        # Both are NaN
+        assert math.isnan(nan_a)
+        assert math.isnan(nan_b)
+
+        # _classify_leaf should return different descriptors in STATIC mode
+        desc_a = memo._classify_leaf(nan_a, "STATIC")
+        desc_b = memo._classify_leaf(nan_b, "STATIC")
+        assert desc_a != desc_b
+
+    def test_ac17_nan_payloads_cache_misses(self):
+        """AC-17 item 2: Different NaN payloads cause cache misses, not hits."""
+        import struct
+
+        nan_a = struct.unpack("<d", bytes.fromhex("000000000000f87f"))[0]
+        nan_b = struct.unpack("<d", bytes.fromhex("010000000000f87f"))[0]
+        assert struct.pack("<d", nan_a) != struct.pack("<d", nan_b)
+
+        def f(x, s):
+            return x * s
+
+        wrapped = memoize_jaxpr(f, policy=MemoPolicy(copy_on_return=False, spot_check_every=0))
+        x = jnp.ones((4,), jnp.float32)
+
+        # First call with nan_a
+        wrapped(x, nan_a)
+
+        # Second call with nan_b (different NaN payload)
+        wrapped(x, nan_b)
+
+        # Third call with nan_a again (should hit)
+        wrapped(x, nan_a)
+
+        # Check stats
+        stats = wrapped.memo_get_stats()
+        assert stats["misses"] == 2, f"Expected 2 misses, got {stats['misses']}"
+        assert stats["hits"] == 1, f"Expected 1 hit, got {stats['hits']}"
+
+    def test_ac17_nan_payloads_float_subclass(self):
+        """AC-17 item 3: Float subclass NaN payloads are distinct in both modes."""
+        import struct
+
+        class F(float):
+            pass
+
+        nan_a = F(struct.unpack("<d", bytes.fromhex("000000000000f87f"))[0])
+        nan_b = F(struct.unpack("<d", bytes.fromhex("010000000000f87f"))[0])
+        assert struct.pack("<d", float(nan_a)) != struct.pack("<d", float(nan_b))
+
+        # In ABSTRACT mode, float subclass goes through _static_exact_token
+        desc_a_abs = memo._classify_leaf(nan_a, "ABSTRACT")
+        desc_b_abs = memo._classify_leaf(nan_b, "ABSTRACT")
+        assert desc_a_abs != desc_b_abs
+
+        # In STATIC mode, float subclass also goes through _static_exact_token
+        desc_a_stat = memo._classify_leaf(nan_a, "STATIC")
+        desc_b_stat = memo._classify_leaf(nan_b, "STATIC")
+        assert desc_a_stat != desc_b_stat
+
+    def test_ac18_non_nan_floats_unchanged(self):
+        """AC-18: Non-NaN float classifications are unchanged."""
+        # Classification for 1.5 in STATIC mode
+        desc = memo._classify_leaf(1.5, "STATIC")
+        assert desc == ("dyn", ("static", "float", "1.5"))
+
+        # -0.0 and 0.0 should differ
+        desc_neg_zero = memo._classify_leaf(-0.0, "STATIC")
+        desc_pos_zero = memo._classify_leaf(0.0, "STATIC")
+        assert desc_neg_zero != desc_pos_zero
+
+    def test_ac18_golden_leaf_digests(self):
+        """AC-18: Golden leaf digests from T2 still pass with NaN keying."""
+        # Test data from AC-18 table
+        test_cases = [
+            (
+                2.5,
+                b"float(2.5)",
+                "9fc15d7f6df8db99bc0dcde0447c9bf5ed6bc2aaccf3f4cfd46a28d4b9f72d98",
+            ),
+            (
+                -0.0,
+                b"float(-0.0)",
+                "9494dcf6094b912eff00023aaee43d28149697b0be0765cd0e091cad8323e21e",
+            ),
+            (
+                1e300,
+                b"float(1e+300)",
+                "361300e047c47d05ece511ef57c019d3c57f58cdafe81273922b1867ebeb431e",
+            ),
+            (
+                5e-324,
+                b"float(5e-324)",
+                "cd705304fa1f0663015d3bb87b4d645c4d8ea0f4d162f46f385e274d6b8d9ce9",
+            ),
+            (3, b"int(3)", "3038d0e4056117cc63ca144b5436861036059825628dddffee5a4c3c0250d829"),
+            (
+                True,
+                b"bool(True)",
+                "8fe0a14cc6b15c2a958819427d423b6ac1ea2b67fbb074167c1de6582629156c",
+            ),
+        ]
+
+        for leaf, preimage, expected_hexdigest in test_cases:
+            # Verify preimage matches expected hash
+            computed_hash = hashlib.sha256(preimage).hexdigest()
+            assert computed_hash == expected_hexdigest, f"Preimage hash mismatch for {leaf}"
+
+            # Verify live _leaf_digest gives the same hash
+            h = hashlib.sha256()
+            memo._leaf_digest(leaf, h)
+            assert h.hexdigest() == expected_hexdigest, f"Live _leaf_digest mismatch for {leaf}"
