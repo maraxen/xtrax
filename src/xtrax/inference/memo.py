@@ -379,35 +379,6 @@ _CALLBACK_PRIMITIVES = {
 _RANDOM_PRIMITIVES = {"random_bits", "threefry2x32_p", "rng_bit_generator", "random_seed"}
 
 
-def _screen_jaxpr(closed) -> None:
-    """Raise MemoImpurityError on detectably impure primitives. Traversal walks
-    with an explicit stack via _iter_subjaxprs exclusively, covering tuple/list-
-    valued params generically and with no depth cap."""
-    banned = _STATEFUL_PRIMITIVES | _CALLBACK_PRIMITIVES | _RANDOM_PRIMITIVES
-
-    offenders: list[tuple[str, str]] = []  # (primitive_name, path) pairs
-    stack: list[tuple[Any, str]] = [(closed.jaxpr, "jaxpr")]
-    while stack:
-        jaxpr_obj, jaxpr_path = stack.pop()
-        for eqn in jaxpr_obj.eqns:
-            eqn_path = f"{jaxpr_path}.{_eqn_label(eqn)}"
-            name = eqn.primitive.name
-            if name in banned:
-                offenders.append((name, eqn_path))
-            for param_name, param_val in eqn.params.items():
-                for sub_path, sub_jaxpr in _iter_subjaxprs(param_val, param_name):
-                    stack.append((sub_jaxpr, f"{eqn_path}.{sub_path}"))
-    if offenders:
-        names = sorted(set(name for name, _ in offenders))
-        paths = ", ".join(path for _, path in offenders)
-        raise MemoImpurityError(
-            f"Function rejected by purity screen: stateful/callback/random "
-            f"primitives present: {names}. If you believe this "
-            "function is pure, restructure to avoid these primitives; wrapping "
-            f"is the purity attestation.\nPaths: {paths}"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Donation screen (spec §3.3/§3.4)
 # ---------------------------------------------------------------------------
@@ -420,9 +391,9 @@ def _iter_subjaxprs(value: Any, path: str = ""):
     exposing ``.eqns``) reachable from ``value``, recursing into tuple/list
     values (e.g. ``lax.cond``'s ``branches``) with NO depth cap.
 
-    Shared traversal used by both _screen_jaxpr and _screen_donation to cover
-    tuple/list-valued params generically (e.g. lax.cond's branches) while
-    respecting structural nesting at any depth.
+    Shared traversal used by _screen_program to cover tuple/list-valued params
+    generically (e.g. lax.cond's branches) while respecting structural nesting
+    at any depth.
     """
     stack: list[tuple[str, Any]] = [(path, value)]
     while stack:
@@ -521,24 +492,34 @@ def _donation_message(sites: tuple[_DonationSite, ...]) -> str:
     )
 
 
-def _screen_donation(closed, invar_to_leaf: tuple[int, ...] | None = None) -> None:
-    """Collect ALL donation-hazard sites (both carriers, at any depth), then
-    raise once (§3.3 "conservative" rule). Traversal walks with an explicit
-    stack via `_iter_subjaxprs` exclusively, so it covers tuple/list-valued
-    params generically and has no depth cap.
+def _screen_program(closed, invar_to_leaf: tuple[int, ...] | None = None) -> None:
+    """Screen a closed jaxpr for impurity and donation hazards in one walk.
+
+    Raises MemoImpurityError if the program contains detectably impure primitives
+    (stateful, callback, or unkeyed random). Raises MemoDonationError if it contains
+    donation markers at any depth. Traversal walks with an explicit stack via
+    `_iter_subjaxprs` exclusively, so it covers tuple/list-valued params generically
+    and has no depth cap.
 
     CR-3: `invar_to_leaf` (typically the caller's `traced_positions`) maps a
     top-level invar index to the true flat `(args, kwargs)` leaf index, for
     callers that traced fewer leaves than the flattened arg count (D-2
     static leaves). `None` (the default) keeps the old identity mapping.
     """
+    banned = _STATEFUL_PRIMITIVES | _CALLBACK_PRIMITIVES | _RANDOM_PRIMITIVES
+
+    offenders: list[tuple[str, str]] = []  # (primitive_name, path) pairs
     sites: list[_DonationSite] = []
     closed_invars = closed.jaxpr.invars
     stack: list[tuple[Any, str, bool]] = [(closed.jaxpr, "jaxpr", True)]
+
     while stack:
         jaxpr_obj, jaxpr_path, top_level = stack.pop()
         for eqn in jaxpr_obj.eqns:
             eqn_path = f"{jaxpr_path}.{_eqn_label(eqn)}"
+            name = eqn.primitive.name
+            if name in banned:
+                offenders.append((name, eqn_path))
             sites.extend(
                 _eqn_donation_sites(
                     eqn, eqn_path, top_level, closed_invars, invar_to_leaf if top_level else None
@@ -547,6 +528,16 @@ def _screen_donation(closed, invar_to_leaf: tuple[int, ...] | None = None) -> No
             for param_name, param_val in eqn.params.items():
                 for sub_path, sub_jaxpr in _iter_subjaxprs(param_val, param_name):
                     stack.append((sub_jaxpr, f"{eqn_path}.{sub_path}", False))
+
+    if offenders:
+        names = sorted(set(name for name, _ in offenders))
+        paths = ", ".join(path for _, path in offenders)
+        raise MemoImpurityError(
+            f"Function rejected by purity screen: stateful/callback/random "
+            f"primitives present: {names}. If you believe this "
+            "function is pure, restructure to avoid these primitives; wrapping "
+            f"is the purity attestation.\nPaths: {paths}"
+        )
     if sites:
         raise MemoDonationError(_donation_message(tuple(sites)), sites=tuple(sites))
 
@@ -659,8 +650,7 @@ class _MemoCore:
                 )
             _raise_classified(exc)  # never returns; no insert (§3.2 step 5)
 
-        _screen_jaxpr(closed)
-        _screen_donation(closed, static_traced)  # CR-3: invars == static_traced positions
+        _screen_program(closed, static_traced)  # CR-3: invars == static_traced positions
         digest = _program_digest(closed)
         with self.lock:
             self._insert(static_token, digest)
@@ -704,8 +694,7 @@ class _MemoCore:
                 )
             _raise_classified(exc)  # never returns; no insert (§3.2 step 5)
 
-        _screen_jaxpr(closed)
-        _screen_donation(closed, abstract_traced)  # CR-3: invars == abstract_traced positions
+        _screen_program(closed, abstract_traced)  # CR-3: invars == abstract_traced positions
         digest = _program_digest(closed)
         with self.lock:
             self._insert(abstract_token, digest)
