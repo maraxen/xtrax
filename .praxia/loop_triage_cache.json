@@ -1,75 +1,49 @@
 {
-  "task_id": "260807_autonomous-dev-loop",
-  "prioritized_items": [
-    {
-      "id": "170",
-      "title": "Rename SafeMap/safe_map → ChunkedMap/chunked_map (or TiledMap)",
-      "category": "infrastructure",
-      "difficulty": "standard",
-      "source": "staging",
-      "recommended_action": "discard",
-      "rationale": "Exact duplicate of already-open backlog #3644, which explicitly records itself as 'Promoted from idea-006 (staging_id 170...)'.",
-      "priority": "P2"
-    },
-    {
-      "id": "169",
-      "title": "Entry-points-based xtrax CLI verb registration",
-      "category": "infrastructure",
-      "difficulty": "quick",
-      "source": "staging",
-      "recommended_action": "discard",
-      "rationale": "Spec's ACs already shipped in commit 77602da / PR #34 (src/xtrax/cli/__init__.py, src/xtrax/cli/registry.py).",
-      "priority": "P3"
-    },
-    {
-      "id": "168",
-      "title": "Generic fail-loud TOML->dataclass config primitive (xtrax.config)",
-      "category": "infrastructure",
-      "difficulty": "quick",
-      "source": "staging",
-      "recommended_action": "discard",
-      "rationale": "Fully implemented in src/xtrax/config.py in the same commit 77602da / PR #34, covered by tests/test_config.py + tests/test_import_isolation.py.",
-      "priority": "P3"
-    },
-    {
-      "id": "idea-001",
-      "title": "Research epics: port-validation pipeline + autoresearch",
-      "category": "research",
-      "difficulty": "extended",
-      "source": "ideas",
-      "recommended_action": "discard",
-      "rationale": "References epics #2180/#2181 no longer present in the open backlog; superseded by the loop-controller + GW-01..06 + T2/T3 DAG work already tracked.",
-      "priority": "P3"
-    },
-    {
-      "id": "idea-002",
-      "title": "xtrax consumer MCP server (xtrax-mcp) exposing RunSpec/CLI primitives",
-      "category": "feature",
-      "difficulty": "extended",
-      "source": "ideas",
-      "recommended_action": "defer",
-      "rationale": "Confirmed real gap, no xtrax-mcp module in repo, but lower priority than active GW-01..06 gate-wiring critical path.",
-      "priority": "P2"
-    },
-    {
-      "id": "idea-005",
-      "title": "Watch hijax; jax.extend adoption triggers",
-      "category": "research",
-      "difficulty": "quick",
-      "source": "ideas",
-      "recommended_action": "defer",
-      "rationale": "Watch-only item; jax.extend/hijax exist upstream but xtrax has no dependency on them yet.",
-      "priority": "P3"
-    }
-  ],
-  "deferred": [
-    {"id": "idea-002", "reason": "Real gap, lower priority than active GW-01..06 critical path; revisit once that chain closes."},
-    {"id": "idea-005", "reason": "Passive watch-only item; no adoption trigger has fired yet."}
-  ],
-  "discarded": [
-    {"id": "170", "reason": "Duplicate of already-open backlog #3644."},
-    {"id": "169", "reason": "Spec fully implemented and merged (commit 77602da / PR #34)."},
-    {"id": "168", "reason": "Spec fully implemented and merged (commit 77602da / PR #34)."},
-    {"id": "idea-001", "reason": "References epics no longer present in the open backlog; superseded."}
-  ]
+ "task_id": "260807_autonomous-dev-loop",
+ "source": "step_b_claude_pm_fallback",
+ "reason": "pm_triage rig-run halted at max_walltime_s=900 in fork_triage, wrote nothing (exit 0)",
+ "written_at": "2026-09-23T23:24:02.477534+00:00",
+ "prioritized_items": [
+  {
+   "backlog_id": "5035",
+   "rank": 1
+  },
+  {
+   "backlog_id": "5241",
+   "rank": 2
+  },
+  {
+   "backlog_id": "5240",
+   "rank": 3
+  },
+  {
+   "backlog_id": "5233",
+   "rank": 4
+  },
+  {
+   "backlog_id": "5234",
+   "rank": 5
+  },
+  {
+   "backlog_id": "4584",
+   "rank": 6
+  }
+ ],
+ "stale_items": [
+  "5021",
+  "4969",
+  "4967"
+ ],
+ "not_xtrax_work": [
+  "4582",
+  "4583"
+ ],
+ "deferred": [
+  "3047",
+  "3048",
+  "3049",
+  "3050",
+  "5233",
+  "4584"
+ ]
 }
