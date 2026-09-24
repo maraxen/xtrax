@@ -16,7 +16,7 @@ below were re-read against that commit.
 
 This sprint has three parts:
 
-- **#5035:** the non-blocking coverage-DAG step prints `PASS` over failing tests. Change what it prints so the verdict line states failures and says where enforcement happens. Exit codes stay the same.
+- **#5035:** the non-blocking coverage-DAG step prints `PASS` over failing tests. Change what it prints so the verdict line states failures and says where enforcement happens. Exit codes stay the same, except that the usage error `--enforce ''` now exits 1 like any other unknown enforce tier (ODQ-2).
 - **#5241:** make the `memoize_jaxpr` per-call path flatten `(args, kwargs)` once and use cached int bounds. Merge the two duplicate jaxpr walkers into one. Cache keys and error behaviour stay byte-identical.
 - **#5240:** correct the misleading wrap-time comment. Key Python-float NaNs by their bit pattern so distinct payloads stop colliding.
 
@@ -81,7 +81,7 @@ This sprint has three parts:
 
 **#5035: coverage-DAG verdict labels**
 
-- **AC-1 (backlog a, b, c).** Report-only run with failures, using a mocked `audit_coverage_dag` that returns `tier1_core` with `tests_failed=19` and `pytest_exit_code=1`:
+- **AC-1 (backlog a, b, c).** A NEW test, `test_main_report_only_labels_failures` (the existing `test_main_report_only_exits_zero_with_mocks` stays unmodified, mock at `tests_failed=11`). Report-only run with failures, using a mocked `audit_coverage_dag` that returns `tier1_core` with `tests_failed=19` and `pytest_exit_code=1`:
   - `main([... "--tier", "tier1_core"])` returns 0.
   - The captured stdout contains no line starting with `PASS`.
   - The captured stdout contains exactly this line: `REPORT (non-blocking): coverage DAG -- 19 test failures in tier1_core (pytest exit 1); enforcement lives in just audit-coverage-tier1`.
@@ -99,20 +99,21 @@ This sprint has three parts:
   - Example: `tier0_audit` failed 2 / exit 1 and `tier1_core` failed 19 / exit 1 give `REPORT (non-blocking): coverage DAG -- 2 test failures in tier0_audit (pytest exit 1); not enforced by any recipe | 19 test failures in tier1_core (pytest exit 1); enforcement lives in just audit-coverage-tier1`.
 
   Red on `49f3def` (ImportError).
-- **AC-5.** Enforce-mode exit codes do not change:
-  - The existing `test_main_enforce_exits_nonzero_when_below_floor` still returns 1, and stderr still contains `FAIL: coverage DAG enforce`.
-  - An enforce run that passes with no observed failures still prints `PASS: coverage DAG enforce` and returns 0.
-  - An enforce run with `passed=True` but failures observed returns 0. Its stdout line is `REPORT (not enforced): coverage DAG --enforce tier0_audit -- 2 test failures in tier0_audit (pytest exit 1); not enforced by any recipe`, and no stdout line starts with `PASS`. The test mocks `--enforce tier0_audit --tier tier0_audit`, with `tier0_audit` failed 2 / exit 1.
+- **AC-5.** Enforce-mode exit codes do not change, except the single usage-error exception in sub-case d:
+  - a. The existing `test_main_enforce_exits_nonzero_when_below_floor` stays unmodified and still returns 1. A NEW `capsys` test, `test_main_enforce_fail_reports_on_stderr`, uses the same mock (`evaluate_enforce` over `tier1_core` failed 11 / exit 1, returning `(False, (result,), list(result.enforce_failures))`) and asserts `main` returns 1 and captured stderr contains `FAIL: coverage DAG enforce`.
+  - b. An enforce run that passes with no observed failures still prints `PASS: coverage DAG enforce` and returns 0.
+  - c. An enforce run with `passed=True` but failures observed returns 0. Its stdout line is `REPORT (not enforced): coverage DAG --enforce tier0_audit -- 2 test failures in tier0_audit (pytest exit 1); not enforced by any recipe`, and no stdout line starts with `PASS`. The test mocks `--enforce tier0_audit --tier tier0_audit`, with `tier0_audit` failed 2 / exit 1.
+  - d. `main(["--root", str(tmp_path), "--config", str(config_path), "--tier", "tier1_core", "--enforce", ""])` with `audit_coverage_dag` NOT mocked (its unknown-tier branch at :380-381 returns `(False, (), ["unknown enforce tier: ''"])` before any pytest run; the test monkeypatches `scripts.audit_coverage_dag.run_tier_pytest` to raise `AssertionError` as a guard) returns 1. Captured stderr contains `unknown enforce tier`. No stdout line equals `None` and no stdout line starts with `PASS`.
 
-  The third sub-case is red on `49f3def`.
+  Sub-cases c and d are red on `49f3def`: c prints `PASS: coverage DAG enforce` (:479); d skips the truthy guard at :469 (`''` is falsy), fails `args.enforce is None` at :475, and prints `PASS: coverage DAG enforce` with exit 0.
 - **AC-6.** Module constant `ENFORCEMENT_RECIPES` equals `{"tier1_core": "audit-coverage-tier1", "tier2_eda": "audit-coverage-tier2", "tier4_controller": "audit-coverage-tier4"}`. Two consistency checks run against the real files:
   - A test parses `Justfile` and finds every recipe whose body invokes `audit_coverage_dag.py` with `--enforce <tier>`. The set of `(tier, recipe)` pairs equals `ENFORCEMENT_RECIPES.items()`.
   - For every value in `ENFORCEMENT_RECIPES`, `.github/workflows/ci.yml` contains `just <recipe>`.
 
   Red on `49f3def` (ImportError).
-- **AC-7.** Blocking layering is unchanged:
+- **AC-7.** Blocking layering is unchanged. The single exit-code exception: `--enforce ''` is a usage error and now exits 1, exactly like any other unknown enforce tier (`--enforce foo` already exits 1 through the same :380-381 path). No Justfile recipe or ci.yml step passes an empty `--enforce`, and every report-only exit code is unchanged.
   - `git diff 49f3def -- Justfile .github/workflows/ci.yml` is empty. This is a gate command, not a unit test, because CI has no `49f3def`-relative ref guarantee.
-  - Every pre-existing test in `tests/distribution/test_coverage_dag.py` passes unmodified, except that T1 may add assertions to `test_main_report_only_exits_zero_with_mocks`.
+  - Every pre-existing test in `tests/distribution/test_coverage_dag.py` passes unmodified. New assertions go in new tests only.
 
 **#5241: memo pins, which land before any refactor**
 
@@ -120,11 +121,12 @@ This sprint has three parts:
   - `type(exc) is MemoImpurityError`, so it is not `MemoDonationError`.
   - `str(exc)` contains `"purity screen"` and does not contain `"donation screen"`.
   - The wrapper is latched: `screen_latched_error is not None`, and a second call raises the same type.
-- **AC-9 (pin).** Screen-output equivalence. For each fixture F_imp, F_don and F_both (defined in T2), the exception raised by `memoize_jaxpr(f)(*args)` matches the reference screen. The reference is a test-local verbatim copy of `49f3def`'s `_screen_jaxpr` followed by `_screen_donation`. It is applied to the closed jaxpr from `memo._trace_closed(f, leaves, treedef, traced_positions)`, where `traced_positions` is all leaf indices.
+- **AC-9 (pin).** Screen-output equivalence. For each fixture F_imp, F_don and F_both (defined in T2), the exception raised by `memoize_jaxpr(f)(*args)` matches the reference screen. The reference is a test-local verbatim copy of `49f3def`'s `_screen_jaxpr` followed by `_screen_donation`, together with test-local verbatim copies of the five helpers they call: `_iter_subjaxprs` (:418-434), `_eqn_label` (:437-441), `_wrapped_leaf_indices` (:444-470), `_eqn_donation_sites` (:473-505) and `_donation_message` (:508-521), plus the `_DonationSite` alias (:415). Only the three primitive sets (`_STATEFUL_PRIMITIVES`, `_CALLBACK_PRIMITIVES`, `_RANDOM_PRIMITIVES`) and the error classes (`MemoImpurityError`, `MemoDonationError`) are imported live, so a T4 edit to any helper body cannot move the oracle with it. It is applied to the closed jaxpr from `memo._trace_closed(f, leaves, treedef, traced_positions)`, where `traced_positions` is all leaf indices.
   - The exception type is the same (checked with `is`).
   - `str(exc)` is identical.
   - For `MemoDonationError`, `exc.sites` is identical.
-- **AC-10 (pin).** Key equivalence. For the T2 key fixture set, two keys equal `_reference_build_key(core, digest, args, kwargs)`, a test-local verbatim copy of `49f3def`'s `build_key` algorithm that reads `core.policy.salt` and `core.stamp`:
+  - For F_don, additionally `str(exc).startswith("Function rejected by donation screen (spec §4.2 item 6): ")` (literal from memo.py:515), so a shared drift in message wording is caught even if reference and live code agreed.
+- **AC-10 (pin).** Key equivalence. For the T2 key fixture set, two keys equal `_reference_build_key(core, digest, args, kwargs)`, a test-local verbatim copy of `49f3def`'s `build_key` algorithm that reads `core.policy.salt` and `core.stamp`. Its per-leaf digest is `_reference_leaf_digest`, a test-local verbatim copy of `49f3def`'s `_leaf_digest` (memo.py:125-161), NOT the live `memo._leaf_digest` (which T7 edits); only `MemoKeyUnsupportedLeafError` is imported live:
   - `core.build_key(digest, args, kwargs)`;
   - the key that `call()` actually stores, checked as `ref_key in core.cache` after one `wrapped(*args, **kwargs)`.
 
@@ -137,9 +139,9 @@ This sprint has three parts:
 
 - **AC-12.** One walker:
   - `memo.py` defines neither `def _screen_jaxpr` nor `def _screen_donation`. It defines `def _screen_program`.
-  - `grep -c "for eqn in jaxpr_obj.eqns" src/xtrax/inference/memo.py` prints `1`.
+  - `grep -cE 'for \w+ in \w+\.eqns' src/xtrax/inference/memo.py` prints `1`.
 
-  Red on `49f3def` (prints `2`). AC-8, AC-9 and every existing `TestDonation`/`TestPurityWalk` test still pass.
+  Red on `49f3def` (prints `2`: the two loops at :392 and :540). AC-8, AC-9 and every existing `TestDonation`/`TestPurityWalk` test still pass.
 - **AC-13.** Flatten once per call. Setup: after one warm-up miss on `f(x) = x * 2.0` with `x = np.ones((4,), np.float32)`, the test monkeypatches `jax.tree_util.tree_flatten`, `jax.tree_util.tree_leaves` and `jax.tree_util.tree_structure` with counting pass-through wrappers. Then one cache hit (`copy_on_return=False`, `spot_check_every=0`) records `tree_flatten == 1`, `tree_leaves == 0` and `tree_structure == 0`. Red on `49f3def` (`tree_structure == 1`, `tree_leaves == 1`).
 - **AC-14.** Cached int bounds. Setup: after one warm-up miss on `f(x, n) = x + n` with `x = np.ones((4,), np.float32)` and `n = 3`, the test monkeypatches `jax.dtypes.canonicalize_dtype` with a counting pass-through wrapper. Then one cache hit on `(x, 3)` records zero `canonicalize_dtype` calls. Red on `49f3def`. AC-11 still passes.
 - **AC-15.** `scripts/prof_memo_hit_loop.py` exists and runs to exit 0. It prints one line matching `^per_call_us=\d+(\.\d+)? key_us=\d+(\.\d+)? screen_us=\d+(\.\d+)?$`. The T3 commit message records the baseline line and the T5 commit message records the after line. There is no numeric threshold: this is a maintainability change with no correctness impact, and wall-clock noise on a shared box makes a threshold flaky.
@@ -153,12 +155,26 @@ This sprint has three parts:
 - **AC-17.** NaN payloads are distinct keys. Let `nan_a = struct.unpack("<d", bytes.fromhex("000000000000f87f"))[0]` and `nan_b = struct.unpack("<d", bytes.fromhex("010000000000f87f"))[0]`. The test first asserts `struct.pack("<d", nan_a) != struct.pack("<d", nan_b)` as a control.
   1. `_classify_leaf(nan_a, "STATIC") != _classify_leaf(nan_b, "STATIC")`.
   2. With `f(x, s) = x * s` and `x = jnp.ones((4,), jnp.float32)`, calling `f(x, nan_a)`, then `f(x, nan_b)`, then `f(x, nan_a)` gives stats `misses == 2` and `hits == 1`.
+  3. Float subclass, which fails `type(leaf) is float` (:270) and reaches `_static_exact_token` via :278-279 in both modes: with test-local `class F(float): pass`, `_classify_leaf(F(nan_a), "ABSTRACT") != _classify_leaf(F(nan_b), "ABSTRACT")` and `_classify_leaf(F(nan_a), "STATIC") != _classify_leaf(F(nan_b), "STATIC")`.
 
-  Both are red on `49f3def` (they compare equal / give `misses == 1`).
+  All three are red on `49f3def` (items 1 and 3 compare equal because `repr` of every NaN, including `float.__repr__` on a subclass, is `'nan'`; item 2 gives `misses == 1`).
 - **AC-18 (pin).** Non-NaN float keys are unchanged:
   - `_classify_leaf(1.5, "STATIC") == ("dyn", ("static", "float", "1.5"))`.
   - `_classify_leaf(-0.0, "STATIC") != _classify_leaf(0.0, "STATIC")`.
-  - AC-10 still passes after T7.
+  - Golden leaf digests, landed in T2 (so they pass on `49f3def`) and still passing after T7. For each `(leaf, preimage)` below, `h = hashlib.sha256(); memo._leaf_digest(leaf, h)` gives `h.hexdigest() == hashlib.sha256(preimage).hexdigest()`, and the frozen `_reference_leaf_digest` gives the same. The preimage is `f"{type(leaf).__name__}({leaf!r})".encode()` per memo.py:155-156 (no prefix, no separator; `bool` reaches that branch with `__name__ == "bool"`). T2 also writes each expected 64-char hexdigest into the test as a string literal, computed once on `49f3def` and asserted equal to `hashlib.sha256(preimage).hexdigest()`:
+
+    | leaf | preimage (literal) | sha256 hexdigest (measured on `49f3def`) |
+    |---|---|---|
+    | `2.5` | `b"float(2.5)"` | `9fc15d7f6df8db99bc0dcde0447c9bf5ed6bc2aaccf3f4cfd46a28d4b9f72d98` |
+    | `-0.0` | `b"float(-0.0)"` | `9494dcf6094b912eff00023aaee43d28149697b0be0765cd0e091cad8323e21e` |
+    | `1e300` | `b"float(1e+300)"` | `361300e047c47d05ece511ef57c019d3c57f58cdafe81273922b1867ebeb431e` |
+    | `5e-324` | `b"float(5e-324)"` | `cd705304fa1f0663015d3bb87b4d645c4d8ea0f4d162f46f385e274d6b8d9ce9` |
+    | `3` | `b"int(3)"` | `3038d0e4056117cc63ca144b5436861036059825628dddffee5a4c3c0250d829` |
+    | `True` | `b"bool(True)"` | `8fe0a14cc6b15c2a958819427d423b6ac1ea2b67fbb074167c1de6582629156c` |
+
+    The hexdigests were measured by running live `memo._leaf_digest` on `49f3def`; all six matched `hashlib.sha256(preimage)`. T2 copies these literals rather than recomputing them.
+
+  - AC-10 (with the frozen `_reference_leaf_digest` copy) still passes after T7.
 
 **Docs and whole-file gates**
 
@@ -176,7 +192,7 @@ This sprint has three parts:
 | ID | Question | Alternatives | Status | Decision |
 |---|---|---|---|---|
 | ODQ-1 | #5035: what does a report-only run print when no tier failed? | Always `REPORT (non-blocking): ...`; keep `PASS: ...` when clean | DECIDED | Always print `REPORT (non-blocking): coverage DAG -- no test failures in <tiers>`. A non-blocking step never says PASS, as the backlog suggests. Reserving `PASS` for steps that can fail keeps a grep for `^PASS` meaningful. |
-| ODQ-2 | #5035: in enforce mode, what happens when `passed` is true but tests failed (the enforced tier has no floors, or `--enforce` names a tier `--tier` did not select)? | Relabel only (exit 0, `REPORT (not enforced): ...`); make it exit 1; reject the invocation as a usage error | DECIDED | Relabel only. The backlog forbids changing blocking semantics. No recipe or workflow reaches these paths (Justfile:298-313 always pairs `--tier T --enforce T` on floored tiers), so a label-only fix removes the lie with zero CI-behaviour risk. Changing exit codes is a separate gate-policy decision. |
+| ODQ-2 | #5035: in enforce mode, what happens when `passed` is true but tests failed (the enforced tier has no floors, or `--enforce` names a tier `--tier` did not select)? | Relabel only (exit 0, `REPORT (not enforced): ...`); make it exit 1; reject the invocation as a usage error | DECIDED | Relabel only. The backlog forbids changing blocking semantics. No recipe or workflow reaches these paths (Justfile:298-313 always pairs `--tier T --enforce T` on floored tiers), so a label-only fix removes the lie with zero CI-behaviour risk. Changing exit codes is a separate gate-policy decision. Single exception, a usage error rather than a gate-policy change: `--enforce ''` today skips the truthy guard at :469 and prints `PASS: coverage DAG enforce` with exit 0, although `audit_coverage_dag` already rejected it as an unknown enforce tier (:380-381). T1's guard `args.enforce is not None and not passed` makes it exit 1, exactly like `--enforce foo` already does (AC-5 d, AC-7). |
 | ODQ-3 | #5035: where does "where enforcement lives" come from? | Hardcoded `ENFORCEMENT_RECIPES` plus a Justfile/ci.yml consistency test; generic text `--enforce <tier>`; parse the Justfile at runtime | DECIDED | Hardcoded mapping plus the AC-6 consistency test. It names the actual recipe a reader can run, as the backlog asks. The test makes drift fail on the commit that causes it. Parsing the Justfile at runtime couples a report script to Justfile syntax on every run for no gain over the test. |
 | ODQ-4 | #5035: add an end-of-chain advisory summary to `audit-deterministic`? | Add it now; defer | DECIDED | Defer. The verdict line itself now names the count and the enforcement location, which satisfies ACs (a)-(c). A chain-end summary needs cross-recipe state plumbing through `.praxia/coverage_last_measured.json` and edits to the `audit-deterministic` recipe, which AC-7 keeps frozen this sprint. |
 | ODQ-5 | #5035: are other `scripts/audit_*.py` report-only over failures? | Relabel others too; none qualify | DECIDED | None qualify. All 22 `print(...PASS...)` sites were grepped. Only `audit_coverage_dag.py:476` is non-blocking. Every other PASS follows a return-1-on-failure check. Scope stays at one script. |
@@ -186,7 +202,7 @@ This sprint has three parts:
 | ODQ-9 | #5241: how is the speed-up measured? | `stats.cum_hash_seconds` (as the backlog says); a dedicated tracked timing script | DECIDED | A tracked script, `scripts/prof_memo_hit_loop.py`. `cum_hash_seconds` accumulates only on misses (memo.py:812) and excludes `build_key` (:759-766), so a hit loop never moves it. That accounting gap also affects `slow_ratio_warn` and gets a follow-up backlog item; this sprint does not fix it (see Risks). |
 | ODQ-10 | #5241: should per-leaf classification and digest work also be fused? | Fuse `_classify_leaf` and `_leaf_digest`; leave them separate | DECIDED | Leave them separate. They produce different things: a structural descriptor that must not read bytes, and a content digest that must. The dominant per-leaf cost is `np.asarray(...).tobytes()`, which a content key cannot avoid. |
 | ODQ-11 | #5240: screen all-default callables at wrap time, or correct the comment? | Screen at wrap time with defaults; correct the comment only | DECIDED | Correct the comment. Wrap-time screening is exactly equivalent to first-call screening only when `((), {})` is the sole possible signature, which means zero parameters. For `def f(x=None)` whose `x is None` branch is impure but never called, wrap-time screening would reject a wrapper that works today. It would also surface arbitrary trace errors (not only `MemoImpurityError`) from `memoize_jaxpr` itself, and add a trace at decoration/import time. The docs (`inference.md:317-318`) already say zero-parameter. |
-| ODQ-12 | #5240: how are Python-float NaNs keyed? | Document the collision only; bit pattern for NaN only (`"nan:" + struct.pack("<d", v).hex()`), `repr` otherwise; bit pattern for every float | DECIDED | Bit pattern for NaN only, plus a docs sentence. A memo key must be conservative: inputs a function can tell apart must not share an entry, and a function can observe the payload (`lax.bitcast_convert_type`). Whether `jnp` ops propagate payloads is backend-dependent, so the key cannot rely on either answer. Array leaves are already keyed by bits (`tobytes`), so this makes Python floats consistent with them. Keeping `repr` for non-NaN leaves every other key byte-identical (AC-18). The hit-rate cost applies only to callers that vary NaN payloads. |
+| ODQ-12 | #5240: how are Python-float NaNs keyed? | Document the collision only; bit pattern for NaN only (`"nan:" + struct.pack("<d", v).hex()`), `repr` otherwise; bit pattern for every float | DECIDED | Bit pattern for NaN only, plus a docs sentence. A memo key must be conservative: inputs a function can tell apart must not share an entry. The payload is observable under x64 (`lax.bitcast_convert_type` on the traced f64), and in Python when the leaf is held static (STATIC mode, float subclasses). Under x64-off ABSTRACT tracing the f64-to-f32 conversion may drop low payload bits, so there `nan_a` and `nan_b` can arrive as the same f32 NaN; the key must stay conservative regardless of backend and mode rather than depend on which case applies. Array leaves are already keyed by bits (`tobytes`), so this makes Python floats consistent with them. Keeping `repr` for non-NaN leaves every other key byte-identical (AC-18). The hit-rate cost applies only to callers that vary NaN payloads. |
 | ODQ-13 | #5241: fix the `cum_hash_seconds` accounting (it excludes `build_key` and hits) in this sprint? | Fix now; file a follow-up | DECIDED | File a follow-up. No sprint item asks for it. Changing it shifts `slow_ratio_warn` behaviour, which `TestCostAdvisory` pins with a threshold. The orchestrator files it at sprint close. |
 
 ## Fixer Tasks
@@ -197,16 +213,21 @@ Order: T1 is independent. After it, T2 (pins) → T3 (baseline measurement) → 
 
 1. In `scripts/audit_coverage_dag.py`, add a module constant after `DEFAULT_TIER`: `ENFORCEMENT_RECIPES: dict[str, str] = {"tier1_core": "audit-coverage-tier1", "tier2_eda": "audit-coverage-tier2", "tier4_controller": "audit-coverage-tier4"}`.
 2. Add `def _failure_segment(result: TierResult) -> str`. It returns `f"{result.tests_failed} test failures in {result.tier_id} (pytest exit {result.pytest_exit_code}); "` followed by either `f"enforcement lives in just {ENFORCEMENT_RECIPES[result.tier_id]}"` when the tier is in the mapping, or `"not enforced by any recipe"` when it is not.
-3. Add `def format_verdict(results: tuple[TierResult, ...], *, enforce_tier: str | None, passed: bool) -> str | None`. It returns the stdout verdict line, or `None` for the enforce-FAIL case, which keeps its existing stderr output. Set `failing = [r for r in results if r.tests_failed > 0 or r.pytest_exit_code != 0]`. Then:
+3. Add `def format_verdict(results: tuple[TierResult, ...], *, enforce_tier: str | None, passed: bool) -> str`. It returns the stdout verdict line and never returns `None`. The enforce-FAIL case is handled in `main` before it is called; if called with `enforce_tier is not None and not passed` it raises `ValueError("format_verdict: enforce-fail is reported on stderr by main")`. Set `failing = [r for r in results if r.tests_failed > 0 or r.pytest_exit_code != 0]`. Then:
    - if `enforce_tier is None` and `failing` is non-empty: `"REPORT (non-blocking): coverage DAG -- " + " | ".join(_failure_segment(r) for r in failing)`;
    - if `enforce_tier is None` and `failing` is empty: `"REPORT (non-blocking): coverage DAG -- no test failures in " + ", ".join(r.tier_id for r in results)`;
-   - if `enforce_tier` is set and `not passed`: `None`;
-   - if `enforce_tier` is set, `passed`, and `failing` is non-empty: `f"REPORT (not enforced): coverage DAG --enforce {enforce_tier} -- " + " | ".join(...)`;
+   - if `enforce_tier is not None` and `not passed`: raise `ValueError` (above);
+   - if `enforce_tier is not None`, `passed`, and `failing` is non-empty: `f"REPORT (not enforced): coverage DAG --enforce {enforce_tier} -- " + " | ".join(...)`;
    - otherwise: `"PASS: coverage DAG enforce"`.
-4. Replace `main()`'s verdict block (:469-480). Keep the enforce-fail branch exactly as it is (stderr `FAIL: coverage DAG enforce` plus the failure list, return 1). Otherwise `print(format_verdict(results, enforce_tier=args.enforce, passed=passed))` and return 0. Exit codes must be identical to today in every branch.
-5. In `tests/distribution/test_coverage_dag.py`, import `ENFORCEMENT_RECIPES` and `format_verdict`. Extend `test_main_report_only_exits_zero_with_mocks` with the `capsys` assertions from AC-1, changing its mock to `tests_failed=19`. Add tests for AC-2, AC-3, AC-4 (a direct `format_verdict` call), AC-5 (all three sub-cases via `main` with a monkeypatched `audit_coverage_dag`) and AC-6.
+4. Replace `main()`'s verdict block (:469-480). Change the enforce-fail guard from the truthy `if args.enforce and not passed` to `if args.enforce is not None and not passed`; its body stays exactly as it is (stderr `FAIL: coverage DAG enforce` plus the failure list, return 1). Otherwise `print(format_verdict(results, enforce_tier=args.enforce, passed=passed))` and return 0. Exit codes are identical to today in every branch with one recorded exception: `--enforce ''` is a usage error and now exits 1 (stderr `FAIL: coverage DAG enforce` and `  - unknown enforce tier: ''`), exactly like any other unknown enforce tier; on `49f3def` it printed `PASS: coverage DAG enforce` and exited 0. See ODQ-2 and AC-7.
+5. In `tests/distribution/test_coverage_dag.py`, import `ENFORCEMENT_RECIPES` and `format_verdict`. Leave every existing test unmodified, including `test_main_report_only_exits_zero_with_mocks` (mock stays at `tests_failed=11`) and `test_main_enforce_exits_nonzero_when_below_floor`. Add NEW tests only:
+   - `test_main_report_only_labels_failures` for AC-1 (mock `tests_failed=19`, `pytest_exit_code=1`, with `capsys`);
+   - AC-2 and AC-3 via `main` with a monkeypatched `audit_coverage_dag` and `capsys`;
+   - AC-4 as a direct `format_verdict` call, plus `pytest.raises(ValueError)` for `format_verdict(..., enforce_tier="tier1_core", passed=False)`;
+   - AC-5 a (`test_main_enforce_fail_reports_on_stderr`, same mock as the existing enforce test), b and c via `main` with a monkeypatched `audit_coverage_dag`; AC-5 d via `main` with `audit_coverage_dag` unmocked and `run_tier_pytest` monkeypatched to raise `AssertionError`;
+   - AC-6.
    - For AC-6, read `ROOT / "Justfile"`. A recipe header is a line matching `^([A-Za-z0-9_-]+)\s*:(?!=)` with no leading whitespace. For each indented body line containing `audit_coverage_dag.py` and matching `--enforce\s+(\S+)`, record `(tier, current_recipe)`. Assert that the set equals `set(ENFORCEMENT_RECIPES.items())`. Then assert that `f"just {recipe}"` is in `(ROOT / ".github/workflows/ci.yml").read_text()` for every recipe.
-6. Confirm red-on-main for the new AC-1/AC-2/AC-3/AC-5c assertions by reasoning, not by checkout: `49f3def` prints `PASS: coverage DAG report-only (non-blocking)` and `PASS: coverage DAG enforce` on those paths. State this in the commit message.
+6. Confirm red-on-main for the new AC-1/AC-2/AC-3/AC-5c/AC-5d assertions by reasoning, not by checkout: `49f3def` prints `PASS: coverage DAG report-only (non-blocking)` and `PASS: coverage DAG enforce` on those paths, and AC-5d exits 0 there. State this in the commit message, including the `--enforce ''` exit-code exception.
 
 Files: `scripts/audit_coverage_dag.py` (modify), `tests/distribution/test_coverage_dag.py` (modify)
 
@@ -223,18 +244,19 @@ Scope estimate: ~40 LOC script, ~140 LOC tests.
 ### T2 — Pin memo behaviour before refactoring (#5241 preconditions)
 
 1. Append `class TestSprint260923Pins:` at the end of `tests/inference/test_memo.py`. Add AC-8 as a test. The wrapped function is `f(x): return jax.jit(lambda y: y * 2, donate_argnums=0)(x) + jax.random.uniform(jax.random.key(0), x.shape)`, called with `x = jnp.ones((4,), jnp.float32)`. Assert `type(exc_info.value) is MemoImpurityError`, `"purity screen" in str(...)`, `"donation screen" not in str(...)`, and the latch.
-2. Add AC-9. Define module-level test helpers `_reference_screen_jaxpr(closed)` and `_reference_screen_donation(closed, invar_to_leaf)` as verbatim copies of `49f3def`'s `memo.py` lines 382-408 and 524-551. They must import `_iter_subjaxprs`, `_eqn_label`, `_eqn_donation_sites`, `_donation_message`, and the three primitive sets, from `xtrax.inference.memo`. Add `_reference_screen(closed, traced)`, which runs purity first and then donation, and returns the raised exception, or `None`. Build `closed` with `leaves, treedef = jax.tree_util.tree_flatten((args, {}))` and `closed = memo._trace_closed(f, leaves, treedef, tuple(range(len(leaves))))`. Compare against the exception from `memoize_jaxpr(f)(*args)`: same `type` (`is`), same `str`, and for donation the same `.sites`. The fixtures, all arrays-only so every leaf is traced:
+2. Add AC-9. Define module-level test helpers `_reference_screen_jaxpr(closed)` and `_reference_screen_donation(closed, invar_to_leaf)` as verbatim copies of `49f3def`'s `memo.py` lines 382-408 and 524-551. Also copy verbatim, test-locally, the helpers they call: `_iter_subjaxprs` (:418-434), `_eqn_label` (:437-441), `_wrapped_leaf_indices` (:444-470), `_eqn_donation_sites` (:473-505), `_donation_message` (:508-521) and the `_DonationSite` alias (:415). Prefix every copied name with `_ref` (for example `_ref_eqn_label`) and rewrite only the internal call sites to the prefixed names; leave every other character unchanged. Import from `xtrax.inference.memo` / `xtrax.inference.errors` only the three primitive sets (`_STATEFUL_PRIMITIVES`, `_CALLBACK_PRIMITIVES`, `_RANDOM_PRIMITIVES`) and the error classes `MemoImpurityError`, `MemoDonationError`. Add `_reference_screen(closed, traced)`, which runs purity first and then donation, and returns the raised exception, or `None`. For F_don also assert `str(exc).startswith("Function rejected by donation screen (spec §4.2 item 6): ")`. Build `closed` with `leaves, treedef = jax.tree_util.tree_flatten((args, {}))` and `closed = memo._trace_closed(f, leaves, treedef, tuple(range(len(leaves))))`. Compare against the exception from `memoize_jaxpr(f)(*args)`: same `type` (`is`), same `str`, and for donation the same `.sites`. The fixtures, all arrays-only so every leaf is traced:
    - F_imp: `f(p, x)` returns `jax.jit(lambda z: z + jax.random.uniform(jax.random.key(1), z.shape))(lax.cond(p, lambda y: y + jax.random.uniform(jax.random.key(0), y.shape), lambda y: y, x))`, called with `(jnp.array(True), jnp.ones((4,), jnp.float32))`. This gives several offenders at nested paths.
    - F_don: `f(x)`: `a = jax.jit(lambda y: y * 2, donate_argnums=0)(x)`, then `b = jax.device_put(a, donate=True)`, then return `jax.jit(lambda z: jax.jit(lambda w: w + 1, donate_argnums=0)(z))(b)`. This gives both carriers, top-level and nested.
    - F_both: the AC-8 function.
-3. Add AC-10. Define `_reference_build_key(core, digest, args, kwargs)` as a verbatim copy of `49f3def`'s `build_key` body (:724-732). Inline `_structure_token`/`_pytree_leaves` as `repr((jax.tree_util.tree_structure((args, kwargs)),))` and `jax.tree_util.tree_leaves((args, kwargs))`, and import `_leaf_digest` from memo.
+3. Add AC-10. Define `_reference_leaf_digest(leaf, sink)` as a verbatim copy of `49f3def`'s `_leaf_digest` (memo.py:125-161), importing only `MemoKeyUnsupportedLeafError` live. Do NOT import `memo._leaf_digest` into the reference: T7 edits it, and a live import would let AC-10 move with the change it is meant to guard. Define `_reference_build_key(core, digest, args, kwargs)` as a verbatim copy of `49f3def`'s `build_key` body (:724-732). Inline `_structure_token`/`_pytree_leaves` as `repr((jax.tree_util.tree_structure((args, kwargs)),))` and `jax.tree_util.tree_leaves((args, kwargs))`, and call `_reference_leaf_digest` per leaf.
    - Fixtures, using `def g(*args, **kwargs): return args[0] * 1.0` wrapped with `MemoPolicy(salt="s1")`:
      - `(np.ones((3,), np.float32),)`;
      - `(jnp.ones((2, 2), jnp.float32), 3, 2.5, -0.0, True, "é", b"\x00")`;
      - `(jnp.ones((2,), jnp.float32),)` with kwargs `{"a": [jnp.zeros((2,)), 1], "b": {"c": "s"}}`.
    - For each fixture, compute `digest = core._ensure_screened(args, kwargs)` and assert `core.build_key(digest, args, kwargs) == _reference_build_key(...)`. Then call `wrapped(*args, **kwargs)` on a fresh wrapper and assert that the reference key (computed from that wrapper's core) is in `core.cache`.
 4. Add AC-11: `_fits_default_int` boundaries with x64 off, and inside `with jax.enable_x64():` (skip that half with `pytest.skip` if `not hasattr(jax, "enable_x64")`, matching `test_cr6_x64_toggle_forces_new_key`).
-5. Run the class. Every test must PASS on the current tree, because these are pins. If any fails, stop and report: it means the reference copy is not verbatim or the fixture assumption is wrong. Do not edit `memo.py`.
+5. Add AC-18's golden leaf digests as `test_golden_leaf_digests`, parametrized over the six `(leaf, preimage)` rows in AC-18 plus a 64-char hex literal per row. Copy each hex literal verbatim from AC-18's table (measured on `49f3def`); do not recompute it. For each row assert: `hashlib.sha256(preimage).hexdigest() == hex_literal`; live `memo._leaf_digest(leaf, h)` gives `h.hexdigest() == hex_literal`; `_reference_leaf_digest` gives the same. Use `(1e300, b"float(1e+300)")` exactly (Python's `repr(1e300)` is `'1e+300'`).
+6. Run the class. Every test must PASS on the current tree, because these are pins. If any fails, stop and report: it means the reference copy is not verbatim or the fixture assumption is wrong. Do not edit `memo.py`.
 
 Files: `tests/inference/test_memo.py` (modify)
 
@@ -246,7 +268,7 @@ uv run --extra dev ruff format --check tests/inference/test_memo.py
 git diff --stat -- src/   # must print nothing
 ```
 
-Scope estimate: ~220 LOC tests.
+Scope estimate: ~330 LOC tests (including ~110 LOC of verbatim reference copies).
 
 ### T3 — Hit-loop timing script and baseline (#5241 measurement)
 
@@ -282,7 +304,7 @@ Scope estimate: ~70 LOC.
    - Push sub-jaxprs via `_iter_subjaxprs(param_val, param_name)` as `(sub_jaxpr, f"{eqn_path}.{sub_path}", False)`, in the same param order as today.
    - After the walk, if `offenders` is non-empty, raise `MemoImpurityError` with the message text copied character-for-character from :401-408. Otherwise, if `sites` is non-empty, raise `MemoDonationError(_donation_message(tuple(sites)), sites=tuple(sites))`.
 2. Replace the two call pairs, :662-663 and :707-708, with `_screen_program(closed, static_traced)` and `_screen_program(closed, abstract_traced)`, and keep the `# CR-3` comments. Delete `_screen_jaxpr` and `_screen_donation`. Update `_iter_subjaxprs`'s docstring ("Shared traversal used by both ...") to name `_screen_program`. Move the section header comment so that the impurity sets, the helpers and `_screen_program` read in dependency order. Do not rename any other helper.
-3. Run `grep -c "for eqn in jaxpr_obj.eqns" src/xtrax/inference/memo.py` and confirm it prints `1`. Then run the gate. AC-8 and AC-9 (T2) must pass unchanged. They are the proof that the raise order, the messages and `.sites` are identical.
+3. Run `grep -cE 'for \w+ in \w+\.eqns' src/xtrax/inference/memo.py` and confirm it prints `1` (it prints `2` on `49f3def`). Then run the gate. AC-8 and AC-9 (T2) must pass unchanged. They are the proof that the raise order, the messages and `.sites` are identical.
 
 Files: `src/xtrax/inference/memo.py` (modify)
 
@@ -304,7 +326,7 @@ Scope estimate: net −25 LOC.
    - Move its body from :679 onward into `def _ensure_screened_flat(self, leaves: list, treedef: Any) -> str`.
    - Reduce `_ensure_screened(self, args, kwargs) -> str` to `leaves, treedef = jax.tree_util.tree_flatten((args, kwargs)); return self._ensure_screened_flat(leaves, treedef)`.
    - Change the signature to `build_key(self, digest, args, kwargs, *, leaves: list | None = None, treedef: Any = None) -> str`. If either is `None`, compute `leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))`. Hash `repr((treedef,))` where `repr(_structure_token(args, kwargs))` was hashed, and iterate `leaves`. Every other line stays byte-for-byte the same.
-4. In `call()`, flatten once, just before `t0`: `leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))`. Call `digest = self._ensure_screened_flat(leaves, treedef)` inside the existing try, and `key = self.build_key(digest, args, kwargs, leaves=leaves, treedef=treedef)`. Keep `args` and `kwargs` positional, because the race test scans positional tuples. Delete `_pytree_leaves` and `_structure_token` if `grep -n "_pytree_leaves\|_structure_token" src tests` shows no other user.
+4. In `call()`, flatten once, immediately after `t0 = time.perf_counter()` (:759) and before the existing `try`: `leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))`. This keeps the flatten inside the `t0`..`hash_seconds` region it occupies today (via `_ensure_screened` :678), so `cum_hash_seconds` and `_maybe_warn_slow` accounting do not shift (ODQ-13). Call `digest = self._ensure_screened_flat(leaves, treedef)` inside the existing try, and `key = self.build_key(digest, args, kwargs, leaves=leaves, treedef=treedef)`. Keep `args` and `kwargs` positional, because the race test scans positional tuples. Delete `_pytree_leaves` and `_structure_token` if `grep -n "_pytree_leaves\|_structure_token" src tests` shows no other user.
 5. Add AC-13 and AC-14 to `TestSprint260923Pins`, or to a new `class TestSprint260923HotPath:` after it. Use `monkeypatch.setattr(jax.tree_util, "tree_flatten", counting_wrapper(orig))` and the same for the other two, and `monkeypatch.setattr(jax.dtypes, "canonicalize_dtype", ...)`. Install the patches only after the warm-up call.
 6. Run `scripts/prof_memo_hit_loop.py` with defaults. Put `after: <line>` and the T3 baseline line in the commit message.
 
@@ -312,6 +334,7 @@ Files: `src/xtrax/inference/memo.py` (modify), `tests/inference/test_memo.py` (m
 
 Gate:
 ```
+uv run --extra dev pytest tests/inference/test_memo.py -q -k "TestSprint260923Pins or TestSprint260923HotPath or TestCostAdvisory"
 uv run --extra dev pytest tests/inference/test_memo.py -q
 uv run --extra dev python scripts/prof_memo_hit_loop.py
 uv run --extra dev ty check src/
@@ -345,7 +368,7 @@ Scope estimate: ~5 LOC src, ~35 LOC tests.
    - In `_classify_leaf`'s STATIC float branch (:273), `("static", "float", _float_token(leaf))`.
    - In `_static_exact_token` (:224-240), return `_float_token(leaf)` when `isinstance(leaf, float)`, else `repr(leaf)`. Add one docstring line.
    - In `_leaf_digest`'s scalar branch (:155-157), use `f"{type(leaf).__name__}({_float_token(leaf)})"` when `isinstance(leaf, float)`, else the existing `f"{type(leaf).__name__}({leaf!r})"`. The non-NaN bytes stay identical.
-3. Add AC-17 (including the `struct.pack` control assertion) and AC-18 in a new `class TestSprint260923NanKeys:`. Confirm that AC-10 still passes.
+3. Add AC-17 items 1-3 (including the `struct.pack` control assertion and the `class F(float)` subclass item in both `"ABSTRACT"` and `"STATIC"`) and AC-18's two `_classify_leaf` bullets in a new `class TestSprint260923NanKeys:`. Do not touch T2's `test_golden_leaf_digests` or `_reference_leaf_digest`; confirm they and AC-10 still pass.
 
 Files: `src/xtrax/inference/memo.py` (modify), `tests/inference/test_memo.py` (modify)
 
@@ -381,9 +404,9 @@ Scope estimate: ~4 lines.
 
 | Risk | Mitigation |
 |---|---|
-| The T2 reference copies are not verbatim, so AC-9/AC-10 pin the wrong behaviour and T4/T5 "pass" against a drifted oracle. | T2 step 5 requires every pin to pass on the untouched `49f3def` `memo.py` before any refactor lands. A failing pin stops the sprint. The reviewer diffs the reference bodies against `git show 49f3def:src/xtrax/inference/memo.py`. |
+| The T2 reference copies are not verbatim, so AC-9/AC-10 pin the wrong behaviour and T4/T5 "pass" against a drifted oracle. | T2 step 5 requires every pin to pass on the untouched `49f3def` `memo.py` before any refactor lands. A failing pin stops the sprint. The reviewer diffs the reference bodies (both screens, the five helpers, `_leaf_digest`, `build_key`) against `git show 49f3def:src/xtrax/inference/memo.py`; only the `_ref` name prefixes may differ. The references import no live helper or digest function, so a T4/T5/T7 edit cannot move the oracle; AC-18's hex literals and AC-9's F_don `startswith` literal anchor them independently of both copies. |
 | The merged walker changes offender or site order, and so the message text. | The push order and path construction are copied from both originals, which were already identical. AC-9 compares full `str(exc)` and `.sites` against the reference. |
-| AC-13's monkeypatch of `jax.tree_util.*` also counts JAX-internal calls. | JAX internals import from `jax._src.tree_util`, not the public module attributes. The patches go in after warm-up, and the hit path runs no tracing and no `jnp` ops. The `np.ndarray` leaf avoids a device transfer path. If counts are inflated, scope the patch to `xtrax.inference.memo.jax.tree_util` and re-verify with a red control (temporarily call `tree_leaves` in `call()`). |
+| AC-13's monkeypatch of `jax.tree_util.*` also counts JAX-internal calls. | JAX internals import from `jax._src.tree_util`, not the public module attributes. The patches go in after warm-up, and the hit path runs no tracing and no `jnp` ops. The `np.ndarray` leaf avoids a device transfer path. If counts are inflated, the fallback is a caller-frame filter: the counting wrapper increments only when `sys._getframe(1).f_globals["__name__"] == "xtrax.inference.memo"`. (Patching `xtrax.inference.memo.jax.tree_util` is not a fallback: it is the same module object as `jax.tree_util`, memo.py:42.) Keep the red control: temporarily call `tree_leaves` in `call()` and confirm AC-13 fails. |
 | The `jax.enable_x64` context is unavailable. | AC-11's x64 half skips exactly as `test_cr6_x64_toggle_forces_new_key` does (`test_memo.py:1858-1860`). |
 | NaN keying lowers the hit rate for callers that vary NaN payloads. | This is only reachable by constructing payloads (`struct`, bit casts). A conservative key is the documented contract. Non-NaN keys are unchanged (AC-18). |
 | Relabelling hides the failure count from someone grepping for `FAIL`. | The REPORT line carries the count, the exit code and the enforcing recipe. `FAIL` remains reserved for steps that block (enforce mode, exit 1). |
@@ -437,3 +460,8 @@ Scope estimate: ~4 lines.
     - :1455-1481: `TestCostAdvisory`;
     - :1858-1860: x64 skip idiom;
   - `docs/api/inference.md`: :316-323 admission, :325-341 donation, :365-367 Keys.
+- Adversarial round 1: `/tmp/claude/loop/r1_challenger.json`, `/tmp/claude/loop/r1_defender.json`, `/tmp/claude/loop/r1_oracle.json` (verdict REVISE; C10, C11 resolved for the spec).
+
+## Revision log
+
+r1: addressed C1, C2, C3, C4, C5, C6, C7, C8, C9
