@@ -2362,6 +2362,48 @@ class TestSprint260923Pins:
             _reference_leaf_digest(leaf, h_ref)
             assert h_ref.hexdigest() == expected_hex
 
+    def test_ac16_keyword_only_default_pin(self):
+        """AC-16: keyword-only parameter with default is screened on first call, not wrap time."""
+
+        def f(*, a=1.0):
+            return jax.random.uniform(jax.random.key(0), (4,)) * a
+
+        # Wrapping should not raise
+        wrapped = memoize_jaxpr(f)
+
+        # screen_latched_error should be None (not screened at wrap time)
+        assert wrapped._memo_core.screen_latched_error is None
+
+        # First call with no arguments should raise MemoImpurityError
+        with pytest.raises(MemoImpurityError):
+            wrapped()
+
+        # Error should latch: second call also raises
+        assert wrapped._memo_core.screen_latched_error is not None
+        with pytest.raises(MemoImpurityError):
+            wrapped()
+
+    def test_ac16_positional_default_pin(self):
+        """AC-16: positional parameter with default is screened on first call, not wrap time."""
+
+        def g(x=1.0):
+            return jax.random.uniform(jax.random.key(0), (4,)) * x
+
+        # Wrapping should not raise
+        wrapped = memoize_jaxpr(g)
+
+        # screen_latched_error should be None (not screened at wrap time)
+        assert wrapped._memo_core.screen_latched_error is None
+
+        # First call with no arguments should raise MemoImpurityError
+        with pytest.raises(MemoImpurityError):
+            wrapped()
+
+        # Error should latch: second call also raises
+        assert wrapped._memo_core.screen_latched_error is not None
+        with pytest.raises(MemoImpurityError):
+            wrapped()
+
 
 def counting_wrapper(orig):
     """Counting wrapper that increments a counter when called."""

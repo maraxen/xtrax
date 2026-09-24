@@ -994,7 +994,10 @@ def memoize_jaxpr(
 
         core = _MemoCore(f, pol)
         stats_holder: dict[str, Any] = {}
-        # Zero-arg (or all-default) callables can be screened at wrap time:
+        # Wrap-time screening runs only for zero-parameter callables: their only
+        # possible call signature is ((), {}), so this is exactly the first call's
+        # screen. Callables with parameters (defaulted or not) are screened per
+        # signature on first call.
         if not inspect.signature(f).parameters:
             try:
                 core._ensure_screened((), {})
