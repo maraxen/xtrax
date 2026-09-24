@@ -459,7 +459,7 @@ def test_main_report_only_labels_failures(
     assert exit_code == 0
 
     captured = capsys.readouterr()
-    assert not captured.out.startswith("PASS")
+    assert not any(line.startswith("PASS") for line in captured.out.splitlines())
     assert (
         "REPORT (non-blocking): coverage DAG -- 19 test failures in tier1_core "
         "(pytest exit 1); enforcement lives in just audit-coverage-tier1"
@@ -507,7 +507,7 @@ def test_main_report_only_no_failures(
 
     captured = capsys.readouterr()
     assert "REPORT (non-blocking): coverage DAG -- no test failures in tier1_core" in captured.out
-    assert not captured.out.startswith("PASS")
+    assert not any(line.startswith("PASS") for line in captured.out.splitlines())
 
 
 def test_main_report_only_nonzero_exit_counts_as_failure(
@@ -742,7 +742,7 @@ def test_main_enforce_pass_with_failures(
         "REPORT (not enforced): coverage DAG --enforce tier0_audit -- "
         "2 test failures in tier0_audit (pytest exit 1); not enforced by any recipe"
     ) in captured.out
-    assert not captured.out.startswith("PASS")
+    assert not any(line.startswith("PASS") for line in captured.out.splitlines())
 
 
 def test_main_enforce_unknown_tier_usage_error(
@@ -777,7 +777,7 @@ def test_main_enforce_unknown_tier_usage_error(
     captured = capsys.readouterr()
     assert "FAIL: coverage DAG enforce" in captured.err
     assert "unknown enforce tier" in captured.err
-    assert not captured.out.startswith("PASS")
+    assert not any(line.startswith("PASS") for line in captured.out.splitlines())
 
 
 def test_enforcement_recipes_consistency() -> None:
