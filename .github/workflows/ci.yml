@@ -94,6 +94,46 @@ jobs:
       - name: Doctest canonical import paths
         run: uv run pytest --doctest-modules src/xtrax/io/ -q
 
+  dependency-floors:
+    # Resolves core + io + cli at their DECLARED FLOORS (uv --resolution
+    # lowest-direct), asserts each floor is actually what got installed, and runs
+    # the dependency-sensitive tests there. Every other job runs the lockfile's
+    # newest versions, so without this the floors are claims nothing tests --
+    # debt #738 found equinox>=0.11.0 and orbax-checkpoint>=0.6.0 could not even
+    # `import xtrax` under the jax>=0.10.2 floor, and numpy/zarr/tyro floors
+    # the resolver could never select.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      - name: Install core + io + cli at their floors
+        run: |
+          uv venv .venv-floors
+          uv pip install --python .venv-floors/bin/python --resolution lowest-direct -e ".[io,cli]"
+
+      - name: Every declared floor is exactly what got installed
+        run: .venv-floors/bin/python scripts/check_dependency_floors.py --extra io --extra cli
+
+      - name: Add test tooling without moving any floored package
+        run: |
+          uv pip freeze --python .venv-floors/bin/python | grep -E '^[A-Za-z0-9_.-]+==' > floors-constraints.txt
+          uv pip install --python .venv-floors/bin/python -c floors-constraints.txt \
+            pytest pytest-asyncio jaxtyping beartype chex pyyaml
+
+      - name: Dependency-sensitive tests at the floors
+        env:
+          OMP_NUM_THREADS: "4"
+        run: |
+          .venv-floors/bin/python -m pytest -q -o addopts="" -p no:cacheprovider \
+            tests/checkpoint tests/training tests/engine tests/run tests/stages \
+            tests/tiling tests/inference tests/transforms tests/sparse \
+            tests/distributed tests/telemetry tests/data tests/cli \
+            tests/scripts/test_check_dependency_floors.py
+
   controller-tests:
     # Deliberately NOT gated on the controller-changes path filter above, unlike
     # audit-port. controller/ imports from src/xtrax/loop/, so a src-only commit can

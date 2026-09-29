@@ -88,6 +88,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Dependency floors raised to versions that actually work** (debt #738). With
+  jax at its own floor (0.10.2), `equinox>=0.11.0` and `orbax-checkpoint>=0.6.0`
+  could not `import xtrax` at all (`jax.core.Primitive`, `jax.sharding.PositionalSharding`
+  and `jax.experimental.layout.DeviceLocalLayout` were removed from jax). New floors,
+  each the lowest release that installs on Python 3.13 and passes the
+  dependency-sensitive suite at jax 0.10.2: `equinox>=0.13.1`,
+  `orbax-checkpoint>=0.11.17`, `numpy>=2.1` (already forced by jax), and in the
+  extras `zarr>=3.0.8` and `tyro>=0.9.1`. `optax>=0.2.3` is unchanged and verified.
+  A new `dependency-floors` CI job resolves core + io + cli with
+  `--resolution lowest-direct`, fails if any floor is not exactly what installed
+  (`scripts/check_dependency_floors.py`), and runs the tests there.
+- **`xtrax.checkpoint` moved off orbax's deprecated `CheckpointManager` kwargs**
+  (debt #739). `max_to_keep`/`keep_period` become an `AnyPreservationPolicy` of
+  `LatestN` + `EveryNSteps` (same retention: the latest N plus every multiple of
+  the period), `item_handlers=` becomes a `handler_registry`, and `items=`
+  save/restore becomes `args=`. The public signatures and on-disk layout are
+  unchanged, and checkpoints written by earlier releases restore as before
+  (pinned by a test). orbax's v1 API is not adopted: as of orbax 0.12.1 it is
+  still `orbax.checkpoint.experimental.v1`.
 - **`ZarrStagingSink` enforces `extension_schema` `required` fields at `drain()`,
   not per `stage()` call** (`xtrax.run`, debt #1540). Per-call enforcement
   contradicted the documented merge-on-repeat contract: a key whose required
