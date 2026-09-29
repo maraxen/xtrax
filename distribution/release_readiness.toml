@@ -95,10 +95,10 @@ blocking = true
 # this attestation is a hermetic, offline TTL claim, not authoritative on its own —
 # the "pypi_and_git_tag" probe opportunistically invalidates it (never satisfies it)
 # by checking for a matching git tag + PyPI release of the current version.
-attested_at = "2026-07-02T00:00:00Z"
+attested_at = "2026-09-29T00:00:00Z"
 ttl_days = 90
 probe = "pypi_and_git_tag"
-notes = "PyPI Trusted Publisher configured and proven (0.2.1, 0.3.0 published via OIDC). TestPyPI intentionally not used — decision 2026-07-02; publish.yml is PyPI-only."
+notes = "PyPI Trusted Publisher configured and proven: publish.yml (OIDC) succeeded 2026-09-02 (0.4.0a8), 2026-09-07 (0.4.0a9), 2026-09-14 (0.4.0a10); earlier 0.2.1 and 0.3.0. Re-attested 2026-09-29. TestPyPI intentionally not used — decision 2026-07-02; publish.yml is PyPI-only."
 
 [[backlog_items]]
 id = 1462
