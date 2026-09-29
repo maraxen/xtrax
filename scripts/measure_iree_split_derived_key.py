@@ -79,8 +79,11 @@ Requires the `export` and `export-runtime` extras:
 """
 
 import argparse
+import json
 import logging
+import os
 import sys
+from importlib import metadata
 
 import jax
 import jax.numpy as jnp
@@ -285,6 +288,11 @@ def main() -> int:
         action="store_true",
         help="exit 1 while the defect still reproduces",
     )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="also write the result JSON here (it always goes to $BTH_RESULTS_PATH if set)",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -297,6 +305,13 @@ def main() -> int:
             sys.argv[0],
         )
         return 2
+
+    versions = {
+        pkg.replace("-", "_") + "_version": metadata.version(pkg)
+        for pkg in ("iree-base-compiler", "iree-base-runtime", "jax", "jaxlib")
+    }
+    for name, version in versions.items():
+        logger.info("%s = %s", name, version)
 
     minimal_agree = measure_minimal(args.n)
     flat_agree = measure_without_nesting(args.n)
@@ -314,6 +329,22 @@ def main() -> int:
         controls_hold,
         unvmapped_ran,
     )
+    result = {
+        **versions,
+        "m1_agree": minimal_agree,
+        "m2_agree": flat_agree,
+        "m3_agree": lone_agree,
+        "m4_agree": repaired_agree,
+        "m5a_agree": sorted_agree,
+        "m5b_agree": const_agree,
+        "reproduces": reproduces,
+        "controls_hold": controls_hold,
+        "unvmapped_ran": unvmapped_ran,
+    }
+    for path in (os.environ.get("BTH_RESULTS_PATH"), args.out):
+        if path:
+            with open(path, "w") as fh:
+                json.dump(result, fh, indent=2)
     if not controls_hold:
         logger.error(
             "A negative control diverged. The finding's SCOPE is wrong, not just "
