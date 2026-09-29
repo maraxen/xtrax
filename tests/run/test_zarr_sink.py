@@ -341,11 +341,19 @@ def test_schema_type_violation_raises_at_stage_time(tmp_path: Path) -> None:
     assert len(sink) == 0  # nothing buffered -- validation precedes buffering
 
 
-def test_schema_required_checked_when_attrs_staged(tmp_path: Path) -> None:
+def test_schema_required_checked_at_drain_not_stage(tmp_path: Path) -> None:
+    """#1540: required fields are enforced when a key is persisted, not per stage() call."""
     sink = _schema_sink(tmp_path)
-    with pytest.raises(ValueError, match="required field 'level'"):
-        sink.stage((0,), value=np.array([1]), attrs={"depth": 2})
-    assert len(sink) == 0
+    sink.stage((0,), value=np.array([1]), attrs={"depth": 2})  # incomplete, but legal to buffer
+    with pytest.raises(ValueError, match=r"drain\(\) refuses.*key=\(0,\).*required field 'level'"):
+        sink.drain()
+    # Raised before any write; the buffer is intact for the caller to complete.
+    assert len(sink) == 1
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    assert "0" not in root
+    sink.stage((0,), attrs={"level": "backbone"})
+    sink.drain()
+    assert zarr.open_group(str(tmp_path / "out.zarr"), mode="r")["0"].attrs["level"] == "backbone"
 
 
 def test_schema_violation_on_merge_raises_immediately(tmp_path: Path) -> None:
@@ -367,6 +375,73 @@ def test_split_stage_calls_satisfy_required_across_merge(tmp_path: Path) -> None
     assert group.attrs["level"] == "backbone"
     assert group.attrs["depth"] == 2
     assert group.attrs["run_id"] == "test-run"
+
+
+def test_schema_complete_payload_across_two_calls_required_arrives_second(
+    tmp_path: Path,
+) -> None:
+    """#1540 contract pin: a schema-complete payload split over TWO stage() calls passes.
+
+    The required field arrives in the SECOND call -- the order the per-call
+    enforcement rejected. (The first-call-complete order above never exposed it.)
+    """
+    sink = _schema_sink(tmp_path)
+    sink.stage((0,), value=np.array([1]), attrs={"depth": 2})
+    sink.stage((0,), other=np.array([2]), attrs={"level": "backbone"})
+    sink.drain()
+
+    group = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")["0"]
+    assert (group.attrs["level"], group.attrs["depth"]) == ("backbone", 2)
+    assert sorted(group.array_keys()) == ["other", "value"]
+
+
+def test_required_satisfied_by_attrs_persisted_in_an_earlier_drain(tmp_path: Path) -> None:
+    """Merge-on-repeat spans drains: on-disk group attrs count toward required."""
+    sink = _schema_sink(tmp_path)
+    sink.stage((0,), value=np.array([1]), attrs={"level": "backbone"})
+    sink.drain()
+    sink.stage((0,), attrs={"depth": 3})  # required field already persisted
+    sink.drain()
+    group = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")["0"]
+    assert (group.attrs["level"], group.attrs["depth"]) == ("backbone", 3)
+
+
+def test_incomplete_key_blocks_whole_drain(tmp_path: Path) -> None:
+    """A drain with one incomplete key writes no key at all -- no partial store."""
+    sink = _schema_sink(tmp_path)
+    sink.stage((0,), value=np.array([1]), attrs={"level": "ok"})
+    sink.stage((1,), value=np.array([2]), attrs={"depth": 1})
+    with pytest.raises(ValueError, match=r"key=\(1,\)"):
+        sink.drain()
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    assert "0" not in root
+    assert "1" not in root
+    assert len(sink) == 2
+
+
+def test_auto_flush_on_incomplete_attrs_raises_and_keeps_payload(tmp_path: Path) -> None:
+    """flush_every=1 makes every stage() a drain, so required must arrive in one call."""
+    spec = SinkSpec(  # type: ignore[assignment]
+        run_id="test-run",
+        output_dir=tmp_path / "out.zarr",
+        format="zarr",
+        flush_every=1,
+        extension_schema=_EXTENSION_SCHEMA,
+    )
+    sink = ZarrStagingSink(spec)
+    with pytest.raises(ValueError, match="drain\\(\\) refuses"):
+        sink.stage((0,), value=np.array([1]), attrs={"depth": 2})
+    assert len(sink) == 1  # buffered; the next complete stage() drains it
+    sink.stage((0,), attrs={"level": "backbone"})
+    assert len(sink) == 0
+
+
+def test_required_not_enforced_on_keys_without_staged_attrs(tmp_path: Path) -> None:
+    """Arrays-only keys carry no caller attrs, so the schema does not apply to them."""
+    sink = _schema_sink(tmp_path)
+    sink.stage((0,), value=np.array([1]))
+    sink.drain()
+    assert "value" in zarr.open_group(str(tmp_path / "out.zarr"), mode="r")["0"]
 
 
 def test_undeclared_keys_pass_through_with_schema_declared(tmp_path: Path) -> None:

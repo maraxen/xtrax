@@ -154,8 +154,10 @@ Zarr sinks auto-capture static run provenance: git SHA/branch/dirty +
 Call `sink.finalize()` once at run end to consolidate store metadata; no
 `stage()`/`drain()` is legitimate afterwards. A second sink opened against
 the same `output_dir` must carry the same `run_id`, or construction raises.
-Optional `SinkSpec.extension_schema` (JSON-Schema-style dict) validates
-caller attrs at `stage()` time; core field names (`git_sha`, `git_branch`,
+Optional `SinkSpec.extension_schema` (JSON-Schema-style dict) type-checks
+caller attrs at `stage()` time and enforces its `required` fields at `drain()`
+over the key's merged view (on-disk + pending attrs), so required fields may be
+split across `stage()` calls; core field names (`git_sha`, `git_branch`,
 `git_dirty`, `run_id`, `created_at`) are reserved.
 
 Verify: `src/xtrax/run/sink.py:14-39`

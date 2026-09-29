@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ZarrStagingSink.drain` stores 0-d and zero-length payloads** (`xtrax.run`, #161).
+  Chunks are now rank-matched (`tuple(max(d, 1) for d in shape)`); previously a
+  0-d per-step scalar, or any array with a zero-length dimension such as
+  `(0, 3)`, raised inside zarr -- surfacing from `io_callback` as an opaque
+  `JaxRuntimeError: INTERNAL: CpuCallback error calling callback`.
 - **`synthesize_dedup_spec` row identity is now exact native bytes per leaf**,
   not numpy-float equality over a promoted, dtype-concatenated view (spec
   §4.3/§5, backlog #5172). The predecessor's `jnp.concatenate` of raw leaves
@@ -80,6 +85,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   factory pattern (`foo = _make_foo()` with a nested `def foo`) is now
   invisible to the gate rather than accidentally loud; covering assigned
   callables would be a gate feature, not this fix.
+
+### Changed
+
+- **`ZarrStagingSink` enforces `extension_schema` `required` fields at `drain()`,
+  not per `stage()` call** (`xtrax.run`, debt #1540). Per-call enforcement
+  contradicted the documented merge-on-repeat contract: a key whose required
+  fields arrived in a later `stage()` call was rejected. Value-type checks stay
+  fail-fast at `stage()`. `drain()` checks every key with staged attrs against
+  its on-disk attrs merged with pending ones, raises before writing anything,
+  and leaves the buffer intact. An auto-flush (`flush_every`) is a drain, so a
+  split must complete within `flush_every` calls.
 
 ## [0.4.0a10] - 2026-09-13
 

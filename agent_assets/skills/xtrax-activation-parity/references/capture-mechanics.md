@@ -138,8 +138,11 @@ Traps, in the order they bite:
    comparison its own `output_dir`.**
 4. **Reserved attrs names.** `stage(attrs=...)` raises on any of `git_sha`,
    `git_branch`, `git_dirty`, `run_id`, `created_at` (`_CORE_PROVENANCE_FIELDS`)
-   -- the sink owns those. When `spec.extension_schema` is set, attrs are
-   validated at `stage()` time against the post-merge view for that key.
+   -- the sink owns those. When `spec.extension_schema` is set, attr value
+   types are checked at `stage()` time; its `required` fields are enforced at
+   `drain()` against the key's merged view (on-disk + pending attrs), so a
+   capture may add required metadata over several `stage()` calls. With
+   `flush_every=1` every `stage()` drains, so each call must be complete.
 5. **0-d and zero-length payloads are stored as-is.** `drain` chunks each
    array as one rank-matched chunk (`chunks=tuple(max(d, 1) for d in shape)`),
    so per-step scalars keep `shape == ()` and `(0,)`/`(0, 3)` round-trip
