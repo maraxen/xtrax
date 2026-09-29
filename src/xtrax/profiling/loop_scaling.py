@@ -28,8 +28,6 @@ jax is imported lazily, inside the functions, so importing this module (and
 ``xtrax.profiling``) stays free of jax -- matching the package's leaf contract.
 """
 
-from __future__ import annotations
-
 import math
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
