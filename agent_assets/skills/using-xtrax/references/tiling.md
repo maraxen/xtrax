@@ -339,7 +339,7 @@ Block until confirmed.
 Current implementation uses powers-of-2 bucketing (`get_k_bucket(k)` rounds up to next power).  
 For k > 256, this wastes up to 2× compute per element (worst case: k=257 → bucket=512).  
 **TODO** at `src/xtrax/tiling/dedup.py:29`: Implement geometric or mixed bucketing.  
-**Status**: Not fixed as of v0.4.0a5 — use with caution for large k.
+**Status**: Not fixed as of v0.4.0a10 (`src/xtrax/tiling/dedup.py:29`) — use with caution for large k.
 
 #### Bucket: Variable-Length Axis Handling
 
