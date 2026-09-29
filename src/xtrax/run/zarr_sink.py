@@ -93,18 +93,28 @@ def _is_json_type(value: Any, pytypes: tuple[type, ...]) -> bool:  # noqa: ANN40
     return isinstance(value, pytypes)
 
 
-def _validate_attrs_against_schema(attrs: dict[str, Any], schema: dict[str, Any]) -> list[str]:
+def _missing_required_fields(attrs: dict[str, Any], schema: dict[str, Any]) -> list[str]:
+    """Describe each schema ``required`` field absent from ``attrs`` (empty means complete)."""
+    return [
+        f"missing required field {name!r}"
+        for name in schema.get("required", [])
+        if name not in attrs
+    ]
+
+
+def _validate_attrs_against_schema(
+    attrs: dict[str, Any], schema: dict[str, Any], *, check_required: bool = True
+) -> list[str]:
     """Minimal stdlib-only validator: checks ``type``/``required``/``properties``.
 
     Follows JSON-Schema ``additionalProperties``-permitted semantics: only
     schema-declared keys are checked; any other key passes through untouched.
+    ``check_required=False`` checks value types only -- the sink's stage()-time
+    mode, since required fields may still arrive in a later stage() call.
     Returns a list of violation descriptions (empty means valid).
     """
-    errors: list[str] = []
+    errors = _missing_required_fields(attrs, schema) if check_required else []
     properties = schema.get("properties", {})
-    for name in schema.get("required", []):
-        if name not in attrs:
-            errors.append(f"missing required field {name!r}")
     for name, value in attrs.items():
         prop = properties.get(name)
         if not isinstance(prop, dict):
@@ -227,7 +237,11 @@ class ZarrStagingSink:
         self._root.attrs.update(dict(self._provenance))
 
     def _validate_stage_attrs(self, key: tuple[Any, ...], attrs: dict[str, Any]) -> None:
-        """Fail loud at stage()-time: reserved-name collisions + extension-schema validity."""
+        """Fail loud at stage()-time: reserved-name collisions + extension-schema value types.
+
+        Required fields are deliberately NOT checked here -- see
+        :meth:`_validate_required_before_drain`.
+        """
         collisions = sorted(_CORE_PROVENANCE_FIELDS.intersection(attrs))
         if collisions:
             msg = (
@@ -238,16 +252,47 @@ class ZarrStagingSink:
             raise ValueError(msg)
         if self._spec.extension_schema is None:
             return
-        # Validate the post-merge view for this key: repeated stage() calls
-        # merge attrs, so required fields may arrive across calls, while any
-        # invalid value still fails immediately (masking is impossible).
+        # Type-check the post-merge view for this key: any invalid value fails
+        # immediately (a later overwrite cannot mask it). Required fields may
+        # still arrive in a later stage() call, so completeness is drain's job.
         merged = dict(self._pending_attrs.get(key, {}))
         merged.update(attrs)
-        errors = _validate_attrs_against_schema(merged, self._spec.extension_schema)
+        errors = _validate_attrs_against_schema(
+            merged, self._spec.extension_schema, check_required=False
+        )
         if errors:
             msg = (
                 f"ZarrStagingSink: staged attrs for key={key!r} violate the SinkSpec "
                 f"extension_schema: {'; '.join(errors)}"
+            )
+            raise ValueError(msg)
+
+    def _validate_required_before_drain(self) -> None:
+        """Fail loud before drain() writes anything: every key with staged attrs is schema-complete.
+
+        Checks the view drain() will leave on disk -- the key group's existing
+        attrs merged with its pending attrs -- so required fields may arrive
+        across stage() calls and across earlier drains. Raises before any
+        write, leaving the buffer intact for the caller to complete and retry.
+        """
+        schema = self._spec.extension_schema
+        if schema is None or not schema.get("required"):
+            return
+        failures: list[str] = []
+        for key, pending in self._pending_attrs.items():
+            group_path = "/".join(str(part) for part in key)
+            existing = self._root.get(group_path) if group_path else self._root
+            merged = dict(existing.attrs) if existing is not None else {}
+            merged.update(pending)
+            missing = _missing_required_fields(merged, schema)
+            if missing:
+                failures.append(f"key={key!r}: {'; '.join(missing)}")
+        if failures:
+            msg = (
+                "ZarrStagingSink: drain() refuses to persist attrs that are incomplete "
+                f"under the SinkSpec extension_schema ({' | '.join(failures)}); nothing "
+                "was written and the buffer is intact -- stage() the missing fields, "
+                "then drain() again."
             )
             raise ValueError(msg)
 
@@ -268,8 +313,12 @@ class ZarrStagingSink:
                 Repeated ``stage`` calls for the same key merge attrs the
                 same way arrays merge (later keys overwrite earlier ones).
                 Attrs keys colliding with core provenance field names raise;
-                when ``spec.extension_schema`` is declared, attrs are
-                validated against it immediately (before buffering).
+                when ``spec.extension_schema`` is declared, attr value types
+                are validated immediately (before buffering) against the
+                merged view, while ``required`` fields are enforced at
+                :meth:`drain` -- so they may be split across stage() calls.
+                An auto-flush (``spec.flush_every``) is a drain: split
+                required fields across fewer calls than ``flush_every``.
             **arrays: Named numpy-convertible arrays to stage under ``key``.
                 Repeated ``stage`` calls for the same key merge: later names
                 overwrite earlier ones with the same name, new names
@@ -277,7 +326,10 @@ class ZarrStagingSink:
 
         Raises:
             ValueError: If ``attrs`` uses a reserved core provenance field
-                name, or violates ``spec.extension_schema``.
+                name, or a value violates a ``spec.extension_schema`` type
+                (nothing is buffered); or if this call triggers an auto-flush
+                whose drain finds a key missing ``required`` fields (this
+                call's payload stays buffered -- see :meth:`drain`).
             RuntimeError: If the sink has already been finalized.
         """
         if self._finalized:
@@ -319,6 +371,10 @@ class ZarrStagingSink:
         minimal ``run_id``/``git_sha`` pointer onto each drained key's group.
 
         Raises:
+            ValueError: If ``spec.extension_schema`` declares ``required``
+                fields and any key with staged attrs would be persisted
+                without them (existing group attrs merged with pending ones).
+                Raised before any write; the buffer is left intact.
             RuntimeError: If the sink has already been finalized.
         """
         if self._finalized:
@@ -327,6 +383,7 @@ class ZarrStagingSink:
                 "metadata was already consolidated for this run."
             )
             raise RuntimeError(msg)
+        self._validate_required_before_drain()
         for key, arrays in self._pending.items():
             group_path = "/".join(str(part) for part in key)
             group = self._root.require_group(group_path) if group_path else self._root
@@ -335,7 +392,9 @@ class ZarrStagingSink:
                     name=name,
                     shape=array.shape,
                     dtype=array.dtype,
-                    chunks=array.shape if array.shape else (1,),
+                    # One chunk per array, rank-matched to its shape: 0-d gets
+                    # chunks=() and zero-length dims get edge 1 (zarr rejects 0).
+                    chunks=tuple(max(d, 1) for d in array.shape),
                     overwrite=True,
                 )
                 arr[...] = array

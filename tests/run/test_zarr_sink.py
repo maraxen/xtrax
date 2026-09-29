@@ -341,11 +341,19 @@ def test_schema_type_violation_raises_at_stage_time(tmp_path: Path) -> None:
     assert len(sink) == 0  # nothing buffered -- validation precedes buffering
 
 
-def test_schema_required_checked_when_attrs_staged(tmp_path: Path) -> None:
+def test_schema_required_checked_at_drain_not_stage(tmp_path: Path) -> None:
+    """#1540: required fields are enforced when a key is persisted, not per stage() call."""
     sink = _schema_sink(tmp_path)
-    with pytest.raises(ValueError, match="required field 'level'"):
-        sink.stage((0,), value=np.array([1]), attrs={"depth": 2})
-    assert len(sink) == 0
+    sink.stage((0,), value=np.array([1]), attrs={"depth": 2})  # incomplete, but legal to buffer
+    with pytest.raises(ValueError, match=r"drain\(\) refuses.*key=\(0,\).*required field 'level'"):
+        sink.drain()
+    # Raised before any write; the buffer is intact for the caller to complete.
+    assert len(sink) == 1
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    assert "0" not in root
+    sink.stage((0,), attrs={"level": "backbone"})
+    sink.drain()
+    assert zarr.open_group(str(tmp_path / "out.zarr"), mode="r")["0"].attrs["level"] == "backbone"
 
 
 def test_schema_violation_on_merge_raises_immediately(tmp_path: Path) -> None:
@@ -367,6 +375,73 @@ def test_split_stage_calls_satisfy_required_across_merge(tmp_path: Path) -> None
     assert group.attrs["level"] == "backbone"
     assert group.attrs["depth"] == 2
     assert group.attrs["run_id"] == "test-run"
+
+
+def test_schema_complete_payload_across_two_calls_required_arrives_second(
+    tmp_path: Path,
+) -> None:
+    """#1540 contract pin: a schema-complete payload split over TWO stage() calls passes.
+
+    The required field arrives in the SECOND call -- the order the per-call
+    enforcement rejected. (The first-call-complete order above never exposed it.)
+    """
+    sink = _schema_sink(tmp_path)
+    sink.stage((0,), value=np.array([1]), attrs={"depth": 2})
+    sink.stage((0,), other=np.array([2]), attrs={"level": "backbone"})
+    sink.drain()
+
+    group = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")["0"]
+    assert (group.attrs["level"], group.attrs["depth"]) == ("backbone", 2)
+    assert sorted(group.array_keys()) == ["other", "value"]
+
+
+def test_required_satisfied_by_attrs_persisted_in_an_earlier_drain(tmp_path: Path) -> None:
+    """Merge-on-repeat spans drains: on-disk group attrs count toward required."""
+    sink = _schema_sink(tmp_path)
+    sink.stage((0,), value=np.array([1]), attrs={"level": "backbone"})
+    sink.drain()
+    sink.stage((0,), attrs={"depth": 3})  # required field already persisted
+    sink.drain()
+    group = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")["0"]
+    assert (group.attrs["level"], group.attrs["depth"]) == ("backbone", 3)
+
+
+def test_incomplete_key_blocks_whole_drain(tmp_path: Path) -> None:
+    """A drain with one incomplete key writes no key at all -- no partial store."""
+    sink = _schema_sink(tmp_path)
+    sink.stage((0,), value=np.array([1]), attrs={"level": "ok"})
+    sink.stage((1,), value=np.array([2]), attrs={"depth": 1})
+    with pytest.raises(ValueError, match=r"key=\(1,\)"):
+        sink.drain()
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    assert "0" not in root
+    assert "1" not in root
+    assert len(sink) == 2
+
+
+def test_auto_flush_on_incomplete_attrs_raises_and_keeps_payload(tmp_path: Path) -> None:
+    """flush_every=1 makes every stage() a drain, so required must arrive in one call."""
+    spec = SinkSpec(  # type: ignore[assignment]
+        run_id="test-run",
+        output_dir=tmp_path / "out.zarr",
+        format="zarr",
+        flush_every=1,
+        extension_schema=_EXTENSION_SCHEMA,
+    )
+    sink = ZarrStagingSink(spec)
+    with pytest.raises(ValueError, match="drain\\(\\) refuses"):
+        sink.stage((0,), value=np.array([1]), attrs={"depth": 2})
+    assert len(sink) == 1  # buffered; the next complete stage() drains it
+    sink.stage((0,), attrs={"level": "backbone"})
+    assert len(sink) == 0
+
+
+def test_required_not_enforced_on_keys_without_staged_attrs(tmp_path: Path) -> None:
+    """Arrays-only keys carry no caller attrs, so the schema does not apply to them."""
+    sink = _schema_sink(tmp_path)
+    sink.stage((0,), value=np.array([1]))
+    sink.drain()
+    assert "value" in zarr.open_group(str(tmp_path / "out.zarr"), mode="r")["0"]
 
 
 def test_undeclared_keys_pass_through_with_schema_declared(tmp_path: Path) -> None:
@@ -539,3 +614,55 @@ def test_derive_sink_spec_flush_every_cadence_through_seam(tmp_path: Path) -> No
     sink.drain()
     root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
     assert "0" in root
+
+
+# --- #161: degenerate shapes (0-d scalars, zero-length dims) ------------------
+
+
+@pytest.mark.parametrize("shape", [(), (0,), (4,), (2, 3), (0, 3)], ids=str)
+def test_drain_round_trips_degenerate_shapes(tmp_path: Path, shape: tuple[int, ...]) -> None:
+    """0-d and zero-length payloads drain and read back bit-identical (#161).
+
+    ``(0, 3)`` is the mixed case: it has a truthy shape, so a fix that only
+    special-cases ``shape == ()`` still hands zarr a zero-length chunk edge.
+    """
+    value = np.arange(int(np.prod(shape)), dtype=np.float32).reshape(shape)
+    sink = _sink(tmp_path, flush_every=100)
+    sink.stage((0,), value=value)
+    sink.drain()
+
+    stored = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")["0"]["value"]
+    assert stored.shape == shape
+    assert stored.dtype == value.dtype
+    np.testing.assert_array_equal(stored[...], value)
+
+
+def test_per_step_scalar_capture_through_io_callback(tmp_path: Path) -> None:
+    """The activation-capture path: a 0-d per-step value staged from io_callback (#161)."""
+    import jax
+    import jax.numpy as jnp
+
+    from xtrax.stages._callback import io_callback
+
+    sink = _sink(tmp_path, flush_every=1)
+    steps: list[int] = []
+
+    def _write(v: np.ndarray) -> np.ndarray:
+        sink.stage(("ref", "loss", len(steps)), value=np.asarray(v))  # no atleast_1d
+        steps.append(len(steps))
+        return np.zeros((), dtype=np.int32)
+
+    @jax.jit
+    def step(x: jax.Array) -> jax.Array:
+        io_callback(_write, jax.ShapeDtypeStruct((), jnp.int32), x.sum(), ordered=True)
+        return x * 2
+
+    x = jnp.arange(3, dtype=jnp.float32)
+    for _ in range(2):
+        x = step(x)
+    jax.effects_barrier()
+
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    got = [float(root[f"ref/loss/{i}"]["value"][...]) for i in range(2)]
+    assert root["ref/loss/0"]["value"].shape == ()
+    assert got == [3.0, 6.0]
