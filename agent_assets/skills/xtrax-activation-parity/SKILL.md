@@ -1,7 +1,7 @@
 ---
 name: xtrax-activation-parity
 description: This skill should be used when two implementations of the same model disagree numerically and the question is WHERE -- a vendored/published reference versus a JAX port, a wheel versus a source tree, two checkpoints loaded by different loaders. Triggers on "find the first divergence", "which tensor diverges first", "trace activations between two implementations", "my port's outputs don't match the reference", "cross-implementation parity failed but the graded parity test doesn't say why", "capture intermediates without changing the forward pass", "diff parameter inventories against a reference checkpoint", or mentions first-divergence tracing, activation capture via Tap/Sink, ZarrStagingSink for intermediates, zarr_content_digest for capture integrity, or parameter-inventory diffing. Covers the escalation ladder (constants, then parameters, then inputs, then activations), non-perturbing capture through xtrax.stages boundaries, the first-divergence table, and the harness negative control that makes "no divergence found" mean something.
-xtrax_version: 0.4.0a7
+xtrax_version: 0.4.0a10
 triggers:
   - first divergence / first-divergence trace / which tensor diverges first
   - cross-implementation parity / reference vs port disagree numerically
