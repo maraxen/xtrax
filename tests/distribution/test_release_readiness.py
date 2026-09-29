@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import textwrap
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +22,12 @@ from xtrax.run.freshness import ProbeResult
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "distribution" / "release_readiness.toml"
+
+
+def _n9_attested(config) -> datetime:
+    """N9's configured attestation time, so the TTL tests follow each re-attestation."""
+    n9 = next(item for item in config.backlog_items if item.item_id == 1454)
+    return datetime.fromisoformat(n9.attested_at.replace("Z", "+00:00"))
 
 
 def test_load_release_readiness_config_reads_committed_toml() -> None:
@@ -55,7 +61,7 @@ def test_verify_workflow_markers_passes_on_publish_workflow() -> None:
 def test_human_gate_config_carries_attestation_fields() -> None:
     config = load_release_readiness_config(CONFIG_PATH)
     n9 = next(item for item in config.backlog_items if item.item_id == 1454)
-    assert n9.attested_at == "2026-07-02T00:00:00Z"
+    assert n9.attested_at == "2026-09-29T00:00:00Z"
     assert n9.ttl_days == 90.0
     assert n9.probe == "pypi_and_git_tag"
 
@@ -94,7 +100,7 @@ def test_human_gate_requires_attestation_fields(tmp_path: Path) -> None:
 
 def test_build_backlog_report_human_gate_fresh_within_ttl() -> None:
     config = load_release_readiness_config(CONFIG_PATH)
-    now = datetime(2026, 7, 10, tzinfo=UTC)  # 8 days into the 90-day TTL
+    now = _n9_attested(config) + timedelta(days=8)  # 8 days into the 90-day TTL
 
     with patch.dict(
         "scripts.audit_release_readiness.PROBES",
@@ -110,7 +116,7 @@ def test_build_backlog_report_human_gate_fresh_within_ttl() -> None:
 
 def test_build_backlog_report_human_gate_ttl_expired() -> None:
     config = load_release_readiness_config(CONFIG_PATH)
-    now = datetime(2027, 1, 1, tzinfo=UTC)  # ~180 days after attestation, past the 90-day TTL
+    now = _n9_attested(config) + timedelta(days=180)  # past the 90-day TTL
 
     with patch.dict(
         "scripts.audit_release_readiness.PROBES",
@@ -126,7 +132,7 @@ def test_build_backlog_report_human_gate_ttl_expired() -> None:
 
 def test_build_backlog_report_human_gate_invalidated_by_probe() -> None:
     config = load_release_readiness_config(CONFIG_PATH)
-    now = datetime(2026, 7, 10, tzinfo=UTC)  # within TTL, but the probe invalidates it
+    now = _n9_attested(config) + timedelta(days=8)  # within TTL, but the probe invalidates it
 
     with patch.dict(
         "scripts.audit_release_readiness.PROBES",
