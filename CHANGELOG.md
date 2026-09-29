@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`xtrax.profiling.loop_scaling`: flag loop bodies whose per-iteration cost grows with
+  the loop's own extent** (debt #1983). `loop_bodies(fn, *args)` traces `fn` (nothing
+  is compiled or run) and reports every `scan`/`while` body at any depth with ONE
+  iteration's work and the trip count -- the multiplication XLA's `cost_analysis`
+  hides by counting a `while` body once. `extent_scaling_report(fn, make_args, n)`
+  traces at `n` and `2n` and flags bodies whose per-iteration work grows (ratio near
+  2.0 for full-extent recompute, near 1.0 for incremental), the O(L^2)
+  autoregressive-sampler shape that correctness tests and small-L wall clocks miss.
+  In-place `dynamic_update_slice`/`scatter` are costed by their update, so a correct
+  incremental body writing its row into an `(L, ...)` buffer is not a false positive.
+  Work is a ratio-oriented proxy (dot_general FLOPs + output elements), not a
+  FLOP-exact model. The debt's third check (consumption ratio) is not implemented.
+
 - **`xtrax.tiling.dedup_synthesis.verify_dedup_spec`**: checks a `DedupSpec`'s
   row-identity claim (spec §4.3/§10.2-10.3, backlog #5172). Every row is
   compared **bitwise, per leaf, in native byte layout** against its claimed
