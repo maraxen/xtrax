@@ -539,3 +539,55 @@ def test_derive_sink_spec_flush_every_cadence_through_seam(tmp_path: Path) -> No
     sink.drain()
     root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
     assert "0" in root
+
+
+# --- #161: degenerate shapes (0-d scalars, zero-length dims) ------------------
+
+
+@pytest.mark.parametrize("shape", [(), (0,), (4,), (2, 3), (0, 3)], ids=str)
+def test_drain_round_trips_degenerate_shapes(tmp_path: Path, shape: tuple[int, ...]) -> None:
+    """0-d and zero-length payloads drain and read back bit-identical (#161).
+
+    ``(0, 3)`` is the mixed case: it has a truthy shape, so a fix that only
+    special-cases ``shape == ()`` still hands zarr a zero-length chunk edge.
+    """
+    value = np.arange(int(np.prod(shape)), dtype=np.float32).reshape(shape)
+    sink = _sink(tmp_path, flush_every=100)
+    sink.stage((0,), value=value)
+    sink.drain()
+
+    stored = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")["0"]["value"]
+    assert stored.shape == shape
+    assert stored.dtype == value.dtype
+    np.testing.assert_array_equal(stored[...], value)
+
+
+def test_per_step_scalar_capture_through_io_callback(tmp_path: Path) -> None:
+    """The activation-capture path: a 0-d per-step value staged from io_callback (#161)."""
+    import jax
+    import jax.numpy as jnp
+
+    from xtrax.stages._callback import io_callback
+
+    sink = _sink(tmp_path, flush_every=1)
+    steps: list[int] = []
+
+    def _write(v: np.ndarray) -> np.ndarray:
+        sink.stage(("ref", "loss", len(steps)), value=np.asarray(v))  # no atleast_1d
+        steps.append(len(steps))
+        return np.zeros((), dtype=np.int32)
+
+    @jax.jit
+    def step(x: jax.Array) -> jax.Array:
+        io_callback(_write, jax.ShapeDtypeStruct((), jnp.int32), x.sum(), ordered=True)
+        return x * 2
+
+    x = jnp.arange(3, dtype=jnp.float32)
+    for _ in range(2):
+        x = step(x)
+    jax.effects_barrier()
+
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    got = [float(root[f"ref/loss/{i}"]["value"][...]) for i in range(2)]
+    assert root["ref/loss/0"]["value"].shape == ()
+    assert got == [3.0, 6.0]

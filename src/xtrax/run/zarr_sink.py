@@ -335,7 +335,9 @@ class ZarrStagingSink:
                     name=name,
                     shape=array.shape,
                     dtype=array.dtype,
-                    chunks=array.shape if array.shape else (1,),
+                    # One chunk per array, rank-matched to its shape: 0-d gets
+                    # chunks=() and zero-length dims get edge 1 (zarr rejects 0).
+                    chunks=tuple(max(d, 1) for d in array.shape),
                     overwrite=True,
                 )
                 arr[...] = array

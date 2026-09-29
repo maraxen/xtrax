@@ -140,17 +140,16 @@ Traps, in the order they bite:
    `git_branch`, `git_dirty`, `run_id`, `created_at` (`_CORE_PROVENANCE_FIELDS`)
    -- the sink owns those. When `spec.extension_schema` is set, attrs are
    validated at `stage()` time against the post-merge view for that key.
-5. **A 0-d payload crashes `drain()`.** `drain` computes
-   `chunks=array.shape if array.shape else (1,)`, so `shape == ()` yields a
-   1-dimensional chunk grid against a 0-dimensional shape and zarr 3.2.1 raises
-   `ValueError: chunk_grid and shape need to have the same number of dimensions`.
-   A `(0,)`-shaped payload fails differently (`integer chunk edge length must
-   be >= 1, got 0`). Everything with all-positive dimensions is fine.
-   **Wrap every staged payload in `np.atleast_1d` and skip empties.**
+5. **0-d and zero-length payloads are stored as-is.** `drain` chunks each
+   array as one rank-matched chunk (`chunks=tuple(max(d, 1) for d in shape)`),
+   so per-step scalars keep `shape == ()` and `(0,)`/`(0, 3)` round-trip
+   (`tests/run/test_zarr_sink.py::test_drain_round_trips_degenerate_shapes`).
+   Before xtrax #161 these crashed `drain()`; do not reintroduce an
+   `np.atleast_1d` wrap -- it changes the stored shape both sides compare on.
 6. **Errors raised inside a capture callback surface as
    `jax.errors.JaxRuntimeError: INTERNAL: CpuCallback error calling callback`**,
-   with the real exception buried in the nested traceback. Trap 5 presents this
-   way. When a capture harness dies opaquely, read past the JAX frames.
+   with the real exception's frames embedded in that message's text. When a
+   capture harness dies opaquely, read past the JAX frames.
 7. **`finalize()` refuses while payloads are pending** and may run only once;
    `stage()`/`drain()` after it raise. Call `drain()` then `finalize()` -- it
    consolidates store metadata and will not strand buffered payloads silently.

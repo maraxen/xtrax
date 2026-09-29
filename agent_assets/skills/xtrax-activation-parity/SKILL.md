@@ -111,9 +111,7 @@ class CaptureSink:
 
     def __call__(self, x: jax.Array) -> None:
         def _write(v):
-            # np.atleast_1d is load-bearing: a 0-d payload crashes drain().
-            self.sink.stage((self.side, self.name, self._step),
-                            value=np.atleast_1d(np.asarray(v)))
+            self.sink.stage((self.side, self.name, self._step), value=np.asarray(v))
             self._step += 1
             return np.zeros((), dtype=np.int32)
         io_callback(_write, jax.ShapeDtypeStruct((), jnp.int32), x, ordered=self.ordered)
