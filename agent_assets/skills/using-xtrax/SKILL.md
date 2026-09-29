@@ -1,6 +1,6 @@
 ---
 name: using-xtrax
-description: "Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), loading your own TOML config via the domain-agnostic `xtrax.config` primitives, composing xtrax's own CLI verbs (`REGISTRY`) into your own CLI, or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep + unreleased graph-validate/graph-plan/graph-author), the xtrax.config TOML primitives, EDA, sparsification, the signature-inference layer (xtrax.inference), and ahead-of-time export via the xtrax.export subpackage (export_pipeline/Target/VerificationLevel/materialize/load_hf_weights, native + wasm32 + SPIR-V codegen)."
+description: "Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), loading your own TOML config via the domain-agnostic `xtrax.config` primitives, composing xtrax's own CLI verbs (`REGISTRY`) into your own CLI, or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep/graph-validate/graph-plan/graph-author/ledger), the xtrax.config TOML primitives, EDA, sparsification, the signature-inference layer (xtrax.inference), and ahead-of-time export via the xtrax.export subpackage (export_pipeline/Target/VerificationLevel/materialize/load_hf_weights, native + wasm32 + SPIR-V codegen)."
 xtrax_version: 0.4.0a10
 triggers:
   - writing JAX pipeline with xtrax
@@ -14,12 +14,12 @@ triggers:
   - sparsify_model / SparsePolicy
   - infer_bundle / BundleSchema / AxisOverride / axis_config
   - signature inference / xtrax.inference / AxisRole / AmbiguousAxisError
-  - xtrax run / xtrax plan / xtrax explain / xtrax export / xtrax resume / xtrax sweep
+  - xtrax run / xtrax plan / xtrax explain / xtrax export / xtrax resume / xtrax sweep / xtrax ledger
   - xtrax.export / export_pipeline / Target / VerificationLevel / CODEGEN_ONLY
   - IREE / vmfb / wasm32 / SPIR-V / ahead-of-time export / load_hf_weights
   - TrainConfig / load_config / ConfigError / init_state
   - load_fn / CLIError / CLIImportError / REGISTRY (stable public xtrax.cli primitives)
-  - xtrax graph-validate / xtrax graph-plan / xtrax graph-author (unreleased, main-only)
+  - xtrax graph-validate / xtrax graph-plan / xtrax graph-author
   - GraphValidateArgs / GraphPlanArgs / GraphAuthorArgs / validate_graph / TemplateGenerator
   - xtrax.config / load_toml_document / require_sections / require_field
   - check_schema_version / classify_schema_version / SchemaVersionStatus
@@ -57,9 +57,13 @@ pip install xtrax[eda]
 
 # For Zarr-backed output sinks + content digests (ZarrStagingSink, zarr_content_digest)
 pip install xtrax[io]
+
+# For the `xtrax` CLI verbs (tyro); for ahead-of-time export (IREE)
+pip install xtrax[cli]
+pip install xtrax[export]
 ```
 
-Dependency floor: read the `jax`/`jaxlib` specifiers in `pyproject.toml`'s `dependencies` rather than trusting a number quoted here -- this line said `<0.11` for the whole period the pin was already `<0.12`. The io_callback shim (`xtrax.stages._callback` — unreleased `main` only, T1-03; not in the 0.4.0a5 wheel) pins this same range and fails loud at import time if the resolved jax drifts outside it.
+Dependency floor: read the `jax`/`jaxlib` specifiers in `pyproject.toml`'s `dependencies` rather than trusting a number quoted here -- this line said `<0.11` for the whole period the pin was already `<0.12`. The io_callback shim (`xtrax.stages._callback`, shipped 0.4.0a6) pins this same range (`PINNED_JAX_RANGE`, `src/xtrax/stages/_callback.py:33`) and fails loud at import time if the resolved jax drifts outside it.
 
 ---
 
@@ -79,6 +83,7 @@ class AxisBoundary(eqx.Module):
     fuse: Fuse | BoundaryCallable | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:96
     tap: Tap | BoundaryCallable | None = eqx.field(static=True, default=None)    # verify: src/xtrax/stages/boundaries.py:97
     sink: Sink | BoundaryCallable | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:98
+    materialize: bool = eqx.field(static=True, default=False)  # verify: boundaries.py:99 -- export-only: declared-materializing sink is stripped
     # No dynamic leaves; tree_flatten returns empty leaves
 ```
 
@@ -121,8 +126,7 @@ Three distinct regions exist:
   ```python
   # Tap and Sink implementations own their io_callback call.
   # Import it from the vendored shim, never from jax.experimental directly
-  # (shim is unreleased main only, T1-03 — on the 0.4.0a5 wheel fall back to
-  # jax.experimental.io_callback):
+  # (it IS jax.experimental.io_callback, re-exported after the drift checks):
   from xtrax.stages._callback import io_callback  # verify: src/xtrax/stages/_callback.py
   # The shim pins jax's still-experimental io_callback: version-range and
   # signature checks run at MODULE IMPORT time and raise IoCallbackSignatureError
@@ -150,7 +154,7 @@ def inference_step(model: eqx.Module, x):
 
 ### Which Primitive for Which Problem
 
-**Decision tree** (verify each branch against `src/xtrax/tiling/plan.py:123-150` BatchPlanner rules):
+**Decision tree** (verify each branch against `src/xtrax/tiling/plan.py:415-529`, `BatchPlanner._decide_strategy`):
 
 ```
 Is the axis variable-length (e.g., sequences of different sizes)?
@@ -158,26 +162,29 @@ Is the axis variable-length (e.g., sequences of different sizes)?
 │   ├─ YES → Bucket strategy (length-padding via select_bucket/bucketize)
 │   └─ NO → Heterogeneous handling (Tap/Sink + padding outside jit)
 │
-└─ NO (cardinality fixed): dedup_eligible=True?
-    ├─ YES (repeated elements) → DedupGather strategy
-    │                              (Phase 0: identify unique items, Phase 1: vmap over K unique,
-    │                               Phase 2: scatter results back to original N positions)
+└─ NO (cardinality fixed): DedupSpec for this axis passed to BatchPlanner(dedup_specs=[...])?
+    ├─ YES (repeated elements) → DedupGather strategy (Phase 0b, plan.py:188-)
+    │                              (identify K unique items, vmap over K, gather back to N)
+    │                              `dedup_eligible=True` ALONE does NOT select it -- it falls
+    │                              through to the cardinality rules below (plan.py:433-438)
     │
-    └─ NO (all distinct): Check cardinality vs. default_batch_size:
-        ├─ cardinality <= batch_size → Vmap (fully parallel vectorization)
+    └─ NO: Check cardinality vs. default_batch_size:
+        ├─ cardinality <= batch_size → Vmap (SafeMap if a memory_estimator says it won't fit)
         │
-        ├─ cardinality > batch_size AND divisible → SafeMap (chunked vmap, memory-bounded)
+        ├─ cardinality > batch_size AND divisible → SafeMap (Vmap if a memory_estimator
+        │                                           says the whole axis fits)
         │
-        └─ cardinality > batch_size AND NOT divisible → SafeMap + deferred warning
-                                                        (last chunk is smaller; OK if handled)
+        └─ cardinality > batch_size AND NOT divisible → SafeMap + RuntimeWarning at plan
+                                                        time, then ValueError at dispatch:
+                                                        safe_map has no ragged last chunk
 ```
 
-**Key decision rule** (verify: `src/xtrax/tiling/plan.py:121-141`):
+**Key decision rule** (verify: `src/xtrax/tiling/plan.py:415-529`):
 
 1. **Bucket** — if `bucket_boundaries` is set (variable-length handling)
-2. **DedupGather** — if `dedup_eligible=True` (repeated elements)
+2. **DedupGather** — only via an explicit `DedupSpec` (Phase 0b); `dedup_eligible=True` alone falls through
 3. **Vmap** — if `cardinality <= batch_size` (small, fully-parallel)
-4. **SafeMap** — if `cardinality > batch_size` (large, chunked; memory-safe)
+4. **SafeMap** — if `cardinality > batch_size` (large, chunked; memory-safe). `cardinality` must be a multiple of `batch_size`, or dispatch raises `ValueError`
 
 **Joint-budget mode** (0.4.0a1+): when `BatchPlanner(budget=MemoryBudget(...))` is set, rules 3-4 are replaced for non-bucket axes — every eligible axis starts at `Vmap`, then axes are greedily demoted to `SafeMap` in spec order until the whole-plan estimate fits the budget. See TIER-2: Tiling Layer → Joint-Budget Planning.
 
@@ -189,14 +196,14 @@ This pattern works **without any tier-2 imports or symbols**:
 
 ```python
 import jax
-from xtrax.tiling.plan import AxisSpec, BatchPlanner, BatchPlan  # verify: src/xtrax/tiling/plan.py:26-120
-from xtrax.tiling.dispatch import make_axis_dispatch  # verify: src/xtrax/tiling/dispatch.py:31-102
+from xtrax.tiling.plan import AxisSpec, BatchPlanner, BatchPlan  # verify: src/xtrax/tiling/plan.py:31-529
+from xtrax.tiling.dispatch import make_axis_dispatch  # verify: src/xtrax/tiling/dispatch.py:31-118
 
 # Step 1: Define axis specification
 axis_spec = AxisSpec(
     name="batch",
-    cardinality=100,           # 100 samples
-    default_batch_size=32,     # chunk size for SafeMap
+    cardinality=96,            # 96 samples -- must be a multiple of the batch size when
+    default_batch_size=32,     # larger than it, or safe_map raises ValueError at dispatch
 )
 
 # Step 2: Build batching plan
@@ -220,10 +227,10 @@ def my_fn(x):
     """Process a single sample."""
     return x * 2
 
-samples = jax.numpy.ones((100, 10))  # (batch, features)
+samples = jax.numpy.ones((96, 10))  # (batch, features)
 results = iterator(my_fn, samples)   # (batch, features) → apply my_fn to each
 
-print(f"Output shape: {results.shape}")  # (100, 10)
+print(f"Output shape: {results.shape}")  # (96, 10)
 ```
 
 **What happened:**
@@ -275,7 +282,7 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | Tiling | `references/tiling.md` | 40% | AxisSpec, BatchPlanner, Strategies, Dispatch, Iterators, Carry, Dedup, Bucket, Multi-Axis Composition |
 | Run | `references/run.md` | 20% | RunSpec, InputResolver, RuntimeBundle, FeatureBatch, SinkSpec/make_sink, ZarrStagingSink, zarr_integrity, AxisBoundary, Fuse/Tap/Sink, topology validation, boundary executor |
 | Training | `references/training.md` | 25% | ResumableState, Trainer, SafetyTrainStep, Engine, Callbacks, Optax |
-| CLI | `references/cli.md` | E2/E3 | Tyro-delegated verbs: plan/explain/export/run/resume/sweep + graph-validate/graph-plan/graph-author |
+| CLI | `references/cli.md` | E2/E3 | Tyro-delegated verbs: plan/explain/export/run/resume/sweep + graph-validate/graph-plan/graph-author + ledger (`src/xtrax/cli/registry.py:42-53`) |
 | EDA | `references/eda.md` | 10% | Plan analysis and visualization |
 | Sparse/Distributed/Checkpoint | `references/sparse-distributed.md` | 5% | Pointer pattern for structured pruning, multi-device training, checkpointing |
 | Signature Inference | `references/inference.md` | — | xtrax.inference: derive AxisSpecs + BundleSchema from a typed function |
@@ -287,7 +294,7 @@ Use the Workflow Index above to pick which file(s) a given task needs — most t
 
 ## Summary
 
-This skill provides a complete, self-contained reference for the xtrax alpha named in its frontmatter `xtrax_version`, plus unreleased `main`.
+This skill provides a complete, self-contained reference for the xtrax alpha named in its frontmatter `xtrax_version`, plus the CHANGELOG `[Unreleased]` changes on main.
 
 **Use TIER-1 to**:
 - Verify compatibility (pre-flight)
@@ -312,7 +319,7 @@ This skill provides a complete, self-contained reference for the xtrax alpha nam
 |-----|----------|--------|
 | DedupGather large-k regime (k > 256) uses suboptimal power-of-2 bucketing | `src/xtrax/tiling/dedup.py:29` | TODO: implement geometric or mixed bucketing for k > 256 |
 | Top-level exports missing (RunSpec, CarrySpec, DedupSpec, AxisBoundary) | `src/xtrax/__init__.py` | By design; use subpackage imports: `from xtrax.run import RunSpec`, `from xtrax.stages import AxisBoundary`, etc. |
-| `make_sink` has no writer for `"jsonl"`/`"h5"` | `src/xtrax/run/sink.py:32-39` | Routing-only stub values; `NotImplementedError` until their writers land. Use `"zarr"` (or `"none"`). |
+| `make_sink` has no writer for `"jsonl"`/`"h5"` | `src/xtrax/run/sink.py:41-58` | Routing-only stub values; `NotImplementedError` until their writers land. Use `"zarr"` (or `"none"`). |
 | Ordered `SafeMap` axis ignores `batch_size` (runs element-at-a-time) | `src/xtrax/stages/executor.py` | Structural JAX constraint, not fixable locally — see Boundary Executor section; use `Scan` if ordering + explicit sequential cost is acceptable |
 The `make_inference_plan` gap noted as of v0.3.0 is closed: plan-time checks now exist via `validate_plan_topology` (`xtrax.stages`, 0.3.1+).
 

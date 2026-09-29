@@ -2,14 +2,14 @@
 
 # CLI Layer (E2/E3) — Tyro-delegated verbs: plan/explain/export/run/resume/sweep + graph-validate/graph-plan/graph-author
 
-> **Availability**: six verbs shipped in the 0.3.0 release (E2: `plan`/`explain`/`export`; E3: `run`/`resume`/`sweep`). Three more — `graph-validate`/`graph-plan`/`graph-author` (T1-10/T1-11/T1-12) — are **unreleased, main-only** (no CHANGELOG entry yet, not in the 0.4.0a5 wheel), same convention as this doc's other main-only flags (e.g. the `io_callback` shim, `axis_boundaries_by_name`). Verify against `REGISTRY` directly (`src/xtrax/cli/registry.py`) before relying on a verb count — this doc is a map, not the territory.
+> **Availability**: six verbs shipped in the 0.3.0 release (E2: `plan`/`explain`/`export`; E3: `run`/`resume`/`sweep`). Three more — `graph-validate`/`graph-plan`/`graph-author` (T1-10/T1-11/T1-12) — shipped in 0.4.0a6 (the CHANGELOG's 0.4.0a6 section omits them; `git tag --contains` places them there), and `ledger` (run-ledger inspect/verify/compact, #108) in 0.4.0a7. Verify against `REGISTRY` directly (`src/xtrax/cli/registry.py`) before relying on a verb count — this doc is a map, not the territory.
 
 #### Verb Registry (Tyro-delegated)
 
 All CLI verbs are registered in `REGISTRY` — a single dict mapping verb name → `(ArgsClass, run_fn)`:
 
 ```python
-from xtrax.cli.registry import REGISTRY  # verify: src/xtrax/cli/registry.py:41-51
+from xtrax.cli.registry import REGISTRY  # verify: src/xtrax/cli/registry.py:42-53
 
 # REGISTRY keys (E2/E3 — 0.3.0 release):
 #   "plan"    → (PlanArgs, run_plan)       — infer_bundle + BatchPlanner, print summary
@@ -19,10 +19,13 @@ from xtrax.cli.registry import REGISTRY  # verify: src/xtrax/cli/registry.py:41-
 #   "resume"  → (ResumeArgs, run_resume)   — read manifest → reconstruct state from latest ckpt → train N more epochs
 #   "sweep"   → (SweepArgs, run_sweep)     — sequential in-process grid search over a sweep TOML
 
-# REGISTRY keys (T1-10/11/12 — unreleased, main-only):
+# REGISTRY keys (T1-10/11/12 — 0.4.0a6):
 #   "graph-validate" → (GraphValidateArgs, run_graph_validate) — load <ir.json>, run validate_graph, write audit_verdict back
 #   "graph-plan"     → (GraphPlanArgs, run_graph_plan)         — load <ir.json>, resolve a node's callable_ref, plan it via plan_from_fn
 #   "graph-author"   → (GraphAuthorArgs, run_graph_author)     — free-generate a candidate IR via TemplateGenerator, validate in-process, write it
+
+# REGISTRY key (#108 — 0.4.0a7):
+#   "ledger"         → (LedgerArgs, run_ledger)                 — inspect / verify / compact the run ledger (src/xtrax/cli/ledger_verb.py)
 ```
 
 `entrypoint.main()` builds a tyro subcommand dict from `REGISTRY` and dispatches the parsed `ArgsClass` instance to its `run_fn`. Verify: `src/xtrax/cli/entrypoint.py:19-48`
@@ -79,7 +82,7 @@ Properties (verify: `src/xtrax/cli/sweep_verb.py`):
 
 `SweepArgs`: positional `config_path` only. Verify: `src/xtrax/cli/sweep_verb.py:34-37`
 
-#### `xtrax graph-validate <ir.json>` Flow (unreleased, main-only, T1-10)
+#### `xtrax graph-validate <ir.json>` Flow (0.4.0a6+, T1-10)
 
 Validates a D4 IR document in place and writes the audit verdict back into it:
 
@@ -93,7 +96,7 @@ xtrax graph-validate <ir.json>
 
 `GraphValidateArgs`: positional `ir_path` only. Malformed input (missing/unknown `schema_version`, unresolvable `callable_ref`) raises `SystemExit` with a clean message. Any node not `verdict=PASS` exits 1 after printing the envelope. Registered as the flat verb `graph-validate` — `entrypoint.py`'s tyro dispatch is a flat `dict[str, (ArgsClass, run_fn)]` with no nested-subcommand support, so this is not the DAG doc's informal two-word `graph validate`. Verify: `src/xtrax/cli/graph_verb.py`
 
-#### `xtrax graph-plan <ir.json> <node-id> [--shapes ...]` Flow (unreleased, main-only, T1-11)
+#### `xtrax graph-plan <ir.json> <node-id> [--shapes ...]` Flow (0.4.0a6+, T1-11)
 
 Resolves a named node's `callable_ref` from a D4 IR document and plans it — the CLI-consumed half of AC1's graph→plan parity proof:
 
@@ -107,7 +110,7 @@ xtrax graph-plan <ir.json> <node_id> [--shapes "x=(4,)f32"]
 
 `GraphPlanArgs`: positional `ir_path`, required `node_id`, optional `shapes` (default `""`; see `xtrax.cli.shapes.parse_shapes` grammar). A node's `callable_ref` post-`load_graph` resolves to the identical live function object `load_fn` would resolve from a bare `module.path:symbol` string — both use the same convention, so this path is provably convergent with `run`'s `--fn` resolution, not just coincidentally similar. Verify: `src/xtrax/cli/graph_plan_verb.py`
 
-#### `xtrax graph-author <out.json> [--seed N] [--num-nodes N]` Flow (unreleased, main-only, T1-12)
+#### `xtrax graph-author <out.json> [--seed N] [--num-nodes N]` Flow (0.4.0a6+, T1-12)
 
 The default generate-then-validate authoring front-end — free-generates a candidate graph and validates it in-process before writing:
 
