@@ -57,6 +57,12 @@ Measured 260912 on iree-base-compiler / iree-base-runtime 3.11. Reproduces
 under both the partitionable and non-partitionable threefry lowerings, so it is
 not specific to ``jax_threefry_partitionable``.
 
+**Rechecked 260929 (pre-registered, see the ``.bth.toml`` sidecar):** M1 still
+reproduces on 3.11.0, which is also the latest stable release, but is exact on the
+nightlies 3.12.0rc20260806 and 3.12.0rc20260925, with every negative control
+holding on all three. So the miscompile was fixed upstream after 3.11.0. M6, the
+un-vmapped runtime abort (iree-org/iree#24929), still aborts on both nightlies.
+
 **Filed upstream as https://github.com/iree-org/iree/issues/24927.** Two further
 results were established for that report and are not re-measured here:
 

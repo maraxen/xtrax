@@ -1,0 +1,9 @@
+# measure_iree_split_derived_key.bth.7e29167f-f01b-4111-be04-357d133f1e24.bth.lock.toml — written at run time, never modified
+[manifest]
+written_at = "2026-09-29T18:31:20.125868+00:00"
+sidecar_sha256 = "a57e5784731f9f14d7947ec81bbf97aa7236a165c02500820adc03182fb78529"
+sidecar_path = "/home/marielle/projects/xtrax/.claude/worktrees/iree-24927-recheck/scripts/measure_iree_split_derived_key.bth.toml"
+git_sha = "7ec625ad224f770ea45828ea81eb4a7ba21b5fe8"
+script_sha256 = "2dc0a256825907574fad76e9f4c74ebedc32e9ee76148f1eba88f4ba5a345ab0"
+run_id = "7e29167f-f01b-4111-be04-357d133f1e24"
+agent_id = null

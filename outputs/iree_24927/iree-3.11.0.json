@@ -1,0 +1,15 @@
+{
+  "iree_base_compiler_version": "3.11.0",
+  "iree_base_runtime_version": "3.11.0",
+  "jax_version": "0.11.1",
+  "jaxlib_version": "0.11.1",
+  "m1_agree": false,
+  "m2_agree": true,
+  "m3_agree": true,
+  "m4_agree": true,
+  "m5a_agree": false,
+  "m5b_agree": true,
+  "reproduces": true,
+  "controls_hold": true,
+  "unvmapped_ran": false
+}
