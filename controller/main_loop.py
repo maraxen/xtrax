@@ -307,11 +307,23 @@ class OneCandidatePassResult:
         -- there is nothing to ratchet against yet, so a first candidate is never rejected on
         ratchet grounds alone.
         """
-        return (
-            self.run_result.success
-            and not self.gate_outcome.hard_blocked
-            and self.ratchet_decision.improved
+        return is_accepted(
+            run_success=self.run_result.success,
+            hard_blocked=self.gate_outcome.hard_blocked,
+            improved=self.ratchet_decision.improved,
         )
+
+
+def is_accepted(*, run_success: bool, hard_blocked: bool, improved: bool) -> bool:
+    """THE acceptance predicate (#4584 part 3), shared by `OneCandidatePassResult.accepted`,
+    the best-so-far lineage advance, and the probe record, so the three cannot disagree.
+
+    Before: the property required all three; the lineage advanced on `improved` alone (a
+    hard-blocked candidate still became best-so-far); and the probe record used
+    `stats.honored and seed.held`, which ignored `improved` and recorded an advisory-only
+    downgrade -- documented as a normal campaign state -- as not accepted.
+    """
+    return run_success and not hard_blocked and improved
 
 
 def _run_git(
@@ -967,9 +979,25 @@ def run_one_candidate_pass(
             fitness_dict, best_fitness, higher_is_better=higher_is_better
         )
 
+    # 2.65. Gate checks (LC-07 wrappers feeding #2181's already-merged xtrax.loop gates). Run
+    # BEFORE the lineage decision (#4584): a hard block has to be able to stop a candidate
+    # becoming best-so-far, not merely flag it afterwards. The gates read the bathos catalog
+    # (this run is already recorded) and nothing the lineage step writes.
+    stats_verdict = stats_battery_fn(**dict(stats_battery_kwargs))
+    stats_decision = assess_stats_battery_verdict(stats_verdict, campaign_mode=campaign_mode)
+
+    seed_counts = seed_trial_counts_fn(seed_trial_db, handoff.content_sha256, hypothesis_clause_id)
+    seed_decision = assess_seed_trial_floor(seed_counts, campaign_mode=campaign_mode)
+
+    accepted = is_accepted(
+        run_success=run_result.success,
+        hard_blocked=stats_decision.hard_blocked or seed_decision.hard_blocked,
+        improved=ratchet_decision.improved,
+    )
+
     # 2.7. Crash-safe best-so-far lineage (S2.1c/S2.4, AC-14) -- accept vs reject branch, driven
-    # solely by ratchet_decision.improved (whether from a real win or the sentinel above).
-    if ratchet_decision.improved:
+    # by the same acceptance predicate the composed result reports (#4584).
+    if accepted:
         prior_best_sha = read_best_so_far(repo, ratchet_ref_name)
         parent_sha = prior_best_sha if prior_best_sha is not None else commit_parent_sha
         if parent_sha is None:
@@ -1016,18 +1044,14 @@ def run_one_candidate_pass(
         # propagate uncaught.
         pending_sha = create_pending_commit(repo, resolved_tree_sha, parent_sha, message)
         advance_best_so_far(repo, ratchet_ref_name, pending_sha, prior_best_sha)
-    else:
+    elif best_fitness is not None:
         # RatchetCrashAtomicityError propagates uncaught. reset_worktree_to_best_so_far reuses
         # the same repo/ratchet_ref_name as the accept branch above -- one source of truth for
         # which repo/ref this campaign ratchets against.
         reset_worktree_to_best_so_far(repo, ratchet_ref_name)
-
-    # 3. Gate checks (LC-07 wrappers feeding #2181's already-merged xtrax.loop gates).
-    stats_verdict = stats_battery_fn(**dict(stats_battery_kwargs))
-    stats_decision = assess_stats_battery_verdict(stats_verdict, campaign_mode=campaign_mode)
-
-    seed_counts = seed_trial_counts_fn(seed_trial_db, handoff.content_sha256, hypothesis_clause_id)
-    seed_decision = assess_seed_trial_floor(seed_counts, campaign_mode=campaign_mode)
+    # else: a FIRST candidate (no best-so-far yet) rejected by a gate. There is no ref to reset
+    # to and none is written; the next candidate is again a first candidate. (Before #4584 this
+    # path was unreachable: the first candidate always advanced lineage, even hard-blocked.)
 
     # 3.5. Evidence attestation check (GW-01, AC-19, advisory-only) -- verify run provenance.
     # May raise ValueError if run_id lookup failed (indicating a broken fallback strategy).
@@ -1079,7 +1103,7 @@ def run_one_candidate_pass(
                 derived_from=derived_from,
                 handoff_sha=handoff.content_sha256,
                 wall_seconds=perf_counter() - pass_started_at,
-                accepted=(run_result.success and stats_decision.honored and seed_decision.held),
+                accepted=accepted,
                 hard_blocked=(stats_decision.hard_blocked or seed_decision.hard_blocked),
             )
         except Exception as exc:  # noqa: BLE001 -- contained by design; see comment above
@@ -1107,6 +1131,7 @@ def run_one_candidate_pass(
 
 
 __all__ = [
+    "is_accepted",
     "CampaignMode",
     "GateOutcome",
     "OneCandidatePassResult",
