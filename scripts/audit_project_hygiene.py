@@ -631,7 +631,12 @@ def check_shipped_imports_reach_consumers(
     """
     from xtrax.devtools.wheel_contents import load_wheel_contents
 
-    wheel = load_wheel_contents(pyproject)
+    try:
+        wheel = load_wheel_contents(pyproject)
+    except ValueError as exc:
+        if "declares no" not in str(exc):
+            raise  # a glob pattern: refuse loudly rather than guess the split
+        return []  # no wheel target declared: there is no shipped/non-shipped split
     project = pyproject.get("project", {})
     consumer_roots = {_requirement_name(r) for r in project.get("dependencies", []) or []}
     for extra, reqs in (project.get("optional-dependencies", {}) or {}).items():

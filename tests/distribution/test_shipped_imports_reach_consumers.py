@@ -122,6 +122,33 @@ def test_module_level_if_and_unguarded_try_still_count() -> None:
     assert {"pytest", "hypothesis"} <= names
 
 
+def test_project_without_a_wheel_target_is_skipped(tmp_path: Path) -> None:
+    """No [tool.hatch.build.targets.wheel]: no split to check against (the synthetic
+    projects in test_project_hygiene.py are like this)."""
+    (tmp_path / "src" / "xtrax").mkdir(parents=True)
+    (tmp_path / "src" / "xtrax" / "m.py").write_text("import pytest\n")
+    pyproject = {"project": {"dependencies": [], "optional-dependencies": {"dev": ["pytest"]}}}
+    env = importlib.metadata.packages_distributions()
+    assert check_shipped_imports_reach_consumers(tmp_path, pyproject, env) == []
+
+
+def test_glob_wheel_config_still_refuses(tmp_path: Path) -> None:
+    pyproject = {
+        **PYPROJECT,
+        "tool": {
+            "hatch": {
+                "build": {
+                    "targets": {"wheel": {"packages": ["src/xtrax"], "exclude": ["src/**/_*.py"]}}
+                }
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="glob"):
+        check_shipped_imports_reach_consumers(
+            tmp_path, pyproject, importlib.metadata.packages_distributions()
+        )
+
+
 def test_real_repository_passes() -> None:
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert (
