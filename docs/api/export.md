@@ -28,7 +28,7 @@ which is deliberately not the same for every target:
 | `WASM32` | `CODEGEN_ONLY` | Compiled. Nothing more |
 | `VULKAN_SPIRV` | `CODEGEN_ONLY` | Compiled; SPIR-V extracted |
 | `METAL_SPIRV` | `CODEGEN_ONLY` | Compiled. Nothing more |
-| `ONNX` | `EXECUTED` | Converted and run on ONNX Runtime's CPU EP; integer outputs matched exactly (see [ONNX](#onnx)) |
+| `ONNX` | `EXECUTED` | Converted and run on ONNX Runtime's CPU EP; integer outputs matched exactly (see ONNX below) |
 
 `IREE_TARGETS` holds the five IREE targets; `ALL_TARGETS` is those plus `ONNX`.
 

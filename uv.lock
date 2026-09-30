@@ -11,7 +11,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "orbax-checkpoint", specifier = ">=0.12.1" }]
+overrides = [{ name = "orbax-checkpoint", specifier = ">=0.11.17" }]
 
 [[package]]
 name = "absl-py"

@@ -140,7 +140,13 @@ Changelog = "https://github.com/maraxen/xtrax/blob/main/CHANGELOG.md"
 # tests/export/test_onnx.py and tests/checkpoint pass on orbax 0.12.6 with
 # jax2onnx 0.17.0, and export-toolchain-tests runs the onnx suite against
 # whatever this lock resolves, so a real incompatibility turns CI red.
-override-dependencies = ["orbax-checkpoint>=0.12.1"]
+#
+# An override REPLACES every declaration of the package, xtrax's own included,
+# and `uv pip install` honours it too. So it must restate the core floor and
+# nothing more: ">=0.12.1" here made the dependency-floors job's lowest-direct
+# install unable to reach the declared 0.11.17. This spelling only drops
+# jax2onnx's upper cap; the lock still resolves 0.12.1.
+override-dependencies = ["orbax-checkpoint>=0.11.17"]
 
 [tool.ruff]
 target-version = "py313"
