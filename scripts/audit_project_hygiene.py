@@ -530,6 +530,131 @@ def check_imports_are_declared(
     return failures
 
 
+# B5 direction 3 (#5036): extras whose packages a CONSUMER never gets. Every other
+# extra (eda, io, cli, export, ...) is something a user legitimately installs, so a
+# shipped module may import its packages; only these are developer-only.
+DEV_ONLY_EXTRAS = frozenset({"dev"})
+
+
+def _requirement_closure(roots: set[str]) -> set[str]:
+    """Normalized distribution names reachable from `roots` via installed metadata.
+
+    Requirements guarded by an `extra == ...` marker are not followed (they are not
+    installed by the plain requirement), and markers are evaluated for THIS
+    interpreter. A root that is not installed contributes only itself.
+    """
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    seen: set[str] = set()
+    stack = list(roots)
+    while stack:
+        name = _normalize_dist_name(stack.pop())
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            requires = importlib.metadata.requires(name) or []
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        for raw in requires:
+            try:
+                req = Requirement(raw)
+            except InvalidRequirement:
+                continue
+            if req.marker is not None and not req.marker.evaluate({"extra": ""}):
+                continue
+            stack.append(req.name)
+    return seen
+
+
+def _module_level_unguarded_imports(tree: ast.Module) -> list[tuple[str, int]]:
+    """Top-level import names a module executes when it is imported.
+
+    Follows module-level `if` and `try` bodies, skipping `if TYPE_CHECKING:` bodies and
+    any `try` whose handlers catch ImportError (optional-dependency guards). Imports
+    inside functions and classes run only when called, so an optional feature's lazy
+    import is not counted.
+    """
+    found: list[tuple[str, int]] = []
+
+    def visit(stmts: list[ast.stmt]) -> None:
+        for stmt in stmts:
+            if isinstance(stmt, ast.Import):
+                found.extend((a.name.split(".")[0], stmt.lineno) for a in stmt.names)
+            elif isinstance(stmt, ast.ImportFrom):
+                if stmt.level == 0 and stmt.module:
+                    found.append((stmt.module.split(".")[0], stmt.lineno))
+            elif isinstance(stmt, ast.If):
+                test = ast.unparse(stmt.test)
+                if test not in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}:
+                    visit(stmt.body)
+                visit(stmt.orelse)
+            elif isinstance(stmt, ast.Try):
+                if not any(_handler_catches_import_error(h) for h in stmt.handlers):
+                    visit(stmt.body)
+                visit(stmt.orelse)
+                visit(stmt.finalbody)
+
+    visit(tree.body)
+    return found
+
+
+def check_shipped_imports_reach_consumers(
+    root: Path,
+    pyproject: dict,
+    env_map: dict[str, list[str]],
+) -> list[str]:
+    """B5 direction 3 (#5036): a SHIPPED module's module-level imports reach a consumer.
+
+    Direction 2 accepts an import that resolves to ANY declared name, dev extra
+    included, so a module that ships in the wheel could import a dev-only package and
+    `pip install xtrax` would then fail on import. Here, for every module the wheel
+    ships (read from pyproject's hatch wheel target, not hand-listed), each unguarded
+    module-level third-party import must resolve to a distribution in the dependency
+    closure of `[project].dependencies` or of a non-dev extra. The closure matters:
+    `jaxtyping` is not declared, but `equinox` (a runtime dependency) requires it.
+
+    An import the environment cannot map to any distribution is left to direction 2.
+    """
+    from xtrax.devtools.wheel_contents import load_wheel_contents
+
+    wheel = load_wheel_contents(pyproject)
+    project = pyproject.get("project", {})
+    consumer_roots = {_requirement_name(r) for r in project.get("dependencies", []) or []}
+    for extra, reqs in (project.get("optional-dependencies", {}) or {}).items():
+        if extra in DEV_ONLY_EXTRAS or not isinstance(reqs, list):
+            continue
+        # A self-referencing extra (`xtrax[eda]`) contributes nothing new.
+        consumer_roots |= {_requirement_name(r) for r in reqs}
+    consumer_roots.discard("xtrax")
+    reachable = _requirement_closure(consumer_roots)
+
+    stdlib = set(sys.stdlib_module_names)
+    failures: list[str] = []
+    for path in sorted((root / "src").rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if not wheel.ships(rel):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (SyntaxError, UnicodeDecodeError):
+            continue  # direction 2 already reports unreadable files
+        for import_name, lineno in _module_level_unguarded_imports(tree):
+            if import_name == "xtrax" or import_name in stdlib:
+                continue
+            dists = {_normalize_dist_name(d) for d in env_map.get(import_name, [])}
+            if not dists or dists & reachable:
+                continue
+            failures.append(
+                f"import {import_name!r} ({rel}:{lineno}) is module-level in a module the "
+                f"wheel ships, but its distribution(s) {sorted(dists)} are reachable only "
+                f"via a dev-only extra ({', '.join(sorted(DEV_ONLY_EXTRAS))}): "
+                "`pip install xtrax` would fail to import this module. Move the import "
+                "into the function that needs it, guard it, or declare the dependency."
+            )
+    return failures
+
+
 def audit_project_hygiene(
     root: Path,
     config_path: Path,
@@ -624,6 +749,7 @@ def audit_project_hygiene(
             failures.extend(
                 check_imports_are_declared(root, data, env_map, config.import_name_overrides)
             )
+            failures.extend(check_shipped_imports_reach_consumers(root, data, env_map))
 
     return len(failures) == 0, failures
 

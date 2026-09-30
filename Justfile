@@ -86,6 +86,14 @@ audit-added-types-diff:
     uv run pytest tests/audit/test_added_types_diff.py -v
     uv run python scripts/audit_added_types_diff.py --no-emit
 
+# #5090: a shipped public dataclass's field shape (removed/renamed/retyped fields,
+# lost defaults, new required fields) must not change without a CHANGELOG line
+# naming the class. added-types-diff audits annotations only, never fields.
+audit-dataclass-shape-diff:
+    uv run ruff check src/xtrax/devtools/gates/dataclass_shape_diff.py src/xtrax/devtools/wheel_contents.py scripts/audit_dataclass_shape_diff.py tests/audit/test_dataclass_shape_diff.py
+    uv run pytest tests/audit/test_dataclass_shape_diff.py -v
+    uv run python scripts/audit_dataclass_shape_diff.py
+
 audit-performance-gate:
     uv run ruff check src/xtrax/devtools/gates/_trace_probe.py src/xtrax/devtools/gates/_performance_probes.py src/xtrax/devtools/gates/performance.py scripts/audit_performance_gate.py tests/audit/test_performance_gate.py
     uv run pytest tests/audit/test_performance_gate.py -v
@@ -325,7 +333,7 @@ audit-orphan-recipes:
     uv run python scripts/audit_orphan_recipes.py --format report
 
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-jax-purity-gate audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-docs-build-contract audit-publish-oidc audit-release-readiness-contract audit-added-types-diff audit-orphan-recipes
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-jax-purity-gate audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-docs-build-contract audit-publish-oidc audit-release-readiness-contract audit-added-types-diff audit-dataclass-shape-diff audit-orphan-recipes
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry
