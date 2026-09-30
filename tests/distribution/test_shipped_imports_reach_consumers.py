@@ -96,6 +96,21 @@ def test_imports_that_do_not_run_on_module_import_are_exempt(tmp_path: Path, sou
     assert _check(tmp_path, "src/xtrax/shipped.py", source) == []
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import warnings\nwith warnings.catch_warnings():\n    import pytest\n",
+        "try:\n    import os\nexcept ImportError:\n    import pytest\n",  # handler runs
+        "class C:\n    import pytest\n",  # a class body runs at import
+        "for _ in range(1):\n    import pytest\n",
+    ],
+    ids=["with", "except-handler-body", "class-body", "for"],
+)
+def test_imports_that_do_run_on_module_import_are_counted(tmp_path: Path, source: str) -> None:
+    failures = _check(tmp_path, "src/xtrax/shipped.py", source)
+    assert len(failures) == 1 and "'pytest'" in failures[0]
+
+
 def test_module_level_if_and_unguarded_try_still_count() -> None:
     import ast
 

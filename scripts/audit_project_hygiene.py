@@ -570,12 +570,14 @@ def _requirement_closure(roots: set[str]) -> set[str]:
 def _module_level_unguarded_imports(tree: ast.Module) -> list[tuple[str, int]]:
     """Top-level import names a module executes when it is imported.
 
-    Follows module-level `if` and `try` bodies, skipping `if TYPE_CHECKING:` bodies and
-    any `try` whose handlers catch ImportError (optional-dependency guards). Imports
-    inside functions and classes run only when called, so an optional feature's lazy
-    import is not counted.
+    Recurses into every compound statement that runs at import time -- `if`, `try`
+    (handlers, `else`, `finally` included), `with`, `for`, `while`, `match`, and class
+    bodies -- skipping only `if TYPE_CHECKING:` bodies, the body of a `try` whose
+    handlers catch ImportError (an optional-dependency guard), and function bodies,
+    which run only when called (an optional feature's lazy import is not counted).
     """
     found: list[tuple[str, int]] = []
+    type_checking = {"TYPE_CHECKING", "typing.TYPE_CHECKING"}
 
     def visit(stmts: list[ast.stmt]) -> None:
         for stmt in stmts:
@@ -584,16 +586,27 @@ def _module_level_unguarded_imports(tree: ast.Module) -> list[tuple[str, int]]:
             elif isinstance(stmt, ast.ImportFrom):
                 if stmt.level == 0 and stmt.module:
                     found.append((stmt.module.split(".")[0], stmt.lineno))
+            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
             elif isinstance(stmt, ast.If):
-                test = ast.unparse(stmt.test)
-                if test not in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}:
+                if ast.unparse(stmt.test) not in type_checking:
                     visit(stmt.body)
                 visit(stmt.orelse)
-            elif isinstance(stmt, ast.Try):
+            elif isinstance(stmt, (ast.Try, ast.TryStar)):
                 if not any(_handler_catches_import_error(h) for h in stmt.handlers):
                     visit(stmt.body)
+                for handler in stmt.handlers:
+                    visit(handler.body)
                 visit(stmt.orelse)
                 visit(stmt.finalbody)
+            elif isinstance(stmt, ast.Match):
+                for case in stmt.cases:
+                    visit(case.body)
+            else:  # With, AsyncWith, For, AsyncFor, While, ClassDef
+                for name in ("body", "orelse", "finalbody"):
+                    block = getattr(stmt, name, None)
+                    if isinstance(block, list):
+                        visit(block)
 
     visit(tree.body)
     return found

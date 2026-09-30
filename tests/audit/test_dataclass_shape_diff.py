@@ -54,9 +54,13 @@ BASE = textwrap.dedent(
 
 
 def _changes(head: str) -> list[tuple[str, str, str]]:
+    return _changes_between(BASE, head)
+
+
+def _changes_between(base: str, head: str) -> list[tuple[str, str, str]]:
     return [
         (c.class_name, c.kind, c.detail)
-        for c in diff_public_dataclass_shapes(rel_path="m.py", base_source=BASE, head_source=head)
+        for c in diff_public_dataclass_shapes(rel_path="m.py", base_source=base, head_source=head)
     ]
 
 
@@ -110,6 +114,65 @@ class TestDiff:
         head = BASE.replace("    x: int\n", "    x: str\n").replace("    y: int\n", "    z: int\n")
         head = head.replace("_cache: int = 0", "_cache: str = ''")
         assert _changes(head) == []
+
+    def test_appending_a_defaulted_field_at_the_end_is_fine_but_inserting_is_not(self):
+        appended = BASE.replace(
+            '    backend: str = "vulkan"\n', '    backend: str = "vulkan"\n    extra: int = 0\n'
+        )
+        assert _changes(appended) == []
+        inserted = BASE.replace(
+            "    adapter_type: str\n", "    extra: int = 0\n    adapter_type: str\n"
+        )
+        kinds = {kind for _, kind, _ in _changes(inserted)}
+        assert "reordered-fields" in kinds
+
+    def test_namedtuple_reorder_is_breaking(self):
+        head = BASE.replace(
+            "        a: int\n        b: int = 0\n", "        b: int = 0\n        a: int\n"
+        )
+        head = BASE.replace("    a: int\n    b: int = 0\n", "    b: int = 0\n    a: int\n")
+        assert ("Pair", "reordered-fields", "a 0->1, b 1->0") in _changes(head)
+
+    def test_init_false_field_is_an_attribute_not_a_parameter(self):
+        """Adding a derived `init=False` field is not a new required parameter."""
+        head = BASE.replace(
+            "    batch_size: int = eqx.field(static=True, default=1)\n",
+            "    batch_size: int = eqx.field(static=True, default=1)\n"
+            "    derived: int = eqx.field(init=False)\n",
+        )
+        assert _changes(head) == []
+
+    def test_removing_an_init_false_field_still_breaks_attribute_access(self):
+        base = BASE.replace(
+            "    batch_size: int = eqx.field(static=True, default=1)\n",
+            "    batch_size: int = eqx.field(static=True, default=1)\n"
+            "    derived: int = eqx.field(init=False)\n",
+        )
+        changes = diff_public_dataclass_shapes(rel_path="m.py", base_source=base, head_source=BASE)
+        assert [(c.class_name, c.kind, c.detail) for c in changes] == [
+            ("Strat", "removed-field", "derived")
+        ]
+
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            ("backend: str = ", "backend: 'str' = "),
+            ("    valid: bool\n", "    valid: Optional[bool]\n"),
+        ],
+        ids=["quoted-forward-ref", "optional"],
+    )
+    def test_spelling_only_annotation_rewrites_are_not_changes(self, old, new):
+        base = (
+            BASE.replace("    valid: bool\n", "    valid: bool | None\n")
+            if "Optional" in new
+            else BASE
+        )
+        head = (
+            base.replace("    valid: bool | None\n", "    valid: Optional[bool]\n")
+            if "Optional" in new
+            else BASE.replace(old, new)
+        )
+        assert _changes_between(base, head) == []
 
     def test_new_file_cannot_break_a_consumer(self):
         assert (
@@ -190,6 +253,48 @@ def test_gate_fails_on_an_unacknowledged_rename_then_passes_once_changelogged(re
     result = run_dataclass_shape_gate(root, target=Path("src/pkg"), merge_base=base)
     assert result.status == "pass"
     assert len(result.changes) == 2  # still reported, now acknowledged
+
+
+def test_changelog_ack_is_a_whole_word_match(repo):
+    """`Result` is not acknowledged by a line about `ExportResult`."""
+    root, base = repo
+    api = root / "src" / "pkg" / "api.py"
+    api.write_text(BASE + "\n@dataclass\nclass Result:\n    x: int\n")
+    _commit(root, "add Result")
+    base2 = _git(root, "rev-parse", "HEAD")
+    api.write_text(BASE + "\n@dataclass\nclass Result:\n    y: int\n")
+    (root / "CHANGELOG.md").write_text("# Changelog\n- `ExportResult` gained a field.\n")
+    _commit(root, "rename Result.x")
+    assert run_dataclass_shape_gate(root, target=Path("src/pkg"), merge_base=base2).status == "fail"
+
+
+def test_deleting_a_module_is_a_removal(repo):
+    root, base = repo
+    _git(root, "rm", "-q", "src/pkg/api.py")
+    _commit(root, "delete api")
+    result = run_dataclass_shape_gate(root, target=Path("src/pkg"), merge_base=base)
+    assert result.status == "fail"
+    assert {c.kind for c in result.unacknowledged} == {"removed-class"}
+
+
+def test_moving_a_module_is_a_removal_from_its_old_path(repo):
+    root, base = repo
+    _git(root, "mv", "src/pkg/api.py", "src/pkg/api2.py")
+    _commit(root, "move api")
+    result = run_dataclass_shape_gate(root, target=Path("src/pkg"), merge_base=base)
+    assert result.status == "fail"
+    assert {c.rel_path for c in result.unacknowledged} == {"src/pkg/api.py"}
+
+
+def test_package_init_is_diffed(repo):
+    root, base = repo
+    init = root / "src" / "pkg" / "__init__.py"
+    init.write_text(BASE)
+    _commit(root, "add init")
+    base2 = _git(root, "rev-parse", "HEAD")
+    init.write_text(BASE.replace("adapter_type: str", "validator: str"))
+    _commit(root, "rename in init")
+    assert run_dataclass_shape_gate(root, target=Path("src/pkg"), merge_base=base2).status == "fail"
 
 
 def test_gate_ignores_files_the_wheel_excludes(repo):
