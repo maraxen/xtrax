@@ -86,6 +86,22 @@ def _capture_git_state(cwd: Path) -> tuple[str, str, bool]:
     return sha, branch, dirty
 
 
+def _prefix_message(e: Exception, context: str) -> None:
+    """Put `context` into `e`'s own rendered message, in place (#5552).
+
+    JAX's io_callback re-renders only an exception's message line, so a note or a
+    chained cause is invisible there. `OSError(errno, strerror)` renders from
+    `strerror`, not `args[0]`; most others render from a str `args[0]`. Anything
+    whose `str()` still lacks the context afterwards gets a note as a last resort.
+    """
+    if isinstance(e, OSError) and isinstance(e.strerror, str):
+        e.strerror = f"{context}: {e.strerror}"
+    elif e.args and isinstance(e.args[0], str):
+        e.args = (f"{context}: {e.args[0]}", *e.args[1:])
+    if context not in str(e):
+        e.add_note(context)
+
+
 def _is_json_type(value: Any, pytypes: tuple[type, ...]) -> bool:  # noqa: ANN401
     # bool subclasses int, so JSON-Schema-wise they must be treated as disjoint types.
     if isinstance(value, bool):
@@ -411,10 +427,7 @@ class ZarrStagingSink:
                         f"for staged key {key!r} at group {group_path or '/'!r}; "
                         "the pending buffer was NOT cleared"
                     )
-                    if e.args and isinstance(e.args[0], str):
-                        e.args = (f"{context}: {e.args[0]}", *e.args[1:])
-                    else:
-                        e.add_note(context)
+                    _prefix_message(e, context)
                     raise
             key_attrs = self._pending_attrs.get(key)
             if key_attrs:

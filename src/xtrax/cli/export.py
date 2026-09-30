@@ -39,7 +39,7 @@ class ExportArgs:
         fn: Import-path string to the function to trace.
             Format: ``'module.path:symbol'``.
         shapes: Space-separated shape specification string.
-            Format: ``'name=(d0,d1,...)<dtype> ...'``.
+            Format: ``'name=(d0,d1,...)dtype ...'``, e.g. ``'x=(4,3)f32 mask=(4,)bool'``.
             Each name corresponds to a positional argument of the function, in order.
         out: Optional file path for the output. Contracts:
             - Default (text): if ``out`` is None, MLIR text is printed to stdout;
