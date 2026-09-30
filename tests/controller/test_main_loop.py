@@ -927,7 +927,10 @@ class TestOneCandidatePassResultAccepted:
         return OneCandidatePassResult(
             handoff=CandidateHandoff(path=Path("c.py"), content_sha256=_VALID_SHA256),
             derived_from="",
-            run_result=CandidateRunResult(script_path="c.py", exit_code=0, success=run_success),
+            # Consistent by construction (#4584): a failed run has a non-zero exit code.
+            run_result=CandidateRunResult(
+                script_path="c.py", exit_code=0 if run_success else 1, success=run_success
+            ),
             gate_outcome=GateOutcome(
                 stats_battery=_stats_decision(hard_blocked=hard_blocked),
                 seed_trial=_seed_decision(hard_blocked=False),
@@ -1227,13 +1230,14 @@ class TestProbeRecordEmission:
         assert not list((tmp_path / "probe_records").glob("*.json"))
         assert "camp-probe-4" in capsys.readouterr().err
 
-    def test_accepted_reflects_run_failure_not_only_gates(
+    def test_failed_run_halts_before_scoring_and_is_never_recorded_accepted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Review finding: gates passing while the run itself reports
-        success=False must record accepted=false (no laundering)."""
+        """No laundering, strengthened (#4584): a run reporting success=False used to be
+        scored anyway (and could advance best-so-far before `accepted` was consulted).
+        It now HALTs before scoring, so nothing is scored and no probe record claims
+        the candidate was accepted."""
         import controller.main_loop as ml
-        from xtrax.profiling.record import ProbeRecord
 
         real_record_run = ml.record_candidate_run
 
@@ -1249,24 +1253,107 @@ class TestProbeRecordEmission:
         transport = _RecordingTransport(_run_envelope())
         adapter = BathosCampaignAdapter(transport=transport, token="test-token")
 
+        scored: list[bool] = []
+
+        def _spy_guarded(*args, **kwargs):
+            scored.append(True)
+            return _passing_guarded_evaluate_fn(*args, **kwargs)
+
+        from controller.evaluate_adapter import RawArtifactsUnavailableError
+
+        with pytest.raises(RawArtifactsUnavailableError, match="exit_code=1"):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-probe-5",
+                campaign_mode="exploration",
+                candidate_static_fn=_passing_candidate_static_fn,
+                stats_battery_kwargs={},
+                stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+                seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
+                    _passing_seed_counts()
+                ),
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(guarded_evaluate_fn=_spy_guarded),
+                probe_record_dir=records_dir,
+            )
+
+        assert scored == []
+        # The halt precedes probe emission: no pass record at all (was: accepted=false).
+        assert not records_dir.exists() or not any(records_dir.glob("pass_*.json"))
+
+    def test_halt_precedes_sidecar_drift_and_any_lineage_step(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordering (#4584 claim 1): with the sidecar-drift check live (autonomous mode),
+        a failed run halts before the drift reaction, and no commit or ref advance runs."""
+        import controller.main_loop as ml
+        from controller.evaluate_adapter import RawArtifactsUnavailableError
+
+        reached: list[str] = []
+        real_record_run = ml.record_candidate_run
+
+        def _failing_run(*args, **kwargs):
+            res = real_record_run(*args, **kwargs)
+            return type(res)(
+                script_path=res.script_path, exit_code=1, success=False, run_id=res.run_id
+            )
+
+        monkeypatch.setattr(ml, "record_candidate_run", _failing_run)
+        for name in (
+            "assert_sidecar_drift_reaction",
+            "create_pending_commit",
+            "advance_best_so_far",
+        ):
+            monkeypatch.setattr(ml, name, lambda *a, _n=name, **k: reached.append(_n))
+
+        adapter = BathosCampaignAdapter(
+            transport=_RecordingTransport(_run_envelope()), token="test-token"
+        )
+        with pytest.raises(RawArtifactsUnavailableError):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-probe-7",
+                campaign_mode="exploration",
+                agent_mode="autonomous",
+                candidate_static_fn=_passing_candidate_static_fn,
+                stats_battery_kwargs={},
+                stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+                seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
+                    _passing_seed_counts()
+                ),
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(),
+            )
+        assert reached == []
+
+    def test_scoring_spy_fires_on_a_successful_run(self, tmp_path: Path) -> None:
+        """Positive control for the test above: the same spy IS reached when the run
+        succeeds, so `scored == []` there means the halt fired, not a dead spy."""
+        scored: list[bool] = []
+
+        def _spy_guarded(*args, **kwargs):
+            scored.append(True)
+            return _passing_guarded_evaluate_fn(*args, **kwargs)
+
+        adapter = BathosCampaignAdapter(
+            transport=_RecordingTransport(_run_envelope()), token="test-token"
+        )
         run_one_candidate_pass(
             _mock_dispatch_backend(),
             adapter,
-            campaign_id="camp-probe-5",
+            campaign_id="camp-probe-6",
             campaign_mode="exploration",
             candidate_static_fn=_passing_candidate_static_fn,
             stats_battery_kwargs={},
             stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
             seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _passing_seed_counts(),
             output_paths=["artifact.json"],
-            **_new_step_kwargs(),
-            probe_record_dir=records_dir,
+            **_new_step_kwargs(guarded_evaluate_fn=_spy_guarded),
+            probe_record_dir=tmp_path / "probe_records",
         )
-
-        written = sorted(records_dir.glob("pass_*.json"))
-        assert len(written) == 1
-        record = ProbeRecord.read(written[0])
-        assert record.config["accepted"] == "false"
+        assert scored == [True]
 
 
 # GW-04 (backlog #3651): structure-tripwire, candidate-smoke, checkified-
