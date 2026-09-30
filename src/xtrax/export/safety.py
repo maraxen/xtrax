@@ -33,6 +33,17 @@ Blockers cover the rules this module owns:
   two or more lanes are exempt, so the rule tests input provenance, not the
   primitive alone. Suppressible, though suppressing it only passes the gate
   and does not make the artifact runnable.
+- ``"onnx-in-graph-rng"``: a JAX random-number primitive in a program bound for
+  the ``onnx`` target. jax2onnx lowers ``jax.random`` draws to ONNX's own
+  attribute-seeded ``RandomUniform``-family ops rather than threefry, so the
+  artifact cannot reproduce JAX's key-determined bits; ``random_split`` has no
+  converter at all. Unsuppressible: no acknowledgement makes the draws JAX's.
+
+The four ``"unlegalizable-op"``/``"sort-stability"``/``"random-permutation"``/
+``"unbatched-threefry-key"`` rules were each measured on IREE and apply only to
+IREE-backend targets. On the ``onnx`` target the same constructs were measured
+exact (``lax.top_k``, stable sort/argsort; 260930 spike), so applying IREE's
+rules there would refuse correct programs.
 
 They are collected rather than raised one at a time so a caller fixing a model
 sees every offending leaf/op at once.
@@ -43,7 +54,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from xtrax.export.targets import Target
+from xtrax.export.targets import Backend, Target
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.stages.topology import AxisDecisionLike, validate_plan_topology
 
@@ -251,11 +262,38 @@ _UNLEGALIZABLE_OP_RULE = "unlegalizable-op"
 _SORT_STABILITY_RULE = "sort-stability"
 _RANDOM_PERMUTATION_RULE = "random-permutation"
 _UNBATCHED_THREEFRY_RULE = "unbatched-threefry-key"
+_ONNX_RNG_RULE = "onnx-in-graph-rng"
 
-#: Rules a caller cannot suppress via ``acknowledged`` -- currently only
-#: unlegalizable ops, because acknowledging one does not make it compile; it
-#: only moves the identical failure later, into ``compile_for_target``.
-_UNSUPPRESSIBLE_RULES = frozenset({_UNLEGALIZABLE_OP_RULE})
+#: Rules a caller cannot suppress via ``acknowledged``. Unlegalizable ops,
+#: because acknowledging one does not make it compile -- it only moves the
+#: identical failure later, into ``compile_for_target``. In-graph RNG on the
+#: onnx target, because no acknowledgement makes ONNX's RNG produce JAX's draws.
+_UNSUPPRESSIBLE_RULES = frozenset({_UNLEGALIZABLE_OP_RULE, _ONNX_RNG_RULE})
+
+#: JAX primitives that draw, derive, or seed random bits. Key wrapping alone
+#: (``random_wrap``/``random_unwrap``) moves no bits and is not listed.
+_JAX_RNG_PRIMITIVES = frozenset(
+    {
+        "random_bits",
+        "random_fold_in",
+        "random_seed",
+        "random_split",
+        "rng_bit_generator",
+        "rng_uniform",
+        "threefry2x32",
+    }
+)
+
+_ONNX_RNG_DETAIL = (
+    "This program draws random numbers inside the exported graph, which the "
+    "onnx target cannot preserve. jax2onnx lowers jax.random draws to ONNX "
+    "RandomUniform/RandomUniformLike -- ONNX's own RNG, seeded by a node "
+    "attribute rather than by the key tensor -- so the artifact cannot "
+    "reproduce JAX's key-determined bits; jax.random.split has no converter "
+    "at all. Measured 260930 on jax2onnx 0.16.1 and 0.17.0. Draw the random "
+    "values on the host and pass them in as inputs (this is how aminx's browser "
+    "sampler feeds its Gumbel noise). Not suppressible."
+)
 
 _TOP_K_DETAIL = (
     "jax.lax.top_k cannot be legalized by IREE's StableHLO importer on any "
@@ -429,8 +467,13 @@ def _is_unbatched_key(eqn: Any) -> bool:
     return shape is not None and math.prod(shape) <= 1
 
 
-def _op_blockers(abstract_inputs: Sequence[Any], fn: Callable[..., Any]) -> list[ExportBlocker]:
-    """Collect blockers for ops IREE cannot legalize or cannot preserve.
+def _op_blockers(
+    abstract_inputs: Sequence[Any], fn: Callable[..., Any], target: Target
+) -> list[ExportBlocker]:
+    """Collect blockers for ops ``target``'s backend cannot legalize or preserve.
+
+    Each backend gets only the rules measured on it: the IREE rules for IREE
+    targets, the in-graph-RNG rule for onnx.
 
     Tracing failures here are swallowed rather than surfaced: a callable that
     ``jax.make_jaxpr`` cannot trace is not something this gate could have
@@ -451,6 +494,22 @@ def _op_blockers(abstract_inputs: Sequence[Any], fn: Callable[..., Any]) -> list
         return []
 
     top = getattr(closed, "jaxpr", closed)
+    if target.backend is Backend.ONNX:
+        return _onnx_op_blockers(top)
+    return _iree_op_blockers(top)
+
+
+def _onnx_op_blockers(top: Any) -> list[ExportBlocker]:
+    """The onnx target's op rules: one blocker per RNG primitive in the program."""
+    return [
+        ExportBlocker(axis=eqn.primitive.name, rule=_ONNX_RNG_RULE, detail=_ONNX_RNG_DETAIL)
+        for eqn in _walk_jaxpr_eqns(top)
+        if eqn.primitive.name in _JAX_RNG_PRIMITIVES
+    ]
+
+
+def _iree_op_blockers(top: Any) -> list[ExportBlocker]:
+    """The IREE targets' op rules, each measured on iree-base-compiler 3.11."""
     input_derived = _input_derived_var_ids(top, frozenset(id(v) for v in top.invars))
     blockers: list[ExportBlocker] = []
     for eqn in _walk_jaxpr_eqns(top):
@@ -520,10 +579,12 @@ def check_export_safety(
         fn: The callable being exported. Its closure-reachable leaves are scanned
             for dtype violations alongside ``abstract_inputs``, and its traced
             jaxpr (including nested sub-jaxprs, e.g. inside ``lax.scan`` or a
-            ``pjit``-wrapped ``argsort`` or ``_shuffle``) is scanned for
-            unlegalizable ops, sorts relying on stable tie-breaking, and
-            ``jax.random.permutation``.
-        target: The target being compiled for.
+            ``pjit``-wrapped ``argsort`` or ``_shuffle``) is scanned for the
+            op rules of ``target``'s backend: unlegalizable ops, sorts relying
+            on stable tie-breaking, ``jax.random.permutation`` and un-batched
+            threefry keys for IREE; in-graph RNG for onnx.
+        target: The target being compiled for. Its ``backend`` selects the op
+            rules.
         request_features: Device features the caller will request, unlocking the
             target's optional dtypes.
         acknowledged: Rule names to suppress from the returned list. Every rule
@@ -539,7 +600,7 @@ def check_export_safety(
     """
     del decisions, axis_boundaries
     blockers = _dtype_blockers(abstract_inputs, fn, target, request_features)
-    blockers += _op_blockers(abstract_inputs, fn)
+    blockers += _op_blockers(abstract_inputs, fn, target)
     return _apply_acknowledged(blockers, acknowledged)
 
 
@@ -578,8 +639,8 @@ def validate_export_safe(
             failure keep seeing one. Either way, the message lists every
             blocker found, across both rule families, not just the first.
         UnsupportedOperationError: If no dtype blocker is present but at least
-            one op blocker (``"unlegalizable-op"``, ``"sort-stability"``, or
-            ``"random-permutation"``) is.
+            one op blocker (e.g. ``"unlegalizable-op"``, ``"sort-stability"``,
+            ``"random-permutation"``, or ``"onnx-in-graph-rng"``) is.
     """
     validate_plan_topology(decisions, axis_boundaries, export_safe=True)
 

@@ -31,7 +31,7 @@ from typing import Any
 import jax
 
 from xtrax.export.spirv import spirv_binaries_in
-from xtrax.export.targets import Target
+from xtrax.export.targets import Backend, Target
 
 __all__ = [
     "CompileError",
@@ -131,9 +131,18 @@ def compile_for_target(
         A CompileResult describing the written artifact.
 
     Raises:
+        ValueError: If ``target`` is not an IREE-backend target (e.g. ``ONNX``,
+            which ``xtrax.export.onnx.convert_to_onnx`` handles).
         CompileError: Compiler missing, or compilation failed even after a
             portable-artifact downgrade.
     """
+    if target.backend is not Backend.IREE:
+        msg = (
+            f"compile_for_target needs an IREE-backend target, got {target.name!r} "
+            f"(backend {target.backend.value!r}); use xtrax.export.onnx.convert_to_onnx "
+            f"for onnx, or export_pipeline, which dispatches on the backend."
+        )
+        raise ValueError(msg)
     tools = _require_compiler()
 
     if out_path is None:
