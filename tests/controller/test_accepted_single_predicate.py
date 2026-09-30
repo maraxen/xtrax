@@ -120,6 +120,20 @@ def test_hard_blocked_first_candidate_writes_and_resets_nothing(monkeypatch):
     assert calls == []
 
 
+def test_crash_resume_hard_block_resets_to_the_existing_ref(monkeypatch):
+    """A real ref with best_fitness still None (crash-resume) is reset on reject: the
+    condition is "a ref exists", not "best_fitness is set"."""
+    calls = _spy_lineage(monkeypatch, prior="resumed-best-sha")
+    result = _pass(
+        mode="sequential",
+        stats=_passing_stats_verdict(),
+        seeds=_failing_seed_counts(),
+        allow_fresh_start_despite_existing_lineage=True,
+    )
+    assert result.accepted is False
+    assert calls == ["reset"]
+
+
 def test_gates_run_before_the_lineage_step(monkeypatch):
     order: list[str] = []
     monkeypatch.setattr(ml, "create_pending_commit", lambda *a, **k: order.append("commit") or "p")

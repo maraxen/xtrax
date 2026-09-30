@@ -323,6 +323,12 @@ def is_accepted(*, run_success: bool, hard_blocked: bool, improved: bool) -> boo
     `stats.honored and seed.held`, which ignored `improved` and recorded an advisory-only
     downgrade -- documented as a normal campaign state -- as not accepted.
     """
+    # `hard_blocked` covers BOTH the stats battery and the seed/trial floor. The seed floor
+    # counts seeds per script_sha256, and every candidate is a new script, so in the gated
+    # modes ("confirmation"/"sequential") a single-run candidate is typically hard-blocked by
+    # it. That was already true of this predicate before #4584; what changed is that the
+    # lineage now agrees with it. Whether the seed floor should veto PROMOTION, or only the
+    # conclude-time "held" claim, is an open design question flagged for sign-off.
     return run_success and not hard_blocked and improved
 
 
@@ -1044,14 +1050,19 @@ def run_one_candidate_pass(
         # propagate uncaught.
         pending_sha = create_pending_commit(repo, resolved_tree_sha, parent_sha, message)
         advance_best_so_far(repo, ratchet_ref_name, pending_sha, prior_best_sha)
-    elif best_fitness is not None:
+    elif best_fitness is not None or read_best_so_far(repo, ratchet_ref_name) is not None:
         # RatchetCrashAtomicityError propagates uncaught. reset_worktree_to_best_so_far reuses
         # the same repo/ratchet_ref_name as the accept branch above -- one source of truth for
-        # which repo/ref this campaign ratchets against.
+        # which repo/ref this campaign ratchets against. A ref existing is the condition, not
+        # best_fitness: a crash-resume can carry a real ref with best_fitness still None.
+        # (best_fitness set with no ref is corruption, and still raises inside the reset.)
         reset_worktree_to_best_so_far(repo, ratchet_ref_name)
-    # else: a FIRST candidate (no best-so-far yet) rejected by a gate. There is no ref to reset
-    # to and none is written; the next candidate is again a first candidate. (Before #4584 this
-    # path was unreachable: the first candidate always advanced lineage, even hard-blocked.)
+    # else: no best-so-far ref exists yet and a gate rejected this candidate -- there is
+    # nothing to reset to and no ref is written. The caller's best_fitness stays None, so the
+    # NEXT candidate also takes the first-candidate sentinel; the ratchet engages only once
+    # some candidate clears the gates. (Before #4584 this path was unreachable: the first
+    # candidate always advanced lineage, even hard-blocked.) If a gate function itself raises,
+    # no reset runs either -- it propagates, like every other gate here.
 
     # 3.5. Evidence attestation check (GW-01, AC-19, advisory-only) -- verify run provenance.
     # May raise ValueError if run_id lookup failed (indicating a broken fallback strategy).
