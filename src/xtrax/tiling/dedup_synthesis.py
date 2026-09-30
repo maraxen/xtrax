@@ -55,9 +55,12 @@ __all__ = [
     "DedupSynthesisCollisionError",
     "DedupSynthesisResult",
     "DedupSynthesisUnsupportedError",
+    "DedupOutputEquivalenceResult",
+    "DedupOutputMismatchError",
     "DedupVerificationResult",
     "merge_dedup_specs",
     "synthesize_dedup_spec",
+    "verify_dedup_outputs",
     "verify_dedup_spec",
 ]
 
@@ -117,6 +120,58 @@ class DedupSpecVerificationError(ValueError):
         self.first_bad_row = first_bad_row
         self.n_bad = n_bad
         self.leaf_index = leaf_index
+
+
+class DedupOutputMismatchError(ValueError):
+    """Raised by verify_dedup_outputs when the dedup path's outputs are not
+    numerically equal to per-row outputs (claim ii, #5217).
+
+    Attributes:
+        max_abs_error: largest |per_row - dedup| over every leaf and row.
+        first_bad_row: smallest row index out of tolerance in any leaf.
+        n_bad: rows out of tolerance in any leaf (union semantics).
+        leaf_index: lowest output-leaf index out of tolerance at first_bad_row.
+        rtol, atol: the tolerance that was applied.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        max_abs_error: float,
+        first_bad_row: int,
+        n_bad: int,
+        leaf_index: int,
+        rtol: float,
+        atol: float,
+    ) -> None:
+        super().__init__(message)
+        self.max_abs_error = max_abs_error
+        self.first_bad_row = first_bad_row
+        self.n_bad = n_bad
+        self.leaf_index = leaf_index
+        self.rtol = rtol
+        self.atol = atol
+
+
+@dataclass(frozen=True)
+class DedupOutputEquivalenceResult:
+    """Result of verify_dedup_outputs (#5217).
+
+    Attributes:
+        n_rows: N, the batch length checked.
+        k: spec.k, the number of canonical rows fn was evaluated on.
+        max_abs_error: largest |per_row - dedup| observed (0.0 when bitwise
+            equal; typically ~1e-6 for float32 where XLA fuses the two paths
+            differently).
+        rtol, atol: the tolerance that was applied.
+    """
+
+    n_rows: int
+    k: int
+    max_abs_error: float
+    rtol: float
+    atol: float
 
 
 @dataclass(frozen=True)
@@ -410,6 +465,105 @@ def merge_dedup_specs(
             result[axis_name] = spec
 
     return result
+
+
+def verify_dedup_outputs(
+    spec: DedupSpec,
+    fn: Any,
+    xs: Any,
+    *,
+    rtol: float = 1e-5,
+    atol: float = 1e-6,
+) -> DedupOutputEquivalenceResult:
+    """Check claim (ii): the dedup path reproduces fn's per-row outputs (#5217).
+
+    Evaluates `fn` two ways over the batch `xs` (a pytree whose leaves share the
+    leading axis N): per row, `jax.vmap(fn)(xs)`; and the way DedupGather dispatches
+    it, `fn` vmapped over the K canonical rows then gathered back to N through the
+    spec's dedup/gather functions. The two are compared NUMERICALLY, never bitwise
+    (spec 260825 §10.2/10.3): XLA fuses the two programs differently, and float32
+    outputs legitimately differ in the last bits (measured 260930: 3.3e-6 at
+    N=2000, K=7). Integer and bool output leaves are compared exactly.
+
+    Complements verify_dedup_spec, which checks claim (i) -- that input rows are
+    byte-identical to their canonical row -- and has no `fn`.
+
+    Args:
+        spec: The DedupSpec whose dispatch is being checked.
+        fn: Per-row function, as the caller would dispatch it over the axis.
+        xs: The batch, leading axis N == len(spec.index_map).
+        rtol, atol: numpy.allclose tolerance (NaN == NaN).
+
+    Returns:
+        DedupOutputEquivalenceResult on success.
+
+    Raises:
+        DedupOutputMismatchError: If any output row is out of tolerance.
+        DedupSpecVerificationError: If the spec is structurally invalid for N.
+        ValueError: If the per-row and dedup outputs differ in structure or shape.
+    """
+    leaves = jax.tree_util.tree_leaves(xs)
+    if not leaves:
+        raise ValueError("verify_dedup_outputs: xs has no array leaves")
+    N = jnp.shape(leaves[0])[0]
+    _check_spec_structure(spec, N)
+
+    dg = spec.to_dedup_gather()
+    per_row = jax.vmap(fn)(xs)
+    unique_rows = dg.dedup_fn(xs, jnp.asarray(dg.unique_indices))
+    deduped = dg.gather_fn(jax.vmap(fn)(unique_rows), jnp.asarray(dg.index_map))
+
+    ref_leaves, ref_tree = jax.tree_util.tree_flatten(per_row)
+    got_leaves, got_tree = jax.tree_util.tree_flatten(deduped)
+    if ref_tree != got_tree:
+        msg = f"verify_dedup_outputs: output structure differs ({ref_tree} vs {got_tree})"
+        raise ValueError(msg)
+
+    # Compared on device; exactly two device->host transfers via _to_host: an (L, N)
+    # bad-row mask and the L per-leaf max errors (same discipline as verify_dedup_spec).
+    bad_by_leaf: list[jax.Array] = []
+    max_by_leaf: list[jax.Array] = []
+    for leaf_index, (ref, got) in enumerate(zip(ref_leaves, got_leaves, strict=True)):
+        ref_d, got_d = jnp.asarray(ref), jnp.asarray(got)
+        if ref_d.shape != got_d.shape:
+            msg = (
+                f"verify_dedup_outputs: output leaf {leaf_index} shape differs "
+                f"({ref_d.shape} vs {got_d.shape})"
+            )
+            raise ValueError(msg)
+        if jnp.issubdtype(ref_d.dtype, jnp.inexact):
+            both_nan = jnp.isnan(ref_d) & jnp.isnan(got_d)
+            diff = jnp.nan_to_num(jnp.abs(ref_d - got_d), nan=jnp.inf)
+            diff = jnp.where(both_nan, 0.0, diff)
+            tol = atol + rtol * jnp.nan_to_num(jnp.abs(got_d), nan=0.0)
+            ok = both_nan | (diff <= tol)
+        else:  # integer / bool outputs: exact
+            diff = jnp.abs(ref_d.astype(jnp.float32) - got_d.astype(jnp.float32))
+            ok = ref_d == got_d
+        bad_by_leaf.append(~ok.reshape(N, -1).all(axis=1))
+        max_by_leaf.append(jnp.max(diff).astype(jnp.float32) if diff.size else jnp.float32(0))
+
+    bad = _to_host(jnp.stack(bad_by_leaf))  # (L, N)
+    max_abs = _to_host(jnp.stack(max_by_leaf)).max().item()
+    union = bad.any(axis=0)
+    n_bad = union.sum().item()
+    if n_bad:
+        first_bad_row = union.argmax().item()
+        leaf_index = bad[:, first_bad_row].argmax().item()
+        raise DedupOutputMismatchError(
+            f"{n_bad} of {N} rows differ between per-row and dedup outputs beyond "
+            f"rtol={rtol}, atol={atol} (max |error| {max_abs:.3g}); first at row "
+            f"{first_bad_row}, output leaf {leaf_index}",
+            max_abs_error=max_abs,
+            first_bad_row=first_bad_row,
+            n_bad=n_bad,
+            leaf_index=leaf_index,
+            rtol=rtol,
+            atol=atol,
+        )
+    return DedupOutputEquivalenceResult(
+        n_rows=N, k=spec.k, max_abs_error=max_abs, rtol=rtol, atol=atol
+    )
 
 
 # ---------------------------------------------------------------------------

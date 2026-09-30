@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`xtrax.tiling.dedup_synthesis.verify_dedup_outputs(spec, fn, xs, *, rtol, atol)`**
+  (#5217): checks claim (ii), that dispatching `fn` through the dedup path
+  (vmap over canonical rows, then gather) reproduces per-row `jax.vmap(fn)(xs)`. The
+  comparison is numeric (`allclose`, NaN equal to NaN; integer and bool outputs exact),
+  never bitwise: XLA fuses the two programs differently, and float32 outputs legitimately
+  differ (3.3e-6 measured at N=2000, K=7). It raises `DedupOutputMismatchError` with
+  the worst error and first bad row. It compares on device and moves one mask
+  through the module's single `_to_host` route. It complements `verify_dedup_spec`,
+  which checks input-row identity.
+
 - **`xtrax.profiling.loop_scaling`: flag loop bodies whose per-iteration cost grows with
   the loop's own extent** (debt #1983). `loop_bodies(fn, *args)` traces `fn` (nothing
   is compiled or run) and reports every `scan`/`while` body at any depth with ONE
@@ -51,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   #5214/#5215.
 
 ### Fixed
+
+- **`BatchPlanner.plan()`: duplicate `DedupSpec`s raise; dedup never makes a budget
+  plan infeasible** (`xtrax.tiling`, #5175). Two `DedupSpec`s for one axis now raise
+  `DedupSpecCollisionError` (plan() routes through `merge_dedup_specs`) instead of
+  silently keeping the last. **Behaviour change** for callers passing duplicates. In
+  joint-budget mode a DedupGather axis was a fixed decision, so adding a `DedupSpec`
+  could turn a plan that fit into `BudgetInfeasibleError`. If every ordinary demotion
+  still leaves the plan over budget, the dedup axes are now planned without dedup as a
+  last resort, with a `RuntimeWarning` and `"DedupSpec dropped"` in the decision's
+  `reasoning`. The error is raised only if that fails too.
 
 - **`ZarrStagingSink.drain` stores 0-d and zero-length payloads** (`xtrax.run`, #161).
   Chunks are now rank-matched (`tuple(max(d, 1) for d in shape)`); previously a
