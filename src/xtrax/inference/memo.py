@@ -96,6 +96,11 @@ class MemoPolicy:
     copy_on_return: bool = False
     block_on_miss: bool = True
     slow_ratio_warn: float = 1.0
+    # #5233: on a miss, run the jitted SCREENED program instead of `fn` eagerly, so a
+    # path the trace never took (`isinstance(x, Tracer)`, identity checks, a caught
+    # ConcretizationTypeError) cannot be what gets cached. Costs one compile per
+    # signature; outputs are the program's arrays and never alias an argument.
+    execute_screened: bool = False
     _stamp_override: str | None = None
 
     def __post_init__(self) -> None:
@@ -329,12 +334,22 @@ def _mode_token(
     return token, traced, has_dyn
 
 
-def _trace_closed(fn: Callable, leaves: list, treedef: Any, traced_positions: tuple[int, ...]):
+def _trace_closed(
+    fn: Callable,
+    leaves: list,
+    treedef: Any,
+    traced_positions: tuple[int, ...],
+    *,
+    return_shape: bool = False,
+):
     """Trace `fn` with only `traced_positions` abstracted; every other leaf
     stays closed-over as its concrete Python value (spec §3.1 "The trace
     calls a probe that takes only the traced leaves"). Raises whatever
     `jax.make_jaxpr` raises, uncaught — the caller wraps this call alone in
-    try/except so screen errors are never mistaken for trace failures."""
+    try/except so screen errors are never mistaken for trace failures.
+
+    `return_shape=True` returns `(closed, out_shape)`, whose pytree structure is
+    what an `execute_screened` runner unflattens its outputs into (#5233)."""
 
     def probe(*traced_vals: Any) -> Any:
         full = list(leaves)
@@ -343,7 +358,42 @@ def _trace_closed(fn: Callable, leaves: list, treedef: Any, traced_positions: tu
         a, k = jax.tree_util.tree_unflatten(treedef, full)
         return fn(*a, **k)
 
-    return jax.make_jaxpr(probe)(*(leaves[p] for p in traced_positions))
+    traced = [leaves[p] for p in traced_positions]
+    if return_shape:
+        return jax.make_jaxpr(probe, return_shape=True)(*traced)
+    return jax.make_jaxpr(probe)(*traced)
+
+
+@dataclass(frozen=True)
+class _ScreenedRunner:
+    """The screened program of one call signature, compiled (#5233).
+
+    Built from the SAME closed jaxpr the purity/donation screen inspected, so a
+    miss under `execute_screened=True` executes exactly what was screened. Static
+    leaves are baked into that program; only `traced_positions` are fed in.
+    """
+
+    digest: str
+    traced_positions: tuple[int, ...]
+    out_tree: Any
+    compiled: Callable
+
+    def __call__(self, leaves: list) -> Any:
+        outs = self.compiled(*(leaves[p] for p in self.traced_positions))
+        return jax.tree_util.tree_unflatten(self.out_tree, outs)
+
+
+def _build_runner(
+    closed: Any, out_shape: Any, traced_positions: tuple[int, ...], digest: str
+) -> _ScreenedRunner:
+    from jax.extend.core import jaxpr_as_fun
+
+    return _ScreenedRunner(
+        digest=digest,
+        traced_positions=traced_positions,
+        out_tree=jax.tree_util.tree_structure(out_shape),
+        compiled=jax.jit(jaxpr_as_fun(closed)),
+    )
 
 
 def _raise_classified(exc: Exception) -> NoReturn:
@@ -385,15 +435,36 @@ def _raise_classified(exc: Exception) -> NoReturn:
 # Impurity screen
 # ---------------------------------------------------------------------------
 
-_STATEFUL_PRIMITIVES = {"pjit_sprng_fold_in", "state_primal"}
-_CALLBACK_PRIMITIVES = {
-    "call",
-    "pure_callback",
-    "io_callback",
-    "host_callback",
-    "callback",
-}
-_RANDOM_PRIMITIVES = {"random_bits", "threefry2x32_p", "rng_bit_generator", "random_seed"}
+# Audited against the primitives JAX 0.10.2 and 0.11.1 register (#5234); a test fails if
+# a listed name stops being registered. Host callbacks, including the debug ones: a hit
+# would silently skip their side effect.
+_CALLBACK_PRIMITIVES = frozenset({"pure_callback", "io_callback", "debug_callback", "debug_print"})
+# Draws. `random_seed` is an unkeyed key built from a constant; `rng_uniform` reads XLA's
+# own RNG state. A memoized draw returns the same sample every call.
+_RANDOM_PRIMITIVES = frozenset(
+    {
+        "random_bits",
+        "random_gamma",
+        "random_seed",
+        "rng_bit_generator",
+        "rng_uniform",
+        "threefry2x32",
+        "threefry4x32",
+        "philox2x32",
+        "philox4x32",
+    }
+)
+# Key plumbing is deterministic in the key it is given and draws nothing, so it is
+# admitted: memoizing `split(key)` returns exactly what the call would. Named here so the
+# registry test pins the decision rather than the absence.
+_ADMITTED_KEY_PRIMITIVES = frozenset(
+    {"random_split", "random_fold_in", "random_wrap", "random_unwrap", "random_clone"}
+)
+_BANNED_PRIMITIVES = _CALLBACK_PRIMITIVES | _RANDOM_PRIMITIVES
+# State is detected structurally, not by name: a function that closes over a mutable
+# `jax.Ref` carries it as a const of the traced program (reads/writes emit `get`/`swap`,
+# which a local, pure ref allocation also emits). `jax.Ref` exists on JAX 0.10.2+.
+_REF_TYPE: type | None = getattr(jax, "Ref", None)
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +594,17 @@ def _screen_program(closed, invar_to_leaf: tuple[int, ...] | None = None) -> Non
     callers that traced fewer leaves than the flattened arg count (D-2
     static leaves). `None` (the default) keeps the old identity mapping.
     """
-    banned = _STATEFUL_PRIMITIVES | _CALLBACK_PRIMITIVES | _RANDOM_PRIMITIVES
+    banned = _BANNED_PRIMITIVES
+
+    if _REF_TYPE is not None:
+        captured = [i for i, c in enumerate(closed.consts) if isinstance(c, _REF_TYPE)]
+        if captured:
+            raise MemoImpurityError(
+                "Function rejected by purity screen: it closes over mutable jax.Ref "
+                f"state (const positions {captured}). A cache hit would skip the "
+                "read/write of that state. Pass the value in as an argument, or "
+                "allocate the ref inside the function."
+            )
 
     offenders: list[tuple[str, str]] = []  # (primitive_name, path) pairs
     sites: list[_DonationSite] = []
@@ -605,6 +686,9 @@ class _MemoCore:
         # Screened-signature table (spec §3.2): token -> digest, or
         # _NEEDS_STATIC while only the ABSTRACT attempt has been resolved.
         self._screened: OrderedDict[tuple, str | _NeedsStaticType] = OrderedDict()
+        # execute_screened (#5233): token -> the compiled screened program. Evicted
+        # with its token, so it is bounded by the same cap.
+        self._runners: dict[tuple, _ScreenedRunner] = {}
         self.stamp: str = (
             policy._stamp_override if policy._stamp_override is not None else _environment_stamp()
         )
@@ -621,7 +705,8 @@ class _MemoCore:
         self._screened[token] = value
         self._screened.move_to_end(token)
         while len(self._screened) > _MAX_SCREENED_SIGNATURES:
-            self._screened.popitem(last=False)
+            evicted_token, _ = self._screened.popitem(last=False)
+            self._runners.pop(evicted_token, None)
 
     def _resolve_static(
         self,
@@ -631,7 +716,7 @@ class _MemoCore:
         came_from_fallback: bool,
         abstract_token: tuple,
         abstract_exc: Exception | None = None,
-    ) -> str:
+    ) -> tuple[str, tuple, tuple[int, ...]]:
         """§3.2 step 3: resolve via the STATIC token, tracing/screening on a
         miss. Only inserts `abstract_token -> _NEEDS_STATIC` if this call was
         reached via step 2's ABSTRACT-trace fallback (`came_from_fallback`).
@@ -655,10 +740,10 @@ class _MemoCore:
             if came_from_fallback:
                 with self.lock:
                     self._insert(abstract_token, _NEEDS_STATIC)
-            return cast(str, sval)
+            return cast(str, sval), static_token, static_traced
 
         try:
-            closed = _trace_closed(self.fn, leaves, treedef, static_traced)
+            closed, out_shape = self._trace(leaves, treedef, static_traced)
         except Exception as exc:
             if abstract_exc is not None:
                 exc.add_note(
@@ -669,13 +754,20 @@ class _MemoCore:
 
         _screen_program(closed, static_traced)  # CR-3: invars == static_traced positions
         digest = _program_digest(closed)
+        runner = self._maybe_runner(closed, out_shape, static_traced, digest)
         with self.lock:
             self._insert(static_token, digest)
+            if runner is not None:
+                self._runners[static_token] = runner
             if came_from_fallback:
                 self._insert(abstract_token, _NEEDS_STATIC)
-        return digest
+        return digest, static_token, static_traced
 
     def _ensure_screened_flat(self, leaves: list, treedef: Any) -> str:
+        """Digest for THIS call's signature; see `_resolve_flat`."""
+        return self._resolve_flat(leaves, treedef)[0]
+
+    def _resolve_flat(self, leaves: list, treedef: Any) -> tuple[str, tuple, tuple[int, ...]]:
         """Resolve the digest for THIS call's signature (spec §3.2),
         screening it (purity + donation) if this is the first time this
         signature has been seen. Takes pre-flattened leaves and treedef.
@@ -690,7 +782,7 @@ class _MemoCore:
                 self._screened.move_to_end(abstract_token)
 
         if val is not _MISSING and val is not _NEEDS_STATIC:
-            return cast(str, val)
+            return cast(str, val), abstract_token, abstract_traced
         if val is _NEEDS_STATIC:
             return self._resolve_static(
                 leaves, treedef, came_from_fallback=False, abstract_token=abstract_token
@@ -698,7 +790,7 @@ class _MemoCore:
 
         # ABSTRACT miss: trace outside the lock.
         try:
-            closed = _trace_closed(self.fn, leaves, treedef, abstract_traced)
+            closed, out_shape = self._trace(leaves, treedef, abstract_traced)
         except Exception as exc:
             if has_dyn:
                 return self._resolve_static(
@@ -712,9 +804,49 @@ class _MemoCore:
 
         _screen_program(closed, abstract_traced)  # CR-3: invars == abstract_traced positions
         digest = _program_digest(closed)
+        runner = self._maybe_runner(closed, out_shape, abstract_traced, digest)
         with self.lock:
             self._insert(abstract_token, digest)
-        return digest
+            if runner is not None:
+                self._runners[abstract_token] = runner
+        return digest, abstract_token, abstract_traced
+
+    def _trace(self, leaves: list, treedef: Any, traced: tuple[int, ...]) -> tuple[Any, Any]:
+        """Trace for screening; also capture the output shape iff a runner will be built."""
+        if self.policy.execute_screened:
+            return _trace_closed(self.fn, leaves, treedef, traced, return_shape=True)
+        return _trace_closed(self.fn, leaves, treedef, traced), None
+
+    def _maybe_runner(
+        self, closed: Any, out_shape: Any, traced: tuple[int, ...], digest: str
+    ) -> _ScreenedRunner | None:
+        if not self.policy.execute_screened:
+            return None
+        return _build_runner(closed, out_shape, traced, digest)
+
+    def _runner_for(
+        self, token: tuple, traced: tuple[int, ...], digest: str, leaves: list, treedef: Any
+    ) -> _ScreenedRunner:
+        """The runner screened for `token`. If a concurrent eviction removed it, rebuild
+        from a fresh trace, but only if that trace is the program that was screened
+        (same digest) -- otherwise the program changed under us (#5233)."""
+        with self.lock:
+            runner = self._runners.get(token)
+        # Digest-checked: a runner stored under this token after an eviction by another
+        # thread's re-trace may be a different program than the digest this call keys on.
+        if runner is not None and runner.digest == digest:
+            return runner
+        closed, out_shape = _trace_closed(self.fn, leaves, treedef, traced, return_shape=True)
+        if _program_digest(closed) != digest:
+            raise MemoStalenessError(
+                "execute_screened: re-tracing this signature produced a different program "
+                "than the one screened; refusing to run an unscreened program"
+            )
+        _screen_program(closed, traced)
+        runner = _build_runner(closed, out_shape, traced, digest)
+        with self.lock:
+            self._runners[token] = runner
+        return runner
 
     def _ensure_screened(self, args: tuple, kwargs: dict) -> str:
         """Resolve the digest for THIS call's signature (spec §3.2),
@@ -787,7 +919,7 @@ class _MemoCore:
         t0 = time.perf_counter()
         leaves, treedef = jax.tree_util.tree_flatten((args, kwargs))
         try:
-            digest = self._ensure_screened_flat(leaves, treedef)
+            digest, token, traced = self._resolve_flat(leaves, treedef)
         except MemoImpurityError as exc:
             with self.lock:
                 self.screen_latched_error = exc  # latch (OBJ-R2-08)
@@ -819,12 +951,21 @@ class _MemoCore:
             # CR-2: calls counter is incremented exactly once inside
             # _maybe_spot_check_unlocked (both the ok and mismatch paths, and
             # the entry-evicted-before-recompute early return).
-            self._maybe_spot_check_unlocked(key, args, kwargs)
+            rerun = None
+            if self.policy.execute_screened:
+
+                def rerun() -> Any:  # noqa: ANN401
+                    return self._runner_for(token, traced, digest, leaves, treedef)(leaves)
+
+            self._maybe_spot_check_unlocked(key, args, kwargs, rerun)
             return value
         self.stats.misses += 1
 
         op_start = time.perf_counter()
-        raw_out = self.fn(*args, **kwargs)
+        if self.policy.execute_screened:
+            raw_out = self._runner_for(token, traced, digest, leaves, treedef)(leaves)
+        else:
+            raw_out = self.fn(*args, **kwargs)
         if self.policy.block_on_miss:
             jax.block_until_ready(raw_out)
         ready = self.policy.block_on_miss
@@ -882,7 +1023,13 @@ class _MemoCore:
                 stacklevel=2,
             )
 
-    def _maybe_spot_check_unlocked(self, key: str, args: tuple, kwargs: dict) -> None:
+    def _maybe_spot_check_unlocked(
+        self,
+        key: str,
+        args: tuple,
+        kwargs: dict,
+        rerun: Callable[[], Any] | None = None,
+    ) -> None:
         with self.lock:
             if self.stats.spot_check_mismatches > 0:
                 raise MemoStalenessError("spot_check_mismatches > 0: poisoned until .memo_reset()")
@@ -895,7 +1042,10 @@ class _MemoCore:
             cached_value = entry.value
         # Recompute OUTSIDE the lock via UNWRAPPED fn (fresh closure read).
         # Replay uses this call's own (args, kwargs) (#5231).
-        fresh = self.fn(*args, **kwargs)
+        # Under execute_screened the cache holds the screened program's output, so the
+        # spot check re-runs that program (`rerun`); re-running fn eagerly would flag the
+        # very trace/eager divergence the caller opted out of (#5233).
+        fresh = rerun() if rerun is not None else self.fn(*args, **kwargs)
         jax.block_until_ready(fresh)
         cached_flat = jax.tree_util.tree_leaves(cached_value)
         fresh_flat = jax.tree_util.tree_leaves(fresh)

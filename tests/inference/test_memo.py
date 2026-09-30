@@ -1991,7 +1991,7 @@ def _reference_screen_jaxpr(closed) -> None:
     """Raise MemoImpurityError on detectably impure primitives. Traversal walks
     with an explicit stack via _iter_subjaxprs exclusively, covering tuple/list-
     valued params generically and with no depth cap."""
-    banned = memo._STATEFUL_PRIMITIVES | memo._CALLBACK_PRIMITIVES | memo._RANDOM_PRIMITIVES
+    banned = memo._BANNED_PRIMITIVES
 
     offenders: list[tuple[str, str]] = []  # (primitive_name, path) pairs
     stack: list[tuple[Any, str]] = [(closed.jaxpr, "jaxpr")]
