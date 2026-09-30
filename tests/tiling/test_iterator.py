@@ -86,7 +86,7 @@ class TestSafeMapIterator:
 
         assert jnp.allclose(vmap_result, safe_result)
 
-    def test_safe_map_iterator_non_divisible_raises_valueerror(self):
+    def test_chunked_map_iterator_non_divisible_runs_a_ragged_final_chunk(self):
         """ChunkedMapIterator should propagate ValueError for non-divisible n."""
 
         def fn(x):

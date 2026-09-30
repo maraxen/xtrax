@@ -18,7 +18,17 @@ a `DeprecationWarning`. They are removed in the release after that.
 
 ## Run it
 
-Python, structurally (needs [ast-grep](https://ast-grep.github.io/) ≥ 0.42):
+Python, structurally (needs [ast-grep](https://ast-grep.github.io/) ≥ 0.42). Start with a
+report-only pass:
+
+```bash
+ast-grep scan --rule codemods/safemap-to-chunkedmap/rules.yml src tests
+```
+
+If it prints `warning[jax-safe-map-unaliased-import]`, alias that import before rewriting
+(`from jax._src.util import safe_map as jax_safe_map`), and rename its call sites to match.
+The identifier rule can't tell a later bare `safe_map(...)` in that file from xtrax's, so
+it would rename it and leave a `NameError`. Then rewrite:
 
 ```bash
 ast-grep scan --rule codemods/safemap-to-chunkedmap/rules.yml --update-all src tests
@@ -55,6 +65,14 @@ Left alone:
 - Any other `"safe_map"` string, for example a benchmark label written into bench
   records, so history stays comparable.
 - Longer identifiers such as `safe_map_count` or `TestSafeMapThing`.
+
+Known limits:
+
+- The JAX exclusion in prose (comments, docstrings, Markdown) applies to the whole
+  line or comment. A line that mentions JAX's `safe_map` and xtrax's `SafeMap` together
+  keeps both names, so fix those by hand.
+- In Markdown, `from jax._src.util import safe_map` inside a code block is renamed. Only
+  `util.safe_map` and "JAX's (own) safe_map" are recognised there, so check the preview.
 
 `fixture_before.py` → `fixture_after.py` in this directory is the exact expected
 transformation. xtrax's `tests/test_renamed_chunked_map.py` checks it, and checks that

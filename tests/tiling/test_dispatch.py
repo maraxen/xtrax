@@ -101,7 +101,7 @@ class TestSafeMapDispatch:
 
         assert jnp.allclose(result, expected)
 
-    def test_safemap_non_divisible_raises(self):
+    def test_chunked_map_non_divisible_runs_a_ragged_final_chunk(self):
         """#5565: a non-divisible cardinality dispatches (ragged final chunk of 10)."""
 
         def fn(x):

@@ -84,6 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   size. xtrax's own divisibility check was the only obstacle, and it is removed (verified
   equal to `vmap` on JAX 0.10.2 and 0.11.1, including n=50,713 with batch 512). The
   planner no longer warns, and the decision's reasoning notes the ragged remainder.
+  **Behaviour change:** a non-divisible axis whose `memory_estimator` says it fits now
+  plans as `Vmap`, like a divisible one. The old Rule 5 forced chunking there only
+  because dispatch was going to fail.
 
 - **`ZarrStagingSink.drain` stores 0-d and zero-length payloads** (`xtrax.run`, #161).
   Chunks are now rank-matched (`tuple(max(d, 1) for d in shape)`); previously a
@@ -147,7 +150,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"ChunkedMap"` before upgrading. The alias constructs the new class, and the codemod
   rewrites that comparison. xtrax's own name-based matching accepts both names for
   this release. Strategy-name strings in EDA output (`strategy_counts` keys, the
-  `strategy` column) are now `"ChunkedMap"`. The sealed `port/` apparatus still
+  `strategy` column) are now `"ChunkedMap"`, and `RuntimeBundle.iterator`'s annotation
+  names `ChunkedMapIterator`. The sealed `port/` apparatus still
   references `xtrax.transforms.map.safe_map` through the alias, so it must be re-sealed
   before the aliases are removed.
 

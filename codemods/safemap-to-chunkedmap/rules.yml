@@ -111,3 +111,18 @@ transform:
   A: { replace: { source: $S, replace: "\\bSafeMap\\b", by: ChunkedMap } }
   NEW: { replace: { source: $A, replace: "\\bSafeMapIterator\\b", by: ChunkedMapIterator } }
 fix: $NEW
+---
+# REPORT ONLY (no fix). In a file that does `from jax... import safe_map` WITHOUT an alias,
+# a later bare `safe_map(...)` call is JAX's function, but the identifier rule above cannot
+# tell and would rename it -- a NameError. Alias the import first
+# (`from jax._src.util import safe_map as jax_safe_map`), then run the codemod.
+id: jax-safe-map-unaliased-import
+language: python
+severity: warning
+message: >-
+  unaliased import of JAX's own safe_map: alias it (e.g. `as jax_safe_map`) before running
+  this codemod, or later bare `safe_map(...)` calls in this file will be renamed
+rule:
+  pattern: from $M import safe_map
+constraints:
+  M: { regex: "^jax(\\.|$)" }

@@ -138,14 +138,17 @@ def __getattr__(name):
         import importlib
 
         return getattr(importlib.import_module(_LAZY[name]), name)
-    from xtrax._renamed import RENAMED
+    from xtrax._renamed import RENAMED, deprecated_alias
 
     if name in RENAMED and RENAMED[name] in _LAZY:
-        # Deprecated pre-#3644 name: resolve through the owning module's own alias hook,
-        # which warns.
+        # Deprecated pre-#3644 name. Warn from THIS hook (one frame below the caller), not
+        # via the submodule's hook -- that would attribute the warning to this file, and
+        # Python's default filter hides DeprecationWarnings not attributed to __main__.
         import importlib
 
-        return getattr(importlib.import_module(_LAZY[RENAMED[name]]), name)
+        new = RENAMED[name]
+        obj = getattr(importlib.import_module(_LAZY[new]), new)
+        return deprecated_alias("xtrax", name, {new: obj})
     raise AttributeError(f"module 'xtrax' has no attribute {name!r}")
 
 

@@ -411,6 +411,19 @@ class TestBatchPlanner:
         decision = plan.decisions[0]
         assert isinstance(decision.strategy, Vmap)
 
+    def test_memory_estimator_under_limit_prefers_vmap_for_a_non_divisible_axis(self):
+        """#5565: divisibility no longer changes the decision. The old Rule 5 forced
+        ChunkedMap here (only because dispatch was going to fail); now a non-divisible
+        axis the estimator says fits gets Vmap, exactly like a divisible one."""
+
+        def low_estimate(spec: AxisSpec) -> int:
+            return 1000
+
+        spec = AxisSpec(name="batch", cardinality=101, default_batch_size=50)
+        decision = BatchPlanner(memory_estimator=low_estimate).plan([spec]).decisions[0]
+        assert isinstance(decision.strategy, Vmap)
+        assert "ragged final chunk of 1" in decision.reasoning
+
     def test_memory_estimator_over_limit_prefers_safemap(self):
         """When memory estimate > limit, prefer ChunkedMap over Vmap."""
 

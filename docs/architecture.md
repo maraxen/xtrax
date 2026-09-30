@@ -106,8 +106,7 @@ The `BatchPlanner` uses these rules (in order):
 
 1. If `dedup_eligible=True`, use `DedupGather`.
 2. If `cardinality <= default_batch_size`, use `Vmap`.
-3. If `cardinality > default_batch_size` and divisible, use `ChunkedMap`.
-4. If `cardinality > default_batch_size` and NOT divisible, use `ChunkedMap` with a warning (will error at dispatch time).
+3. If `cardinality > default_batch_size`, use `ChunkedMap`. A cardinality that is not a multiple of the batch size is fine: the final chunk is simply smaller.
 
 For custom strategies (e.g., Scan for RNNs), construct `AxisDecision` directly.
 

@@ -12,6 +12,8 @@ Code that dispatches on the strategy's class NAME therefore sees the new name;
 xtrax's own name-based matching accepts both for this release (topology, export).
 """
 
+import os
+import sys
 import warnings
 from typing import Any
 
@@ -37,6 +39,17 @@ def deprecated_alias(module_name: str, name: str, namespace: dict[str, Any]) -> 
         "deprecated alias and will be removed in the next release. Migrate with the "
         "ast-grep rules in codemods/safemap-to-chunkedmap/.",
         DeprecationWarning,
-        stacklevel=3,
+        skip_file_prefixes=_internal_prefixes(),
     )
     return namespace[new]
+
+
+def _internal_prefixes() -> tuple[str, ...]:
+    """Directories whose frames are never "the caller": xtrax itself (this module and the
+    __getattr__ hooks), plus jaxtyping when loaded -- its import hook wraps xtrax functions
+    and adds a frame, so a fixed stacklevel would blame the wrong file."""
+    prefixes = [os.path.dirname(os.path.abspath(__file__)) + os.sep]
+    jaxtyping_file = getattr(sys.modules.get("jaxtyping"), "__file__", None)
+    if isinstance(jaxtyping_file, str):
+        prefixes.append(os.path.dirname(os.path.abspath(jaxtyping_file)) + os.sep)
+    return tuple(prefixes)

@@ -277,9 +277,8 @@ class TestBoundariesForExport:
         """A bare None would flip an ordered ChunkedMap onto a different lowering.
 
         execute_map_axis reads boundary.sink.ordered to choose between
-        jax.lax.map and chunked_map(..., batch_size=...); the latter raises when
-        cardinality is not divisible by batch_size, so a working configuration
-        would crash at export.
+        jax.lax.map (sequential) and chunked_map(..., batch_size=...) (batched), so
+        dropping the flag would export a different program from the one that ran.
         """
         boundaries = {"batch": AxisBoundary(sink=_Sink(ordered=True), materialize=True)}
         assert _boundaries_for_export(boundaries)["batch"].sink.ordered is True

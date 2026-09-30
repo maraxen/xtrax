@@ -134,7 +134,7 @@ class BatchPlanner:
     When memory_estimator is provided, it overrides rule 3/4 decisions
     to prefer ChunkedMap if estimated Vmap memory exceeds device limit.
 
-    When budget is provided (joint-budget mode), rules 3-5 are replaced for
+    When budget is provided (joint-budget mode), rules 3-4 are replaced for
     non-bucket axes: every eligible axis starts at Vmap, then axes with
     cardinality > default_batch_size are greedily demoted to ChunkedMap — in the
     order specs were given — until budget.estimate() over the whole plan fits

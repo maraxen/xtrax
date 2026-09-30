@@ -32,9 +32,11 @@ def test_old_name_is_a_warning_alias_for_the_new_object(module: str, old: str, n
     import importlib
 
     mod = importlib.import_module(module)
-    with pytest.warns(DeprecationWarning, match=rf"{old} was renamed to {new}.*#3644"):
+    with pytest.warns(DeprecationWarning, match=rf"{old} was renamed to {new}.*#3644") as rec:
         aliased = getattr(mod, old)
     assert aliased is getattr(mod, new)
+    # Attributed to the caller (this file), or Python's default filter would hide it.
+    assert {w.filename for w in rec} == {__file__}
 
 
 def test_from_import_of_an_old_name_warns():
@@ -95,3 +97,36 @@ def test_codemod_rewrites_the_fixture_exactly_and_is_idempotent(tmp_path: Path):
     assert target.read_text() == (CODEMOD / "fixture_after.py").read_text()
     again = subprocess.run(cmd, check=True, capture_output=True, text=True)
     assert "Applied" not in again.stdout + again.stderr
+
+
+def _rename_markdown():  # noqa: ANN202
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rename_markdown", CODEMOD / "rename_markdown.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_rename_markdown_whole_words_and_jax_exclusion():
+    rename = _rename_markdown().rename_text
+    text = (
+        "Use `SafeMap` or `SafeMapIterator`; call safe_map(fn, xs).\n"
+        "JAX's own safe_map is unrelated; so is util.safe_map.\n"
+        "safe_map_count and MySafeMapper stay.\n"
+    )
+    assert rename(text) == (
+        "Use `ChunkedMap` or `ChunkedMapIterator`; call chunked_map(fn, xs).\n"
+        "JAX's own safe_map is unrelated; so is util.safe_map.\n"
+        "safe_map_count and MySafeMapper stay.\n"
+    )
+    assert rename(rename(text)) == rename(text)  # idempotent
+
+
+def test_rename_markdown_check_mode_reports_without_writing(tmp_path: Path):
+    doc = tmp_path / "doc.md"
+    doc.write_text("SafeMap\n")
+    assert _rename_markdown().main(["--check", str(tmp_path)]) == 1
+    assert doc.read_text() == "SafeMap\n"
+    assert _rename_markdown().main([str(tmp_path)]) == 0
+    assert doc.read_text() == "ChunkedMap\n"
