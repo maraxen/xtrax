@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`MemoPolicy(execute_screened=True)`** (`xtrax.inference`, #5233): on a cache miss,
+  run the jitted **screened program** of that call signature instead of the function
+  eagerly, so a path the trace never took (`isinstance(x, jax.core.Tracer)`, identity
+  checks, a caught `ConcretizationTypeError`) cannot be what gets cached. The runner
+  is built from the same closed jaxpr the screen inspected; if it has to be rebuilt,
+  a re-trace whose program differs from the screened one raises `MemoStalenessError`.
+  Spot checks under this policy re-run the screened program, not the function
+  eagerly. Opt-in; the default is unchanged. Costs one compile per signature, and a
+  miss returns fresh output buffers, never an argument's.
+
 - **`xtrax.profiling.loop_scaling`: flag loop bodies whose per-iteration cost grows with
   the loop's own extent** (debt #1983). `loop_bodies(fn, *args)` traces `fn` (nothing
   is compiled or run) and reports every `scan`/`while` body at any depth with ONE
@@ -65,6 +75,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   syntax, so `x=(4,3)<float32>` was rejected. The parser now accepts the long aliases
   `float32`/`float64`/`int32` and an optional `<...>` around the dtype, reports a
   missing dtype specifically, and every error message shows `e.g. x=(4,3)f32`.
+
+- **`memoize_jaxpr` purity screen audited against the primitives JAX registers**
+  (`xtrax.inference`, #5234). Five of the eleven banned names were registered by
+  neither JAX 0.10.2 nor 0.11.1 (the "stateful" list banned nothing at all). The screen
+  now rejects `debug_print` and `debug_callback` (a hit would skip the side effect),
+  `random_gamma`, `rng_uniform`, `threefry2x32`/`threefry4x32` and `philox2x32`/`philox4x32`,
+  and **a function that
+  closes over a mutable `jax.Ref`**, which previously crashed in the program digest
+  with `ValueError: Out of bound indexer`. Key plumbing on a key argument
+  (`random_split`, `random_fold_in`, `random_wrap`, `random_unwrap`, `random_clone`)
+  is admitted explicitly. Tests fail if any listed name stops being registered, or if
+  a registered random/rng/callback/debug-family primitive is left unclassified.
+  **Behaviour change:** a memoized function that calls `jax.debug.print` is now rejected.
 
 - **`ZarrStagingSink.drain` stores 0-d and zero-length payloads** (`xtrax.run`, #161).
   Chunks are now rank-matched (`tuple(max(d, 1) for d in shape)`); previously a
