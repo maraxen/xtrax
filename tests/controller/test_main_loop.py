@@ -586,7 +586,9 @@ class TestGateCheckIsLoadBearing:
 
         assert result.gate_outcome.seed_trial.hard_blocked is True
         assert result.gate_outcome.hard_blocked is True
-        assert result.accepted is False
+        # #4584 option 2: the seed floor vetoes the HELD claim, not promotion.
+        assert result.accepted is True
+        assert result.held is False
 
     def test_downgraded_verdict_is_advisory_only_for_exploration_campaign(self) -> None:
         """An advisory-only downgrade (exploration mode) must NOT flip acceptance -- both

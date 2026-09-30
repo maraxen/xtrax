@@ -231,8 +231,10 @@ class GateOutcome:
 
         This is the load-bearing signal a failing gate check must actually produce: a
         `confirmation`/`sequential` campaign whose stats-battery verdict downgraded, or whose
-        seed/trial floor isn't cleared, hard-blocks here -- it is not silently plumbed through
-        and ignored by `OneCandidatePassResult.accepted` below. Sidecar drift does NOT fold
+        seed/trial floor isn't cleared, hard-blocks here. The two gates veto different things
+        (#4584, option 2): a stats-battery block vetoes PROMOTION
+        (`OneCandidatePassResult.accepted`); a seed/trial-floor block vetoes only the
+        conclude-time HELD claim (`OneCandidatePassResult.held`). Sidecar drift does NOT fold
         into hard_blocked; SidecarHashMismatchError is raised directly (autonomous mode) or
         sidecar_drift.should_warn is set (collaborative mode).
         """
@@ -309,27 +311,41 @@ class OneCandidatePassResult:
         """
         return is_accepted(
             run_success=self.run_result.success,
-            hard_blocked=self.gate_outcome.hard_blocked,
+            stats_hard_blocked=self.gate_outcome.stats_battery.hard_blocked,
             improved=self.ratchet_decision.improved,
         )
 
+    @property
+    def held(self) -> bool:
+        """True iff the candidate was promoted AND clears the seed/trial floor, i.e. its
+        result may be reported as held (#4584, option 2). See `is_held`."""
+        return is_held(
+            accepted=self.accepted, seed_hard_blocked=self.gate_outcome.seed_trial.hard_blocked
+        )
 
-def is_accepted(*, run_success: bool, hard_blocked: bool, improved: bool) -> bool:
-    """THE acceptance predicate (#4584 part 3), shared by `OneCandidatePassResult.accepted`,
+
+def is_accepted(*, run_success: bool, stats_hard_blocked: bool, improved: bool) -> bool:
+    """THE promotion predicate (#4584 part 3), shared by `OneCandidatePassResult.accepted`,
     the best-so-far lineage advance, and the probe record, so the three cannot disagree.
 
     Before: the property required all three; the lineage advanced on `improved` alone (a
     hard-blocked candidate still became best-so-far); and the probe record used
     `stats.honored and seed.held`, which ignored `improved` and recorded an advisory-only
     downgrade -- documented as a normal campaign state -- as not accepted.
+
+    Only the STATS-battery gate vetoes promotion (Marielle, 260930, option 2). The seed/trial
+    floor counts seeds per script_sha256 and every candidate is a new script, so as a
+    promotion veto it would block nearly every single-run candidate in the gated modes and
+    the ratchet would never advance. It answers "is there enough replication to report this
+    result as held?", a claim about the campaign's result, so it gates `is_held` instead.
     """
-    # `hard_blocked` covers BOTH the stats battery and the seed/trial floor. The seed floor
-    # counts seeds per script_sha256, and every candidate is a new script, so in the gated
-    # modes ("confirmation"/"sequential") a single-run candidate is typically hard-blocked by
-    # it. That was already true of this predicate before #4584; what changed is that the
-    # lineage now agrees with it. Whether the seed floor should veto PROMOTION, or only the
-    # conclude-time "held" claim, is an open design question flagged for sign-off.
-    return run_success and not hard_blocked and improved
+    return run_success and not stats_hard_blocked and improved
+
+
+def is_held(*, accepted: bool, seed_hard_blocked: bool) -> bool:
+    """The conclude-time HELD claim (#4584, option 2): promoted, AND the seed/trial floor is
+    cleared (not hard-blocked). An advisory-only seed downgrade (exploration) does not flip it."""
+    return accepted and not seed_hard_blocked
 
 
 def _run_git(
@@ -437,6 +453,7 @@ def _emit_candidate_pass_probe_record(
     handoff_sha: str,
     wall_seconds: float,
     accepted: bool,
+    held: bool,
     hard_blocked: bool,
 ) -> Path:
     """Emit a Stage-0 provenance ProbeRecord for one candidate pass (Phase C).
@@ -473,6 +490,7 @@ def _emit_candidate_pass_probe_record(
             "derived_from": derived_from,
             "handoff_content_sha256": handoff_sha,
             "accepted": str(accepted).lower(),
+            "held": str(held).lower(),
             "hard_blocked": str(hard_blocked).lower(),
             "source": "controller.run_one_candidate_pass",
             "axis_note": ("provenance artifact; n_atoms placeholder by contract"),
@@ -997,9 +1015,10 @@ def run_one_candidate_pass(
 
     accepted = is_accepted(
         run_success=run_result.success,
-        hard_blocked=stats_decision.hard_blocked or seed_decision.hard_blocked,
+        stats_hard_blocked=stats_decision.hard_blocked,
         improved=ratchet_decision.improved,
     )
+    held = is_held(accepted=accepted, seed_hard_blocked=seed_decision.hard_blocked)
 
     # 2.7. Crash-safe best-so-far lineage (S2.1c/S2.4, AC-14) -- accept vs reject branch, driven
     # by the same acceptance predicate the composed result reports (#4584).
@@ -1115,6 +1134,7 @@ def run_one_candidate_pass(
                 handoff_sha=handoff.content_sha256,
                 wall_seconds=perf_counter() - pass_started_at,
                 accepted=accepted,
+                held=held,
                 hard_blocked=(stats_decision.hard_blocked or seed_decision.hard_blocked),
             )
         except Exception as exc:  # noqa: BLE001 -- contained by design; see comment above
@@ -1143,6 +1163,7 @@ def run_one_candidate_pass(
 
 __all__ = [
     "is_accepted",
+    "is_held",
     "CampaignMode",
     "GateOutcome",
     "OneCandidatePassResult",

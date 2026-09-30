@@ -14,7 +14,7 @@ import pytest
 
 import controller.main_loop as ml
 from controller.bathos_campaign_adapter import BathosCampaignAdapter
-from controller.main_loop import is_accepted, run_one_candidate_pass
+from controller.main_loop import is_accepted, is_held, run_one_candidate_pass
 
 # test_main_loop's autouse fixtures (git crash-atomicity stubs, metrics-provenance isolation
 # with a non-empty run_id), registered here by import.
@@ -47,7 +47,7 @@ from tests.controller.test_main_loop import (  # noqa: F401
 )
 def test_the_predicate(run_success: bool, hard_blocked: bool, improved: bool, expected: bool):
     assert (
-        is_accepted(run_success=run_success, hard_blocked=hard_blocked, improved=improved)
+        is_accepted(run_success=run_success, stats_hard_blocked=hard_blocked, improved=improved)
         is expected
     )
 
@@ -114,7 +114,9 @@ def test_control_clean_gates_and_improved_candidate_advances(monkeypatch):
 def test_hard_blocked_first_candidate_writes_and_resets_nothing(monkeypatch):
     """No best-so-far exists yet: nothing to reset to, and no ref is written."""
     calls = _spy_lineage(monkeypatch, prior=None)
-    result = _pass(mode="sequential", stats=_passing_stats_verdict(), seeds=_failing_seed_counts())
+    result = _pass(
+        mode="confirmation", stats=_downgraded_stats_verdict(), seeds=_passing_seed_counts()
+    )
     assert result.gate_outcome.hard_blocked is True
     assert result.accepted is False
     assert calls == []
@@ -125,9 +127,9 @@ def test_crash_resume_hard_block_resets_to_the_existing_ref(monkeypatch):
     condition is "a ref exists", not "best_fitness is set"."""
     calls = _spy_lineage(monkeypatch, prior="resumed-best-sha")
     result = _pass(
-        mode="sequential",
-        stats=_passing_stats_verdict(),
-        seeds=_failing_seed_counts(),
+        mode="confirmation",
+        stats=_downgraded_stats_verdict(),
+        seeds=_passing_seed_counts(),
         allow_fresh_start_despite_existing_lineage=True,
     )
     assert result.accepted is False
@@ -183,3 +185,50 @@ def test_probe_record_reports_the_same_acceptance_as_the_result(tmp_path: Path):
     assert result.accepted is True
     (written,) = sorted(records.glob("pass_*.json"))
     assert ProbeRecord.read(written).config["accepted"] == "true"
+
+
+# --- #4584 option 2 (Marielle, 260930): the seed floor gates HELD, not promotion ---------
+
+
+@pytest.mark.parametrize(
+    ("accepted", "seed_hard_blocked", "expected"),
+    [(True, False, True), (True, True, False), (False, False, False), (False, True, False)],
+)
+def test_the_held_predicate(accepted: bool, seed_hard_blocked: bool, expected: bool):
+    assert is_held(accepted=accepted, seed_hard_blocked=seed_hard_blocked) is expected
+
+
+def test_seed_floor_alone_promotes_but_is_not_held(monkeypatch, tmp_path: Path):
+    """A single-run candidate in a gated mode: the seed floor is unmet (as it is for nearly
+    every new script), but the stats battery passes -- it IS promoted, and NOT held."""
+    from xtrax.profiling.record import ProbeRecord
+
+    calls = _spy_lineage(monkeypatch, prior=None)
+    records = tmp_path / "records"
+    adapter = BathosCampaignAdapter(transport=_RecordingTransport(_run_envelope()), token="t")
+    result = run_one_candidate_pass(
+        _mock_dispatch_backend(),
+        adapter,
+        campaign_id="camp-seed",
+        campaign_mode="sequential",
+        candidate_static_fn=_passing_candidate_static_fn,
+        stats_battery_kwargs={},
+        stats_battery_fn=lambda **kw: _passing_stats_verdict(),
+        seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": _failing_seed_counts(),
+        output_paths=["artifact.json"],
+        **_new_step_kwargs(),
+        probe_record_dir=records,
+    )
+    assert result.gate_outcome.seed_trial.hard_blocked is True
+    assert (result.accepted, result.held) == (True, False)
+    assert calls == ["commit", "advance"]  # promoted: the ratchet advances
+    (written,) = sorted(records.glob("pass_*.json"))
+    config = ProbeRecord.read(written).config
+    assert (config["accepted"], config["held"]) == ("true", "false")
+
+
+def test_clean_gates_are_promoted_and_held(monkeypatch):
+    calls = _spy_lineage(monkeypatch, prior=None)
+    result = _pass(mode="sequential", stats=_passing_stats_verdict(), seeds=_passing_seed_counts())
+    assert (result.accepted, result.held) == (True, True)
+    assert calls == ["commit", "advance"]
