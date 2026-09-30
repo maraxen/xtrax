@@ -450,6 +450,8 @@ _RANDOM_PRIMITIVES = frozenset(
         "rng_uniform",
         "threefry2x32",
         "threefry4x32",
+        "philox2x32",
+        "philox4x32",
     }
 )
 # Key plumbing is deterministic in the key it is given and draws nothing, so it is
@@ -830,7 +832,9 @@ class _MemoCore:
         (same digest) -- otherwise the program changed under us (#5233)."""
         with self.lock:
             runner = self._runners.get(token)
-        if runner is not None:
+        # Digest-checked: a runner stored under this token after an eviction by another
+        # thread's re-trace may be a different program than the digest this call keys on.
+        if runner is not None and runner.digest == digest:
             return runner
         closed, out_shape = _trace_closed(self.fn, leaves, treedef, traced, return_shape=True)
         if _program_digest(closed) != digest:
@@ -947,7 +951,13 @@ class _MemoCore:
             # CR-2: calls counter is incremented exactly once inside
             # _maybe_spot_check_unlocked (both the ok and mismatch paths, and
             # the entry-evicted-before-recompute early return).
-            self._maybe_spot_check_unlocked(key, args, kwargs)
+            rerun = None
+            if self.policy.execute_screened:
+
+                def rerun() -> Any:  # noqa: ANN401
+                    return self._runner_for(token, traced, digest, leaves, treedef)(leaves)
+
+            self._maybe_spot_check_unlocked(key, args, kwargs, rerun)
             return value
         self.stats.misses += 1
 
@@ -1013,7 +1023,13 @@ class _MemoCore:
                 stacklevel=2,
             )
 
-    def _maybe_spot_check_unlocked(self, key: str, args: tuple, kwargs: dict) -> None:
+    def _maybe_spot_check_unlocked(
+        self,
+        key: str,
+        args: tuple,
+        kwargs: dict,
+        rerun: Callable[[], Any] | None = None,
+    ) -> None:
         with self.lock:
             if self.stats.spot_check_mismatches > 0:
                 raise MemoStalenessError("spot_check_mismatches > 0: poisoned until .memo_reset()")
@@ -1026,7 +1042,10 @@ class _MemoCore:
             cached_value = entry.value
         # Recompute OUTSIDE the lock via UNWRAPPED fn (fresh closure read).
         # Replay uses this call's own (args, kwargs) (#5231).
-        fresh = self.fn(*args, **kwargs)
+        # Under execute_screened the cache holds the screened program's output, so the
+        # spot check re-runs that program (`rerun`); re-running fn eagerly would flag the
+        # very trace/eager divergence the caller opted out of (#5233).
+        fresh = rerun() if rerun is not None else self.fn(*args, **kwargs)
         jax.block_until_ready(fresh)
         cached_flat = jax.tree_util.tree_leaves(cached_value)
         fresh_flat = jax.tree_util.tree_leaves(fresh)

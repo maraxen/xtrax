@@ -325,7 +325,7 @@ exact value.
 **Impure primitives.** Rejected at any depth: host callbacks (`pure_callback`,
 `io_callback`, `debug_callback`, `debug_print`) and draws (`random_bits`,
 `random_gamma`, `random_seed`, `rng_bit_generator`, `rng_uniform`, `threefry2x32`,
-`threefry4x32`). Key plumbing on a key argument (`random_split`, `random_fold_in`,
+`threefry4x32`, `philox2x32`, `philox4x32`). Key plumbing on a key argument (`random_split`, `random_fold_in`,
 `random_wrap`, `random_unwrap`, `random_clone`) is admitted: it is deterministic in
 the key and draws nothing. A function that closes over a mutable `jax.Ref` is
 rejected; a ref allocated inside the function is admitted.
@@ -388,8 +388,9 @@ on its bit pattern, so NaNs with different payloads are distinct keys.
   plain `int` traced abstractly, `isinstance(x, jax.core.Tracer)`, `np.ndarray` vs
   `jax.Array` checks) or by catching `ConcretizationTypeError` can differ from the
   screened trace. `MemoPolicy(execute_screened=True)` closes this: a miss runs the
-  jitted screened program itself (one compile per signature; outputs never alias an
-  argument, and Python scalars the function returns come back as arrays);
+  jitted screened program itself (one compile per signature; outputs are fresh
+  buffers, Python scalars the function returns come back as arrays, and spot checks
+  re-run the screened program rather than the function);
 - `np.bool_` and numpy-scalar enums are array leaves traced abstractly, so the
   static rule for `bool` does not cover `x is np.True_`.
 

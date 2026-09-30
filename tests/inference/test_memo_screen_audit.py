@@ -43,6 +43,18 @@ def test_banned_and_admitted_do_not_overlap() -> None:
     assert not (memo._BANNED_PRIMITIVES & memo._ADMITTED_KEY_PRIMITIVES)
 
 
+def test_every_registered_draw_or_callback_primitive_is_classified() -> None:
+    """Completeness, the direction the existence test cannot see: a draw-like or
+    callback-like primitive this JAX registers must be banned or admitted by decision,
+    never silently unclassified (philox2x32/4x32 were, on first review)."""
+    import re
+
+    family = re.compile(r"random|rng|threefry|philox|callback|debug")
+    registered = {n for n in _registered_primitive_names() if family.search(n)}
+    unclassified = sorted(registered - memo._BANNED_PRIMITIVES - memo._ADMITTED_KEY_PRIMITIVES)
+    assert unclassified == [], f"classify these (jax {jax.__version__}): {unclassified}"
+
+
 def test_registry_scan_can_fail() -> None:
     """Negative control: the scan distinguishes a registered name from a dead one."""
     registered = _registered_primitive_names()
@@ -147,21 +159,68 @@ def test_execute_screened_preserves_output_pytree_structure() -> None:
         np.testing.assert_array_equal(np.asarray(got), np.asarray(want))
 
 
-def test_execute_screened_static_mode_signature() -> None:
-    """A scalar that forces the STATIC retrace still resolves to a runner for that token."""
+def test_execute_screened_static_mode_signature(monkeypatch) -> None:  # noqa: ANN001
+    """A scalar that forces the STATIC retrace resolves to a runner stored under the
+    token call() looks up: repeats of a signature never re-trace or grow the table."""
 
     def f(x, n):  # noqa: ANN001, ANN202
         return x[:n] * 2  # slicing needs a concrete n -> ABSTRACT fails, STATIC succeeds
 
     m = memoize_jaxpr(f, policy=MemoPolicy(execute_screened=True))
+    core = m._memo_core
     np.testing.assert_array_equal(np.asarray(m(jnp.arange(5.0), 2)), [0.0, 2.0])
     np.testing.assert_array_equal(np.asarray(m(jnp.arange(5.0), 3)), [0.0, 2.0, 4.0])
+    assert set(core._runners) <= set(core._screened)
+    n_runners = len(core._runners)
+
+    traces = {"n": 0}
+    real = memo._trace_closed
+
+    def counting(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        traces["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(memo, "_trace_closed", counting)
+    # Same static n, new array values: a cache MISS on an already-screened signature.
+    np.testing.assert_array_equal(np.asarray(m(jnp.arange(5.0) + 1, 2)), [2.0, 4.0])
+    assert traces["n"] == 0
+    assert len(core._runners) == n_runners
 
 
 def test_execute_screened_miss_does_not_alias_the_argument() -> None:
     x = jnp.ones(3)
     m = memoize_jaxpr(lambda a: a, policy=MemoPolicy(execute_screened=True))
-    assert m(x) is not x
+    y = m(x)
+    assert y.unsafe_buffer_pointer() != x.unsafe_buffer_pointer()
+
+
+def test_spot_check_under_execute_screened_recomputes_the_screened_program() -> None:
+    """Spot-checking against eager fn would poison the wrapper on the very divergence
+    the caller opted out of; it re-runs the screened program instead."""
+    m = memoize_jaxpr(_divergent, policy=MemoPolicy(execute_screened=True, spot_check_every=2))
+    x = _f32(1.0, 1.0)
+    for _ in range(6):  # includes spot-checked hits
+        np.testing.assert_array_equal(np.asarray(m(x)), 0.0)
+    assert m.memo_get_stats()["spot_check_mismatches"] == 0
+
+
+def test_stored_runner_for_another_digest_is_not_used() -> None:
+    """A runner under this token whose digest differs from the resolved one is refused
+    and rebuilt through the digest-checked path."""
+    m = memoize_jaxpr(_divergent, policy=MemoPolicy(execute_screened=True))
+    x = _f32(1.0, 1.0)
+    m(x)
+    core = m._memo_core
+    (token,) = core._runners
+    stale = core._runners[token]
+    core._runners[token] = memo._ScreenedRunner(
+        digest="not-the-screened-digest",
+        traced_positions=stale.traced_positions,
+        out_tree=stale.out_tree,
+        compiled=lambda *a: [a[0] + 100.0],  # would be visibly wrong if used
+    )
+    np.testing.assert_array_equal(np.asarray(m(_f32(2.0, 2.0))), 0.0)
+    assert core._runners[token].digest == stale.digest
 
 
 def _f32(*values: float) -> jax.Array:
