@@ -169,9 +169,9 @@ Is the axis variable-length (e.g., sequences of different sizes)?
     │                              through to the cardinality rules below (plan.py:433-438)
     │
     └─ NO: Check cardinality vs. default_batch_size:
-        ├─ cardinality <= batch_size → Vmap (SafeMap if a memory_estimator says it won't fit)
+        ├─ cardinality <= batch_size → Vmap (ChunkedMap if a memory_estimator says it won't fit)
         │
-        └─ cardinality > batch_size → SafeMap (Vmap if a memory_estimator says the
+        └─ cardinality > batch_size → ChunkedMap (Vmap if a memory_estimator says the
                                          whole axis fits). Divisibility does not matter:
                                          a ragged final chunk runs as one smaller vmap,
                                          with no padding (after 0.4.0a10, #5565)
@@ -182,9 +182,9 @@ Is the axis variable-length (e.g., sequences of different sizes)?
 1. **Bucket** — if `bucket_boundaries` is set (variable-length handling)
 2. **DedupGather** — only via an explicit `DedupSpec` (Phase 0b); `dedup_eligible=True` alone falls through
 3. **Vmap** — if `cardinality <= batch_size` (small, fully-parallel)
-4. **SafeMap** — if `cardinality > batch_size` (large, chunked; memory-safe). A `cardinality` that is not a multiple of `batch_size` is fine: the final chunk is smaller (through 0.4.0a10 this raised `ValueError` at dispatch)
+4. **ChunkedMap** — if `cardinality > batch_size` (large, chunked; memory-safe). A `cardinality` that is not a multiple of `batch_size` is fine: the final chunk is smaller (through 0.4.0a10 this raised `ValueError` at dispatch)
 
-**Joint-budget mode** (0.4.0a1+): when `BatchPlanner(budget=MemoryBudget(...))` is set, rules 3-4 are replaced for non-bucket axes — every eligible axis starts at `Vmap`, then axes are greedily demoted to `SafeMap` in spec order until the whole-plan estimate fits the budget. See TIER-2: Tiling Layer → Joint-Budget Planning.
+**Joint-budget mode** (0.4.0a1+): when `BatchPlanner(budget=MemoryBudget(...))` is set, rules 3-4 are replaced for non-bucket axes — every eligible axis starts at `Vmap`, then axes are greedily demoted to `ChunkedMap` in spec order until the whole-plan estimate fits the budget. See TIER-2: Tiling Layer → Joint-Budget Planning.
 
 ---
 
@@ -233,7 +233,7 @@ print(f"Output shape: {results.shape}")  # (96, 10)
 
 **What happened:**
 - `AxisSpec` declared the axis (name, size, batch threshold)
-- `BatchPlanner.plan()` selected the best strategy (Vmap, SafeMap, etc.)
+- `BatchPlanner.plan()` selected the best strategy (Vmap, ChunkedMap, etc.)
 - `make_axis_dispatch()` returned a typed iterator matching the strategy
 - Iterator applied `my_fn` to the axis, returning results
 
@@ -318,7 +318,7 @@ This skill provides a complete, self-contained reference for the xtrax alpha nam
 | DedupGather large-k regime (k > 256) uses suboptimal power-of-2 bucketing | `src/xtrax/tiling/dedup.py:29` | TODO: implement geometric or mixed bucketing for k > 256 |
 | Top-level exports missing (RunSpec, CarrySpec, DedupSpec, AxisBoundary) | `src/xtrax/__init__.py` | By design; use subpackage imports: `from xtrax.run import RunSpec`, `from xtrax.stages import AxisBoundary`, etc. |
 | `make_sink` has no writer for `"jsonl"`/`"h5"` | `src/xtrax/run/sink.py:41-58` | Routing-only stub values; `NotImplementedError` until their writers land. Use `"zarr"` (or `"none"`). |
-| Ordered `SafeMap` axis ignores `batch_size` (runs element-at-a-time) | `src/xtrax/stages/executor.py` | Structural JAX constraint, not fixable locally — see Boundary Executor section; use `Scan` if ordering + explicit sequential cost is acceptable |
+| Ordered `ChunkedMap` axis ignores `batch_size` (runs element-at-a-time) | `src/xtrax/stages/executor.py` | Structural JAX constraint, not fixable locally — see Boundary Executor section; use `Scan` if ordering + explicit sequential cost is acceptable |
 The `make_inference_plan` gap noted as of v0.3.0 is closed: plan-time checks now exist via `validate_plan_topology` (`xtrax.stages`, 0.3.1+).
 
 Nested executor composition (vmap-of-scan) ordering is also no longer a gap. The T1-05 stress harness landed and certifies `(lane, step)` call order at `N_TRIALS=20` in `tests/stages/test_nested_ordering.py`, and `xtrax.export`'s composer builds multi-axis plans on that certified recipe (`tests/export/test_multi_axis.py`). The composer still refuses `Bucket` (host-tier) and `WhileCarry` (unbounded trip count) — those are genuine remaining limits, not this one.

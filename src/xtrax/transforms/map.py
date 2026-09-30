@@ -5,7 +5,7 @@ import jax
 T: type
 
 
-def safe_map[T](fn: Callable[[T], T], xs: T, batch_size: int | None = None) -> T:
+def chunked_map[T](fn: Callable[[T], T], xs: T, batch_size: int | None = None) -> T:
     """Apply a function to a pytree using vmap or lax.map depending on size.
 
     Uses jax.vmap when batch_size is None or n <= batch_size. Otherwise uses
@@ -31,3 +31,10 @@ def safe_map[T](fn: Callable[[T], T], xs: T, batch_size: int | None = None) -> T
 
     # lax.map handles a ragged final chunk itself (no padding; see docstring).
     return jax.lax.map(fn, xs, batch_size=batch_size)
+
+
+def __getattr__(name: str):  # noqa: ANN202 -- PEP 562 module hook
+    """Deprecated pre-#3644 names (SafeMap, SafeMapIterator, safe_map) for one release."""
+    from xtrax._renamed import deprecated_alias
+
+    return deprecated_alias(__name__, name, globals())

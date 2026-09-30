@@ -1,0 +1,113 @@
+# ast-grep rewrite rules: SafeMap -> ChunkedMap, SafeMapIterator -> ChunkedMapIterator,
+# safe_map -> chunked_map (xtrax backlog #3644). Structural, not regex-over-text:
+# see README.md in this directory for usage, scope and what is deliberately left alone.
+#
+#   ast-grep scan --rule codemods/safemap-to-chunkedmap/rules.yml --update-all <paths>
+#
+# Each rule is idempotent; re-running on already-migrated code changes nothing.
+id: safemap-class-identifier
+language: python
+message: SafeMap/SafeMapIterator was renamed to ChunkedMap/ChunkedMapIterator (xtrax #3644)
+rule:
+  pattern: $ID
+  kind: identifier
+  regex: ^SafeMap(Iterator)?$
+transform:
+  NEW: { replace: { source: $ID, replace: "^SafeMap", by: ChunkedMap } }
+fix: $NEW
+---
+# Strategy names compared as strings (type(strategy).__name__ matching, __all__, lazy
+# export tables) -- exact string contents only, never prose.
+id: safemap-class-string
+language: python
+message: strategy name string "SafeMap" is now "ChunkedMap" (xtrax #3644)
+rule:
+  pattern: $S
+  kind: string_content
+  regex: ^SafeMap(Iterator)?$
+transform:
+  NEW: { replace: { source: $S, replace: "^SafeMap", by: ChunkedMap } }
+fix: $NEW
+---
+# The function. JAX's own, unrelated `safe_map` (jax._src.util, a length-checked map) is
+# never touched: not when imported from a jax module, not when reached as `util.safe_map`.
+id: safe-map-function-identifier
+language: python
+message: safe_map was renamed to chunked_map (xtrax #3644)
+rule:
+  kind: identifier
+  regex: ^safe_map$
+  not:
+    any:
+      - inside:
+          kind: import_from_statement
+          has: { field: module_name, regex: "^jax(\\.|$)" }
+          stopBy: end
+      - inside:
+          kind: attribute
+          has: { field: object, regex: "(^|\\.)util$" }
+fix: chunked_map
+---
+# "safe_map" as an EXPORT NAME (in __all__ or a lazy-export table). Other "safe_map"
+# strings -- e.g. benchmark labels recorded in bench artifacts -- are left alone.
+id: safe-map-export-string
+language: python
+message: export name "safe_map" is now "chunked_map" (xtrax #3644)
+rule:
+  kind: string_content
+  regex: ^safe_map$
+  inside:
+    kind: assignment
+    has: { field: left, regex: "^(__all__|_LAZY)$" }
+    stopBy: end
+fix: chunked_map
+---
+# Prose in comments and docstrings, whole words only, so documentation does not go stale.
+id: safemap-comment-prose
+language: python
+message: comment mentions the pre-#3644 name
+rule:
+  pattern: $C
+  kind: comment
+  regex: \b(SafeMap(Iterator)?|safe_map)\b
+  # Prose about JAX's own safe_map keeps its name.
+  not: { regex: "util\\.safe_map|(?i)jax('s)?\\s+(own\\s+)?safe_map" }
+transform:
+  A: { replace: { source: $C, replace: "\\bSafeMap\\b", by: ChunkedMap } }
+  B: { replace: { source: $A, replace: "\\bSafeMapIterator\\b", by: ChunkedMapIterator } }
+  NEW: { replace: { source: $B, replace: "\\bsafe_map\\b", by: chunked_map } }
+fix: $NEW
+---
+id: safemap-docstring-prose
+language: python
+message: docstring mentions the pre-#3644 name
+rule:
+  pattern: $D
+  kind: string
+  regex: \b(SafeMap(Iterator)?|safe_map)\b
+  inside: { kind: expression_statement }
+  not:
+    any:
+      - has: { kind: string_content, regex: "^(SafeMap(Iterator)?|safe_map)$" }
+      - regex: "util\\.safe_map|(?i)jax('s)?\\s+(own\\s+)?safe_map"
+transform:
+  A: { replace: { source: $D, replace: "\\bSafeMap\\b", by: ChunkedMap } }
+  B: { replace: { source: $A, replace: "\\bSafeMapIterator\\b", by: ChunkedMapIterator } }
+  NEW: { replace: { source: $B, replace: "\\bsafe_map\\b", by: chunked_map } }
+fix: $NEW
+---
+# Messages naming the strategy class inside a longer string (error messages, planner
+# reasoning). Whole words only, and only the CLASS names: a lowercase "safe_map" inside
+# a string is left alone, since those are typically labels (e.g. benchmark IDs).
+id: safemap-class-in-message
+language: python
+message: message names the pre-#3644 class
+rule:
+  pattern: $S
+  kind: string_content
+  regex: \bSafeMap(Iterator)?\b
+  not: { regex: "^SafeMap(Iterator)?$" }
+transform:
+  A: { replace: { source: $S, replace: "\\bSafeMap\\b", by: ChunkedMap } }
+  NEW: { replace: { source: $A, replace: "\\bSafeMapIterator\\b", by: ChunkedMapIterator } }
+fix: $NEW

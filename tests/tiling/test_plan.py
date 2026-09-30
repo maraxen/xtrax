@@ -11,7 +11,7 @@ from xtrax.tiling.plan import (
     BatchPlan,
     BatchPlanner,
 )
-from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Vmap
+from xtrax.tiling.strategy import Bucket, ChunkedMap, DedupGather, Vmap
 
 
 class TestAxisSpec:
@@ -300,28 +300,28 @@ class TestBatchPlanner:
         assert isinstance(decision.strategy, Vmap)
 
     def test_rule3_divisible_cardinality_returns_safemap(self):
-        """Rule 3: cardinality > batch_size AND divisible → SafeMap."""
+        """Rule 3: cardinality > batch_size AND divisible → ChunkedMap."""
         spec = AxisSpec(name="batch", cardinality=100, default_batch_size=25)
         planner = BatchPlanner()
         plan = planner.plan([spec])
 
         assert len(plan.decisions) == 1
         decision = plan.decisions[0]
-        assert isinstance(decision.strategy, SafeMap)
+        assert isinstance(decision.strategy, ChunkedMap)
         assert decision.strategy.batch_size == 25
 
     def test_rule3_divisible_cardinality_ratio_4(self):
-        """Rule 3: cardinality=200, batch_size=50 (divisible) → SafeMap."""
+        """Rule 3: cardinality=200, batch_size=50 (divisible) → ChunkedMap."""
         spec = AxisSpec(name="batch", cardinality=200, default_batch_size=50)
         planner = BatchPlanner()
         plan = planner.plan([spec])
 
         decision = plan.decisions[0]
-        assert isinstance(decision.strategy, SafeMap)
+        assert isinstance(decision.strategy, ChunkedMap)
         assert decision.strategy.batch_size == 50
 
     def test_rule4_non_divisible_cardinality_returns_safemap_without_warning(self):
-        """#5565: non-divisible → SafeMap, no warning; the final chunk is ragged."""
+        """#5565: non-divisible → ChunkedMap, no warning; the final chunk is ragged."""
         spec = AxisSpec(name="batch", cardinality=100, default_batch_size=30)
         planner = BatchPlanner()
 
@@ -330,7 +330,7 @@ class TestBatchPlanner:
             plan = planner.plan([spec])
 
         decision = plan.decisions[0]
-        assert isinstance(decision.strategy, SafeMap)
+        assert isinstance(decision.strategy, ChunkedMap)
         assert decision.strategy.batch_size == 30
         assert "ragged final chunk of 10" in decision.reasoning
 
@@ -344,7 +344,7 @@ class TestBatchPlanner:
             plan = planner.plan([spec])
 
         decision = plan.decisions[0]
-        assert isinstance(decision.strategy, SafeMap)
+        assert isinstance(decision.strategy, ChunkedMap)
         assert "ragged final chunk of 11" in decision.reasoning
 
     def test_plan_decision_length_matches_specs(self):
@@ -396,7 +396,7 @@ class TestBatchPlanner:
         assert isinstance(plan.decisions[0].strategy, Vmap)
 
     def test_memory_estimator_under_limit_prefers_vmap(self):
-        """When memory estimate < limit, prefer Vmap over SafeMap."""
+        """When memory estimate < limit, prefer Vmap over ChunkedMap."""
 
         def low_estimate(spec: AxisSpec) -> int:
             # Always return a small value
@@ -412,7 +412,7 @@ class TestBatchPlanner:
         assert isinstance(decision.strategy, Vmap)
 
     def test_memory_estimator_over_limit_prefers_safemap(self):
-        """When memory estimate > limit, prefer SafeMap over Vmap."""
+        """When memory estimate > limit, prefer ChunkedMap over Vmap."""
 
         def high_estimate(spec: AxisSpec) -> int:
             # Return value exceeding default 4 GiB limit
@@ -422,9 +422,9 @@ class TestBatchPlanner:
         planner = BatchPlanner(memory_estimator=high_estimate)
         plan = planner.plan([spec])
 
-        # High memory estimate should prefer SafeMap
+        # High memory estimate should prefer ChunkedMap
         decision = plan.decisions[0]
-        assert isinstance(decision.strategy, SafeMap)
+        assert isinstance(decision.strategy, ChunkedMap)
 
     def test_memory_estimator_exception_fallback_to_defaults(self):
         """When memory_estimator raises, fall back to default rules silently."""
@@ -468,7 +468,7 @@ class TestBatchPlanner:
 
         specs = [
             AxisSpec(name="batch", cardinality=32, default_batch_size=100),  # Vmap
-            AxisSpec(name="seq", cardinality=100, default_batch_size=25),  # SafeMap
+            AxisSpec(name="seq", cardinality=100, default_batch_size=25),  # ChunkedMap
             AxisSpec(
                 name="token",
                 cardinality=500,
@@ -492,7 +492,7 @@ class TestBatchPlanner:
         plan = planner.plan(specs)
 
         assert isinstance(plan.decisions[0].strategy, Vmap)
-        assert isinstance(plan.decisions[1].strategy, SafeMap)
+        assert isinstance(plan.decisions[1].strategy, ChunkedMap)
         assert isinstance(plan.decisions[2].strategy, DedupGather)
 
     def test_reasoning_field_populated(self):

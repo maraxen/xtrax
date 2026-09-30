@@ -89,7 +89,7 @@ Notes for callers:
 | `ordered=True` tap/sink on a **`Vmap`** axis | **HALTS** `PlanTopologyError` at plan construction | `topology.py`, `validate_plan_topology` rule 2 |
 | same, reaching the executor directly | **HALTS** `ExecutorError` (defense in depth) | `executor.py`, `execute_map_axis` |
 | an ordered capture nested inside a `Vmap` axis's `fn` | **HALTS** `ExecutorError`, re-raised from JAX's own `ValueError` | `executor.py` |
-| `ordered=True` tap/sink on a **`SafeMap`** axis | **runs, silently ignoring `strategy.batch_size`** -- one element at a time, unconditionally, at any batch size | `executor.py`, `execute_map_axis` SafeMap branch |
+| `ordered=True` tap/sink on a **`ChunkedMap`** axis | **runs, silently ignoring `strategy.batch_size`** -- one element at a time, unconditionally, at any batch size | `executor.py`, `execute_map_axis` ChunkedMap branch |
 | `Scan` strategy on a **heterogeneous** axis | **HALTS** `PlanTopologyError` | `topology.py` rule 1 |
 
 The underlying JAX error string the executor matches on is

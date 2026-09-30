@@ -51,7 +51,7 @@ Scope doc: `.praxia/docs/specs/260825_jax-optimizing-skill-scope.md`.
 |---|---|---|---|---|
 | 1 -- Host boundary mechanics | How host callbacks fire; never the math | ordered vs unordered Tap/Sink, per-step sink batching via ZarrStagingSink, io_callback round-trip accounting | Stage-1 micro probe isolating callback cost; DISPATCH_COUNT must not regress | DISPATCH_COUNT |
 | 2 -- Data movement | When/how arrays reach the device; still not the math | async_indexed_stream buffer sizing, double-buffering input iteration, dtype coercion at load vs in-graph, bucket selection to bound recompiles | paired Stage-1 wall probes (feed-starved vs fed); show overlap hides latency, not shifts it | TERM_RANKING (same platform); END_TO_END only via scale guard |
-| 3 -- Composition | The program itself | Vmap/SafeMap/DedupGather/Bucket swaps, on-the-fly one-hot/categorical encode, fusion-friendly refactors, donate/remat tradeoffs | Stage-0 cost probe FIRST, then paired Stage-1/2; ranking claims need TERM_RANKING floors; parity metric when numerics could shift | TERM_RANKING / END_TO_END |
+| 3 -- Composition | The program itself | Vmap/ChunkedMap/DedupGather/Bucket swaps, on-the-fly one-hot/categorical encode, fusion-friendly refactors, donate/remat tradeoffs | Stage-0 cost probe FIRST, then paired Stage-1/2; ranking claims need TERM_RANKING floors; parity metric when numerics could shift | TERM_RANKING / END_TO_END |
 
 Tier-1 facts already established in code (verify-paths):
 - An ordered Tap/Sink inside a Scan of N steps costs N serialized host round

@@ -64,8 +64,8 @@ class _StrippedSink:
 
     Preserves the original sink's ``ordered`` flag. That matters: the executor's
     branch selection reads ``boundary.sink.ordered``, so replacing a sink with
-    bare None flips an ordered SafeMap axis off the ``jax.lax.map`` path onto
-    ``safe_map(..., batch_size=...)`` -- a different lowering from the one the
+    bare None flips an ordered ChunkedMap axis off the ``jax.lax.map`` path onto
+    ``chunked_map(..., batch_size=...)`` -- a different lowering from the one the
     configuration was verified with, so the exported program would not be the
     one that ran.
 

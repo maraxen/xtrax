@@ -134,6 +134,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`SafeMap` → `ChunkedMap`, `SafeMapIterator` → `ChunkedMapIterator`, `safe_map` →
+  `chunked_map`** (#3644). `safe_map` already means something else in JAX
+  (`jax._src.util.safe_map`, a length-checked map), and "Safe" suggested the
+  `xtrax.safety` subsystem; the strategy is memory-bounded chunking. **The old names
+  import for one release as deprecated aliases** (each access raises
+  `DeprecationWarning`); they are removed in the release after. Migrate mechanically
+  with `codemods/safemap-to-chunkedmap/`: ast-grep rules for Python plus a Markdown
+  script, with a fixture pair showing the exact transformation (see its README).
+  **Consumers that dispatch on the strategy's class *name*** (aminx's
+  `kernel_dispatch.py` compares `type(strategy).__name__ == "SafeMap"`) must accept
+  `"ChunkedMap"` before upgrading. The alias constructs the new class, and the codemod
+  rewrites that comparison. xtrax's own name-based matching accepts both names for
+  this release. Strategy-name strings in EDA output (`strategy_counts` keys, the
+  `strategy` column) are now `"ChunkedMap"`. The sealed `port/` apparatus still
+  references `xtrax.transforms.map.safe_map` through the alias, so it must be re-sealed
+  before the aliases are removed.
+
 - **Dependency floors raised to versions that actually work** (debt #738). With
   jax at its own floor (0.10.2), `equinox>=0.11.0` and `orbax-checkpoint>=0.6.0`
   could not `import xtrax` at all (`jax.core.Primitive`, `jax.sharding.PositionalSharding`

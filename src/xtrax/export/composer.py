@@ -20,6 +20,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from xtrax._renamed import CHUNKED_MAP_NAMES
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.stages.executor import ExecutorError, execute_map_axis, execute_scan_axis
 from xtrax.tiling.dispatch import axis_dispatch
@@ -33,7 +34,7 @@ __all__ = [
     "compose_vmap_of_scan",
 ]
 
-_SUPPORTED = "Vmap/SafeMap/Scan/DedupGather"
+_SUPPORTED = "Vmap/ChunkedMap/Scan/DedupGather"
 
 
 class ComposerError(Exception):
@@ -92,7 +93,7 @@ def compose_single_axis(
 
     strategy_name = type(strategy).__name__
 
-    if strategy_name in ("Vmap", "SafeMap"):
+    if strategy_name in ("Vmap", *CHUNKED_MAP_NAMES):  # legacy "SafeMap" too (#3644)
 
         def _run_map(xs: Any) -> Any:
             return execute_map_axis(step_fn, xs, strategy, boundary)
