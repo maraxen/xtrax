@@ -82,6 +82,19 @@ class TestPinnedCheck:
         assert check.not_orphans == ["audit-wired"]
         assert check.regressions == []
 
+    def test_pinned_recipe_needing_arguments_is_an_error_not_a_ci_note(self):
+        """Unreached but unrunnable bare: it must not read as 'reached by CI now'."""
+        check = check_pinned(
+            pinned=["audit-a", "audit-wired"],
+            not_pinned={},
+            orphans=["audit-a"],
+            recipes=RECIPES,
+            results={"audit-a": "PASS"},
+            needs_arguments=["audit-wired"],
+        )
+        assert check.needs_arguments == ["audit-wired"]
+        assert check.not_orphans == []
+
     def test_overlap_between_tables_is_rejected(self, tmp_path):
         pin = tmp_path / "pin.toml"
         pin.write_text('pinned = ["audit-a"]\n[not_pinned]\naudit-a = "x"\n')

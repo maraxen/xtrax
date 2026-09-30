@@ -61,8 +61,8 @@ jobs:
           {
             echo "## Unreached audit recipes"
             echo
-            echo "\`$total\` recipes that no workflow invokes. This job does not gate --"
-            echo "a FAIL here is information, not a build break (see #5002)."
+            echo "\`$total\` recipes that no workflow invokes. Only recipes pinned in"
+            echo "\`.github/audit_orphans_pinned.toml\` gate; see the gate step (#5002)."
             echo
             echo "| recipe | result | seconds |"
             echo "|---|---|---|"
@@ -83,7 +83,7 @@ jobs:
             uv sync --extra dev --extra eda --extra io --quiet
 
             start=$SECONDS
-            if timeout 900 just "$recipe" > "/tmp/${recipe}.log" 2>&1; then
+            if timeout 900 just "$recipe" < /dev/null > "/tmp/${recipe}.log" 2>&1; then
               result="PASS"
               passed=$((passed + 1))
             else
@@ -113,7 +113,20 @@ jobs:
           echo "$passed passed, $failed failed of $total"
 
       - name: Gate on the pinned passing set (#5002)
-        run: uv run python scripts/audit_orphan_recipes.py --check-results /tmp/orphan-results.tsv
+        run: |
+          # No pipefail: under GitHub's `bash -e` it would abort before the summary is
+          # written. PIPESTATUS[0] carries the gate's own exit code instead.
+          uv run python scripts/audit_orphan_recipes.py --check-results /tmp/orphan-results.tsv 2>&1 \
+            | tee /tmp/orphan-gate.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo
+            echo "### Pinned-set gate"
+            echo '```'
+            cat /tmp/orphan-gate.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Upload recipe logs
         if: always()

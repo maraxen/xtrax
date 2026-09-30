@@ -52,7 +52,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -197,6 +197,7 @@ class PinnedCheck:
     unclassified: list[str]  # derived orphan in neither `pinned` nor `[not_pinned]`
     not_orphans: list[str]  # named in the pin file but no longer an orphan (wired into CI)
     unknown: list[str]  # named in the pin file but not a Justfile recipe at all -> gate fails
+    needs_arguments: list[str] = field(default_factory=list)  # pinned but unrunnable -> fails
 
 
 def load_pinned(path: Path) -> tuple[list[str], dict[str, str]]:
@@ -218,6 +219,7 @@ def check_pinned(
     orphans: list[str],
     recipes: dict[str, dict],
     results: dict[str, str],
+    needs_arguments: list[str] | None = None,
 ) -> PinnedCheck:
     """A pinned orphan that did not PASS is a regression; naming a non-recipe is an error.
 
@@ -225,14 +227,20 @@ def check_pinned(
     and pass, and silence is not a pass.
     """
     orphan_set = set(orphans)
+    unrunnable = set(needs_arguments or ())
     named = [*pinned, *not_pinned]
     return PinnedCheck(
         regressions=sorted(
             name for name in pinned if name in orphan_set and results.get(name) != "PASS"
         ),
         unclassified=sorted(orphan_set - set(named)),
-        not_orphans=sorted(name for name in named if name in recipes and name not in orphan_set),
+        not_orphans=sorted(
+            name
+            for name in named
+            if name in recipes and name not in orphan_set and name not in unrunnable
+        ),
         unknown=sorted(name for name in named if name not in recipes),
+        needs_arguments=sorted(name for name in pinned if name in unrunnable),
     )
 
 
@@ -290,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
             orphans=runnable,
             recipes=recipes,
             results=read_results(args.check_results),
+            needs_arguments=needs_args,
         )
         for name in check.unclassified:
             print(f"UNCLASSIFIED (reported, not gated): {name} -- pin it once it passes")
@@ -297,9 +306,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"NOTE: {name} is reached by CI now; drop it from the pin file")
         for name in check.unknown:
             print(f"FAIL: pin file names {name!r}, which is not a Justfile recipe", file=sys.stderr)
+        for name in check.needs_arguments:
+            print(
+                f"FAIL: pinned recipe {name} requires arguments, so the orphan run cannot "
+                "execute it; unpin it or give its parameters defaults",
+                file=sys.stderr,
+            )
         for name in check.regressions:
             print(f"FAIL: pinned recipe {name} did not pass (regression, #5002)", file=sys.stderr)
-        if check.regressions or check.unknown or dangling:
+        if check.regressions or check.unknown or check.needs_arguments or dangling:
             return 1
         n_gated = sum(1 for name in pinned if name in set(runnable))
         print(f"PASS: all {n_gated} pinned orphan recipes passed")
