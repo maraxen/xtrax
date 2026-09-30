@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comparison is numeric (`allclose`, NaN equal to NaN; integer and bool outputs exact),
   never bitwise: XLA fuses the two programs differently, and float32 outputs legitimately
   differ (3.3e-6 measured at N=2000, K=7). It raises `DedupOutputMismatchError` with
-  the worst error and first bad row. It compares on device and moves one mask
-  through the module's single `_to_host` route. It complements `verify_dedup_spec`,
+  the worst error and first bad row. Both paths are jitted by default (`jit=True`), as
+  production dispatch is, and equal infinities compare equal. It compares on device and
+  moves one mask through the module's single `_to_host` route. It complements `verify_dedup_spec`,
   which checks input-row identity.
 
 - **`xtrax.profiling.loop_scaling`: flag loop bodies whose per-iteration cost grows with
@@ -68,9 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently keeping the last. **Behaviour change** for callers passing duplicates. In
   joint-budget mode a DedupGather axis was a fixed decision, so adding a `DedupSpec`
   could turn a plan that fit into `BudgetInfeasibleError`. If every ordinary demotion
-  still leaves the plan over budget, the dedup axes are now planned without dedup as a
-  last resort, with a `RuntimeWarning` and `"DedupSpec dropped"` in the decision's
-  `reasoning`. The error is raised only if that fails too.
+  still leaves the plan over budget, dedup axes are now planned without dedup as a
+  last resort, one at a time in spec order until the plan fits, each with a
+  `RuntimeWarning` and `"DedupSpec dropped"` in the decision's `reasoning`. The error is raised only if that fails too.
 
 - **`ZarrStagingSink.drain` stores 0-d and zero-length payloads** (`xtrax.run`, #161).
   Chunks are now rank-matched (`tuple(max(d, 1) for d in shape)`); previously a

@@ -208,8 +208,10 @@ class BatchPlanner:
             ValueError: If a CarrySpec targets a heterogeneous axis.
             AmbiguousAxisError: If an axis has an unresolved UNKNOWN role.
             BudgetInfeasibleError: In budget mode, if demoting every candidate
+                -- and, as a last resort, planning dedup axes without dedup --
                 still leaves the joint estimate over budget. Budget-mode
                 estimator exceptions also propagate unchanged.
+            DedupSpecCollisionError: If two DedupSpecs name the same axis (#5175).
         """
         from xtrax.tiling.dedup_synthesis import merge_dedup_specs
 
@@ -326,9 +328,10 @@ class BatchPlanner:
         DedupGather axes (Phase 0b) are fixed decisions, so on their own they
         could turn a plan that fits the budget without a DedupSpec into an
         infeasible one (#5175). If every ordinary demotion still leaves the plan
-        over budget, those axes are handed back to ordinary budget planning as
-        a last resort (with a RuntimeWarning, and the fallback recorded in each
-        decision's reasoning) before BudgetInfeasibleError is raised. Adding a
+        over budget, dedup axes are handed back to ordinary budget planning one
+        at a time, in spec order, until it fits -- a last resort, each with a
+        RuntimeWarning and the fallback recorded in its decision's reasoning --
+        before BudgetInfeasibleError is raised. Adding a
         DedupSpec therefore never makes a feasible plan infeasible. Note the
         fallback changes the axis's numerics at the ~1e-6 level: gather-per-
         canonical and per-row outputs are equal only up to float tolerance
@@ -350,23 +353,32 @@ class BatchPlanner:
 
         estimate, n_candidates = self._greedy_demote(specs, decisions, pending, budget)
         dropped: list[int] = []
-        if estimate > budget.bytes and dedup_indices:
-            dropped = list(dedup_indices)
-            names = ", ".join(repr(specs[i].name) for i in dropped)
+        # Release dedup axes ONE AT A TIME, in spec order, stopping at the first fit: the
+        # minimal change, so a DedupSpec another axis's release already made room for keeps
+        # its dedup (and its numerics).
+        for idx in dedup_indices:
+            if estimate <= budget.bytes:
+                break
+            spec = specs[idx]
+            if spec.role == AxisRole.UNKNOWN:
+                # The Phase-0b `continue` skipped this guard; ordinary planning needs it.
+                raise AmbiguousAxisError(
+                    f"axis '{spec.name}' has an unresolved role; declare it with "
+                    f"@axis_config or provide an override before planning."
+                )
             warnings.warn(
-                f"MemoryBudget of {budget.bytes} B cannot be met with DedupGather on "
-                f"axis {names}; planning {'it' if len(dropped) == 1 else 'them'} without "
-                "dedup instead (outputs then match the dedup path only up to float "
-                "tolerance).",
+                f"MemoryBudget of {budget.bytes} B cannot be met with DedupGather on axis "
+                f"{spec.name!r}; planning it without dedup instead (outputs then match the "
+                "dedup path only up to float tolerance).",
                 RuntimeWarning,
                 stacklevel=3,
             )
-            for idx in dropped:
-                if specs[idx].bucket_boundaries is None:
-                    decisions[idx] = None
-                else:
-                    decisions[idx] = self._decide_strategy(specs[idx])
-            pending = sorted({*pending, *(i for i in dropped if decisions[i] is None)})
+            dropped.append(idx)
+            if spec.bucket_boundaries is None:
+                decisions[idx] = None
+                pending = sorted({*pending, idx})
+            else:
+                decisions[idx] = self._decide_strategy(spec)
             estimate, n_candidates = self._greedy_demote(specs, decisions, pending, budget)
 
         def _snapshot() -> tuple[AxisDecision, ...]:
@@ -434,7 +446,7 @@ class BatchPlanner:
                     f"is not divisible by batch_size={spec.default_batch_size}. "
                     f"This plan will raise ValueError at make_axis_dispatch time.",
                     RuntimeWarning,
-                    stacklevel=3,
+                    stacklevel=4,  # _greedy_demote <- _plan_joint_budget <- plan <- caller
                 )
             step += 1
             before = estimate

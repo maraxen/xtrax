@@ -27,7 +27,8 @@ against the same byte definition, so the two functions cannot drift: every row
 k_mismatch, index_map_length, unique_indices_bounds, index_map_bounds) before any
 device→host transfer, then compares row bytes with exactly one transfer call.
 Compute-equivalence (claim ii, "does re-running fn on deduped rows reproduce the
-full output") is not checked here; that is follow-up #5217.
+full output") needs `fn`, so it is a separate function, `verify_dedup_outputs`
+(#5217). It compares numerically, never bitwise: the two programs fuse differently.
 
 Design invariants (F3, F4):
   - unique_indices = ascending FIRST-OCCURRENCE POSITIONS of distinct rows
@@ -474,6 +475,7 @@ def verify_dedup_outputs(
     *,
     rtol: float = 1e-5,
     atol: float = 1e-6,
+    jit: bool = True,
 ) -> DedupOutputEquivalenceResult:
     """Check claim (ii): the dedup path reproduces fn's per-row outputs (#5217).
 
@@ -492,7 +494,9 @@ def verify_dedup_outputs(
         spec: The DedupSpec whose dispatch is being checked.
         fn: Per-row function, as the caller would dispatch it over the axis.
         xs: The batch, leading axis N == len(spec.index_map).
-        rtol, atol: numpy.allclose tolerance (NaN == NaN).
+        rtol, atol: numpy.isclose tolerance (NaN == NaN; equal infinities equal).
+        jit: evaluate both paths under jax.jit (default), as production dispatch
+            does -- eager op-by-op evaluation need not reproduce XLA's fusion.
 
     Returns:
         DedupOutputEquivalenceResult on success.
@@ -509,12 +513,25 @@ def verify_dedup_outputs(
     _check_spec_structure(spec, N)
 
     dg = spec.to_dedup_gather()
-    per_row = jax.vmap(fn)(xs)
-    unique_rows = dg.dedup_fn(xs, jnp.asarray(dg.unique_indices))
-    deduped = dg.gather_fn(jax.vmap(fn)(unique_rows), jnp.asarray(dg.index_map))
+    unique_idx = jnp.asarray(dg.unique_indices)
+    index_map = jnp.asarray(dg.index_map)
+
+    def _per_row(batch: Any) -> Any:
+        return jax.vmap(fn)(batch)
+
+    def _dedup_path(batch: Any) -> Any:
+        return dg.gather_fn(jax.vmap(fn)(dg.dedup_fn(batch, unique_idx)), index_map)
+
+    # Production dispatch is jitted, and XLA fusion is where the two paths differ.
+    run_per_row: Any = jax.jit(_per_row) if jit else _per_row
+    run_dedup: Any = jax.jit(_dedup_path) if jit else _dedup_path
+    per_row = run_per_row(xs)
+    deduped = run_dedup(xs)
 
     ref_leaves, ref_tree = jax.tree_util.tree_flatten(per_row)
     got_leaves, got_tree = jax.tree_util.tree_flatten(deduped)
+    if not ref_leaves:
+        raise ValueError("verify_dedup_outputs: fn returned no array leaves to compare")
     if ref_tree != got_tree:
         msg = f"verify_dedup_outputs: output structure differs ({ref_tree} vs {got_tree})"
         raise ValueError(msg)
@@ -532,11 +549,14 @@ def verify_dedup_outputs(
             )
             raise ValueError(msg)
         if jnp.issubdtype(ref_d.dtype, jnp.inexact):
-            both_nan = jnp.isnan(ref_d) & jnp.isnan(got_d)
-            diff = jnp.nan_to_num(jnp.abs(ref_d - got_d), nan=jnp.inf)
-            diff = jnp.where(both_nan, 0.0, diff)
-            tol = atol + rtol * jnp.nan_to_num(jnp.abs(got_d), nan=0.0)
-            ok = both_nan | (diff <= tol)
+            # numpy.isclose semantics: NaN==NaN, equal infinities equal, an infinity
+            # vs anything else unequal (inf-inf is NaN, so it cannot go through diff).
+            same = (jnp.isnan(ref_d) & jnp.isnan(got_d)) | (ref_d == got_d)
+            finite = jnp.isfinite(ref_d) & jnp.isfinite(got_d)
+            diff = jnp.where(same, 0.0, jnp.abs(ref_d - got_d))
+            diff = jnp.where(same | finite, diff, jnp.inf)
+            tol = atol + rtol * jnp.where(finite, jnp.abs(got_d), 0.0)
+            ok = same | (finite & (diff <= tol))
         else:  # integer / bool outputs: exact
             diff = jnp.abs(ref_d.astype(jnp.float32) - got_d.astype(jnp.float32))
             ok = ref_d == got_d

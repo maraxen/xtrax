@@ -169,3 +169,98 @@ def test_structural_mismatch_is_reported_before_evaluating_fn():
     with pytest.raises(DedupSpecVerificationError):
         verify_dedup_outputs(spec, lambda r: called.append(1) or r, xs[:16])
     assert called == []
+
+
+# --- review-driven cases ---------------------------------------------------------------
+
+
+def test_equal_infinities_are_equal_and_inf_vs_finite_is_not():
+    """Masked logits / log(0) produce +-inf on both paths; inf-inf is NaN, not a diff."""
+    spec, xs, _ = _batch(32, 4, 8)
+    ok = verify_dedup_outputs(spec, lambda r: jnp.where(r > 0, r, -jnp.inf), xs)
+    assert ok.max_abs_error == 0.0
+    wrong = DedupSpec(
+        axis_name="b",
+        unique_indices=spec.unique_indices,
+        index_map=(spec.index_map + 1) % spec.k,
+        k=spec.k,
+    )
+    with pytest.raises(DedupOutputMismatchError):
+        verify_dedup_outputs(wrong, lambda r: jnp.where(r > 0, r, -jnp.inf), xs)
+
+
+def test_eager_and_jitted_modes_both_verify():
+    spec, xs, w = _batch(64, 4, 16)
+    for jit in (True, False):
+        assert verify_dedup_outputs(spec, lambda r: jnp.tanh(r @ w), xs, jit=jit).n_rows == 64
+
+
+def test_fn_with_no_array_outputs_is_a_clear_error():
+    spec, xs, _ = _batch(16, 4, 8)
+    with pytest.raises(ValueError, match="no array leaves"):
+        verify_dedup_outputs(spec, lambda r: {}, xs)
+
+
+def _two_dedup_axes():  # noqa: ANN202
+    a = AxisSpec(name="a", cardinality=100, default_batch_size=10, dedup_eligible=True)
+    b = AxisSpec(name="b", cardinality=100, default_batch_size=10, dedup_eligible=True)
+    specs = [
+        DedupSpec(
+            axis_name=n,
+            unique_indices=np.arange(30, dtype=np.int32),
+            index_map=(np.arange(100) % 30).astype(np.int32),
+            k=30,
+        )
+        for n in ("a", "b")
+    ]
+    return a, b, specs
+
+
+def test_dedup_axes_are_released_one_at_a_time_in_spec_order():
+    """Releasing the first dedup axis is enough, so the second keeps its dedup."""
+    a, b, specs = _two_dedup_axes()
+
+    def cost(decisions) -> int:  # noqa: ANN001
+        return sum(600 if isinstance(d.strategy, DedupGather) else 100 for d in decisions)
+
+    planner = BatchPlanner(dedup_specs=specs, budget=MemoryBudget(bytes=800, estimate=cost))
+    with pytest.warns(RuntimeWarning, match="'a'") as record:
+        plan = planner.plan([a, b])
+    by = {d.spec.name: d for d in plan.decisions}
+    assert not isinstance(by["a"].strategy, DedupGather)
+    assert isinstance(by["b"].strategy, DedupGather)
+    assert not any("'b'" in str(w.message) for w in record)
+
+
+def test_bucket_bounded_dedup_axis_falls_back_to_its_bucket_strategy():
+    spec = AxisSpec(
+        name="b",
+        cardinality=100,
+        default_batch_size=10,
+        dedup_eligible=True,
+        bucket_boundaries=(50, 100),
+    )
+
+    def cost(decisions) -> int:  # noqa: ANN001
+        return 1_000 if any(isinstance(d.strategy, DedupGather) for d in decisions) else 10
+
+    planner = BatchPlanner(dedup_specs=[_ds(30)], budget=MemoryBudget(bytes=100, estimate=cost))
+    with pytest.warns(RuntimeWarning):
+        plan = planner.plan([spec])
+    assert type(plan.decisions[0].strategy).__name__ == "Bucket"
+    assert "DedupSpec dropped" in plan.decisions[0].reasoning
+
+
+def test_dropped_unknown_role_dedup_axis_still_fails_loud():
+    from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
+
+    spec = AxisSpec(
+        name="b",
+        cardinality=100,
+        default_batch_size=10,
+        dedup_eligible=True,
+        role=AxisRole.UNKNOWN,
+    )
+    planner = BatchPlanner(dedup_specs=[_ds(30)], budget=MemoryBudget(bytes=150, estimate=_cost))
+    with pytest.raises(AmbiguousAxisError):
+        planner.plan([spec])
