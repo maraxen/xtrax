@@ -388,16 +388,34 @@ class ZarrStagingSink:
             group_path = "/".join(str(part) for part in key)
             group = self._root.require_group(group_path) if group_path else self._root
             for name, array in arrays.items():
-                arr = group.create_array(
-                    name=name,
-                    shape=array.shape,
-                    dtype=array.dtype,
-                    # One chunk per array, rank-matched to its shape: 0-d gets
-                    # chunks=() and zero-length dims get edge 1 (zarr rejects 0).
-                    chunks=tuple(max(d, 1) for d in array.shape),
-                    overwrite=True,
-                )
-                arr[...] = array
+                try:
+                    arr = group.create_array(
+                        name=name,
+                        shape=array.shape,
+                        dtype=array.dtype,
+                        # One chunk per array, rank-matched to its shape: 0-d gets
+                        # chunks=() and zero-length dims get edge 1 (zarr rejects 0).
+                        chunks=tuple(max(d, 1) for d in array.shape),
+                        overwrite=True,
+                    )
+                    arr[...] = array
+                except Exception as e:
+                    # #5552: zarr's own message names only zarr internals, and from an
+                    # io_callback JAX re-renders just the original exception's message
+                    # line (no notes, no chained cause). So the context goes INTO the
+                    # message, on the same exception object: type and traceback are
+                    # unchanged for callers that catch it.
+                    context = (
+                        f"ZarrStagingSink.drain: failed writing array {name!r} "
+                        f"(shape={tuple(array.shape)}, dtype={array.dtype}) "
+                        f"for staged key {key!r} at group {group_path or '/'!r}; "
+                        "the pending buffer was NOT cleared"
+                    )
+                    if e.args and isinstance(e.args[0], str):
+                        e.args = (f"{context}: {e.args[0]}", *e.args[1:])
+                    else:
+                        e.add_note(context)
+                    raise
             key_attrs = self._pending_attrs.get(key)
             if key_attrs:
                 group.attrs.update(key_attrs)

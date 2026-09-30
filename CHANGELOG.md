@@ -52,6 +52,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ZarrStagingSink.drain` errors name the payload that failed** (`xtrax.run`, #5552).
+  A zarr write error now carries the staged key, group path, array name, shape and
+  dtype in its message, on the same exception object (type unchanged), and says the
+  pending buffer was not cleared. The context is in the message itself because JAX's
+  `io_callback` re-renders only the original exception's message line, not notes or
+  chained causes; previously a drain from the activation-capture path surfaced as an
+  opaque `CpuCallback error` naming only zarr internals.
+
+- **CLI shape specs: the documented form works and errors show a real example**
+  (`xtrax.cli`, #5174). `<dtype>` in the grammar was a placeholder but read as literal
+  syntax, so `x=(4,3)<float32>` was rejected. The parser now accepts the long aliases
+  `float32`/`float64`/`int32` and an optional `<...>` around the dtype, reports a
+  missing dtype specifically, and every error message shows `e.g. x=(4,3)f32`.
+
 - **`ZarrStagingSink.drain` stores 0-d and zero-length payloads** (`xtrax.run`, #161).
   Chunks are now rank-matched (`tuple(max(d, 1) for d in shape)`); previously a
   0-d per-step scalar, or any array with a zero-length dimension such as
