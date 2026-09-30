@@ -30,11 +30,11 @@ this sprint made exactly that error.
 
 ## What this script does NOT claim
 
-It reports which recipes are unreached. It says nothing about whether they pass --
-that is the scheduled workflow's job (`.github/workflows/audit-orphans.yml`), and
-until that workflow has run at least once, nobody knows. No expected-status data is
-baked in here, because there is none yet; inventing it would be the same unfounded
-green this script exists to expose.
+It reports which recipes are unreached. Whether they pass is the scheduled workflow's
+job (`.github/workflows/audit-orphans.yml`). Expected status is data, not code: it
+lives in `.github/audit_orphans_pinned.toml` (#5002), pinned from the first four
+scheduled runs, and `--check-results` fails when a pinned recipe stops passing. The
+set of orphans stays derived; only which of them gate is listed.
 
 ## The one thing it does enforce
 
@@ -51,6 +51,8 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +79,8 @@ AUDIT_PREFIX = "audit-"
 # entry points by accident -- but that is a property of one line of bash, not a
 # guarantee. Excluding the file by name makes it structural.
 SELF_WORKFLOW = "audit-orphans.yml"
+
+PINNED_PATH = Path(".github") / "audit_orphans_pinned.toml"
 
 
 def load_recipes(root: Path = ROOT) -> dict[str, dict]:
@@ -185,9 +189,80 @@ def orphan_audit_recipes(
     return runnable, needs_args
 
 
+@dataclass(frozen=True)
+class PinnedCheck:
+    """Outcome of comparing one run's per-recipe results against the pinned set (#5002)."""
+
+    regressions: list[str]  # pinned, and FAILED (or never ran) this run -> gate fails
+    unclassified: list[str]  # derived orphan in neither `pinned` nor `[not_pinned]`
+    not_orphans: list[str]  # named in the pin file but no longer an orphan (wired into CI)
+    unknown: list[str]  # named in the pin file but not a Justfile recipe at all -> gate fails
+
+
+def load_pinned(path: Path) -> tuple[list[str], dict[str, str]]:
+    """Read the pin file: the expected-pass list and the reasoned not-pinned table."""
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    pinned = list(data.get("pinned", []))
+    not_pinned = dict(data.get("not_pinned", {}))
+    overlap = sorted(set(pinned) & set(not_pinned))
+    if overlap:
+        msg = f"{path}: recipes both pinned and not_pinned: {overlap}"
+        raise ValueError(msg)
+    return pinned, not_pinned
+
+
+def check_pinned(
+    *,
+    pinned: list[str],
+    not_pinned: dict[str, str],
+    orphans: list[str],
+    recipes: dict[str, dict],
+    results: dict[str, str],
+) -> PinnedCheck:
+    """A pinned orphan that did not PASS is a regression; naming a non-recipe is an error.
+
+    A pinned recipe missing from `results` counts as a regression: it was expected to run
+    and pass, and silence is not a pass.
+    """
+    orphan_set = set(orphans)
+    named = [*pinned, *not_pinned]
+    return PinnedCheck(
+        regressions=sorted(
+            name for name in pinned if name in orphan_set and results.get(name) != "PASS"
+        ),
+        unclassified=sorted(orphan_set - set(named)),
+        not_orphans=sorted(name for name in named if name in recipes and name not in orphan_set),
+        unknown=sorted(name for name in named if name not in recipes),
+    )
+
+
+def read_results(path: Path) -> dict[str, str]:
+    """Parse `recipe<TAB>PASS|FAIL` lines written by audit-orphans.yml."""
+    results: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        name, _, status = line.partition("\t")
+        results[name.strip()] = status.strip()
+    return results
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT, help="Repository root")
+    parser.add_argument(
+        "--check-results",
+        type=Path,
+        default=None,
+        help="Gate mode (#5002): read `recipe<TAB>PASS|FAIL` lines and exit 1 if any "
+        "recipe pinned in --pinned did not pass",
+    )
+    parser.add_argument(
+        "--pinned",
+        type=Path,
+        default=None,
+        help="Pin file (default: .github/audit_orphans_pinned.toml under --root)",
+    )
     parser.add_argument(
         "--format",
         choices=("lines", "json", "report"),
@@ -206,6 +281,29 @@ def main(argv: list[str] | None = None) -> int:
 
     audit_total = sum(1 for name in recipes if name.startswith(AUDIT_PREFIX))
     audit_covered = sum(1 for name in covered if name.startswith(AUDIT_PREFIX))
+
+    if args.check_results is not None:
+        pinned, not_pinned = load_pinned(args.pinned or root / PINNED_PATH)
+        check = check_pinned(
+            pinned=pinned,
+            not_pinned=not_pinned,
+            orphans=runnable,
+            recipes=recipes,
+            results=read_results(args.check_results),
+        )
+        for name in check.unclassified:
+            print(f"UNCLASSIFIED (reported, not gated): {name} -- pin it once it passes")
+        for name in check.not_orphans:
+            print(f"NOTE: {name} is reached by CI now; drop it from the pin file")
+        for name in check.unknown:
+            print(f"FAIL: pin file names {name!r}, which is not a Justfile recipe", file=sys.stderr)
+        for name in check.regressions:
+            print(f"FAIL: pinned recipe {name} did not pass (regression, #5002)", file=sys.stderr)
+        if check.regressions or check.unknown or dangling:
+            return 1
+        n_gated = sum(1 for name in pinned if name in set(runnable))
+        print(f"PASS: all {n_gated} pinned orphan recipes passed")
+        return 0
 
     if args.format == "lines":
         for name in runnable:

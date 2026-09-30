@@ -1,0 +1,42 @@
+# Phase 2 of the orphan-recipe run (#5002): which unreached audit-* recipes GATE.
+#
+# `pinned` recipes passed on the first scheduled runs (2026-09-06 through 2026-09-28,
+# identical 27-recipe set) and must keep passing: a pinned recipe that fails makes
+# audit-orphans.yml fail. This is a list of recipes EXPECTED TO PASS, not an exemption
+# list -- a recipe absent from it is reported but not gated.
+#
+# Every derived orphan that is not pinned is named in [not_pinned] with its reason, so
+# "not gated" is always a stated decision. A derived orphan in neither table is
+# reported as UNCLASSIFIED; pin it once it has passed.
+
+pinned = [
+  "audit-baseline-contract",
+  "audit-correctness-gate",
+  "audit-coverage-dag-all",
+  "audit-docs-build",
+  "audit-docs-judgment",
+  "audit-documentation-gate",
+  "audit-emit-contract",
+  "audit-empirical-oracle",
+  "audit-foundation",
+  "audit-judgment",
+  "audit-performance-gate",
+  "audit-plugin-manifest",
+  "audit-port-bridge",
+  "audit-profiling-contract",
+  "audit-promotion-gate",
+  "audit-refute-promote",
+  "audit-release-readiness",
+  "audit-routing-contract",
+  "audit-rubrics-contract",
+  "audit-test-rigor-gate-quick",
+  "audit-tombstone-contract",
+  "audit-type-hardening-gate",
+]
+
+[not_pinned]
+audit-drift-check = "CI-incapable: diffs against a real `praxia plugin install` export, and the praxia CLI is not installed in CI (see its Justfile comment)."
+audit-test-rigor-gate = "Was failing only on environment: tests/eda/test_viz.py needs matplotlib, which the job did not install until the eda extra was added (#5002). Pin after its first green run."
+audit-structure-complexity-gate = "Real quality findings vs baseline (cognitive_complexity_max=117, 44 ruff complexity violations on 2026-09-28). Separate fix; pin once green."
+audit-api-ergonomics-gate = "Real quality findings vs baseline (param_sprawl_violation_count=6 on 2026-09-28). Separate fix; pin once green."
+audit-bootstrap = "Aggregates other dimensions; fails only because api_ergonomics and structure_complexity fail. Pin once both are green."

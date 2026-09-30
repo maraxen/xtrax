@@ -412,8 +412,20 @@ def format_verdict(
         return f"REPORT (not enforced): coverage DAG --enforce {enforce_tier} -- " + " | ".join(
             _failure_segment(r) for r in failing
         )
-    else:
-        return "PASS: coverage DAG enforce"
+    # PASS only when a floor was actually evaluated for the enforced tier (#5248). A
+    # floor-less tier (enforce_passed None) or one --tier did not select evaluated nothing.
+    enforced = [r for r in results if r.tier_id == enforce_tier]
+    if not enforced:
+        return (
+            f"REPORT (not enforced): coverage DAG --enforce {enforce_tier} -- "
+            "tier was not run (not selected by --tier)"
+        )
+    if enforced[0].enforce_passed is not True:
+        return (
+            f"REPORT (not enforced): coverage DAG --enforce {enforce_tier} -- "
+            "tier declares no enforce_* floors"
+        )
+    return "PASS: coverage DAG enforce"
 
 
 def audit_coverage_dag(
