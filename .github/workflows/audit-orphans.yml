@@ -11,14 +11,13 @@
 # these workflow files. Wire a recipe into CI and it leaves this run automatically;
 # add a new one and it joins automatically. There is nothing to keep in sync.
 #
-# PHASE 1 -- THIS WORKFLOW DOES NOT GATE. Every recipe runs with its failure
-# recorded and tolerated, and the job succeeds regardless. That is deliberate: no
-# one has ever run most of these, so there is no basis yet for saying which *should*
-# pass. Claiming otherwise would manufacture exactly the unfounded green this exists
-# to expose. Phase 2 -- pin the passing set and start failing on regressions -- is
-# backlog #5002, and wants the first run's output as its input.
+# PHASE 2 (#5002) -- THIS WORKFLOW GATES ON THE PINNED SET. Every recipe still runs
+# and is recorded, but a recipe listed in .github/audit_orphans_pinned.toml that
+# fails makes the job fail. The pinned set is what passed on the first four scheduled
+# runs; every orphan NOT pinned is named there with its reason. A new, unclassified
+# orphan is reported, not gated, until someone pins it.
 #
-# Read the run's job summary, not its status badge. The badge is green by design.
+# Read the run's job summary for the unpinned recipes' results.
 name: Audit Orphans
 
 on:
@@ -43,8 +42,10 @@ jobs:
       - name: Install just
         run: uv tool install rust-just
 
+      # Same extras as ci.yml's test job: audit-test-rigor-gate runs the whole suite, and
+      # tests/eda needs matplotlib (the eda extra) to collect at all (#5002).
       - name: Install dev dependencies
-        run: uv sync --extra dev --extra io
+        run: uv sync --extra dev --extra eda --extra io
 
       - name: Enumerate unreached recipes
         id: enumerate
@@ -60,8 +61,8 @@ jobs:
           {
             echo "## Unreached audit recipes"
             echo
-            echo "\`$total\` recipes that no workflow invokes. This job does not gate --"
-            echo "a FAIL here is information, not a build break (see #5002)."
+            echo "\`$total\` recipes that no workflow invokes. Only recipes pinned in"
+            echo "\`.github/audit_orphans_pinned.toml\` gate; see the gate step (#5002)."
             echo
             echo "| recipe | result | seconds |"
             echo "|---|---|---|"
@@ -79,10 +80,10 @@ jobs:
             # audit-docs-build-contract in the Justfile). Without this line, every
             # recipe sequenced after it would fail on an unrelated ImportError and
             # the whole report would be noise.
-            uv sync --extra dev --extra io --quiet
+            uv sync --extra dev --extra eda --extra io --quiet
 
             start=$SECONDS
-            if timeout 900 just "$recipe" > "/tmp/${recipe}.log" 2>&1; then
+            if timeout 900 just "$recipe" < /dev/null > "/tmp/${recipe}.log" 2>&1; then
               result="PASS"
               passed=$((passed + 1))
             else
@@ -93,6 +94,11 @@ jobs:
             elapsed=$((SECONDS - start))
 
             echo "| \`$recipe\` | $result | ${elapsed} |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$result" = "PASS" ]; then
+              printf '%s\tPASS\n' "$recipe" >> /tmp/orphan-results.tsv
+            else
+              printf '%s\tFAIL\n' "$recipe" >> /tmp/orphan-results.tsv
+            fi
 
             echo "::group::$recipe -- $result"
             tail -80 "/tmp/${recipe}.log"
@@ -105,6 +111,22 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "$passed passed, $failed failed of $total"
+
+      - name: Gate on the pinned passing set (#5002)
+        run: |
+          # No pipefail: under GitHub's `bash -e` it would abort before the summary is
+          # written. PIPESTATUS[0] carries the gate's own exit code instead.
+          uv run python scripts/audit_orphan_recipes.py --check-results /tmp/orphan-results.tsv 2>&1 \
+            | tee /tmp/orphan-gate.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo
+            echo "### Pinned-set gate"
+            echo '```'
+            cat /tmp/orphan-gate.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Upload recipe logs
         if: always()

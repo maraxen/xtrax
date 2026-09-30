@@ -64,6 +64,17 @@ and must not be committed.
 just audit-deterministic
 ```
 
+Two of its gates check what a consumer sees, compared against the merge-base:
+
+- `audit-dataclass-shape-diff`: removing, renaming, retyping or reordering a
+  field of a shipped public dataclass (also a `NamedTuple` or an `eqx.Module`),
+  dropping a field's default, adding a required field, or deleting or moving
+  its module breaks consumers. Name the class in a `CHANGELOG.md` line in the
+  same change, or the gate fails.
+- `audit-project-hygiene`: a module that ships in the wheel must not import a
+  dev-only package at module level. Everything outside the wheel's `exclude`
+  (`src/xtrax/devtools`) ships.
+
 ## Documentation
 
 Build documentation locally:

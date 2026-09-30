@@ -1,4 +1,4 @@
-# ring-probes Internal Docs
+# onnx-spike-260930 Internal Docs
 
 ## Daily
 
@@ -71,6 +71,7 @@
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [260930_onnx-route-spike](research/260930_onnx-route-spike.md) — Three pre-registered bathos runs: every tied sort/argsort/top_k/argmax/scatter case is exact on ORT CPU; jax2onnx 0.16.1 breaks nested jit on jax 0.11; threefry is replaced by ONNX RandomUniform and does not run
 - [260922_conformance-residuals-probes](research/260922_conformance-residuals-probes.md) — Measured JAX 0.11.1 / numpy 2.5.1 CPU behaviours behind spec 260922_conformance-residuals §1.1 — donation carriers in jaxprs, synthesizer row-identity unsoundness, byte bitcasts, and which host-transfer oracles work on CPU
 - [260914_browser-inference-routes-jaxjs-jax2onnx](research/260914_browser-inference-routes-jaxjs-jax2onnx.md) — Measured coverage of the non-IREE browser paths — jax-js is a reimplementation not a converter, jax2onnx takes Equinox directly and covers every primitive aminx needs, but ONNX mandates int64 TopK indices which ORT Web's WebGPU EP does not support
 - [260901_webgpu-export-measurement-pass](research/260901_webgpu-export-measurement-pass.md) — Empirical de-risking of the xtrax.export spec before implementation — pins resolve, but AC-8's WebGPU-validity gate is falsified by IREE's push-constant ABI
