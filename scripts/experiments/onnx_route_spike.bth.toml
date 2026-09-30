@@ -1,0 +1,66 @@
+[metadata]
+title = "xtrax ONNX route spike: jax2onnx -> ORT CPU EP integer exactness + dtype census"
+created = "260930"
+schema_version = "0.3"
+
+[experiment]
+hypothesis = "jax2onnx 0.16.1 converts each of 10 generic cases (tie-rich 2-key sort, stable argsort int+float, lax.top_k, top_k-via-2-key-sort, argmax on ties, int scatter-add+gather, threefry uniform, nested-split threefry, and a TinyMLP composed by xtrax.export.composer.build_traceable_callable) under export_mode standard AND web, and ONNX Runtime 1.30 CPU EP executes every converted graph with integer/bit outputs EXACTLY equal to the JAX oracle and float outputs within 1e-5 max-abs, under both ORT_DISABLE_ALL and ORT_ENABLE_ALL, with graph output dtypes identical to JAX's. Instrument validity is established by controls: tie order is observable in the fixtures (a descending-index tiebreak changes the answer), the comparator fires on a 2-slot swap and on a 1-ulp bit change and not on identity, and a 1e-3 weight-perturbed MLP converted by the same path misses the 1e-5 bar."
+stage_name = "exploration"
+novel = true
+
+[controls]
+positive_outcome = ["pass", "pass_dtype_widened"]
+negative_outcome = ["instrument_invalid", "op_divergent", "partial_conversion"]
+
+# Declaration ORDER is load-bearing: bathos takes the FIRST matching outcome.
+# instrument_invalid must precede everything (a broken instrument voids all other
+# labels); op_divergent must precede pass-family labels (divergence dominates).
+
+[outcomes.instrument_invalid]
+condition = "controls_ok = false"
+decision = "A control failed (ties not observable, comparator blind, or perturbed MLP undetected). No other number from this run may be cited; fix the instrument and re-run."
+reasoning = "A comparison that cannot see a tie-order change or a perturbed weight would read every case as exact."
+is_residual = false
+
+[outcomes.op_divergent]
+condition = "controls_ok = true AND n_value_divergent > 0"
+decision = "At least one converted, ORT-executed case returned different values from JAX. The `divergent` list names which op/mode pairs an xtrax onnx target would have to refuse or rewrite (the ONNX analogue of the IREE sort-stability rule)."
+reasoning = "Silent integer divergence under a successful conversion is exactly the failure class seen on IREE; the per-op list is the finding."
+is_residual = false
+
+[outcomes.pass]
+condition = "controls_ok = true AND smoke = false AND n_value_divergent = 0 AND n_unconverted = 0 AND n_ort_failed = 0 AND n_io_dtype_changed = 0"
+decision = "All 20 variants convert, execute, match JAX exactly, and keep JAX's I/O dtypes on ORT CPU. The ONNX route is sound for these op classes on ORT CPU; browser (ORT Web wasm/WebGPU) evidence is still required before any browser claim."
+reasoning = "Every case, both modes, both optimisation levels, controls live."
+is_residual = false
+
+[outcomes.pass_dtype_widened]
+condition = "controls_ok = true AND smoke = false AND n_value_divergent = 0 AND n_unconverted = 0 AND n_ort_failed = 0 AND n_io_dtype_changed > 0"
+decision = "Values are exact, but some graphs' output dtypes differ from JAX (e.g. int32 -> int64). An xtrax onnx target must cast back or declare the widened dtype in its result; consumers with typed buffers (aminx JS Int32Array) depend on it."
+reasoning = "Value parity with a changed I/O dtype is a contract change, not a numeric one."
+is_residual = false
+
+[outcomes.partial_conversion]
+condition = "controls_ok = true AND n_value_divergent = 0 AND (n_unconverted > 0 OR n_ort_failed > 0 OR smoke = true)"
+decision = "No value divergence, but some cases did not convert or ORT refused them (see `unconverted` and per-case errors), or this was a smoke run. Those op classes are unsupported on the route, not wrong."
+reasoning = "Unsupported fails loudly, which is the acceptable failure; it scopes what the target can carry."
+is_residual = true
+
+[result_schema]
+versions = "dict"
+seed = "int"
+smoke = "bool"
+controls = "dict"
+controls_ok = "bool"
+n_variants = "int"
+n_converted = "int"
+n_unconverted = "int"
+n_value_divergent = "int"
+n_ort_failed = "int"
+n_io_dtype_changed = "int"
+n_graphs_with_int64 = "int"
+divergent = "list"
+unconverted = "list"
+io_dtype_changed = "list"
+per_case_path = "str"
+note = "str"
