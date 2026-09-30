@@ -121,11 +121,11 @@ Both are left to a future AC-10-style cross-repo gap-filing item, not silently w
 
 import hashlib
 import json
+import logging
 import os
 import selectors
 import shutil
 import subprocess
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -133,6 +133,7 @@ from pathlib import Path
 from typing import Any
 
 _DEFAULT_TIMEOUT = 30.0
+_logger = logging.getLogger(__name__)
 
 # Mirrors scripts/probe_praxia_mcp_invocation.py's `_FALLBACK_COMMAND` precedent: the live
 # ~/.claude.json mcpServers.bathos entry's command, read directly, used only if `bth-mcp`
@@ -642,10 +643,11 @@ class BathosCampaignAdapter:
                         f"{script_path!r} (bathos contract drift, #4584)",
                     },
                 )
-            print(
-                f"WARNING: bathos run envelope for {script_path!r} reports success=True "
-                f"with exit_code={exit_code}; treating the run as failed (#4584)",
-                file=sys.stderr,
+            _logger.warning(
+                "bathos run envelope for %r reports success=True with exit_code=%s; "
+                "treating the run as failed (#4584)",
+                script_path,
+                exit_code,
             )
         return CandidateRunResult(
             script_path=envelope["script_path"],

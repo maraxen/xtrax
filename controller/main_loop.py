@@ -101,8 +101,9 @@ the pieces it sequences: `dispatch_backend.dispatch_candidate()` (`CandidateHand
 `CandidateSmokeFailedError`, `CheckifiedExecutionError`, see the GW-04 addendum above),
 `record_candidate_run`/`resolve_derived_from` (`MultiParentLineageUnsupportedError`), or
 `campaign_adapter.run` via `record_candidate_run` (`BathosMcpToolError`, `BathosMcpTransportError`,
-`BathosTokenMissingError`). Every one of these propagates to the caller unmodified. AC-8c (LC-11)
-owns error/retry policy and the "conclude
+`BathosTokenMissingError`), or the pre-scoring success check on the run it returns
+(`RawArtifactsUnavailableError`, #4584). Every one of these propagates to the caller unmodified.
+AC-8c (LC-11) owns error/retry policy and the "conclude
 fires on every code path" guarantee; this module's job is to prove the happy-path sequence is
 wired correctly end-to-end, not to also own what happens when a step fails.
 """
@@ -745,8 +746,11 @@ def run_one_candidate_pass(
             before the real bathos run.
         MultiParentLineageUnsupportedError: `parentage` names more than one distinct, real
             parent run ID -- raised before any bathos call.
-        BathosMcpToolError: `campaign_adapter.run` itself failed (bathos-side validation or the
-            script run reported failure).
+        BathosMcpToolError: `campaign_adapter.run` itself failed: bathos-side validation
+            (`ok: False`), or an envelope claiming failure with exit_code 0 (contract drift).
+        RawArtifactsUnavailableError: the bathos run did not succeed (#4584) -- raised right
+            after the run, before sidecar-drift handling, scoring or any lineage step, so a
+            failed run is never scored and never advances the best-so-far ref.
         BathosMcpTransportError: the MCP round-trip to bathos failed.
         BathosTokenMissingError: no local bathos MCP write-token is available.
         ClosureHashMismatchError, ProtectedPathMutatedError, UnlistedReadError: closure-lock

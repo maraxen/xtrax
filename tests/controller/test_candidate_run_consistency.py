@@ -37,7 +37,7 @@ def test_contradictory_results_are_unrepresentable(exit_code: int, success: bool
 
 
 def test_adapter_turns_success_with_nonzero_exit_into_a_failed_run(
-    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     adapter = BathosCampaignAdapter(
         token="stub-token",
@@ -45,7 +45,7 @@ def test_adapter_turns_success_with_nonzero_exit_into_a_failed_run(
     )
     result = adapter.run("c.py", campaign_id="camp-1")
     assert (result.success, result.exit_code) == (False, 127)
-    assert "treating the run as failed (#4584)" in capsys.readouterr().err
+    assert "treating the run as failed (#4584)" in caplog.text
 
 
 def test_adapter_rejects_failure_with_zero_exit_as_contract_drift() -> None:

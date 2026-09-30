@@ -47,3 +47,13 @@ and a campaign that did list a controller file would fail loudly, not drift.
      the constitution says the agent must not settle for itself. Marielle approving
      that PR is the sign-off. No attestation row and no re-lock are needed, because
      nothing in the closure changes.
+
+## Consequence to know
+
+Part 1 is a HALT, not a rejection. A candidate whose bathos run fails now raises
+`RawArtifactsUnavailableError` out of `run_one_candidate_pass`. `run_multi_iteration_loop`
+does not catch it, so the campaign ends and concludes with `outcome_label="aborted"`.
+The pre-bathos gates (smoke, checkified execution) already behave this way. Before,
+the failed run was scored, recorded `accepted=False`, and the loop continued. Whether
+a failed candidate should instead be a caught per-candidate failure that continues the
+campaign is error/retry policy. That belongs to AC-8c (LC-11), not to this fix.

@@ -148,7 +148,9 @@ three types originate anywhere in the call chain `run_campaign_loop` -> `run_mul
   slice) `xtrax.loop.candidate_static` -- raises its *own* distinct exception type
   (`MultiParentLineageUnsupportedError`, `BathosMcpToolError`/`BathosMcpTransportError`/
   `BathosTokenMissingError`, `StatsBatteryGateInputError`, `SeedGateInputError`,
-  `DiversityQuotaInputError`, `CandidateStaticGateError`), none of which is a `ValueError`/
+  `DiversityQuotaInputError`, `CandidateStaticGateError`, and -- #4584 -- the evaluate
+  adapter's `RawArtifactsUnavailableError`, raised when a candidate's bathos run did not
+  succeed), none of which is a `ValueError`/
   `TimeoutError`/`CandidateHandoffFailure` subclass (all grepped and confirmed direct
   `Exception` subclasses) -- so `CandidateStaticGateError` falls to the same **uncaught
   exception** / `outcome_label="aborted"` bucket as the others in this list, with zero special-

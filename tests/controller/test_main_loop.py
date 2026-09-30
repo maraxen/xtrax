@@ -1238,7 +1238,6 @@ class TestProbeRecordEmission:
         It now HALTs before scoring, so nothing is scored and no probe record claims
         the candidate was accepted."""
         import controller.main_loop as ml
-        from xtrax.profiling.record import ProbeRecord
 
         real_record_run = ml.record_candidate_run
 
@@ -1280,8 +1279,54 @@ class TestProbeRecordEmission:
             )
 
         assert scored == []
-        for path in records_dir.glob("pass_*.json"):
-            assert ProbeRecord.read(path).config.get("accepted") != "true"
+        # The halt precedes probe emission: no pass record at all (was: accepted=false).
+        assert not records_dir.exists() or not any(records_dir.glob("pass_*.json"))
+
+    def test_halt_precedes_sidecar_drift_and_any_lineage_step(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordering (#4584 claim 1): with the sidecar-drift check live (autonomous mode),
+        a failed run halts before the drift reaction, and no commit or ref advance runs."""
+        import controller.main_loop as ml
+        from controller.evaluate_adapter import RawArtifactsUnavailableError
+
+        reached: list[str] = []
+        real_record_run = ml.record_candidate_run
+
+        def _failing_run(*args, **kwargs):
+            res = real_record_run(*args, **kwargs)
+            return type(res)(
+                script_path=res.script_path, exit_code=1, success=False, run_id=res.run_id
+            )
+
+        monkeypatch.setattr(ml, "record_candidate_run", _failing_run)
+        for name in (
+            "assert_sidecar_drift_reaction",
+            "create_pending_commit",
+            "advance_best_so_far",
+        ):
+            monkeypatch.setattr(ml, name, lambda *a, _n=name, **k: reached.append(_n))
+
+        adapter = BathosCampaignAdapter(
+            transport=_RecordingTransport(_run_envelope()), token="test-token"
+        )
+        with pytest.raises(RawArtifactsUnavailableError):
+            run_one_candidate_pass(
+                _mock_dispatch_backend(),
+                adapter,
+                campaign_id="camp-probe-7",
+                campaign_mode="exploration",
+                agent_mode="autonomous",
+                candidate_static_fn=_passing_candidate_static_fn,
+                stats_battery_kwargs={},
+                stats_battery_fn=lambda **kwargs: _passing_stats_verdict(),
+                seed_trial_counts_fn=lambda db, sha, hypothesis_clause_id="": (
+                    _passing_seed_counts()
+                ),
+                output_paths=["artifact.json"],
+                **_new_step_kwargs(),
+            )
+        assert reached == []
 
     def test_scoring_spy_fires_on_a_successful_run(self, tmp_path: Path) -> None:
         """Positive control for the test above: the same spy IS reached when the run
