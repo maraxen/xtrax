@@ -125,6 +125,7 @@ import os
 import selectors
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -196,6 +197,17 @@ class CandidateRunResult:
     exit_code: int
     success: bool
     run_id: str = ""
+
+    def __post_init__(self) -> None:
+        # #4584: bathos defines success as exit_code == 0 (run_tool), so a result where
+        # they disagree can only be a construction bug. Refusing it here means no reader
+        # can see a "successful" run that exited non-zero, or the reverse.
+        if self.success != (self.exit_code == 0):
+            msg = (
+                f"CandidateRunResult: success={self.success} contradicts "
+                f"exit_code={self.exit_code} (success must equal exit_code == 0)"
+            )
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -584,11 +596,17 @@ class BathosCampaignAdapter:
             no_sidecar: bypass sidecar enforcement, for exploratory runs.
 
         Returns:
-            A `CandidateRunResult` with the script's exit code and success flag.
+            A `CandidateRunResult` with the script's exit code and success flag. A script
+            that ran and FAILED is returned, not raised: `success=False` with its non-zero
+            exit code. `success` is derived as the envelope's `success` AND `exit_code == 0`,
+            so the result is always self-consistent (#4584): an envelope claiming success
+            with a non-zero exit is logged as bathos contract drift and returned as failed.
 
         Raises:
-            BathosMcpToolError: bathos's own tool-level validation or the script run itself
-                reported failure.
+            BathosMcpToolError: bathos's own tool-level validation rejected the call
+                (`ok: False` in the envelope), or the envelope claims failure with
+                exit_code 0 (contract drift with no consistent reading). A failed script
+                run does NOT raise.
             BathosMcpTransportError: the MCP round-trip itself failed.
             BathosTokenMissingError: no local MCP write-token is available.
         """
@@ -610,10 +628,29 @@ class BathosCampaignAdapter:
         )
         # Query for the run_id using script_sha256 (fallback strategy per step 1.2)
         run_id = self._query_run_id_by_script_sha256(script_path, self._catalog_dir)
+        exit_code = envelope["exit_code"]
+        reported = bool(envelope["success"])
+        if reported != (exit_code == 0):
+            # bathos defines success as exit_code == 0, so this is contract drift (#4584).
+            if exit_code == 0:
+                # "Failed" with a zero exit has no self-consistent representation.
+                raise BathosMcpToolError(
+                    "run",
+                    {
+                        **envelope,
+                        "error": f"envelope reports success=False with exit_code=0 for "
+                        f"{script_path!r} (bathos contract drift, #4584)",
+                    },
+                )
+            print(
+                f"WARNING: bathos run envelope for {script_path!r} reports success=True "
+                f"with exit_code={exit_code}; treating the run as failed (#4584)",
+                file=sys.stderr,
+            )
         return CandidateRunResult(
             script_path=envelope["script_path"],
-            exit_code=envelope["exit_code"],
-            success=envelope["success"],
+            exit_code=exit_code,
+            success=reported and exit_code == 0,
             run_id=run_id,
         )
 

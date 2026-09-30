@@ -128,7 +128,11 @@ from controller.bathos_library_wrappers import (
     get_sidecar_drift_signal,
 )
 from controller.dispatch import CandidateHandoff, DispatchBackend
-from controller.evaluate_adapter import BathosFrozenContext, score_raw_artifacts
+from controller.evaluate_adapter import (
+    BathosFrozenContext,
+    RawArtifactsUnavailableError,
+    score_raw_artifacts,
+)
 from controller.lineage_interim import (
     CandidateParentage,
     record_candidate_run,
@@ -821,6 +825,19 @@ def run_one_candidate_pass(
         agent_mode=agent_mode,
         no_sidecar=no_sidecar,
     )
+
+    # 2.3. A failed run is never scored (#4584). Nothing downstream gated on success:
+    # scoring ran on whatever partial artifacts a failed script left, and a good enough
+    # score advanced the best-so-far ref at step 2.9 before `accepted` (which does read
+    # success) was ever consulted. HALT here, before any step acts on the run -- the same
+    # refusal BathosSplitComputeEvaluator makes (controller/evaluate_adapter.py).
+    if not run_result.success:
+        msg = (
+            f"bathos run of {handoff.path} did not succeed (exit_code={run_result.exit_code})"
+            " -- refusing to score raw artifacts that may be partial or absent, or to let"
+            " them advance the best-so-far lineage"
+        )
+        raise RawArtifactsUnavailableError(msg)
 
     # 2.4. Sidecar-drift check (GW-01, AC-18) -- MUST fire BEFORE any best-so-far commit
     # lands, to prevent a drift-tainted candidate from becoming the new best-so-far. Skip
