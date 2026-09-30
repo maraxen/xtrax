@@ -320,39 +320,32 @@ class TestBatchPlanner:
         assert isinstance(decision.strategy, SafeMap)
         assert decision.strategy.batch_size == 50
 
-    def test_rule4_non_divisible_cardinality_returns_safemap_with_warning(self):
-        """Rule 4: non-divisible → SafeMap with warnings.warn."""
+    def test_rule4_non_divisible_cardinality_returns_safemap_without_warning(self):
+        """#5565: non-divisible → SafeMap, no warning; the final chunk is ragged."""
         spec = AxisSpec(name="batch", cardinality=100, default_batch_size=30)
         planner = BatchPlanner()
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             plan = planner.plan([spec])
 
-            # Check warning was raised
-            assert len(w) == 1
-            assert "not divisible" in str(w[0].message).lower()
-
-        # Check strategy is still SafeMap (deferred failure contract)
         decision = plan.decisions[0]
         assert isinstance(decision.strategy, SafeMap)
         assert decision.strategy.batch_size == 30
+        assert "ragged final chunk of 10" in decision.reasoning
 
     def test_rule4_non_divisible_large_remainder(self):
         """Rule 4: cardinality=101, batch_size=30 (remainder=11)."""
         spec = AxisSpec(name="batch", cardinality=101, default_batch_size=30)
         planner = BatchPlanner()
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             plan = planner.plan([spec])
-
-            assert len(w) >= 1
-            # Check for "not divisible" in any warning
-            assert any("not divisible" in str(warn.message).lower() for warn in w)
 
         decision = plan.decisions[0]
         assert isinstance(decision.strategy, SafeMap)
+        assert "ragged final chunk of 11" in decision.reasoning
 
     def test_plan_decision_length_matches_specs(self):
         """BatchPlan.decisions length equals len(specs)."""

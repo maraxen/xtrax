@@ -94,10 +94,8 @@ class TestSafeMapIterator:
 
         xs = jnp.arange(10)  # n=10
 
-        safe_iter = SafeMapIterator(tile=3)  # 10 % 3 != 0
-
-        with pytest.raises(ValueError, match="not divisible"):
-            safe_iter(fn, xs)
+        safe_iter = SafeMapIterator(tile=3)  # 10 % 3 != 0: ragged final chunk (#5565)
+        assert jnp.array_equal(safe_iter(fn, xs), jax.vmap(fn)(xs))
 
     def test_safe_map_iterator_divisible_batch(self):
         """SafeMapIterator should work with divisible batch sizes."""

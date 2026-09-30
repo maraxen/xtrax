@@ -75,6 +75,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a registered random/rng/callback/debug-family primitive is left unclassified.
   **Behaviour change:** a memoized function that calls `jax.debug.print` is now rejected.
 
+- **Chunked mapping handles a ragged final chunk** (`xtrax.transforms`,
+  `xtrax.tiling`, #5565). An axis whose cardinality is not a multiple of its batch
+  size used to plan as SafeMap with a `RuntimeWarning`, then raise `ValueError` at
+  dispatch. Any data-driven axis could hit this; an MSA depth of 50,713 = 13·47·83 has
+  no usable divisor. `jax.lax.map(batch_size=...)` already runs the remainder as one
+  smaller vmapped chunk, with no padding and peak memory still bounded by the batch
+  size. xtrax's own divisibility check was the only obstacle, and it is removed (verified
+  equal to `vmap` on JAX 0.10.2 and 0.11.1, including n=50,713 with batch 512). The
+  planner no longer warns, and the decision's reasoning notes the ragged remainder.
+
 - **`ZarrStagingSink.drain` stores 0-d and zero-length payloads** (`xtrax.run`, #161).
   Chunks are now rank-matched (`tuple(max(d, 1) for d in shape)`); previously a
   0-d per-step scalar, or any array with a zero-length dimension such as

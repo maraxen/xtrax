@@ -102,16 +102,14 @@ class TestSafeMapDispatch:
         assert jnp.allclose(result, expected)
 
     def test_safemap_non_divisible_raises(self):
-        """SafeMap with non-divisible batch raises ValueError via axis_dispatch."""
+        """#5565: a non-divisible cardinality dispatches (ragged final chunk of 10)."""
 
         def fn(x):
             return x * 2
 
         xs = jnp.arange(100)
-        strategy = SafeMap(batch_size=30)
-
-        with pytest.raises(ValueError, match="safe_map.*not divisible"):
-            axis_dispatch(strategy, fn, xs)
+        out = axis_dispatch(SafeMap(batch_size=30), fn, xs)
+        assert jnp.array_equal(out, jax.vmap(fn)(xs))
 
 
 class TestScanDispatch:

@@ -128,8 +128,8 @@ class BatchPlanner:
     1. bucket_boundaries is not None → Bucket (length-padding)
     2. dedup_eligible=True → DedupGather
     3. cardinality <= batch_size → Vmap
-    4. cardinality > batch_size AND divisible → SafeMap
-    5. non-divisible → SafeMap with warning (deferred-failure contract)
+    4. cardinality > batch_size → SafeMap. Divisibility does not matter: a
+       ragged final chunk is handled by the chunked map itself (#5565).
 
     When memory_estimator is provided, it overrides rule 3/4 decisions
     to prefer SafeMap if estimated Vmap memory exceeds device limit.
@@ -350,14 +350,6 @@ class BatchPlanner:
             if estimate <= budget.bytes:
                 break
             spec = specs[idx]
-            if spec.cardinality % spec.default_batch_size != 0:
-                warnings.warn(
-                    f"AxisSpec(name={spec.name!r}): cardinality={spec.cardinality} "
-                    f"is not divisible by batch_size={spec.default_batch_size}. "
-                    f"This plan will raise ValueError at make_axis_dispatch time.",
-                    RuntimeWarning,
-                    stacklevel=3,
-                )
             step += 1
             before = estimate
             decisions[idx] = AxisDecision(
@@ -475,55 +467,28 @@ class BatchPlanner:
                     strategy=strategy,
                 )
 
-        # Rule 4 & 5: cardinality > batch_size
-        # Check divisibility
-        if spec.cardinality % spec.default_batch_size == 0:
-            # Rule 4: divisible → SafeMap (unless memory estimator allows Vmap)
-            if should_prefer_safemap_for_memory:
-                # Memory estimate exceeds limit: use SafeMap
-                strategy = SafeMap(batch_size=spec.default_batch_size)
-                reasoning = (
-                    "cardinality > batch_size and divisible but memory_estimator override → SafeMap"
-                )
-                return AxisDecision(
-                    spec=spec,
-                    batch_size=spec.default_batch_size,
-                    reasoning=reasoning,
-                    strategy=strategy,
-                )
-            elif self.memory_estimator is not None:
-                # Memory estimator is provided and under limit: prefer Vmap
-                strategy = Vmap()
-                reasoning = "cardinality > batch_size and divisible but memory safe → Vmap"
-                return AxisDecision(
-                    spec=spec,
-                    batch_size=spec.default_batch_size,
-                    reasoning=reasoning,
-                    strategy=strategy,
-                )
-            else:
-                # No memory estimator: use default SafeMap
-                strategy = SafeMap(batch_size=spec.default_batch_size)
-                return AxisDecision(
-                    spec=spec,
-                    batch_size=spec.default_batch_size,
-                    reasoning="cardinality > batch_size and divisible → SafeMap",
-                    strategy=strategy,
-                )
-        else:
-            # Rule 5: non-divisible → SafeMap + warning (deferred-failure contract)
-            warnings.warn(
-                f"AxisSpec(name={spec.name!r}): cardinality={spec.cardinality} "
-                f"is not divisible by batch_size={spec.default_batch_size}. "
-                f"This plan will raise ValueError at make_axis_dispatch time.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
+        # Rule 4: cardinality > batch_size. Divisibility no longer changes the decision
+        # (#5565): the chunked map runs a ragged final chunk itself, so the former Rule 5
+        # (non-divisible -> SafeMap + a warning that dispatch would raise) is gone.
+        remainder = spec.cardinality % spec.default_batch_size
+        shape = "divisible" if remainder == 0 else f"ragged final chunk of {remainder}"
+        if should_prefer_safemap_for_memory:
+            # Memory estimate exceeds limit: use SafeMap
             strategy = SafeMap(batch_size=spec.default_batch_size)
-            reasoning = "cardinality > batch_size but not divisible → SafeMap (deferred failure)"
-            return AxisDecision(
-                spec=spec,
-                batch_size=spec.default_batch_size,
-                reasoning=reasoning,
-                strategy=strategy,
+            reasoning = (
+                f"cardinality > batch_size ({shape}) but memory_estimator override → SafeMap"
             )
+        elif self.memory_estimator is not None:
+            # Memory estimator is provided and under limit: prefer Vmap
+            strategy = Vmap()
+            reasoning = f"cardinality > batch_size ({shape}) but memory safe → Vmap"
+        else:
+            # No memory estimator: use default SafeMap
+            strategy = SafeMap(batch_size=spec.default_batch_size)
+            reasoning = f"cardinality > batch_size ({shape}) → SafeMap"
+        return AxisDecision(
+            spec=spec,
+            batch_size=spec.default_batch_size,
+            reasoning=reasoning,
+            strategy=strategy,
+        )

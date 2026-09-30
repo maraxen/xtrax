@@ -223,13 +223,18 @@ class TestEstimatorErrors:
 
 
 class TestDivisibilityWarning:
-    """AC9: demoting a non-divisible axis keeps the Rule-5 deferred-failure warning."""
+    """#5565: demoting a non-divisible axis no longer warns -- dispatch handles the
+    ragged final chunk, so there is no deferred failure left to warn about."""
 
-    def test_non_divisible_demotion_warns(self) -> None:
+    def test_non_divisible_demotion_does_not_warn(self) -> None:
+        import warnings
+
         estimate = _per_strategy_estimator(vmap_cost=100, other_cost=10)
         planner = BatchPlanner(budget=MemoryBudget(bytes=50, estimate=estimate))
-        with pytest.warns(RuntimeWarning, match="not divisible"):
-            planner.plan([_spec("ragged", cardinality=1000, batch_size=256)])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            plan = planner.plan([_spec("ragged", cardinality=1000, batch_size=256)])
+        assert type(plan.decisions[0].strategy).__name__ == "SafeMap"
 
     def test_divisible_demotion_does_not_warn(self) -> None:
         import warnings

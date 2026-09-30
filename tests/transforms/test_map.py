@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import pytest
 
 from xtrax.transforms.map import safe_map
 
@@ -153,25 +152,21 @@ class TestSafeMapErrors:
     """Tests for error handling."""
 
     def test_non_divisible_raises_value_error(self):
-        """n % batch_size != 0 should raise ValueError."""
+        """#5565: n % batch_size != 0 runs a ragged final chunk and matches vmap."""
         xs = jnp.arange(10).reshape(10, 1)
 
-        def identity(x):
-            return x
+        def fn(x):
+            return x * 3 + 1
 
-        with pytest.raises(ValueError) as exc_info:
-            safe_map(identity, xs, batch_size=3)
-
-        assert "not divisible" in str(exc_info.value).lower()
-        assert "10" in str(exc_info.value)
-        assert "3" in str(exc_info.value)
+        assert jnp.array_equal(safe_map(fn, xs, batch_size=3), jax.vmap(fn)(xs))
 
     def test_non_divisible_error_message_format(self):
-        """Error message should include n and batch_size values."""
-        xs = jnp.arange(7).reshape(7, 1)
+        """#5565: ragged chunking handles pytrees and a prime cardinality."""
+        xs = {"a": jnp.arange(7.0).reshape(7, 1), "b": jnp.ones((7, 3))}
 
-        def identity(x):
-            return x
+        def fn(r):
+            return {"s": r["a"].sum() + r["b"].sum(), "a": r["a"] * 2}
 
-        with pytest.raises(ValueError, match=r"n=7.+batch_size=2"):
-            safe_map(identity, xs, batch_size=2)  # 7 % 2 != 0
+        out, ref = safe_map(fn, xs, batch_size=2), jax.vmap(fn)(xs)
+        for got, want in zip(jax.tree.leaves(out), jax.tree.leaves(ref), strict=True):
+            assert jnp.array_equal(got, want)

@@ -77,7 +77,7 @@ xtrax provides a **composable glue layer** that makes these libraries work toget
 
 Provides safe wrappers around JAX's map and scan operations:
 
-- `safe_map(fn, xs, batch_size)`: Vmap if xs is small; chunk and loop otherwise. Raises `ValueError` if xs leading dimension isn't divisible by batch_size.
+- `safe_map(fn, xs, batch_size)`: Vmap if xs is small; chunk and loop otherwise. A leading dimension that is not a multiple of batch_size is fine: the last chunk is simply smaller.
 - `safe_scan(fn, init, xs)`: Identical to `jax.lax.scan`; wrapper validates pre-trace.
 
 These are low-level building blocks used by the tiling layer.
