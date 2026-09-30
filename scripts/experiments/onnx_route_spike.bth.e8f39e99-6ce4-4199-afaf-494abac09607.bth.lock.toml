@@ -1,0 +1,9 @@
+# onnx_route_spike.bth.e8f39e99-6ce4-4199-afaf-494abac09607.bth.lock.toml — written at run time, never modified
+[manifest]
+written_at = "2026-09-30T19:30:13.761160+00:00"
+sidecar_sha256 = "30a9e184eb410c0955aeac4617b38062745f5825654271eb0736d1d3a57183f8"
+sidecar_path = "/home/marielle/projects/xtrax/.claude/worktrees/onnx-spike-260930/scripts/experiments/onnx_route_spike.bth.toml"
+git_sha = "526e53ee37feceb45b51614e9c12d1a27e56a8c8"
+script_sha256 = "f9b7a91b1eccb4ddd9ecdf8e759fdac75cffbf8fc7ff4bf6bf1b1a9e0156f2a9"
+run_id = "e8f39e99-6ce4-4199-afaf-494abac09607"
+agent_id = null
