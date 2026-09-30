@@ -164,7 +164,9 @@ def compare(kind: str, oracle: list[np.ndarray], got: list[np.ndarray]) -> dict[
         if kind == "float_bar":
             d = float(np.max(np.abs(o.astype(np.float64) - g.astype(np.float64))))
             max_abs = max(max_abs, d)
-            n_mismatch += int(np.sum(np.abs(o.astype(np.float64) - g.astype(np.float64)) > FLOAT_BAR))
+            n_mismatch += int(
+                np.sum(np.abs(o.astype(np.float64) - g.astype(np.float64)) > FLOAT_BAR)
+            )
         elif kind == "bits_exact":
             ob = o.astype(np.float32).view(np.uint32)
             gb = g.astype(np.float32).view(np.uint32)
@@ -172,7 +174,11 @@ def compare(kind: str, oracle: list[np.ndarray], got: list[np.ndarray]) -> dict[
         else:
             n_mismatch += int(np.sum(o.astype(np.int64) != g.astype(np.int64)))
     exact = n_mismatch == 0
-    return {"values_exact": exact, "n_mismatch": n_mismatch, "max_abs": max_abs if kind == "float_bar" else None}
+    return {
+        "values_exact": exact,
+        "n_mismatch": n_mismatch,
+        "max_abs": max_abs if kind == "float_bar" else None,
+    }
 
 
 def run_controls(cases: list[Case], extra: dict[str, Any]) -> dict[str, Any]:
@@ -312,7 +318,11 @@ def run_case(case: Case, export_mode: str, out_dir: Path) -> dict[str, Any]:
             r = compare(case.kind, case.oracle, got)
             r["ort_output_dtypes"] = [str(g.dtype) for g in got]
         except Exception as exc:  # noqa: BLE001 -- ORT failure is a recorded result
-            r = {"values_exact": False, "n_mismatch": -1, "ort_error": f"{type(exc).__name__}: {exc}"[:2000]}
+            r = {
+                "values_exact": False,
+                "n_mismatch": -1,
+                "ort_error": f"{type(exc).__name__}: {exc}"[:2000],
+            }
         runs[level] = r
     rec["ort"] = runs
     rec["values_exact"] = all(r.get("values_exact") for r in runs.values())
@@ -354,10 +364,19 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     rec = run_case(c, mode, out_dir)
                 except Exception:  # noqa: BLE001 -- never lose the rest of the run
-                    rec = {"case": c.name, "export_mode": mode, "converted": False,
-                           "error": traceback.format_exc()[-2000:]}
-                logger.info("%s/%s converted=%s exact=%s", c.name, mode,
-                            rec.get("converted"), rec.get("values_exact"))
+                    rec = {
+                        "case": c.name,
+                        "export_mode": mode,
+                        "converted": False,
+                        "error": traceback.format_exc()[-2000:],
+                    }
+                logger.info(
+                    "%s/%s converted=%s exact=%s",
+                    c.name,
+                    mode,
+                    rec.get("converted"),
+                    rec.get("values_exact"),
+                )
                 fh.write(json.dumps(rec, default=str) + "\n")
                 fh.flush()
                 records.append(rec)
@@ -365,8 +384,9 @@ def main(argv: list[str] | None = None) -> int:
     # (3) Float control: perturbed-weight MLP, converted and run by the SAME path, must miss the bar
     # against the UNPERTURBED oracle.
     mlp = next(c for c in cases if c.name == "mlp_xtrax_plan")
-    ctrl_case = Case("mlp_perturbed_ctrl", extra["mlp_perturbed_fn"], mlp.inputs, "float_bar",
-                     oracle=mlp.oracle)
+    ctrl_case = Case(
+        "mlp_perturbed_ctrl", extra["mlp_perturbed_fn"], mlp.inputs, "float_bar", oracle=mlp.oracle
+    )
     ctrl = run_case(ctrl_case, "standard", out_dir)
     ctrl_max_abs = (ctrl.get("ort") or {}).get("enable_all", {}).get("max_abs")
     controls["perturbed_mlp_converted"] = bool(ctrl.get("converted"))
@@ -378,14 +398,24 @@ def main(argv: list[str] | None = None) -> int:
 
     controls_ok = all(
         controls[k]
-        for k in ("ties_visible_argsort", "ties_visible_topk", "cmp_detects_swap", "cmp_identity_ok",
-                  "bits_detects_ulp", "perturbed_mlp_detected", "perturbed_oracle_differs")
+        for k in (
+            "ties_visible_argsort",
+            "ties_visible_topk",
+            "cmp_detects_swap",
+            "cmp_identity_ok",
+            "bits_detects_ulp",
+            "perturbed_mlp_detected",
+            "perturbed_oracle_differs",
+        )
     )
     converted = [r for r in records if r.get("converted")]
     # A graph ORT refused to execute is not a value divergence; it is counted in n_ort_failed.
     divergent = [r for r in converted if not r.get("ort_failed") and not r.get("values_exact")]
     result = {
-        "versions": {p: version(p) for p in ("jax", "jaxlib", "jax2onnx", "onnx", "onnxruntime", "equinox", "xtrax")},
+        "versions": {
+            p: version(p)
+            for p in ("jax", "jaxlib", "jax2onnx", "onnx", "onnxruntime", "equinox", "xtrax")
+        },
         "seed": args.seed,
         "smoke": args.smoke,
         "controls": controls,
@@ -396,10 +426,16 @@ def main(argv: list[str] | None = None) -> int:
         "n_value_divergent": len(divergent),
         "n_ort_failed": sum(1 for r in converted if r.get("ort_failed")),
         "n_io_dtype_changed": sum(1 for r in converted if r.get("io_dtype_changed")),
-        "n_graphs_with_int64": sum(1 for r in converted if r["census"]["node_output_dtypes"].get("int64")),
+        "n_graphs_with_int64": sum(
+            1 for r in converted if r["census"]["node_output_dtypes"].get("int64")
+        ),
         "divergent": sorted({f"{r['case']}/{r['export_mode']}" for r in divergent}),
-        "unconverted": sorted({f"{r['case']}/{r['export_mode']}" for r in records if not r.get("converted")}),
-        "io_dtype_changed": sorted({f"{r['case']}/{r['export_mode']}" for r in converted if r.get("io_dtype_changed")}),
+        "unconverted": sorted(
+            {f"{r['case']}/{r['export_mode']}" for r in records if not r.get("converted")}
+        ),
+        "io_dtype_changed": sorted(
+            {f"{r['case']}/{r['export_mode']}" for r in converted if r.get("io_dtype_changed")}
+        ),
         "per_case_path": str(per_case_path),
         "note": "ORT Python CPU EP is not ORT Web; this is not browser evidence.",
     }
@@ -407,8 +443,19 @@ def main(argv: list[str] | None = None) -> int:
     rp = os.environ.get("BTH_RESULTS_PATH")
     if rp:
         Path(rp).write_text(json.dumps(result, default=str))
-    logger.info("summary: %s", {k: result[k] for k in ("controls_ok", "n_variants", "n_converted",
-                                                       "n_value_divergent", "n_io_dtype_changed")})
+    logger.info(
+        "summary: %s",
+        {
+            k: result[k]
+            for k in (
+                "controls_ok",
+                "n_variants",
+                "n_converted",
+                "n_value_divergent",
+                "n_io_dtype_changed",
+            )
+        },
+    )
     return 0
 
 
