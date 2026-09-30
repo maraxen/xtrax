@@ -27,6 +27,19 @@ def _sink(tmp_path: Path) -> ZarrStagingSink:
     )
 
 
+def _raw_zarr_error_type(tmp_path: Path) -> type[BaseException]:
+    """What THIS zarr raises for an object-dtype array (KeyError at the 3.0.8 floor,
+    ValueError later) -- the drain must re-raise exactly that type, unwrapped."""
+    import zarr
+
+    group = zarr.open_group(str(tmp_path / "raw.zarr"), mode="w")
+    try:
+        group.create_array(name="x", shape=(2,), dtype=object)
+    except Exception as e:  # noqa: BLE001 -- the type is the point
+        return type(e)
+    pytest.skip("this zarr accepts object dtype; no failing payload to drain")
+
+
 def _assert_self_locating(text: str) -> None:
     assert "('batch', 7)" in text
     assert "'bad_payload'" in text
@@ -37,10 +50,12 @@ def _assert_self_locating(text: str) -> None:
 def test_direct_drain_error_keeps_type_and_names_the_payload(tmp_path: Path) -> None:
     sink = _sink(tmp_path)
     sink.stage(("batch", 7), bad_payload=_BAD)
-    with pytest.raises(ValueError) as info:  # zarr's own type is preserved
+    expected = _raw_zarr_error_type(tmp_path)
+    with pytest.raises(expected) as info:  # zarr's own type, not a wrapper
         sink.drain()
+    assert type(info.value) is expected
     _assert_self_locating(str(info.value))
-    assert "Zarr data type resolution" in str(info.value)  # original message kept
+    assert str(info.value).count("ZarrStagingSink.drain") == 1  # prefixed once, original kept
 
 
 def test_drain_error_through_io_callback_is_self_locating(tmp_path: Path) -> None:
@@ -96,6 +111,6 @@ def test_failed_drain_leaves_the_buffer_for_a_retry(tmp_path: Path) -> None:
     """The message says the buffer was not cleared; hold it to that."""
     sink = _sink(tmp_path)
     sink.stage(("batch", 7), bad_payload=_BAD)
-    with pytest.raises(ValueError, match="NOT cleared"):
+    with pytest.raises(_raw_zarr_error_type(tmp_path), match="NOT cleared"):
         sink.drain()
     assert ("batch", 7) in sink._pending
