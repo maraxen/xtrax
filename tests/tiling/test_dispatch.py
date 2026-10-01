@@ -6,12 +6,12 @@ import pytest
 
 from xtrax.tiling.dispatch import DispatchRejected, axis_dispatch, make_axis_dispatch
 from xtrax.tiling.iterator import (
+    ChunkedMapIterator,
     JaxScanIterator,
-    SafeMapIterator,
     VmapIterator,
     WhileLoopIterator,
 )
-from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Scan, Vmap, WhileCarry
+from xtrax.tiling.strategy import Bucket, ChunkedMap, DedupGather, Scan, Vmap, WhileCarry
 
 
 class TestVmapDispatch:
@@ -66,52 +66,50 @@ class TestVmapDispatch:
 
 
 class TestSafeMapDispatch:
-    """Test SafeMap strategy dispatch."""
+    """Test ChunkedMap strategy dispatch."""
 
     def test_safemap_factory_returns_iterator(self):
-        """make_axis_dispatch(SafeMap) returns SafeMapIterator."""
-        strategy = SafeMap(batch_size=32)
+        """make_axis_dispatch(ChunkedMap) returns ChunkedMapIterator."""
+        strategy = ChunkedMap(batch_size=32)
         iterator = make_axis_dispatch(strategy)
-        assert isinstance(iterator, SafeMapIterator)
+        assert isinstance(iterator, ChunkedMapIterator)
         assert iterator.tile == 32
 
     def test_safemap_no_chunking_when_small(self):
-        """SafeMap with batch_size >= n uses vmap via axis_dispatch."""
+        """ChunkedMap with batch_size >= n uses vmap via axis_dispatch."""
 
         def fn(x):
             return x * 2
 
         xs = jnp.arange(10)
-        strategy = SafeMap(batch_size=50)
+        strategy = ChunkedMap(batch_size=50)
         result = axis_dispatch(strategy, fn, xs)
         expected = jax.vmap(fn)(xs)
 
         assert jnp.allclose(result, expected)
 
     def test_safemap_chunking_divisible(self):
-        """SafeMap with divisible chunking matches vmap via axis_dispatch."""
+        """ChunkedMap with divisible chunking matches vmap via axis_dispatch."""
 
         def fn(x):
             return x * 3
 
         xs = jnp.arange(100)
-        strategy = SafeMap(batch_size=25)
+        strategy = ChunkedMap(batch_size=25)
         result = axis_dispatch(strategy, fn, xs)
         expected = jax.vmap(fn)(xs)
 
         assert jnp.allclose(result, expected)
 
-    def test_safemap_non_divisible_raises(self):
-        """SafeMap with non-divisible batch raises ValueError via axis_dispatch."""
+    def test_chunked_map_non_divisible_runs_a_ragged_final_chunk(self):
+        """#5565: a non-divisible cardinality dispatches (ragged final chunk of 10)."""
 
         def fn(x):
             return x * 2
 
         xs = jnp.arange(100)
-        strategy = SafeMap(batch_size=30)
-
-        with pytest.raises(ValueError, match="safe_map.*not divisible"):
-            axis_dispatch(strategy, fn, xs)
+        out = axis_dispatch(ChunkedMap(batch_size=30), fn, xs)
+        assert jnp.array_equal(out, jax.vmap(fn)(xs))
 
 
 class TestScanDispatch:
@@ -431,9 +429,9 @@ class TestDispatchExhaustiveness:
         assert isinstance(strategy, Vmap)
 
     def test_safemap_isinstance(self):
-        """SafeMap is recognized."""
-        strategy = SafeMap(batch_size=32)
-        assert isinstance(strategy, SafeMap)
+        """ChunkedMap is recognized."""
+        strategy = ChunkedMap(batch_size=32)
+        assert isinstance(strategy, ChunkedMap)
 
     def test_scan_isinstance(self):
         """Scan is recognized."""
@@ -491,13 +489,13 @@ class TestDispatchIntegration:
         assert jnp.allclose(result, expected)
 
     def test_dispatch_safemap_with_neural_net_like(self):
-        """Test SafeMap with neural net-like operation via axis_dispatch."""
+        """Test ChunkedMap with neural net-like operation via axis_dispatch."""
 
         def fn(x):
             return jax.nn.relu(x)
 
         xs = jnp.linspace(-1, 1, 100)
-        strategy = SafeMap(batch_size=25)
+        strategy = ChunkedMap(batch_size=25)
         result = axis_dispatch(strategy, fn, xs)
         expected = jax.vmap(fn)(xs)
 

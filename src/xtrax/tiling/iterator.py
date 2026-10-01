@@ -2,7 +2,7 @@
 
 Four iterator strategies control how a mapped axis is iterated:
 - VmapIterator: jax.vmap — fully parallel, stateless.
-- SafeMapIterator: safe_map with tiling — memory-bounded, stateless.
+- ChunkedMapIterator: chunked_map with tiling — memory-bounded, stateless.
 - JaxScanIterator: jax.lax.scan — carry-bearing, sequential.
 - WhileLoopIterator: jax.lax.while_loop — carry-bearing, no output collection.
 
@@ -23,7 +23,7 @@ import equinox as eqx
 import jax
 import jax.lax
 
-from xtrax.transforms.map import safe_map
+from xtrax.transforms.map import chunked_map
 
 
 @runtime_checkable
@@ -116,8 +116,8 @@ class VmapIterator(eqx.Module):
         return jax.vmap(fn, in_axes=in_axes)(xs)
 
 
-class SafeMapIterator(eqx.Module):
-    """Iterate via safe_map with tile chunking — memory-bounded, stateless.
+class ChunkedMapIterator(eqx.Module):
+    """Iterate via chunked_map with tile chunking — memory-bounded, stateless.
 
     Elements are processed in tiles to avoid memory exhaustion and XLA
     loop construct issues. No carry state; elements are independent.
@@ -132,23 +132,23 @@ class SafeMapIterator(eqx.Module):
         *,
         in_axes: Any = 0,
     ) -> Any:
-        """Apply fn using safe_map with tiling.
+        """Apply fn using chunked_map with tiling.
 
         Args:
             fn: Callable to apply per-element.
             xs: Input pytree.
-            in_axes: Axis specification (default 0; safe_map always uses axis 0).
+            in_axes: Axis specification (default 0; chunked_map always uses axis 0).
 
         Returns:
-            Output after safe_map over the first axis.
+            Output after chunked_map over the first axis.
 
         """
-        # Note: safe_map always iterates over axis 0; in_axes parameter is
+        # Note: chunked_map always iterates over axis 0; in_axes parameter is
         # accepted for protocol compatibility.
         if in_axes != 0:
-            msg = "SafeMapIterator currently only supports in_axes=0"
+            msg = "ChunkedMapIterator currently only supports in_axes=0"
             raise NotImplementedError(msg)
-        return safe_map(fn, xs, batch_size=self.tile)
+        return chunked_map(fn, xs, batch_size=self.tile)
 
 
 class JaxScanIterator(eqx.Module):
@@ -283,9 +283,16 @@ class BucketIterator:
 __all__ = [
     "JaxScanIterator",
     "MapIterator",
-    "SafeMapIterator",
+    "ChunkedMapIterator",
     "ScanIterator",
     "VmapIterator",
     "BucketIterator",
     "WhileLoopIterator",
 ]
+
+
+def __getattr__(name: str):  # noqa: ANN202 -- PEP 562 module hook
+    """Deprecated pre-#3644 names (SafeMap, SafeMapIterator, safe_map) for one release."""
+    from xtrax._renamed import deprecated_alias
+
+    return deprecated_alias(__name__, name, globals())

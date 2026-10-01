@@ -6,12 +6,12 @@ must hold before any JAX trace:
 1. Scan strategy is invalid on a heterogeneous axis (jax.lax.scan requires a
    static carry shape; heterogeneous axes have variable-shape elements).
 2. An ordered=True Tap or Sink on a Vmap axis has no step-ordering guarantee
-   (vmap does not preserve step order; ordered io_callback needs SafeMap or
+   (vmap does not preserve step order; ordered io_callback needs ChunkedMap or
    Scan).
 
 This module implements that promised validator. It is structural/duck-typed
 (matches by `type(strategy).__name__`, not isinstance against xtrax's own
-Vmap/SafeMap/Scan classes) so it works correctly on ANY library's plan
+Vmap/ChunkedMap/Scan classes) so it works correctly on ANY library's plan
 objects with matching field names -- including a parallel BatchPlanner
 reimplementation (e.g. aminx.tiling) whose strategy instances are distinct
 classes from xtrax's. Nominal isinstance checks here would silently never
@@ -172,7 +172,9 @@ def axis_boundaries_by_name(
     return result
 
 
-_EXPORTABLE_STRATEGIES = ("Vmap", "SafeMap", "Scan", "DedupGather")
+# "SafeMap" is the pre-#3644 name, still accepted so a consumer's own duck-typed
+# strategy class of that name keeps matching (see xtrax._renamed).
+_EXPORTABLE_STRATEGIES = ("Vmap", "ChunkedMap", "SafeMap", "Scan", "DedupGather")
 
 
 def _check_export_boundary(decision: AxisDecisionLike, boundary: AxisBoundaryLike | None) -> bool:
@@ -272,7 +274,7 @@ def validate_plan_topology(
                 f"PlanTopologyError: axis '{decision.spec.name}' is heterogeneous "
                 f"(element shapes vary) but has a Scan strategy. "
                 f"jax.lax.scan requires static carry shape -- heterogeneous axes "
-                f"must use SafeMap. Use CarrySpec only on homogeneous axes."
+                f"must use ChunkedMap. Use CarrySpec only on homogeneous axes."
             )
             raise PlanTopologyError(msg)
 
@@ -284,7 +286,7 @@ def validate_plan_topology(
                     msg = (
                         f"PlanTopologyError: axis '{decision.spec.name}' has an "
                         f"ordered=True Tap but uses Vmap strategy. vmap does not "
-                        f"preserve step order. Use SafeMap or Scan on axes with "
+                        f"preserve step order. Use ChunkedMap or Scan on axes with "
                         f"ordered boundary ops."
                     )
                     raise PlanTopologyError(msg)
@@ -292,7 +294,7 @@ def validate_plan_topology(
                     msg = (
                         f"PlanTopologyError: axis '{decision.spec.name}' has an "
                         f"ordered=True Sink but uses Vmap strategy. vmap does not "
-                        f"preserve step order. Use SafeMap or Scan on axes with "
+                        f"preserve step order. Use ChunkedMap or Scan on axes with "
                         f"ordered boundary ops."
                     )
                     raise PlanTopologyError(msg)

@@ -4,7 +4,7 @@
 code reads that row to block anything: the enforcement is the ``audit-port`` CI job
 running ``just audit-port`` -> ``pytest port/tests/``, where a failing parity tier
 fails the job. That chain was implicit and unverified. This module pins every link,
-and proves the last one with a planted perturbation: a wrong ``safe_map`` run through
+and proves the last one with a planted perturbation: a wrong ``chunked_map`` run through
 the REAL port conftest and parity tests must make pytest exit non-zero, while the
 unperturbed copy must pass (so the failure is the perturbation, not the harness).
 """
@@ -113,7 +113,7 @@ def test_unperturbed_port_harness_passes(tmp_path: Path) -> None:
 
 
 def test_planted_parity_failure_fails_the_harness(tmp_path: Path) -> None:
-    """Negative control: a wrong safe_map through the real conftest must fail pytest."""
+    """Negative control: a wrong chunked_map through the real conftest must fail pytest."""
     result = _run_port_harness(tmp_path, plant=True)
     assert result.returncode != 0, "a wrong safe_map passed the parity harness"
     assert "FAILED" in result.stdout

@@ -152,7 +152,7 @@ from xtrax.tiling import BatchPlanner
 
 planner = BatchPlanner()
 plan = planner.plan(axes)  # No error
-print(plan.decisions[0].strategy)  # e.g., "SafeMap"
+print(plan.decisions[0].strategy)  # e.g., "ChunkedMap"
 ```
 
 ## Worked Examples (Detailed)

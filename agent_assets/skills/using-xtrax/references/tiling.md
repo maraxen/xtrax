@@ -12,7 +12,7 @@ from xtrax.tiling.plan import AxisSpec  # verify: src/xtrax/tiling/plan.py:26-93
 spec = AxisSpec(
     name="batch",                      # verify: src/xtrax/tiling/plan.py:43 (Human-readable axis name)
     cardinality=1000,                  # Total elements on this axis
-    default_batch_size=32,             # Chunk size for SafeMap
+    default_batch_size=32,             # Chunk size for ChunkedMap
     tile_granularity=1,                # Alignment (default 1 = no constraint)
     heterogeneous=False,               # Elements have varying shapes?
     dedup_eligible=False,              # Repeated elements?
@@ -31,9 +31,9 @@ Enforcement: `DeprecationWarning` from `src/xtrax/tiling/plan.py:76-91`
 **IMPORTANT SCOPE**: The `.batch_size` deprecation applies **only to `AxisSpec`**.  
 The following remain live, correct fields and require NO changes:
 - `AxisDecision.batch_size` — the chosen batch size for this axis
-- `SafeMap.batch_size` — the tile size in the SafeMap strategy
+- `ChunkedMap.batch_size` — the tile size in the ChunkedMap strategy
 - `AxisStatsEntry["batch_size"]` — EDA output field
-- `safe_map(batch_size=...)` — parameter to safe_map function
+- `chunked_map(batch_size=...)` — parameter to chunked_map function
 
 ⚠ WARN: `AxisSpec.granularity` is **deprecated** (since v0.3.0).  
 Use `AxisSpec.tile_granularity` instead.  
@@ -83,11 +83,11 @@ Each `AxisDecision` contains:
 - `spec: AxisSpec` — the input specification
 - `batch_size: int` — final chosen batch size
 - `reasoning: str` — human-readable explanation
-- `strategy: AxisStrategy` — Vmap | SafeMap | Scan | DedupGather | Bucket
+- `strategy: AxisStrategy` — Vmap | ChunkedMap | Scan | DedupGather | Bucket
 
 #### Joint-Budget Planning (0.4.0a1+): MemoryBudget + Estimators
 
-`BatchPlanner(budget=MemoryBudget(bytes=..., estimate=...))` replaces the independent per-axis rules 3-5 with whole-plan greedy demotion: every eligible axis starts at `Vmap`, then axes with `cardinality > default_batch_size` are demoted to `SafeMap` **in the order specs were given** until the joint estimate fits the budget. Callers express demotion priority by spec order (axes they are most willing to sequentialize first). Carry/dedup/bucket decisions stay fixed but participate in the estimate; budget-mode reasoning strings carry the byte numbers for `xtrax explain`.
+`BatchPlanner(budget=MemoryBudget(bytes=..., estimate=...))` replaces the independent per-axis rules 3-5 with whole-plan greedy demotion: every eligible axis starts at `Vmap`, then axes with `cardinality > default_batch_size` are demoted to `ChunkedMap` **in the order specs were given** until the joint estimate fits the budget. Callers express demotion priority by spec order (axes they are most willing to sequentialize first). Carry/dedup/bucket decisions stay fixed but participate in the estimate; budget-mode reasoning strings carry the byte numbers for `xtrax explain`.
 
 ```python
 from xtrax.tiling import (  # all exported at xtrax.tiling level, same tier as CarrySpec
@@ -108,7 +108,7 @@ Verify: `src/xtrax/tiling/budget.py:23-56`, `src/xtrax/tiling/estimators.py:27-9
 **Strict by design** (unlike per-axis `memory_estimator`, which swallows estimator errors):
 - 🚫 HALTS: `budget` and `memory_estimator` are mutually exclusive — passing both raises.
 - 🚫 HALTS: estimator exceptions propagate unchanged; there is no silent fallback in budget mode.
-- 🚫 HALTS: `BudgetInfeasibleError` when every demotion candidate is already `SafeMap` and the joint estimate still exceeds `budget.bytes` — the message names budget, final estimate, and per-axis strategy state.
+- 🚫 HALTS: `BudgetInfeasibleError` when every demotion candidate is already `ChunkedMap` and the joint estimate still exceeds `budget.bytes` — the message names budget, final estimate, and per-axis strategy state.
 - 🚫 HALTS: `MemoryBudget.__post_init__` rejects non-int/non-positive `bytes` and non-callable `estimate`. Verify: `src/xtrax/tiling/budget.py:50-56`
 
 **Native estimator building blocks** (`xtrax.tiling.estimators`):
@@ -131,16 +131,16 @@ strategy = Vmap()
 # Applied via: results = jax.vmap(fn)(inputs)  # verify: src/xtrax/tiling/dispatch.py:95-96
 ```
 
-**2. SafeMap** — Chunked vmap, memory-safe.  
+**2. ChunkedMap** — Chunked vmap, memory-safe.  
 Selected when: `cardinality > batch_size`  
 Behavior: Chunks inputs into `batch_size` chunks, applies vmap to each chunk, concatenates.  
 Verify: `src/xtrax/tiling/strategy.py:49-53`
 
 ```python
-from xtrax.tiling.strategy import SafeMap  # verify: src/xtrax/tiling/strategy.py:49-53
+from xtrax.tiling.strategy import ChunkedMap  # verify: src/xtrax/tiling/strategy.py:49-53
 
-strategy = SafeMap(batch_size=32)
-# Applied via: results = safe_map(fn, inputs, batch_size=32)  # verify: src/xtrax/transforms/map.py
+strategy = ChunkedMap(batch_size=32)
+# Applied via: results = chunked_map(fn, inputs, batch_size=32)  # verify: src/xtrax/transforms/map.py
 ```
 
 Memory estimation (optional): Provide a `memory_estimator` to `BatchPlanner` to prevent Vmap if estimated memory > device limit.
@@ -215,12 +215,12 @@ Enforcement: falls through to exhaustiveness `TypeError` at `src/xtrax/tiling/di
 from xtrax.tiling.dispatch import make_axis_dispatch
 
 iterator = make_axis_dispatch(
-    strategy=decision.strategy,    # Vmap | SafeMap | Scan (NOT DedupGather or Bucket)
+    strategy=decision.strategy,    # Vmap | ChunkedMap | Scan (NOT DedupGather or Bucket)
     axis="batch",                   # Name of the axis (for error messages)
     heterogeneous_axes={"state"},  # Set of axes with variable-shape elements
 )
 
-# Iterator is one of: VmapIterator, SafeMapIterator, JaxScanIterator
+# Iterator is one of: VmapIterator, ChunkedMapIterator, JaxScanIterator
 results = iterator(fn, inputs, in_axes=0)
 ```
 
@@ -238,17 +238,17 @@ Reason: `jax.lax.scan` requires static carry shape; variable-geometry state is i
 
 #### Iterators: Three Patterns
 
-**MapIterator** (stateless): Vmap and SafeMap
+**MapIterator** (stateless): Vmap and ChunkedMap
 
 ```python
-from xtrax.tiling.iterator import VmapIterator, SafeMapIterator
+from xtrax.tiling.iterator import VmapIterator, ChunkedMapIterator
 
 # VmapIterator: jax.vmap
 vmap_iter = VmapIterator()
 results = vmap_iter(fn, inputs, in_axes=0)  # fn applied in parallel
 
-# SafeMapIterator: chunked vmap
-safemap_iter = SafeMapIterator(tile=32)
+# ChunkedMapIterator: chunked vmap
+safemap_iter = ChunkedMapIterator(tile=32)
 results = safemap_iter(fn, inputs, in_axes=0)  # fn applied in chunks of 32
 ```
 
@@ -389,7 +389,7 @@ seqlen_spec = AxisSpec(name="seqlen", cardinality=1000, default_batch_size=32,
                        bucket_boundaries=(32, 64, 128))
 
 # DedupSpec is DATA-DEPENDENT: caller must have already inspected the batch
-# (e.g. np.unique on the host) to compute these — unlike Bucket/Vmap/SafeMap,
+# (e.g. np.unique on the host) to compute these — unlike Bucket/Vmap/ChunkedMap,
 # which are static config.
 dedup = DedupSpec(
     axis_name="tokens",                                       # matches AxisSpec.name
@@ -408,7 +408,7 @@ plan = planner.plan([tokens_spec, seqlen_spec])
 
 Verify: `src/xtrax/tiling/plan.py:184-283` (plan(), independent per-axis loop), `src/xtrax/tiling/plan.py:242-257` (Phase 0b DedupSpec pre-demotion), `src/xtrax/tiling/plan.py:397-408` (Bucket Rule 1), `src/xtrax/tiling/dedup.py:46-90` (DedupSpec fields + `__post_init__` validation: `len(unique_indices) == k`, `index_map` covers exactly `[0, k)`)
 
-**Executing the mixed plan.** There is no single call that dispatches a whole multi-strategy `BatchPlan` — the caller iterates `plan.decisions` and routes each axis by strategy type. Bucket axes are handled on the host **before** the jit boundary; DedupGather axes go through the eager `axis_dispatch()` shim; Vmap/SafeMap/Scan axes use `make_axis_dispatch()` iterators (Dispatch subsection, above). xtrax provides the per-axis primitives, not a mixed-strategy executor.
+**Executing the mixed plan.** There is no single call that dispatches a whole multi-strategy `BatchPlan` — the caller iterates `plan.decisions` and routes each axis by strategy type. Bucket axes are handled on the host **before** the jit boundary; DedupGather axes go through the eager `axis_dispatch()` shim; Vmap/ChunkedMap/Scan axes use `make_axis_dispatch()` iterators (Dispatch subsection, above). xtrax provides the per-axis primitives, not a mixed-strategy executor.
 
 ```python
 from xtrax.tiling.bucket import select_bucket, bucketize
@@ -421,18 +421,18 @@ boundaries = bucket_decision.strategy.boundaries
 bucket_idx = select_bucket(seq_length, boundaries=boundaries)
 padded_seq = bucketize(sequence, boundaries=boundaries)
 
-# 2. DedupGather axis: eager three-phase shim (dedup → safe_map → gather).
+# 2. DedupGather axis: eager three-phase shim (dedup → chunked_map → gather).
 ys = axis_dispatch(dedup_decision.strategy, fn, xs)
-# internally: dedup_fn(xs, unique_indices) → safe_map(fn, ...) → gather_fn(ys, index_map)
+# internally: dedup_fn(xs, unique_indices) → chunked_map(fn, ...) → gather_fn(ys, index_map)
 ```
 
-Verify: `src/xtrax/tiling/dispatch.py:105-174` (axis_dispatch eager shim — handles Vmap, SafeMap, Scan, DedupGather), `src/xtrax/tiling/dispatch.py:152-161` (DedupGather three-phase execution). Confirmed live this session: `axis_dispatch(dedup_decision.strategy, lambda x: x * 2, jnp.array([10,20,10,30,20,20,10,30]))` → `[20 40 20 60 40 40 20 60]` — round-trips correctly through dedup→map→gather.
+Verify: `src/xtrax/tiling/dispatch.py:105-174` (axis_dispatch eager shim — handles Vmap, ChunkedMap, Scan, DedupGather), `src/xtrax/tiling/dispatch.py:152-161` (DedupGather three-phase execution). Confirmed live this session: `axis_dispatch(dedup_decision.strategy, lambda x: x * 2, jnp.array([10,20,10,30,20,20,10,30]))` → `[20 40 20 60 40 40 20 60]` — round-trips correctly through dedup→map→gather.
 
 🚫 HALTS: Neither mixed-plan strategy goes through `make_axis_dispatch()`.  
 `make_axis_dispatch(DedupGather(...))` raises `DispatchRejected` ("handled elsewhere ... Use DedupGather via BatchPlanner + _dispatch_axis"); `make_axis_dispatch(Bucket(...))` falls through to the exhaustiveness `TypeError: Unknown strategy type` (no dedicated branch).  
 Enforcement: `src/xtrax/tiling/dispatch.py:78-82` (DedupGather), `src/xtrax/tiling/dispatch.py:101-102` (Bucket)
 
-🚫 HALTS: `axis_dispatch(Bucket(...), fn, xs)` also raises `TypeError`, by design: "Bucket is a host-side strategy and is not executed by axis_dispatch. Pad to a bucket shape on the host with select_bucket()/bucketize() before your jitted step, then dispatch the per-bucket compute with a device-tier strategy (e.g. Vmap/SafeMap)."  
+🚫 HALTS: `axis_dispatch(Bucket(...), fn, xs)` also raises `TypeError`, by design: "Bucket is a host-side strategy and is not executed by axis_dispatch. Pad to a bucket shape on the host with select_bucket()/bucketize() before your jitted step, then dispatch the per-bucket compute with a device-tier strategy (e.g. Vmap/ChunkedMap)."  
 Enforcement: `src/xtrax/tiling/dispatch.py:163-171`
 
-⚠ WARN: `DedupSpec` inputs are data-dependent. `unique_indices`/`index_map`/`k` must be computed from the **actual batch** on the host before `planner.plan()` is called; if the batch changes, rebuild the `DedupSpec` and re-plan. The other axes in a composed plan (Bucket boundaries, Vmap/SafeMap cardinality) are static config and survive batch changes unchanged.
+⚠ WARN: `DedupSpec` inputs are data-dependent. `unique_indices`/`index_map`/`k` must be computed from the **actual batch** on the host before `planner.plan()` is called; if the batch changes, rebuild the `DedupSpec` and re-plan. The other axes in a composed plan (Bucket boundaries, Vmap/ChunkedMap cardinality) are static config and survive batch changes unchanged.

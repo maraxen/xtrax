@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import pytest
 
 from xtrax.tiling.dispatch import axis_dispatch, make_axis_dispatch
-from xtrax.tiling.strategy import DedupGather, SafeMap, Vmap
+from xtrax.tiling.strategy import ChunkedMap, DedupGather, Vmap
 
 
 def _simple_fn(x):
@@ -14,7 +14,7 @@ def _make_vmap():
 
 
 def _make_safe_map():
-    return SafeMap(batch_size=8)
+    return ChunkedMap(batch_size=8)
 
 
 def _make_dedup():
@@ -51,7 +51,7 @@ def test_tiling_dispatch_overhead(benchmark, strategy_name):
             "xtrax_n_atoms": 32,
             "xtrax_scale_basis": "batch_rows",
             # DedupGather rides the backward-compatible eager shim; Vmap/
-            # SafeMap go through the factory. Recorded so cross-strategy
+            # ChunkedMap go through the factory. Recorded so cross-strategy
             # comparisons know the entry point differed.
             "xtrax_dispatch_entry": (
                 "axis_dispatch" if strategy_name == "dedup" else "make_axis_dispatch"
@@ -64,6 +64,6 @@ def test_tiling_dispatch_overhead(benchmark, strategy_name):
         # DedupGather is handled by axis_dispatch (backward-compatible eager shim)
         benchmark(axis_dispatch, strategy, _simple_fn, xs)
     else:
-        # Vmap/SafeMap use the factory-style make_axis_dispatch
+        # Vmap/ChunkedMap use the factory-style make_axis_dispatch
         dispatch = make_axis_dispatch(strategy)
         benchmark(dispatch, _simple_fn, xs)
