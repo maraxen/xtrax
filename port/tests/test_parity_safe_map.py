@@ -1,4 +1,4 @@
-"""Graded parity stub for safe_map — MVP leaf kernel (AC-3, AC-4)."""
+"""Graded parity stub for chunked_map (was safe_map, xtrax #3644) — MVP leaf kernel (AC-3, AC-4)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from xtrax.transforms.map import safe_map
+from xtrax.transforms.map import chunked_map
 
 REFERENCE_DIR = Path(__file__).resolve().parents[1] / "reference" / "safe_map"
 BASELINE_PATH = REFERENCE_DIR / "baseline_io.json"
@@ -42,7 +42,7 @@ def test_tier_1_dtype_shape(oracle, port_target) -> None:
         xs, fn, dtype = _case_arrays(case)
         ref_out = oracle.safe_map_reference(fn, xs)
         jax_dtype = jnp.dtype(dtype)
-        jax_out = np.asarray(safe_map(fn, jnp.asarray(xs, dtype=jax_dtype)))
+        jax_out = np.asarray(chunked_map(fn, jnp.asarray(xs, dtype=jax_dtype)))
         assert ref_out.shape == jax_out.shape, case["name"]
         if dtype == "float32":
             assert ref_out.dtype == jax_out.dtype, case["name"]
@@ -55,7 +55,7 @@ def test_tier_2_float64(oracle, port_target) -> None:
     case = next(c for c in baseline["cases"] if c["dtype"] == "float64")
     xs, fn, _ = _case_arrays(case)
     ref_out = oracle.safe_map_reference(fn, xs)
-    jax_out = np.asarray(safe_map(fn, jnp.asarray(xs, dtype=jnp.float64)))
+    jax_out = np.asarray(chunked_map(fn, jnp.asarray(xs, dtype=jnp.float64)))
     np.testing.assert_allclose(jax_out, ref_out, rtol=1e-10, atol=1e-10)
 
 
@@ -66,7 +66,7 @@ def test_tier_3_float32(oracle, port_target) -> None:
     xs, fn, _ = _case_arrays(case)
     ref_out = oracle.safe_map_reference(fn, xs.astype(np.float32))
     with jax.default_matmul_precision("highest"):
-        jax_out = np.asarray(safe_map(fn, jnp.asarray(xs, dtype=jnp.float32)))
+        jax_out = np.asarray(chunked_map(fn, jnp.asarray(xs, dtype=jnp.float32)))
     rtol, atol = 1e-4, 1e-4
     np.testing.assert_allclose(jax_out, ref_out, rtol=rtol, atol=atol)
 
@@ -77,7 +77,7 @@ def test_tier_4_gradient_ad(oracle, port_target) -> None:
     xs = jnp.arange(4.0, dtype=jnp.float32)
 
     def _loss(params: jax.Array) -> jax.Array:
-        out = safe_map(lambda x: x * params, xs)
+        out = chunked_map(lambda x: x * params, xs)
         return jnp.sum(out)
 
     grad = jax.grad(_loss)(jnp.array(2.0))
@@ -90,7 +90,7 @@ def test_tier_5_jit_invariance(oracle, port_target) -> None:
     case = baseline["cases"][0]
     xs, fn, _ = _case_arrays(case)
     xs_jax = jnp.asarray(xs)
-    eager = np.asarray(safe_map(fn, xs_jax))
-    jit_safe_map = jax.jit(safe_map, static_argnums=(0, 2))
-    jitted = np.asarray(jit_safe_map(fn, xs_jax))
+    eager = np.asarray(chunked_map(fn, xs_jax))
+    jit_chunked_map = jax.jit(chunked_map, static_argnums=(0, 2))
+    jitted = np.asarray(jit_chunked_map(fn, xs_jax))
     np.testing.assert_allclose(jitted, eager, rtol=1e-6, atol=1e-6)

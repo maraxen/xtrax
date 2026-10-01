@@ -9,6 +9,6 @@
 #
 # Example rows (commented — uncomment when wiring kernels in Phase 2):
 # [symbols]
-# "xtrax.transforms.map.safe_map" = "transforms.safe_map"
+# "xtrax.transforms.map.chunked_map" = "transforms.chunked_map"
 
 [symbols]
