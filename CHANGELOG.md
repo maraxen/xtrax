@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`xtrax.run.digest` module**: Digest functions for reproducibility and durability
+  infrastructure (#U4, spec demistify 261001_preemption-safe-cimist-fitting):
+  `canonical_digest`, `array_digest`, `source_fingerprint`, `numerics_env`. Used by
+  pipeline resumption and done-marker verification to detect content changes
+  independent of timing, process, or operational metadata.
+
+- **Reserved `xtrax.` attribute namespace** (#U0, spec demistify
+  261001_preemption-safe-cimist-fitting): Zarr attrs starting with the prefix
+  `"xtrax."` are excluded from `zarr_content_digest` by default (pass
+  `include_provenance=True` to include them). The sink's new `stamp_reserved()`
+  method is the sanctioned writer of such attrs, ensuring internal bookkeeping
+  (e.g. run reports, status flags) does not affect content-based reproducibility.
+  `ZarrStagingSink.stage()` now rejects caller attrs in the reserved namespace.
+
 ## [0.4.0a11] - 2026-10-01
 
 ### Added

@@ -14,6 +14,7 @@ from beartype.roar import BeartypeCallHintParamViolation
 
 from xtrax.run.sink import SinkSpec, derive_sink_spec, make_sink
 from xtrax.run.spec import RunSpec
+from xtrax.run.zarr_integrity import zarr_content_digest
 from xtrax.run.zarr_sink import ZarrStagingSink
 
 
@@ -666,3 +667,97 @@ def test_per_step_scalar_capture_through_io_callback(tmp_path: Path) -> None:
     got = [float(root[f"ref/loss/{i}"]["value"][...]) for i in range(2)]
     assert root["ref/loss/0"]["value"].shape == ()
     assert got == [3.0, 6.0]
+
+
+# --- Reserved attrs (xtrax. namespace) validation ---
+
+
+def test_stage_rejects_reserved_attr_keys(tmp_path: Path) -> None:
+    """stage() raises ValueError if attrs keys start with the reserved prefix."""
+    sink = _sink(tmp_path, flush_every=100)
+    with pytest.raises(ValueError, match="reserved namespace"):
+        sink.stage((0,), attrs={"xtrax.x": 1})
+    # Nothing should be buffered after a failed stage()
+    assert len(sink) == 0
+
+
+def test_stamp_reserved_writes_to_root(tmp_path: Path) -> None:
+    """stamp_reserved() writes xtrax.-prefixed attrs directly to the root group."""
+    sink = _sink(tmp_path)
+    sink.stage((0,), value=np.array([1]))
+    sink.drain()
+
+    # Before stamping, content digest is what it is
+    before_digest = zarr_content_digest(tmp_path / "out.zarr")
+
+    sink.stamp_reserved((), "run_report", {"status": "done"})
+
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    assert "xtrax.run_report" in root.attrs
+    assert root.attrs["xtrax.run_report"]["status"] == "done"
+
+    # Content digest should not change (reserved attrs are excluded by default)
+    after_digest = zarr_content_digest(tmp_path / "out.zarr")
+    assert before_digest == after_digest
+
+
+def test_stamp_reserved_writes_to_nested_key(tmp_path: Path) -> None:
+    """stamp_reserved() creates nested groups and writes attrs to the right level."""
+    sink = _sink(tmp_path)
+    sink.stage(("a", "b"), value=np.array([1]))
+    sink.drain()
+
+    sink.stamp_reserved(("a", "b"), "metadata", {"version": "1.0"})
+
+    root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
+    nested = root["a/b"]
+    assert "xtrax.metadata" in nested.attrs
+    assert nested.attrs["xtrax.metadata"]["version"] == "1.0"
+
+
+def test_stamp_reserved_rejects_empty_name(tmp_path: Path) -> None:
+    """stamp_reserved() raises ValueError for empty name."""
+    sink = _sink(tmp_path)
+    with pytest.raises(ValueError, match="name must be non-empty"):
+        sink.stamp_reserved((), "", {"x": 1})
+
+
+def test_stamp_reserved_rejects_name_with_slash(tmp_path: Path) -> None:
+    """stamp_reserved() raises ValueError for names containing '/'."""
+    sink = _sink(tmp_path)
+    with pytest.raises(ValueError, match="may not contain"):
+        sink.stamp_reserved((), "a/b", {"x": 1})
+
+
+def test_stamp_reserved_rejects_name_with_dot(tmp_path: Path) -> None:
+    """stamp_reserved() raises ValueError for names containing '.'."""
+    sink = _sink(tmp_path)
+    with pytest.raises(ValueError, match="may not contain"):
+        sink.stamp_reserved((), "a.b", {"x": 1})
+
+
+def test_stamp_reserved_rejects_reserved_names(tmp_path: Path) -> None:
+    """stamp_reserved() raises ValueError for reserved names 'commit' and 'store'."""
+    sink = _sink(tmp_path)
+    with pytest.raises(ValueError, match="reserved"):
+        sink.stamp_reserved((), "commit", {"x": 1})
+    with pytest.raises(ValueError, match="reserved"):
+        sink.stamp_reserved((), "store", {"x": 1})
+
+
+def test_stamp_reserved_rejects_non_json_payload(tmp_path: Path) -> None:
+    """stamp_reserved() raises ValueError for non-JSON-serializable payload."""
+    sink = _sink(tmp_path)
+    with pytest.raises(ValueError, match="cannot be normalized to JSON"):
+        sink.stamp_reserved((), "bad", {"x": set([1, 2])})  # type: ignore[dict-item]
+
+
+def test_stamp_reserved_after_finalize_raises_runtimeerror(tmp_path: Path) -> None:
+    """stamp_reserved() raises RuntimeError after finalize()."""
+    sink = _sink(tmp_path)
+    sink.stage((0,), value=np.array([1]))
+    sink.drain()
+    sink.finalize()
+
+    with pytest.raises(RuntimeError, match="after finalize"):
+        sink.stamp_reserved((), "foo", {"x": 1})

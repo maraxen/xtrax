@@ -264,3 +264,71 @@ def test_provenance_exclusion_survives_finalize_consolidated_metadata(tmp_path: 
     assert zarr_content_digest(path_a, include_provenance=True) != zarr_content_digest(
         path_b, include_provenance=True
     )
+
+
+# --- Reserved attrs exclusion (xtrax. namespace) ---
+#
+# stamp_reserved writes xtrax.-prefixed attrs that should not affect content-based
+# reproducibility. These tests verify they are excluded by default but included
+# when include_provenance=True.
+
+
+def test_reserved_attr_on_root_excluded_by_default(tmp_path: Path) -> None:
+    """xtrax.-prefixed attrs on the root group are excluded from digest by default."""
+    store_path = _make_store(tmp_path)
+    original = zarr_content_digest(store_path)
+
+    root = zarr.open_group(str(store_path), mode="a")
+    root.attrs["xtrax.foo"] = "bar"
+
+    assert zarr_content_digest(store_path) == original
+
+
+def test_reserved_attr_on_root_included_with_provenance(tmp_path: Path) -> None:
+    """xtrax.-prefixed attrs on root ARE included when include_provenance=True."""
+    store_path = _make_store(tmp_path)
+    original = zarr_content_digest(store_path, include_provenance=True)
+
+    root = zarr.open_group(str(store_path), mode="a")
+    root.attrs["xtrax.foo"] = "bar"
+
+    assert zarr_content_digest(store_path, include_provenance=True) != original
+
+
+def test_reserved_attr_on_nested_group_excluded_by_default(tmp_path: Path) -> None:
+    """xtrax.-prefixed attrs on nested groups are excluded from digest by default."""
+    store_path = tmp_path / "store.zarr"
+    root = zarr.open_group(str(store_path), mode="a")
+    sub = root.require_group("nested")
+    arr = sub.create_array(name="data", shape=(1,), dtype="int32")
+    arr[...] = np.array([1], dtype=np.int32)
+
+    original = zarr_content_digest(store_path)
+
+    sub.attrs["xtrax.foo"] = "bar"
+    assert zarr_content_digest(store_path) == original
+
+
+def test_reserved_attr_on_nested_group_included_with_provenance(tmp_path: Path) -> None:
+    """xtrax.-prefixed attrs on nested groups ARE included when include_provenance=True."""
+    store_path = tmp_path / "store.zarr"
+    root = zarr.open_group(str(store_path), mode="a")
+    sub = root.require_group("nested")
+    arr = sub.create_array(name="data", shape=(1,), dtype="int32")
+    arr[...] = np.array([1], dtype=np.int32)
+
+    original = zarr_content_digest(store_path, include_provenance=True)
+
+    sub.attrs["xtrax.foo"] = "bar"
+    assert zarr_content_digest(store_path, include_provenance=True) != original
+
+
+def test_normal_attr_on_root_still_affects_digest(tmp_path: Path) -> None:
+    """Verify that non-reserved and non-provenance attrs still change the digest."""
+    store_path = _make_store(tmp_path)
+    original = zarr_content_digest(store_path)
+
+    root = zarr.open_group(str(store_path), mode="a")
+    root.attrs["myattr"] = "myvalue"
+
+    assert zarr_content_digest(store_path) != original

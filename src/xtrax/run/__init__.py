@@ -11,6 +11,12 @@ from xtrax.run.component_binding import (
     ComponentSidecarRefMissingError,
     component_sidecar_binding,
 )
+from xtrax.run.digest import (
+    array_digest,
+    canonical_digest,
+    numerics_env,
+    source_fingerprint,
+)
 from xtrax.run.ident import new_run_id
 from xtrax.run.repro_floor import (
     ReproFloorResult,
@@ -33,7 +39,7 @@ from xtrax.run.zarr_integrity import (
     update_zarr_node_digest,
     zarr_content_digest,
 )
-from xtrax.run.zarr_sink import ZarrStagingSink
+from xtrax.run.zarr_sink import RESERVED_ATTR_PREFIX, ZarrStagingSink
 
 __all__ = [
     "RunSpec",
@@ -45,11 +51,16 @@ __all__ = [
     "new_run_id",
     "make_sink",
     "ZarrStagingSink",
+    "RESERVED_ATTR_PREFIX",
     "canonical_json_bytes",
     "normalize_json_value",
     "update_array_digest",
     "update_zarr_node_digest",
     "zarr_content_digest",
+    "canonical_digest",
+    "array_digest",
+    "source_fingerprint",
+    "numerics_env",
     "fsync_file",
     "fsync_directory",
     "fsync_tree",

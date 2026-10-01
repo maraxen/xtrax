@@ -21,6 +21,7 @@ installed -- only constructing a sink does.
 
 import subprocess
 import warnings
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,13 @@ from xtrax.run.sink import SinkSpec
 #: Core provenance field names written by the sink itself. Caller-staged
 #: attrs may not use these names (collision raises at :meth:`ZarrStagingSink.stage`).
 _CORE_PROVENANCE_FIELDS = frozenset({"git_sha", "git_branch", "git_dirty", "run_id", "created_at"})
+
+#: Prefix reserved for xtrax-written attrs. Attrs whose key starts with this
+#: prefix are excluded from ``zarr_content_digest`` by default (unless
+#: ``include_provenance=True``), ensuring that internal sink bookkeeping
+#: (stamped via :meth:`ZarrStagingSink.stamp_reserved`) does not affect
+#: content-based reproducibility.
+RESERVED_ATTR_PREFIX = "xtrax."
 
 _GIT_UNKNOWN = "unknown"
 
@@ -266,6 +274,14 @@ class ZarrStagingSink:
                 "overwritten by caller attrs."
             )
             raise ValueError(msg)
+        reserved = sorted(k for k in attrs if str(k).startswith(RESERVED_ATTR_PREFIX))
+        if reserved:
+            msg = (
+                f"ZarrStagingSink: staged attrs for key={key!r} use reserved namespace "
+                f"{RESERVED_ATTR_PREFIX!r} (attr name(s) {reserved}); this namespace is "
+                "reserved for the sink's own use. Use stamp_reserved() to write reserved attrs."
+            )
+            raise ValueError(msg)
         if self._spec.extension_schema is None:
             return
         # Type-check the post-merge view for this key: any invalid value fails
@@ -329,9 +345,10 @@ class ZarrStagingSink:
                 Repeated ``stage`` calls for the same key merge attrs the
                 same way arrays merge (later keys overwrite earlier ones).
                 Attrs keys colliding with core provenance field names raise;
-                when ``spec.extension_schema`` is declared, attr value types
-                are validated immediately (before buffering) against the
-                merged view, while ``required`` fields are enforced at
+                attrs keys starting with the reserved namespace (``"xtrax."``)
+                also raise; when ``spec.extension_schema`` is declared, attr
+                value types are validated immediately (before buffering) against
+                the merged view, while ``required`` fields are enforced at
                 :meth:`drain` -- so they may be split across stage() calls.
                 An auto-flush (``spec.flush_every``) is a drain: split
                 required fields across fewer calls than ``flush_every``.
@@ -342,10 +359,11 @@ class ZarrStagingSink:
 
         Raises:
             ValueError: If ``attrs`` uses a reserved core provenance field
-                name, or a value violates a ``spec.extension_schema`` type
-                (nothing is buffered); or if this call triggers an auto-flush
-                whose drain finds a key missing ``required`` fields (this
-                call's payload stays buffered -- see :meth:`drain`).
+                name, the reserved ``"xtrax."`` namespace, or a value violates
+                a ``spec.extension_schema`` type (nothing is buffered); or if
+                this call triggers an auto-flush whose drain finds a key missing
+                ``required`` fields (this call's payload stays buffered -- see
+                :meth:`drain`).
             RuntimeError: If the sink has already been finalized.
         """
         if self._finalized:
@@ -444,6 +462,71 @@ class ZarrStagingSink:
         self._pending_attrs.clear()
         self._staged_since_drain = 0
         self._write_root_provenance()
+
+    def stamp_reserved(self, key: tuple[Any, ...], name: str, payload: Mapping[str, Any]) -> None:
+        """Stamp a reserved-namespace attr onto a key's group.
+
+        The one sanctioned writer of ``xtrax.``-prefixed attrs. Such attrs
+        are excluded from ``zarr_content_digest`` by default, ensuring that
+        internal sink bookkeeping does not affect content-based reproducibility.
+
+        Args:
+            key: The group address (tuple of path components; empty tuple for root).
+            name: A non-empty, non-slash, non-dot name. Reserved names "commit"
+                and "store" raise (owned by the sink). The full attr key written
+                to the group is ``f"{RESERVED_ATTR_PREFIX}{name}"``.
+            payload: A mapping to normalize, canonicalize, and write. Must be
+                JSON-safe and pass ``canonical_json_bytes`` without error.
+
+        Raises:
+            RuntimeError: If the sink has already been finalized.
+            ValueError: If ``name`` is empty, contains "/" or ".", or is one of
+                the reserved values ("commit", "store"); or if ``payload`` cannot
+                be normalized to JSON (e.g. contains a set, object, or other
+                non-JSON-serializable value).
+        """
+        if self._finalized:
+            msg = (
+                "ZarrStagingSink: stamp_reserved() after finalize() is not legitimate -- "
+                "metadata was already consolidated for this run."
+            )
+            raise RuntimeError(msg)
+        # Validate name.
+        if not name:
+            msg = "ZarrStagingSink.stamp_reserved: name must be non-empty"
+            raise ValueError(msg)
+        if "/" in name or "." in name:
+            msg = f"ZarrStagingSink.stamp_reserved: name={name!r} may not contain '/' or '.'"
+            raise ValueError(msg)
+        if name in {"commit", "store"}:
+            msg = (
+                f"ZarrStagingSink.stamp_reserved: name={name!r} is reserved by the sink itself "
+                f"(owned by zarr consolidation or internal bookkeeping)"
+            )
+            raise ValueError(msg)
+        # Normalize and validate payload is JSON-safe.
+        try:
+            from xtrax.run.zarr_integrity import canonical_json_bytes
+            from xtrax.run.zarr_integrity import normalize_json_value as nv
+
+            normalized = dict(nv(dict(payload)))
+            canonical_json_bytes(normalized)
+        except TypeError as e:
+            msg = (
+                f"ZarrStagingSink.stamp_reserved: key={key!r}, name={name!r}, "
+                f"payload cannot be normalized to JSON-safe form: {e}"
+            )
+            raise ValueError(msg) from e
+        except ValueError as e:
+            msg = (
+                f"ZarrStagingSink.stamp_reserved: key={key!r}, name={name!r}, "
+                f"payload is not JSON-serializable: {e}"
+            )
+            raise ValueError(msg) from e
+        # Write immediately to the group (not buffered).
+        group_path = "/".join(str(p) for p in key) if key else ""
+        group = self._root.require_group(group_path) if group_path else self._root
+        group.attrs[RESERVED_ATTR_PREFIX + name] = normalized
 
     def finalize(self) -> None:
         """Signal run completion: consolidate store metadata exactly once.

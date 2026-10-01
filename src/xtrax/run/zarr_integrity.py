@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from xtrax.run.zarr_sink import _CORE_PROVENANCE_FIELDS
+from xtrax.run.zarr_sink import _CORE_PROVENANCE_FIELDS, RESERVED_ATTR_PREFIX
 
 if TYPE_CHECKING:
     import zarr
@@ -86,8 +86,10 @@ def update_zarr_node_digest(
     By default (``include_provenance=False``), excludes provenance-tracking attrs that
     may vary between runs:
     - ROOT GROUP (``path == "/"``): excludes all five core provenance field names:
-      ``git_sha``, ``git_branch``, ``git_dirty``, ``run_id``, ``created_at``.
-    - NON-ROOT GROUPS: excludes only ``run_id`` and ``git_sha`` (the per-key pointer pair).
+      ``git_sha``, ``git_branch``, ``git_dirty``, ``run_id``, ``created_at``, plus
+      any attr whose key starts with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
+    - NON-ROOT GROUPS: excludes only ``run_id`` and ``git_sha`` (the per-key pointer pair),
+      plus any attr whose key starts with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
     - ARRAYS: excludes nothing (arrays hold no provenance attrs).
 
     This exclusion is unconditional by attr **name**, regardless of origin. A hand-built
@@ -126,6 +128,9 @@ def update_zarr_node_digest(
         # Non-root group: exclude only run_id and git_sha (the per-key pointer pair).
         exclude_keys = _CORE_PROVENANCE_FIELDS & {"run_id", "git_sha"}
 
+    # When include_provenance=True, we skip only the named exclusions.
+    # When include_provenance=False, we also skip reserved attrs.
+    exclude_reserved = not include_provenance
     attrs_payload = {
         str(key): normalize_json_value(value)
         for key, value in sorted(node.attrs.items())
@@ -133,6 +138,7 @@ def update_zarr_node_digest(
         # non-str attr key would otherwise be recorded as "run_id" while failing
         # to match the exclusion set, and be hashed anyway.
         if str(key) not in exclude_keys
+        and not (exclude_reserved and str(key).startswith(RESERVED_ATTR_PREFIX))
     }
     digest.update(canonical_json_bytes(attrs_payload))
     digest.update(b"\n")
@@ -162,8 +168,9 @@ def zarr_content_digest(path: Path, *, include_provenance: bool = False) -> str:
 
     By default, excludes provenance-tracking attrs:
     - ROOT GROUP: excludes ``git_sha``, ``git_branch``, ``git_dirty``, ``run_id``,
-      ``created_at``.
-    - NON-ROOT GROUPS: excludes ``run_id`` and ``git_sha`` (the per-key pointer pair).
+      ``created_at``, plus attrs starting with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
+    - NON-ROOT GROUPS: excludes ``run_id`` and ``git_sha`` (the per-key pointer pair),
+      plus attrs starting with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
     - ARRAYS: excludes nothing.
 
     This exclusion is unconditional by attr **name**, regardless of origin. A
