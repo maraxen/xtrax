@@ -91,7 +91,8 @@ def update_zarr_node_digest(
       any attr whose key starts with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
     - NON-ROOT GROUPS: excludes only ``run_id`` and ``git_sha`` (the per-key pointer pair),
       plus any attr whose key starts with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
-    - ARRAYS: excludes nothing (arrays hold no provenance attrs).
+    - ARRAYS: excludes no provenance field names (arrays hold none), but attrs whose key
+      starts with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``) are excluded on array nodes too.
 
     This exclusion is unconditional by attr **name**, regardless of origin. A hand-built
     store whose root group carries a domain-meaningful attr named, e.g., ``git_branch``,
@@ -111,7 +112,7 @@ def update_zarr_node_digest(
 
     # Determine which attr names to exclude based on node type and path.
     if isinstance(node, zarr.Array):
-        # Arrays skip nothing.
+        # Arrays skip no provenance names (the reserved-prefix filter below still applies).
         exclude_keys = set()
     elif include_provenance:
         # Caller explicitly wants provenance included.
@@ -172,7 +173,8 @@ def zarr_content_digest(path: Path, *, include_provenance: bool = False) -> str:
       ``created_at``, plus attrs starting with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
     - NON-ROOT GROUPS: excludes ``run_id`` and ``git_sha`` (the per-key pointer pair),
       plus attrs starting with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
-    - ARRAYS: excludes nothing.
+    - ARRAYS: excludes no provenance field names, but attrs starting with
+      ``RESERVED_ATTR_PREFIX`` (``"xtrax."``) are excluded on array nodes too.
 
     This exclusion is unconditional by attr **name**, regardless of origin. A
     hand-built store whose root group carries a domain-meaningful attr named

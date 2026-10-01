@@ -20,6 +20,7 @@ installed -- only constructing a sink does.
 """
 
 import copy
+import os
 import shutil
 import subprocess
 import uuid
@@ -193,10 +194,12 @@ class ZarrStagingSink:
     place. A different ``input_digest`` already committed at a key raises
     :class:`~xtrax.run.zarr_commit.CommitConflictError`. ``lookup``,
     ``committed_keys`` and ``gc_staging`` expose resume-by-inspection;
-    ``close()`` (or ``with``) removes this writer's staging directory;
-    ``finalize()`` raises because consolidated metadata would go stale as
-    writers add groups. ``run_id`` must be unique per process (use
-    :func:`xtrax.run.ident.new_run_id`).
+    ``close()`` (or ``with``) removes this writer's staging directory and ends
+    the sink's use (undrained keys are discarded with a warning); ``finalize()``
+    raises because consolidated metadata would go stale as writers add groups.
+    Every key's parent must equal or start with a declared prefix. Exclusive mode
+    refuses to open a directory that is already a durable store. ``run_id`` must
+    be unique per process (use :func:`xtrax.run.ident.new_run_id`).
     """
 
     def __init__(self, spec: SinkSpec) -> None:
@@ -213,6 +216,18 @@ class ZarrStagingSink:
                 "xtrax.run ident helpers or pass an explicit id."
             )
             raise ValueError(msg)
+        if spec.open_mode == "create_or_join":
+            # run_id becomes a key part (the writer record) and a staging directory
+            # name: reject anything that is not a valid single key part BEFORE any
+            # filesystem work, so a bad id never leaves a half-created store behind.
+            try:
+                zc.key_path((spec.run_id,))
+            except ValueError as e:
+                msg = (
+                    f"ZarrStagingSink: run_id {spec.run_id!r} is not usable in durable "
+                    f"mode (it becomes a key part and a directory name): {e}"
+                )
+                raise ValueError(msg) from e
 
         try:
             import zarr
@@ -225,10 +240,22 @@ class ZarrStagingSink:
 
         self._spec = spec
         self._durable = spec.open_mode == "create_or_join"
-        self._output_dir: Path = spec.output_dir
+        self._closed = False
+        # Durable mode resolves symlinks up front so staging lands next to the REAL
+        # target (the rename into the store must stay on one filesystem).
+        self._output_dir: Path = (
+            Path(spec.output_dir).resolve() if self._durable else spec.output_dir
+        )
         self._root: zarr.Group
         if not self._durable:
             self._root = zarr.open_group(str(spec.output_dir), mode="a")
+            if zc.STORE_ATTR in self._root.attrs:
+                msg = (
+                    f"ZarrStagingSink: output_dir {str(spec.output_dir)!r} is a durable store "
+                    f"(its root carries {zc.STORE_ATTR!r}); exclusive mode would rewrite the "
+                    "root attrs. Open it with SinkSpec(open_mode='create_or_join')."
+                )
+                raise ValueError(msg)
         self._pending: dict[tuple[Any, ...], dict[str, np.ndarray]] = {}
         self._pending_attrs: dict[tuple[Any, ...], dict[str, Any]] = {}
         # Durable-only per-key commit inputs: input_digest/input_payload/commit_meta/env_extra.
@@ -301,7 +328,8 @@ class ZarrStagingSink:
             StoreIdentityMismatch: If an existing store has a different identity.
             UnknownPrefixError: If a required prefix group is missing.
             NotADurableStoreError: If the target is not a durable store.
-            ValueError: If this ``run_id`` already joined the store.
+            ValueError: If this ``run_id`` already joined the store, or the store and its
+                staging directory are on different filesystems.
         """
         import zarr
 
@@ -316,7 +344,9 @@ class ZarrStagingSink:
                 prefixes.append(prefix)
         writer_dir = zc.staging_root(output_dir) / self._writer_id
         try:
-            if not output_dir.exists():
+            if not output_dir.exists() or self._is_empty_dir(output_dir):
+                # An existing EMPTY directory counts as absent: rename over an empty
+                # directory is atomic on POSIX (a racing loser still gets ENOTEMPTY).
                 # A False return means another process won the creation race:
                 # fall through to join.
                 zc.create_store(
@@ -329,12 +359,36 @@ class ZarrStagingSink:
             self.store_record: dict[str, Any] = zc.open_store(
                 output_dir, identity_payload=identity, prefixes=prefixes
             )
+            self._check_same_filesystem()
             self._root = zarr.open_group(str(output_dir), mode="r+", use_consolidated=False)
             self._process_env: dict[str, Any] = numerics_env()
             self._commit_writer_record()
         except BaseException:
             shutil.rmtree(writer_dir, ignore_errors=True)
             raise
+
+    @staticmethod
+    def _is_empty_dir(path: Path) -> bool:
+        """Whether ``path`` is an existing directory with no entries."""
+        return path.is_dir() and not any(path.iterdir())
+
+    def _check_same_filesystem(self) -> None:
+        """Staging lives beside the store; a rename across devices would not be atomic.
+
+        Raises:
+            ValueError: If the staging root's parent and the store are on different devices.
+        """
+        staging_parent = zc.staging_root(self._output_dir).parent
+        staging_dev = os.stat(staging_parent).st_dev
+        store_dev = os.stat(self._output_dir).st_dev
+        if staging_dev != store_dev:
+            msg = (
+                f"ZarrStagingSink: staging directory parent {str(staging_parent)!r} (device "
+                f"{staging_dev}) and the store {str(self._output_dir)!r} (device {store_dev}) are "
+                "on different filesystems; the atomic rename into the store would not be atomic "
+                "(or would fail with EXDEV). Use an output_dir that is not itself a mount point."
+            )
+            raise ValueError(msg)
 
     def _commit_writer_record(self) -> None:
         """Commit ``("_xtrax_writers", run_id)`` -- before any shard of this writer."""
@@ -369,6 +423,14 @@ class ZarrStagingSink:
             f"ZarrStagingSink: run_id {run_id!r} already joined store; run ids must be "
             "unique per process (use new_run_id())"
         )
+
+    def _require_open(self, what: str) -> None:
+        if self._closed:
+            msg = (
+                f"ZarrStagingSink: {what}() after close() is not legitimate -- "
+                "close() ends this sink's use; open a fresh sink."
+            )
+            raise RuntimeError(msg)
 
     def _require_durable(self, what: str) -> None:
         if not self._durable:
@@ -408,6 +470,17 @@ class ZarrStagingSink:
             msg = (
                 f"ZarrStagingSink: key={key!r} is under the reserved prefix "
                 f"{WRITERS_PREFIX!r}, which holds the sink's own writer records"
+            )
+            raise ValueError(msg)
+        allowed = [p for p in self._spec.prefixes if p and p[0] != WRITERS_PREFIX]
+        parent = tuple(str(part) for part in key[:-1])
+        if not any(parent[: len(p)] == p for p in allowed):
+            declared = [list(p) for p in allowed]
+            msg = (
+                f"ZarrStagingSink: key={key!r} is not under a declared prefix; its parent "
+                f"{parent!r} must equal or start with one of SinkSpec.prefixes {declared} "
+                "(a committed key cannot be nested inside another committed key, and "
+                "keys outside the declared prefixes are not part of this store's layout)"
             )
             raise ValueError(msg)
         extra = dict(normalize_json_value(dict(env_extra))) if env_extra else {}
@@ -556,11 +629,17 @@ class ZarrStagingSink:
                 this call triggers an auto-flush whose drain finds a key missing
                 ``required`` fields (this call's payload stays buffered -- see
                 :meth:`drain`). In durable mode, also if ``input_digest`` is
-                missing, ``key`` is empty/invalid or under the reserved writer
-                prefix, or ``env_extra`` collides with a process field. In
-                exclusive mode, if any durable-only argument is passed.
-            RuntimeError: If the sink has already been finalized.
+                missing, ``key`` is empty/invalid, under the reserved writer
+                prefix, or its parent is not equal to / nested under one of the
+                declared ``spec.prefixes``, or ``env_extra`` collides with a process
+                field. In exclusive mode, if any durable-only argument is passed.
+            RuntimeError: If the sink has already been finalized or closed.
+            CommitConflictError: Durable mode only; if this call triggers an
+                auto-flush (``spec.flush_every``) whose drain finds a different
+                ``input_digest`` already committed at a pending key. The call's
+                payload stays buffered (see :meth:`drain`).
         """
+        self._require_open("stage")
         if self._finalized:
             msg = (
                 "ZarrStagingSink: stage() after finalize() is not legitimate -- "
@@ -572,8 +651,11 @@ class ZarrStagingSink:
         )
         if attrs:
             self._validate_stage_attrs(key, attrs)
+        # Convert BEFORE touching the buffer: a conversion error (e.g. a ragged list)
+        # on a new key must not leave an orphan empty entry in ``_pending``.
+        converted = {name: np.asarray(value) for name, value in arrays.items()}
         entry = self._pending.setdefault(key, {})
-        entry.update({name: np.asarray(value) for name, value in arrays.items()})
+        entry.update(converted)
         if attrs:
             self._pending_attrs.setdefault(key, {}).update(attrs)
         if commit_info is not None:
@@ -614,7 +696,14 @@ class ZarrStagingSink:
         """
         for key in list(self._pending):
             arrays = self._pending[key]
-            info = self._pending_commit[key]
+            info = self._pending_commit.get(key)
+            if info is None:
+                msg = (
+                    f"ZarrStagingSink.drain: durable key {key!r} is buffered without commit "
+                    "inputs (input_digest etc.); this is an internal inconsistency, not a "
+                    "caller error. The pending buffer was NOT cleared."
+                )
+                raise RuntimeError(msg)
             key_rel = zc.key_path(key)
             staged_dir = zc.staging_root(self._output_dir) / self._writer_id / key_rel
             if staged_dir.exists():
@@ -684,10 +773,13 @@ class ZarrStagingSink:
                 fields and any key with staged attrs would be persisted
                 without them (existing group attrs merged with pending ones).
                 Raised before any write; the buffer is left intact.
-            RuntimeError: If the sink has already been finalized.
+            RuntimeError: If the sink has already been finalized or closed.
             CommitConflictError: Durable mode only; a different ``input_digest``
-                is already committed at a key (see the buffer note above).
+                is already committed at a key (see the buffer note above). The same
+                error can also surface from :meth:`stage` when its auto-flush
+                (``spec.flush_every``) hits the conflict.
         """
+        self._require_open("drain")
         if self._finalized:
             msg = (
                 "ZarrStagingSink: drain() after finalize() is not legitimate -- "
@@ -753,6 +845,11 @@ class ZarrStagingSink:
         are excluded from ``zarr_content_digest`` by default, ensuring that
         internal sink bookkeeping does not affect content-based reproducibility.
 
+        Durable mode: only an already-committed key can be stamped (the root never
+        is). The stamp is an in-place attr write on an otherwise immutable shard, not
+        an atomic commit, so concurrent stamps of the same ``name`` on the same key
+        by different writers are last-writer-wins.
+
         Args:
             key: The group address (tuple of path components; empty tuple for root).
             name: A non-empty, non-slash, non-dot name. Reserved names "commit"
@@ -762,12 +859,13 @@ class ZarrStagingSink:
                 JSON-safe and pass ``canonical_json_bytes`` without error.
 
         Raises:
-            RuntimeError: If the sink has already been finalized.
+            RuntimeError: If the sink has already been finalized or closed.
             ValueError: If ``name`` is empty, contains "/" or ".", or is one of
                 the reserved values ("commit", "store"); or if ``payload`` cannot
                 be normalized to JSON (e.g. contains a set, object, or other
                 non-JSON-serializable value).
         """
+        self._require_open("stamp_reserved")
         if self._finalized:
             msg = (
                 "ZarrStagingSink: stamp_reserved() after finalize() is not legitimate -- "
@@ -896,7 +994,25 @@ class ZarrStagingSink:
         return zc.gc_staging(self._output_dir, older_than, exclude=[self._writer_id])
 
     def close(self) -> None:
-        """Remove this writer's own staging directory (idempotent; no-op if exclusive)."""
+        """Close the sink; later ``stage``/``drain``/``stamp_reserved`` raise ``RuntimeError``.
+
+        Durable mode also removes this writer's own staging directory. Idempotent
+        (a second call does nothing). Staged keys that were never drained are
+        discarded, with a ``UserWarning`` naming how many.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self._pending:
+            warnings.warn(
+                f"ZarrStagingSink.close(): discarding {len(self._pending)} staged key(s) that "
+                "were never drained (call drain() before close() to persist them).",
+                UserWarning,
+                stacklevel=2,
+            )
+            self._pending.clear()
+            self._pending_attrs.clear()
+            self._pending_commit.clear()
         if not self._durable:
             return
         shutil.rmtree(zc.staging_root(self._output_dir) / self._writer_id, ignore_errors=True)

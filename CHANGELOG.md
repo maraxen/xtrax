@@ -54,6 +54,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new import-free `xtrax.run._sink_names` to break an import cycle (still
   re-exported from `zarr_sink`).
 
+  Deliberate deviations from the exclusive-mode contract, and hardening rules of the
+  durable mode:
+  - `stamp_reserved(())` on the root **raises** in durable mode (a durable store never
+    rewrites root attrs); stamp a committed key instead. Concurrent stamps of the same
+    name on the same key by different writers are last-writer-wins.
+  - Durable `drain()` **reports auto-flushed outcomes**: it returns the
+    `Committed | Duplicate` outcome of every key committed since the previous explicit
+    `drain()`, including keys an auto-flush (`flush_every`) committed inside `stage()`.
+    A `CommitConflictError` can therefore also surface from `stage()`.
+  - **Exclusive mode refuses durable stores**: opening a directory whose root carries
+    `xtrax.store` with the default `open_mode="exclusive"` raises `ValueError` instead of
+    rewriting the durable store's root.
+  - A key can never be nested inside a committed key: `commit_key` raises
+    `UnknownPrefixError` if the parent, or any ancestor below the store root, is a
+    committed key; `stage()` requires the key's parent to equal or sit under a declared
+    `SinkSpec.prefixes` entry (the reserved writers prefix excluded).
+  - An existing **empty** directory is treated as absent by `create_or_join`; a non-empty
+    non-store directory still raises `NotADurableStoreError`. The output directory is
+    resolved through symlinks so staging lands beside the real target, and a staging /
+    store device mismatch raises `ValueError`. `run_id` is validated as a key part before
+    any filesystem work.
+  - `close()` now ends the sink (all modes): `stage`/`drain`/`stamp_reserved` afterwards
+    raise `RuntimeError`, and undrained keys are discarded with a `UserWarning`.
+  - `lookup(verify=True)` propagates `OSError`/`MemoryError` from the content-digest
+    computation instead of reporting `Corrupt`; zarr decode errors stay `Corrupt` (the
+    reason now names the exception type). `gc_staging` renames each candidate to
+    `<name>.gc-<uuid8>` before deleting it.
+
 ## [0.4.0a11] - 2026-10-01
 
 ### Added

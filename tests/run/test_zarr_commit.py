@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import subprocess
 import sys
 import time
@@ -14,7 +16,7 @@ import pytest
 import zarr
 
 from xtrax.run import zarr_commit as zc
-from xtrax.run.zarr_integrity import zarr_content_digest
+from xtrax.run.zarr_integrity import update_zarr_node_digest, zarr_content_digest
 
 
 def _simple_staged_group(staged_dir: Path) -> None:
@@ -368,69 +370,91 @@ class TestLookupClassification:
         assert "uncommitted" in result.reason
 
     def test_lookup_corrupt_content_digest_mismatch(self, tmp_path: Path) -> None:
-        store = tmp_path / "store"
-        zc.create_store(
-            store,
-            identity_payload={"type": "test"},
-            creator_run_id="creator",
-            prefixes=(("chunks",),),
-            writer_id="writer",
-        )
-        staged_dir = zc.staging_root(store) / "writer" / "test_key"
-        zc.write_staged_group(staged_dir, {"arr": np.arange(5, dtype=np.float32)})
-        zc.commit_key(
-            store,
-            ("chunks", "k0"),
-            staged_dir,
-            input_digest="digest1",
-            run_id="run1",
-            env={},
-        )
-        # Modify the committed data on disk directly by rewriting a chunk file
-        key_dir = store / "chunks" / "k0"
-        # Find and modify the array chunk file
-        chunk_files = list(key_dir.glob("arr/*"))
-        if chunk_files:
-            # Modify the first chunk file to corrupt it
-            chunk_file = chunk_files[0]
-            with chunk_file.open("r+b") as f:
-                data = f.read()
-                # Flip a byte in the middle
-                mid = len(data) // 2
-                modified = data[:mid] + bytes([data[mid] ^ 0xFF]) + data[mid + 1 :]
-                f.seek(0)
-                f.write(modified)
+        store = _make_store(tmp_path)
+        _commit_k0(store)
+        chunk_file = _flip_chunk_byte(store / "chunks" / "k0")
 
+        # The flipped chunk still decodes: the ONLY thing that can flag it is the digest.
         result = zc.lookup(store, ("chunks", "k0"), "digest1", verify=True)
         assert isinstance(result, zc.Corrupt)
-        assert "content digest" in result.reason
+        assert result.reason == "content digest mismatch", chunk_file
 
     def test_lookup_with_verify_false_skips_content_check(self, tmp_path: Path) -> None:
-        store = tmp_path / "store"
-        zc.create_store(
-            store,
-            identity_payload={"type": "test"},
-            creator_run_id="creator",
-            prefixes=(("chunks",),),
-            writer_id="writer",
-        )
-        staged_dir = zc.staging_root(store) / "writer" / "test_key"
-        zc.write_staged_group(staged_dir, {"arr": np.arange(5)})
-        zc.commit_key(
-            store,
-            ("chunks", "k0"),
-            staged_dir,
-            input_digest="digest1",
-            run_id="run1",
-            env={},
-        )
-        # Modify data but verify=False should not detect it
-        key_dir = store / "chunks" / "k0"
-        group = zarr.open_group(str(key_dir), mode="r+")
-        group["arr"][:] = np.arange(10)
+        store = _make_store(tmp_path)
+        _commit_k0(store)
+        _flip_chunk_byte(store / "chunks" / "k0")
 
+        # Same mutated store: verify=True flags it, verify=False does not look.
+        assert isinstance(zc.lookup(store, ("chunks", "k0"), "digest1", verify=True), zc.Corrupt)
         result = zc.lookup(store, ("chunks", "k0"), "digest1", verify=False)
         assert isinstance(result, zc.Reuse)
+
+    def test_tampered_input_digest_is_corrupt_even_without_verify(self, tmp_path: Path) -> None:
+        store = _make_store(tmp_path)
+        _commit_k0(store)
+        group = zarr.open_group(str(store / "chunks" / "k0"), mode="r+")
+        tampered = dict(group.attrs[zc.COMMIT_ATTR])  # type: ignore[arg-type]
+        tampered["input_digest"] = "forged"
+        group.attrs[zc.COMMIT_ATTR] = tampered
+
+        # Looking up under the FORGED digest must not be fooled into Reuse: the record
+        # digest no longer matches, so the record is tampered whatever the verify flag.
+        for lookup_digest in ("forged", "digest1"):
+            result = zc.lookup(store, ("chunks", "k0"), lookup_digest, verify=False)
+            assert isinstance(result, zc.Corrupt), lookup_digest
+            assert "tampered" in result.reason
+
+    def test_environmental_oserror_propagates_not_corrupt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _make_store(tmp_path)
+        _commit_k0(store)
+
+        def boom(path: Path) -> str:
+            raise OSError(5, "Input/output error")
+
+        monkeypatch.setattr("xtrax.run.zarr_commit.zarr_content_digest", boom)
+        with pytest.raises(OSError, match="Input/output error"):
+            zc.lookup(store, ("chunks", "k0"), "digest1", verify=True)
+        # verify=False never computes the digest, so it is unaffected.
+        assert isinstance(zc.lookup(store, ("chunks", "k0"), "digest1", verify=False), zc.Reuse)
+
+    def test_memoryerror_propagates_not_corrupt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _make_store(tmp_path)
+        _commit_k0(store)
+
+        def boom(path: Path) -> str:
+            raise MemoryError
+
+        monkeypatch.setattr("xtrax.run.zarr_commit.zarr_content_digest", boom)
+        with pytest.raises(MemoryError):
+            zc.lookup(store, ("chunks", "k0"), "digest1", verify=True)
+
+    def test_decode_error_is_corrupt_and_names_the_exception_type(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = _make_store(tmp_path)
+        _commit_k0(store)
+
+        def boom(path: Path) -> str:
+            raise ValueError("bad metadata")
+
+        monkeypatch.setattr("xtrax.run.zarr_commit.zarr_content_digest", boom)
+        result = zc.lookup(store, ("chunks", "k0"), "digest1", verify=True)
+        assert isinstance(result, zc.Corrupt)
+        assert "ValueError" in result.reason
+        assert "bad metadata" in result.reason
+
+    def test_unreadable_node_metadata_is_corrupt(self, tmp_path: Path) -> None:
+        """Damaged array metadata is corruption, not an environmental I/O failure."""
+        store = _make_store(tmp_path)
+        _commit_k0(store)
+        (store / "chunks" / "k0" / "arr" / "zarr.json").write_text("{ not json")
+        result = zc.lookup(store, ("chunks", "k0"), "digest1", verify=True)
+        assert isinstance(result, zc.Corrupt)
+        assert "failed to compute content digest" in result.reason
 
 
 class TestCommittedKeys:
@@ -544,7 +568,8 @@ class TestGcStaging:
         os.utime(excluded_dir, (old_mtime, old_mtime))
 
         removed = zc.gc_staging(store, timedelta(seconds=50), exclude=["excluded"])
-        assert old_dir not in [r for r in removed if r.exists()]
+        assert old_dir in removed
+        assert not old_dir.exists()
         assert excluded_dir.exists()  # excluded should still exist
 
     def test_returns_empty_for_missing_staging(self, tmp_path: Path) -> None:
@@ -790,6 +815,35 @@ class TestDigestLocality:
         committed_digest = zarr_content_digest(store / "chunks" / "k0")
         assert committed_digest == staged_digest
 
+    def test_digest_walked_from_store_root_differs(self, tmp_path: Path) -> None:
+        """Negative half: the digest is key-relative; a root-anchored walk must not match.
+
+        The record's ``content_digest`` is only meaningful when computed with the key
+        group as its own root. Walking the same committed shard from the store root
+        (path ``/chunks/k0``) folds in a different path and so digests differently --
+        this is why ``lookup`` re-digests the key directory itself.
+        """
+        store = tmp_path / "store"
+        zc.create_store(
+            store,
+            identity_payload={"type": "test"},
+            creator_run_id="creator",
+            prefixes=(("chunks",),),
+            writer_id="writer",
+        )
+        staged_dir = zc.staging_root(store) / "writer" / "key1"
+        zc.write_staged_group(staged_dir, {"arr": np.arange(5), "labels": np.array([1, 0])})
+        result = zc.commit_key(
+            store, ("chunks", "k0"), staged_dir, input_digest="d", run_id="r", env={}
+        )
+
+        root_group = zarr.open_group(str(store), mode="r")
+        hasher = hashlib.sha256()
+        update_zarr_node_digest(hasher, root_group["chunks/k0"], "/chunks/k0")  # type: ignore[arg-type]
+        assert hasher.hexdigest() != result.record.content_digest
+        # ...while the key-relative walk (what lookup does) still matches.
+        assert zarr_content_digest(store / "chunks" / "k0") == result.record.content_digest
+
 
 class TestReuseOpen:
     """Tests for Reuse.open()."""
@@ -840,6 +894,31 @@ def _commit_k0(store: Path, staged_name: str = "key", digest: str = "digest1") -
         store, ("chunks", "k0"), staged_dir, input_digest=digest, run_id="run1", env={}
     )
     return result.record
+
+
+def _flip_chunk_byte(key_dir: Path) -> Path:
+    """Flip one byte of the real chunk file ``arr/c/0`` so it still decodes, differently.
+
+    Walks from the last byte backwards to the first flip that zarr can still decode
+    to DIFFERENT values (a flip inside the compression framing would instead make
+    decoding fail, which is a different failure than a silent content change).
+    """
+    chunk_file = key_dir / "arr" / "c" / "0"
+    assert chunk_file.is_file(), f"expected chunk file {chunk_file}"
+    original = chunk_file.read_bytes()
+    before = np.asarray(zarr.open_group(str(key_dir), mode="r")["arr"][...])
+    for pos in range(len(original) - 1, -1, -1):
+        mutated = original[:pos] + bytes([original[pos] ^ 0x01]) + original[pos + 1 :]
+        chunk_file.write_bytes(mutated)
+        try:
+            after = np.asarray(zarr.open_group(str(key_dir), mode="r")["arr"][...])
+        except Exception:  # noqa: BLE001 - framing damage; try the next byte
+            continue
+        if not np.array_equal(before, after):
+            assert chunk_file.read_bytes() != original
+            return chunk_file
+    chunk_file.write_bytes(original)
+    raise AssertionError("no single-byte flip of the chunk decodes to different values")
 
 
 class TestFsyncOrdering:
@@ -953,6 +1032,160 @@ class TestUnknownPrefixCleanup:
             zc.commit_key(
                 store, ("unknown", "k0"), staged_dir, input_digest="d", run_id="r", env={}
             )
+
+
+def _commit_k0_with_subgroup(store: Path) -> None:
+    """Commit chunks/k0 containing a nested group ``sub`` (a legal zarr child)."""
+    staged_dir = zc.staging_root(store) / "writer" / "k0-staged"
+    zc.write_staged_group(staged_dir, {"arr": np.arange(5)})
+    zarr.open_group(str(staged_dir), mode="r+").require_group("sub")
+    zc.commit_key(
+        store, ("chunks", "k0"), staged_dir, input_digest="digest1", run_id="run1", env={}
+    )
+
+
+class TestCommitKeyNesting:
+    """A key can never be nested inside a committed key (it would corrupt the shard)."""
+
+    @pytest.fixture
+    def renames(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+        seen: list[tuple[str, str]] = []
+        real = os.rename
+
+        def spy(src: str, dst: str, *a: object, **kw: object) -> None:
+            seen.append((str(src), str(dst)))
+            real(src, dst, *a, **kw)  # type: ignore[arg-type]
+
+        monkeypatch.setattr("xtrax.run.zarr_commit.os.rename", spy)
+        return seen
+
+    @pytest.mark.parametrize(
+        "nested_key",
+        [
+            ("chunks", "k0", "inner"),  # parent IS the committed key
+            ("chunks", "k0", "arr", "inner"),  # parent is an array inside it
+            ("chunks", "k0", "sub", "inner"),  # parent is a plain group; ANCESTOR is committed
+        ],
+    )
+    def test_nesting_inside_committed_shard_is_rejected(
+        self, tmp_path: Path, renames: list[tuple[str, str]], nested_key: tuple[str, ...]
+    ) -> None:
+        store = _make_store(tmp_path)
+        _commit_k0_with_subgroup(store)
+        digest_before = zarr_content_digest(store / "chunks" / "k0")
+        renames.clear()
+
+        staged_dir = zc.staging_root(store) / "writer" / "nested"
+        zc.write_staged_group(staged_dir, {"arr": np.arange(3)})
+        with pytest.raises(zc.UnknownPrefixError) as exc:
+            zc.commit_key(store, nested_key, staged_dir, input_digest="d2", run_id="r", env={})
+        assert "committed key" in str(exc.value)
+
+        assert renames == [], "commit_key renamed something despite the rejection"
+        assert not (store / zc.key_path(nested_key)).exists()
+        assert not staged_dir.exists()  # same cleanup contract as a missing prefix
+        # The committed shard is untouched and still verifies.
+        assert zarr_content_digest(store / "chunks" / "k0") == digest_before
+        result = zc.lookup(store, ("chunks", "k0"), "digest1", verify=True)
+        assert isinstance(result, zc.Reuse), result
+
+    def test_nesting_inside_tampered_committed_key_is_also_rejected(self, tmp_path: Path) -> None:
+        """A tampered record still marks the directory as a committed key (has COMMIT_ATTR)."""
+        store = _make_store(tmp_path)
+        _commit_k0(store)
+        group = zarr.open_group(str(store / "chunks" / "k0"), mode="r+")
+        group.attrs[zc.COMMIT_ATTR] = {"input_digest": "digest1"}  # malformed
+        staged_dir = zc.staging_root(store) / "writer" / "nested"
+        zc.write_staged_group(staged_dir, {"arr": np.arange(3)})
+        with pytest.raises(zc.UnknownPrefixError):
+            zc.commit_key(
+                store, ("chunks", "k0", "inner"), staged_dir, input_digest="d", run_id="r", env={}
+            )
+        assert not (store / "chunks" / "k0" / "inner").exists()
+
+    def test_plain_nested_prefix_group_is_still_a_legal_parent(self, tmp_path: Path) -> None:
+        """Not-committed intermediate groups remain valid parents (no over-rejection)."""
+        store = tmp_path / "store"
+        assert zc.create_store(
+            store,
+            identity_payload={"type": "test"},
+            creator_run_id="creator",
+            prefixes=(("a", "b"),),
+            writer_id="writer",
+        )
+        staged_dir = zc.staging_root(store) / "writer" / "k"
+        zc.write_staged_group(staged_dir, {"arr": np.arange(3)})
+        outcome = zc.commit_key(
+            store, ("a", "b", "k"), staged_dir, input_digest="d", run_id="r", env={}
+        )
+        assert isinstance(outcome, zc.Committed)
+
+
+class TestGcStagingRename:
+    """gc_staging renames a candidate away before deleting it (narrows the stat/delete race)."""
+
+    @staticmethod
+    def _old_dir(store: Path, name: str, age: float = 100.0) -> Path:
+        staging = zc.staging_root(store)
+        d = staging / name
+        (d / "inflight").mkdir(parents=True)
+        (d / "inflight" / "f").write_text("x")
+        old = time.time() - age
+        os.utime(d, (old, old))
+        return d
+
+    def test_candidate_is_renamed_to_gc_name_before_rmtree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = tmp_path / "store"
+        store.mkdir()
+        victim = self._old_dir(store, "dead-writer")
+
+        deleted: list[tuple[str, bool]] = []
+        real_rmtree = zc.shutil.rmtree
+
+        def spy(path: Path, *a: object, **kw: object) -> None:
+            deleted.append((Path(path).name, victim.exists()))
+            real_rmtree(path, *a, **kw)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(zc.shutil, "rmtree", spy)
+        removed = zc.gc_staging(store, timedelta(seconds=50))
+
+        assert removed == [victim]
+        assert not victim.exists()
+        assert len(deleted) == 1
+        name, original_still_there = deleted[0]
+        assert re.fullmatch(r"dead-writer\.gc-[0-9a-f]{8}", name), name
+        assert not original_still_there, "rmtree ran against the original name"
+        assert list(zc.staging_root(store).iterdir()) == []  # no .gc- leftovers
+
+    def test_candidate_vanishing_before_rename_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = tmp_path / "store"
+        store.mkdir()
+        victim = self._old_dir(store, "dead-writer")
+        real_rename = os.rename
+
+        def racing_rename(src: str, dst: str, *a: object, **kw: object) -> None:
+            real_rename(src, tmp_path / "elsewhere")  # another collector got there first
+            real_rename(src, dst, *a, **kw)  # type: ignore[arg-type]
+
+        monkeypatch.setattr("xtrax.run.zarr_commit.os.rename", racing_rename)
+        assert zc.gc_staging(store, timedelta(seconds=50)) == []
+        assert not victim.exists()
+
+    def test_other_collectors_gc_dirs_are_neither_renamed_nor_reported(
+        self, tmp_path: Path
+    ) -> None:
+        store = tmp_path / "store"
+        store.mkdir()
+        mid_delete = self._old_dir(store, "dead-writer.gc-0123abcd")
+        fresh_mid_delete = self._old_dir(store, "fresh.gc-89abcdef", age=0.0)
+        removed = zc.gc_staging(store, timedelta(seconds=50))
+        assert removed == []  # not ours to report
+        assert not mid_delete.exists()  # an old leftover from a crashed collector is swept
+        assert fresh_mid_delete.exists()  # a young one may still be in someone's hands
 
 
 class TestCreateStoreStagingIsolation:

@@ -11,9 +11,12 @@ present).
 """
 
 import errno
+import json
 import os
+import re
 import shutil
 import time
+import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -63,12 +66,19 @@ class CommitConflictError(DurableStoreError):
 
 
 class UnknownPrefixError(DurableStoreError):
-    """Raised when a prefix group does not exist in the store."""
+    """Raised when a key's prefix group does not exist, or is not a legal parent.
 
-    def __init__(self, key: tuple[str, ...], prefix: tuple[str, ...]) -> None:
+    A prefix is not a legal parent when it is itself a committed key, or lies
+    inside one: committed keys are immutable, so nothing may be nested in them.
+    """
+
+    def __init__(
+        self, key: tuple[str, ...], prefix: tuple[str, ...], reason: str | None = None
+    ) -> None:
         self.key = key
         self.prefix = prefix
-        msg = f"UnknownPrefixError: prefix {prefix} does not exist (for key {key})"
+        self.reason = reason or "does not exist"
+        msg = f"UnknownPrefixError: prefix {prefix} {self.reason} (for key {key})"
         super().__init__(msg)
 
 
@@ -101,7 +111,7 @@ class NotADurableStoreError(DurableStoreError):
 
 @dataclass(frozen=True)
 class CommitRecord:
-    """A committed entry record, immutable and hashable."""
+    """A committed entry record (frozen; its dict fields are not hashable)."""
 
     input_digest: str
     input_payload: dict[str, Any]
@@ -213,6 +223,20 @@ def _fault(step: str) -> None:
         os._exit(137)
 
 
+def _has_commit_attr(group_dir: Path) -> bool:
+    """Whether ``group_dir``'s zarr metadata carries ``COMMIT_ATTR`` (valid or tampered).
+
+    Reads ``zarr.json`` directly (no zarr dependency, no array reads) so it is cheap
+    enough to run on every ancestor of a key at commit time.
+    """
+    try:
+        meta = json.loads((group_dir / "zarr.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    attrs = meta.get("attributes") if isinstance(meta, dict) else None
+    return isinstance(attrs, dict) and COMMIT_ATTR in attrs
+
+
 def _compute_record_digest(d: dict[str, Any]) -> str:
     """Compute the record digest without the record_digest field itself."""
     filtered = {k: v for k, v in d.items() if k != "record_digest"}
@@ -293,8 +317,15 @@ def commit_key(
         Committed if the key was newly committed.
         Duplicate if the key was already committed with matching input_digest.
 
+    The post-rename parent-directory fsync is the final durability barrier: if it
+    fails, the exception propagates for a key that is ALREADY visible in the store
+    (the rename cannot be undone). Retrying the commit is safe and returns
+    ``Duplicate``.
+
     Raises:
-        UnknownPrefixError: If the target prefix does not exist as a zarr group.
+        UnknownPrefixError: If the target prefix does not exist as a zarr group, or
+            the prefix is itself a committed key or lies inside one (committed keys
+            are immutable; nothing is renamed and the staged dir is removed).
         CommitConflictError: If the target exists with a different input_digest.
     """
     try:
@@ -303,12 +334,23 @@ def commit_key(
         msg = "commit_key requires the optional 'zarr' dependency"
         raise ImportError(msg) from e
 
-    # Fail fast: the target prefix must already exist as a zarr group.
+    # Fail fast: the target prefix must already exist as a zarr group, and neither it
+    # nor any ancestor below the store root may itself be a committed key (committed
+    # keys are immutable: nesting a key inside one would invalidate its content digest).
     target = store / key_path(key)
     parent = target.parent
+    parent_parts = tuple(parent.relative_to(store).parts)
     if not (parent / "zarr.json").is_file():
         shutil.rmtree(staged_dir, ignore_errors=True)
-        raise UnknownPrefixError(key, tuple(parent.relative_to(store).parts))
+        raise UnknownPrefixError(key, parent_parts)
+    for depth in range(1, len(parent_parts) + 1):
+        if _has_commit_attr(store.joinpath(*parent_parts[:depth])):
+            shutil.rmtree(staged_dir, ignore_errors=True)
+            raise UnknownPrefixError(
+                key,
+                parent_parts[:depth],
+                "is a committed key; keys cannot be nested inside committed keys",
+            )
 
     content_digest = zarr_content_digest(staged_dir)
     _fault("digested")
@@ -431,6 +473,11 @@ def lookup(
         Missing: Key does not exist.
         Stale: Key exists but input_digest differs.
         Corrupt: Key exists but verification failed or record is invalid.
+
+    Raises:
+        OSError: If recomputing the content digest hits an environmental I/O
+            error (it is propagated, never classified as ``Corrupt``).
+        MemoryError: Likewise propagated.
     """
     target = store / key_path(key)
     if not target.exists():
@@ -443,10 +490,22 @@ def lookup(
         return Stale(record)
 
     if verify:
+        from zarr.errors import BaseZarrError
+
         try:
             actual_digest = zarr_content_digest(target)
+        except MemoryError:
+            raise
+        except BaseZarrError as e:
+            # Zarr's missing-node errors are FileNotFoundErrors too; a node whose
+            # metadata is gone is corruption, not an environmental I/O failure.
+            return Corrupt(f"failed to compute content digest ({type(e).__name__}): {e}")
+        except OSError:
+            # Environmental I/O failure (EIO, EMFILE, ...): says nothing about the
+            # shard's integrity, so it must not be reported as Corrupt.
+            raise
         except Exception as e:
-            return Corrupt(f"failed to compute content digest: {e}")
+            return Corrupt(f"failed to compute content digest ({type(e).__name__}): {e}")
         if actual_digest != record.content_digest:
             return Corrupt("content digest mismatch")
 
@@ -491,8 +550,19 @@ def committed_keys(store: Path, prefix: tuple[str, ...] = ()) -> list[tuple[str,
     return sorted(committed)
 
 
+_GC_SUFFIX_RE = re.compile(r"\.gc-[0-9a-f]{8}$")
+
+
 def gc_staging(store: Path, older_than: timedelta, *, exclude: Iterable[str] = ()) -> list[Path]:
     """Remove staging directories older than the given age.
+
+    To narrow the stat-then-delete race with a writer that has just touched its
+    directory, each candidate is first renamed to ``<name>.gc-<uuid8>`` (atomic;
+    it vanishes from its writer-visible name at once) and only then deleted. A
+    candidate that disappears in between is skipped. Directories already carrying
+    a ``.gc-`` suffix belong to another collector (or to one that crashed mid-delete):
+    they are never renamed again and never reported, but an old one is swept with a
+    best-effort delete so a crashed collector cannot leak it forever.
 
     Args:
         store: The store root directory.
@@ -500,7 +570,7 @@ def gc_staging(store: Path, older_than: timedelta, *, exclude: Iterable[str] = (
         exclude: Directory names to skip.
 
     Returns:
-        Sorted list of removed paths.
+        Sorted list of removed paths (the original, pre-rename names).
     """
     staging = staging_root(store)
     if not staging.exists():
@@ -524,12 +594,22 @@ def gc_staging(store: Path, older_than: timedelta, *, exclude: Iterable[str] = (
             mtime = child.stat().st_mtime
         except (OSError, PermissionError):
             continue
-        if now - mtime > older_than.total_seconds():
-            try:
-                shutil.rmtree(child)
-                removed.append(child)
-            except (OSError, PermissionError):
-                pass
+        if now - mtime <= older_than.total_seconds():
+            continue
+        if _GC_SUFFIX_RE.search(child.name):
+            shutil.rmtree(child, ignore_errors=True)
+            continue
+        condemned = child.with_name(f"{child.name}.gc-{uuid.uuid4().hex[:8]}")
+        try:
+            os.rename(str(child), str(condemned))
+        except OSError:
+            # Gone (another collector won) or not renameable: leave it alone.
+            continue
+        try:
+            shutil.rmtree(condemned)
+        except OSError:
+            continue
+        removed.append(child)
 
     return sorted(removed)
 

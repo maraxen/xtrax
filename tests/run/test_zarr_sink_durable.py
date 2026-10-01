@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -360,12 +361,54 @@ class TestStageArguments:
         assert group.attrs["trial"] == 3
         assert group.attrs["other"] == 1
 
-    def test_unknown_prefix_raises_and_keeps_buffer(self, tmp_path: Path) -> None:
+    def test_missing_subprefix_raises_and_keeps_buffer(self, tmp_path: Path) -> None:
+        # ("shards", "sub") is under a declared prefix but the group was never created.
         sink = _sink(tmp_path / "store")
-        sink.stage(("nowhere", "k"), input_digest="d", x=np.ones(1))
+        sink.stage(("shards", "sub", "k"), input_digest="d", x=np.ones(1))
         with pytest.raises(zc.UnknownPrefixError):
             sink.drain()
         assert len(sink) == 1
+
+    def test_undeclared_prefix_rejected_at_stage(self, tmp_path: Path) -> None:
+        sink = _sink(tmp_path / "store", prefixes=(("shards",), ("other", "deep")))
+        with pytest.raises(ValueError, match="declared prefix") as exc:
+            sink.stage(("nowhere", "k"), input_digest="d", x=np.ones(1))
+        # The message names the allowed prefixes, and the writers prefix is not among them.
+        assert "shards" in str(exc.value) and "deep" in str(exc.value)
+        assert WRITERS not in str(exc.value).split("SinkSpec.prefixes")[1]
+        assert len(sink) == 0
+        # A single-part key has an empty parent, which no declared prefix equals.
+        with pytest.raises(ValueError, match="declared prefix"):
+            sink.stage(("loose",), input_digest="d", x=np.ones(1))
+        # A parent that is a strict ANCESTOR of a declared prefix is not under it either.
+        with pytest.raises(ValueError, match="declared prefix"):
+            sink.stage(("other", "k"), input_digest="d", x=np.ones(1))
+        assert len(sink) == 0
+        # Equal to, or nested under, a declared prefix is accepted.
+        sink.stage(("shards", "ok"), input_digest="d", x=np.ones(1))
+        sink.stage(("other", "deep", "ok"), input_digest="d", x=np.ones(1))
+        sink.stage(("other", "deep", "more", "ok"), input_digest="d", x=np.ones(1))
+        assert len(sink) == 3
+
+    def test_no_declared_prefixes_rejects_every_key(self, tmp_path: Path) -> None:
+        sink = _sink(tmp_path / "store", prefixes=())
+        with pytest.raises(ValueError, match="declared prefix"):
+            sink.stage(("shards", "k"), input_digest="d", x=np.ones(1))
+
+    def test_nesting_inside_a_committed_shard_is_rejected_and_shard_stays_valid(
+        self, tmp_path: Path
+    ) -> None:
+        store = tmp_path / "store"
+        sink = _sink(store)
+        sink.stage(("shards", "k0"), input_digest="d", x=np.arange(4))
+        sink.drain()
+        # The parent ("shards", "k0") is under a declared prefix, so stage() accepts it;
+        # commit_key must refuse to nest a key inside the committed shard.
+        sink.stage(("shards", "k0", "inner"), input_digest="d2", y=np.ones(2))
+        with pytest.raises(zc.UnknownPrefixError, match="committed key"):
+            sink.drain()
+        assert not (store / "shards" / "k0" / "inner").exists()
+        assert isinstance(sink.lookup(("shards", "k0"), "d", verify=True), zc.Reuse)
 
 
 # --------------------------------------------------------------------------------------
@@ -415,13 +458,15 @@ class TestRootNeverRewritten:
         real = zarr.open_group
 
         def spy(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-            modes.append(str(kwargs.get("mode", "r+")))
+            # zarr.open_group's own default mode is "a".
+            modes.append(str(kwargs.get("mode", args[1] if len(args) > 1 else "a")))
             return real(*args, **kwargs)
 
         monkeypatch.setattr(zarr, "open_group", spy)
         store = tmp_path / "store"
         _sink(store).stage(("shards", "k"), input_digest="d", x=np.ones(1))
         _sink(store)
+        assert modes, "the open_group spy was never exercised"
         assert "a" not in modes
 
 
@@ -638,6 +683,202 @@ class TestLifecycle:
             sink.committed_keys()
         with pytest.raises(RuntimeError, match="durable"):
             sink.gc_staging(timedelta(0))
+
+
+# --------------------------------------------------------------------------------------
+# 9. Review-round hardening (stage buffer integrity, store creation/joining edge cases,
+#    closed-sink semantics, early run_id validation)
+# --------------------------------------------------------------------------------------
+
+
+class TestStageBufferIntegrity:
+    def test_conversion_error_on_new_key_leaves_no_orphan_entry(self, tmp_path: Path) -> None:
+        sink = _sink(tmp_path / "store")
+        key = ("shards", "ragged")
+        with pytest.raises(ValueError):
+            sink.stage(key, input_digest="d", x=[[1, 2], [3]])  # ragged -> not an array
+        assert len(sink) == 0, "a failed conversion left an orphan empty entry in _pending"
+        assert key not in sink._pending
+        # A following valid stage + drain works and commits only the valid key.
+        sink.stage(("shards", "good"), input_digest="d", x=np.arange(3))
+        out = sink.drain()
+        assert list(out) == [("shards", "good")]
+        assert sink.committed_keys(("shards",)) == [("shards", "good")]
+
+    def test_conversion_error_on_existing_key_keeps_earlier_arrays(self, tmp_path: Path) -> None:
+        sink = _sink(tmp_path / "store")
+        key = ("shards", "k")
+        sink.stage(key, input_digest="d", x=np.arange(3))
+        with pytest.raises(ValueError):
+            sink.stage(key, input_digest="d", y=[[1, 2], [3]])
+        assert set(sink._pending[key]) == {"x"}
+        assert isinstance(sink.drain()[key], zc.Committed)
+
+    def test_missing_commit_inputs_is_a_clear_runtime_error(self, tmp_path: Path) -> None:
+        sink = _sink(tmp_path / "store")
+        key = ("shards", "k")
+        sink.stage(key, input_digest="d", x=np.arange(3))
+        del sink._pending_commit[key]  # simulate the internal inconsistency
+        with pytest.raises(RuntimeError, match="without commit inputs") as exc:
+            sink.drain()
+        assert repr(key) in str(exc.value)
+        assert len(sink) == 1  # buffer not cleared
+
+
+class TestEmptyDirectoryTarget:
+    def test_existing_empty_directory_is_treated_as_absent(self, tmp_path: Path) -> None:
+        store = tmp_path / "pre-made"
+        store.mkdir()
+        sink = _sink(store)
+        assert sink.store_record["identity_payload"] == IDENTITY
+        assert (store / "zarr.json").is_file()
+        sink.stage(("shards", "k"), input_digest="d", x=np.arange(2))
+        assert isinstance(sink.drain()[("shards", "k")], zc.Committed)
+
+    def test_second_sink_joins_the_store_created_over_an_empty_directory(
+        self, tmp_path: Path
+    ) -> None:
+        store = tmp_path / "pre-made"
+        store.mkdir()
+        _sink(store)
+        joined = _sink(store)  # no longer empty: must join, not recreate
+        assert joined.store_record["identity_payload"] == IDENTITY
+        assert len(zc.committed_keys(store, (WRITERS,))) == 2
+
+    def test_non_empty_non_store_directory_still_raises(self, tmp_path: Path) -> None:
+        target = tmp_path / "occupied"
+        target.mkdir()
+        (target / "precious.txt").write_text("do not clobber")
+        with pytest.raises(zc.NotADurableStoreError):
+            _sink(target)
+        assert (target / "precious.txt").read_text() == "do not clobber"
+        assert not (target / "zarr.json").exists()
+
+    def test_existing_file_target_still_raises(self, tmp_path: Path) -> None:
+        target = tmp_path / "afile"
+        target.write_text("x")
+        with pytest.raises(zc.NotADurableStoreError):
+            _sink(target)
+
+
+class TestSameFilesystemInvariant:
+    def test_symlinked_output_dir_stages_next_to_the_real_target(self, tmp_path: Path) -> None:
+        real_parent = tmp_path / "elsewhere"
+        real_parent.mkdir()
+        real = real_parent / "store"
+        link = tmp_path / "link"
+        link.symlink_to(real)  # dangling: the store is created through the link
+
+        sink = _sink(link)
+        sink.stage(("shards", "k"), input_digest="d", x=np.arange(2))
+        sink.drain()
+        assert (real / "zarr.json").is_file()
+        assert (real_parent / "store.staging" / sink._writer_id).is_dir()
+        assert not (tmp_path / "link.staging").exists(), "staging landed beside the symlink"
+
+        # Joining through the link behaves the same.
+        joiner = _sink(link)
+        joiner.stage(("shards", "k2"), input_digest="d", x=np.arange(2))
+        joiner.drain()
+        assert (real_parent / "store.staging" / joiner._writer_id).is_dir()
+        assert not (tmp_path / "link.staging").exists()
+
+    def test_device_mismatch_raises_clear_value_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = tmp_path / "store"
+        real_stat = os.stat
+
+        class _Fake:
+            def __init__(self, real: os.stat_result) -> None:
+                self.st_dev = real.st_dev + 1
+
+        def fake_stat(path: Any, *a: Any, **kw: Any) -> Any:  # noqa: ANN401
+            result = real_stat(path, *a, **kw)
+            return _Fake(result) if Path(path) == store else result
+
+        monkeypatch.setattr("xtrax.run.zarr_sink.os.stat", fake_stat)
+        with pytest.raises(ValueError, match="different filesystems"):
+            _sink(store)
+
+
+class TestExclusiveRefusesDurableStore:
+    def test_exclusive_open_on_durable_store_raises_and_root_is_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        store = tmp_path / "store"
+        _sink(store)
+        before = _root_bytes(store)
+        with pytest.raises(ValueError, match="durable store"):
+            ZarrStagingSink(SinkSpec(run_id="r", output_dir=store, format="zarr"))
+        assert _root_bytes(store) == before
+
+
+class TestClose:
+    def test_use_after_close_raises(self, tmp_path: Path) -> None:
+        sink = _sink(tmp_path / "store")
+        sink.stage(("shards", "k"), input_digest="d", x=np.arange(2))
+        sink.drain()
+        sink.close()
+        with pytest.raises(RuntimeError, match="after close"):
+            sink.stage(("shards", "k2"), input_digest="d", x=np.arange(2))
+        with pytest.raises(RuntimeError, match="after close"):
+            sink.drain()
+        with pytest.raises(RuntimeError, match="after close"):
+            sink.stamp_reserved(("shards", "k"), "note", {"a": 1})
+        sink.close()  # still idempotent
+
+    def test_use_after_close_raises_in_exclusive_mode_too(self, tmp_path: Path) -> None:
+        sink = ZarrStagingSink(SinkSpec(run_id="r", output_dir=tmp_path / "e", format="zarr"))
+        sink.close()
+        with pytest.raises(RuntimeError, match="after close"):
+            sink.stage((0,), v=np.ones(1))
+
+    def test_close_with_undrained_keys_warns_with_count_and_discards(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        sink = _sink(store)
+        sink.stage(("shards", "a"), input_digest="d", x=np.arange(2))
+        sink.stage(("shards", "b"), input_digest="d", x=np.arange(2))
+        with pytest.warns(UserWarning, match=r"discarding 2 staged key"):
+            sink.close()
+        assert len(sink) == 0
+        assert zc.committed_keys(store, ("shards",)) == []
+
+    def test_close_after_full_drain_does_not_warn(self, tmp_path: Path) -> None:
+        sink = _sink(tmp_path / "store")
+        sink.stage(("shards", "a"), input_digest="d", x=np.arange(2))
+        sink.drain()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            sink.close()
+            sink.close()
+
+    def test_second_close_does_not_warn_again(self, tmp_path: Path) -> None:
+        sink = _sink(tmp_path / "store")
+        sink.stage(("shards", "a"), input_digest="d", x=np.arange(2))
+        with pytest.warns(UserWarning):
+            sink.close()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            sink.close()
+
+
+class TestEarlyRunIdValidation:
+    @pytest.mark.parametrize("bad", ["a/b", "..", ".", "x/"])
+    def test_invalid_run_id_raises_before_any_filesystem_work(
+        self, tmp_path: Path, bad: str
+    ) -> None:
+        store = tmp_path / "store"
+        with pytest.raises(ValueError, match="run_id"):
+            _sink(store, run_id=bad)
+        assert not store.exists()
+        assert not zc.staging_root(store).exists()
+        assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+    def test_exclusive_mode_run_id_is_not_restricted(self, tmp_path: Path) -> None:
+        # The key-part rule only applies where run_id becomes a key part (durable mode).
+        sink = ZarrStagingSink(SinkSpec(run_id="a/b", output_dir=tmp_path / "e", format="zarr"))
+        assert len(sink) == 0
 
 
 # --------------------------------------------------------------------------------------
