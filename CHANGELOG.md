@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a11] - 2026-10-01
+
 ### Added
+
+- **`xtrax.export.divergence` / `xtrax.export.rings`: divergence mapping** (#5095, #156).
+  Locates *where* a compiled artifact departs from production JAX, instead of
+  `parity.compare`'s single scalar. `compare_pytree` reports per-leaf `LeafDivergence`
+  (ULP distance for floats; exact match for integers and bools, with no budget, ever),
+  and `classify_probes` labels each named probe with a `DivergenceClass` in precedence
+  order (`UNCOMPARABLE`, `DISCRETE_FLIP`, `INJECTED`, `AMPLIFIED`, `ATTENUATED`, `CLEAN`)
+  against fusion-noise budgets measured on the host (`budget_leaf`, `budget_key`). The
+  ring runners `r0_replay_gate`, `r1_target_isa`, `r2a_fusion`, `r2b_lowering`, `r3_probe`
+  and `run_ladder` separate replay, target-ISA, fusion and lowering effects. Ring
+  execution needs the `export` extra; `divergence` itself imports no IREE.
 
 - **`xtrax.export.ONNX`: an ONNX export target, verified on ONNX Runtime** (new `onnx`
   extra: `jax2onnx>=0.17.0,<0.18`, `onnx`, `onnxruntime`; no IREE). `export_pipeline(...,
@@ -189,6 +202,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callables would be a gate feature, not this fix.
 
 ### Changed
+
+- **Divergence rungs R1 and R2b report per-probe divergence; `UNCOMPARABLE` class**
+  (`xtrax.export`, #5210, #5209, #157). Both rungs used to return `passed=True` with
+  `probes=()` for arbitrarily large value divergence, so `all(r.passed for r in
+  results)` read an integer index flip as "no divergence". `passed` stays structural
+  (the precondition held and every leaf was comparable). `r1_target_isa` and
+  `r2b_lowering` now take `probe_deps=` (forwarded by `run_ladder`) and populate
+  `probes` with `classify_probes` against R2a's budgets; check `probes`, not `passed`,
+  for value divergence. A probe with a leaf that could not be compared (shape/dtype
+  mismatch) is now `UNCOMPARABLE` rather than `AMPLIFIED`.
+
+- **`memoize_jaxpr` cache hits are cheaper** (`xtrax.inference`, #5241, #160): arguments
+  are flattened once per call (was three times), the purity and donation screens walk
+  the jaxpr once, and integer bounds are cached. Keys and screening results are
+  unchanged (pinned against the previous implementation).
 
 - **`export_pipeline` runs every target's safety gate first, then evaluates `reference_fn`
   once, then compiles**, rather than gating, compiling and calling `reference_fn` per target. That makes the oracle independent of
