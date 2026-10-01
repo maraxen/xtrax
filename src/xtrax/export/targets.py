@@ -1,7 +1,9 @@
 """Compilation targets and the depth to which each one is verified.
 
-A ``Target`` is a named IREE backend plus the dtype vocabulary that backend
-accepts and the flags it needs. ``VerificationLevel`` records how far this
+A ``Target`` is a named backend plus the dtype vocabulary that backend accepts
+and the flags it needs. ``Backend`` says which toolchain produces the artifact:
+IREE (StableHLO -> vmfb) for every target except ``onnx``, which goes through
+jax2onnx to an ONNX graph. ``VerificationLevel`` records how far this
 package is willing to vouch for the resulting artifact, which is deliberately
 not the same for every target:
 
@@ -18,12 +20,16 @@ not the same for every target:
   a device this package does not require, and the WebGPU shader-validity gate
   that would once have raised ``vulkan-spirv`` to ``VALIDATED`` was falsified
   before it was built (see ``xtrax.export.spirv``).
+- ``onnx`` is converted AND executed on ONNX Runtime's CPU execution provider,
+  with integer outputs compared exactly. That is evidence about ORT CPU only:
+  the same file on ORT Web (wasm or WebGPU) is not executed here.
 
 No target is registered at ``VALIDATED``; ``export_pipeline`` refuses one, since
 it has nothing to populate the result with.
 
-Nothing here imports IREE. Target selection is plain data, available with only
-the base install; the toolchain is touched lazily by ``xtrax.export.compile``.
+Nothing here imports IREE or jax2onnx. Target selection is plain data, available
+with only the base install; the toolchains are touched lazily by
+``xtrax.export.compile`` and ``xtrax.export.onnx``.
 """
 
 from collections.abc import Mapping
@@ -32,24 +38,43 @@ from enum import StrEnum
 
 __all__ = [
     "ALL_TARGETS",
+    "IREE_TARGETS",
     "METAL_SPIRV",
     "NATIVE",
     "NATIVE_PORTABLE",
+    "ONNX",
     "VULKAN_SPIRV",
     "WASM32",
+    "Backend",
     "Target",
     "VerificationLevel",
     "target_by_name",
 ]
 
 
+class Backend(StrEnum):
+    """Which toolchain turns the traced pipeline into an artifact.
+
+    Attributes:
+        IREE: ``jax.export`` -> StableHLO -> ``iree-compile`` -> vmfb.
+        ONNX: ``jax2onnx.to_onnx`` on the composed callable -> ``.onnx`` graph.
+            jax2onnx traces the Python callable itself; it does not consume
+            StableHLO, so nothing IREE-specific applies to it.
+    """
+
+    IREE = "iree"
+    ONNX = "onnx"
+
+
 class VerificationLevel(StrEnum):
     """How far a compiled artifact's correctness has actually been established.
 
     Attributes:
-        EXECUTED: Numerics were verified against an independent JAX oracle via
-            IREE's native runtime. This bounds *lowering* fidelity (XLA vs.
-            IREE); it does not by itself prove the plan was composed correctly.
+        EXECUTED: Numerics were verified against an independent JAX oracle by
+            running the artifact -- IREE's native runtime for IREE targets, ONNX
+            Runtime's CPU execution provider for ``onnx``. This bounds
+            *lowering* fidelity; it does not by itself prove the plan was
+            composed correctly.
         CODEGEN_ONLY: The artifact compiled. It was never executed or otherwise
             validated, so ``ExportResult.verified`` is unconditionally False.
         VALIDATED: SPIR-V accepted by a shader validator; never executed.
@@ -63,11 +88,12 @@ class VerificationLevel(StrEnum):
 
 @dataclass(frozen=True)
 class Target:
-    """One compilation target: an IREE backend plus its dtype and flag envelope.
+    """One compilation target: a backend plus its dtype and flag envelope.
 
     Attributes:
         name: Key used in ``export_pipeline``'s result dict, e.g. ``"native"``.
-        iree_backend: Value passed to ``--iree-hal-target-backends``.
+        iree_backend: Value passed to ``--iree-hal-target-backends``. Empty for
+            a non-IREE ``backend``.
         verification_level: How far this target's artifact is verified.
         supported_dtypes: Dtype names accepted unconditionally.
         optional_dtypes: Dtype names accepted only when the corresponding
@@ -81,6 +107,9 @@ class Target:
             binaries worth extracting. Drives the executable dump in
             ``xtrax.export.compile``; a backend that emits something else keeps
             ``CompileResult.spirv_bytes`` at None.
+        backend: The toolchain producing the artifact. Defaults to IREE, which
+            every target but ``onnx`` uses; the op-level export-safety rules are
+            keyed on it, because each backend's rules were measured on it alone.
     """
 
     name: str
@@ -91,6 +120,7 @@ class Target:
     optional_dtype_features: Mapping[str, str] = field(default_factory=dict)
     extra_compiler_flags: tuple[str, ...] = ()
     emits_spirv: bool = False
+    backend: Backend = Backend.IREE
 
 
 # The dtype envelopes below are measured (260902, iree-base-compiler and
@@ -239,13 +269,39 @@ METAL_SPIRV = Target(
     emits_spirv=False,
 )
 
-ALL_TARGETS: tuple[Target, ...] = (
+IREE_TARGETS: tuple[Target, ...] = (
     NATIVE,
     NATIVE_PORTABLE,
     WASM32,
     VULKAN_SPIRV,
     METAL_SPIRV,
 )
+
+# Measured 260930 (jax2onnx 0.17.0, onnxruntime 1.30.0 CPU EP): each dtype below
+# converts, executes, and comes back with its dtype and values intact. bf16 is
+# excluded because it cannot be EXECUTED, not because it fails to convert: ORT
+# has no bf16 CPU kernel for elementwise ops (`Could not find an implementation
+# for Add(14)`). i64 and f64 are absent because the converter refuses
+# jax_enable_x64 outright (see xtrax.export.onnx) -- a 32-bit process has none.
+# tests/export/test_onnx.py re-measures this envelope against the real
+# toolchain in CI, so it cannot drift from what the pins actually do.
+_ONNX_DTYPES = frozenset({"f32", "f16", "i32", "i16", "i8", "u32", "u16", "u8", "bool"})
+
+# One artifact, no IREE. EXECUTED here means ORT's Python CPU execution provider
+# ran the graph against an independent oracle with integer outputs compared
+# exactly. It is NOT browser evidence: ORT Web's WebGPU EP has no int64, and the
+# ONNX spec forces int64 on TopK/ArgMax index outputs, so a sort-bearing graph
+# is expected to partition across EPs there. See
+# .praxia/docs/research/260930_onnx-route-spike.md.
+ONNX = Target(
+    name="onnx",
+    iree_backend="",
+    verification_level=VerificationLevel.EXECUTED,
+    supported_dtypes=_ONNX_DTYPES,
+    backend=Backend.ONNX,
+)
+
+ALL_TARGETS: tuple[Target, ...] = (*IREE_TARGETS, ONNX)
 
 
 def target_by_name(name: str) -> Target:

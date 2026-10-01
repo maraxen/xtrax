@@ -83,6 +83,22 @@ export = [
   "xtrax[export-runtime]",
   "iree-base-compiler>=3.11,<4",
 ]
+# The `onnx` export target (xtrax.export.onnx): jax2onnx -> ONNX Runtime. No IREE.
+# The jax2onnx floor is load-bearing, not a freshness preference: 0.16.1 builds
+# jax.core.Var with jax 0.10's three-argument signature, so on jax 0.11 every
+# function that traces a nested jit (stable argsort, every jax.random draw) fails
+# to convert; 0.17.0 fixes it. Capped below the next minor because jax2onnx is
+# pre-1.0. See .praxia/docs/research/260930_onnx-route-spike.md.
+onnx = [
+  "jax2onnx>=0.17.0,<0.18",
+  "onnx>=1.23,<2",
+  "onnxruntime>=1.30,<2",
+]
+# NOTE: jax2onnx declares orbax-checkpoint<0.11.37. uv keeps one lock across all
+# extras, so left alone that cap would pull every environment (core included)
+# down to orbax 0.11.x. [tool.uv] override-dependencies below lifts it for this
+# repo's lock only; a `pip install xtrax[onnx]` from PyPI still gets jax2onnx's
+# own cap, which no metadata of ours can override.
 # NOTE: there is deliberately no `provenance = ["cisternal"]` extra yet.
 #
 # xtrax.telemetry uses cisternal.provenance (durable per-run git refs, dirty-tree
@@ -117,6 +133,20 @@ Documentation = "https://xtrax.readthedocs.io"
 Repository = "https://github.com/maraxen/xtrax"
 Issues = "https://github.com/maraxen/xtrax/issues"
 Changelog = "https://github.com/maraxen/xtrax/blob/main/CHANGELOG.md"
+
+[tool.uv]
+# Lifts jax2onnx's orbax-checkpoint<0.11.37 cap (see the `onnx` extra) so the
+# single lock keeps a current orbax for every environment. Measured 260930:
+# tests/export/test_onnx.py and tests/checkpoint pass on orbax 0.12.6 with
+# jax2onnx 0.17.0, and export-toolchain-tests runs the onnx suite against
+# whatever this lock resolves, so a real incompatibility turns CI red.
+#
+# An override REPLACES every declaration of the package, xtrax's own included,
+# and `uv pip install` honours it too. So it must restate the core floor and
+# nothing more: ">=0.12.1" here made the dependency-floors job's lowest-direct
+# install unable to reach the declared 0.11.17. This spelling only drops
+# jax2onnx's upper cap; the lock still resolves 0.12.1.
+override-dependencies = ["orbax-checkpoint>=0.11.17"]
 
 [tool.ruff]
 target-version = "py313"

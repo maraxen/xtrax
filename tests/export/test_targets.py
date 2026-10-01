@@ -9,11 +9,14 @@ import pytest
 
 from xtrax.export.targets import (
     ALL_TARGETS,
+    IREE_TARGETS,
     METAL_SPIRV,
     NATIVE,
     NATIVE_PORTABLE,
+    ONNX,
     VULKAN_SPIRV,
     WASM32,
+    Backend,
     Target,
     VerificationLevel,
     target_by_name,
@@ -21,14 +24,39 @@ from xtrax.export.targets import (
 
 
 class TestRegistryContents:
-    def test_the_five_targets_are_registered(self):
-        assert ALL_TARGETS == (
+    def test_the_five_iree_targets_are_registered(self):
+        assert IREE_TARGETS == (
             NATIVE,
             NATIVE_PORTABLE,
             WASM32,
             VULKAN_SPIRV,
             METAL_SPIRV,
         )
+
+    def test_all_targets_is_iree_plus_onnx(self):
+        assert ALL_TARGETS == (*IREE_TARGETS, ONNX)
+
+    @pytest.mark.parametrize("target", IREE_TARGETS)
+    def test_iree_targets_default_to_the_iree_backend(self, target: Target):
+        assert target.backend is Backend.IREE
+        assert target.iree_backend
+
+    def test_onnx_is_an_executed_non_iree_target(self):
+        assert ONNX.backend is Backend.ONNX
+        assert ONNX.iree_backend == ""
+        assert ONNX.verification_level is VerificationLevel.EXECUTED
+        assert not ONNX.emits_spirv
+
+    def test_onnx_envelope_is_the_measured_one(self):
+        """Measured 260930; tests/export/test_onnx.py re-measures it for real.
+
+        bf16 converts but ORT has no CPU kernel for it, so an EXECUTED target
+        cannot carry it; i64/f64 need x64, which the converter refuses.
+        """
+        assert ONNX.supported_dtypes == frozenset(
+            {"f32", "f16", "i32", "i16", "i8", "u32", "u16", "u8", "bool"}
+        )
+        assert not {"bf16", "i64", "f64"} & ONNX.supported_dtypes
 
     def test_no_target_is_registered_as_validated(self):
         """export_pipeline refuses VALIDATED, having nothing to populate it with."""
@@ -59,7 +87,7 @@ class TestRegistryContents:
         """bf16 compiles and its signature is untouched; nothing here is executed."""
         assert "bf16" in target.supported_dtypes
 
-    @pytest.mark.parametrize("target", ALL_TARGETS)
+    @pytest.mark.parametrize("target", IREE_TARGETS)
     def test_the_envelope_splits_by_level_not_by_backend(self, target: Target):
         """Measured: every backend compiles the same set; only the runtime differs."""
         expected = NATIVE.supported_dtypes | {"bf16"}
@@ -149,6 +177,24 @@ class TestTargetIsPlainData:
         code = (
             "import sys; import xtrax.export; "
             "mods = [m for m in sys.modules if m == 'iree' or m.startswith('iree.')]; "
+            "assert not mods, mods; print('clean')"
+        )
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", code], capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stderr
+        assert "clean" in result.stdout
+
+    def test_importing_the_package_does_not_pull_in_the_onnx_toolchain(self):
+        """The onnx target's toolchain is lazy exactly like IREE's.
+
+        Fresh interpreter for the same reason as above: the onnx extra may be
+        installed here, and jax2onnx imports flax, orbax and more on load.
+        """
+        code = (
+            "import sys; import xtrax.export; "
+            "bad = ('jax2onnx', 'onnxruntime', 'onnx'); "
+            "mods = [m for m in sys.modules if m.split('.')[0] in bad]; "
             "assert not mods, mods; print('clean')"
         )
         result = subprocess.run(  # noqa: S603

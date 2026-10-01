@@ -3,14 +3,15 @@
 TIER-2 reference for `xtrax.export`. The public narrative version is `docs/api/export.md`;
 this file is the agent-facing summary. Read the live source at the cited paths when in doubt.
 
-`xtrax.export` compiles a `BatchPlan`-shaped computation ahead of time through IREE. It is an
-optional extra: `uv sync --extra export` (`iree-base-compiler`, `iree-base-runtime`,
-`huggingface_hub`, `safetensors`). Importing `xtrax.export` without the toolchain works; only
-compilation needs it.
+`xtrax.export` compiles a `BatchPlan`-shaped computation ahead of time through IREE, or
+converts it to ONNX through jax2onnx. Both are optional extras: `uv sync --extra export`
+(`iree-base-compiler`, `iree-base-runtime`, `huggingface_hub`, `safetensors`) and
+`uv sync --extra onnx` (`jax2onnx>=0.17`, `onnx`, `onnxruntime`). Importing `xtrax.export`
+without either toolchain works; only compilation needs it.
 
 ## Targets, and what each one actually proves
 
-`verify: src/xtrax/export/targets.py:125-225`
+`verify: src/xtrax/export/targets.py:155-304`
 
 | Target | IREE backend | VerificationLevel | Emits SPIR-V |
 |---|---|---|---|
@@ -19,11 +20,13 @@ compilation needs it.
 | `WASM32` | `llvm-cpu` (wasm32 triple) | `CODEGEN_ONLY` | no |
 | `VULKAN_SPIRV` | `vulkan-spirv` | `CODEGEN_ONLY` | yes |
 | `METAL_SPIRV` | `metal-spirv` | `CODEGEN_ONLY` | **no** — it dumps MSL, not SPIR-V, despite the name |
+| `ONNX` | none (`Backend.ONNX`, jax2onnx) | `EXECUTED` on ORT CPU | no |
 
 `VerificationLevel` is the whole point of the type, so read it literally:
 
 - `EXECUTED` — the artifact was compiled **and run**, and its output compared against a
-  caller-supplied `reference_fn`. `NATIVE` and `NATIVE_PORTABLE` reach this.
+  caller-supplied `reference_fn`. `NATIVE`, `NATIVE_PORTABLE` and `ONNX` reach this; for
+  `ONNX`, "run" means ONNX Runtime's CPU execution provider, not a browser.
 - `CODEGEN_ONLY` — the artifact compiled. Nothing ran it. A green `CODEGEN_ONLY` export says
   the compiler accepted the program, and says nothing whatsoever about numerics.
 - `VALIDATED` exists in the enum but no target registers it; `export_pipeline` raises
@@ -79,6 +82,25 @@ lane-dependent ordered `Tap`/`Sink` under a literal `vmap` raises `MultiAxisComp
 `Bucket` (host-tier — pad with `bucketize()` before the boundary) and `WhileCarry` (unbounded
 trip count — convert to `Scan` with a static length) raise `UnsupportedStrategyError`.
 
+## ONNX
+
+`verify: src/xtrax/export/onnx.py`. `ONNX` skips StableHLO entirely: `convert_to_onnx` runs
+`jax2onnx.to_onnx` on the composed callable and `verify_onnx_parity` runs the file on ORT.
+
+- **Op rules are keyed on `Target.backend`.** IREE's `sort-stability`, `unlegalizable-op`
+  (`lax.top_k`), `random-permutation` and `unbatched-threefry-key` do not apply to `ONNX` —
+  those constructs were measured exact on ORT. `ONNX` instead refuses any JAX RNG primitive
+  (`onnx-in-graph-rng`, unsuppressible): jax2onnx turns `jax.random` draws into ONNX
+  `RandomUniform`, which ignores the key. Feed random values in from the host.
+- **Parity is per leaf and exact for integers/bools**, and a dtype change fails it
+  (`LeafParityResult.dtype_mismatches`). Plain `compare`'s `rtol` would accept an index
+  off by 9 at magnitude 1e6.
+- **`ExportResult.onnx_census`** counts int64 tensors inside the graph (from `TopK`/`ArgMax`);
+  graph I/O keeps JAX's dtypes. Relevant for ORT Web's WebGPU EP, which has no int64.
+- **Process state:** x64 is refused; the first jax2onnx conversion in a process leaves
+  `jnp.cumsum` replaced, which `convert_to_onnx` undoes, and `export_pipeline` evaluates
+  `reference_fn` before compiling any target.
+
 ## WebGPU: there is no gate, on purpose
 
 IREE's Vulkan HAL passes dispatch parameters through push constants, which are not a WebGPU
@@ -92,5 +114,5 @@ readiness. Tracked as backlog #4856.
 
 `export_pipeline` is the one to reach for. `build_traceable_callable`/`compose_single_axis`/
 `compose_vmap_of_scan` are the composer layer beneath it; `compile_for_target`,
-`run_native_vmfb`, `verify_native_parity`, `load_hf_weights`, `spirv_binaries_in`/`is_spirv`
-are the pieces it orchestrates. Full list: `src/xtrax/export/__init__.py:54`.
+`run_native_vmfb`, `verify_native_parity`, `convert_to_onnx`, `run_onnx`, `verify_onnx_parity`,
+`load_hf_weights`, `spirv_binaries_in`/`is_spirv` are the pieces it orchestrates. Full list: `src/xtrax/export/__init__.py:54`.

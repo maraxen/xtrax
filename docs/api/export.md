@@ -1,19 +1,23 @@
 # Export
 
-Compile a planned xtrax pipeline to a standalone artifact, via StableHLO and IREE.
+Compile a planned xtrax pipeline to a standalone artifact: via StableHLO and IREE,
+or via jax2onnx to an ONNX graph.
 
-Install the toolchain with the `export` extra:
+Install the toolchain for the targets you use:
 
 ```bash
-pip install xtrax[export]
+pip install xtrax[export]   # IREE targets
+pip install xtrax[onnx]     # the ONNX target
 ```
 
-`xtrax.export` itself imports on a base install; IREE is loaded lazily, so a
-missing extra surfaces as a `CompileError` naming it at compile time.
+`xtrax.export` itself imports on a base install; both toolchains are loaded
+lazily, so a missing extra surfaces as a `CompileError` naming it at compile
+time.
 
 ## Targets and what each one proves
 
-A `Target` pairs an IREE backend with the dtype vocabulary and flags it needs.
+A `Target` pairs a backend with the dtype vocabulary and flags it needs.
+`Target.backend` is `Backend.IREE` for every target except `ONNX`.
 `VerificationLevel` records how far the artifact's correctness was established,
 which is deliberately not the same for every target:
 
@@ -24,6 +28,9 @@ which is deliberately not the same for every target:
 | `WASM32` | `CODEGEN_ONLY` | Compiled. Nothing more |
 | `VULKAN_SPIRV` | `CODEGEN_ONLY` | Compiled; SPIR-V extracted |
 | `METAL_SPIRV` | `CODEGEN_ONLY` | Compiled. Nothing more |
+| `ONNX` | `EXECUTED` | Converted and run on ONNX Runtime's CPU EP; integer outputs matched exactly (see ONNX below) |
+
+`IREE_TARGETS` holds the five IREE targets; `ALL_TARGETS` is those plus `ONNX`.
 
 `WASM32` is not executed because doing so needs an emsdk-built IREE runtime,
 which has no published package. The SPIR-V targets are not executed because
@@ -370,6 +377,61 @@ a loop body executing many times counts its ops once rather than once per
 iteration, and the count is taken from the instrumented module's StableHLO
 before IREE's own fusion and DCE — the stage where the divergence actually
 lives.
+
+## ONNX
+
+The `ONNX` target converts the composed callable with `jax2onnx` (opset
+`ONNX_OPSET`, 23) and verifies the `.onnx` file by running it on ONNX Runtime's
+CPU execution provider. It needs no IREE:
+
+```python
+from xtrax.export import ONNX, export_pipeline
+
+results = export_pipeline(
+    step_fn, plan, abstract_inputs, concrete_inputs,
+    targets=(ONNX,), reference_fn=reference,
+)
+results["onnx"].verified         # parity against reference_fn
+results["onnx"].onnx_census      # where each dtype occurs in the graph
+```
+
+Parity compares every output leaf. Integer and bool leaves must match exactly,
+and every leaf must keep its dtype; float leaves use `atol`/`rtol`. Reference
+leaves pass through `jnp.asarray` first, as they do for the IREE targets, so a
+NumPy oracle's float64/int64 compares as float32/int32. The result
+is a `LeafParityResult` with one `ParityResult` per leaf.
+
+**What the gate allows.** The op rules are backend-specific. Stable sorts and
+`jax.lax.top_k`, which the IREE rules block, are exact on ONNX Runtime and pass
+the gate for `ONNX`. The `ONNX` target has one rule of its own,
+`"onnx-in-graph-rng"`, which cannot be acknowledged away. jax2onnx lowers
+`jax.random` draws to ONNX `RandomUniform`, which is seeded by a node attribute,
+not the key, so the artifact cannot reproduce JAX's bits. Draw random values
+on the host and pass them in. `convert_to_onnx` also refuses any converted
+graph that contains an ONNX RNG op, subgraphs included.
+
+**int64 inside the graph.** ONNX requires int64 indices from `TopK` and
+`ArgMax`. jax2onnx casts them back at the boundary, so graph inputs and outputs
+keep JAX's dtypes. `ExportResult.onnx_census` counts the internal int64 tensors
+and the ops that produce them, and `diagnostics` names them. That matters on
+ONNX Runtime Web: its WebGPU execution provider has no int64, so those nodes run
+on another provider there.
+
+**Process state.** Conversion refuses `jax_enable_x64`. A process's first
+`jax2onnx` conversion leaves `jax.numpy.cumsum` replaced. `convert_to_onnx`
+restores every public `jax.numpy`/`jax.lax`/`jax.nn`/`jax.random` attribute the
+conversion replaced, and `export_pipeline` evaluates `reference_fn` before any
+target is compiled.
+
+**Dtypes.** `f32`, `f16`, `i32`, `i16`, `i8`, `u32`, `u16`, `u8`, `bool`. `bf16`
+converts, but ONNX Runtime has no CPU kernel to execute it.
+
+Pytree inputs and outputs are flattened. The graph takes
+`jax.tree_util.tree_leaves(inputs)` in order and returns the output leaves;
+`run_onnx(path, *inputs)` applies the same flattening.
+
+Verification covers ONNX Runtime's CPU execution provider. Running the file in
+a browser through ONNX Runtime Web is a separate, unverified step.
 
 ## WebGPU
 

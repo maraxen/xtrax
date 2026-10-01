@@ -184,8 +184,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mesa-vulkan-drivers libvulkan1
 
-      - name: Install dependencies with the export toolchain
-        run: uv sync --extra dev --extra io --extra export
+      # `onnx` rides along so tests/export/test_onnx.py runs for real under the
+      # no-skips gate below; installing it beside `export` also proves the two
+      # toolchains co-install (jax2onnx caps orbax-checkpoint <0.11.37).
+      - name: Install dependencies with the export toolchains
+        run: uv sync --extra dev --extra io --extra export --extra onnx
 
       - name: Export tests against real IREE
         # A bare `pytest -q` here is exactly as green with every export test
@@ -206,7 +209,7 @@ jobs:
           if grep -qE '^SKIPPED \[[0-9]+\] ' export_test_output.txt; then
             echo "::error::export-toolchain-tests skipped at least one test."
             echo "This job exists to exercise tests/export/ against a real optional"
-            echo "toolchain (IREE 3.11, safetensors, huggingface_hub). Every skip in"
+            echo "toolchain (IREE 3.11, jax2onnx, onnxruntime, safetensors, huggingface_hub). Every skip in"
             echo "here is an importorskip, so a skip means one of those did not"
             echo "install and this job's 'tested for real' claim is void for the"
             echo "tests below -- it is not a pass."

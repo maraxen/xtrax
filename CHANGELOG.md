@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`xtrax.export.ONNX`: an ONNX export target, verified on ONNX Runtime** (new `onnx`
+  extra: `jax2onnx>=0.17.0,<0.18`, `onnx`, `onnxruntime`; no IREE). `export_pipeline(...,
+  targets=(ONNX,))` converts the composed callable with jax2onnx at opset 23 and runs the
+  `.onnx` file on ORT's CPU execution provider against `reference_fn`. The target is
+  `EXECUTED`. Parity is per output leaf (`LeafParityResult`): integer and bool leaves must
+  match exactly and every leaf must keep its dtype. `ExportResult.onnx_census` records where
+  int64 occurs inside the graph (from `TopK`/`ArgMax`); graph I/O keeps JAX's dtypes.
+  `Target.backend` (`Backend.IREE` / `Backend.ONNX`) now selects the export-safety op
+  rules. The four IREE rules apply to IREE targets only, because stable sorts and
+  `lax.top_k` were measured exact on ORT. `ONNX` adds `"onnx-in-graph-rng"`
+  (unsuppressible), because jax2onnx lowers `jax.random` draws to key-ignoring ONNX
+  `RandomUniform`. Conversion refuses `jax_enable_x64`, and it undoes the `jnp.cumsum`
+  patch that a process's first jax2onnx call leaves behind. `IREE_TARGETS` is the five
+  IREE targets; `ALL_TARGETS` adds `ONNX`; `compile_for_target` refuses a non-IREE target.
+  `ExportResult.artifact_bytes` is a backend-neutral alias of `vmfb_bytes`. Measured in
+  `.praxia/docs/research/260930_onnx-route-spike.md`. The verification covers ORT CPU
+  only, not ORT Web.
+
 - **`xtrax.tiling.dedup_synthesis.verify_dedup_outputs(spec, fn, xs, *, rtol, atol)`**
   (#5217): checks claim (ii), that dispatching `fn` through the dedup path
   (vmap over canonical rows, then gather) reproduces per-row `jax.vmap(fn)(xs)`. The
@@ -171,6 +189,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callables would be a gate feature, not this fix.
 
 ### Changed
+
+- **`export_pipeline` runs every target's safety gate first, then evaluates `reference_fn`
+  once, then compiles**, rather than gating, compiling and calling `reference_fn` per target. That makes the oracle independent of
+  toolchain side effects on `jax.numpy`.
+- **`[tool.uv] override-dependencies` lifts jax2onnx's `orbax-checkpoint<0.11.37` cap** in
+  xtrax's own lock, so the `onnx` extra adds packages without pulling every environment
+  down to orbax 0.11.x (the lock keeps 0.12.1). The ONNX and checkpoint suites pass on orbax
+  0.12.x. A `pip install xtrax[onnx]` from PyPI still gets jax2onnx's own cap.
 
 - **`SafeMap` → `ChunkedMap`, `SafeMapIterator` → `ChunkedMapIterator`, `safe_map` →
   `chunked_map`** (#3644). `safe_map` already means something else in JAX

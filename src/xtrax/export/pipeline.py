@@ -1,4 +1,8 @@
-"""End-to-end export: plan -> traceable callable -> StableHLO -> artifact.
+"""End-to-end export: plan -> traceable callable -> artifact.
+
+IREE targets go traceable callable -> StableHLO -> vmfb; the ``onnx`` target
+goes traceable callable -> jax2onnx -> ``.onnx``. Both are gated by the same
+``validate_export_safe`` call, whose op rules are keyed on the backend.
 
 The logic lives here rather than in ``__init__.py`` because the coverage config
 omits every ``*/__init__.py``; putting it there would make the package's
@@ -15,10 +19,11 @@ import jax
 
 from xtrax.export.compile import CompileResult, compile_for_target
 from xtrax.export.composer import build_traceable_callable
+from xtrax.export.onnx import OnnxDtypeCensus, convert_to_onnx, verify_onnx_parity
 from xtrax.export.parity import ParityResult, verify_native_parity
 from xtrax.export.safety import validate_export_safe
 from xtrax.export.spirv import SpirvValidationResult
-from xtrax.export.targets import NATIVE, WASM32, Target, VerificationLevel
+from xtrax.export.targets import NATIVE, WASM32, Backend, Target, VerificationLevel
 from xtrax.stages.boundaries import AxisBoundary
 
 __all__ = ["ExportResult", "export_pipeline"]
@@ -32,9 +37,11 @@ class ExportResult:
         target: The target this was compiled for.
         path: The compiled artifact on disk. Execution and parity always go
             through this; a test wanting the real executed array calls
-            ``run_native_vmfb(result.path, *concrete_inputs)``.
-        vmfb_bytes: The artifact's bytes, read once from ``path``. Convenience
-            only.
+            ``run_native_vmfb(result.path, *concrete_inputs)``, or
+            ``run_onnx(result.path, *concrete_inputs)`` for ``onnx``.
+        vmfb_bytes: The artifact's bytes, read once from ``path`` -- a vmfb for
+            IREE targets, a serialized ONNX model for ``onnx`` (see
+            ``artifact_bytes``). Convenience only.
         size_bytes: Size of the artifact.
         spirv_bytes: Extracted SPIR-V keyed by executable name, or None.
         verification_level: How far this target's artifact is verified.
@@ -44,7 +51,10 @@ class ExportResult:
             genuine failure.
         parity: The parity comparison, for EXECUTED targets only.
         spirv_validation: The shader validation, for VALIDATED targets only.
-        diagnostics: Notes worth surfacing, e.g. a StableHLO downgrade.
+        diagnostics: Notes worth surfacing, e.g. a StableHLO downgrade, or int64
+            tensors inside an ONNX graph.
+        onnx_census: Where each dtype occurs in the ONNX graph, for ``onnx``
+            only; None for IREE targets.
     """
 
     target: Target
@@ -57,6 +67,17 @@ class ExportResult:
     parity: ParityResult | None
     spirv_validation: SpirvValidationResult | None
     diagnostics: tuple[str, ...]
+    onnx_census: OnnxDtypeCensus | None = None
+
+    @property
+    def artifact_bytes(self) -> bytes:
+        """The artifact's bytes under a backend-neutral name.
+
+        Identical to ``vmfb_bytes``, which keeps its name for existing callers
+        but holds a serialized ONNX model, not a vmfb, for the ``onnx`` target.
+        Branch on ``target.backend`` before treating these as a vmfb.
+        """
+        return self.vmfb_bytes
 
 
 class _StrippedSink:
@@ -130,13 +151,23 @@ def _verified_for(
     return False
 
 
-def _diagnostics_for(compiled: CompileResult) -> tuple[str, ...]:
+def _diagnostics_for(
+    compiled: CompileResult, census: OnnxDtypeCensus | None = None
+) -> tuple[str, ...]:
     """Collect notes worth surfacing from one compile."""
     notes: list[str] = []
     if compiled.downgraded_stablehlo:
         notes.append(
             f"{compiled.target.name}: StableHLO downgraded to a portable artifact "
             f"before IREE accepted it"
+        )
+    if census is not None and census.n_int64:
+        producers = ", ".join(f"{op} x{n}" for op, n in sorted(census.int64_producers.items()))
+        notes.append(
+            f"{compiled.target.name}: {census.n_int64} int64 tensor(s) inside the graph "
+            f"({producers}); graph I/O is {census.graph_inputs} -> {census.graph_outputs}. "
+            f"ORT Web's WebGPU execution provider has no int64, so those nodes would run "
+            f"on another execution provider there."
         )
     return tuple(notes)
 
@@ -180,7 +211,9 @@ def export_pipeline(
             ``concrete_inputs`` or without ``reference_fn``.
         PlanTopologyError: Propagated from the safety gate.
         DtypeNotSupportedError: If a leaf's dtype is rejected by a target.
-        CompileError: If IREE rejects the module, or is not installed.
+        CompileError: If IREE (or, for ``onnx``, jax2onnx) rejects the program
+            or is not installed, or an ``onnx`` conversion is attempted under
+            ``jax_enable_x64``.
     """
     targets = tuple(targets)
     executed = [t for t in targets if t.verification_level is VerificationLevel.EXECUTED]
@@ -219,6 +252,9 @@ def export_pipeline(
     decisions = list(plan.decisions)
     results: dict[str, ExportResult] = {}
 
+    # Every target's gate runs first, so a rejected export fails fast without
+    # paying for the oracle (often an unbatched per-row loop), and a gate's error
+    # is never masked by an exception from reference_fn.
     for target in targets:
         validate_export_safe(
             decisions,
@@ -229,22 +265,37 @@ def export_pipeline(
             request_features=request_features,
         )
 
-        # Strip only after the gate has confirmed every materializing axis is
-        # well-formed. The composer never sees `materialize` itself.
-        boundaries = _boundaries_for_export(axis_boundaries)
+    # The oracle is then evaluated once, before any target is compiled. That is
+    # a correctness requirement, not an optimisation: jax2onnx leaves a patched
+    # jax.numpy attribute behind after converting (measured: cumsum), so an
+    # oracle computed after an onnx conversion could run code the caller never
+    # wrote. convert_to_onnx also restores those attributes; this ordering makes
+    # the reference independent of whether that restoration is complete.
+    expected: Any = None
+    if executed:
+        assert concrete_inputs is not None  # noqa: S101 - guarded above
+        assert reference_fn is not None  # noqa: S101 - guarded above
+        expected = reference_fn(concrete_inputs)
+
+    # Strip only after the gates have confirmed every materializing axis is
+    # well-formed. The composer never sees `materialize` itself.
+    boundaries = _boundaries_for_export(axis_boundaries)
+    for target in targets:
         callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
-        exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
-        compiled = compile_for_target(exported.mlir_module(), target)
+        census: OnnxDtypeCensus | None = None
+        if target.backend is Backend.ONNX:
+            compiled, census = convert_to_onnx(callable_, abstract_inputs, target)
+        else:
+            exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
+            compiled = compile_for_target(exported.mlir_module(), target)
 
         parity: ParityResult | None = None
         if target.verification_level is VerificationLevel.EXECUTED:
             assert concrete_inputs is not None  # noqa: S101 - guarded above
-            assert reference_fn is not None  # noqa: S101 - guarded above
-            parity = verify_native_parity(
-                reference_fn(concrete_inputs),
-                compiled.path,
-                concrete_inputs,
-            )
+            if target.backend is Backend.ONNX:
+                parity = verify_onnx_parity(expected, compiled.path, concrete_inputs)
+            else:
+                parity = verify_native_parity(expected, compiled.path, concrete_inputs)
 
         results[target.name] = ExportResult(
             target=target,
@@ -256,7 +307,8 @@ def export_pipeline(
             verified=_verified_for(target.verification_level, parity, None),
             parity=parity,
             spirv_validation=None,
-            diagnostics=_diagnostics_for(compiled),
+            diagnostics=_diagnostics_for(compiled, census),
+            onnx_census=census,
         )
 
     return results
