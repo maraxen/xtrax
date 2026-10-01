@@ -54,8 +54,11 @@ expected value from the same callable it is checking proves only that a function
 itself. `verify_native_parity` compares `reference_fn`'s output against
 `run_native_vmfb(result.path, *concrete_inputs)`.
 
-`ParityResult` exposes a scalar diff only. If you need to assert *ordering* (which element ran
-when), call `run_native_vmfb` directly and decode the array — the parity scalar cannot show it.
+Native parity, like ONNX parity, is a `LeafParityResult`: one result per output leaf,
+integers and bools compared exactly, a dtype change a failure (#5688; before it, native
+used `rtol` for everything and passed an index off by 9 at magnitude 1e6). It still reports
+a diff per leaf, not positions: to assert *ordering* (which element ran when), call
+`run_native_vmfb` directly and decode the array.
 
 ## Dtypes
 
@@ -92,9 +95,13 @@ trip count — convert to `Scan` with a static length) raise `UnsupportedStrateg
   those constructs were measured exact on ORT. `ONNX` instead refuses any JAX RNG primitive
   (`onnx-in-graph-rng`, unsuppressible): jax2onnx turns `jax.random` draws into ONNX
   `RandomUniform`, which ignores the key. Feed random values in from the host.
-- **Parity is per leaf and exact for integers/bools**, and a dtype change fails it
-  (`LeafParityResult.dtype_mismatches`). Plain `compare`'s `rtol` would accept an index
-  off by 9 at magnitude 1e6.
+- **Parity is per leaf and exact for integers/bools on every backend**
+  (`compare_leaves`), and a dtype change fails it (`LeafParityResult.dtype_mismatches`).
+- **The dtype gate judges outputs on every target, and each op on ONNX**: bf16
+  arithmetic (`x.astype(jnp.bfloat16) + 1`) is a `DtypeNotSupportedError` at plan time
+  (ORT's CPU EP has no bf16 kernels for it), where it used to be a raw `onnxruntime`
+  error at session creation. Casts and data movement run at any dtype, so the
+  precision-emulation idiom `x.astype(jnp.bfloat16).astype(jnp.float32)` exports.
 - **`ExportResult.onnx_census`** counts int64 tensors inside the graph (from `TopK`/`ArgMax`);
   graph I/O keeps JAX's dtypes. Relevant for ORT Web's WebGPU EP, which has no int64.
 - **Process state:** x64 is refused; the first jax2onnx conversion in a process leaves
@@ -115,4 +122,4 @@ readiness. Tracked as backlog #4856.
 `export_pipeline` is the one to reach for. `build_traceable_callable`/`compose_single_axis`/
 `compose_vmap_of_scan` are the composer layer beneath it; `compile_for_target`,
 `run_native_vmfb`, `verify_native_parity`, `convert_to_onnx`, `run_onnx`, `verify_onnx_parity`,
-`load_hf_weights`, `spirv_binaries_in`/`is_spirv` are the pieces it orchestrates. Full list: `src/xtrax/export/__init__.py:54`.
+`load_hf_weights`, `spirv_binaries_in`/`is_spirv` are the pieces it orchestrates. Full list: `xtrax.export.__all__`.

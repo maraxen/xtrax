@@ -1,12 +1,12 @@
 [manifest]
 wave_id = "wave_001_example"
 task_id = "260617_xtrax-composition-mission"
-manifest_hash = "sha256:1560a81b091b18286d4369ffda1818a5c74ff7df3286cd38797326413288da5b"
+manifest_hash = "sha256:baa63141f73d010ed0b9aeb37dc47a1b9fc009d910bf20c4d52b09b307d50c03"
 created_at = "2026-06-18T00:00:00Z"
 paper_mask_enforced = true
 
 [[kernels]]
 order = 1
-qualname = "xtrax.transforms.map.safe_map"
+qualname = "xtrax.transforms.map.chunked_map"
 module_path = "src/xtrax/transforms/map.py"
 depends_on = []

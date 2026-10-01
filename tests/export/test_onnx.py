@@ -301,7 +301,7 @@ class TestParityRulesWithAFakeRuntime:
         fake_outputs["outputs"] = [expected[0].copy(), np.array([0, 1, 5], np.int32)]
         text = verify_onnx_parity(expected, Path("unused.onnx"), ()).summary()
         assert text.startswith("FAIL: leaf 1 of 2:")
-        assert "exact integer comparison" in text
+        assert "exact comparison" in text
         assert "atol" not in text
 
     def test_every_leaf_is_reported(self, fake_outputs):
@@ -422,11 +422,39 @@ class TestTiedIndexOpsAreExact:
 
 @pytest.mark.usefixtures("toolchain")
 class TestToolchainBehaviour:
-    def test_a_conversion_leaves_jnp_as_it_found_it(self):
-        original = jnp.cumsum
-        spec = jax.ShapeDtypeStruct((N,), jnp.int32)
-        convert_to_onnx(_stable_argsort, (spec,), ONNX)
-        assert jnp.cumsum is original
+    @staticmethod
+    def _first_conversion_in_a_fresh_process(*, disable_guard: bool) -> str:
+        """Run convert_to_onnx as a fresh interpreter's FIRST conversion.
+
+        In-process, an earlier test's conversion has already spent jax2onnx's
+        one-time cumsum patch, so a check there passes whether or not
+        convert_to_onnx restores anything (#5690).
+        """
+        guard = (
+            "import contextlib; onnx_mod._restoring_jax_namespaces = contextlib.nullcontext; "
+            if disable_guard
+            else ""
+        )
+        code = (
+            "import jax, jax.numpy as jnp; "
+            "from xtrax.export import ONNX; from xtrax.export import onnx as onnx_mod; "
+            f"{guard}o = jnp.cumsum; "
+            "f = lambda a: jnp.argsort(a, stable=True); "
+            "onnx_mod.convert_to_onnx(f, (jax.ShapeDtypeStruct((4,), jnp.int32),), ONNX); "
+            "print('leaked' if jnp.cumsum is not o else 'clean')"
+        )
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", code], capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stderr[-2000:]
+        return result.stdout.strip().splitlines()[-1]
+
+    def test_a_first_conversion_leaves_jnp_as_it_found_it(self):
+        assert self._first_conversion_in_a_fresh_process(disable_guard=False) == "clean"
+
+    def test_without_the_guard_the_same_first_conversion_leaks(self):
+        """Control: the guard, not luck, is what restores jnp.cumsum."""
+        assert self._first_conversion_in_a_fresh_process(disable_guard=True) == "leaked"
 
     def test_the_restoration_is_load_bearing(self):
         """Red control: a process's FIRST bare to_onnx leaves jnp.cumsum replaced.

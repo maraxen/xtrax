@@ -920,7 +920,8 @@ def _any_leaf_failed(leaves_by_name: Mapping[str, tuple[LeafDivergence, ...]]) -
 
 def _coerce_like_parity(value: Any) -> Any:  # noqa: ANN401
     """Coerce a pytree exactly as ``parity.compare`` coerces its reference
-    argument, applied leaf by leaf.
+    argument, applied leaf by leaf. (Only the coercion is shared: ``compare``
+    itself now compares integer/bool references exactly, #5688.)
 
     ``parity.compare`` normalizes via ``np.asarray(jnp.asarray(expected))``
     -- under this build's disabled x64, ``jnp.asarray`` silently narrows a

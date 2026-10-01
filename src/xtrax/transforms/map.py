@@ -31,10 +31,3 @@ def chunked_map[T](fn: Callable[[T], T], xs: T, batch_size: int | None = None) -
 
     # lax.map handles a ragged final chunk itself (no padding; see docstring).
     return jax.lax.map(fn, xs, batch_size=batch_size)
-
-
-def __getattr__(name: str):  # noqa: ANN202 -- PEP 562 module hook
-    """Deprecated pre-#3644 names (SafeMap, SafeMapIterator, safe_map) for one release."""
-    from xtrax._renamed import deprecated_alias
-
-    return deprecated_alias(__name__, name, globals())

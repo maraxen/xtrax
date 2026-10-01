@@ -42,11 +42,10 @@ from types import ModuleType
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 from xtrax.export.compile import CompileError, CompileResult
-from xtrax.export.parity import ParityResult, compare
+from xtrax.export.parity import LeafParityResult, compare_leaves, narrow_inputs
 from xtrax.export.targets import Backend, Target
 
 __all__ = [
@@ -122,10 +121,10 @@ def _guarded_modules() -> tuple[ModuleType, ...]:
 
 @contextlib.contextmanager
 def _restoring_jax_namespaces() -> Iterator[None]:
-    """Undo any public-attribute replacement made inside the block.
+    """Undo any public-attribute replacement or deletion made inside the block.
 
-    Only attributes that existed before and were *replaced* are restored.
-    Identity, not equality, is the test: a patch is a different object. Names
+    Only attributes that existed before are restored: put back if *replaced*, or
+    if *deleted*. Identity, not equality, is the test: a patch is a different object. Names
     the block *adds* are left in place (jax2onnx adds e.g. ``jnp.cumsum_p`` and
     ``lax.remat2_p``, which no pre-existing code references and which jax2onnx
     itself may rely on). A replacement made concurrently by other code during
@@ -140,8 +139,74 @@ def _restoring_jax_namespaces() -> Iterator[None]:
             for name, value in before.items():
                 if name.startswith("_"):
                     continue
-                if vars(module).get(name, value) is not value:
+                current = vars(module)
+                if name not in current or current[name] is not value:
                     setattr(module, name, value)
+
+
+# protobuf refuses to serialize a message of 2 GiB or more. A model whose baked-in
+# weights cross that is written with its tensors in an external-data file beside
+# the .onnx (ONNX's standard layout, which ORT loads from the model's directory).
+_PROTOBUF_LIMIT_BYTES = 2**31 - 1
+# Tensors at least this large go to the external-data file when it is used.
+_EXTERNAL_DATA_THRESHOLD_BYTES = 1024
+
+
+def _model_tensors(model: Any) -> Iterator[Any]:
+    """Every TensorProto in the model: initializers and Constant-style node
+    attributes, in the main graph, every subgraph, and every function."""
+    graphs = list(_walk_graphs(model.graph))
+    for function in model.functions:
+        graphs.append(function)
+    for graph in graphs:
+        yield from getattr(graph, "initializer", ())
+        for node in graph.node:
+            for attr in node.attribute:
+                if attr.HasField("t"):
+                    yield attr.t
+                yield from attr.tensors
+
+
+def _write_model(model: Any, out_path: Path) -> int:
+    """Write ``model`` to ``out_path``; return the bytes written (both files).
+
+    Below protobuf's limit, one file. At or above it, every tensor of at least
+    ``_EXTERNAL_DATA_THRESHOLD_BYTES`` -- initializers AND tensors held in node
+    attributes (jax2onnx emits Constant nodes in function mode) -- moves to
+    ``<out_path>.data``. Tensors are marked with ``set_external_data`` here rather
+    than through ``save_model(save_as_external_data=True)``: that path checks
+    whether the data file exists relative to the process's CWD, not the model's
+    directory, so an unrelated file of that name in the CWD failed the export.
+    The model's in-memory tensor bytes are cleared by the external write.
+
+    Raises:
+        CompileError: If serialization or the write fails.
+    """
+    onnx = _require_onnx()
+    from onnx import external_data_helper, numpy_helper  # ty: ignore[unresolved-import]
+
+    data_path = out_path.with_name(out_path.name + ".data")
+    try:
+        # onnx appends to an existing external-data file (it opens it r+b and seeks
+        # to the end), so a stale one from an earlier export would grow and be
+        # counted again. Neither layout may leave one behind.
+        data_path.unlink(missing_ok=True)
+        if model.ByteSize() < _PROTOBUF_LIMIT_BYTES:
+            data = model.SerializeToString()
+            out_path.write_bytes(data)
+            return len(data)
+        for tensor in _model_tensors(model):
+            if not tensor.HasField("raw_data"):
+                if tensor.data_type == onnx.TensorProto.STRING:
+                    continue
+                tensor.CopyFrom(numpy_helper.from_array(numpy_helper.to_array(tensor), tensor.name))
+            if len(tensor.raw_data) >= _EXTERNAL_DATA_THRESHOLD_BYTES:
+                external_data_helper.set_external_data(tensor, location=data_path.name)
+        onnx.save_model(model, str(out_path))
+    except Exception as exc:
+        msg = f"could not write the ONNX model to {out_path}: {exc}"
+        raise CompileError(msg) from exc
+    return out_path.stat().st_size + (data_path.stat().st_size if data_path.exists() else 0)
 
 
 def _flat_callable(
@@ -302,7 +367,9 @@ def convert_to_onnx(
     Raises:
         ValueError: If ``target`` is not an ONNX-backend target.
         CompileError: If the toolchain is missing, ``jax_enable_x64`` is set,
-            jax2onnx rejects the callable, or the graph contains RNG ops.
+            jax2onnx rejects the callable, the graph contains RNG ops, or the model
+            cannot be written. A model of 2 GiB or more (protobuf's limit) is
+            written with its tensors in ``<out_path>.data`` beside it.
     """
     if target.backend is not Backend.ONNX:
         msg = f"convert_to_onnx needs an onnx-backend target, got {target.name!r}"
@@ -344,18 +411,18 @@ def convert_to_onnx(
         handle.close()
         out_path = Path(handle.name)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    data = model.SerializeToString()
-    out_path.write_bytes(data)
+    census = onnx_dtype_census(model)  # before writing: external data clears tensor bytes
+    size_bytes = _write_model(model, out_path)
 
     compiled = CompileResult(
         target=target,
         path=out_path,
-        size_bytes=len(data),
+        size_bytes=size_bytes,
         spirv_bytes=None,
         downgraded_stablehlo=False,
         stderr="",
     )
-    return compiled, onnx_dtype_census(model)
+    return compiled, census
 
 
 def run_onnx(onnx_path: Path, *args: Any) -> list[np.ndarray]:
@@ -368,71 +435,43 @@ def run_onnx(onnx_path: Path, *args: Any) -> list[np.ndarray]:
 
     Returns:
         One numpy array per graph output: the leaves of the pipeline's result.
+
+    Each input leaf is narrowed to JAX's dtypes first (``parity.narrow_inputs``, as
+    for the native targets), as it would be on its way into the traced program: a
+    NumPy float64/int64 input narrows to float32/int32, matching the graph, which was
+    converted with x64 disabled. No copy to a device is made.
+
+    Raises:
+        CompileError: If ONNX Runtime cannot load the graph (e.g. no kernel for an
+            op at its dtype) or run it with these inputs. The message names the
+            graph's declared inputs next to the dtypes and shapes that were fed.
     """
     ort = _require_ort()
-    session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
-    leaves = [np.asarray(x) for x in jax.tree_util.tree_leaves(list(args))]
-    feeds = {spec.name: leaf for spec, leaf in zip(session.get_inputs(), leaves, strict=True)}
-    return [np.asarray(out) for out in session.run(None, feeds)]
-
-
-@dataclass(frozen=True)
-class LeafParityResult(ParityResult):
-    """A ``ParityResult`` over every output leaf, integers compared exactly.
-
-    The inherited fields describe the first failing leaf, or the first leaf when
-    all pass, except ``passed`` (every leaf) and ``max_abs_diff`` (the maximum
-    across float leaves; inf on a shape or dtype mismatch).
-
-    Attributes:
-        leaf_results: One ``ParityResult`` per leaf, in output order.
-        dtype_mismatches: ``"leaf <i>: expected <dtype>, got <dtype>"`` for each
-            leaf whose dtype changed across the export.
-    """
-
-    leaf_results: tuple[ParityResult, ...] = ()
-    dtype_mismatches: tuple[str, ...] = ()
-
-    def summary(self) -> str:
-        """Render a verdict naming the failing leaf and how it failed."""
-        verdict = "PASS" if self.passed else "FAIL"
-        if self.dtype_mismatches:
-            return f"{verdict}: " + "; ".join(self.dtype_mismatches)
-        n = len(self.leaf_results)
-        for i, leaf in enumerate(self.leaf_results):
-            if leaf.passed:
-                continue
-            if leaf.shape_expected != leaf.shape_actual:
-                detail = f"shape mismatch expected {leaf.shape_expected}, got {leaf.shape_actual}"
-            elif leaf.atol == 0.0 and leaf.rtol == 0.0:
-                detail = f"max|diff| = {leaf.max_abs_diff:.3e} (exact integer comparison)"
-            else:
-                detail = (
-                    f"max|diff| = {leaf.max_abs_diff:.3e} (atol={leaf.atol:g}, rtol={leaf.rtol:g})"
-                )
-            return f"{verdict}: leaf {i} of {n}: {detail}"
-        return f"{verdict}: {n} leaf/leaves, max|diff| = {self.max_abs_diff:.3e}"
-
-
-def _exact(expected: np.ndarray, actual: np.ndarray) -> ParityResult:
-    """Exact comparison for integer and bool leaves."""
-    shapes_match = expected.shape == actual.shape
-    passed = shapes_match and bool(np.array_equal(expected, actual))
-    if not shapes_match:
-        diff = float("inf")
-    elif expected.size:
-        wide_e = expected.astype(np.int64)
-        diff = float(np.max(np.abs(wide_e - actual.astype(np.int64))))
-    else:
-        diff = 0.0
-    return ParityResult(
-        passed=passed,
-        max_abs_diff=diff,
-        atol=0.0,
-        rtol=0.0,
-        shape_expected=tuple(expected.shape),
-        shape_actual=tuple(actual.shape),
-    )
+    leaves = [np.asarray(x) for x in jax.tree_util.tree_leaves(narrow_inputs(args))]
+    try:
+        session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    except Exception as exc:
+        msg = f"ONNX Runtime could not load {onnx_path.name}: {exc}"
+        raise CompileError(msg) from exc
+    declared = session.get_inputs()
+    if len(declared) != len(leaves):
+        msg = (
+            f"{onnx_path.name} declares {len(declared)} input(s) but {len(leaves)} "
+            f"input leaf/leaves were given"
+        )
+        raise CompileError(msg)
+    feeds = {spec.name: leaf for spec, leaf in zip(declared, leaves, strict=True)}
+    try:
+        outputs = session.run(None, feeds)
+    except Exception as exc:
+        wanted = ", ".join(f"{d.name}: {d.type}{tuple(d.shape)}" for d in declared)
+        given = ", ".join(f"{leaf.dtype}{leaf.shape}" for leaf in leaves)
+        msg = (
+            f"ONNX Runtime could not run {onnx_path.name}: {exc} "
+            f"(declared: {wanted}; given: {given})"
+        )
+        raise CompileError(msg) from exc
+    return [np.asarray(out) for out in outputs]
 
 
 def verify_onnx_parity(
@@ -459,46 +498,10 @@ def verify_onnx_parity(
         change, on any integer/bool difference, or on a float leaf outside
         tolerance.
 
-    Each reference leaf is first passed through ``jnp.asarray``, exactly as
+    Each reference leaf is first narrowed to JAX's dtypes, exactly as
     ``compare`` does for the IREE targets. In a 32-bit process that narrows a
     NumPy oracle's float64/int64 to float32/int32, so one ``reference_fn``
     written in NumPy verifies the same way on every target; the dtype rule then
     catches a genuine change across the export, e.g. int32 -> int64.
     """
-    exp_leaves = [np.asarray(jnp.asarray(x)) for x in jax.tree_util.tree_leaves(expected)]
-    act_leaves = run_onnx(onnx_path, *concrete_inputs)
-
-    if len(exp_leaves) != len(act_leaves):
-        return LeafParityResult(
-            passed=False,
-            max_abs_diff=float("inf"),
-            atol=atol,
-            rtol=rtol,
-            shape_expected=(len(exp_leaves),),
-            shape_actual=(len(act_leaves),),
-            dtype_mismatches=(f"expected {len(exp_leaves)} output leaves, got {len(act_leaves)}",),
-        )
-
-    results: list[ParityResult] = []
-    mismatches: list[str] = []
-    for i, (exp, act) in enumerate(zip(exp_leaves, act_leaves, strict=True)):
-        if exp.dtype != act.dtype:
-            mismatches.append(f"leaf {i}: expected {exp.dtype}, got {act.dtype}")
-        if np.issubdtype(exp.dtype, np.integer) or exp.dtype == np.bool_:
-            results.append(_exact(exp, act))
-        else:
-            results.append(compare(exp, act, atol=atol, rtol=rtol))
-
-    passed = not mismatches and all(r.passed for r in results)
-    lead = next((r for r in results if not r.passed), results[0] if results else None)
-    max_diff = float("inf") if mismatches else max((r.max_abs_diff for r in results), default=0.0)
-    return LeafParityResult(
-        passed=passed,
-        max_abs_diff=max_diff,
-        atol=atol,
-        rtol=rtol,
-        shape_expected=lead.shape_expected if lead else (),
-        shape_actual=lead.shape_actual if lead else (),
-        leaf_results=tuple(results),
-        dtype_mismatches=tuple(mismatches),
-    )
+    return compare_leaves(expected, run_onnx(onnx_path, *concrete_inputs), atol=atol, rtol=rtol)

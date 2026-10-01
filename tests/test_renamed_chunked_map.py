@@ -1,5 +1,6 @@
-"""#3644: SafeMap -> ChunkedMap. The old names stay importable for one release as
-deprecated aliases, and name-based strategy matching accepts both names."""
+"""#3644: SafeMap -> ChunkedMap. The old names were deprecated aliases for one release
+(0.4.0a11) and are removed (#5680). Name-based strategy matching still accepts the legacy
+"SafeMap" for consumers' own duck-typed classes (aminx debt #2371)."""
 
 from __future__ import annotations
 
@@ -15,49 +16,60 @@ ROOT = Path(__file__).resolve().parents[1]
 CODEMOD = ROOT / "codemods" / "safemap-to-chunkedmap"
 
 
-@pytest.mark.parametrize(
-    ("module", "old", "new"),
-    [
-        ("xtrax", "SafeMap", "ChunkedMap"),
-        ("xtrax", "safe_map", "chunked_map"),
-        ("xtrax.tiling", "SafeMap", "ChunkedMap"),
-        ("xtrax.tiling", "SafeMapIterator", "ChunkedMapIterator"),
-        ("xtrax.tiling.strategy", "SafeMap", "ChunkedMap"),
-        ("xtrax.tiling.iterator", "SafeMapIterator", "ChunkedMapIterator"),
-        ("xtrax.transforms", "safe_map", "chunked_map"),
-        ("xtrax.transforms.map", "safe_map", "chunked_map"),
-    ],
-)
-def test_old_name_is_a_warning_alias_for_the_new_object(module: str, old: str, new: str):
+OLD_NAMES = [
+    ("xtrax", "SafeMap"),
+    ("xtrax", "safe_map"),
+    ("xtrax.tiling", "SafeMap"),
+    ("xtrax.tiling", "SafeMapIterator"),
+    ("xtrax.tiling.strategy", "SafeMap"),
+    ("xtrax.tiling.iterator", "SafeMapIterator"),
+    ("xtrax.transforms", "safe_map"),
+    ("xtrax.transforms.map", "safe_map"),
+]
+
+
+@pytest.mark.parametrize(("module", "old"), OLD_NAMES)
+def test_old_names_are_removed(module: str, old: str):
+    """The one-release deprecation window (0.4.0a11) is over (#5680)."""
     import importlib
 
     mod = importlib.import_module(module)
-    with pytest.warns(DeprecationWarning, match=rf"{old} was renamed to {new}.*#3644") as rec:
-        aliased = getattr(mod, old)
-    assert aliased is getattr(mod, new)
-    # Attributed to the caller (this file), or Python's default filter would hide it.
-    assert {w.filename for w in rec} == {__file__}
+    assert not hasattr(mod, old)
 
 
-def test_from_import_of_an_old_name_warns():
-    with pytest.warns(DeprecationWarning, match="SafeMap was renamed"):
+@pytest.mark.parametrize(
+    ("module", "new"),
+    [
+        ("xtrax", "ChunkedMap"),
+        ("xtrax", "chunked_map"),
+        ("xtrax.tiling", "ChunkedMap"),
+        ("xtrax.tiling", "ChunkedMapIterator"),
+        ("xtrax.tiling.strategy", "ChunkedMap"),
+        ("xtrax.tiling.iterator", "ChunkedMapIterator"),
+        ("xtrax.transforms", "chunked_map"),
+        ("xtrax.transforms.map", "chunked_map"),
+    ],
+)
+def test_new_names_resolve_in_every_module_the_old_ones_did(module: str, new: str):
+    """Control for the removal test: the same lookups succeed under the new names."""
+    import importlib
+
+    assert hasattr(importlib.import_module(module), new)
+
+
+def test_from_import_of_an_old_name_fails():
+    with pytest.raises(ImportError, match="SafeMap"):
         from xtrax.tiling import SafeMap  # noqa: F401
 
 
 def test_unknown_names_still_raise_attribute_error():
+    import xtrax
     import xtrax.tiling
 
     with pytest.raises(AttributeError, match="NoSuchThing"):
         xtrax.tiling.NoSuchThing  # noqa: B018
-
-
-def test_the_alias_constructs_the_new_class():
-    """So code dispatching on type(...).__name__ sees the new name (documented)."""
-    import xtrax.tiling
-
-    with pytest.warns(DeprecationWarning):
-        strategy = xtrax.tiling.SafeMap(batch_size=4)
-    assert type(strategy).__name__ == "ChunkedMap"
+    with pytest.raises(AttributeError, match="NoSuchThing"):
+        xtrax.NoSuchThing  # noqa: B018
 
 
 def test_new_names_do_not_warn():
@@ -71,7 +83,7 @@ def test_new_names_do_not_warn():
 
 def test_name_matching_accepts_a_consumers_duck_typed_safemap_class():
     """aminx defines its own class named `SafeMap`; name-based matching must still
-    recognise it for this release."""
+    recognise it until aminx deprecates it (aminx debt #2371; xtrax #5680 step 4)."""
     from xtrax._renamed import CHUNKED_MAP_NAMES
     from xtrax.stages.topology import _EXPORTABLE_STRATEGIES
 
