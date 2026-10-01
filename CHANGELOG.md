@@ -29,13 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output leaf, integers and bools exact, any dtype change a failure.
   `verify_native_parity` returns a `LeafParityResult` (a `ParityResult` subclass), and a
   multi-output native entry point is compared leaf by leaf instead of being stacked into
-  one array. An array-like oracle (a nested Python list) for a single output is now read
-  as one array on every backend; onnx used to split it into scalar leaves. Under
-  `jax_enable_x64`, a NumPy oracle left at NumPy's 64-bit default is not a dtype
-  mismatch against a narrower output of the same kind; its values are still compared,
-  exactly for integers. **Behaviour
-  change:** a native export that only passed through float tolerance on an integer
-  output now fails. `LeafParityResult` and the new `compare_leaves` live in
+  one array. A nested list of scalars for a single output is read as one array on every
+  backend (onnx used to split it into scalar leaves); a tuple of arrays is never stacked,
+  so an export that collapsed two outputs into one cannot verify. Under
+  `jax_enable_x64`, a NumPy oracle left at NumPy's 64-bit default (float64/int64/uint64)
+  is not a dtype mismatch against its 32-bit counterpart; values are still compared,
+  exactly for integers, and any other narrowing is a mismatch. An integer reference
+  against a float output, or a bool <-> int swap, fails with `max_abs_diff` inf. Both
+  backends narrow concrete inputs the same way (`parity.narrow_inputs`), so a float64
+  NumPy input to an f32 export now runs on native too. The comparison label reads
+  `(exact comparison)`. **Behaviour change:** a native export that only passed through
+  float tolerance on an integer output now fails. `LeafParityResult` and the new `compare_leaves` live in
   `xtrax.export.parity` (`LeafParityResult` is still importable from
   `xtrax.export.onnx`).
 
@@ -51,15 +55,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conversion *deleted*, not only one it replaced.
 
 - **ONNX failures surface as the documented error types** (`xtrax.export`, #5689).
-  The dtype gate now judges every leaf of a pytree input (`abstract_inputs[0]['a']`),
-  for every target, and, for `ONNX`, every dtype the traced program computes in: a
-  bf16 intermediate is a `DtypeNotSupportedError` at plan time instead of a raw
-  `onnxruntime` `NOT_IMPLEMENTED` at session creation (ORT's CPU EP has no bf16
-  kernels; f16 and the integer types run, measured 2026-10-01). `run_onnx` narrows
-  each concrete input through `jnp.asarray` (a float64 NumPy input to an f32 graph
-  now runs) and raises `CompileError`, naming the declared and given inputs, when ORT
-  cannot load or run the graph. A model of 2 GiB or more is written with its tensors
-  in `<model>.onnx.data`, where serialization used to raise a raw `ValueError`.
+  The dtype gate now judges every leaf of a pytree input (`abstract_inputs[0]['a']`) and
+  the program's OUTPUTS, for every target (a bf16-returning program passed `native`);
+  for `ONNX` it also judges every op by its operands' and results' dtypes, except the
+  data-movement primitives ORT runs at any dtype (casts, reshape, transpose, slices,
+  concatenate, gather, rev, reduce_sum). So `x.astype(jnp.bfloat16) + 1` is a
+  `DtypeNotSupportedError` at plan time instead of a raw `onnxruntime`
+  `NOT_IMPLEMENTED` at session creation, while the precision-emulation idiom
+  `x.astype(jnp.bfloat16).astype(jnp.float32)` passes. Both the allowlist and the
+  envelope (f16 and the integer types run as intermediates) are pinned by ORT tests.
+  One cause is one blocker: an input dtype is not reported again by the ops that use
+  it. `run_onnx` narrows inputs (no device copy) and raises `CompileError`, naming the
+  declared and given inputs, when ORT cannot load or run the graph. A model of 2 GiB
+  or more is written with every large tensor -- Constant-node attributes included --
+  in `<model>.onnx.data`, where serialization used to raise a raw `ValueError`; a
+  stale data file is removed first, and an unrelated file of that name in the CWD no
+  longer fails the export.
 
 ### Changed
 

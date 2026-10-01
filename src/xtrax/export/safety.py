@@ -477,7 +477,17 @@ def _is_unbatched_key(eqn: Any) -> bool:
     return shape is not None and math.prod(shape) <= 1
 
 
-def trace_for_export_safety(fn: Callable[..., Any], abstract_inputs: Sequence[Any]) -> Any:
+# Passed as ``traced_jaxpr`` once tracing has been tried and failed, so the gate
+# does not re-trace ``fn`` once per target (export_pipeline).
+_NOT_TRACEABLE = object()
+
+
+def trace_for_export_safety(
+    fn: Callable[..., Any],
+    abstract_inputs: Sequence[Any],
+    *,
+    reraise: tuple[type[BaseException], ...] = (),
+) -> Any:
     """Trace ``fn`` once for the op and program-dtype rules, or None if it cannot be.
 
     Pass the result as ``traced_jaxpr`` to judge several targets from one trace.
@@ -489,11 +499,15 @@ def trace_for_export_safety(fn: Callable[..., Any], abstract_inputs: Sequence[An
     ``jax.make_jaxpr`` cannot trace is not something these rules could have
     usefully judged, and it fails identically -- at export or conversion time,
     with a clearer error pointing at the actual call site -- moments later.
+    Exceptions of a type in ``reraise`` propagate instead (``export_pipeline``
+    passes ``ComposerError``, which the composer can raise at trace time).
     """
     import jax
 
     try:
         closed = jax.make_jaxpr(fn)(*abstract_inputs)
+    except reraise:
+        raise
     except Exception:  # noqa: BLE001 - see docstring: never masks a real failure
         return None
     return getattr(closed, "jaxpr", closed)
@@ -513,38 +527,102 @@ def _op_blockers(top: Any, target: Target) -> list[ExportBlocker]:
     return _iree_op_blockers(top)
 
 
-def _program_dtype_blockers(
-    top: Any, target: Target, request_features: frozenset[str]
-) -> list[ExportBlocker]:
-    """One dtype blocker per rejected dtype the onnx program computes in.
+# Primitives ONNX Runtime's CPU EP runs at a dtype outside the onnx envelope: pure
+# data movement, casts, and the reductions measured to have bf16 kernels. Each is
+# pinned by an ORT run in tests/export/test_export_review_followups.py
+# (test_allowlisted_primitive_runs_in_bf16_on_ort), with arithmetic (add, mul, dot,
+# neg, max, gt, select_n, pad, broadcast_to's Expand) as the failing control. Call
+# wrappers emit no op of their own; their bodies are walked separately.
+_ONNX_DTYPE_AGNOSTIC_PRIMITIVES = frozenset(
+    {
+        "convert_element_type",
+        "reshape",
+        "transpose",
+        "squeeze",
+        "slice",
+        "dynamic_slice",
+        "concatenate",
+        "gather",
+        "rev",
+        "reduce_sum",
+        "pjit",
+        "jit",
+        "closed_call",
+        "custom_jvp_call",
+        "custom_vjp_call",
+        "remat",
+        "checkpoint",
+    }
+)
 
-    Only the onnx backend: ONNX Runtime needs a kernel for every op at the dtype
-    it runs in, so a bf16 intermediate (``x.astype(jnp.bfloat16) + 1``) fails at
-    session creation with ``NOT_IMPLEMENTED`` even when every input and output is
-    f32. IREE compiles such intermediates; for its targets only the I/O boundary
-    is judged. Inputs are not re-judged here (``_dtype_blockers`` already did, and
-    would report each twice). JAX's extended dtypes (PRNG keys) and ``float0`` are
-    skipped: neither reaches a graph as a tensor, and an RNG key is the op rules'
-    concern. ``float0`` needs its own check: ``issubdtype(float0, extended)`` is
-    False.
+
+def _judged_dtype(dtype: Any) -> bool:
+    """Whether a program value's dtype is one the dtype rules judge at all.
+
+    JAX's extended dtypes (PRNG keys) and ``float0`` never reach an artifact as a
+    tensor (an RNG key is the op rules' concern). ``float0`` needs its own check:
+    ``issubdtype(float0, extended)`` is False.
     """
-    if top is None or target.backend is not Backend.ONNX:
-        return []
     import jax
 
-    seen: dict[str, str] = {}
-    candidates = [(eqn.primitive.name, v) for eqn in _walk_jaxpr_eqns(top) for v in eqn.outvars]
-    for where, var in candidates:
+    if dtype is None or dtype == jax.dtypes.float0:
+        return False
+    return not jax.dtypes.issubdtype(dtype, jax.dtypes.extended)
+
+
+def _boundary_dtype_names(abstract_inputs: Sequence[Any], fn: Any) -> frozenset[str]:
+    """Dtype names ``_dtype_blockers`` already judged (inputs and closure leaves)."""
+    import jax
+
+    names = {
+        dtype_name(spec.dtype)
+        for spec in jax.tree_util.tree_leaves(list(abstract_inputs))
+        if getattr(spec, "dtype", None) is not None
+    }
+    names |= {dtype_name(d) for _, d in _closure_dtype_leaves(fn)}
+    return frozenset(names)
+
+
+def _program_dtype_blockers(
+    top: Any, target: Target, request_features: frozenset[str], judged: frozenset[str]
+) -> list[ExportBlocker]:
+    """One dtype blocker per rejected dtype the program returns or (onnx) computes in.
+
+    Outputs, every target: an artifact returns its outputs' dtypes, so a program
+    returning bf16 is refused on ``native`` just as a bf16 input is.
+
+    Ops, onnx only: ONNX Runtime needs a kernel for each op at the dtype it runs in,
+    so ``x.astype(jnp.bfloat16) + 1`` fails at session creation with
+    ``NOT_IMPLEMENTED`` even when every input and output is f32. An op is judged by
+    the dtypes of its operands AND results (a bf16 comparison returns bool),
+    except primitives in ``_ONNX_DTYPE_AGNOSTIC_PRIMITIVES``, which ORT runs at any
+    dtype -- so the bf16 precision-emulation idiom
+    ``x.astype(jnp.bfloat16).astype(jnp.float32)`` passes. IREE compiles such
+    intermediates; for its targets only the boundary is judged.
+
+    Dtypes in ``judged`` (inputs and closure leaves, which ``_dtype_blockers``
+    already reported) are skipped, so one cause is one blocker.
+    """
+    if top is None:
+        return []
+    found: dict[str, str] = {}
+
+    def note(where: str, var: Any) -> None:
         dtype = getattr(getattr(var, "aval", None), "dtype", None)
-        if (
-            dtype is None
-            or dtype == jax.dtypes.float0
-            or jax.dtypes.issubdtype(dtype, jax.dtypes.extended)
-        ):
-            continue
-        seen.setdefault(dtype_name(dtype), where)
+        if _judged_dtype(dtype) and dtype_name(dtype) not in judged:
+            found.setdefault(dtype_name(dtype), where)
+
+    for var in top.outvars:
+        note("output", var)
+    if target.backend is Backend.ONNX:
+        for eqn in _walk_jaxpr_eqns(top):
+            if eqn.primitive.name in _ONNX_DTYPE_AGNOSTIC_PRIMITIVES:
+                continue
+            for var in (*eqn.invars, *eqn.outvars):
+                note(eqn.primitive.name, var)
+
     blockers: list[ExportBlocker] = []
-    for name, where in seen.items():
+    for name, where in found.items():
         blocker = _dtype_blocker(f"program:{where}", name, target, request_features)
         if blocker is not None:
             blockers.append(blocker)
@@ -659,9 +737,15 @@ def check_export_safety(
         objection.
     """
     del decisions, axis_boundaries
-    top = traced_jaxpr if traced_jaxpr is not None else trace_for_export_safety(fn, abstract_inputs)
+    if traced_jaxpr is _NOT_TRACEABLE:
+        top = None
+    elif traced_jaxpr is not None:
+        top = traced_jaxpr
+    else:
+        top = trace_for_export_safety(fn, abstract_inputs)
     blockers = _dtype_blockers(abstract_inputs, fn, target, request_features)
-    blockers += _program_dtype_blockers(top, target, request_features)
+    judged = _boundary_dtype_names(abstract_inputs, fn)
+    blockers += _program_dtype_blockers(top, target, request_features, judged)
     blockers += _op_blockers(top, target)
     return _apply_acknowledged(blockers, acknowledged)
 

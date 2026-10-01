@@ -301,7 +301,7 @@ class TestParityRulesWithAFakeRuntime:
         fake_outputs["outputs"] = [expected[0].copy(), np.array([0, 1, 5], np.int32)]
         text = verify_onnx_parity(expected, Path("unused.onnx"), ()).summary()
         assert text.startswith("FAIL: leaf 1 of 2:")
-        assert "exact integer comparison" in text
+        assert "exact comparison" in text
         assert "atol" not in text
 
     def test_every_leaf_is_reported(self, fake_outputs):

@@ -69,7 +69,10 @@ class TestDtypeGate:
             )
 
     def test_an_f16_intermediate_is_accepted(self):
-        """Control: f16 runs on ORT's CPU EP (spiked 2026-10-01), so it is no blocker."""
+        """Control: f16 runs on ORT's CPU EP.
+
+        Pinned by test_envelope_dtype_runs_as_an_intermediate_on_ort.
+        """
         xs = np.ones((4, 3), np.float32)
         fn = lambda x: (x.astype(jnp.float16) + 1).astype(jnp.float32)  # noqa: E731
         top = trace_for_export_safety(fn, (_spec(xs),))
@@ -187,9 +190,9 @@ class TestOpGateSeesTheExportedProgram:
         calls = []
         real = safety.trace_for_export_safety
 
-        def spy(fn, abstract_inputs):
+        def spy(fn, abstract_inputs, **kw):
             calls.append(fn)
-            return real(fn, abstract_inputs)
+            return real(fn, abstract_inputs, **kw)
 
         monkeypatch.setattr("xtrax.export.pipeline.trace_for_export_safety", spy)
         xs = np.ones((4, 3), np.float64)
@@ -245,8 +248,9 @@ def test_float0_is_not_a_dtype_blocker():
     from types import SimpleNamespace as NS
 
     var = NS(aval=NS(dtype=jax.dtypes.float0))
-    top = NS(eqns=[NS(primitive=NS(name="grad_int"), outvars=[var], params={})], invars=[])
-    assert safety._program_dtype_blockers(top, ONNX, frozenset()) == []
+    eqn = NS(primitive=NS(name="grad_int"), invars=[], outvars=[var], params={})
+    top = NS(eqns=[eqn], invars=[], outvars=[var])
+    assert safety._program_dtype_blockers(top, ONNX, frozenset(), frozenset()) == []
 
 
 def test_trace_for_export_safety_is_exported():
@@ -306,3 +310,205 @@ def test_an_external_data_export_says_the_artifact_is_two_files(monkeypatch):
     )["onnx"]
     assert result.verified, result.parity.summary()
     assert any(".onnx.data" in note for note in result.diagnostics)
+
+
+# --- second review of #180 (xhigh) ---------------------------------------------------
+
+
+def test_a_consumed_input_dtype_is_reported_once():
+    """Was: a bf16 input with fn = x + 1 gave 'abstract_inputs[0]' AND 'program:add'."""
+    ab = (jax.ShapeDtypeStruct((4,), jnp.bfloat16),)
+    fn = lambda x: x + 1  # noqa: E731
+    blockers = check_export_safety(
+        [], {}, ab, fn, ONNX, traced_jaxpr=trace_for_export_safety(fn, ab)
+    )
+    assert [b.axis for b in blockers] == ["abstract_inputs[0]"]
+
+
+def test_the_bf16_precision_emulation_idiom_passes_the_onnx_gate():
+    """Was refused: casts are data movement, which ORT runs in bf16."""
+    xs = np.ones((4, 3), np.float32)
+    fn = lambda x: x.astype(jnp.bfloat16).astype(jnp.float32)  # noqa: E731
+    top = trace_for_export_safety(fn, (_spec(xs),))
+    assert check_export_safety([], {}, (_spec(xs),), fn, ONNX, traced_jaxpr=top) == []
+
+
+def test_a_bf16_comparison_is_refused_although_its_result_is_bool():
+    """Operands are judged too: gt on bf16 returns bool but has no ORT bf16 kernel."""
+    xs = np.ones((4, 3), np.float32)
+    fn = lambda x: (x.astype(jnp.bfloat16) > 1).astype(jnp.float32)  # noqa: E731
+    top = trace_for_export_safety(fn, (_spec(xs),))
+    blockers = check_export_safety([], {}, (_spec(xs),), fn, ONNX, traced_jaxpr=top)
+    assert [b.axis for b in blockers] == ["program:gt"]
+
+
+def test_a_native_gate_refuses_a_bf16_output():
+    """Was: only inputs were judged, so a bf16-returning program passed `native`."""
+    xs = np.ones((4,), np.float32)
+    fn = lambda x: x.astype(jnp.bfloat16)  # noqa: E731
+    top = trace_for_export_safety(fn, (_spec(xs),))
+    blockers = check_export_safety([], {}, (_spec(xs),), fn, NATIVE, traced_jaxpr=top)
+    assert [(b.axis, b.rule) for b in blockers] == [("program:output", "dtype")]
+
+
+def test_failed_tracing_is_not_repeated_per_target(monkeypatch):
+    """Was: when both traces failed, every target's gate re-traced fn."""
+    calls = []
+    real = safety.trace_for_export_safety
+
+    def spy(fn, abstract_inputs, **kw):
+        calls.append(fn)
+        return real(fn, abstract_inputs, **kw)
+
+    monkeypatch.setattr(safety, "trace_for_export_safety", spy)
+    monkeypatch.setattr("xtrax.export.pipeline.trace_for_export_safety", spy)
+
+    def untraceable(x):
+        msg = "cannot be traced"
+        raise TypeError(msg)
+
+    xs = np.ones((4, 3), np.float32)
+    with pytest.raises(Exception):  # noqa: B017, PT011 - export itself fails afterwards
+        export_pipeline(
+            untraceable,
+            _vmap_plan(4),
+            (_spec(xs),),
+            (xs,),
+            targets=(NATIVE, ONNX),
+            reference_fn=lambda inp: inp[0],
+        )
+    assert len(calls) == 2  # the composed callable, then fn: never once per target
+
+
+def test_a_composer_error_raised_while_tracing_is_a_composer_error(monkeypatch):
+    """Was: swallowed by the safety trace, then surfaced from conversion as CompileError."""
+    from xtrax.export.composer import MultiAxisCompositionError
+
+    def composes_but_fails_on_trace(*_args, **_kwargs):
+        def callable_(*_a):
+            msg = "lane-dependent ordered sink"
+            raise MultiAxisCompositionError(msg)
+
+        return callable_
+
+    monkeypatch.setattr(
+        "xtrax.export.pipeline.build_traceable_callable", composes_but_fails_on_trace
+    )
+    xs = np.ones((4, 3), np.float32)
+    with pytest.raises(MultiAxisCompositionError, match="lane-dependent"):
+        export_pipeline(
+            lambda x: x,
+            _vmap_plan(4),
+            (_spec(xs),),
+            (xs,),
+            targets=(ONNX,),
+            reference_fn=_no_oracle,
+        )
+
+
+# --- ORT facts the dtype rules rest on, pinned (were cited as dated spikes) ------------
+
+
+_BF16_CASES = {
+    "convert_element_type": lambda v: v.astype(jnp.bfloat16).astype(jnp.float32),
+    "reshape": lambda v: v.astype(jnp.bfloat16).reshape(4, 3).astype(jnp.float32),
+    "transpose": lambda v: v.astype(jnp.bfloat16).T.astype(jnp.float32),
+    "squeeze": lambda v: jnp.squeeze(v.astype(jnp.bfloat16)[None]).astype(jnp.float32),
+    "slice": lambda v: v.astype(jnp.bfloat16)[1:, :2].astype(jnp.float32),
+    "dynamic_slice": lambda v: jax.lax.dynamic_slice(v.astype(jnp.bfloat16), (1, 1), (2, 2)).astype(
+        jnp.float32
+    ),
+    "concatenate": lambda v: jnp.concatenate([v.astype(jnp.bfloat16)] * 2).astype(jnp.float32),
+    "gather": lambda v: v.astype(jnp.bfloat16)[jnp.array([2, 0])].astype(jnp.float32),
+    "rev": lambda v: v.astype(jnp.bfloat16)[::-1].astype(jnp.float32),
+    "reduce_sum": lambda v: v.astype(jnp.bfloat16).sum(0).astype(jnp.float32),
+}
+
+
+@pytest.mark.usefixtures("onnx_toolchain")
+@pytest.mark.parametrize("primitive", sorted(_BF16_CASES))
+def test_allowlisted_primitive_runs_in_bf16_on_ort(primitive):
+    """Each data-movement primitive the onnx dtype rule lets through really runs on
+    ORT's CPU EP in bf16, and every non-wrapper allowlist entry has a case here."""
+    wrappers = {
+        "pjit",
+        "jit",
+        "closed_call",
+        "custom_jvp_call",
+        "custom_vjp_call",
+        "remat",
+        "checkpoint",
+    }
+    assert set(_BF16_CASES) == safety._ONNX_DTYPE_AGNOSTIC_PRIMITIVES - wrappers
+    x = np.arange(12, dtype=np.float32).reshape(3, 4)
+    fn = _BF16_CASES[primitive]
+    compiled, _ = onnx_mod.convert_to_onnx(fn, (_spec(x),), ONNX)
+    out = onnx_mod.run_onnx(compiled.path, x)[0]
+    np.testing.assert_allclose(out, np.asarray(jax.jit(fn)(x)), atol=0.5)
+
+
+@pytest.mark.usefixtures("onnx_toolchain")
+@pytest.mark.parametrize(
+    "fn",
+    [lambda v: v.astype(jnp.bfloat16) + 1, lambda v: -v.astype(jnp.bfloat16)],
+    ids=["add", "neg"],
+)
+def test_bf16_arithmetic_has_no_ort_kernel(fn):
+    """Control: why arithmetic is NOT allowlisted. If this starts passing, ORT gained
+    bf16 kernels and the allowlist can grow."""
+    x = np.ones((3, 4), np.float32)
+    wrapped = lambda v: fn(v).astype(jnp.float32)  # noqa: E731
+    compiled, _ = onnx_mod.convert_to_onnx(wrapped, (_spec(x),), ONNX)
+    with pytest.raises(CompileError, match="NOT_IMPLEMENTED"):
+        onnx_mod.run_onnx(compiled.path, x)
+
+
+@pytest.mark.usefixtures("onnx_toolchain")
+@pytest.mark.parametrize(
+    "dtype", ["float16", "int32", "int16", "int8", "uint32", "uint16", "uint8"]
+)
+def test_envelope_dtype_runs_as_an_intermediate_on_ort(dtype):
+    """Every non-f32 dtype in the onnx envelope runs on ORT's CPU EP as arithmetic."""
+    x = np.ones((4,), np.float32)
+    dt = jnp.dtype(dtype)
+    fn = lambda v: (v.astype(dt) + jnp.asarray(1, dt) * 2).astype(jnp.float32)  # noqa: E731
+    compiled, _ = onnx_mod.convert_to_onnx(fn, (_spec(x),), ONNX)
+    np.testing.assert_array_equal(onnx_mod.run_onnx(compiled.path, x)[0], np.full(4, 3.0))
+
+
+# --- external data: attribute tensors, and no CWD collision ---------------------------
+
+
+@pytest.mark.usefixtures("onnx_toolchain")
+def test_every_large_tensor_goes_external_including_attributes(monkeypatch, tmp_path):
+    import onnx
+
+    monkeypatch.setattr(onnx_mod, "_PROTOBUF_LIMIT_BYTES", 0)
+    weights = np.arange(4096, dtype=np.float32)
+    x = np.ones((4096,), np.float32)
+    out = tmp_path / "m.onnx"
+    onnx_mod.convert_to_onnx(lambda v: v * weights, (_spec(x),), ONNX, out_path=out)
+    model = onnx.load(str(out), load_external_data=False)
+    inline = [
+        t.name
+        for t in onnx_mod._model_tensors(model)
+        if t.data_location != onnx.TensorProto.EXTERNAL
+        and len(t.raw_data) >= onnx_mod._EXTERNAL_DATA_THRESHOLD_BYTES
+    ]
+    assert inline == []
+
+
+@pytest.mark.usefixtures("onnx_toolchain")
+def test_an_unrelated_data_file_in_the_cwd_does_not_fail_the_export(monkeypatch, tmp_path):
+    """Was: onnx checked os.path.exists(location) against the CWD, not the model dir."""
+    monkeypatch.setattr(onnx_mod, "_PROTOBUF_LIMIT_BYTES", 0)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "m.onnx.data").write_bytes(b"unrelated")
+    monkeypatch.chdir(cwd)
+    weights = np.arange(4096, dtype=np.float32)
+    x = np.ones((4096,), np.float32)
+    out = tmp_path / "dest" / "m.onnx"
+    onnx_mod.convert_to_onnx(lambda v: v * weights, (_spec(x),), ONNX, out_path=out)
+    assert (cwd / "m.onnx.data").read_bytes() == b"unrelated"
+    assert onnx_mod.verify_onnx_parity(x * weights, out, (x,)).passed

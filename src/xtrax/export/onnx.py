@@ -42,11 +42,10 @@ from types import ModuleType
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 from xtrax.export.compile import CompileError, CompileResult
-from xtrax.export.parity import LeafParityResult, compare_leaves
+from xtrax.export.parity import LeafParityResult, compare_leaves, narrow_inputs
 from xtrax.export.targets import Backend, Target
 
 __all__ = [
@@ -153,13 +152,39 @@ _PROTOBUF_LIMIT_BYTES = 2**31 - 1
 _EXTERNAL_DATA_THRESHOLD_BYTES = 1024
 
 
+def _model_tensors(model: Any) -> Iterator[Any]:
+    """Every TensorProto in the model: initializers and Constant-style node
+    attributes, in the main graph, every subgraph, and every function."""
+    graphs = list(_walk_graphs(model.graph))
+    for function in model.functions:
+        graphs.append(function)
+    for graph in graphs:
+        yield from getattr(graph, "initializer", ())
+        for node in graph.node:
+            for attr in node.attribute:
+                if attr.HasField("t"):
+                    yield attr.t
+                yield from attr.tensors
+
+
 def _write_model(model: Any, out_path: Path) -> int:
     """Write ``model`` to ``out_path``; return the bytes written (both files).
+
+    Below protobuf's limit, one file. At or above it, every tensor of at least
+    ``_EXTERNAL_DATA_THRESHOLD_BYTES`` -- initializers AND tensors held in node
+    attributes (jax2onnx emits Constant nodes in function mode) -- moves to
+    ``<out_path>.data``. Tensors are marked with ``set_external_data`` here rather
+    than through ``save_model(save_as_external_data=True)``: that path checks
+    whether the data file exists relative to the process's CWD, not the model's
+    directory, so an unrelated file of that name in the CWD failed the export.
+    The model's in-memory tensor bytes are cleared by the external write.
 
     Raises:
         CompileError: If serialization or the write fails.
     """
     onnx = _require_onnx()
+    from onnx import external_data_helper, numpy_helper  # ty: ignore[unresolved-import]
+
     data_path = out_path.with_name(out_path.name + ".data")
     try:
         # onnx appends to an existing external-data file (it opens it r+b and seeks
@@ -170,14 +195,14 @@ def _write_model(model: Any, out_path: Path) -> int:
             data = model.SerializeToString()
             out_path.write_bytes(data)
             return len(data)
-        onnx.save_model(
-            model,
-            str(out_path),
-            save_as_external_data=True,
-            all_tensors_to_one_file=True,
-            location=data_path.name,
-            size_threshold=_EXTERNAL_DATA_THRESHOLD_BYTES,
-        )
+        for tensor in _model_tensors(model):
+            if not tensor.HasField("raw_data"):
+                if tensor.data_type == onnx.TensorProto.STRING:
+                    continue
+                tensor.CopyFrom(numpy_helper.from_array(numpy_helper.to_array(tensor), tensor.name))
+            if len(tensor.raw_data) >= _EXTERNAL_DATA_THRESHOLD_BYTES:
+                external_data_helper.set_external_data(tensor, location=data_path.name)
+        onnx.save_model(model, str(out_path))
     except Exception as exc:
         msg = f"could not write the ONNX model to {out_path}: {exc}"
         raise CompileError(msg) from exc
@@ -386,6 +411,7 @@ def convert_to_onnx(
         handle.close()
         out_path = Path(handle.name)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    census = onnx_dtype_census(model)  # before writing: external data clears tensor bytes
     size_bytes = _write_model(model, out_path)
 
     compiled = CompileResult(
@@ -396,7 +422,7 @@ def convert_to_onnx(
         downgraded_stablehlo=False,
         stderr="",
     )
-    return compiled, onnx_dtype_census(model)
+    return compiled, census
 
 
 def run_onnx(onnx_path: Path, *args: Any) -> list[np.ndarray]:
@@ -410,9 +436,10 @@ def run_onnx(onnx_path: Path, *args: Any) -> list[np.ndarray]:
     Returns:
         One numpy array per graph output: the leaves of the pipeline's result.
 
-    Each input leaf goes through ``jnp.asarray`` first, as it would on its way into
-    the traced JAX program: in a 32-bit process a NumPy float64/int64 input narrows
-    to float32/int32, matching the graph, which was converted with x64 disabled.
+    Each input leaf is narrowed to JAX's dtypes first (``parity.narrow_inputs``, as
+    for the native targets), as it would be on its way into the traced program: a
+    NumPy float64/int64 input narrows to float32/int32, matching the graph, which was
+    converted with x64 disabled. No copy to a device is made.
 
     Raises:
         CompileError: If ONNX Runtime cannot load the graph (e.g. no kernel for an
@@ -420,7 +447,7 @@ def run_onnx(onnx_path: Path, *args: Any) -> list[np.ndarray]:
             graph's declared inputs next to the dtypes and shapes that were fed.
     """
     ort = _require_ort()
-    leaves = [np.asarray(jnp.asarray(x)) for x in jax.tree_util.tree_leaves(list(args))]
+    leaves = [np.asarray(x) for x in jax.tree_util.tree_leaves(narrow_inputs(args))]
     try:
         session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     except Exception as exc:
@@ -471,7 +498,7 @@ def verify_onnx_parity(
         change, on any integer/bool difference, or on a float leaf outside
         tolerance.
 
-    Each reference leaf is first passed through ``jnp.asarray``, exactly as
+    Each reference leaf is first narrowed to JAX's dtypes, exactly as
     ``compare`` does for the IREE targets. In a 32-bit process that narrows a
     NumPy oracle's float64/int64 to float32/int32, so one ``reference_fn``
     written in NumPy verifies the same way on every target; the dtype rule then

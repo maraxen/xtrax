@@ -18,10 +18,14 @@ from typing import Any
 import jax
 
 from xtrax.export.compile import CompileResult, compile_for_target
-from xtrax.export.composer import build_traceable_callable
+from xtrax.export.composer import ComposerError, build_traceable_callable
 from xtrax.export.onnx import OnnxDtypeCensus, convert_to_onnx, verify_onnx_parity
 from xtrax.export.parity import ParityResult, verify_native_parity
-from xtrax.export.safety import trace_for_export_safety, validate_export_safe
+from xtrax.export.safety import (
+    _NOT_TRACEABLE,
+    trace_for_export_safety,
+    validate_export_safe,
+)
 from xtrax.export.spirv import SpirvValidationResult
 from xtrax.export.targets import NATIVE, WASM32, Backend, Target, VerificationLevel
 from xtrax.stages.boundaries import AxisBoundary
@@ -279,15 +283,21 @@ def export_pipeline(
     # have run, so it never hides their dtype/op blockers. If the composed callable
     # cannot be composed or traced, `fn` itself is traced, once, for every gate.
     boundaries = _boundaries_for_export(axis_boundaries)
-    composer_error: Exception | None = None
+    # The composer can also raise while the callable is TRACED (e.g. a lane-dependent
+    # ordered sink under Vmap-over-Scan); that error is held the same way, so it
+    # surfaces as ComposerError rather than a later CompileError from conversion.
+    composer_error: ComposerError | None = None
     callable_: Callable[..., Any] | None = None
+    traced: Any = None
     try:
         callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
-    except Exception as exc:  # noqa: BLE001 - re-raised below, after the gates
+        traced = trace_for_export_safety(callable_, abstract_inputs, reraise=(ComposerError,))
+    except ComposerError as exc:
         composer_error = exc
-    traced = trace_for_export_safety(callable_, abstract_inputs) if callable_ else None
     if traced is None:
         traced = trace_for_export_safety(fn, abstract_inputs)
+    if traced is None:
+        traced = _NOT_TRACEABLE  # tried twice: the gates must not re-trace per target
 
     # Every target's gate runs first, so a rejected export fails fast without
     # paying for the oracle (often an unbatched per-row loop), and a gate's error

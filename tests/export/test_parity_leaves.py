@@ -31,7 +31,7 @@ class TestCompareIsExactForIntegersAndBools:
         result = compare(BIG, OFF_BY_9)
         assert result.passed is False
         assert result.max_abs_diff == 9.0
-        assert "exact integer comparison" in result.summary()
+        assert "exact comparison" in result.summary()
 
     def test_identical_integers_pass(self):
         assert compare(BIG, BIG.copy()).passed is True
@@ -59,7 +59,7 @@ class TestNativeParityIsPerLeafAndExact:
         result = self._run(tmp_path, BIG, OFF_BY_9)
         assert isinstance(result, LeafParityResult)
         assert result.passed is False
-        assert "exact integer comparison" in result.summary()
+        assert "exact comparison" in result.summary()
 
     def test_exact_integer_output_passes_on_native(self, fake_runtime, tmp_path):
         fake_runtime["result"] = BIG.copy()
@@ -153,11 +153,12 @@ def x64():
 
 
 class TestExactDiffAndDtypes:
-    def test_the_diff_against_a_float_output_is_not_truncated(self):
-        """Was: int64 casts reported 'FAIL: max|diff| = 0.000e+00' for [1, 2] vs [1.4, 2.0]."""
+    def test_a_float_output_for_an_integer_reference_is_a_kind_change(self):
+        """Was: int64 casts reported 'FAIL: max|diff| = 0.000e+00' for [1, 2] vs
+        [1.4, 2.0] -- a FAIL whose number said the values matched. A change of kind is
+        now inf, never a value diff that can read as agreement."""
         result = compare(np.array([1, 2], np.int32), np.array([1.4, 2.0], np.float32))
-        assert result.passed is False
-        assert result.max_abs_diff == pytest.approx(0.4, abs=1e-6)
+        assert (result.passed, result.max_abs_diff) == (False, float("inf"))
 
     def test_a_nan_output_reads_as_an_infinite_diff(self):
         result = compare(np.array([1], np.int32), np.array([np.nan], np.float32))
@@ -213,3 +214,87 @@ def test_in_32_bit_a_narrower_artifact_is_still_a_dtype_change():
     narrowed the oracle, so f32 -> f16 across the export is a real change."""
     result = compare_leaves(np.ones(3), [np.ones(3, np.float16)])
     assert result.dtype_mismatches == ("leaf 0: expected float32, got float16",)
+
+
+# --- second review of #180 (xhigh) ---------------------------------------------------
+
+
+def test_a_two_output_tuple_oracle_never_verifies_one_stacked_output():
+    """Was: any tuple oracle was stacked when the artifact had one output, so an export
+    that collapsed two outputs into one (2, 2) array verified."""
+    oracle = (np.ones(2, np.float32), np.ones(2, np.float32))
+    result = compare_leaves(oracle, [np.ones((2, 2), np.float32)])
+    assert result.passed is False
+    assert "expected 2 output leaves, got 1" in result.summary()
+
+
+def test_a_two_output_tuple_oracle_never_verifies_under_x64_either(x64):
+    oracle = (jnp.array([1, 2], jnp.int32), jnp.array([3, 4], jnp.int32))
+    assert compare_leaves(oracle, [np.array([[1, 2], [3, 4]], np.int16)]).passed is False
+
+
+@pytest.mark.parametrize(
+    ("oracle_dtype", "artifact_dtype"),
+    [(np.int32, np.int16), (np.float32, np.float16), (np.int64, np.int8), (np.float64, np.float16)],
+)
+def test_under_x64_only_the_64_to_32_bit_default_pair_is_tolerated(
+    x64, oracle_dtype, artifact_dtype
+):
+    """Was: any same-kind narrowing passed under x64."""
+    result = compare_leaves(np.ones(3, oracle_dtype), [np.ones(3, artifact_dtype)])
+    assert result.dtype_mismatches, result.summary()
+
+
+def test_a_bool_int_swap_fails_with_an_infinite_diff():
+    """Was: compare([True, False], int8 [1, 0]) passed."""
+    for exp, act in [
+        (np.array([True, False]), np.array([1, 0], np.int8)),
+        (np.array([1, 0], np.int32), np.array([True, False])),
+    ]:
+        result = compare(exp, act)
+        assert (result.passed, result.max_abs_diff) == (False, float("inf"))
+
+
+def test_int32_diff_is_exact_on_the_vectorised_path():
+    result = compare(np.array([-(2**31), 0], np.int32), np.array([2**31 - 1, 0], np.int32))
+    assert result.max_abs_diff == float(2**32 - 1)
+
+
+def test_iree_returns_flat_typed_leaves(tmp_path):
+    """Pins what verify_native_parity relies on: the IREE runtime returns a multi-output
+    (and dict) entry point as a flat tuple of leaves, keeping int32/bool dtypes."""
+    pytest.importorskip("iree.compiler")
+    pytest.importorskip("iree.runtime")
+    from xtrax.export.compile import compile_for_target, run_native_vmfb
+    from xtrax.export.targets import NATIVE
+
+    x = np.arange(6, dtype=np.float32).reshape(2, 3)
+
+    def run(fn):
+        exported = jax.export.export(jax.jit(fn))(jax.ShapeDtypeStruct(x.shape, x.dtype))
+        return run_native_vmfb(compile_for_target(exported.mlir_module(), NATIVE).path, x)
+
+    out = run(lambda v: (v * 2, jnp.argmax(v, axis=1), v > 2))
+    assert [np.asarray(o).dtype for o in out] == [np.float32, np.int32, np.bool_]
+    out = run(lambda v: {"a": v, "b": jnp.argmax(v, axis=1)})
+    assert isinstance(out, tuple)
+    assert [np.asarray(o).dtype for o in out] == [np.float32, np.int32]
+
+
+def test_a_float64_numpy_input_verifies_on_native():
+    """Was: IREE raised 'input0 element type mismatch; expected f32' -- only run_onnx
+    narrowed inputs. Both backends now share parity.narrow_inputs."""
+    pytest.importorskip("iree.compiler")
+    pytest.importorskip("iree.runtime")
+    from xtrax.export import NATIVE, export_pipeline
+
+    xs = np.ones((4, 3))  # float64
+    result = export_pipeline(
+        lambda x: x * 2,
+        _vmap_plan(4),
+        (jax.ShapeDtypeStruct((4, 3), jnp.float32),),
+        (xs,),
+        targets=(NATIVE,),
+        reference_fn=lambda inp: np.asarray(inp[0], np.float32) * 2,
+    )["native"]
+    assert result.verified, result.parity.summary()

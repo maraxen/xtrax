@@ -97,9 +97,11 @@ trip count — convert to `Scan` with a static length) raise `UnsupportedStrateg
   `RandomUniform`, which ignores the key. Feed random values in from the host.
 - **Parity is per leaf and exact for integers/bools on every backend**
   (`compare_leaves`), and a dtype change fails it (`LeafParityResult.dtype_mismatches`).
-- **The dtype gate also judges the ONNX program's own dtypes**, not just its I/O: a bf16
-  intermediate is a `DtypeNotSupportedError` at plan time (ORT's CPU EP has no bf16
-  kernels), where it used to be a raw `onnxruntime` error at session creation.
+- **The dtype gate judges outputs on every target, and each op on ONNX**: bf16
+  arithmetic (`x.astype(jnp.bfloat16) + 1`) is a `DtypeNotSupportedError` at plan time
+  (ORT's CPU EP has no bf16 kernels for it), where it used to be a raw `onnxruntime`
+  error at session creation. Casts and data movement run at any dtype, so the
+  precision-emulation idiom `x.astype(jnp.bfloat16).astype(jnp.float32)` exports.
 - **`ExportResult.onnx_census`** counts int64 tensors inside the graph (from `TopK`/`ArgMax`);
   graph I/O keeps JAX's dtypes. Relevant for ORT Web's WebGPU EP, which has no int64.
 - **Process state:** x64 is refused; the first jax2onnx conversion in a process leaves
