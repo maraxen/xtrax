@@ -23,6 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. run reports, status flags) does not affect content-based reproducibility.
   `ZarrStagingSink.stage()` now rejects caller attrs in the reserved namespace.
 
+- **`xtrax.run.zarr_commit` module** (#U1-U2, spec demistify
+  261001_preemption-safe-cimist-fitting): Durable atomic-commit primitives for
+  zarr v3 directory stores. Provides crash-safe staging + rename patterns:
+  `commit_key` (atomically commit a staged group), `lookup` (classify key state:
+  Missing, Reuse, Stale, Corrupt), `create_store` / `open_store` (initialize and
+  open durable stores with identity payloads and prefix trees), `committed_keys`
+  (enumerate committed keys), `gc_staging` (garbage-collect staging dirs),
+  `write_staged_group` (stage arrays + attrs). Frozen dataclasses `CommitRecord`,
+  `Committed`, `Duplicate` for immutable record-keeping; exception hierarchy
+  `DurableStoreError` + specific subclasses for diagnostics. Includes fault
+  injection support (XTRAX_FAULT_INJECT env var) for crash atomicity testing.
+
 ## [0.4.0a11] - 2026-10-01
 
 ### Added
