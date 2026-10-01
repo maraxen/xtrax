@@ -5,7 +5,7 @@ import pytest
 
 from xtrax.eda.stats import analyze_bucket, analyze_dedup, extract_plan_stats
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
-from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Vmap
+from xtrax.tiling.strategy import Bucket, ChunkedMap, DedupGather, Vmap
 
 
 class TestExtractPlanStats:
@@ -67,7 +67,7 @@ class TestExtractPlanStats:
             spec=spec2,
             batch_size=256,
             reasoning="safemap for large cardinality",
-            strategy=SafeMap(batch_size=256),
+            strategy=ChunkedMap(batch_size=256),
         )
         plan = BatchPlan(decisions=(decision1, decision2))
 
@@ -75,7 +75,7 @@ class TestExtractPlanStats:
 
         assert stats["total_axes"] == 2
         assert len(stats["axes"]) == 2
-        assert stats["strategy_counts"] == {"Vmap": 1, "SafeMap": 1}
+        assert stats["strategy_counts"] == {"Vmap": 1, "ChunkedMap": 1}
 
     def test_strategy_count_accumulates(self):
         """extract_plan_stats accumulates strategy counts correctly."""
@@ -84,7 +84,7 @@ class TestExtractPlanStats:
                 spec=AxisSpec(name=f"axis{i}", cardinality=100 + i, default_batch_size=32),
                 batch_size=32,
                 reasoning="test",
-                strategy=Vmap() if i < 3 else SafeMap(batch_size=32),
+                strategy=Vmap() if i < 3 else ChunkedMap(batch_size=32),
             )
             for i in range(5)
         )
@@ -92,7 +92,7 @@ class TestExtractPlanStats:
 
         stats = extract_plan_stats(plan)
 
-        assert stats["strategy_counts"] == {"Vmap": 3, "SafeMap": 2}
+        assert stats["strategy_counts"] == {"Vmap": 3, "ChunkedMap": 2}
 
     def test_dedup_stats_accumulated_in_extract(self):
         """extract_plan_stats accumulates dedup stats from DedupGather decisions."""
@@ -231,17 +231,17 @@ class TestAnalyzeDedup:
             analyze_dedup(decision)
 
     def test_analyze_dedup_rejects_safemap(self):
-        """analyze_dedup rejects SafeMap strategy."""
+        """analyze_dedup rejects ChunkedMap strategy."""
         spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
         decision = AxisDecision(
             spec=spec,
             batch_size=32,
             reasoning="test",
-            strategy=SafeMap(batch_size=32),
+            strategy=ChunkedMap(batch_size=32),
         )
 
         with pytest.raises(
-            TypeError, match="analyze_dedup requires a DedupGather-shaped strategy.*got SafeMap"
+            TypeError, match="analyze_dedup requires a DedupGather-shaped strategy.*got ChunkedMap"
         ):
             analyze_dedup(decision)
 
@@ -334,17 +334,17 @@ class TestAnalyzeBucket:
             analyze_bucket(decision)
 
     def test_analyze_bucket_rejects_safemap(self):
-        """analyze_bucket rejects SafeMap strategy."""
+        """analyze_bucket rejects ChunkedMap strategy."""
         spec = AxisSpec(name="batch", cardinality=100, default_batch_size=32)
         decision = AxisDecision(
             spec=spec,
             batch_size=32,
             reasoning="test",
-            strategy=SafeMap(batch_size=32),
+            strategy=ChunkedMap(batch_size=32),
         )
 
         with pytest.raises(
-            TypeError, match="analyze_bucket requires a Bucket-shaped strategy.*got SafeMap"
+            TypeError, match="analyze_bucket requires a Bucket-shaped strategy.*got ChunkedMap"
         ):
             analyze_bucket(decision)
 

@@ -2,12 +2,12 @@
 
 CORE exports (stable, always available):
     AxisSpec, BatchPlanner, BatchPlan, AxisDecision
-    Vmap, SafeMap, Scan, ScanTransition, Bucket, select_bucket, bucketize
+    Vmap, ChunkedMap, Scan, ScanTransition, Bucket, select_bucket, bucketize
     WhileCarry, WhileBodyFn, WhileCondFn, fixed_step_count_cond
     make_axis_dispatch, axis_dispatch, DispatchRejected
     CarrySpec, CarryShape
     MemoryBudget, BudgetInfeasibleError, device_memory_budget, lowered_memory_estimate
-    VmapIterator, SafeMapIterator, JaxScanIterator, WhileLoopIterator, BucketIterator,
+    VmapIterator, ChunkedMapIterator, JaxScanIterator, WhileLoopIterator, BucketIterator,
     MapIterator, ScanIterator
 
 OPTIONAL (dedup/gather machinery — import from submodules):
@@ -24,9 +24,9 @@ from xtrax.tiling.dispatch import DispatchRejected, axis_dispatch, make_axis_dis
 from xtrax.tiling.estimators import device_memory_budget, lowered_memory_estimate
 from xtrax.tiling.iterator import (
     BucketIterator,
+    ChunkedMapIterator,
     JaxScanIterator,
     MapIterator,
-    SafeMapIterator,
     ScanIterator,
     VmapIterator,
     WhileLoopIterator,
@@ -34,7 +34,7 @@ from xtrax.tiling.iterator import (
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan, BatchPlanner
 from xtrax.tiling.strategy import (
     Bucket,
-    SafeMap,
+    ChunkedMap,
     Scan,
     ScanTransition,
     Vmap,
@@ -50,7 +50,7 @@ __all__ = [
     "BatchPlan",
     "BatchPlanner",
     "Vmap",
-    "SafeMap",
+    "ChunkedMap",
     "Scan",
     "Bucket",
     "select_bucket",
@@ -70,7 +70,7 @@ __all__ = [
     "device_memory_budget",
     "lowered_memory_estimate",
     "VmapIterator",
-    "SafeMapIterator",
+    "ChunkedMapIterator",
     "JaxScanIterator",
     "WhileLoopIterator",
     "BucketIterator",
@@ -78,3 +78,10 @@ __all__ = [
     "ScanIterator",
     "_BatchPlanWrapper",
 ]
+
+
+def __getattr__(name: str):  # noqa: ANN202 -- PEP 562 module hook
+    """Deprecated pre-#3644 names (SafeMap, SafeMapIterator, safe_map) for one release."""
+    from xtrax._renamed import deprecated_alias
+
+    return deprecated_alias(__name__, name, globals())

@@ -1,7 +1,7 @@
 """MemoryBudget — declare a joint memory budget for BatchPlanner.
 
 Used by BatchPlanner callers who need whole-plan memory planning: start every
-eligible axis at Vmap, then greedily demote axes to SafeMap (in the order specs
+eligible axis at Vmap, then greedily demote axes to ChunkedMap (in the order specs
 were given) until the joint estimate fits the budget. Mirrors the
 CarrySpec/DedupSpec pattern: caller declares, planner enforces.
 
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class BudgetInfeasibleError(Exception):
     """Raised when no demotion sequence brings the plan under its MemoryBudget.
 
-    Every demotion candidate has been demoted to SafeMap and the joint
+    Every demotion candidate has been demoted to ChunkedMap and the joint
     estimate still exceeds ``MemoryBudget.bytes``. The message names the
     budget, the final estimate, and the per-axis strategy state so the caller
     can see exactly what was tried.

@@ -14,8 +14,8 @@ from typing import Any
 
 import jax
 
-from xtrax.tiling.strategy import AxisStrategy, SafeMap, Scan, Vmap, WhileCarry
-from xtrax.transforms.map import safe_map
+from xtrax.tiling.strategy import AxisStrategy, ChunkedMap, Scan, Vmap, WhileCarry
+from xtrax.transforms.map import chunked_map
 from xtrax.transforms.scan import safe_scan
 
 
@@ -36,14 +36,14 @@ def make_axis_dispatch(
 ) -> object:
     """Dispatch an AxisStrategy to a typed iterator.
 
-    Converts a strategy (Vmap, SafeMap, Scan) into a corresponding iterator
-    (VmapIterator, SafeMapIterator, JaxScanIterator). Enforces topological
+    Converts a strategy (Vmap, ChunkedMap, Scan) into a corresponding iterator
+    (VmapIterator, ChunkedMapIterator, JaxScanIterator). Enforces topological
     constraints: e.g., Scan on a heterogeneous axis is rejected.
 
     Parameters
     ----------
     strategy : AxisStrategy
-        One of Vmap, SafeMap, Scan, or DedupGather.
+        One of Vmap, ChunkedMap, Scan, or DedupGather.
     axis : str, optional
         Name of the axis being dispatched. Default "". Used to detect
         heterogeneous axes via heterogeneous_axes parameter.
@@ -55,7 +55,7 @@ def make_axis_dispatch(
     Returns
     -------
     object
-        A MapIterator (VmapIterator or SafeMapIterator) or ScanIterator
+        A MapIterator (VmapIterator or ChunkedMapIterator) or ScanIterator
         (JaxScanIterator). Concrete types are imported at call time.
 
     Raises
@@ -68,8 +68,8 @@ def make_axis_dispatch(
     """
     # Lazy import to avoid circular dependency with iterator.py.
     from xtrax.tiling.iterator import (
+        ChunkedMapIterator,
         JaxScanIterator,
-        SafeMapIterator,
         VmapIterator,
         WhileLoopIterator,
     )
@@ -107,8 +107,8 @@ def make_axis_dispatch(
     # Dispatch by strategy type.
     if isinstance(strategy, Vmap):
         return VmapIterator()
-    if isinstance(strategy, SafeMap):
-        return SafeMapIterator(tile=strategy.batch_size)
+    if isinstance(strategy, ChunkedMap):
+        return ChunkedMapIterator(tile=strategy.batch_size)
     if isinstance(strategy, Scan):
         return JaxScanIterator()
     if isinstance(strategy, WhileCarry):
@@ -143,11 +143,11 @@ def axis_dispatch(
             raise ValueError("axis_dispatch: Vmap requires fn")
         return jax.vmap(fn)(xs)
 
-    elif isinstance(strategy, SafeMap):
-        # SafeMap: chunked vmap for memory efficiency
+    elif isinstance(strategy, ChunkedMap):
+        # ChunkedMap: chunked vmap for memory efficiency
         if fn is None:
-            raise ValueError("axis_dispatch: SafeMap requires fn")
-        return safe_map(fn, xs, batch_size=strategy.batch_size)
+            raise ValueError("axis_dispatch: ChunkedMap requires fn")
+        return chunked_map(fn, xs, batch_size=strategy.batch_size)
 
     elif isinstance(strategy, Scan):
         # Scan: carry-bearing sequential iteration
@@ -173,7 +173,7 @@ def axis_dispatch(
         # Phase 1: dedup — select K unique elements from N using unique_indices
         deduped_xs = strategy.dedup_fn(xs, strategy.unique_indices)
         # Phase 2: map — apply fn to K unique elements
-        deduped_ys = safe_map(fn, deduped_xs, batch_size=None)  # vmap over deduped
+        deduped_ys = chunked_map(fn, deduped_xs, batch_size=None)  # vmap over deduped
         # Phase 3: gather — scatter K results back to N positions using index_map
         return strategy.gather_fn(deduped_ys, strategy.index_map)
 
@@ -206,7 +206,7 @@ def axis_dispatch(
             "Bucket is a host-side strategy and is not executed by "
             "axis_dispatch. Pad to a bucket shape on the host with "
             "select_bucket()/bucketize() before your jitted step, then dispatch "
-            "the per-bucket compute with a device-tier strategy (e.g. Vmap/SafeMap)."
+            "the per-bucket compute with a device-tier strategy (e.g. Vmap/ChunkedMap)."
         )
 
     else:

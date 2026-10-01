@@ -49,7 +49,7 @@ class Tap(Protocol, Generic[T]):  # noqa: UP046
     """Identity transform with side effect. T -> T.
 
     Value continues downstream unchanged; side effect fires at each step.
-    `ordered`: if True, requires SafeMap or Scan strategy on this axis —
+    `ordered`: if True, requires ChunkedMap or Scan strategy on this axis —
     vmap does not preserve step order. Validator enforces this.
     Implementations must use io_callback internally.
 
@@ -67,7 +67,7 @@ class Tap(Protocol, Generic[T]):  # noqa: UP046
 class Sink(Protocol, Generic[T]):  # noqa: UP046
     """Terminal side effect. T -> None. Value leaves the pipeline.
 
-    `ordered`: if True, requires SafeMap or Scan strategy on this axis.
+    `ordered`: if True, requires ChunkedMap or Scan strategy on this axis.
     Implementations must use io_callback(ordered=self.ordered) internally.
     Example: IoCallbackEncoderSink (writes encoded tensors to H5).
 

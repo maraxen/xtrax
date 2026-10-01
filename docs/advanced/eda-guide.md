@@ -27,9 +27,9 @@ specs = [
 plan = BatchPlanner().plan(specs)
 
 stats = extract_plan_stats(plan)
-# stats["strategy_counts"]  -> {"SafeMap": 1, "Bucket": 1}
+# stats["strategy_counts"]  -> {"ChunkedMap": 1, "Bucket": 1}
 # stats["total_axes"]       -> 2
-# stats["axes"][0]          -> {"name": "batch", "strategy": "SafeMap", ...}
+# stats["axes"][0]          -> {"name": "batch", "strategy": "ChunkedMap", ...}
 
 # explain_plan guarantees non-empty reasoning strings
 rich = explain_plan(plan)

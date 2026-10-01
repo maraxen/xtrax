@@ -18,7 +18,7 @@ A set of composable building blocks for JAX/Equinox training loops — engine + 
 
 xtrax packages that pre-trace layer, plus the conveniences that surround it:
 
-- **Axis tiling** — declare axes with `AxisSpec`; `BatchPlanner` selects `Vmap`, `SafeMap` (chunked via `jax.lax.map`), `Scan`, bucketing, or dedup-gather per axis, and `xtrax explain` reports why
+- **Axis tiling** — declare axes with `AxisSpec`; `BatchPlanner` selects `Vmap`, `ChunkedMap` (chunked via `jax.lax.map`), `Scan`, bucketing, or dedup-gather per axis, and `xtrax explain` reports why
 - **Composable training steps** — `Trainer` or `SafetyTrainStep` with your own loss functions and optimizers
 - **Safety-checked arithmetic** — opt-in checkify NaN/Inf detection and safe ops (`safe_norm`, `safe_reciprocal`)
 - **Inference sparsification** — structured sparsity masks with `SparseConfig` and `sparsify_model`, fixed compile shapes

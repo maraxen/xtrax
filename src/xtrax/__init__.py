@@ -26,7 +26,7 @@ __all__ = [
     "BatchPlan",
     "BatchPlanner",
     "Vmap",
-    "SafeMap",
+    "ChunkedMap",
     "DedupGather",
     "Bucket",
     "select_bucket",
@@ -42,7 +42,7 @@ __all__ = [
     "init_dist",
     "is_distributed",
     # Transforms
-    "safe_map",
+    "chunked_map",
     "safe_scan",
     # Safety
     "safe_norm",
@@ -92,7 +92,7 @@ _LAZY = {
     "BatchPlan": "xtrax.tiling",
     "BatchPlanner": "xtrax.tiling",
     "Vmap": "xtrax.tiling",
-    "SafeMap": "xtrax.tiling",
+    "ChunkedMap": "xtrax.tiling",
     "DedupGather": "xtrax.tiling.strategy",
     "Bucket": "xtrax.tiling",
     "select_bucket": "xtrax.tiling",
@@ -108,7 +108,7 @@ _LAZY = {
     "init_dist": "xtrax.distributed",
     "is_distributed": "xtrax.distributed",
     # Transforms subpackage
-    "safe_map": "xtrax.transforms",
+    "chunked_map": "xtrax.transforms",
     "safe_scan": "xtrax.transforms",
     # Safety subpackage
     "safe_norm": "xtrax.safety",
@@ -138,6 +138,17 @@ def __getattr__(name):
         import importlib
 
         return getattr(importlib.import_module(_LAZY[name]), name)
+    from xtrax._renamed import RENAMED, deprecated_alias
+
+    if name in RENAMED and RENAMED[name] in _LAZY:
+        # Deprecated pre-#3644 name. Warn from THIS hook (one frame below the caller), not
+        # via the submodule's hook -- that would attribute the warning to this file, and
+        # Python's default filter hides DeprecationWarnings not attributed to __main__.
+        import importlib
+
+        new = RENAMED[name]
+        obj = getattr(importlib.import_module(_LAZY[new]), new)
+        return deprecated_alias("xtrax", name, {new: obj})
     raise AttributeError(f"module 'xtrax' has no attribute {name!r}")
 
 

@@ -16,7 +16,7 @@ from xtrax.export.composer import (
 )
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.tiling.plan import AxisDecision, AxisSpec
-from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Scan, Vmap, WhileCarry
+from xtrax.tiling.strategy import Bucket, ChunkedMap, DedupGather, Scan, Vmap, WhileCarry
 
 
 def _decision(name: str, strategy: object, *, cardinality: int = 8) -> AxisDecision:
@@ -39,7 +39,7 @@ class TestUnsupportedStrategies:
             compose_single_axis(lambda x: x, _decision("a", Bucket(boundaries=(4, 8))))
 
     def test_bucket_points_at_the_supported_set(self):
-        with pytest.raises(UnsupportedStrategyError, match="Vmap/SafeMap/Scan/DedupGather"):
+        with pytest.raises(UnsupportedStrategyError, match="Vmap/ChunkedMap/Scan/DedupGather"):
             compose_single_axis(lambda x: x, _decision("a", Bucket(boundaries=(4, 8))))
 
     def test_bucket_explains_the_workaround(self):
@@ -64,7 +64,7 @@ class TestUnsupportedStrategies:
 
 
 class TestMapAxes:
-    @pytest.mark.parametrize("strategy", [Vmap(), SafeMap(batch_size=2)])
+    @pytest.mark.parametrize("strategy", [Vmap(), ChunkedMap(batch_size=2)])
     def test_round_trips_a_map_axis(self, strategy):
         xs = jnp.arange(8 * 3, dtype=jnp.float32).reshape(8, 3)
         composed = compose_single_axis(lambda x: x * 2.0, _decision("a", strategy))
