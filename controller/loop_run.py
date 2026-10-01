@@ -719,7 +719,7 @@ def run_campaign_loop(
         "success",
         conclusion=(
             f"completed {len(loop_result.iterations)} candidate(s) "
-            f"({loop_result.accepted_count} accepted), "
+            f"({loop_result.accepted_count} accepted, {loop_result.held_count} held), "
             f"termination_reason={loop_result.termination_reason}"
         ),
     )

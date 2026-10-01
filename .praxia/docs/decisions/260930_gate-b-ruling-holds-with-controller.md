@@ -57,3 +57,18 @@ The pre-bathos gates (smoke, checkified execution) already behave this way. Befo
 the failed run was scored, recorded `accepted=False`, and the loop continued. Whether
 a failed candidate should instead be a caught per-candidate failure that continues the
 campaign is error/retry policy. That belongs to AC-8c (LC-11), not to this fix.
+
+## Ruling on the seed floor (Marielle, 2026-09-30, in #173)
+
+Option 2. **Only the stats-battery gate vetoes promotion.** `is_accepted` (the best-so-far
+advance, `OneCandidatePassResult.accepted`, the probe record's `accepted`) reads the stats
+block only. The seed/trial floor gates the conclude-time **held** claim: `is_held =
+accepted and not seed_hard_blocked` (`OneCandidatePassResult.held`,
+`LoopResult.held_count`, the probe record's `held`).
+
+Why: the floor counts seeds and trials per `script_sha256` (`MIN_SEEDS=3`, `MIN_TRIALS=29`).
+Every evolved candidate is a new script, and a single run yields about one seed. As a
+promotion veto it would block nearly every candidate in the gated modes, and the ratchet
+would never advance. It asks whether there is enough replication to report a result as
+held. That is a question about the campaign's claim, not about which candidate is best so
+far.
