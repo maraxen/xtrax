@@ -9,6 +9,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`xtrax.run.digest` module**: Digest functions for reproducibility and durability
+  infrastructure (#U4, spec demistify 261001_preemption-safe-cimist-fitting):
+  `canonical_digest`, `array_digest`, `source_fingerprint`, `numerics_env`. Used by
+  pipeline resumption and done-marker verification to detect content changes
+  independent of timing, process, or operational metadata.
+
+- **Reserved `xtrax.` attribute namespace** (#U0, spec demistify
+  261001_preemption-safe-cimist-fitting): Zarr attrs starting with the prefix
+  `"xtrax."` are excluded from `zarr_content_digest` by default (pass
+  `include_provenance=True` to include them). The sink's new `stamp_reserved()`
+  method is the sanctioned writer of such attrs, ensuring internal bookkeeping
+  (e.g. run reports, status flags) does not affect content-based reproducibility.
+  `ZarrStagingSink.stage()` now rejects caller attrs in the reserved namespace.
+
+- **`xtrax.run.zarr_commit` module** (#U1-U2, spec demistify
+  261001_preemption-safe-cimist-fitting): Durable atomic-commit primitives for
+  zarr v3 directory stores. Provides crash-safe staging + rename patterns:
+  `commit_key` (atomically commit a staged group), `lookup` (classify key state:
+  Missing, Reuse, Stale, Corrupt), `create_store` / `open_store` (initialize and
+  open durable stores with identity payloads and prefix trees), `committed_keys`
+  (enumerate committed keys), `gc_staging` (garbage-collect staging dirs),
+  `write_staged_group` (stage arrays + attrs). Frozen dataclasses `CommitRecord`,
+  `Committed`, `Duplicate` for immutable record-keeping; exception hierarchy
+  `DurableStoreError` + specific subclasses for diagnostics. Includes fault
+  injection support (XTRAX_FAULT_INJECT env var) for crash atomicity testing.
+
+- **`ZarrStagingSink` durable create-or-join mode** (#U3, spec demistify
+  261001_preemption-safe-cimist-fitting): `SinkSpec` gains defaulted fields
+  `open_mode` (`"exclusive"` | `"create_or_join"`), `store_identity` and
+  `prefixes` (also accepted by `derive_sink_spec`). With
+  `open_mode="create_or_join"` the sink atomically creates the store root (or
+  joins an existing one after an identity + prefix check), never opens the
+  target with `mode="a"` and never rewrites root attrs, and commits a writer
+  record at `("_xtrax_writers", run_id)` before the constructor returns. In
+  this mode `stage()` takes `input_digest` (required), `input_payload`,
+  `commit_meta` and `env_extra`; `drain()` commits each key atomically via
+  staging + rename and returns `{key: Committed | Duplicate}`
+  (`CommitConflictError` on a differing digest). New `lookup`,
+  `committed_keys`, `gc_staging`, `close()` and context-manager support;
+  `finalize()` raises (durable stores are never consolidated) and
+  `stamp_reserved` only targets already-committed keys. `drain()` returns `{}`
+  in the unchanged `exclusive` mode. The sink's shared constants moved to the
+  new import-free `xtrax.run._sink_names` to break an import cycle (still
+  re-exported from `zarr_sink`).
+
+  Deliberate deviations from the exclusive-mode contract, and hardening rules of the
+  durable mode:
+  - `stamp_reserved(())` on the root **raises** in durable mode (a durable store never
+    rewrites root attrs); stamp a committed key instead. Concurrent stamps of the same
+    name on the same key by different writers are last-writer-wins.
+  - Durable `drain()` **reports auto-flushed outcomes**: it returns the
+    `Committed | Duplicate` outcome of every key committed since the previous explicit
+    `drain()`, including keys an auto-flush (`flush_every`) committed inside `stage()`.
+    A `CommitConflictError` can therefore also surface from `stage()`.
+  - **Exclusive mode refuses durable stores**: opening a directory whose root carries
+    `xtrax.store` with the default `open_mode="exclusive"` raises `ValueError` instead of
+    rewriting the durable store's root.
+  - A key can never be nested inside a committed key: `commit_key` raises
+    `UnknownPrefixError` if the parent, or any ancestor below the store root, is a
+    committed key; `stage()` requires the key's parent to equal or sit under a declared
+    `SinkSpec.prefixes` entry (the reserved writers prefix excluded).
+  - An existing **empty** directory is treated as absent by `create_or_join`; a non-empty
+    non-store directory still raises `NotADurableStoreError`. The output directory is
+    resolved through symlinks so staging lands beside the real target, and a staging /
+    store device mismatch raises `ValueError`. `run_id` is validated as a key part before
+    any filesystem work.
+  - `close()` now ends the sink (all modes): `stage`/`drain`/`stamp_reserved` afterwards
+    raise `RuntimeError`, and undrained keys are discarded with a `UserWarning`.
+  - `lookup(verify=True)` propagates `OSError`/`MemoryError` from the content-digest
+    computation instead of reporting `Corrupt`; zarr decode errors stay `Corrupt` (the
+    reason now names the exception type). `gc_staging` renames each candidate to
+    `<name>.gc-<uuid8>` before deleting it.
 - **`xtrax-io-on-shared-filesystems` skill** (`agent_assets/skills/`). Reference for
   choosing a read pattern on NFS/Lustre/GPFS: cost is requests x latency, not bytes;
   what `md.iterload(stride=k)` and an offset-table seek reader actually read; the
