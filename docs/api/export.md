@@ -148,7 +148,13 @@ boundary, a mis-shaped carry — changes both sides identically.
 
 ## What can cross the boundary
 
-`validate_export_safe` runs before any tracing.
+`validate_export_safe` runs before anything is compiled, converted, or run. In
+`export_pipeline` the plan topology is checked first; then the composed callable is
+built and traced once, and every target's gate judges that one trace: the batched
+program actually exported, so a per-element function is judged as it is
+exported. Called directly, `check_export_safety` / `validate_export_safe` take that
+trace as `traced_jaxpr=trace_for_export_safety(callable_, abstract_inputs)`;
+without it they trace `fn` against `abstract_inputs`.
 
 Supported strategies are `Vmap`, `ChunkedMap`, `Scan`, and `DedupGather`. `Bucket`
 is host-tier: pad with `bucketize()` before the boundary. `WhileCarry` has an
@@ -397,9 +403,29 @@ results["onnx"].onnx_census      # where each dtype occurs in the graph
 
 Parity compares every output leaf. Integer and bool leaves must match exactly,
 and every leaf must keep its dtype; float leaves use `atol`/`rtol`. Reference
-leaves pass through `jnp.asarray` first, as they do for the IREE targets, so a
-NumPy oracle's float64/int64 compares as float32/int32. The result
-is a `LeafParityResult` with one `ParityResult` per leaf.
+leaves are narrowed to JAX's dtypes first (`parity.to_jax_dtypes`, what `jnp.asarray`
+would give them), so in a 32-bit process a NumPy oracle's float64/int64 compares as
+float32/int32. Under `jax_enable_x64` a NumPy oracle keeps NumPy's 64-bit default,
+and exactly that pair against the program's 32-bit dtype is not counted as a dtype
+change. A tuple of arrays is a multi-output oracle and is never stacked into one
+array. The result is a `LeafParityResult` with one `ParityResult` per leaf. The
+native targets compare the same way, through the same `compare_leaves`.
+
+Concrete inputs are narrowed the same way on both backends (`parity.narrow_inputs`),
+so a float64 NumPy input feeds an f32 graph or entry point the way it would feed the
+traced program. If ONNX Runtime still cannot load or run the graph, `run_onnx` raises
+`CompileError` naming the graph's declared inputs and what was fed. A model of 2 GiB or more, protobuf's limit, is written with its
+tensors in `<model>.onnx.data` beside the `.onnx`, which ONNX Runtime loads from the
+same directory; `size_bytes` counts both files.
+
+Every target's dtype gate judges the program's inputs (every pytree leaf) and its
+outputs. The `ONNX` gate also judges each op by the dtypes of its operands and
+results: ONNX Runtime needs a kernel for each op at its dtype, and its CPU execution
+provider has no bf16 arithmetic, so `x.astype(jnp.bfloat16) + 1` is refused at plan
+time with `DtypeNotSupportedError`. Data movement and casts (reshape, transpose,
+slices, concatenate, gather, rev, reduce_sum) run at any dtype and are allowed, so
+`x.astype(jnp.bfloat16).astype(jnp.float32)` exports. IREE targets compile bf16
+intermediates, and only their inputs and outputs are judged.
 
 **What the gate allows.** The op rules are backend-specific. Stable sorts and
 `jax.lax.top_k`, which the IREE rules block, are exact on ONNX Runtime and pass

@@ -19,6 +19,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   targets `xtrax.transforms.map.chunked_map` and is re-sealed (manifest hash recomputed
   with `scripts/audit_port_oracle_seal.py`; the reference oracle is unchanged).
 
+### Fixed
+
+- **Native/IREE parity compares integer and bool outputs exactly, per output leaf**
+  (`xtrax.export`, #5688). `compare` / `verify_native_parity` used `np.allclose(rtol=1e-5)`
+  for every dtype, so an index output of `1_000_009` passed for `1_000_000` and
+  `ExportResult.verified` was True for a wrong native artifact, while the same program
+  failed on the onnx target. Both backends now share `compare_leaves`: one result per
+  output leaf, integers and bools exact, any dtype change a failure.
+  `verify_native_parity` returns a `LeafParityResult` (a `ParityResult` subclass), and a
+  multi-output native entry point is compared leaf by leaf instead of being stacked into
+  one array. A nested list of scalars for a single output is read as one array on every
+  backend (onnx used to split it into scalar leaves); a tuple of arrays is never stacked,
+  so an export that collapsed two outputs into one cannot verify. Under
+  `jax_enable_x64`, a NumPy oracle left at NumPy's 64-bit default (float64/int64/uint64)
+  is not a dtype mismatch against its 32-bit counterpart; values are still compared,
+  exactly for integers, and any other narrowing is a mismatch. An integer reference
+  against a float output, or a bool <-> int swap, fails with `max_abs_diff` inf. Both
+  backends narrow concrete inputs the same way (`parity.narrow_inputs`), so a float64
+  NumPy input to an f32 export now runs on native too. The comparison label reads
+  `(exact comparison)`. **Behaviour change:** a native export that only passed through
+  float tolerance on an integer output now fails. `LeafParityResult` and the new `compare_leaves` live in
+  `xtrax.export.parity` (`LeafParityResult` is still importable from
+  `xtrax.export.onnx`).
+
+- **The export gate judges the program actually exported** (`xtrax.export`, #5690).
+  The op rules traced the per-element `fn` against the BATCHED `abstract_inputs` and
+  swallowed the trace failure, so for an ordinary per-element function the
+  "unsuppressible" `onnx-in-graph-rng` rule (and the IREE op rules) never ran; an RNG
+  draw was refused only after conversion, by the graph backstop. `export_pipeline` now
+  checks topology, composes the callable once, traces it once
+  (`safety.trace_for_export_safety`), and every target's gate judges that trace
+  (new `traced_jaxpr=` on `check_export_safety` / `validate_export_safe`). The
+  `convert_to_onnx` namespace guard also restores a public JAX attribute that a
+  conversion *deleted*, not only one it replaced.
+
+- **ONNX failures surface as the documented error types** (`xtrax.export`, #5689).
+  The dtype gate now judges every leaf of a pytree input (`abstract_inputs[0]['a']`) and
+  the program's OUTPUTS, for every target (a bf16-returning program passed `native`);
+  for `ONNX` it also judges every op by its operands' and results' dtypes, except the
+  data-movement primitives ORT runs at any dtype (casts, reshape, transpose, slices,
+  concatenate, gather, rev, reduce_sum). So `x.astype(jnp.bfloat16) + 1` is a
+  `DtypeNotSupportedError` at plan time instead of a raw `onnxruntime`
+  `NOT_IMPLEMENTED` at session creation, while the precision-emulation idiom
+  `x.astype(jnp.bfloat16).astype(jnp.float32)` passes. Both the allowlist and the
+  envelope (f16 and the integer types run as intermediates) are pinned by ORT tests.
+  One cause is one blocker: an input dtype is not reported again by the ops that use
+  it. `run_onnx` narrows inputs (no device copy) and raises `CompileError`, naming the
+  declared and given inputs, when ORT cannot load or run the graph. A model of 2 GiB
+  or more is written with every large tensor -- Constant-node attributes included --
+  in `<model>.onnx.data`, where serialization used to raise a raw `ValueError`; a
+  stale data file is removed first, and an unrelated file of that name in the CWD no
+  longer fails the export.
+
+### Changed
+
+- **`export_pipeline` traces and composes once for all targets** (#5691), where it
+  traced `fn` once per target in the gate loop and rebuilt the composed callable once
+  per target in the compile loop.
+
 ## [0.4.0a11] - 2026-10-01
 
 ### Added

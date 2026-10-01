@@ -18,13 +18,18 @@ from typing import Any
 import jax
 
 from xtrax.export.compile import CompileResult, compile_for_target
-from xtrax.export.composer import build_traceable_callable
+from xtrax.export.composer import ComposerError, build_traceable_callable
 from xtrax.export.onnx import OnnxDtypeCensus, convert_to_onnx, verify_onnx_parity
 from xtrax.export.parity import ParityResult, verify_native_parity
-from xtrax.export.safety import validate_export_safe
+from xtrax.export.safety import (
+    _NOT_TRACEABLE,
+    trace_for_export_safety,
+    validate_export_safe,
+)
 from xtrax.export.spirv import SpirvValidationResult
 from xtrax.export.targets import NATIVE, WASM32, Backend, Target, VerificationLevel
 from xtrax.stages.boundaries import AxisBoundary
+from xtrax.stages.topology import validate_plan_topology
 
 __all__ = ["ExportResult", "export_pipeline"]
 
@@ -161,6 +166,14 @@ def _diagnostics_for(
             f"{compiled.target.name}: StableHLO downgraded to a portable artifact "
             f"before IREE accepted it"
         )
+    data_path = compiled.path.with_name(compiled.path.name + ".data")
+    if compiled.target.backend is Backend.ONNX and data_path.exists():
+        notes.append(
+            f"{compiled.target.name}: the model is {compiled.size_bytes} bytes, over "
+            f"protobuf's 2 GiB limit, so its tensors are in {data_path.name} beside "
+            f"{compiled.path.name}. The artifact is both files: vmfb_bytes holds only "
+            f"the graph, and ONNX Runtime loads the data from the model's directory."
+        )
     if census is not None and census.n_int64:
         producers = ", ".join(f"{op} x{n}" for op, n in sorted(census.int64_producers.items()))
         notes.append(
@@ -211,6 +224,10 @@ def export_pipeline(
             ``concrete_inputs`` or without ``reference_fn``.
         PlanTopologyError: Propagated from the safety gate.
         DtypeNotSupportedError: If a leaf's dtype is rejected by a target.
+        UnsupportedOperationError: If a target's op rules reject the program.
+        ComposerError: If the plan cannot be composed into one callable (and its
+            subclasses). Raised after every target's gate, so it never hides a
+            dtype or op blocker.
         CompileError: If IREE (or, for ``onnx``, jax2onnx) rejects the program
             or is not installed, or an ``onnx`` conversion is attempted under
             ``jax_enable_x64``.
@@ -252,6 +269,36 @@ def export_pipeline(
     decisions = list(plan.decisions)
     results: dict[str, ExportResult] = {}
 
+    # Topology first: stripping the materializing sinks (below) and composing are
+    # only meaningful once every materializing axis is known to be well-formed.
+    # validate_export_safe re-checks it per target; this call makes it come first.
+    validate_plan_topology(decisions, axis_boundaries or {}, export_safe=True)
+
+    # The callable is composed once, and traced once, for every target: the gates
+    # judge the batched program actually exported (a per-element `fn` cannot be
+    # traced against the batched abstract inputs, which used to skip the op rules
+    # silently, #5690), and N targets no longer cost N traces and N compositions.
+    # The composer never sees `materialize` itself.
+    # A composition error (e.g. a Scan axis with no init) is held until the gates
+    # have run, so it never hides their dtype/op blockers. If the composed callable
+    # cannot be composed or traced, `fn` itself is traced, once, for every gate.
+    boundaries = _boundaries_for_export(axis_boundaries)
+    # The composer can also raise while the callable is TRACED (e.g. a lane-dependent
+    # ordered sink under Vmap-over-Scan); that error is held the same way, so it
+    # surfaces as ComposerError rather than a later CompileError from conversion.
+    composer_error: ComposerError | None = None
+    callable_: Callable[..., Any] | None = None
+    traced: Any = None
+    try:
+        callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
+        traced = trace_for_export_safety(callable_, abstract_inputs, reraise=(ComposerError,))
+    except ComposerError as exc:
+        composer_error = exc
+    if traced is None:
+        traced = trace_for_export_safety(fn, abstract_inputs)
+    if traced is None:
+        traced = _NOT_TRACEABLE  # tried twice: the gates must not re-trace per target
+
     # Every target's gate runs first, so a rejected export fails fast without
     # paying for the oracle (often an unbatched per-row loop), and a gate's error
     # is never masked by an exception from reference_fn.
@@ -263,7 +310,11 @@ def export_pipeline(
             fn,
             target,
             request_features=request_features,
+            traced_jaxpr=traced,
         )
+    if composer_error is not None:
+        raise composer_error
+    assert callable_ is not None  # noqa: S101 - set whenever composer_error is None
 
     # The oracle is then evaluated once, before any target is compiled. That is
     # a correctness requirement, not an optimisation: jax2onnx leaves a patched
@@ -277,11 +328,7 @@ def export_pipeline(
         assert reference_fn is not None  # noqa: S101 - guarded above
         expected = reference_fn(concrete_inputs)
 
-    # Strip only after the gates have confirmed every materializing axis is
-    # well-formed. The composer never sees `materialize` itself.
-    boundaries = _boundaries_for_export(axis_boundaries)
     for target in targets:
-        callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
         census: OnnxDtypeCensus | None = None
         if target.backend is Backend.ONNX:
             compiled, census = convert_to_onnx(callable_, abstract_inputs, target)
