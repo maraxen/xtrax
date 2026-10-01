@@ -36,6 +36,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `xtrax.export.parity` (`LeafParityResult` is still importable from
   `xtrax.export.onnx`).
 
+- **The export gate judges the program actually exported** (`xtrax.export`, #5690).
+  The op rules traced the per-element `fn` against the BATCHED `abstract_inputs` and
+  swallowed the trace failure, so for an ordinary per-element function the
+  "unsuppressible" `onnx-in-graph-rng` rule (and the IREE op rules) never ran; an RNG
+  draw was refused only after conversion, by the graph backstop. `export_pipeline` now
+  checks topology, composes the callable once, traces it once
+  (`safety.trace_for_export_safety`), and every target's gate judges that trace
+  (new `traced_jaxpr=` on `check_export_safety` / `validate_export_safe`). The
+  `convert_to_onnx` namespace guard also restores a public JAX attribute that a
+  conversion *deleted*, not only one it replaced.
+
+- **ONNX failures surface as the documented error types** (`xtrax.export`, #5689).
+  The dtype gate now judges every leaf of a pytree input (`abstract_inputs[0]['a']`),
+  for every target, and, for `ONNX`, every dtype the traced program computes in: a
+  bf16 intermediate is a `DtypeNotSupportedError` at plan time instead of a raw
+  `onnxruntime` `NOT_IMPLEMENTED` at session creation (ORT's CPU EP has no bf16
+  kernels; f16 and the integer types run, measured 2026-10-01). `run_onnx` narrows
+  each concrete input through `jnp.asarray` (a float64 NumPy input to an f32 graph
+  now runs) and raises `CompileError`, naming the declared and given inputs, when ORT
+  cannot load or run the graph. A model of 2 GiB or more is written with its tensors
+  in `<model>.onnx.data`, where serialization used to raise a raw `ValueError`.
+
+### Changed
+
+- **`export_pipeline` traces and composes once for all targets** (#5691), where it
+  traced `fn` once per target in the gate loop and rebuilt the composed callable once
+  per target in the compile loop.
+
 ## [0.4.0a11] - 2026-10-01
 
 ### Added

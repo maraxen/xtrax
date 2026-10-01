@@ -42,6 +42,7 @@ from types import ModuleType
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from xtrax.export.compile import CompileError, CompileResult
@@ -121,10 +122,10 @@ def _guarded_modules() -> tuple[ModuleType, ...]:
 
 @contextlib.contextmanager
 def _restoring_jax_namespaces() -> Iterator[None]:
-    """Undo any public-attribute replacement made inside the block.
+    """Undo any public-attribute replacement or deletion made inside the block.
 
-    Only attributes that existed before and were *replaced* are restored.
-    Identity, not equality, is the test: a patch is a different object. Names
+    Only attributes that existed before are restored: put back if *replaced*, or
+    if *deleted*. Identity, not equality, is the test: a patch is a different object. Names
     the block *adds* are left in place (jax2onnx adds e.g. ``jnp.cumsum_p`` and
     ``lax.remat2_p``, which no pre-existing code references and which jax2onnx
     itself may rely on). A replacement made concurrently by other code during
@@ -139,8 +140,44 @@ def _restoring_jax_namespaces() -> Iterator[None]:
             for name, value in before.items():
                 if name.startswith("_"):
                     continue
-                if vars(module).get(name, value) is not value:
+                current = vars(module)
+                if name not in current or current[name] is not value:
                     setattr(module, name, value)
+
+
+# protobuf refuses to serialize a message of 2 GiB or more. A model whose baked-in
+# weights cross that is written with its tensors in an external-data file beside
+# the .onnx (ONNX's standard layout, which ORT loads from the model's directory).
+_PROTOBUF_LIMIT_BYTES = 2**31 - 1
+# Tensors at least this large go to the external-data file when it is used.
+_EXTERNAL_DATA_THRESHOLD_BYTES = 1024
+
+
+def _write_model(model: Any, out_path: Path) -> int:
+    """Write ``model`` to ``out_path``; return the bytes written (both files).
+
+    Raises:
+        CompileError: If serialization or the write fails.
+    """
+    onnx = _require_onnx()
+    data_path = out_path.with_name(out_path.name + ".data")
+    try:
+        if model.ByteSize() < _PROTOBUF_LIMIT_BYTES:
+            data = model.SerializeToString()
+            out_path.write_bytes(data)
+            return len(data)
+        onnx.save_model(
+            model,
+            str(out_path),
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location=data_path.name,
+            size_threshold=_EXTERNAL_DATA_THRESHOLD_BYTES,
+        )
+    except Exception as exc:
+        msg = f"could not write the ONNX model to {out_path}: {exc}"
+        raise CompileError(msg) from exc
+    return out_path.stat().st_size + (data_path.stat().st_size if data_path.exists() else 0)
 
 
 def _flat_callable(
@@ -301,7 +338,9 @@ def convert_to_onnx(
     Raises:
         ValueError: If ``target`` is not an ONNX-backend target.
         CompileError: If the toolchain is missing, ``jax_enable_x64`` is set,
-            jax2onnx rejects the callable, or the graph contains RNG ops.
+            jax2onnx rejects the callable, the graph contains RNG ops, or the model
+            cannot be written. A model of 2 GiB or more (protobuf's limit) is
+            written with its tensors in ``<out_path>.data`` beside it.
     """
     if target.backend is not Backend.ONNX:
         msg = f"convert_to_onnx needs an onnx-backend target, got {target.name!r}"
@@ -343,13 +382,12 @@ def convert_to_onnx(
         handle.close()
         out_path = Path(handle.name)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    data = model.SerializeToString()
-    out_path.write_bytes(data)
+    size_bytes = _write_model(model, out_path)
 
     compiled = CompileResult(
         target=target,
         path=out_path,
-        size_bytes=len(data),
+        size_bytes=size_bytes,
         spirv_bytes=None,
         downgraded_stablehlo=False,
         stderr="",
@@ -367,12 +405,42 @@ def run_onnx(onnx_path: Path, *args: Any) -> list[np.ndarray]:
 
     Returns:
         One numpy array per graph output: the leaves of the pipeline's result.
+
+    Each input leaf goes through ``jnp.asarray`` first, as it would on its way into
+    the traced JAX program: in a 32-bit process a NumPy float64/int64 input narrows
+    to float32/int32, matching the graph, which was converted with x64 disabled.
+
+    Raises:
+        CompileError: If ONNX Runtime cannot load the graph (e.g. no kernel for an
+            op at its dtype) or run it with these inputs. The message names the
+            graph's declared inputs next to the dtypes and shapes that were fed.
     """
     ort = _require_ort()
-    session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
-    leaves = [np.asarray(x) for x in jax.tree_util.tree_leaves(list(args))]
-    feeds = {spec.name: leaf for spec, leaf in zip(session.get_inputs(), leaves, strict=True)}
-    return [np.asarray(out) for out in session.run(None, feeds)]
+    leaves = [np.asarray(jnp.asarray(x)) for x in jax.tree_util.tree_leaves(list(args))]
+    try:
+        session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    except Exception as exc:
+        msg = f"ONNX Runtime could not load {onnx_path.name}: {exc}"
+        raise CompileError(msg) from exc
+    declared = session.get_inputs()
+    if len(declared) != len(leaves):
+        msg = (
+            f"{onnx_path.name} declares {len(declared)} input(s) but {len(leaves)} "
+            f"input leaf/leaves were given"
+        )
+        raise CompileError(msg)
+    feeds = {spec.name: leaf for spec, leaf in zip(declared, leaves, strict=True)}
+    try:
+        outputs = session.run(None, feeds)
+    except Exception as exc:
+        wanted = ", ".join(f"{d.name}: {d.type}{tuple(d.shape)}" for d in declared)
+        given = ", ".join(f"{leaf.dtype}{leaf.shape}" for leaf in leaves)
+        msg = (
+            f"ONNX Runtime could not run {onnx_path.name}: {exc} "
+            f"(declared: {wanted}; given: {given})"
+        )
+        raise CompileError(msg) from exc
+    return [np.asarray(out) for out in outputs]
 
 
 def verify_onnx_parity(

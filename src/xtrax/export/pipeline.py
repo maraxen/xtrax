@@ -21,10 +21,11 @@ from xtrax.export.compile import CompileResult, compile_for_target
 from xtrax.export.composer import build_traceable_callable
 from xtrax.export.onnx import OnnxDtypeCensus, convert_to_onnx, verify_onnx_parity
 from xtrax.export.parity import ParityResult, verify_native_parity
-from xtrax.export.safety import validate_export_safe
+from xtrax.export.safety import trace_for_export_safety, validate_export_safe
 from xtrax.export.spirv import SpirvValidationResult
 from xtrax.export.targets import NATIVE, WASM32, Backend, Target, VerificationLevel
 from xtrax.stages.boundaries import AxisBoundary
+from xtrax.stages.topology import validate_plan_topology
 
 __all__ = ["ExportResult", "export_pipeline"]
 
@@ -252,6 +253,20 @@ def export_pipeline(
     decisions = list(plan.decisions)
     results: dict[str, ExportResult] = {}
 
+    # Topology first: stripping the materializing sinks (below) and composing are
+    # only meaningful once every materializing axis is known to be well-formed.
+    # validate_export_safe re-checks it per target; this call makes it come first.
+    validate_plan_topology(decisions, axis_boundaries or {}, export_safe=True)
+
+    # The callable is composed once, and traced once, for every target: the gates
+    # judge the batched program actually exported (a per-element `fn` cannot be
+    # traced against the batched abstract inputs, which used to skip the op rules
+    # silently, #5690), and N targets no longer cost N traces and N compositions.
+    # The composer never sees `materialize` itself.
+    boundaries = _boundaries_for_export(axis_boundaries)
+    callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
+    traced = trace_for_export_safety(callable_, abstract_inputs)
+
     # Every target's gate runs first, so a rejected export fails fast without
     # paying for the oracle (often an unbatched per-row loop), and a gate's error
     # is never masked by an exception from reference_fn.
@@ -263,6 +278,7 @@ def export_pipeline(
             fn,
             target,
             request_features=request_features,
+            traced_jaxpr=traced,
         )
 
     # The oracle is then evaluated once, before any target is compiled. That is
@@ -277,11 +293,7 @@ def export_pipeline(
         assert reference_fn is not None  # noqa: S101 - guarded above
         expected = reference_fn(concrete_inputs)
 
-    # Strip only after the gates have confirmed every materializing axis is
-    # well-formed. The composer never sees `materialize` itself.
-    boundaries = _boundaries_for_export(axis_boundaries)
     for target in targets:
-        callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
         census: OnnxDtypeCensus | None = None
         if target.backend is Backend.ONNX:
             compiled, census = convert_to_onnx(callable_, abstract_inputs, target)

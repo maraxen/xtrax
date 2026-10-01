@@ -66,6 +66,7 @@ __all__ = [
     "check_export_safety",
     "dtype_name",
     "find_bcoo_leaves",
+    "trace_for_export_safety",
     "validate_export_safe",
 ]
 
@@ -241,13 +242,22 @@ def _dtype_blockers(
     target: Target,
     request_features: frozenset[str],
 ) -> list[ExportBlocker]:
-    """Collect a blocker for every input or closure leaf whose dtype is rejected."""
+    """Collect a blocker for every input or closure leaf whose dtype is rejected.
+
+    Inputs are flattened to their leaves first, so a dict or tuple input's leaves are
+    judged too (``abstract_inputs[0]['a']``); a bare array input keeps the plain
+    ``abstract_inputs[<i>]`` name.
+    """
+    import jax
+
     blockers: list[ExportBlocker] = []
-    for index, spec in enumerate(abstract_inputs):
+    flat, _ = jax.tree_util.tree_flatten_with_path(list(abstract_inputs))
+    for path, spec in flat:
         dtype = getattr(spec, "dtype", None)
         if dtype is None:
             continue
-        blocker = _dtype_blocker(f"abstract_inputs[{index}]", dtype, target, request_features)
+        where = f"abstract_inputs{jax.tree_util.keystr(path)}"
+        blocker = _dtype_blocker(where, dtype, target, request_features)
         if blocker is not None:
             blockers.append(blocker)
 
@@ -467,36 +477,73 @@ def _is_unbatched_key(eqn: Any) -> bool:
     return shape is not None and math.prod(shape) <= 1
 
 
-def _op_blockers(
-    abstract_inputs: Sequence[Any], fn: Callable[..., Any], target: Target
-) -> list[ExportBlocker]:
-    """Collect blockers for ops ``target``'s backend cannot legalize or preserve.
+def trace_for_export_safety(fn: Callable[..., Any], abstract_inputs: Sequence[Any]) -> Any:
+    """Trace ``fn`` once for the op and program-dtype rules, or None if it cannot be.
 
-    Each backend gets only the rules measured on it: the IREE rules for IREE
-    targets, the in-graph-RNG rule for onnx.
+    Pass the result as ``traced_jaxpr`` to judge several targets from one trace.
+    ``export_pipeline`` traces the composed callable it actually exports -- the
+    batched program -- so a per-element ``fn`` (which usually cannot be traced
+    against the BATCHED ``abstract_inputs``) is still judged.
 
-    Tracing failures here are swallowed rather than surfaced: a callable that
-    ``jax.make_jaxpr`` cannot trace is not something this gate could have
-    usefully judged anyway, and it will fail identically -- at export or
-    compile time, with a clearer error pointing at the actual call site --
-    whether or not this function ran. Swallowing the exception here does not
-    hide a real problem; it just declines to duplicate one that surfaces on
-    its own moments later.
+    Tracing failures are swallowed rather than surfaced: a callable that
+    ``jax.make_jaxpr`` cannot trace is not something these rules could have
+    usefully judged, and it fails identically -- at export or conversion time,
+    with a clearer error pointing at the actual call site -- moments later.
     """
-    try:
-        import jax
-    except ImportError:  # pragma: no cover - jax is a hard dependency
-        return []
+    import jax
 
     try:
         closed = jax.make_jaxpr(fn)(*abstract_inputs)
     except Exception:  # noqa: BLE001 - see docstring: never masks a real failure
-        return []
+        return None
+    return getattr(closed, "jaxpr", closed)
 
-    top = getattr(closed, "jaxpr", closed)
+
+def _op_blockers(top: Any, target: Target) -> list[ExportBlocker]:
+    """Collect blockers for ops ``target``'s backend cannot legalize or preserve.
+
+    Each backend gets only the rules measured on it: the IREE rules for IREE
+    targets, the in-graph-RNG rule for onnx. ``top`` is None when the program
+    could not be traced (see ``trace_for_export_safety``).
+    """
+    if top is None:
+        return []
     if target.backend is Backend.ONNX:
         return _onnx_op_blockers(top)
     return _iree_op_blockers(top)
+
+
+def _program_dtype_blockers(
+    top: Any, target: Target, request_features: frozenset[str]
+) -> list[ExportBlocker]:
+    """One dtype blocker per rejected dtype the onnx program computes in.
+
+    Only the onnx backend: ONNX Runtime needs a kernel for every op at the dtype
+    it runs in, so a bf16 intermediate (``x.astype(jnp.bfloat16) + 1``) fails at
+    session creation with ``NOT_IMPLEMENTED`` even when every input and output is
+    f32. IREE compiles such intermediates; for its targets only the I/O boundary
+    is judged. JAX's extended dtypes (PRNG keys, float0) are skipped: they never
+    reach a graph as a tensor, and an RNG key is the op rules' concern.
+    """
+    if top is None or target.backend is not Backend.ONNX:
+        return []
+    import jax
+
+    seen: dict[str, str] = {}
+    candidates = [("input", v) for v in top.invars]
+    for eqn in _walk_jaxpr_eqns(top):
+        candidates += [(eqn.primitive.name, v) for v in eqn.outvars]
+    for where, var in candidates:
+        dtype = getattr(getattr(var, "aval", None), "dtype", None)
+        if dtype is None or jax.dtypes.issubdtype(dtype, jax.dtypes.extended):
+            continue
+        seen.setdefault(dtype_name(dtype), where)
+    blockers: list[ExportBlocker] = []
+    for name, where in seen.items():
+        blocker = _dtype_blocker(f"program:{where}", name, target, request_features)
+        if blocker is not None:
+            blockers.append(blocker)
+    return blockers
 
 
 def _onnx_op_blockers(top: Any) -> list[ExportBlocker]:
@@ -550,9 +597,10 @@ def _apply_acknowledged(
 ) -> list[ExportBlocker]:
     """Drop blockers whose rule is acknowledged, except unsuppressible ones.
 
-    ``"unlegalizable-op"`` is never suppressed here: the caller can pass it in
-    ``acknowledged`` and it will simply have no effect on that rule, because
-    the op cannot compile regardless of who has acknowledged it.
+    Rules in ``_UNSUPPRESSIBLE_RULES`` -- ``"unlegalizable-op"`` and
+    ``"onnx-in-graph-rng"`` -- are never suppressed here: the caller can pass them
+    in ``acknowledged`` and it has no effect, because the artifact cannot be built
+    (or cannot reproduce the pipeline's draws) regardless of who acknowledged it.
     """
     return [b for b in blockers if b.rule not in acknowledged or b.rule in _UNSUPPRESSIBLE_RULES]
 
@@ -566,6 +614,7 @@ def check_export_safety(
     *,
     request_features: frozenset[str] = frozenset(),
     acknowledged: frozenset[str] = frozenset(),
+    traced_jaxpr: Any = None,
 ) -> list[ExportBlocker]:
     """List every blocker between this plan and the export boundary.
 
@@ -588,10 +637,16 @@ def check_export_safety(
         request_features: Device features the caller will request, unlocking the
             target's optional dtypes.
         acknowledged: Rule names to suppress from the returned list. Every rule
-            except ``"unlegalizable-op"`` is suppressible this way --
-            ``"unlegalizable-op"`` cannot compile at all, so acknowledging it
-            would only move the identical failure later, into
-            ``compile_for_target``.
+            except ``"unlegalizable-op"`` and ``"onnx-in-graph-rng"`` is
+            suppressible this way -- those two cannot produce a correct artifact
+            at all, so acknowledging them would only move the failure later.
+        traced_jaxpr: The jaxpr of the callable actually exported, from
+            ``trace_for_export_safety(callable_, abstract_inputs)``. When given,
+            the op and program-dtype rules read it instead of tracing ``fn``, so a
+            per-element ``fn`` is judged through the batched program it is
+            exported as, and several targets share one trace. When omitted,
+            ``fn`` is traced against ``abstract_inputs``, and a per-element
+            ``fn`` that cannot be traced that way is not judged by those rules.
 
     Returns:
         Every blocker found, in discovery order, minus any whose rule is in
@@ -599,8 +654,10 @@ def check_export_safety(
         objection.
     """
     del decisions, axis_boundaries
+    top = traced_jaxpr if traced_jaxpr is not None else trace_for_export_safety(fn, abstract_inputs)
     blockers = _dtype_blockers(abstract_inputs, fn, target, request_features)
-    blockers += _op_blockers(abstract_inputs, fn, target)
+    blockers += _program_dtype_blockers(top, target, request_features)
+    blockers += _op_blockers(top, target)
     return _apply_acknowledged(blockers, acknowledged)
 
 
@@ -613,6 +670,7 @@ def validate_export_safe(
     *,
     request_features: frozenset[str] = frozenset(),
     acknowledged: frozenset[str] = frozenset(),
+    traced_jaxpr: Any = None,
 ) -> None:
     """Raise unless this plan can cross the export boundary for ``target``.
 
@@ -624,7 +682,8 @@ def validate_export_safe(
         target: The target being compiled for.
         request_features: Device features the caller will request.
         acknowledged: Rule names to suppress. See ``check_export_safety``;
-            ``"unlegalizable-op"`` is not suppressible.
+            ``"unlegalizable-op"`` and ``"onnx-in-graph-rng"`` are not suppressible.
+        traced_jaxpr: The exported callable's jaxpr. See ``check_export_safety``.
 
     Raises:
         PlanTopologyError: Propagated unwrapped from validate_plan_topology --
@@ -652,6 +711,7 @@ def validate_export_safe(
         target,
         request_features=request_features,
         acknowledged=acknowledged,
+        traced_jaxpr=traced_jaxpr,
     )
     if blockers:
         detail = "\n".join(f"  - {b.axis} ({b.rule}): {b.detail}" for b in blockers)
