@@ -208,13 +208,20 @@ class BatchPlanner:
             ValueError: If a CarrySpec targets a heterogeneous axis.
             AmbiguousAxisError: If an axis has an unresolved UNKNOWN role.
             BudgetInfeasibleError: In budget mode, if demoting every candidate
+                -- and, as a last resort, planning dedup axes without dedup --
                 still leaves the joint estimate over budget. Budget-mode
                 estimator exceptions also propagate unchanged.
+            DedupSpecCollisionError: If two DedupSpecs name the same axis (#5175).
         """
+        from xtrax.tiling.dedup_synthesis import merge_dedup_specs
+
         carry_by_name = {cs.axis_name: cs for cs in self.carry_specs}
-        dedup_by_name = {ds.axis_name: ds for ds in self.dedup_specs}
+        # #5175: route through merge_dedup_specs so two DedupSpecs for one axis raise
+        # DedupSpecCollisionError here too, instead of silently keeping the last one.
+        dedup_by_name = merge_dedup_specs(*({ds.axis_name: ds} for ds in self.dedup_specs))
         decisions: list[AxisDecision | None] = []
         pending: list[int] = []
+        dedup_indices: list[int] = []
 
         # Process specs in order, applying Phase 0/0b rules first, then standard rules
         for spec in specs:
@@ -264,6 +271,7 @@ class BatchPlanner:
             if spec.name in dedup_by_name:
                 ds = dedup_by_name[spec.name]
                 dg_strategy = ds.to_dedup_gather()
+                dedup_indices.append(len(decisions))
                 decisions.append(
                     AxisDecision(
                         spec=spec,
@@ -298,7 +306,7 @@ class BatchPlanner:
             decisions.append(decision)
 
         if self.budget is not None:
-            self._plan_joint_budget(specs, decisions, pending)
+            self._plan_joint_budget(specs, decisions, pending, dedup_indices)
 
         return BatchPlan(decisions=tuple(d for d in decisions if d is not None))
 
@@ -307,6 +315,7 @@ class BatchPlanner:
         specs: Sequence[AxisSpec],
         decisions: list[AxisDecision | None],
         pending: list[int],
+        dedup_indices: Sequence[int] = (),
     ) -> None:
         """Resolve pending axes under the joint MemoryBudget (greedy demotion).
 
@@ -316,19 +325,100 @@ class BatchPlanner:
         budget.estimate() over the full plan (fixed decisions included) fits
         budget.bytes.
 
+        DedupGather axes (Phase 0b) are fixed decisions, so on their own they
+        could turn a plan that fits the budget without a DedupSpec into an
+        infeasible one (#5175). If every ordinary demotion still leaves the plan
+        over budget, dedup axes are handed back to ordinary budget planning one
+        at a time, in spec order, until it fits -- a last resort, each with a
+        RuntimeWarning and the fallback recorded in its decision's reasoning --
+        before BudgetInfeasibleError is raised. Adding a
+        DedupSpec therefore never makes a feasible plan infeasible. Note the
+        fallback changes the axis's numerics at the ~1e-6 level: gather-per-
+        canonical and per-row outputs are equal only up to float tolerance
+        (see verify_dedup_outputs).
+
         Args:
             specs: Full spec sequence (indices align with decisions).
             decisions: Decision list with None placeholders at pending indices.
             pending: Indices of axes awaiting joint-budget resolution.
+            dedup_indices: Indices of Phase-0b DedupGather decisions.
 
         Raises:
-            BudgetInfeasibleError: If all candidates are demoted and the
-                estimate still exceeds the budget.
+            BudgetInfeasibleError: If all candidates are demoted -- dedup axes
+                included -- and the estimate still exceeds the budget.
         """
         budget = self.budget
         if budget is None:  # pragma: no cover - plan() only calls with budget set
             raise RuntimeError("_plan_joint_budget requires a MemoryBudget")
 
+        estimate, n_candidates = self._greedy_demote(specs, decisions, pending, budget)
+        dropped: list[int] = []
+        # Release dedup axes ONE AT A TIME, in spec order, stopping at the first fit: the
+        # minimal change, so a DedupSpec another axis's release already made room for keeps
+        # its dedup (and its numerics).
+        for idx in dedup_indices:
+            if estimate <= budget.bytes:
+                break
+            spec = specs[idx]
+            if spec.role == AxisRole.UNKNOWN:
+                # The Phase-0b `continue` skipped this guard; ordinary planning needs it.
+                raise AmbiguousAxisError(
+                    f"axis '{spec.name}' has an unresolved role; declare it with "
+                    f"@axis_config or provide an override before planning."
+                )
+            warnings.warn(
+                f"MemoryBudget of {budget.bytes} B cannot be met with DedupGather on axis "
+                f"{spec.name!r}; planning it without dedup instead (outputs then match the "
+                "dedup path only up to float tolerance).",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            dropped.append(idx)
+            if spec.bucket_boundaries is None:
+                decisions[idx] = None
+                pending = sorted({*pending, idx})
+            else:
+                decisions[idx] = self._decide_strategy(spec)
+            estimate, n_candidates = self._greedy_demote(specs, decisions, pending, budget)
+
+        def _snapshot() -> tuple[AxisDecision, ...]:
+            return tuple(d for d in decisions if d is not None)
+
+        if estimate > budget.bytes:
+            state_desc = ", ".join(
+                f"{d.spec.name}={type(d.strategy).__name__}" for d in _snapshot()
+            )
+            also = " (DedupGather already dropped)" if dropped else ""
+            raise BudgetInfeasibleError(
+                f"plan cannot fit MemoryBudget: estimate {estimate} B > budget "
+                f"{budget.bytes} B after demoting all {n_candidates} candidate "
+                f"axes{also}; final strategies: {state_desc}"
+            )
+
+        self._finalize_budget_reasoning(specs, decisions, pending, estimate, budget)
+        for idx in dropped:
+            decision = decisions[idx]
+            if decision is None:  # pragma: no cover - every dropped axis was re-decided
+                continue
+            decisions[idx] = AxisDecision(
+                spec=decision.spec,
+                batch_size=decision.batch_size,
+                reasoning=(
+                    f"{decision.reasoning}; DedupSpec dropped: MemoryBudget "
+                    f"{budget.bytes} B infeasible with DedupGather (#5175)"
+                ),
+                strategy=decision.strategy,
+            )
+
+    def _greedy_demote(
+        self,
+        specs: Sequence[AxisSpec],
+        decisions: list[AxisDecision | None],
+        pending: list[int],
+        budget: MemoryBudget,
+    ) -> tuple[int, int]:
+        """Vmap every pending axis, then demote candidates in order until the joint
+        estimate fits. Returns (final estimate, number of demotion candidates)."""
         for idx in pending:
             spec = specs[idx]
             decisions[idx] = AxisDecision(
@@ -370,17 +460,17 @@ class BatchPlanner:
                 strategy=ChunkedMap(batch_size=spec.default_batch_size),
             )
 
-        if estimate > budget.bytes:
-            state_desc = ", ".join(
-                f"{d.spec.name}={type(d.strategy).__name__}" for d in _snapshot()
-            )
-            raise BudgetInfeasibleError(
-                f"plan cannot fit MemoryBudget: estimate {estimate} B > budget "
-                f"{budget.bytes} B after demoting all {len(candidates)} candidate "
-                f"axes; final strategies: {state_desc}"
-            )
+        return estimate, len(candidates)
 
-        # Finalize reasoning for pending axes that kept Vmap.
+    def _finalize_budget_reasoning(
+        self,
+        specs: Sequence[AxisSpec],
+        decisions: list[AxisDecision | None],
+        pending: list[int],
+        estimate: int,
+        budget: MemoryBudget,
+    ) -> None:
+        """Finalize reasoning for pending axes that kept Vmap."""
         for idx in pending:
             decision = decisions[idx]
             if decision is None or not isinstance(decision.strategy, Vmap):
