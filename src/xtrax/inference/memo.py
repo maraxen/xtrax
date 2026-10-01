@@ -17,7 +17,8 @@ Cache key (spec 260922 §3.1-§3.3):
   sha256(normalized str(ClosedJaxpr) + folded const values in ascending
   const-var order) — see `_program_digest`.
 - leaf digests reuse update_array_digest's canonicalize+tobytes core plus a
-  container-type/weak_type/dtype extension; Python scalars digest via
+  container-type/weak_type/dtype extension (a typed PRNG key digests its impl
+  name and `key_data` bits); Python scalars digest via
   (type-tag, repr); `str`/`bytes` digest exactly (no normalization); anything
   else -> MemoKeyUnsupportedLeafError.
 - environment stamp bounds RNG-implementation and autotune/atomics drift.
@@ -144,13 +145,47 @@ def _float_token(value: float) -> str:
     return repr(value)
 
 
+def _key_impl_name(leaf: Any) -> str | None:
+    """The PRNG impl name of a typed key array (`jax.random.key`), else None.
+
+    A typed key's dtype is an extended dtype (`key<fry>`) that NumPy cannot
+    interpret; any other extended dtype is refused rather than guessed at."""
+    dtype = leaf.dtype
+    if not jax.dtypes.issubdtype(dtype, jax.dtypes.extended):
+        return None
+    if jax.dtypes.issubdtype(dtype, jax.dtypes.prng_key):
+        return str(jax.random.key_impl(leaf))
+    raise MemoKeyUnsupportedLeafError(
+        f"Unsupported extended dtype {dtype} for memo key; of the extended dtypes "
+        "only typed PRNG keys (jax.random.key) are admitted."
+    )
+
+
+def _array_dtype_token(leaf: Any) -> str:
+    """Dtype name for a key descriptor: `key<impl>` for a typed key, which
+    names the impl so equal key bits under two impls never collide."""
+    impl = _key_impl_name(leaf)
+    if impl is not None:
+        return f"key<{impl}>"
+    return np.dtype(leaf.dtype).name
+
+
 def _leaf_digest(leaf: Any, sink: hashlib._Hash) -> None:
     """Fold one pytree leaf into the digest stream (spec §3.3).
 
     Arrays fold the container type before the dtype (D-4, AC-13b), so an
-    `np.ndarray` and an equal `jax.Array` digest differently. `str`/`bytes`
-    digest EXACTLY, with no Unicode normalization (D-3, AC-6/AC-6b).
+    `np.ndarray` and an equal `jax.Array` digest differently. A typed PRNG key
+    digests its impl and its `key_data` bits. `str`/`bytes` digest EXACTLY, with
+    no Unicode normalization (D-3, AC-6/AC-6b).
     """
+    if hasattr(leaf, "shape") and hasattr(leaf, "dtype") and _key_impl_name(leaf) is not None:
+        bits = np.ascontiguousarray(np.asarray(jax.random.key_data(leaf)))
+        sink.update(type(leaf).__qualname__.encode())
+        sink.update(_array_dtype_token(leaf).encode())
+        sink.update(repr(tuple(leaf.shape)).encode())
+        sink.update(bits.dtype.name.encode() + repr(bits.shape).encode())
+        sink.update(bits.tobytes(order="C"))
+        return
     if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
         # House primitive core (zarr_integrity.update_array_digest recipe):
         # container type, then canonicalize + C-order bytes.
@@ -205,7 +240,9 @@ def _program_digest(closed) -> str:
     h = hashlib.sha256()
     h.update(" ".join(str(closed).split()).encode())
     for const in closed.consts:  # ascending const-var declaration order
-        _leaf_digest(np.asarray(const), h)
+        # A closed-over typed key stays a key (np.asarray cannot read its dtype).
+        is_key = hasattr(const, "dtype") and _key_impl_name(const) is not None
+        _leaf_digest(const if is_key else np.asarray(const), h)
     return h.hexdigest()
 
 
@@ -267,7 +304,7 @@ def _classify_leaf(leaf: Any, mode: str, x64: bool | None = None) -> tuple[str, 
     token (spec §3.1, in order):
 
     1. **arr** — has `.shape` and `.dtype` (covers numpy scalars, `jax.Array`,
-       `np.ndarray`, `np.bool_`, ...). Always traced.
+       `np.ndarray`, `np.bool_`, typed PRNG keys, ...). Always traced.
     2. **dyn** — `type(leaf) is float` or `type(leaf) is int` (EXACT type
        check, so `bool`/enum/numpy-scalar subclasses never land here). Traced
        in ABSTRACT mode; held static in STATIC mode.
@@ -286,7 +323,7 @@ def _classify_leaf(leaf: Any, mode: str, x64: bool | None = None) -> tuple[str, 
             "arr",
             type(leaf).__qualname__,
             tuple(leaf.shape),
-            np.dtype(leaf.dtype).name,
+            _array_dtype_token(leaf),
             bool(getattr(leaf, "weak_type", False)),
         )
     if type(leaf) is float:

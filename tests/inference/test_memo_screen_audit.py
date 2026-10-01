@@ -6,6 +6,7 @@ import gc
 
 import jax
 import jax.experimental
+import jax.extend.random
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -83,8 +84,7 @@ def test_debug_side_effects_are_rejected(label: str, fn) -> None:  # noqa: ANN00
     ids=["split", "fold_in"],
 )
 def test_key_plumbing_on_a_key_argument_is_admitted(fn) -> None:  # noqa: ANN001
-    # Raw uint32 key: a typed `jax.random.key` ARGUMENT currently fails leaf
-    # classification with a TypeError (separate item); both emit the same primitives.
+    # Raw uint32 key; typed keys are covered by the #5679 tests below.
     key = jax.random.PRNGKey(0)
     m = memoize_jaxpr(fn)
     a = m(key)
@@ -97,6 +97,62 @@ def test_a_draw_on_a_key_argument_is_still_rejected() -> None:
     """Control for the admission above: drawing, not key plumbing, is what is banned."""
     with pytest.raises(MemoImpurityError, match="random_bits"):
         memoize_jaxpr(lambda k: jax.random.normal(k, (2,)))(jax.random.PRNGKey(0))
+
+
+# --- #5679: typed PRNG keys (jax.random.key) ------------------------------------------
+
+# Every impl the installed JAX ships (jax.extend.random has no public registry).
+_KEY_IMPLS = [
+    getattr(jax.extend.random, name).name
+    for name in ("threefry_prng_impl", "rbg_prng_impl", "unsafe_rbg_prng_impl")
+]
+
+
+@pytest.mark.parametrize("impl", _KEY_IMPLS)
+def test_typed_key_argument_is_memoized(impl: str) -> None:
+    """Used to raise `TypeError: Cannot interpret 'key<fry>' as a data type`."""
+    split = memoize_jaxpr(lambda k: jax.random.split(k))
+    key = jax.random.key(0, impl=impl)
+    a = split(key)
+    assert split(key) is a  # hit
+    np.testing.assert_array_equal(
+        jax.random.key_data(a), jax.random.key_data(jax.random.split(key))
+    )
+    other = split(jax.random.key(1, impl=impl))  # different bits: a miss, not an alias
+    assert split.memo_get_stats()["misses"] == 2
+    assert not np.array_equal(jax.random.key_data(other), jax.random.key_data(a))
+
+
+def test_same_key_bits_under_two_impls_do_not_share_an_entry() -> None:
+    bits = jnp.arange(4, dtype=jnp.uint32)  # rbg and unsafe_rbg both hold 4 x uint32
+    rbg = jax.random.wrap_key_data(bits, impl="rbg")
+    urbg = jax.random.wrap_key_data(bits, impl="unsafe_rbg")
+    split = memoize_jaxpr(lambda k: jax.random.split(k))
+    a, b = split(rbg), split(urbg)
+    assert split.memo_get_stats()["misses"] == 2
+    assert jax.random.key_impl(a) != jax.random.key_impl(b)
+
+
+def test_typed_key_output_passes_its_own_spot_check() -> None:
+    split = memoize_jaxpr(lambda k: jax.random.split(k), policy=MemoPolicy(spot_check_every=1))
+    key = jax.random.key(0)
+    split(key)
+    split(key)  # a spot-checked hit: equal keys must not read as staleness
+    assert split.memo_get_stats()["spot_check_mismatches"] == 0
+
+
+def test_closed_over_typed_key_is_digested() -> None:
+    base = jax.random.key(7)
+    m = memoize_jaxpr(lambda i: jax.random.fold_in(base, i))
+    np.testing.assert_array_equal(
+        jax.random.key_data(m(jnp.int32(3))), jax.random.key_data(jax.random.fold_in(base, 3))
+    )
+
+
+def test_a_draw_on_a_typed_key_argument_is_rejected_by_the_screen() -> None:
+    """Control: the typed key now reaches the screen, which still bans the draw."""
+    with pytest.raises(MemoImpurityError, match="random_bits"):
+        memoize_jaxpr(lambda k: jax.random.normal(k, (2,)))(jax.random.key(0))
 
 
 def test_captured_mutable_ref_is_rejected_by_the_screen() -> None:

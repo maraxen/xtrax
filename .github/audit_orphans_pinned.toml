@@ -11,7 +11,9 @@
 # reported as UNCLASSIFIED; pin it once it has passed.
 
 pinned = [
+  "audit-api-ergonomics-gate",  # baseline re-seeded 2026-10-01 (#5682)
   "audit-baseline-contract",
+  "audit-bootstrap",  # green once both gates it aggregates were (#5682)
   "audit-correctness-gate",
   "audit-coverage-dag-all",
   "audit-docs-build",
@@ -30,6 +32,7 @@ pinned = [
   "audit-release-readiness",
   "audit-routing-contract",
   "audit-rubrics-contract",
+  "audit-structure-complexity-gate",  # baseline re-seeded 2026-10-01 (#5682)
   "audit-test-rigor-gate",  # green on its first run with the eda extra (run 36766318687)
   "audit-test-rigor-gate-quick",
   "audit-tombstone-contract",
@@ -38,6 +41,3 @@ pinned = [
 
 [not_pinned]
 audit-drift-check = "CI-incapable: diffs against a real `praxia plugin install` export, and the praxia CLI is not installed in CI (see its Justfile comment)."
-audit-structure-complexity-gate = "Real quality findings vs baseline (cognitive_complexity_max=117, 44 ruff complexity violations on 2026-09-28). Separate fix; pin once green."
-audit-api-ergonomics-gate = "Real quality findings vs baseline (param_sprawl_violation_count=6 on 2026-09-28). Separate fix; pin once green."
-audit-bootstrap = "Aggregates other dimensions; fails only because api_ergonomics and structure_complexity fail. Pin once both are green."

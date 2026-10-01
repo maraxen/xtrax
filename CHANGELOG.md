@@ -105,6 +105,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`memoize_jaxpr` admits typed PRNG keys** (`xtrax.inference`, #5679). A
+  `jax.random.key(...)` argument raised `TypeError: Cannot interpret 'key<fry>' as a data
+  type` during leaf classification, and a function closing over one raised from the program
+  digest. A typed key now digests its impl name and `key_data` bits, so equal bits under two
+  impls are different entries; key plumbing (`split`, `fold_in`) on a typed key is memoized
+  and a draw is refused by the purity screen, as for a raw `PRNGKey`. Any other extended
+  dtype raises `MemoKeyUnsupportedLeafError`.
 - **Native/IREE parity compares integer and bool outputs exactly, per output leaf**
   (`xtrax.export`, #5688). `compare` / `verify_native_parity` used `np.allclose(rtol=1e-5)`
   for every dtype, so an index output of `1_000_009` passed for `1_000_000` and
