@@ -42,11 +42,10 @@ from types import ModuleType
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 from xtrax.export.compile import CompileError, CompileResult
-from xtrax.export.parity import ParityResult, compare
+from xtrax.export.parity import LeafParityResult, compare_leaves
 from xtrax.export.targets import Backend, Target
 
 __all__ = [
@@ -376,65 +375,6 @@ def run_onnx(onnx_path: Path, *args: Any) -> list[np.ndarray]:
     return [np.asarray(out) for out in session.run(None, feeds)]
 
 
-@dataclass(frozen=True)
-class LeafParityResult(ParityResult):
-    """A ``ParityResult`` over every output leaf, integers compared exactly.
-
-    The inherited fields describe the first failing leaf, or the first leaf when
-    all pass, except ``passed`` (every leaf) and ``max_abs_diff`` (the maximum
-    across float leaves; inf on a shape or dtype mismatch).
-
-    Attributes:
-        leaf_results: One ``ParityResult`` per leaf, in output order.
-        dtype_mismatches: ``"leaf <i>: expected <dtype>, got <dtype>"`` for each
-            leaf whose dtype changed across the export.
-    """
-
-    leaf_results: tuple[ParityResult, ...] = ()
-    dtype_mismatches: tuple[str, ...] = ()
-
-    def summary(self) -> str:
-        """Render a verdict naming the failing leaf and how it failed."""
-        verdict = "PASS" if self.passed else "FAIL"
-        if self.dtype_mismatches:
-            return f"{verdict}: " + "; ".join(self.dtype_mismatches)
-        n = len(self.leaf_results)
-        for i, leaf in enumerate(self.leaf_results):
-            if leaf.passed:
-                continue
-            if leaf.shape_expected != leaf.shape_actual:
-                detail = f"shape mismatch expected {leaf.shape_expected}, got {leaf.shape_actual}"
-            elif leaf.atol == 0.0 and leaf.rtol == 0.0:
-                detail = f"max|diff| = {leaf.max_abs_diff:.3e} (exact integer comparison)"
-            else:
-                detail = (
-                    f"max|diff| = {leaf.max_abs_diff:.3e} (atol={leaf.atol:g}, rtol={leaf.rtol:g})"
-                )
-            return f"{verdict}: leaf {i} of {n}: {detail}"
-        return f"{verdict}: {n} leaf/leaves, max|diff| = {self.max_abs_diff:.3e}"
-
-
-def _exact(expected: np.ndarray, actual: np.ndarray) -> ParityResult:
-    """Exact comparison for integer and bool leaves."""
-    shapes_match = expected.shape == actual.shape
-    passed = shapes_match and bool(np.array_equal(expected, actual))
-    if not shapes_match:
-        diff = float("inf")
-    elif expected.size:
-        wide_e = expected.astype(np.int64)
-        diff = float(np.max(np.abs(wide_e - actual.astype(np.int64))))
-    else:
-        diff = 0.0
-    return ParityResult(
-        passed=passed,
-        max_abs_diff=diff,
-        atol=0.0,
-        rtol=0.0,
-        shape_expected=tuple(expected.shape),
-        shape_actual=tuple(actual.shape),
-    )
-
-
 def verify_onnx_parity(
     expected: Any,
     onnx_path: Path,
@@ -465,40 +405,4 @@ def verify_onnx_parity(
     written in NumPy verifies the same way on every target; the dtype rule then
     catches a genuine change across the export, e.g. int32 -> int64.
     """
-    exp_leaves = [np.asarray(jnp.asarray(x)) for x in jax.tree_util.tree_leaves(expected)]
-    act_leaves = run_onnx(onnx_path, *concrete_inputs)
-
-    if len(exp_leaves) != len(act_leaves):
-        return LeafParityResult(
-            passed=False,
-            max_abs_diff=float("inf"),
-            atol=atol,
-            rtol=rtol,
-            shape_expected=(len(exp_leaves),),
-            shape_actual=(len(act_leaves),),
-            dtype_mismatches=(f"expected {len(exp_leaves)} output leaves, got {len(act_leaves)}",),
-        )
-
-    results: list[ParityResult] = []
-    mismatches: list[str] = []
-    for i, (exp, act) in enumerate(zip(exp_leaves, act_leaves, strict=True)):
-        if exp.dtype != act.dtype:
-            mismatches.append(f"leaf {i}: expected {exp.dtype}, got {act.dtype}")
-        if np.issubdtype(exp.dtype, np.integer) or exp.dtype == np.bool_:
-            results.append(_exact(exp, act))
-        else:
-            results.append(compare(exp, act, atol=atol, rtol=rtol))
-
-    passed = not mismatches and all(r.passed for r in results)
-    lead = next((r for r in results if not r.passed), results[0] if results else None)
-    max_diff = float("inf") if mismatches else max((r.max_abs_diff for r in results), default=0.0)
-    return LeafParityResult(
-        passed=passed,
-        max_abs_diff=max_diff,
-        atol=atol,
-        rtol=rtol,
-        shape_expected=lead.shape_expected if lead else (),
-        shape_actual=lead.shape_actual if lead else (),
-        leaf_results=tuple(results),
-        dtype_mismatches=tuple(mismatches),
-    )
+    return compare_leaves(expected, run_onnx(onnx_path, *concrete_inputs), atol=atol, rtol=rtol)

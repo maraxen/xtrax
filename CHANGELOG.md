@@ -19,6 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   targets `xtrax.transforms.map.chunked_map` and is re-sealed (manifest hash recomputed
   with `scripts/audit_port_oracle_seal.py`; the reference oracle is unchanged).
 
+### Fixed
+
+- **Native/IREE parity compares integer and bool outputs exactly, per output leaf**
+  (`xtrax.export`, #5688). `compare` / `verify_native_parity` used `np.allclose(rtol=1e-5)`
+  for every dtype, so an index output of `1_000_009` passed for `1_000_000` and
+  `ExportResult.verified` was True for a wrong native artifact, while the same program
+  failed on the onnx target. Both backends now share `compare_leaves`: one result per
+  output leaf, integers and bools exact, any dtype change a failure.
+  `verify_native_parity` returns a `LeafParityResult` (a `ParityResult` subclass), and a
+  multi-output native entry point is compared leaf by leaf instead of being stacked into
+  one array. An array-like oracle (a nested Python list) for a single output is now read
+  as one array on every backend; onnx used to split it into scalar leaves. **Behaviour
+  change:** a native export that only passed through float tolerance on an integer
+  output now fails. `LeafParityResult` and the new `compare_leaves` live in
+  `xtrax.export.parity` (`LeafParityResult` is still importable from
+  `xtrax.export.onnx`).
+
 ## [0.4.0a11] - 2026-10-01
 
 ### Added

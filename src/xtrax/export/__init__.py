@@ -51,7 +51,6 @@ from xtrax.export.hf_weights import (
 from xtrax.export.onnx import (
     ONNX_OPSET,
     ONNX_RNG_OP_TYPES,
-    LeafParityResult,
     OnnxDtypeCensus,
     convert_to_onnx,
     find_onnx_rng_ops,
@@ -59,7 +58,13 @@ from xtrax.export.onnx import (
     run_onnx,
     verify_onnx_parity,
 )
-from xtrax.export.parity import ParityResult, compare, verify_native_parity
+from xtrax.export.parity import (
+    LeafParityResult,
+    ParityResult,
+    compare,
+    compare_leaves,
+    verify_native_parity,
+)
 from xtrax.export.pipeline import ExportResult, export_pipeline
 from xtrax.export.rings import (
     BUCKET_LADDER,
@@ -149,6 +154,7 @@ __all__ = [
     "check_export_safety",
     "classify_probes",
     "compare",
+    "compare_leaves",
     "compare_pytree",
     "compile_for_target",
     "compose_single_axis",
