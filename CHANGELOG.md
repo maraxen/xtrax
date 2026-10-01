@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`xtrax-io-on-shared-filesystems` skill** (`agent_assets/skills/`). Reference for
   choosing a read pattern on NFS/Lustre/GPFS: cost is requests x latency, not bytes;
   what `md.iterload(stride=k)` and an offset-table seek reader actually read; the
-  `/proc/<pid>/io` bytes-per-request and `nfsiostat` diagnostics that separate
-  latency-bound from bandwidth-bound; stage-by-large-copy, reduce-once/read-many and
+  CPU-bound check first, then `nfsiostat` per-op RTT/kB-op (not `/proc/<pid>/io`
+  call size, which stdio buffering makes small even for good sequential reads) to
+  separate latency-bound from bandwidth-bound; stage-by-large-copy, reduce-once/read-many and
   filesystem-keyed reader selection; and the same-filesystem A/B gate before an
   I/O-path change ships. Baseline agents without it misstated what a strided
   `iterload` reads and proposed adding parallel readers to a bandwidth-bound pool.
