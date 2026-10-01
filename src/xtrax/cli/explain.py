@@ -28,7 +28,7 @@ class ExplainArgs:
         fn: Import-path string to the function to explain.
             Format: 'module.path:symbol'.
         shapes: Space-separated shape specification string.
-            Format: 'name=(d0,d1,...)<dtype> ...'.
+            Format: 'name=(d0,d1,...)dtype ...', e.g. 'x=(4,3)f32 mask=(4,)bool'.
             Each name corresponds to a positional argument of the function, in order.
         fmt: Output format. One of "json" (default), "text", "html", "png".
             "json" is the machine contract: a single JSON object with a ``_meta``

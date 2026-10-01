@@ -10,9 +10,9 @@ import equinox as eqx
 from xtrax.run.spec import RunSpec
 from xtrax.tiling import (
     BucketIterator,
+    ChunkedMapIterator,
     JaxScanIterator,
     MapIterator,
-    SafeMapIterator,
     ScanIterator,
     VmapIterator,
     WhileLoopIterator,
@@ -28,7 +28,7 @@ class RuntimeBundle:
 
     iterator: (
         VmapIterator
-        | SafeMapIterator
+        | ChunkedMapIterator
         | JaxScanIterator
         | WhileLoopIterator
         | BucketIterator

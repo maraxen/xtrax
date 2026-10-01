@@ -152,7 +152,7 @@ from xtrax.tiling import BatchPlanner
 
 planner = BatchPlanner()
 plan = planner.plan(axes)  # No error
-print(plan.decisions[0].strategy)  # e.g., "SafeMap"
+print(plan.decisions[0].strategy)  # e.g., "ChunkedMap"
 ```
 
 ## Worked Examples (Detailed)
@@ -322,6 +322,14 @@ A signature is the argument tree structure, including kwargs, plus each
 array's container type, shape, dtype and weak type, and each static scalar's
 exact value.
 
+**Impure primitives.** Rejected at any depth: host callbacks (`pure_callback`,
+`io_callback`, `debug_callback`, `debug_print`) and draws (`random_bits`,
+`random_gamma`, `random_seed`, `rng_bit_generator`, `rng_uniform`, `threefry2x32`,
+`threefry4x32`, `philox2x32`, `philox4x32`). Key plumbing on a key argument (`random_split`, `random_fold_in`,
+`random_wrap`, `random_unwrap`, `random_clone`) is admitted: it is deterministic in
+the key and draws nothing. A function that closes over a mutable `jax.Ref` is
+rejected; a ref allocated inside the function is admitted.
+
 **Donation is rejected, unconditionally.** `memoize_jaxpr` never admits a
 function whose traced jaxpr carries a donation marker, at any depth — this
 covers both `donate_argnums`/`donate_argnames` (visible as a `True` in a
@@ -375,11 +383,14 @@ on its bit pattern, so NaNs with different payloads are distinct keys.
 
 - out-of-trace impurity: closure state, time, I/O;
 - `custom_vjp` `bwd` and `custom_jvp` rule callables;
-- trace/eager divergence (#5233): a cache miss runs the function eagerly, so a
-  path chosen by identity or type checks (`isinstance(n, int)` on a plain `int`
-  traced abstractly, `isinstance(x, jax.core.Tracer)`, `np.ndarray` vs `jax.Array`
-  checks) or by catching `ConcretizationTypeError` can differ from the screened
-  trace;
+- trace/eager divergence (#5233), **by default**: a cache miss runs the function
+  eagerly, so a path chosen by identity or type checks (`isinstance(n, int)` on a
+  plain `int` traced abstractly, `isinstance(x, jax.core.Tracer)`, `np.ndarray` vs
+  `jax.Array` checks) or by catching `ConcretizationTypeError` can differ from the
+  screened trace. `MemoPolicy(execute_screened=True)` closes this: a miss runs the
+  jitted screened program itself (one compile per signature; outputs are fresh
+  buffers, Python scalars the function returns come back as arrays, and spot checks
+  re-run the screened program rather than the function);
 - `np.bool_` and numpy-scalar enums are array leaves traced abstractly, so the
   static rule for `bool` does not cover `x is np.True_`.
 

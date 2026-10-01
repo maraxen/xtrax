@@ -1,4 +1,4 @@
-"""Tests for tiling iterators: VmapIterator, SafeMapIterator, BucketIterator."""
+"""Tests for tiling iterators: VmapIterator, ChunkedMapIterator, BucketIterator."""
 
 import jax
 import jax.numpy as jnp
@@ -6,7 +6,7 @@ import pytest
 
 from xtrax.tiling.iterator import (
     BucketIterator,
-    SafeMapIterator,
+    ChunkedMapIterator,
     VmapIterator,
     WhileLoopIterator,
 )
@@ -52,10 +52,10 @@ class TestVmapIterator:
 
 
 class TestSafeMapIterator:
-    """Test SafeMapIterator shape, divisibility, and equivalence."""
+    """Test ChunkedMapIterator shape, divisibility, and equivalence."""
 
     def test_safe_map_iterator_equals_vmap_when_batch_size_gte_n(self):
-        """SafeMapIterator with tile >= n should equal VmapIterator."""
+        """ChunkedMapIterator with tile >= n should equal VmapIterator."""
 
         def fn(x):
             return x * 2
@@ -65,13 +65,13 @@ class TestSafeMapIterator:
         vmap_iter = VmapIterator()
         vmap_result = vmap_iter(fn, xs)
 
-        safe_iter = SafeMapIterator(tile=20)
+        safe_iter = ChunkedMapIterator(tile=20)
         safe_result = safe_iter(fn, xs)
 
         assert jnp.allclose(vmap_result, safe_result)
 
     def test_safe_map_iterator_batch_size_equals_n(self):
-        """SafeMapIterator with tile == n should equal VmapIterator."""
+        """ChunkedMapIterator with tile == n should equal VmapIterator."""
 
         def fn(x):
             return x * 2
@@ -81,33 +81,31 @@ class TestSafeMapIterator:
         vmap_iter = VmapIterator()
         vmap_result = vmap_iter(fn, xs)
 
-        safe_iter = SafeMapIterator(tile=10)
+        safe_iter = ChunkedMapIterator(tile=10)
         safe_result = safe_iter(fn, xs)
 
         assert jnp.allclose(vmap_result, safe_result)
 
-    def test_safe_map_iterator_non_divisible_raises_valueerror(self):
-        """SafeMapIterator should propagate ValueError for non-divisible n."""
+    def test_chunked_map_iterator_non_divisible_runs_a_ragged_final_chunk(self):
+        """ChunkedMapIterator should propagate ValueError for non-divisible n."""
 
         def fn(x):
             return x * 2
 
         xs = jnp.arange(10)  # n=10
 
-        safe_iter = SafeMapIterator(tile=3)  # 10 % 3 != 0
-
-        with pytest.raises(ValueError, match="not divisible"):
-            safe_iter(fn, xs)
+        safe_iter = ChunkedMapIterator(tile=3)  # 10 % 3 != 0: ragged final chunk (#5565)
+        assert jnp.array_equal(safe_iter(fn, xs), jax.vmap(fn)(xs))
 
     def test_safe_map_iterator_divisible_batch(self):
-        """SafeMapIterator should work with divisible batch sizes."""
+        """ChunkedMapIterator should work with divisible batch sizes."""
 
         def fn(x):
             return x * 2
 
         xs = jnp.arange(10)
 
-        safe_iter = SafeMapIterator(tile=5)
+        safe_iter = ChunkedMapIterator(tile=5)
         result = safe_iter(fn, xs)
 
         expected = jax.vmap(fn)(xs)

@@ -10,9 +10,10 @@ Grammar
 A shape specification string consists of one or more space-separated entries,
 each specifying a single input array. Each entry follows the format::
 
-    name=(d0,d1,...)<dtype>
+    name=(d0,d1,...)dtype
 
-where:
+for example ``x=(4,3)f32``. Wrapping the dtype in angle brackets (``x=(4,3)<f32>``) is
+also accepted. Here:
 
 - **name**: An identifier for the input (e.g., ``x``, ``mask``, ``weights``).
   This name is used only for display and input identification purposes.
@@ -26,9 +27,9 @@ where:
 
 - **dtype**: A dtype specifier from the supported vocabulary. Supported dtypes:
 
-  - ``f32`` → ``numpy.float32``
-  - ``f64`` → ``numpy.float64``
-  - ``i32`` → ``numpy.int32``
+  - ``f32`` or ``float32`` → ``numpy.float32``
+  - ``f64`` or ``float64`` → ``numpy.float64``
+  - ``i32`` or ``int32`` → ``numpy.int32``
   - ``bool`` → ``numpy.bool_``
 
 Examples
@@ -54,12 +55,12 @@ Errors
 ------
 
 Malformed entries raise ``ShapeParseError``, which quotes the expected
-grammar to guide correction. Common errors:
+grammar with a concrete example to guide correction. Common errors:
 
 - Missing ``=`` separator
 - Missing or mismatched parentheses
 - Non-integer dimensions
-- Unknown dtype specifiers
+- Missing or unknown dtype specifiers
 """
 
 from __future__ import annotations
@@ -75,10 +76,17 @@ from xtrax.cli.errors import ShapeParseError
 # Map dtype strings to numpy/jax dtype objects
 _DTYPE_MAP: dict[str, Any] = {
     "f32": np.float32,
+    "float32": np.float32,
     "f64": np.float64,
+    "float64": np.float64,
     "i32": np.int32,
+    "int32": np.int32,
     "bool": np.bool_,
 }
+
+# One concrete example rather than a `<dtype>` placeholder: the placeholder read as
+# literal syntax, and `x=(4,3)<float32>` was rejected (#5174).
+_EXPECTED = "Expected: name=(d0,d1,...)dtype, e.g. x=(4,3)f32 or mask=(4,)bool"
 
 
 def parse_shapes(s: str) -> dict[str, jax.ShapeDtypeStruct]:
@@ -88,7 +96,7 @@ def parse_shapes(s: str) -> dict[str, jax.ShapeDtypeStruct]:
     ----------
     s : str
         A space-separated list of shape entries, each in the format
-        ``name=(d0,d1,...)<dtype>``.
+        ``name=(d0,d1,...)dtype``.
 
     Returns
     -------
@@ -105,7 +113,7 @@ def parse_shapes(s: str) -> dict[str, jax.ShapeDtypeStruct]:
     s = s.strip()
 
     if not s:
-        raise ShapeParseError("Empty shape specification. Expected: name=(d0,d1,...)<dtype>")
+        raise ShapeParseError(f"Empty shape specification. {_EXPECTED}")
 
     entries = s.split()
     result: dict[str, jax.ShapeDtypeStruct] = {}
@@ -117,9 +125,7 @@ def parse_shapes(s: str) -> dict[str, jax.ShapeDtypeStruct]:
         _parse_single_entry(entry, result)
 
     if not result:
-        raise ShapeParseError(
-            "No valid entries in shape specification. Expected: name=(d0,d1,...)<dtype>"
-        )
+        raise ShapeParseError(f"No valid entries in shape specification. {_EXPECTED}")
 
     return result
 
@@ -130,7 +136,7 @@ def _parse_single_entry(entry: str, result: dict[str, jax.ShapeDtypeStruct]) -> 
     Parameters
     ----------
     entry : str
-        A single shape entry in the format ``name=(d0,d1,...)<dtype>``.
+        A single shape entry in the format ``name=(d0,d1,...)dtype``.
     result : dict
         The result dictionary to which the parsed entry is added.
 
@@ -141,36 +147,36 @@ def _parse_single_entry(entry: str, result: dict[str, jax.ShapeDtypeStruct]) -> 
     """
     # Check for '=' separator
     if "=" not in entry:
-        raise ShapeParseError(
-            f"Malformed entry '{entry}': missing '=' separator. Expected: name=(d0,d1,...)<dtype>"
-        )
+        raise ShapeParseError(f"Malformed entry '{entry}': missing '=' separator. {_EXPECTED}")
 
     name, rest = entry.split("=", 1)
     name = name.strip()
 
     if not name:
-        raise ShapeParseError(
-            f"Malformed entry '{entry}': name is empty. Expected: name=(d0,d1,...)<dtype>"
-        )
+        raise ShapeParseError(f"Malformed entry '{entry}': name is empty. {_EXPECTED}")
 
     # Validate name is a valid identifier
     if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", name):
         raise ShapeParseError(
-            f"Malformed entry '{entry}': name '{name}' is not a valid identifier. "
-            f"Expected: name=(d0,d1,...)<dtype>"
+            f"Malformed entry '{entry}': name '{name}' is not a valid identifier. {_EXPECTED}"
         )
 
     # Parse shape and dtype from rest
     # Pattern: (d0,d1,...)dtype
-    match = re.match(r"^\(([^)]*)\)([a-zA-Z0-9]+)$", rest)
+    match = re.match(r"^\(([^)]*)\)(?:<([a-zA-Z0-9]+)>|([a-zA-Z0-9]+))$", rest)
+    if not match and re.match(r"^\([^)]*\)$", rest):
+        raise ShapeParseError(
+            f"Malformed entry '{entry}': missing dtype after the shape. {_EXPECTED}"
+        )
 
     if not match:
         raise ShapeParseError(
             f"Malformed entry '{entry}': expected shape in parentheses followed by dtype. "
-            f"Expected: name=(d0,d1,...)<dtype>"
+            f"{_EXPECTED}"
         )
 
-    shape_str, dtype_str = match.groups()
+    shape_str, bracketed, bare = match.groups()
+    dtype_str = bracketed or bare
 
     # Parse shape
     shape = _parse_shape(shape_str, entry)
@@ -227,7 +233,7 @@ def _parse_shape(shape_str: str, full_entry: str) -> tuple[int, ...]:
         except ValueError:
             raise ShapeParseError(
                 f"Malformed entry '{full_entry}': '{dim_str}' is not a valid non-negative integer. "
-                f"Expected: name=(d0,d1,...)<dtype>"
+                f"{_EXPECTED}"
             )
 
     return tuple(shape)

@@ -27,6 +27,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.praxia/docs/research/260930_onnx-route-spike.md`. The verification covers ORT CPU
   only, not ORT Web.
 
+- **`xtrax.tiling.dedup_synthesis.verify_dedup_outputs(spec, fn, xs, *, rtol, atol)`**
+  (#5217): checks claim (ii), that dispatching `fn` through the dedup path
+  (vmap over canonical rows, then gather) reproduces per-row `jax.vmap(fn)(xs)`. The
+  comparison is numeric (`allclose`, NaN equal to NaN; integer and bool outputs exact),
+  never bitwise: XLA fuses the two programs differently, and float32 outputs legitimately
+  differ (3.3e-6 measured at N=2000, K=7). It raises `DedupOutputMismatchError` with
+  the worst error and first bad row. Both paths are jitted by default (`jit=True`), as
+  production dispatch is, and equal infinities compare equal. It compares on device and
+  moves one mask through the module's single `_to_host` route. It complements `verify_dedup_spec`,
+  which checks input-row identity.
+
+- **`MemoPolicy(execute_screened=True)`** (`xtrax.inference`, #5233): on a cache miss,
+  run the jitted **screened program** of that call signature instead of the function
+  eagerly, so a path the trace never took (`isinstance(x, jax.core.Tracer)`, identity
+  checks, a caught `ConcretizationTypeError`) cannot be what gets cached. The runner
+  is built from the same closed jaxpr the screen inspected; if it has to be rebuilt,
+  a re-trace whose program differs from the screened one raises `MemoStalenessError`.
+  Spot checks under this policy re-run the screened program, not the function
+  eagerly. Opt-in; the default is unchanged. Costs one compile per signature, and a
+  miss returns fresh output buffers, never an argument's.
+
 - **`xtrax.profiling.loop_scaling`: flag loop bodies whose per-iteration cost grows with
   the loop's own extent** (debt #1983). `loop_bodies(fn, *args)` traces `fn` (nothing
   is compiled or run) and reports every `scan`/`while` body at any depth with ONE
@@ -69,6 +90,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   #5214/#5215.
 
 ### Fixed
+
+- **`ZarrStagingSink.drain` errors name the payload that failed** (`xtrax.run`, #5552).
+  A zarr write error now carries the staged key, group path, array name, shape and
+  dtype in its message, on the same exception object (type unchanged), and says the
+  pending buffer was not cleared. The context is in the message itself because JAX's
+  `io_callback` re-renders only the original exception's message line, not notes or
+  chained causes; previously a drain from the activation-capture path surfaced as an
+  opaque `CpuCallback error` naming only zarr internals.
+
+- **CLI shape specs: the documented form works and errors show a real example**
+  (`xtrax.cli`, #5174). `<dtype>` in the grammar was a placeholder but read as literal
+  syntax, so `x=(4,3)<float32>` was rejected. The parser now accepts the long aliases
+  `float32`/`float64`/`int32` and an optional `<...>` around the dtype, reports a
+  missing dtype specifically, and every error message shows `e.g. x=(4,3)f32`.
+
+- **`BatchPlanner.plan()`: duplicate `DedupSpec`s raise; dedup never makes a budget
+  plan infeasible** (`xtrax.tiling`, #5175). Two `DedupSpec`s for one axis now raise
+  `DedupSpecCollisionError` (plan() routes through `merge_dedup_specs`) instead of
+  silently keeping the last. **Behaviour change** for callers passing duplicates. In
+  joint-budget mode a DedupGather axis was a fixed decision, so adding a `DedupSpec`
+  could turn a plan that fit into `BudgetInfeasibleError`. If every ordinary demotion
+  still leaves the plan over budget, dedup axes are now planned without dedup as a
+  last resort, one at a time in spec order until the plan fits, each with a
+  `RuntimeWarning` and `"DedupSpec dropped"` in the decision's `reasoning`. The error is raised only if that fails too.
+
+- **`memoize_jaxpr` purity screen audited against the primitives JAX registers**
+  (`xtrax.inference`, #5234). Five of the eleven banned names were registered by
+  neither JAX 0.10.2 nor 0.11.1 (the "stateful" list banned nothing at all). The screen
+  now rejects `debug_print` and `debug_callback` (a hit would skip the side effect),
+  `random_gamma`, `rng_uniform`, `threefry2x32`/`threefry4x32` and `philox2x32`/`philox4x32`,
+  and **a function that
+  closes over a mutable `jax.Ref`**, which previously crashed in the program digest
+  with `ValueError: Out of bound indexer`. Key plumbing on a key argument
+  (`random_split`, `random_fold_in`, `random_wrap`, `random_unwrap`, `random_clone`)
+  is admitted explicitly. Tests fail if any listed name stops being registered, or if
+  a registered random/rng/callback/debug-family primitive is left unclassified.
+  **Behaviour change:** a memoized function that calls `jax.debug.print` is now rejected.
+
+- **Chunked mapping handles a ragged final chunk** (`xtrax.transforms`,
+  `xtrax.tiling`, #5565). An axis whose cardinality is not a multiple of its batch
+  size used to plan as SafeMap with a `RuntimeWarning`, then raise `ValueError` at
+  dispatch. Any data-driven axis could hit this; an MSA depth of 50,713 = 13·47·83 has
+  no usable divisor. `jax.lax.map(batch_size=...)` already runs the remainder as one
+  smaller vmapped chunk, with no padding and peak memory still bounded by the batch
+  size. xtrax's own divisibility check was the only obstacle, and it is removed (verified
+  equal to `vmap` on JAX 0.10.2 and 0.11.1, including n=50,713 with batch 512). The
+  planner no longer warns, and the decision's reasoning notes the ragged remainder.
+  **Behaviour change:** a non-divisible axis whose `memory_estimator` says it fits now
+  plans as `Vmap`, like a divisible one. The old Rule 5 forced chunking there only
+  because dispatch was going to fail.
 
 - **`ZarrStagingSink.drain` stores 0-d and zero-length payloads** (`xtrax.run`, #161).
   Chunks are now rank-matched (`tuple(max(d, 1) for d in shape)`); previously a
@@ -126,6 +197,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   xtrax's own lock, so the `onnx` extra adds packages without pulling every environment
   down to orbax 0.11.x (the lock keeps 0.12.1). The ONNX and checkpoint suites pass on orbax
   0.12.x. A `pip install xtrax[onnx]` from PyPI still gets jax2onnx's own cap.
+
+- **`SafeMap` → `ChunkedMap`, `SafeMapIterator` → `ChunkedMapIterator`, `safe_map` →
+  `chunked_map`** (#3644). `safe_map` already means something else in JAX
+  (`jax._src.util.safe_map`, a length-checked map), and "Safe" suggested the
+  `xtrax.safety` subsystem; the strategy is memory-bounded chunking. **The old names
+  import for one release as deprecated aliases** (each access raises
+  `DeprecationWarning`); they are removed in the release after. Migrate mechanically
+  with `codemods/safemap-to-chunkedmap/`: ast-grep rules for Python plus a Markdown
+  script, with a fixture pair showing the exact transformation (see its README).
+  **Consumers that dispatch on the strategy's class *name*** (aminx's
+  `kernel_dispatch.py` compares `type(strategy).__name__ == "SafeMap"`) must accept
+  `"ChunkedMap"` before upgrading. The alias constructs the new class, and the codemod
+  rewrites that comparison. xtrax's own name-based matching accepts both names for
+  this release. Strategy-name strings in EDA output (`strategy_counts` keys, the
+  `strategy` column) are now `"ChunkedMap"`, and `RuntimeBundle.iterator`'s annotation
+  names `ChunkedMapIterator`. The sealed `port/` apparatus still
+  references `xtrax.transforms.map.safe_map` through the alias, so it must be re-sealed
+  before the aliases are removed.
 
 - **Dependency floors raised to versions that actually work** (debt #738). With
   jax at its own floor (0.10.2), `equinox>=0.11.0` and `orbax-checkpoint>=0.6.0`

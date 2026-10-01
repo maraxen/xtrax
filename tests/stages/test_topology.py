@@ -17,7 +17,7 @@ from xtrax.stages.topology import (
     validate_plan_topology,
 )
 from xtrax.tiling.plan import AxisDecision, AxisSpec
-from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Scan, Vmap, WhileCarry
+from xtrax.tiling.strategy import Bucket, ChunkedMap, DedupGather, Scan, Vmap, WhileCarry
 
 
 def _vmap_decision(name: str, *, heterogeneous: bool = False) -> AxisDecision:
@@ -28,7 +28,7 @@ def _vmap_decision(name: str, *, heterogeneous: bool = False) -> AxisDecision:
 def _safemap_decision(name: str, tile: int = 1) -> AxisDecision:
     spec = AxisSpec(name=name, cardinality=8, default_batch_size=tile)
     return AxisDecision(
-        spec=spec, batch_size=tile, reasoning="test", strategy=SafeMap(batch_size=tile)
+        spec=spec, batch_size=tile, reasoning="test", strategy=ChunkedMap(batch_size=tile)
     )
 
 

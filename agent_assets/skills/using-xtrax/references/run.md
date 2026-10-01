@@ -290,10 +290,10 @@ The first code that actually runs `AxisBoundary` ops. Two-tier contract: ordered
 
 ```python
 from xtrax.stages import ExecutorError, execute_map_axis, execute_scan_axis
-from xtrax.tiling import SafeMap, Vmap
+from xtrax.tiling import ChunkedMap, Vmap
 
-# Vmap/SafeMap axis: tap/sink per step, fuse once over stacked ys
-ys = execute_map_axis(fn, xs, strategy=SafeMap(batch_size=32), boundary=boundary)
+# Vmap/ChunkedMap axis: tap/sink per step, fuse once over stacked ys
+ys = execute_map_axis(fn, xs, strategy=ChunkedMap(batch_size=32), boundary=boundary)
 
 # Scan axis: fn is (carry, x) -> (carry, y); fuse never receives final_carry
 final_carry, ys = execute_scan_axis(transition, init, xs, boundary=boundary)
@@ -303,7 +303,7 @@ Verify: `src/xtrax/stages/executor.py`
 
 🚫 HALTS: `execute_map_axis` with `Vmap` + an ordered tap/sink raises `ExecutorError` — JAX cannot lower this at all (`ValueError: Cannot vmap ordered IO callback`). Defense-in-depth behind `validate_plan_topology`.
 
-⚠ WARN: **`SafeMap` + `ordered=True` silently ignores `batch_size` and runs one element at a time — unconditionally.** `jax.lax.map(..., batch_size=B)` batches via `jax.vmap` internally for ANY B >= 1 (verified empirically — even `batch_size=1` raises the vmap-ordered error); only the no-`batch_size` pure-scan path tolerates `ordered=True`. There is no partially-batched middle ground: an ordered `SafeMap` axis is architecturally identical in cost to a sequential `Scan`. If you need both ordering AND real batching throughput, there isn't one today — consider `Scan`, which makes the sequential cost explicit.
+⚠ WARN: **`ChunkedMap` + `ordered=True` silently ignores `batch_size` and runs one element at a time — unconditionally.** `jax.lax.map(..., batch_size=B)` batches via `jax.vmap` internally for ANY B >= 1 (verified empirically — even `batch_size=1` raises the vmap-ordered error); only the no-`batch_size` pure-scan path tolerates `ordered=True`. There is no partially-batched middle ground: an ordered `ChunkedMap` axis is architecturally identical in cost to a sequential `Scan`. If you need both ordering AND real batching throughput, there isn't one today — consider `Scan`, which makes the sequential cost explicit.
 
 ⚠ WARN: `ordered=True` is a real, structural cost, not a default knob: it threads an XLA token as a genuine data dependency between consecutive ordered calls (JEP-10657), so XLA cannot reorder, overlap, or pipeline them with other work. Only set it when correctness genuinely depends on host-observed order; keep `ordered=False` on every other axis's boundary ops.
 
@@ -327,7 +327,7 @@ Example: Write final results to H5.
 
 Verify: `src/xtrax/stages/boundaries.py:32-82`
 
-⚠ NOTE: `Tap.ordered` / `Sink.ordered` have a real performance cost, not just a correctness constraint — see the Boundary Executor section above (XLA token dependency, no vmap compatibility, `SafeMap` batch_size silently ignored when ordered).
+⚠ NOTE: `Tap.ordered` / `Sink.ordered` have a real performance cost, not just a correctness constraint — see the Boundary Executor section above (XLA token dependency, no vmap compatibility, `ChunkedMap` batch_size silently ignored when ordered).
 
 #### StageBundle: Typed Bag of Optional Callable Stage Slots
 

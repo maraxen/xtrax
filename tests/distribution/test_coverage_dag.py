@@ -591,6 +591,58 @@ def test_format_verdict_joins_multiple_failures() -> None:
     assert verdict == expected
 
 
+def _clean_result(tier_id: str, *, enforce_passed: bool | None) -> TierResult:
+    return TierResult(
+        tier_id=tier_id,
+        measure_coverage=False,
+        line_pct=None,
+        branch_pct=None,
+        tests_run=10,
+        tests_failed=0,
+        pytest_exit_code=0,
+        enforce_passed=enforce_passed,
+    )
+
+
+def test_format_verdict_pass_requires_evaluated_floor() -> None:
+    """#5248 control: a genuinely evaluated, passing floor still prints PASS."""
+    result = _clean_result("tier1_core", enforce_passed=True)
+    assert format_verdict((result,), enforce_tier="tier1_core", passed=True) == (
+        "PASS: coverage DAG enforce"
+    )
+
+
+def test_format_verdict_floorless_tier_is_not_pass() -> None:
+    """#5248: --enforce on a tier with no enforce_* floors evaluated nothing -- never PASS."""
+    result = _clean_result("tier0_audit", enforce_passed=None)
+    verdict = format_verdict((result,), enforce_tier="tier0_audit", passed=True)
+    assert verdict == (
+        "REPORT (not enforced): coverage DAG --enforce tier0_audit -- "
+        "tier declares no enforce_* floors"
+    )
+
+
+def test_format_verdict_unselected_enforce_tier_is_not_pass() -> None:
+    """#5248: --enforce naming a tier --tier did not run evaluated nothing -- never PASS."""
+    result = _clean_result("tier0_audit", enforce_passed=None)
+    verdict = format_verdict((result,), enforce_tier="tier1_core", passed=True)
+    assert verdict == (
+        "REPORT (not enforced): coverage DAG --enforce tier1_core -- "
+        "tier was not run (not selected by --tier)"
+    )
+
+
+def test_evaluate_enforce_floorless_tier_yields_none_not_pass() -> None:
+    """#5248 end-to-end through the real evaluator: floor-less -> enforce_passed None -> REPORT."""
+    dag = load_coverage_dag(CONFIG_PATH)
+    tier0 = next(t for t in dag.tiers if t.id == "tier0_audit")
+    evaluated = evaluate_enforce(tier0, _clean_result("tier0_audit", enforce_passed=None))
+    assert evaluated.enforce_passed is None
+    assert not format_verdict((evaluated,), enforce_tier="tier0_audit", passed=True).startswith(
+        "PASS"
+    )
+
+
 def test_format_verdict_raises_on_enforce_fail() -> None:
     """AC-4: format_verdict raises ValueError when enforce_tier is set and passed=False."""
     result = TierResult(
@@ -668,6 +720,7 @@ def test_main_enforce_pass_no_failures(
             tests_run=824,
             tests_failed=0,
             pytest_exit_code=0,
+            enforce_passed=True,
         )
         state_path = tmp_path / ".praxia" / "coverage_last_measured.json"
         state_path.parent.mkdir(parents=True)

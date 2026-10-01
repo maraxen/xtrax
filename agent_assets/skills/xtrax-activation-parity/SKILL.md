@@ -128,7 +128,7 @@ host two run ids (`ZarrStagingSink.__init__` refuses). Then `drain()`,
 `finalize()`, `fsync_tree()`, and only then digest.
 
 An `ordered=True` capture on a `Vmap` axis **halts** -- and an ordered capture
-on a `SafeMap` axis silently discards its `batch_size`. Both, plus every other
+on a `ChunkedMap` axis silently discards its `batch_size`. Both, plus every other
 trap in the capture path, are enumerated with verify-paths in
 `references/capture-mechanics.md`; read it before wiring a harness.
 

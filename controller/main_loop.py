@@ -101,8 +101,9 @@ the pieces it sequences: `dispatch_backend.dispatch_candidate()` (`CandidateHand
 `CandidateSmokeFailedError`, `CheckifiedExecutionError`, see the GW-04 addendum above),
 `record_candidate_run`/`resolve_derived_from` (`MultiParentLineageUnsupportedError`), or
 `campaign_adapter.run` via `record_candidate_run` (`BathosMcpToolError`, `BathosMcpTransportError`,
-`BathosTokenMissingError`). Every one of these propagates to the caller unmodified. AC-8c (LC-11)
-owns error/retry policy and the "conclude
+`BathosTokenMissingError`), or the pre-scoring success check on the run it returns
+(`RawArtifactsUnavailableError`, #4584). Every one of these propagates to the caller unmodified.
+AC-8c (LC-11) owns error/retry policy and the "conclude
 fires on every code path" guarantee; this module's job is to prove the happy-path sequence is
 wired correctly end-to-end, not to also own what happens when a step fails.
 """
@@ -128,7 +129,11 @@ from controller.bathos_library_wrappers import (
     get_sidecar_drift_signal,
 )
 from controller.dispatch import CandidateHandoff, DispatchBackend
-from controller.evaluate_adapter import BathosFrozenContext, score_raw_artifacts
+from controller.evaluate_adapter import (
+    BathosFrozenContext,
+    RawArtifactsUnavailableError,
+    score_raw_artifacts,
+)
 from controller.lineage_interim import (
     CandidateParentage,
     record_candidate_run,
@@ -226,8 +231,10 @@ class GateOutcome:
 
         This is the load-bearing signal a failing gate check must actually produce: a
         `confirmation`/`sequential` campaign whose stats-battery verdict downgraded, or whose
-        seed/trial floor isn't cleared, hard-blocks here -- it is not silently plumbed through
-        and ignored by `OneCandidatePassResult.accepted` below. Sidecar drift does NOT fold
+        seed/trial floor isn't cleared, hard-blocks here. The two gates veto different things
+        (#4584, option 2): a stats-battery block vetoes PROMOTION
+        (`OneCandidatePassResult.accepted`); a seed/trial-floor block vetoes only the
+        conclude-time HELD claim (`OneCandidatePassResult.held`). Sidecar drift does NOT fold
         into hard_blocked; SidecarHashMismatchError is raised directly (autonomous mode) or
         sidecar_drift.should_warn is set (collaborative mode).
         """
@@ -302,11 +309,43 @@ class OneCandidatePassResult:
         -- there is nothing to ratchet against yet, so a first candidate is never rejected on
         ratchet grounds alone.
         """
-        return (
-            self.run_result.success
-            and not self.gate_outcome.hard_blocked
-            and self.ratchet_decision.improved
+        return is_accepted(
+            run_success=self.run_result.success,
+            stats_hard_blocked=self.gate_outcome.stats_battery.hard_blocked,
+            improved=self.ratchet_decision.improved,
         )
+
+    @property
+    def held(self) -> bool:
+        """True iff the candidate was promoted AND clears the seed/trial floor, i.e. its
+        result may be reported as held (#4584, option 2). See `is_held`."""
+        return is_held(
+            accepted=self.accepted, seed_hard_blocked=self.gate_outcome.seed_trial.hard_blocked
+        )
+
+
+def is_accepted(*, run_success: bool, stats_hard_blocked: bool, improved: bool) -> bool:
+    """THE promotion predicate (#4584 part 3), shared by `OneCandidatePassResult.accepted`,
+    the best-so-far lineage advance, and the probe record, so the three cannot disagree.
+
+    Before: the property required all three; the lineage advanced on `improved` alone (a
+    hard-blocked candidate still became best-so-far); and the probe record used
+    `stats.honored and seed.held`, which ignored `improved` and recorded an advisory-only
+    downgrade -- documented as a normal campaign state -- as not accepted.
+
+    Only the STATS-battery gate vetoes promotion (Marielle, 260930, option 2). The seed/trial
+    floor counts seeds per script_sha256 and every candidate is a new script, so as a
+    promotion veto it would block nearly every single-run candidate in the gated modes and
+    the ratchet would never advance. It answers "is there enough replication to report this
+    result as held?", a claim about the campaign's result, so it gates `is_held` instead.
+    """
+    return run_success and not stats_hard_blocked and improved
+
+
+def is_held(*, accepted: bool, seed_hard_blocked: bool) -> bool:
+    """The conclude-time HELD claim (#4584, option 2): promoted, AND the seed/trial floor is
+    cleared (not hard-blocked). An advisory-only seed downgrade (exploration) does not flip it."""
+    return accepted and not seed_hard_blocked
 
 
 def _run_git(
@@ -414,6 +453,7 @@ def _emit_candidate_pass_probe_record(
     handoff_sha: str,
     wall_seconds: float,
     accepted: bool,
+    held: bool,
     hard_blocked: bool,
 ) -> Path:
     """Emit a Stage-0 provenance ProbeRecord for one candidate pass (Phase C).
@@ -450,6 +490,7 @@ def _emit_candidate_pass_probe_record(
             "derived_from": derived_from,
             "handoff_content_sha256": handoff_sha,
             "accepted": str(accepted).lower(),
+            "held": str(held).lower(),
             "hard_blocked": str(hard_blocked).lower(),
             "source": "controller.run_one_candidate_pass",
             "axis_note": ("provenance artifact; n_atoms placeholder by contract"),
@@ -741,8 +782,11 @@ def run_one_candidate_pass(
             before the real bathos run.
         MultiParentLineageUnsupportedError: `parentage` names more than one distinct, real
             parent run ID -- raised before any bathos call.
-        BathosMcpToolError: `campaign_adapter.run` itself failed (bathos-side validation or the
-            script run reported failure).
+        BathosMcpToolError: `campaign_adapter.run` itself failed: bathos-side validation
+            (`ok: False`), or an envelope claiming failure with exit_code 0 (contract drift).
+        RawArtifactsUnavailableError: the bathos run did not succeed (#4584) -- raised right
+            after the run, before sidecar-drift handling, scoring or any lineage step, so a
+            failed run is never scored and never advances the best-so-far ref.
         BathosMcpTransportError: the MCP round-trip to bathos failed.
         BathosTokenMissingError: no local bathos MCP write-token is available.
         ClosureHashMismatchError, ProtectedPathMutatedError, UnlistedReadError: closure-lock
@@ -821,6 +865,19 @@ def run_one_candidate_pass(
         agent_mode=agent_mode,
         no_sidecar=no_sidecar,
     )
+
+    # 2.3. A failed run is never scored (#4584). Nothing downstream gated on success:
+    # scoring ran on whatever partial artifacts a failed script left, and a good enough
+    # score advanced the best-so-far ref at step 2.9 before `accepted` (which does read
+    # success) was ever consulted. HALT here, before any step acts on the run -- the same
+    # refusal BathosSplitComputeEvaluator makes (controller/evaluate_adapter.py).
+    if not run_result.success:
+        msg = (
+            f"bathos run of {handoff.path} did not succeed (exit_code={run_result.exit_code})"
+            " -- refusing to score raw artifacts that may be partial or absent, or to let"
+            " them advance the best-so-far lineage"
+        )
+        raise RawArtifactsUnavailableError(msg)
 
     # 2.4. Sidecar-drift check (GW-01, AC-18) -- MUST fire BEFORE any best-so-far commit
     # lands, to prevent a drift-tainted candidate from becoming the new best-so-far. Skip
@@ -946,9 +1003,26 @@ def run_one_candidate_pass(
             fitness_dict, best_fitness, higher_is_better=higher_is_better
         )
 
+    # 2.65. Gate checks (LC-07 wrappers feeding #2181's already-merged xtrax.loop gates). Run
+    # BEFORE the lineage decision (#4584): a hard block has to be able to stop a candidate
+    # becoming best-so-far, not merely flag it afterwards. The gates read the bathos catalog
+    # (this run is already recorded) and nothing the lineage step writes.
+    stats_verdict = stats_battery_fn(**dict(stats_battery_kwargs))
+    stats_decision = assess_stats_battery_verdict(stats_verdict, campaign_mode=campaign_mode)
+
+    seed_counts = seed_trial_counts_fn(seed_trial_db, handoff.content_sha256, hypothesis_clause_id)
+    seed_decision = assess_seed_trial_floor(seed_counts, campaign_mode=campaign_mode)
+
+    accepted = is_accepted(
+        run_success=run_result.success,
+        stats_hard_blocked=stats_decision.hard_blocked,
+        improved=ratchet_decision.improved,
+    )
+    held = is_held(accepted=accepted, seed_hard_blocked=seed_decision.hard_blocked)
+
     # 2.7. Crash-safe best-so-far lineage (S2.1c/S2.4, AC-14) -- accept vs reject branch, driven
-    # solely by ratchet_decision.improved (whether from a real win or the sentinel above).
-    if ratchet_decision.improved:
+    # by the same acceptance predicate the composed result reports (#4584).
+    if accepted:
         prior_best_sha = read_best_so_far(repo, ratchet_ref_name)
         parent_sha = prior_best_sha if prior_best_sha is not None else commit_parent_sha
         if parent_sha is None:
@@ -995,18 +1069,19 @@ def run_one_candidate_pass(
         # propagate uncaught.
         pending_sha = create_pending_commit(repo, resolved_tree_sha, parent_sha, message)
         advance_best_so_far(repo, ratchet_ref_name, pending_sha, prior_best_sha)
-    else:
+    elif best_fitness is not None or read_best_so_far(repo, ratchet_ref_name) is not None:
         # RatchetCrashAtomicityError propagates uncaught. reset_worktree_to_best_so_far reuses
         # the same repo/ratchet_ref_name as the accept branch above -- one source of truth for
-        # which repo/ref this campaign ratchets against.
+        # which repo/ref this campaign ratchets against. A ref existing is the condition, not
+        # best_fitness: a crash-resume can carry a real ref with best_fitness still None.
+        # (best_fitness set with no ref is corruption, and still raises inside the reset.)
         reset_worktree_to_best_so_far(repo, ratchet_ref_name)
-
-    # 3. Gate checks (LC-07 wrappers feeding #2181's already-merged xtrax.loop gates).
-    stats_verdict = stats_battery_fn(**dict(stats_battery_kwargs))
-    stats_decision = assess_stats_battery_verdict(stats_verdict, campaign_mode=campaign_mode)
-
-    seed_counts = seed_trial_counts_fn(seed_trial_db, handoff.content_sha256, hypothesis_clause_id)
-    seed_decision = assess_seed_trial_floor(seed_counts, campaign_mode=campaign_mode)
+    # else: no best-so-far ref exists yet and a gate rejected this candidate -- there is
+    # nothing to reset to and no ref is written. The caller's best_fitness stays None, so the
+    # NEXT candidate also takes the first-candidate sentinel; the ratchet engages only once
+    # some candidate clears the gates. (Before #4584 this path was unreachable: the first
+    # candidate always advanced lineage, even hard-blocked.) If a gate function itself raises,
+    # no reset runs either -- it propagates, like every other gate here.
 
     # 3.5. Evidence attestation check (GW-01, AC-19, advisory-only) -- verify run provenance.
     # May raise ValueError if run_id lookup failed (indicating a broken fallback strategy).
@@ -1058,7 +1133,8 @@ def run_one_candidate_pass(
                 derived_from=derived_from,
                 handoff_sha=handoff.content_sha256,
                 wall_seconds=perf_counter() - pass_started_at,
-                accepted=(run_result.success and stats_decision.honored and seed_decision.held),
+                accepted=accepted,
+                held=held,
                 hard_blocked=(stats_decision.hard_blocked or seed_decision.hard_blocked),
             )
         except Exception as exc:  # noqa: BLE001 -- contained by design; see comment above
@@ -1086,6 +1162,8 @@ def run_one_candidate_pass(
 
 
 __all__ = [
+    "is_accepted",
+    "is_held",
     "CampaignMode",
     "GateOutcome",
     "OneCandidatePassResult",

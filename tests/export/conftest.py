@@ -50,7 +50,7 @@ def model() -> TinyMLP:
 
 @pytest.fixture
 def plan() -> Any:
-    """A single-axis plan over 32 elements, batch size 8 (resolves to SafeMap)."""
+    """A single-axis plan over 32 elements, batch size 8 (resolves to ChunkedMap)."""
     return BatchPlanner().plan([AxisSpec(name="batch", cardinality=32, default_batch_size=8)])
 
 
