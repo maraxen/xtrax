@@ -50,12 +50,14 @@ def test_tier_1_dtype_shape(oracle, port_target) -> None:
 
 @pytest.mark.tier_2
 def test_tier_2_float64(oracle, port_target) -> None:
-    jax.config.update("jax_enable_x64", True)
     baseline = _load_baseline()
     case = next(c for c in baseline["cases"] if c["dtype"] == "float64")
     xs, fn, _ = _case_arrays(case)
     ref_out = oracle.safe_map_reference(fn, xs)
-    jax_out = np.asarray(chunked_map(fn, jnp.asarray(xs, dtype=jnp.float64)))
+    # Scoped: the conftest runs port tiers first, so a bare config.update leaked x64
+    # into every later test of a combined run (#5681).
+    with jax.enable_x64(True):
+        jax_out = np.asarray(chunked_map(fn, jnp.asarray(xs, dtype=jnp.float64)))
     np.testing.assert_allclose(jax_out, ref_out, rtol=1e-10, atol=1e-10)
 
 
