@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The deprecated `SafeMap` / `SafeMapIterator` / `safe_map` aliases** (#5680). They
+  shipped for one release (0.4.0a11) as `DeprecationWarning` aliases of `ChunkedMap` /
+  `ChunkedMapIterator` / `chunked_map` (#3644) and now raise `AttributeError` /
+  `ImportError`. **Breaking.** Migrate with the ast-grep rules in
+  `codemods/safemap-to-chunkedmap/`. Name-based strategy matching (`stages.topology`,
+  `export.composer`) still accepts the class name `"SafeMap"`, for consumers' own
+  duck-typed classes of that name (aminx's, until its deprecation). The port wave now
+  targets `xtrax.transforms.map.chunked_map` and is re-sealed (manifest hash recomputed
+  with `scripts/audit_port_oracle_seal.py`; the reference oracle is unchanged).
+
 ## [0.4.0a11] - 2026-10-01
 
 ### Added

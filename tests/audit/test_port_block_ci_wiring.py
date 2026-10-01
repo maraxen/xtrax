@@ -25,10 +25,10 @@ yaml = pytest.importorskip("yaml")
 ROOT = Path(__file__).resolve().parents[2]
 
 _PLANT = '''
-"""pytest plugin: make xtrax's safe_map wrong before the parity tests import it."""
+"""pytest plugin: make xtrax's chunked_map wrong before the parity tests import it."""
 import xtrax.transforms.map as _m
 
-_real = _m.safe_map
+_real = _m.chunked_map
 
 
 def _wrong(fn, xs, *args, **kwargs):
@@ -36,7 +36,7 @@ def _wrong(fn, xs, *args, **kwargs):
 
 
 def pytest_configure(config):
-    _m.safe_map = _wrong
+    _m.chunked_map = _wrong
 '''
 
 
@@ -115,7 +115,7 @@ def test_unperturbed_port_harness_passes(tmp_path: Path) -> None:
 def test_planted_parity_failure_fails_the_harness(tmp_path: Path) -> None:
     """Negative control: a wrong chunked_map through the real conftest must fail pytest."""
     result = _run_port_harness(tmp_path, plant=True)
-    assert result.returncode != 0, "a wrong safe_map passed the parity harness"
+    assert result.returncode != 0, "a wrong chunked_map passed the parity harness"
     assert "FAILED" in result.stdout
     assert "Not equal to tolerance" in result.stdout  # failed ON parity, not on setup
     audits = (tmp_path / "repo" / ".praxia" / "audits.jsonl").read_text(encoding="utf-8")

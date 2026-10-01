@@ -13,8 +13,9 @@ length-checked map). "Safe" also suggested the checkify-based `xtrax.safety` sub
 The strategy is memory-bounded chunking over `jax.lax.map(batch_size=...)`, so the new
 name says that.
 
-The old names still import for **one release** as deprecated aliases, and each use raises
-a `DeprecationWarning`. They are removed in the release after that.
+The old names imported for **one release**, 0.4.0a11, as deprecated aliases that raised a
+`DeprecationWarning`. They are removed after it, so on later releases code using them fails
+with `AttributeError`/`ImportError` until migrated.
 
 ## Run it
 
