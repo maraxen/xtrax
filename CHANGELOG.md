@@ -7,15 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0a12] - 2026-10-01
+
 ### Added
 
 - **`xtrax.run.digest` module**: Digest functions for reproducibility and durability
-  infrastructure (#U4, spec demistify 261001_preemption-safe-cimist-fitting):
+  infrastructure (#181, U4, spec demistify 261001_preemption-safe-cimist-fitting):
   `canonical_digest`, `array_digest`, `source_fingerprint`, `numerics_env`. Used by
   pipeline resumption and done-marker verification to detect content changes
   independent of timing, process, or operational metadata.
 
-- **Reserved `xtrax.` attribute namespace** (#U0, spec demistify
+- **Reserved `xtrax.` attribute namespace** (#181, U0, spec demistify
   261001_preemption-safe-cimist-fitting): Zarr attrs starting with the prefix
   `"xtrax."` are excluded from `zarr_content_digest` by default (pass
   `include_provenance=True` to include them). The sink's new `stamp_reserved()`
@@ -23,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. run reports, status flags) does not affect content-based reproducibility.
   `ZarrStagingSink.stage()` now rejects caller attrs in the reserved namespace.
 
-- **`xtrax.run.zarr_commit` module** (#U1-U2, spec demistify
+- **`xtrax.run.zarr_commit` module** (#181, U1-U2, spec demistify
   261001_preemption-safe-cimist-fitting): Durable atomic-commit primitives for
   zarr v3 directory stores. Provides crash-safe staging + rename patterns:
   `commit_key` (atomically commit a staged group), `lookup` (classify key state:
@@ -35,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DurableStoreError` + specific subclasses for diagnostics. Includes fault
   injection support (XTRAX_FAULT_INJECT env var) for crash atomicity testing.
 
-- **`ZarrStagingSink` durable create-or-join mode** (#U3, spec demistify
+- **`ZarrStagingSink` durable create-or-join mode** (#181, U3, spec demistify
   261001_preemption-safe-cimist-fitting): `SinkSpec` gains defaulted fields
   `open_mode` (`"exclusive"` | `"create_or_join"`), `store_identity` and
   `prefixes` (also accepted by `derive_sink_spec`). With
