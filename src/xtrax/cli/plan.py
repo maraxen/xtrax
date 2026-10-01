@@ -20,7 +20,8 @@ class PlanArgs:
     Attributes:
         fn: Import-path string to the function to plan. Format: 'module.path:symbol'.
             The function will be loaded lazily only when run_plan is invoked.
-        shapes: Space-separated shape specification string. Format: 'name=(d0,d1,...)<dtype> ...'.
+        shapes: Space-separated shape specification string.
+            Format: 'name=(d0,d1,...)dtype ...', e.g. 'x=(4,3)f32 mask=(4,)bool'.
             Each name corresponds to a positional argument of the function, in order.
     """
 

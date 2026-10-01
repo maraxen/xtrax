@@ -86,6 +86,22 @@ def _capture_git_state(cwd: Path) -> tuple[str, str, bool]:
     return sha, branch, dirty
 
 
+def _prefix_message(e: Exception, context: str) -> None:
+    """Put `context` into `e`'s own rendered message, in place (#5552).
+
+    JAX's io_callback re-renders only an exception's message line, so a note or a
+    chained cause is invisible there. `OSError(errno, strerror)` renders from
+    `strerror`, not `args[0]`; most others render from a str `args[0]`. Anything
+    whose `str()` still lacks the context afterwards gets a note as a last resort.
+    """
+    if isinstance(e, OSError) and isinstance(e.strerror, str):
+        e.strerror = f"{context}: {e.strerror}"
+    elif e.args and isinstance(e.args[0], str):
+        e.args = (f"{context}: {e.args[0]}", *e.args[1:])
+    if context not in str(e):
+        e.add_note(context)
+
+
 def _is_json_type(value: Any, pytypes: tuple[type, ...]) -> bool:  # noqa: ANN401
     # bool subclasses int, so JSON-Schema-wise they must be treated as disjoint types.
     if isinstance(value, bool):
@@ -388,16 +404,31 @@ class ZarrStagingSink:
             group_path = "/".join(str(part) for part in key)
             group = self._root.require_group(group_path) if group_path else self._root
             for name, array in arrays.items():
-                arr = group.create_array(
-                    name=name,
-                    shape=array.shape,
-                    dtype=array.dtype,
-                    # One chunk per array, rank-matched to its shape: 0-d gets
-                    # chunks=() and zero-length dims get edge 1 (zarr rejects 0).
-                    chunks=tuple(max(d, 1) for d in array.shape),
-                    overwrite=True,
-                )
-                arr[...] = array
+                try:
+                    arr = group.create_array(
+                        name=name,
+                        shape=array.shape,
+                        dtype=array.dtype,
+                        # One chunk per array, rank-matched to its shape: 0-d gets
+                        # chunks=() and zero-length dims get edge 1 (zarr rejects 0).
+                        chunks=tuple(max(d, 1) for d in array.shape),
+                        overwrite=True,
+                    )
+                    arr[...] = array
+                except Exception as e:
+                    # #5552: zarr's own message names only zarr internals, and from an
+                    # io_callback JAX re-renders just the original exception's message
+                    # line (no notes, no chained cause). So the context goes INTO the
+                    # message, on the same exception object: type and traceback are
+                    # unchanged for callers that catch it.
+                    context = (
+                        f"ZarrStagingSink.drain: failed writing array {name!r} "
+                        f"(shape={tuple(array.shape)}, dtype={array.dtype}) "
+                        f"for staged key {key!r} at group {group_path or '/'!r}; "
+                        "the pending buffer was NOT cleared"
+                    )
+                    _prefix_message(e, context)
+                    raise
             key_attrs = self._pending_attrs.get(key)
             if key_attrs:
                 group.attrs.update(key_attrs)
