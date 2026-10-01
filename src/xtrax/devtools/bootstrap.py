@@ -275,7 +275,9 @@ def run_audit_bootstrap(
     structure_complexity = run_structure_complexity_gate(
         audits_path=resolved_audits,
         baseline_path=resolved_baseline,
-        root=resolved_root,
+        # The scan root, as for the standalone gate: the whole repo would also count
+        # scripts/, tests/ and controller/ against a baseline measured on src/xtrax.
+        root=target,
         run_id=resolved_run_id,
         write_baseline=write_baseline,
     )

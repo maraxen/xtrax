@@ -321,10 +321,35 @@ def test_run_audit_bootstrap_uses_quick_test_rigor_path(tmp_path: Path) -> None:
                 root=ROOT,
                 write_baseline=False,
                 test_rigor_quick=True,
+                manifest_path=tmp_path / "manifest.toml",  # not the tracked manifest
             )
 
     _, kwargs = test_rigor_mock.call_args
     assert kwargs["tests_path"] == (ROOT / "tests" / "audit").resolve()
+
+
+def test_run_audit_bootstrap_scans_src_for_structure_complexity(tmp_path: Path) -> None:
+    """Like the standalone gate, not the repo root: scanning ROOT also counted scripts/,
+    tests/ and controller/ (103 ruff hits vs 51 on src/xtrax, 2026-10-01, #5682)."""
+    baseline_path = tmp_path / "audit_baseline.json"
+    _seed_baseline(baseline_path)
+    gate_results = _passing_gate_results()
+
+    with _patch_gate_runners(gate_results):
+        with patch(
+            "xtrax.devtools.bootstrap.run_structure_complexity_gate",
+            return_value=gate_results["structure_complexity"],
+        ) as structure_mock:
+            run_audit_bootstrap(
+                audits_path=tmp_path / "audits.jsonl",
+                baseline_path=baseline_path,
+                root=ROOT,
+                write_baseline=False,
+                manifest_path=tmp_path / "manifest.toml",
+            )
+
+    _, kwargs = structure_mock.call_args
+    assert kwargs["root"] == (ROOT / "src" / "xtrax").resolve()
 
 
 def test_write_bootstrap_manifest_emits_debt_seed_for_maximize_floor(
