@@ -24,7 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from xtrax.run.zarr_sink import _CORE_PROVENANCE_FIELDS, RESERVED_ATTR_PREFIX
+from xtrax.run._sink_names import CORE_PROVENANCE_FIELDS as _CORE_PROVENANCE_FIELDS
+from xtrax.run._sink_names import RESERVED_ATTR_PREFIX
 
 if TYPE_CHECKING:
     import zarr

@@ -35,6 +35,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DurableStoreError` + specific subclasses for diagnostics. Includes fault
   injection support (XTRAX_FAULT_INJECT env var) for crash atomicity testing.
 
+- **`ZarrStagingSink` durable create-or-join mode** (#U3, spec demistify
+  261001_preemption-safe-cimist-fitting): `SinkSpec` gains defaulted fields
+  `open_mode` (`"exclusive"` | `"create_or_join"`), `store_identity` and
+  `prefixes` (also accepted by `derive_sink_spec`). With
+  `open_mode="create_or_join"` the sink atomically creates the store root (or
+  joins an existing one after an identity + prefix check), never opens the
+  target with `mode="a"` and never rewrites root attrs, and commits a writer
+  record at `("_xtrax_writers", run_id)` before the constructor returns. In
+  this mode `stage()` takes `input_digest` (required), `input_payload`,
+  `commit_meta` and `env_extra`; `drain()` commits each key atomically via
+  staging + rename and returns `{key: Committed | Duplicate}`
+  (`CommitConflictError` on a differing digest). New `lookup`,
+  `committed_keys`, `gc_staging`, `close()` and context-manager support;
+  `finalize()` raises (durable stores are never consolidated) and
+  `stamp_reserved` only targets already-committed keys. `drain()` returns `{}`
+  in the unchanged `exclusive` mode. The sink's shared constants moved to the
+  new import-free `xtrax.run._sink_names` to break an import cycle (still
+  re-exported from `zarr_sink`).
+
 ## [0.4.0a11] - 2026-10-01
 
 ### Added

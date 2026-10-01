@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -13,6 +14,9 @@ if TYPE_CHECKING:
     from xtrax.run.zarr_sink import ZarrStagingSink
 
 Format = Literal["jsonl", "h5", "zarr", "none"]
+OpenMode = Literal["exclusive", "create_or_join"]
+
+_OPEN_MODES = ("exclusive", "create_or_join")
 
 
 @dataclass
@@ -21,6 +25,13 @@ class SinkSpec:
 
     ``run_id`` is required: it is the join key linking everything a sink writes
     to the run that produced it (see ZarrStagingSink provenance tracking).
+
+    ``open_mode="exclusive"`` (default) is the original single-writer mode.
+    ``open_mode="create_or_join"`` opens a durable, multi-writer store: it
+    requires ``format == "zarr"`` and a ``store_identity`` payload (the
+    canonical identity every joiner must match). ``prefixes`` lists the group
+    prefixes that must exist in the store (created atomically with the store
+    root); it is normalized to a tuple of tuples of ``str``.
     """
 
     run_id: str
@@ -28,6 +39,9 @@ class SinkSpec:
     format: Format = "jsonl"
     flush_every: int = 1
     extension_schema: dict[str, Any] | None = None
+    open_mode: OpenMode = "exclusive"
+    store_identity: Mapping[str, Any] | None = None
+    prefixes: Sequence[tuple[str, ...]] = ()
 
     def __post_init__(self) -> None:
         # Plain-Python backstop: beartype/jaxtyping wrapping is test-env-only
@@ -36,6 +50,29 @@ class SinkSpec:
         if not isinstance(self.run_id, str):
             msg = f"SinkSpec.run_id must be str, got {type(self.run_id).__name__}"
             raise TypeError(msg)
+        if self.open_mode not in _OPEN_MODES:
+            msg = f"SinkSpec.open_mode must be one of {_OPEN_MODES}, got {self.open_mode!r}"
+            raise ValueError(msg)
+        if self.open_mode == "create_or_join":
+            if self.store_identity is None:
+                msg = "SinkSpec(open_mode='create_or_join') requires store_identity"
+                raise ValueError(msg)
+            if self.format != "zarr":
+                msg = (
+                    "SinkSpec(open_mode='create_or_join') requires format='zarr', "
+                    f"got {self.format!r}"
+                )
+                raise ValueError(msg)
+        normalized: list[tuple[str, ...]] = []
+        for prefix in self.prefixes:
+            if isinstance(prefix, str):
+                msg = (
+                    f"SinkSpec.prefixes entries must be tuples of str, got bare str {prefix!r} "
+                    f"(did you mean ({prefix!r},)?)"
+                )
+                raise TypeError(msg)
+            normalized.append(tuple(str(part) for part in prefix))
+        self.prefixes = tuple(normalized)
 
 
 def make_sink(spec: SinkSpec) -> ZarrStagingSink | None:
@@ -66,6 +103,9 @@ def derive_sink_spec(
     format: Format = "zarr",
     flush_every: int = 1,
     extension_schema: dict[str, Any] | None = None,
+    open_mode: OpenMode = "exclusive",
+    store_identity: Mapping[str, Any] | None = None,
+    prefixes: Sequence[tuple[str, ...]] = (),
 ) -> SinkSpec:
     """Derive a :class:`SinkSpec` from a :class:`RunSpec` -- the canonical seam.
 
@@ -91,6 +131,10 @@ def derive_sink_spec(
         format: Routing format; defaults to ``"zarr"``.
         flush_every: Flush cadence in writes; forwarded verbatim.
         extension_schema: Extension schema mapping; forwarded verbatim.
+        open_mode: ``"exclusive"`` (default) or ``"create_or_join"``; forwarded.
+        store_identity: Canonical store identity payload; forwarded (required
+            for ``"create_or_join"``).
+        prefixes: Group prefixes that must exist in a durable store; forwarded.
 
     Returns:
         A fully-resolved ``SinkSpec`` whose ``run_id`` is never empty --
@@ -102,4 +146,7 @@ def derive_sink_spec(
         format=format,
         flush_every=flush_every,
         extension_schema=extension_schema,
+        open_mode=open_mode,
+        store_identity=store_identity,
+        prefixes=prefixes,
     )
