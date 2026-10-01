@@ -3,7 +3,7 @@
 
 Phase B of .praxia/docs/specs/
 260824_upstream-profiling-probe-tooling-from-prolix.md. One jitted program
-applies all three tiling strategies (Vmap / SafeMap / DedupGather) to the
+applies all three tiling strategies (Vmap / ChunkedMap / DedupGather) to the
 representative kernel, each under its own jax.named_scope. The compiled HLO
 text carries the scope paths (op_name metadata); the executed trace carries
 per-thunk durations under post-fusion hlo_op names -- xtrax.profiling.trace's
@@ -43,7 +43,7 @@ from xtrax.profiling.trace import (
     scope_map_from_hlo_text,
 )
 from xtrax.tiling.dispatch import axis_dispatch, make_axis_dispatch
-from xtrax.tiling.strategy import DedupGather, SafeMap, Vmap
+from xtrax.tiling.strategy import ChunkedMap, DedupGather, Vmap
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,7 +72,7 @@ def _build_program(rows: int, cols: int, safemap_batch: int, dedup_k_bucket: int
         gather_fn=lambda y, i: y[i],
     )
     vmap_iter = make_axis_dispatch(Vmap())
-    safemap_iter = make_axis_dispatch(SafeMap(batch_size=safemap_batch))
+    safemap_iter = make_axis_dispatch(ChunkedMap(batch_size=safemap_batch))
 
     def program(xv, xsd):
         with jax.named_scope(LABEL_VMAP):

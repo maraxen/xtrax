@@ -274,12 +274,11 @@ class TestBoundariesForExport:
         assert isinstance(stripped["batch"].sink, _StrippedSink)
 
     def test_stripped_sink_preserves_ordered(self):
-        """A bare None would flip an ordered SafeMap onto a different lowering.
+        """A bare None would flip an ordered ChunkedMap onto a different lowering.
 
         execute_map_axis reads boundary.sink.ordered to choose between
-        jax.lax.map and safe_map(..., batch_size=...); the latter raises when
-        cardinality is not divisible by batch_size, so a working configuration
-        would crash at export.
+        jax.lax.map (sequential) and chunked_map(..., batch_size=...) (batched), so
+        dropping the flag would export a different program from the one that ran.
         """
         boundaries = {"batch": AxisBoundary(sink=_Sink(ordered=True), materialize=True)}
         assert _boundaries_for_export(boundaries)["batch"].sink.ordered is True

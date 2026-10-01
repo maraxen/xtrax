@@ -2,7 +2,7 @@
 
 from xtrax.eda.explain import explain_plan
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
-from xtrax.tiling.strategy import SafeMap, Vmap
+from xtrax.tiling.strategy import ChunkedMap, Vmap
 
 
 class TestExplainPlan:
@@ -65,7 +65,7 @@ class TestExplainPlan:
             spec=spec2,
             batch_size=64,
             reasoning="",  # Empty
-            strategy=SafeMap(batch_size=64),
+            strategy=ChunkedMap(batch_size=64),
         )
 
         plan = BatchPlan(decisions=(decision1, decision2))

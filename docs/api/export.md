@@ -143,7 +143,7 @@ boundary, a mis-shaped carry — changes both sides identically.
 
 `validate_export_safe` runs before any tracing.
 
-Supported strategies are `Vmap`, `SafeMap`, `Scan`, and `DedupGather`. `Bucket`
+Supported strategies are `Vmap`, `ChunkedMap`, `Scan`, and `DedupGather`. `Bucket`
 is host-tier: pad with `bucketize()` before the boundary. `WhileCarry` has an
 unbounded trip count: convert it to a `Scan` with a static length.
 

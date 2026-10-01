@@ -96,6 +96,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a registered random/rng/callback/debug-family primitive is left unclassified.
   **Behaviour change:** a memoized function that calls `jax.debug.print` is now rejected.
 
+- **Chunked mapping handles a ragged final chunk** (`xtrax.transforms`,
+  `xtrax.tiling`, #5565). An axis whose cardinality is not a multiple of its batch
+  size used to plan as SafeMap with a `RuntimeWarning`, then raise `ValueError` at
+  dispatch. Any data-driven axis could hit this; an MSA depth of 50,713 = 13·47·83 has
+  no usable divisor. `jax.lax.map(batch_size=...)` already runs the remainder as one
+  smaller vmapped chunk, with no padding and peak memory still bounded by the batch
+  size. xtrax's own divisibility check was the only obstacle, and it is removed (verified
+  equal to `vmap` on JAX 0.10.2 and 0.11.1, including n=50,713 with batch 512). The
+  planner no longer warns, and the decision's reasoning notes the ragged remainder.
+  **Behaviour change:** a non-divisible axis whose `memory_estimator` says it fits now
+  plans as `Vmap`, like a divisible one. The old Rule 5 forced chunking there only
+  because dispatch was going to fail.
+
 - **`ZarrStagingSink.drain` stores 0-d and zero-length payloads** (`xtrax.run`, #161).
   Chunks are now rank-matched (`tuple(max(d, 1) for d in shape)`); previously a
   0-d per-step scalar, or any array with a zero-length dimension such as
@@ -144,6 +157,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callables would be a gate feature, not this fix.
 
 ### Changed
+
+- **`SafeMap` → `ChunkedMap`, `SafeMapIterator` → `ChunkedMapIterator`, `safe_map` →
+  `chunked_map`** (#3644). `safe_map` already means something else in JAX
+  (`jax._src.util.safe_map`, a length-checked map), and "Safe" suggested the
+  `xtrax.safety` subsystem; the strategy is memory-bounded chunking. **The old names
+  import for one release as deprecated aliases** (each access raises
+  `DeprecationWarning`); they are removed in the release after. Migrate mechanically
+  with `codemods/safemap-to-chunkedmap/`: ast-grep rules for Python plus a Markdown
+  script, with a fixture pair showing the exact transformation (see its README).
+  **Consumers that dispatch on the strategy's class *name*** (aminx's
+  `kernel_dispatch.py` compares `type(strategy).__name__ == "SafeMap"`) must accept
+  `"ChunkedMap"` before upgrading. The alias constructs the new class, and the codemod
+  rewrites that comparison. xtrax's own name-based matching accepts both names for
+  this release. Strategy-name strings in EDA output (`strategy_counts` keys, the
+  `strategy` column) are now `"ChunkedMap"`, and `RuntimeBundle.iterator`'s annotation
+  names `ChunkedMapIterator`. The sealed `port/` apparatus still
+  references `xtrax.transforms.map.safe_map` through the alias, so it must be re-sealed
+  before the aliases are removed.
 
 - **Dependency floors raised to versions that actually work** (debt #738). With
   jax at its own floor (0.10.2), `equinox>=0.11.0` and `orbax-checkpoint>=0.6.0`

@@ -18,7 +18,7 @@ from xtrax.tiling.dedup_synthesis import (
     verify_dedup_outputs,
 )
 from xtrax.tiling.plan import AxisSpec, BatchPlanner
-from xtrax.tiling.strategy import DedupGather, SafeMap
+from xtrax.tiling.strategy import ChunkedMap, DedupGather
 
 
 def _ds(k: int, n: int = 100) -> DedupSpec:
@@ -56,7 +56,7 @@ def _cost(decisions) -> int:  # noqa: ANN001
     for d in decisions:
         if isinstance(d.strategy, DedupGather):
             total += 1_000  # a working set the estimate says is too big
-        elif isinstance(d.strategy, SafeMap):
+        elif isinstance(d.strategy, ChunkedMap):
             total += d.batch_size * 10
         else:  # Vmap
             total += d.spec.cardinality * 10
@@ -64,9 +64,9 @@ def _cost(decisions) -> int:  # noqa: ANN001
 
 
 def test_without_dedup_this_budget_is_feasible():
-    """The baseline the next test must not regress: SafeMap(10) costs 100 <= 150."""
+    """The baseline the next test must not regress: ChunkedMap(10) costs 100 <= 150."""
     plan = BatchPlanner(budget=MemoryBudget(bytes=150, estimate=_cost)).plan([SPEC])
-    assert isinstance(plan.decisions[0].strategy, SafeMap)
+    assert isinstance(plan.decisions[0].strategy, ChunkedMap)
 
 
 def test_dedup_is_dropped_as_a_last_resort_rather_than_failing_the_plan():
@@ -74,7 +74,7 @@ def test_dedup_is_dropped_as_a_last_resort_rather_than_failing_the_plan():
     with pytest.warns(RuntimeWarning, match="without dedup"):
         plan = planner.plan([SPEC])
     decision = plan.decisions[0]
-    assert isinstance(decision.strategy, SafeMap)
+    assert isinstance(decision.strategy, ChunkedMap)
     assert "DedupSpec dropped" in decision.reasoning
 
 
@@ -103,7 +103,7 @@ def test_other_axes_are_demoted_before_dedup_is_dropped():
         by = {d.spec.name: d for d in decisions}
         dedup = 50 if isinstance(by["b"].strategy, DedupGather) else 999
         o = by["o"]
-        return dedup + (100 if isinstance(o.strategy, SafeMap) else 1_000)
+        return dedup + (100 if isinstance(o.strategy, ChunkedMap) else 1_000)
 
     planner = BatchPlanner(dedup_specs=[_ds(30)], budget=MemoryBudget(bytes=200, estimate=cost))
     with warnings.catch_warnings():
@@ -111,7 +111,7 @@ def test_other_axes_are_demoted_before_dedup_is_dropped():
         plan = planner.plan([SPEC, other])
     by = {d.spec.name: d for d in plan.decisions}
     assert isinstance(by["b"].strategy, DedupGather)
-    assert isinstance(by["o"].strategy, SafeMap)
+    assert isinstance(by["o"].strategy, ChunkedMap)
 
 
 # --- #5217 --------------------------------------------------------------------------------

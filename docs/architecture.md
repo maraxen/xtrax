@@ -6,7 +6,7 @@ xtrax is organized into eleven composable subpackages, each with a single respon
 
 ```
 xtrax/
-  transforms/    — Low-level JAX wrappers: safe_map, safe_scan
+  transforms/    — Low-level JAX wrappers: chunked_map, safe_scan
   tiling/        — Axis strategies and batching: AxisSpec, BatchPlanner, dispatch
   stages/        — Generic pipeline protocols and bundles
   training/      — Training loop: Trainer, ResumableState, losses, optimizers, callbacks
@@ -77,7 +77,7 @@ xtrax provides a **composable glue layer** that makes these libraries work toget
 
 Provides safe wrappers around JAX's map and scan operations:
 
-- `safe_map(fn, xs, batch_size)`: Vmap if xs is small; chunk and loop otherwise. Raises `ValueError` if xs leading dimension isn't divisible by batch_size.
+- `chunked_map(fn, xs, batch_size)`: Vmap if xs is small; chunk and loop otherwise. A leading dimension that is not a multiple of batch_size is fine: the last chunk is simply smaller.
 - `safe_scan(fn, init, xs)`: Identical to `jax.lax.scan`; wrapper validates pre-trace.
 
 These are low-level building blocks used by the tiling layer.
@@ -89,7 +89,7 @@ These are low-level building blocks used by the tiling layer.
 Defines how to schedule computation across axes:
 
 - `AxisSpec`: Declares an axis with cardinality, batch size, and eligibility for deduplication.
-- `BatchPlanner`: Selects a strategy (Vmap, SafeMap, DedupGather) for each axis automatically.
+- `BatchPlanner`: Selects a strategy (Vmap, ChunkedMap, DedupGather) for each axis automatically.
 - `make_axis_dispatch()`: Executes the selected strategy on data.
 
 Example:
@@ -106,8 +106,7 @@ The `BatchPlanner` uses these rules (in order):
 
 1. If `dedup_eligible=True`, use `DedupGather`.
 2. If `cardinality <= default_batch_size`, use `Vmap`.
-3. If `cardinality > default_batch_size` and divisible, use `SafeMap`.
-4. If `cardinality > default_batch_size` and NOT divisible, use `SafeMap` with a warning (will error at dispatch time).
+3. If `cardinality > default_batch_size`, use `ChunkedMap`. A cardinality that is not a multiple of the batch size is fine: the final chunk is simply smaller.
 
 For custom strategies (e.g., Scan for RNNs), construct `AxisDecision` directly.
 

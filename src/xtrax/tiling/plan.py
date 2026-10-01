@@ -14,7 +14,7 @@ from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
 from xtrax.tiling.strategy import (
     AxisStrategy,
     Bucket,
-    SafeMap,
+    ChunkedMap,
     Scan,
     ScanTransition,
     Vmap,
@@ -34,7 +34,7 @@ class AxisSpec:
     Attributes:
         name: Human-readable axis name (e.g., "batch", "sequence").
         cardinality: Number of elements along this axis.
-        default_batch_size: Default batch size threshold and chunk size for SafeMap.
+        default_batch_size: Default batch size threshold and chunk size for ChunkedMap.
         tile_granularity: Alignment granularity (default 1, no constraint).
         heterogeneous: Whether elements have different sizes (default False).
         dedup_eligible: Whether this axis is eligible for deduplication (default False).
@@ -101,7 +101,7 @@ class AxisDecision:
         spec: The AxisSpec that was analyzed.
         batch_size: Final batch size used (from spec).
         reasoning: Human-readable explanation of the decision.
-        strategy: Selected AxisStrategy (Bucket, Vmap, SafeMap, or DedupGather).
+        strategy: Selected AxisStrategy (Bucket, Vmap, ChunkedMap, or DedupGather).
     """
 
     spec: AxisSpec
@@ -128,15 +128,15 @@ class BatchPlanner:
     1. bucket_boundaries is not None → Bucket (length-padding)
     2. dedup_eligible=True → DedupGather
     3. cardinality <= batch_size → Vmap
-    4. cardinality > batch_size AND divisible → SafeMap
-    5. non-divisible → SafeMap with warning (deferred-failure contract)
+    4. cardinality > batch_size → ChunkedMap. Divisibility does not matter: a
+       ragged final chunk is handled by the chunked map itself (#5565).
 
     When memory_estimator is provided, it overrides rule 3/4 decisions
-    to prefer SafeMap if estimated Vmap memory exceeds device limit.
+    to prefer ChunkedMap if estimated Vmap memory exceeds device limit.
 
-    When budget is provided (joint-budget mode), rules 3-5 are replaced for
+    When budget is provided (joint-budget mode), rules 3-4 are replaced for
     non-bucket axes: every eligible axis starts at Vmap, then axes with
-    cardinality > default_batch_size are greedily demoted to SafeMap — in the
+    cardinality > default_batch_size are greedily demoted to ChunkedMap — in the
     order specs were given — until budget.estimate() over the whole plan fits
     budget.bytes. Callers express demotion priority by spec order (axes they
     are most willing to sequentialize first). Estimator exceptions propagate;
@@ -156,7 +156,7 @@ class BatchPlanner:
         Args:
             memory_estimator: Optional function that estimates Vmap memory (bytes)
                 for a given AxisSpec. If provided and estimate exceeds device limit,
-                SafeMap is preferred over Vmap. If the estimator raises an exception,
+                ChunkedMap is preferred over Vmap. If the estimator raises an exception,
                 falls back to default rules silently. Mutually exclusive with budget.
             carry_specs: Optional list of CarrySpec objects declaring which axes
                 should use Scan strategy (Phase 0 pre-demotion), or WhileCarry
@@ -321,7 +321,7 @@ class BatchPlanner:
 
         Fills decisions[idx] in place for every idx in pending. Every pending
         axis starts at Vmap; axes with cardinality > default_batch_size are
-        demoted to SafeMap one at a time — in the order given — until
+        demoted to ChunkedMap one at a time — in the order given — until
         budget.estimate() over the full plan (fixed decisions included) fits
         budget.bytes.
 
@@ -440,32 +440,24 @@ class BatchPlanner:
             if estimate <= budget.bytes:
                 break
             spec = specs[idx]
-            if spec.cardinality % spec.default_batch_size != 0:
-                warnings.warn(
-                    f"AxisSpec(name={spec.name!r}): cardinality={spec.cardinality} "
-                    f"is not divisible by batch_size={spec.default_batch_size}. "
-                    f"This plan will raise ValueError at make_axis_dispatch time.",
-                    RuntimeWarning,
-                    stacklevel=4,  # _greedy_demote <- _plan_joint_budget <- plan <- caller
-                )
             step += 1
             before = estimate
             decisions[idx] = AxisDecision(
                 spec=spec,
                 batch_size=spec.default_batch_size,
                 reasoning="joint-budget: demoted (pending final estimate)",
-                strategy=SafeMap(batch_size=spec.default_batch_size),
+                strategy=ChunkedMap(batch_size=spec.default_batch_size),
             )
             estimate = budget.estimate(_snapshot())
             decisions[idx] = AxisDecision(
                 spec=spec,
                 batch_size=spec.default_batch_size,
                 reasoning=(
-                    f"joint-budget: demoted to SafeMap(batch_size="
+                    f"joint-budget: demoted to ChunkedMap(batch_size="
                     f"{spec.default_batch_size}) at step {step} "
                     f"(estimate {before} -> {estimate} B, budget {budget.bytes} B)"
                 ),
-                strategy=SafeMap(batch_size=spec.default_batch_size),
+                strategy=ChunkedMap(batch_size=spec.default_batch_size),
             )
 
         return estimate, len(candidates)
@@ -527,7 +519,7 @@ class BatchPlanner:
             # No special handling: fall through to cardinality-based rules
             pass
 
-        # Check memory estimate before deciding between Vmap and SafeMap
+        # Check memory estimate before deciding between Vmap and ChunkedMap
         should_prefer_safemap_for_memory = False
         if self.memory_estimator is not None:
             try:
@@ -547,9 +539,9 @@ class BatchPlanner:
         # Rule 3: cardinality <= batch_size → Vmap (unless memory override)
         if spec.cardinality <= spec.default_batch_size:
             if should_prefer_safemap_for_memory:
-                # Memory estimator overrides: use SafeMap
-                strategy = SafeMap(batch_size=spec.default_batch_size)
-                reasoning = "cardinality <= batch_size but memory_estimator override → SafeMap"
+                # Memory estimator overrides: use ChunkedMap
+                strategy = ChunkedMap(batch_size=spec.default_batch_size)
+                reasoning = "cardinality <= batch_size but memory_estimator override → ChunkedMap"
                 return AxisDecision(
                     spec=spec,
                     batch_size=spec.default_batch_size,
@@ -565,55 +557,28 @@ class BatchPlanner:
                     strategy=strategy,
                 )
 
-        # Rule 4 & 5: cardinality > batch_size
-        # Check divisibility
-        if spec.cardinality % spec.default_batch_size == 0:
-            # Rule 4: divisible → SafeMap (unless memory estimator allows Vmap)
-            if should_prefer_safemap_for_memory:
-                # Memory estimate exceeds limit: use SafeMap
-                strategy = SafeMap(batch_size=spec.default_batch_size)
-                reasoning = (
-                    "cardinality > batch_size and divisible but memory_estimator override → SafeMap"
-                )
-                return AxisDecision(
-                    spec=spec,
-                    batch_size=spec.default_batch_size,
-                    reasoning=reasoning,
-                    strategy=strategy,
-                )
-            elif self.memory_estimator is not None:
-                # Memory estimator is provided and under limit: prefer Vmap
-                strategy = Vmap()
-                reasoning = "cardinality > batch_size and divisible but memory safe → Vmap"
-                return AxisDecision(
-                    spec=spec,
-                    batch_size=spec.default_batch_size,
-                    reasoning=reasoning,
-                    strategy=strategy,
-                )
-            else:
-                # No memory estimator: use default SafeMap
-                strategy = SafeMap(batch_size=spec.default_batch_size)
-                return AxisDecision(
-                    spec=spec,
-                    batch_size=spec.default_batch_size,
-                    reasoning="cardinality > batch_size and divisible → SafeMap",
-                    strategy=strategy,
-                )
+        # Rule 4: cardinality > batch_size. Divisibility no longer changes the decision
+        # (#5565): the chunked map runs a ragged final chunk itself, so the former Rule 5
+        # (non-divisible -> ChunkedMap + a warning that dispatch would raise) is gone.
+        remainder = spec.cardinality % spec.default_batch_size
+        shape = "divisible" if remainder == 0 else f"ragged final chunk of {remainder}"
+        if should_prefer_safemap_for_memory:
+            # Memory estimate exceeds limit: use ChunkedMap
+            strategy = ChunkedMap(batch_size=spec.default_batch_size)
+            reasoning = (
+                f"cardinality > batch_size ({shape}) but memory_estimator override → ChunkedMap"
+            )
+        elif self.memory_estimator is not None:
+            # Memory estimator is provided and under limit: prefer Vmap
+            strategy = Vmap()
+            reasoning = f"cardinality > batch_size ({shape}) but memory safe → Vmap"
         else:
-            # Rule 5: non-divisible → SafeMap + warning (deferred-failure contract)
-            warnings.warn(
-                f"AxisSpec(name={spec.name!r}): cardinality={spec.cardinality} "
-                f"is not divisible by batch_size={spec.default_batch_size}. "
-                f"This plan will raise ValueError at make_axis_dispatch time.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
-            strategy = SafeMap(batch_size=spec.default_batch_size)
-            reasoning = "cardinality > batch_size but not divisible → SafeMap (deferred failure)"
-            return AxisDecision(
-                spec=spec,
-                batch_size=spec.default_batch_size,
-                reasoning=reasoning,
-                strategy=strategy,
-            )
+            # No memory estimator: use default ChunkedMap
+            strategy = ChunkedMap(batch_size=spec.default_batch_size)
+            reasoning = f"cardinality > batch_size ({shape}) → ChunkedMap"
+        return AxisDecision(
+            spec=spec,
+            batch_size=spec.default_batch_size,
+            reasoning=reasoning,
+            strategy=strategy,
+        )

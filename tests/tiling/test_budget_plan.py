@@ -11,8 +11,8 @@ from xtrax.tiling import (
     BatchPlanner,
     BudgetInfeasibleError,
     CarrySpec,
+    ChunkedMap,
     MemoryBudget,
-    SafeMap,
     Scan,
     Vmap,
 )
@@ -91,9 +91,9 @@ class TestUnderBudget:
         assert len(estimate.calls) >= 1
 
     def test_default_rules_would_have_chosen_safemap(self) -> None:
-        # Same specs without budget: cardinality > batch_size → SafeMap.
+        # Same specs without budget: cardinality > batch_size → ChunkedMap.
         plan = BatchPlanner().plan([_spec("a")])
-        assert isinstance(plan.decisions[0].strategy, SafeMap)
+        assert isinstance(plan.decisions[0].strategy, ChunkedMap)
 
 
 class TestGreedyDemotion:
@@ -104,7 +104,7 @@ class TestGreedyDemotion:
         planner = BatchPlanner(budget=MemoryBudget(bytes=210, estimate=estimate))
         plan = planner.plan([_spec("a"), _spec("b"), _spec("c")])
         strategies = [type(d.strategy) for d in plan.decisions]
-        assert strategies == [SafeMap, Vmap, Vmap]
+        assert strategies == [ChunkedMap, Vmap, Vmap]
         # initial (300) + after demoting a (210, fits)
         assert len(estimate.calls) == 2
 
@@ -113,7 +113,7 @@ class TestGreedyDemotion:
         planner = BatchPlanner(budget=MemoryBudget(bytes=130, estimate=estimate))
         plan = planner.plan([_spec("a"), _spec("b"), _spec("c")])
         strategies = [type(d.strategy) for d in plan.decisions]
-        assert strategies == [SafeMap, SafeMap, Vmap]
+        assert strategies == [ChunkedMap, ChunkedMap, Vmap]
         assert "step 1" in plan.decisions[0].reasoning
         assert "step 2" in plan.decisions[1].reasoning
 
@@ -121,7 +121,7 @@ class TestGreedyDemotion:
         estimate = _per_strategy_estimator(vmap_cost=100, other_cost=10)
         planner = BatchPlanner(budget=MemoryBudget(bytes=210, estimate=estimate))
         plan = planner.plan([_spec("c"), _spec("a"), _spec("b")])
-        demoted = [d.spec.name for d in plan.decisions if isinstance(d.strategy, SafeMap)]
+        demoted = [d.spec.name for d in plan.decisions if isinstance(d.strategy, ChunkedMap)]
         assert demoted == ["c"]
 
 
@@ -134,7 +134,7 @@ class TestDemotionNoOpExclusion:
         plan = planner.plan([_spec("small", cardinality=8), _spec("big")])
         by_name = {d.spec.name: d for d in plan.decisions}
         assert isinstance(by_name["small"].strategy, Vmap)
-        assert isinstance(by_name["big"].strategy, SafeMap)
+        assert isinstance(by_name["big"].strategy, ChunkedMap)
         assert "no-op" in by_name["small"].reasoning
 
     def test_only_small_axes_and_over_budget_is_infeasible(self) -> None:
@@ -206,8 +206,8 @@ class TestInfeasible:
         message = str(excinfo.value)
         assert "estimate 10000 B" in message
         assert "budget 100 B" in message
-        assert "a=SafeMap" in message
-        assert "b=SafeMap" in message
+        assert "a=ChunkedMap" in message
+        assert "b=ChunkedMap" in message
 
 
 class TestEstimatorErrors:
@@ -223,13 +223,18 @@ class TestEstimatorErrors:
 
 
 class TestDivisibilityWarning:
-    """AC9: demoting a non-divisible axis keeps the Rule-5 deferred-failure warning."""
+    """#5565: demoting a non-divisible axis no longer warns -- dispatch handles the
+    ragged final chunk, so there is no deferred failure left to warn about."""
 
-    def test_non_divisible_demotion_warns(self) -> None:
+    def test_non_divisible_demotion_does_not_warn(self) -> None:
+        import warnings
+
         estimate = _per_strategy_estimator(vmap_cost=100, other_cost=10)
         planner = BatchPlanner(budget=MemoryBudget(bytes=50, estimate=estimate))
-        with pytest.warns(RuntimeWarning, match="not divisible"):
-            planner.plan([_spec("ragged", cardinality=1000, batch_size=256)])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            plan = planner.plan([_spec("ragged", cardinality=1000, batch_size=256)])
+        assert type(plan.decisions[0].strategy).__name__ == "ChunkedMap"
 
     def test_divisible_demotion_does_not_warn(self) -> None:
         import warnings

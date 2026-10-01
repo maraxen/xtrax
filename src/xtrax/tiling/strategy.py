@@ -63,7 +63,7 @@ class Vmap:
 
 
 @dataclass(frozen=True)
-class SafeMap:
+class ChunkedMap:
     """Safe chunked map strategy: vmap with explicit chunking via lax.map."""
 
     batch_size: int
@@ -153,4 +153,11 @@ def fixed_step_count_cond(n_steps: int) -> WhileCondFn:
     return _cond
 
 
-AxisStrategy = Vmap | SafeMap | Scan | DedupGather | Bucket | WhileCarry
+AxisStrategy = Vmap | ChunkedMap | Scan | DedupGather | Bucket | WhileCarry
+
+
+def __getattr__(name: str):  # noqa: ANN202 -- PEP 562 module hook
+    """Deprecated pre-#3644 names (SafeMap, SafeMapIterator, safe_map) for one release."""
+    from xtrax._renamed import deprecated_alias
+
+    return deprecated_alias(__name__, name, globals())
