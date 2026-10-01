@@ -137,3 +137,79 @@ def test_native_export_of_an_index_pipeline_verifies_exactly(offset: int, verifi
         reference_fn=lambda inp: np.max(inp[0], axis=1).astype(np.int32) + offset,
     )["native"]
     assert result.verified is verified, result.parity.summary() if result.parity else None
+
+
+# --- review of #180 ------------------------------------------------------------------
+
+
+@pytest.fixture
+def x64():
+    prior = jax.config.jax_enable_x64
+    jax.config.update("jax_enable_x64", True)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", prior)
+
+
+class TestExactDiffAndDtypes:
+    def test_the_diff_against_a_float_output_is_not_truncated(self):
+        """Was: int64 casts reported 'FAIL: max|diff| = 0.000e+00' for [1, 2] vs [1.4, 2.0]."""
+        result = compare(np.array([1, 2], np.int32), np.array([1.4, 2.0], np.float32))
+        assert result.passed is False
+        assert result.max_abs_diff == pytest.approx(0.4, abs=1e-6)
+
+    def test_a_nan_output_reads_as_an_infinite_diff(self):
+        result = compare(np.array([1], np.int32), np.array([np.nan], np.float32))
+        assert (result.passed, result.max_abs_diff) == (False, float("inf"))
+
+    def test_a_uint64_diff_of_2_64_minus_1_is_not_reported_as_1(self, x64):
+        """int64 differencing is exact only modulo 2**64: 0 vs 2**64 - 1 wraps to a
+        reported diff of 1. Under x64: uint64 only exists there (32-bit jnp.asarray
+        narrows it)."""
+        result = compare(np.array([0], np.uint64), np.array([2**64 - 1], np.uint64))
+        assert result.passed is False
+        assert result.max_abs_diff == float(2**64 - 1)
+
+    def test_a_bool_reference_against_a_float_output_fails(self):
+        """Was: compare([True], [1.0]) passed -- equal values, different kind."""
+        assert compare(np.array([True]), np.array([1.0], np.float32)).passed is False
+
+
+class TestOracleShapes:
+    def test_a_dict_oracle_against_one_output_is_a_count_mismatch_not_a_crash(self):
+        oracle = {"a": np.zeros(2, np.float32), "b": np.zeros(2, np.float32)}
+        result = compare_leaves(oracle, [np.zeros(2, np.float32)])
+        assert result.passed is False
+        assert "expected 2 output leaves, got 1" in result.summary()
+
+    def test_a_none_oracle_is_a_count_mismatch_not_a_crash(self):
+        result = compare_leaves(None, [np.zeros(2, np.float32)])
+        assert result.passed is False
+        assert "expected 0 output leaves, got 1" in result.summary()
+
+
+class TestOracleWidthUnderX64:
+    def test_a_numpy_float64_oracle_verifies_an_f32_output(self, x64):
+        """Under x64 jnp.asarray keeps NumPy's f64, while an f32 program returns f32."""
+        result = compare_leaves(np.ones(3), [np.ones(3, np.float32)])
+        assert result.passed, result.summary()
+
+    def test_a_numpy_int64_oracle_verifies_an_i32_output_exactly(self, x64):
+        assert compare_leaves(np.array([1, 2]), [np.array([1, 2], np.int32)]).passed
+        assert not compare_leaves(np.array([1, 2]), [np.array([1, 3], np.int32)]).passed
+
+    def test_an_artifact_wider_than_the_oracle_is_still_a_dtype_change(self, x64):
+        result = compare_leaves(np.array([1, 2], np.int32), [np.array([1, 2], np.int64)])
+        assert result.dtype_mismatches == ("leaf 0: expected int32, got int64",)
+
+    def test_a_jax_array_oracle_dtype_is_explicit(self, x64):
+        result = compare_leaves(jnp.ones(3, jnp.float64), [np.ones(3, np.float32)])
+        assert result.passed is False
+
+
+def test_in_32_bit_a_narrower_artifact_is_still_a_dtype_change():
+    """Control: the width allowance is x64-only. In 32-bit, jnp.asarray already
+    narrowed the oracle, so f32 -> f16 across the export is a real change."""
+    result = compare_leaves(np.ones(3), [np.ones(3, np.float16)])
+    assert result.dtype_mismatches == ("leaf 0: expected float32, got float16",)

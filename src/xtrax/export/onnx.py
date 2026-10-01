@@ -162,6 +162,10 @@ def _write_model(model: Any, out_path: Path) -> int:
     onnx = _require_onnx()
     data_path = out_path.with_name(out_path.name + ".data")
     try:
+        # onnx appends to an existing external-data file (it opens it r+b and seeks
+        # to the end), so a stale one from an earlier export would grow and be
+        # counted again. Neither layout may leave one behind.
+        data_path.unlink(missing_ok=True)
         if model.ByteSize() < _PROTOBUF_LIMIT_BYTES:
             data = model.SerializeToString()
             out_path.write_bytes(data)

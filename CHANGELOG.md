@@ -30,7 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `verify_native_parity` returns a `LeafParityResult` (a `ParityResult` subclass), and a
   multi-output native entry point is compared leaf by leaf instead of being stacked into
   one array. An array-like oracle (a nested Python list) for a single output is now read
-  as one array on every backend; onnx used to split it into scalar leaves. **Behaviour
+  as one array on every backend; onnx used to split it into scalar leaves. Under
+  `jax_enable_x64`, a NumPy oracle left at NumPy's 64-bit default is not a dtype
+  mismatch against a narrower output of the same kind; its values are still compared,
+  exactly for integers. **Behaviour
   change:** a native export that only passed through float tolerance on an integer
   output now fails. `LeafParityResult` and the new `compare_leaves` live in
   `xtrax.export.parity` (`LeafParityResult` is still importable from

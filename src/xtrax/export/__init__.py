@@ -87,6 +87,7 @@ from xtrax.export.safety import (
     ExportSafetyError,
     check_export_safety,
     find_bcoo_leaves,
+    trace_for_export_safety,
     validate_export_safe,
 )
 from xtrax.export.spirv import SpirvValidationResult, is_spirv, spirv_binaries_in
@@ -182,6 +183,7 @@ __all__ = [
     "sub_k_neighbours",
     "symmetric_geometry",
     "target_by_name",
+    "trace_for_export_safety",
     "validate_export_safe",
     "validate_probe_deps",
     "verify_native_parity",

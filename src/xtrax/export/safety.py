@@ -522,20 +522,25 @@ def _program_dtype_blockers(
     it runs in, so a bf16 intermediate (``x.astype(jnp.bfloat16) + 1``) fails at
     session creation with ``NOT_IMPLEMENTED`` even when every input and output is
     f32. IREE compiles such intermediates; for its targets only the I/O boundary
-    is judged. JAX's extended dtypes (PRNG keys, float0) are skipped: they never
-    reach a graph as a tensor, and an RNG key is the op rules' concern.
+    is judged. Inputs are not re-judged here (``_dtype_blockers`` already did, and
+    would report each twice). JAX's extended dtypes (PRNG keys) and ``float0`` are
+    skipped: neither reaches a graph as a tensor, and an RNG key is the op rules'
+    concern. ``float0`` needs its own check: ``issubdtype(float0, extended)`` is
+    False.
     """
     if top is None or target.backend is not Backend.ONNX:
         return []
     import jax
 
     seen: dict[str, str] = {}
-    candidates = [("input", v) for v in top.invars]
-    for eqn in _walk_jaxpr_eqns(top):
-        candidates += [(eqn.primitive.name, v) for v in eqn.outvars]
+    candidates = [(eqn.primitive.name, v) for eqn in _walk_jaxpr_eqns(top) for v in eqn.outvars]
     for where, var in candidates:
         dtype = getattr(getattr(var, "aval", None), "dtype", None)
-        if dtype is None or jax.dtypes.issubdtype(dtype, jax.dtypes.extended):
+        if (
+            dtype is None
+            or dtype == jax.dtypes.float0
+            or jax.dtypes.issubdtype(dtype, jax.dtypes.extended)
+        ):
             continue
         seen.setdefault(dtype_name(dtype), where)
     blockers: list[ExportBlocker] = []

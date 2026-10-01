@@ -74,14 +74,37 @@ def _is_exact_dtype(dtype: np.dtype) -> bool:
     return bool(np.issubdtype(dtype, np.integer)) or dtype == np.bool_
 
 
+def _exact_max_abs_diff(expected: np.ndarray, actual: np.ndarray) -> float:
+    """Largest |expected - actual| for an exact comparison, never contradicting it.
+
+    Two integer/bool arrays are differenced as Python ints, so uint64 above 2**63
+    neither wraps nor rounds. Anything else (a float artifact output) is differenced
+    in float64 without truncation, and a NaN or inf difference reads as inf.
+    """
+    if _is_exact_dtype(actual.dtype):
+        diffs = np.abs(expected.astype(object) - actual.astype(object))
+        return float(max(diffs.ravel(), default=0))
+    with np.errstate(invalid="ignore", over="ignore"):
+        diffs = np.abs(expected.astype(np.float64) - actual.astype(np.float64))
+    diffs = np.where(np.isfinite(diffs), diffs, np.inf)
+    return float(diffs.max())
+
+
 def _exact(expected: np.ndarray, actual: np.ndarray) -> ParityResult:
-    """Exact comparison for integer and bool arrays."""
+    """Exact comparison for integer and bool references.
+
+    The artifact's output must itself be integer or bool: a float output equal in
+    value (``1.0`` for ``True``) still FAILS, since the export changed what kind of
+    value the program returns.
+    """
     shapes_match = expected.shape == actual.shape
-    passed = shapes_match and bool(np.array_equal(expected, actual))
+    passed = (
+        shapes_match and _is_exact_dtype(actual.dtype) and bool(np.array_equal(expected, actual))
+    )
     if not shapes_match:
         diff = float("inf")
     elif expected.size:
-        diff = float(np.max(np.abs(expected.astype(np.int64) - actual.astype(np.int64))))
+        diff = _exact_max_abs_diff(expected, actual)
     else:
         diff = 0.0
     return ParityResult(
@@ -111,7 +134,8 @@ def compare(
 
     Returns:
         A ParityResult. Integer and bool values (judged by ``expected``'s dtype) are
-        compared exactly and the tolerances ignored. A shape mismatch
+        compared exactly and the tolerances ignored; an integer/bool reference
+        against a non-integer, non-bool ``actual`` fails. A shape mismatch
         short-circuits to a failure rather than broadcasting: a silently broadcast
         comparison is how a real regression gets missed.
     """
@@ -178,13 +202,42 @@ def _expected_leaves(expected: Any, n_actual: int) -> list[np.ndarray]:
     nested Python list for a single (2, 2) output, would flatten to scalar leaves;
     when the artifact has exactly one output and the leaf counts disagree, the
     whole oracle is that one array, as ``compare``'s ``jnp.asarray`` reads it.
-    Each leaf goes through ``jnp.asarray``, which in a 32-bit process narrows a
-    NumPy oracle's float64/int64 to float32/int32, as the traced program would.
+    Only a Python list/tuple is read that way: a dict, None, or a ragged list keeps
+    its own leaves, and a count mismatch is reported rather than raised. Each leaf
+    goes through ``jnp.asarray``, which in a 32-bit process narrows a NumPy oracle's
+    float64/int64 to float32/int32, as the traced program would.
     """
     leaves = jax.tree_util.tree_leaves(expected)
-    if len(leaves) != n_actual and n_actual == 1:
-        leaves = [expected]
+    if len(leaves) != n_actual and n_actual == 1 and isinstance(expected, (list, tuple)):
+        try:
+            leaves = [np.asarray(jnp.asarray(expected))]
+        except (TypeError, ValueError):
+            pass  # ragged or non-numeric: not one array; report the leaf count
     return [np.asarray(jnp.asarray(x)) for x in leaves]
+
+
+def _narrower_same_kind(actual: np.dtype, expected: np.dtype) -> bool:
+    """``actual`` is the same kind as ``expected`` (int/uint/float) and narrower."""
+    return actual.kind == expected.kind and actual.itemsize < expected.itemsize
+
+
+def _numpy_default_width_leaves(expected: Any, n_actual: int) -> list[bool]:
+    """Per leaf: is the oracle a non-JAX value (NumPy array, Python scalar/list)?
+
+    In a 32-bit process ``jnp.asarray`` narrows such a leaf to the program's widths.
+    Under ``jax_enable_x64`` it does not, so a NumPy oracle stays at NumPy's 64-bit
+    default while an f32/i32 program returns f32/i32. That width difference is the
+    oracle's, not the export's: values are still compared (exactly, for integers),
+    but it is not a dtype mismatch. A JAX-array oracle's dtype is explicit, and an
+    artifact WIDER than the oracle (int32 -> int64) is always a mismatch.
+    """
+    if not jax.config.jax_enable_x64:
+        # 32-bit: jnp.asarray already narrowed the oracle, so every width counts.
+        return [False] * max(n_actual, len(jax.tree_util.tree_leaves(expected)))
+    leaves = jax.tree_util.tree_leaves(expected)
+    if len(leaves) != n_actual and n_actual == 1 and isinstance(expected, (list, tuple)):
+        leaves = [expected]
+    return [not isinstance(x, jax.Array) for x in leaves]
 
 
 def compare_leaves(
@@ -209,6 +262,7 @@ def compare_leaves(
     """
     act = [np.asarray(x) for x in actual_leaves]
     exp = _expected_leaves(expected, len(act))
+    numpy_wide = _numpy_default_width_leaves(expected, len(act))
     if len(exp) != len(act):
         return LeafParityResult(
             passed=False,
@@ -223,7 +277,7 @@ def compare_leaves(
     results: list[ParityResult] = []
     mismatches: list[str] = []
     for i, (e, a) in enumerate(zip(exp, act, strict=True)):
-        if e.dtype != a.dtype:
+        if e.dtype != a.dtype and not (numpy_wide[i] and _narrower_same_kind(a.dtype, e.dtype)):
             mismatches.append(f"leaf {i}: expected {e.dtype}, got {a.dtype}")
         results.append(compare(e, a, atol=atol, rtol=rtol))
 

@@ -226,3 +226,83 @@ def test_the_namespace_guard_still_restores_a_replaced_name():
         assert jnp.cumsum is original
     finally:
         jnp.cumsum = original
+
+
+# --- review of #180: fixes for what the first version of this PR got wrong ----------
+
+
+def test_an_input_dtype_is_reported_once():
+    """The program-dtype rule does not re-judge inputs (was: two blockers for one)."""
+    ab = (jax.ShapeDtypeStruct((4,), jnp.bfloat16),)
+    fn = lambda x: x  # noqa: E731
+    top = trace_for_export_safety(fn, ab)
+    blockers = check_export_safety([], {}, ab, fn, ONNX, traced_jaxpr=top)
+    assert [b.axis for b in blockers] == ["abstract_inputs[0]"]
+
+
+def test_float0_is_not_a_dtype_blocker():
+    """issubdtype(float0, extended) is False, so float0 needs its own skip."""
+    from types import SimpleNamespace as NS
+
+    var = NS(aval=NS(dtype=jax.dtypes.float0))
+    top = NS(eqns=[NS(primitive=NS(name="grad_int"), outvars=[var], params={})], invars=[])
+    assert safety._program_dtype_blockers(top, ONNX, frozenset()) == []
+
+
+def test_trace_for_export_safety_is_exported():
+    from xtrax.export import trace_for_export_safety as exported
+
+    assert exported is trace_for_export_safety
+
+
+def test_a_composition_error_does_not_hide_the_gate():
+    """A Scan axis with no init cannot compose; a bf16 input must still be reported
+    first, as it was before composition moved ahead of the gates."""
+    from xtrax.export.composer import ComposerError
+    from xtrax.tiling.strategy import Scan
+
+    spec = AxisSpec(name="t", cardinality=4, default_batch_size=0)
+    plan = _Plan([AxisDecision(spec=spec, batch_size=0, reasoning="t", strategy=Scan())])
+
+    def step(carry, x):
+        return carry, x
+
+    bad = np.ones((4, 3), np.float32).astype(jnp.bfloat16)
+    with pytest.raises(DtypeNotSupportedError):
+        export_pipeline(step, plan, (_spec(bad),), (bad,), targets=(ONNX,), reference_fn=_no_oracle)
+    ok = np.ones((4, 3), np.float32)
+    with pytest.raises(ComposerError, match="initial carry"):
+        export_pipeline(step, plan, (_spec(ok),), (ok,), targets=(ONNX,), reference_fn=_no_oracle)
+
+
+@pytest.mark.usefixtures("onnx_toolchain")
+def test_exporting_twice_does_not_grow_the_external_data(monkeypatch, tmp_path):
+    """onnx appends to an existing <model>.onnx.data; a stale one must be removed."""
+    monkeypatch.setattr(onnx_mod, "_PROTOBUF_LIMIT_BYTES", 0)
+    weights = np.arange(4096, dtype=np.float32)
+    x = np.ones((4096,), np.float32)
+    out = tmp_path / "big.onnx"
+    sizes = [
+        onnx_mod.convert_to_onnx(lambda v: v * weights, (_spec(x),), ONNX, out_path=out)[
+            0
+        ].size_bytes
+        for _ in range(2)
+    ]
+    assert sizes[0] == sizes[1]
+
+
+@pytest.mark.usefixtures("onnx_toolchain")
+def test_an_external_data_export_says_the_artifact_is_two_files(monkeypatch):
+    monkeypatch.setattr(onnx_mod, "_PROTOBUF_LIMIT_BYTES", 0)
+    weights = np.arange(4096, dtype=np.float32)
+    xs = np.ones((2, 4096), np.float32)
+    result = export_pipeline(
+        lambda v: v * weights,
+        _vmap_plan(2),
+        (_spec(xs),),
+        (xs,),
+        targets=(ONNX,),
+        reference_fn=lambda inp: inp[0] * weights,
+    )["onnx"]
+    assert result.verified, result.parity.summary()
+    assert any(".onnx.data" in note for note in result.diagnostics)
