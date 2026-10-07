@@ -7,12 +7,14 @@ jax.random.key(seed); n=13; chunk_sample_start=0. The resume-7 slices
 captured in the same session match these rows from index 7.
 """
 
+import math
+import sys
+
 import jax
 import numpy as np
 import pytest
 
 from xtrax.random import (
-    INDEX_DTYPE,
     ChunkSpan,
     element_keys,
     iter_chunk_keys,
@@ -22,6 +24,17 @@ from xtrax.random import (
 N = 13
 CHUNK_SIZES = (1, 2, 5, 13)
 RESUME_STARTS = (0, 4, 7)
+
+# element_keys(0, 2**31 - 2, 3) from the same aminx commit. The third index
+# is 2**31, which numpy int32 addition wraps to -2**31.
+INT32_WRAP_GOLDEN = np.array(
+    [
+        [1120217530, 2425421979],
+        [3380239599, 3343201961],
+        [917456828, 636652529],
+    ],
+    dtype=np.uint32,
+)
 
 # Rows are jax.random.key_data of compute_sample_keys(jax.random.key(seed), 13).
 GOLDEN = {
@@ -75,6 +88,57 @@ def _concat_plan(seed: int, plan: tuple[ChunkSpan, ...]) -> np.ndarray:
     return np.concatenate(parts, axis=0)
 
 
+class _PlanDidNotFinish(TimeoutError):
+    """``make_chunk_plan`` exceeded the test's iteration bound."""
+
+
+# Line events inside make_chunk_plan, not wall time. A ``while <=`` off-by-one
+# appends a zero-length chunk forever; a one-second alarm still lets that loop
+# allocate until the machine stalls. A few thousand lines is enough for every
+# plan this file builds and stops the runaway loop before it grows.
+_PLAN_LINE_BUDGET = 5000
+
+
+def _call_bounded(fn, /, *args, **kwargs):
+    """Call ``fn`` and fail if ``make_chunk_plan`` exceeds ``_PLAN_LINE_BUDGET``."""
+    events = sys.monitoring.events
+    tool = sys.monitoring.PROFILER_ID
+    sys.monitoring.use_tool_id(tool, "xtrax-plan-bound")
+    seen = {"n": 0}
+
+    def _on_line(code, line_number):
+        if code.co_name != "make_chunk_plan":
+            return None
+        seen["n"] += 1
+        if seen["n"] > _PLAN_LINE_BUDGET:
+            msg = (
+                "make_chunk_plan exceeded the iteration bound (possible while-condition off-by-one)"
+            )
+            raise _PlanDidNotFinish(msg)
+        return None
+
+    sys.monitoring.register_callback(tool, events.LINE, _on_line)
+    sys.monitoring.set_events(tool, events.LINE)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        sys.monitoring.set_events(tool, events.NO_EVENTS)
+        sys.monitoring.register_callback(tool, events.LINE, None)
+        sys.monitoring.free_tool_id(tool)
+
+
+def _chunk_plan(count: int, chunk_size: int, *, start: int = 0) -> tuple[ChunkSpan, ...]:
+    try:
+        plan = _call_bounded(make_chunk_plan, count, chunk_size, start=start)
+    except _PlanDidNotFinish as exc:
+        pytest.fail(str(exc))
+    expected_len = 0 if count == 0 else math.ceil(count / chunk_size)
+    # Length is checked before any walk of the spans. A planner that emits
+    # extra empty chunks fails here instead of looping in the test.
+    assert len(plan) == expected_len
+    return plan
+
+
 def _chunk_local_keys(base_key: jax.Array, count: int) -> jax.Array:
     """Negative control: fold_in the index within the chunk, ignoring the global start."""
     local = np.arange(count, dtype=np.int32)
@@ -82,8 +146,36 @@ def _chunk_local_keys(base_key: jax.Array, count: int) -> jax.Array:
 
 
 class TestElementKeys:
-    def test_index_dtype_contract(self):
-        assert INDEX_DTYPE == np.dtype(np.int32)
+    def test_int32_wrap_matches_aminx_golden(self):
+        got = _key_data(element_keys(0, 2**31 - 2, 3))
+        np.testing.assert_array_equal(got, INT32_WRAP_GOLDEN)
+
+    def test_int32_overflow_wraps_like_numpy(self):
+        """``start=2**31-1``, ``count=2`` wraps as numpy int32 addition does.
+
+        The documented contract is that ``start + i`` is an ``int32`` sum:
+        ``2**31 - 1`` stays the int32 maximum, and the next index wraps to
+        the int32 minimum (``-2**31``). Keys are ``fold_in`` of those bits.
+        """
+        start = 2**31 - 1
+        count = 2
+        wrapped = np.arange(count, dtype=np.int32) + np.int32(start)
+        assert wrapped.dtype == np.dtype(np.int32)
+        assert int(wrapped[0]) == np.iinfo(np.int32).max
+        assert int(wrapped[1]) == np.iinfo(np.int32).min
+        base = jax.random.key(0)
+        expected = _key_data(jax.vmap(lambda idx: jax.random.fold_in(base, idx))(wrapped))
+        got = _key_data(element_keys(0, start, count))
+        np.testing.assert_array_equal(got, expected)
+
+    def test_legacy_prngkey_matches_typed_key(self):
+        legacy = jax.random.PRNGKey(12345)
+        typed = jax.random.key(12345)
+        assert legacy.dtype == np.uint32
+        assert legacy.shape == (2,)
+        from_legacy = _key_data(element_keys(legacy, 0, N))
+        from_typed = _key_data(element_keys(typed, 0, N))
+        np.testing.assert_array_equal(from_legacy, from_typed)
 
     @pytest.mark.parametrize("seed", (0, 12345))
     def test_matches_aminx_golden(self, seed: int):
@@ -112,6 +204,18 @@ class TestElementKeys:
         with pytest.raises(ValueError, match="start"):
             element_keys(0, -1, 1)
 
+    def test_negative_count_raises(self):
+        with pytest.raises(ValueError, match=r"count must be >= 0, got -1"):
+            element_keys(0, 0, -1)
+
+    def test_bool_seed_raises(self):
+        with pytest.raises(TypeError, match=r"seed must be an int or a PRNG key, got bool"):
+            element_keys(True, 0, 1)
+
+    def test_non_integer_start_raises(self):
+        with pytest.raises(TypeError, match=r"start must be an integer, got float"):
+            element_keys(0, 1.5, 1)
+
     def test_start_outside_int32_raises(self):
         with pytest.raises(ValueError, match="int32"):
             element_keys(0, int(np.iinfo(np.int32).max) + 1, 1)
@@ -125,7 +229,7 @@ class TestChunkAndResumeInvariance:
         self, seed: int, chunk_size: int, resume: int
     ):
         count = N - resume
-        plan = make_chunk_plan(count, chunk_size, start=resume)
+        plan = _chunk_plan(count, chunk_size, start=resume)
         covered = sum(span.count for span in plan)
         assert covered == count
         assert plan[0].start == resume
@@ -135,8 +239,8 @@ class TestChunkAndResumeInvariance:
         np.testing.assert_array_equal(got, _golden(seed, resume, count))
 
     def test_resume_plan_matches_suffix_of_original_plan(self):
-        full = make_chunk_plan(N, 5, start=0)
-        resumed = make_chunk_plan(N - 4, 5, start=4)
+        full = _chunk_plan(N, 5, start=0)
+        resumed = _chunk_plan(N - 4, 5, start=4)
         full_data = _concat_plan(0, full)
         resumed_data = _concat_plan(0, resumed)
         np.testing.assert_array_equal(resumed_data, full_data[4:])
@@ -146,7 +250,7 @@ class TestChunkAndResumeInvariance:
         base = jax.random.key(0)
         full = _key_data(element_keys(base, 0, N))
         local_parts = []
-        for span in make_chunk_plan(N, 5, start=0):
+        for span in _chunk_plan(N, 5, start=0):
             local_parts.append(_key_data(_chunk_local_keys(base, span.count)))
         local = np.concatenate(local_parts, axis=0)
         assert local.shape == full.shape
@@ -162,6 +266,36 @@ class TestChunkAndResumeInvariance:
         assert xtrax.iter_chunk_keys is iter_chunk_keys
         assert xtrax.make_chunk_plan is make_chunk_plan
         assert xtrax.ChunkSpan is ChunkSpan
+
+    def test_plan_spans_cover_range_without_hanging(self):
+        cases = (
+            (0, 5, 0),  # count=0 -> empty plan
+            (3, 10, 4),  # chunk_size > count -> one chunk
+            (13, 5, 0),
+            (10, 3, 7),
+            (8, 1, 2),
+        )
+        for count, chunk_size, start in cases:
+            plan = _chunk_plan(count, chunk_size, start=start)
+            if count == 0:
+                assert plan == ()
+                continue
+            if chunk_size > count:
+                assert len(plan) == 1
+                assert plan[0] == ChunkSpan(start, count)
+            cursor = start
+            for span in plan:
+                assert span.count >= 1
+                assert span.count <= chunk_size
+                assert span.start == cursor
+                cursor += span.count
+            assert cursor == start + count
+
+    def test_make_chunk_plan_rejects_bad_size_and_count(self):
+        with pytest.raises(ValueError, match=r"chunk_size must be >= 1, got 0"):
+            _call_bounded(make_chunk_plan, 4, 0)
+        with pytest.raises(ValueError, match=r"count must be >= 0, got -3"):
+            _call_bounded(make_chunk_plan, -3, 2)
 
 
 def test_iter_chunk_keys_yields_span_slices():
