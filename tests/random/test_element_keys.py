@@ -177,6 +177,20 @@ class TestElementKeys:
         from_typed = _key_data(element_keys(typed, 0, N))
         np.testing.assert_array_equal(from_legacy, from_typed)
 
+    @pytest.mark.parametrize(
+        ("base_key", "typed"),
+        ((jax.random.key(0), True), (0, True), (jax.random.PRNGKey(0), False)),
+        ids=("typed-key", "int-seed", "legacy-key"),
+    )
+    def test_output_key_kind_follows_the_input(self, base_key, typed: bool):
+        keys = element_keys(base_key, 0, 3)
+        if typed:
+            assert jax.dtypes.issubdtype(keys.dtype, jax.dtypes.prng_key)
+            assert keys.shape == (3,)
+        else:
+            assert keys.dtype == np.uint32
+            assert keys.shape == (3, 2)
+
     @pytest.mark.parametrize("seed", (0, 12345))
     def test_matches_aminx_golden(self, seed: int):
         got = _key_data(element_keys(seed, 0, N))
