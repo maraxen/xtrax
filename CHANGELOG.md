@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Host-side bucketing primitives on `xtrax.tiling`** (#2522): `BUCKET_LADDER`
+  (64..2048) now lives in `xtrax.tiling` so runtime code does not import the
+  export stack. `xtrax.export.rings.BUCKET_LADDER` is the same object. New
+  helpers: `valid_span` (valid span from the leading edge through the last
+  valid position), `select_rung` (smallest ladder rung at least the span,
+  capped at the caller's current length), `trim_axis`, and `pad_axis`.
+
+- **Layered config resolution** (#2524): `xtrax.config.resolve_layered` resolves
+  one key through an explicit argument, an environment variable (empty or
+  `none` disables that layer), `[tool.<app>]` in the nearest `pyproject.toml`,
+  the per-machine `${XDG_CONFIG_HOME:-~/.config}/<app>/config.toml`, then a
+  default, and reports which layer decided. A malformed TOML file raises
+  `ValueError`. `resolve_memory_budget` builds on it: configured values are
+  absolute byte counts; otherwise it uses `device_memory_budget` (source
+  `device`) and, when the device reports no `bytes_limit`, a logged 4 GiB
+  default scaled by `headroom`.
+
+### Changed
+
+- **`BatchPlanner` memory-limit fallback is no longer silent** (#2524): the
+  per-axis `memory_estimator` path reads the device limit via
+  `device_memory_budget(fraction=1.0)`, so a reported `bytes_limit` is still
+  compared in full. When the device does not report `bytes_limit`, the planner
+  logs once and uses the documented 4 GiB default
+  (`xtrax.tiling.estimators.DEFAULT_DEVICE_MEMORY_BYTES`) instead of
+  substituting that figure with no record. Planning decisions on devices that
+  do not report a limit are unchanged. `device_memory_budget` itself still
+  raises when the runtime cannot answer.
+
 ## [0.4.0a12] - 2026-10-01
 
 ### Added

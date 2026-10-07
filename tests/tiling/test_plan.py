@@ -1,5 +1,6 @@
 """Tests for xtrax.tiling.plan — AxisSpec, AxisDecision, BatchPlan, BatchPlanner."""
 
+import logging
 import warnings
 
 import jax
@@ -528,3 +529,40 @@ class TestBatchPlanner:
 
         decision = plan.decisions[0]
         assert decision.batch_size == spec.default_batch_size
+
+    def test_memory_estimator_uses_reported_device_limit(self, monkeypatch):
+        """A reported bytes_limit replaces the 4 GiB fallback (fraction 1.0)."""
+        seen: dict[str, float] = {}
+
+        def fake_budget(fraction: float = 0.9, device=None) -> int:
+            seen["fraction"] = fraction
+            return 500
+
+        monkeypatch.setattr("xtrax.tiling.estimators.device_memory_budget", fake_budget)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
+        decision = BatchPlanner(memory_estimator=lambda spec: 1000).plan([spec]).decisions[0]
+        assert seen["fraction"] == 1.0
+        # 1000 bytes exceeds the reported 500 and is far below 4 GiB.
+        assert isinstance(decision.strategy, ChunkedMap)
+
+    def test_missing_device_stats_logs_documented_4gib_default(self, monkeypatch, caplog):
+        """No bytes_limit: log once and keep the 4 GiB comparison."""
+        import xtrax.tiling.plan as plan_mod
+
+        def no_stats(fraction: float = 0.9, device=None) -> int:
+            raise RuntimeError("no stats")
+
+        monkeypatch.setattr("xtrax.tiling.estimators.device_memory_budget", no_stats)
+        plan_mod._default_device_limit_logged = False
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
+
+        def high(spec: AxisSpec) -> int:
+            return 10 * (2**30)
+
+        with caplog.at_level(logging.INFO, logger="xtrax.tiling.plan"):
+            first = BatchPlanner(memory_estimator=high).plan([spec]).decisions[0]
+            second = BatchPlanner(memory_estimator=high).plan([spec]).decisions[0]
+        assert isinstance(first.strategy, ChunkedMap)
+        assert isinstance(second.strategy, ChunkedMap)
+        messages = [record.message for record in caplog.records if "4 GiB" in record.message]
+        assert len(messages) == 1
