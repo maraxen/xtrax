@@ -196,6 +196,67 @@ class TestFixedAxes:
             planner.plan([_spec("mystery", role=AxisRole.UNKNOWN)])
 
 
+class TestHeterogeneousBudget:
+    """AxisSpec.heterogeneous is never Vmap in joint-budget mode."""
+
+    def test_heterogeneous_stays_chunked_when_budget_fits(self) -> None:
+        seen: list[dict[str, type]] = []
+
+        def estimate(decisions) -> int:
+            seen.append({d.spec.name: type(d.strategy) for d in decisions})
+            return 0
+
+        planner = BatchPlanner(budget=MemoryBudget(bytes=10_000, estimate=estimate))
+        plan = planner.plan(
+            [
+                _spec("het", cardinality=8, batch_size=32, heterogeneous=True),
+                _spec("hom", cardinality=1024, batch_size=256),
+            ]
+        )
+        by_name = {d.spec.name: d for d in plan.decisions}
+        assert isinstance(by_name["het"].strategy, ChunkedMap)
+        assert by_name["het"].strategy.batch_size == 32
+        assert isinstance(by_name["hom"].strategy, Vmap)
+        assert "heterogeneous" in by_name["het"].reasoning
+        assert "budget" in by_name["het"].reasoning
+        assert seen
+        assert all(snapshot["het"] is ChunkedMap for snapshot in seen)
+
+    def test_heterogeneous_not_demoted_from_vmap_when_over_budget(self) -> None:
+        seen: list[tuple] = []
+
+        def estimate(decisions) -> int:
+            seen.append(tuple(type(d.strategy).__name__ for d in decisions))
+            return 10_000
+
+        planner = BatchPlanner(budget=MemoryBudget(bytes=100, estimate=estimate))
+        with pytest.raises(BudgetInfeasibleError, match="het=ChunkedMap"):
+            planner.plan([_spec("het", heterogeneous=True), _spec("hom")])
+        assert seen[0] == ("ChunkedMap", "Vmap")
+        assert seen[-1] == ("ChunkedMap", "ChunkedMap")
+        assert all(snapshot[0] == "ChunkedMap" for snapshot in seen)
+
+    def test_heterogeneous_only_over_budget_names_chunked_map(self) -> None:
+        planner = BatchPlanner(budget=MemoryBudget(bytes=100, estimate=lambda decisions: 10_000))
+        with pytest.raises(BudgetInfeasibleError, match=r"het=ChunkedMap") as excinfo:
+            planner.plan([_spec("het", heterogeneous=True)])
+        assert "0 candidate" in str(excinfo.value)
+
+    def test_heterogeneous_dedup_kept_when_budget_fits(self) -> None:
+        dedup = DedupSpec(
+            axis_name="het",
+            unique_indices=np.array([0, 1], dtype=np.int32),
+            index_map=np.array([0, 1, 0, 1], dtype=np.int32),
+            k=2,
+        )
+        planner = BatchPlanner(
+            budget=MemoryBudget(bytes=100, estimate=lambda decisions: 0),
+            dedup_specs=[dedup],
+        )
+        plan = planner.plan([_spec("het", cardinality=4, batch_size=4, heterogeneous=True)])
+        assert isinstance(plan.decisions[0].strategy, DedupGather)
+
+
 class TestInfeasible:
     """AC7: exhausted candidates over budget raise BudgetInfeasibleError."""
 

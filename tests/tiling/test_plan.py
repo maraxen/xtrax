@@ -115,6 +115,32 @@ class TestBatchPlan:
         assert len(plan.decisions) == 1
         assert plan.decisions[0] is decision
 
+    def test_decision_for_returns_named_decision(self):
+        """decision_for returns the AxisDecision (and its strategy) for a known axis."""
+        batch = AxisSpec(name="batch", cardinality=8, default_batch_size=8)
+        seq = AxisSpec(name="seq", cardinality=64, default_batch_size=8)
+        plan = BatchPlanner().plan([batch, seq])
+        decision = plan.decision_for("seq")
+        assert decision.spec.name == "seq"
+        assert isinstance(decision.strategy, ChunkedMap)
+        assert decision is plan.decisions[1]
+
+    def test_decision_for_unknown_axis_raises_keyerror(self):
+        """Unknown axes raise KeyError naming the missing axis and the known ones."""
+        spec = AxisSpec(name="batch", cardinality=8, default_batch_size=8)
+        plan = BatchPlanner().plan([spec])
+        with pytest.raises(KeyError, match="no decision for axis 'missing'") as excinfo:
+            plan.decision_for("missing")
+        assert "batch" in str(excinfo.value)
+
+    def test_decision_for_exported_on_public_batchplan(self):
+        """decision_for is on the BatchPlan exported from xtrax.tiling and xtrax."""
+        import xtrax
+        from xtrax.tiling import BatchPlan as PublicBatchPlan
+
+        assert PublicBatchPlan.decision_for is BatchPlan.decision_for
+        assert xtrax.BatchPlan.decision_for is BatchPlan.decision_for
+
 
 class TestBatchPlanner:
     """BatchPlanner selection rules and behavior."""
