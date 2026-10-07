@@ -150,6 +150,35 @@ def test_iteration_work_times_trip_count() -> None:
     assert body.max_dot_output_elements == 16
 
 
+def _scan_of_dots(x):
+    return jax.lax.scan(lambda c, _: (c @ c, None), x, None, length=10)[0]
+
+
+def _custom_jvp_scan():
+    @jax.custom_jvp
+    def g(x):
+        return _scan_of_dots(x)
+
+    @g.defjvp
+    def _g_jvp(primals, tangents):
+        return g(primals[0]), tangents[0]
+
+    return g
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [jax.checkpoint, lambda f: _custom_jvp_scan()],
+    ids=["checkpoint", "custom_jvp"],
+)
+def test_loop_inside_a_callee_is_reported_with_its_work(wrap) -> None:
+    """A scan hidden behind remat / custom_jvp is still found, and its dots counted."""
+    (body,) = loop_bodies(wrap(_scan_of_dots), jnp.ones((4, 4)))
+    assert body.trip_count == 10
+    assert body.iteration_work == 128
+    assert body.max_dot_output_elements == 16
+
+
 def test_while_has_unknown_trip_count() -> None:
     (body,) = loop_bodies(jax.jit(full_recompute_while), jnp.ones((4, D)))
     assert body.trip_count is None
