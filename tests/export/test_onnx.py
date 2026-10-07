@@ -146,6 +146,56 @@ class TestWithoutToolchain:
         spec = jax.ShapeDtypeStruct((4,), jnp.float32)
         assert self._safety(jnp.tanh, spec, ONNX) == []
 
+    def test_convert_accepts_a_model_name_and_an_embed_flag(self):
+        import inspect
+
+        params = inspect.signature(convert_to_onnx).parameters
+        assert params["model_name"].default == "xtrax_export"
+        assert params["embed_external_data"].default is False
+
+    def test_rng_audit_descends_into_function_subgraphs_and_censuses_domains(self):
+        """A RandomUniform nested in a function's Loop body is not on function.node."""
+
+        class _Attr:
+            def __init__(self, graph):
+                self._graph = graph
+                self.graphs = ()
+
+            def HasField(self, name: str) -> bool:
+                return name == "g" and self._graph is not None
+
+            @property
+            def g(self):
+                return self._graph
+
+        class _Node:
+            def __init__(self, op_type, name, domain="", attributes=()):
+                self.op_type = op_type
+                self.name = name
+                self.domain = domain
+                self.attribute = attributes
+
+        class _Graph:
+            def __init__(self, nodes):
+                self.node = nodes
+
+        class _Model:
+            def __init__(self, graph, functions):
+                self.graph = graph
+                self.functions = functions
+
+        body = _Graph(
+            [
+                _Node("Identity", "std", domain="ai.onnx"),
+                _Node("RandomUniform", "draw"),
+                _Node("CustomOp", "custom", domain="com.example"),
+            ]
+        )
+        function = _Graph([_Node("Loop", "loop", attributes=(_Attr(body),))])
+        model = _Model(_Graph([_Node("Identity", "top")]), (function,))
+        assert onnx_mod.find_onnx_rng_ops(model) == ["RandomUniform:draw"]
+        assert onnx_mod.onnx_unknown_domain_census(model) == {"com.example": 1}
+
     def test_convert_refuses_a_non_onnx_target(self):
         spec = jax.ShapeDtypeStruct((4,), jnp.float32)
         with pytest.raises(ValueError, match="onnx-backend target"):
@@ -486,6 +536,29 @@ class TestToolchainBehaviour:
         compiled, _ = convert_to_onnx(jnp.cumsum, (jax.ShapeDtypeStruct(x.shape, x.dtype),), ONNX)
         result = verify_onnx_parity(np.cumsum(x), compiled.path, (x,))
         assert result.passed, result.summary()
+
+    def test_embedding_drops_external_data_and_keeps_the_model_name(self, monkeypatch, tmp_path):
+        """The spill path (limit forced to 0) must not leave external refs when embedding."""
+        import onnx
+
+        monkeypatch.setattr(onnx_mod, "_PROTOBUF_LIMIT_BYTES", 0)
+        weights = np.arange(4096, dtype=np.float32)
+        x = np.ones((4096,), np.float32)
+        out = tmp_path / "embedded.onnx"
+        convert_to_onnx(
+            lambda v: v * weights,
+            (jax.ShapeDtypeStruct(x.shape, x.dtype),),
+            ONNX,
+            out_path=out,
+            model_name="per_graph",
+            embed_external_data=True,
+        )
+        model = onnx.load(str(out), load_external_data=False)
+        assert model.graph.name == "per_graph"
+        assert not (tmp_path / "embedded.onnx.data").exists()
+        for tensor in onnx_mod._model_tensors(model):
+            assert tensor.data_location != onnx.TensorProto.EXTERNAL
+            assert len(tensor.external_data) == 0
 
     def test_rng_ops_are_found_inside_subgraphs(self):
         """The graph-level backstop walks If/Loop bodies, not just the top."""

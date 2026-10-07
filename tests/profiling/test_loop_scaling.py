@@ -143,3 +143,29 @@ def test_structure_change_between_extents_raises() -> None:
 def test_extent_must_be_positive() -> None:
     with pytest.raises(ValueError, match="extent must be >= 1"):
         extent_scaling_report(incremental_scan, _seq, 0)
+
+
+def test_searchsorted_log_n_trip_count_is_not_flagged() -> None:
+    """searchsorted's binary search is O(log n) trips. Per-step work grows with a
+    vector of queries, but the trip count does not scale with the extent, so the
+    loop is not the O(L^2) shape extent_scaling_report exists to flag.
+    """
+
+    def searchsorted_program(x: jax.Array) -> jax.Array:
+        queries = jnp.linspace(0.0, 1.0, x.shape[0], dtype=x.dtype)
+        return jnp.searchsorted(x, queries)
+
+    report = extent_scaling_report(
+        searchsorted_program,
+        lambda n: (jnp.linspace(0.0, 1.0, n, dtype=jnp.float32),),
+        32,
+    )
+    (finding,) = report.findings
+    assert finding.primitive == "scan"
+    # Per-step work still grows with the query vector (the old false positive).
+    assert finding.ratio >= report.threshold
+    assert finding.trip_count_at_extent is not None
+    assert finding.trip_count_at_double_extent is not None
+    trip_growth = finding.trip_count_at_double_extent / finding.trip_count_at_extent
+    assert trip_growth < report.threshold
+    assert report.flagged == ()

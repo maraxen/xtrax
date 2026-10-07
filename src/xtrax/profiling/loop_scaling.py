@@ -7,16 +7,21 @@ look fine, and XLA's ``cost_analysis`` counts a ``while`` body once, so a naive
 total hides the trip count. (Found the hard way: an aminx autoregressive sampler
 ran 25-40x its reference per draw.)
 
-Two primitives, both static (trace only -- nothing is compiled or executed):
+Two primitives. ``loop_bodies`` only traces. ``extent_scaling_report`` traces
+both extents and, when a ``while`` has no static trip count, runs the program
+once per extent under ``jax.disable_jit`` to count that loop's iterations:
 
 - :func:`loop_bodies` -- every ``scan``/``while`` body reachable from ``fn``, at
   any depth, with the work of ONE iteration and the trip count (``scan`` length;
   ``None`` for ``while``, whose trip count is data-dependent).
 - :func:`extent_scaling_report` -- traces at ``extent`` and ``2 * extent``, pairs
-  loop bodies by structural path, and flags every body whose per-iteration work
-  grows with the extent. A body whose work is independent of the extent has a
-  ratio near 1.0; a body that re-does full-extent work every step has a ratio
-  near 2.0.
+  loop bodies by structural path, and flags a body only when BOTH its
+  per-iteration work AND its trip count grow with the extent. A body whose work
+  is independent of the extent has a work ratio near 1.0; a body that re-does
+  full-extent work every step has a ratio near 2.0. A loop whose trip count is
+  constant or sub-linear (``jnp.searchsorted`` lowers to a scan of
+  ``ceil(log2(n))`` steps) is not the O(L^2) shape, even when each step's work
+  grows because the step is batched over the extent.
 
 "Work" is an explicit proxy, not a FLOP-exact model: ``2*M*N*K`` per
 ``dot_general`` plus one unit per output element of every other equation, with
@@ -29,13 +34,17 @@ jax is imported lazily, inside the functions, so importing this module (and
 """
 
 import math
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-#: Default per-iteration work ratio (at 2x extent vs 1x) at or above which a loop
-#: body is flagged. Extent-independent bodies sit near 1.0 and full-extent
-#: recompute near 2.0; 1.5 splits them with margin for padding/bookkeeping ops.
+from xtrax.profiling.jaxpr import sub_jaxprs
+
+#: Default ratio (at 2x extent vs 1x) at or above which per-iteration work, and
+#: separately trip count, count as growing with the extent. Extent-independent
+#: work sits near 1.0 and full-extent recompute near 2.0; a linear trip count
+#: doubles and a log-n trip count (binary search) barely moves. 1.5 splits both
+#: with margin for padding and bookkeeping ops.
 DEFAULT_RATIO_THRESHOLD = 1.5
 
 _LOOP_BODY_PARAM = {"scan": "jaxpr", "while": "body_jaxpr"}
@@ -86,6 +95,8 @@ class ScalingFinding:
     work_at_double_extent: int
     ratio: float
     flagged: bool
+    trip_count_at_extent: int | None = None
+    trip_count_at_double_extent: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,19 +119,6 @@ class ExtentScalingReport:
 
 class LoopStructureMismatchError(ValueError):
     """The program's loop structure differs between the two traced extents."""
-
-
-def _inner_jaxprs(value: Any) -> Iterator[Any]:  # noqa: ANN401 -- jax internals
-    """Yield every (open) Jaxpr reachable from an eqn param value."""
-    stack = [value]
-    while stack:
-        v = stack.pop()
-        if hasattr(v, "eqns"):
-            yield v
-        elif hasattr(v, "jaxpr") and hasattr(v.jaxpr, "eqns"):
-            yield v.jaxpr
-        elif isinstance(v, (tuple, list)):
-            stack.extend(v)
 
 
 def _numel(aval: Any) -> int:  # noqa: ANN401
@@ -148,7 +146,7 @@ def _jaxpr_work(jaxpr: Any, path: str, found: list[LoopBody]) -> tuple[int, int]
         name = eqn.primitive.name
         here = f"{path}/{idx}:{name}"
         if name in _LOOP_BODY_PARAM:
-            body = next(_inner_jaxprs(eqn.params[_LOOP_BODY_PARAM[name]]))
+            body = next(sub_jaxprs(eqn.params[_LOOP_BODY_PARAM[name]]))
             before = len(found)
             body_work, body_dot = _jaxpr_work(body, here, found)
             trips = int(eqn.params["length"]) if name == "scan" else None
@@ -165,7 +163,7 @@ def _jaxpr_work(jaxpr: Any, path: str, found: list[LoopBody]) -> tuple[int, int]
             # writes its row into an (L, ...) buffer would look O(L) per step).
             work += _numel(eqn.invars[_IN_PLACE_UPDATE_OPERAND[name]].aval)
         else:
-            subs = [j for v in eqn.params.values() for j in _inner_jaxprs(v)]
+            subs = list(sub_jaxprs(eqn.params))
             if subs:
                 # cond: most expensive branch; pjit / custom_* / remat: the one callee.
                 branch_costs = [
@@ -198,6 +196,95 @@ def loop_bodies(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> list[LoopB
     return found
 
 
+def _trip_growth_scales(small: int | None, large: int | None, threshold: float) -> bool:
+    """Whether the trip count grows with the extent.
+
+    A missing count (a ``while`` that could not be measured) is treated as
+    scaling: the O(L^2) sampler is a ``while`` whose trips equal the extent,
+    and dropping an unmeasured one would hide that true positive. A known
+    count scales only when ``large / small`` reaches ``threshold``.
+    """
+    if small is None or large is None:
+        return True
+    if small <= 0:
+        return large > small
+    return large / small >= threshold
+
+
+def _measure_while_trips(fn: Callable[..., Any], args: tuple[Any, ...]) -> list[int]:
+    """Run ``fn(*args)`` eagerly and count each ``while_loop``'s iterations.
+
+    The first invocation of each ``(cond, body)`` code pair is kept, in the
+    order the loops are entered (outermost first, matching :func:`loop_bodies`).
+    Later invocations of the same pair -- a ``while`` inside a ``scan`` -- are
+    the same loop, not a new one.
+    """
+    import jax
+
+    real = jax.lax.while_loop
+    first: dict[object, int] = {}
+    order: list[object] = []
+
+    def wrapped(cond_fun, body_fun, init_val):  # noqa: ANN001 -- lax's own signature
+        key = (
+            getattr(cond_fun, "__code__", id(cond_fun)),
+            getattr(body_fun, "__code__", id(body_fun)),
+        )
+        fresh = key not in first
+        if fresh:
+            order.append(key)
+            first[key] = 0
+        trips = 0
+
+        def body_count(state):  # noqa: ANN001, ANN202
+            nonlocal trips
+            trips += 1
+            return body_fun(state)
+
+        result = real(cond_fun, body_count, init_val)
+        if fresh:
+            first[key] = trips
+        return result
+
+    jax.lax.while_loop = wrapped
+    try:
+        with jax.disable_jit():
+            fn(*args)
+    finally:
+        jax.lax.while_loop = real
+    return [first[key] for key in order]
+
+
+def _trip_counts_at(
+    fn: Callable[..., Any], args: tuple[Any, ...], bodies: list[LoopBody]
+) -> list[int | None]:
+    """Trip count aligned with ``bodies``.
+
+    ``scan`` lengths come from the trace. ``while`` lengths are measured. If
+    the eager run fails or does not line up with the traced ``while`` bodies,
+    those counts stay ``None`` and :func:`_trip_growth_scales` keeps the old
+    "assume linear" bias so a true positive is not dropped.
+    """
+    if not any(body.trip_count is None for body in bodies):
+        return [body.trip_count for body in bodies]
+    try:
+        measured: list[int | None] = list(_measure_while_trips(fn, args))
+    except Exception:  # noqa: BLE001 - measurement is a refinement, not a gate
+        measured = []
+    n_while = sum(body.primitive == "while" for body in bodies)
+    if len(measured) != n_while:
+        measured = [None] * n_while
+    out: list[int | None] = []
+    index = 0
+    for body in bodies:
+        if body.trip_count is not None:
+            out.append(body.trip_count)
+        else:
+            out.append(measured[index])
+            index += 1
+    return out
+
+
 def extent_scaling_report(
     fn: Callable[..., Any],
     make_args: Callable[[int], tuple[Any, ...]],
@@ -205,15 +292,18 @@ def extent_scaling_report(
     *,
     threshold: float = DEFAULT_RATIO_THRESHOLD,
 ) -> ExtentScalingReport:
-    """Flag loop bodies whose per-iteration work grows with the loop's extent.
+    """Flag loop bodies whose work and trip count both grow with the extent.
 
     Args:
-        fn: The program to inspect (traced, never executed).
+        fn: The program to inspect. Traced at both extents. A ``while`` whose
+            trip count is not static is also run, once per extent, to count
+            iterations.
         make_args: Builds ``fn``'s positional arguments for a given extent --
             e.g. ``lambda n: (jnp.zeros((n, d)),)`` for a sequence of length ``n``.
         extent: Base extent; the program is also traced at ``2 * extent``.
-        threshold: Per-iteration work ratio (2x vs 1x) at or above which a body
-            is flagged.
+        threshold: Ratio (2x vs 1x) at or above which per-iteration work and
+            trip count each count as growing. A body is flagged only when both
+            do. Log-n and constant trip counts stay under it.
 
     Returns:
         An :class:`ExtentScalingReport` with one finding per loop body.
@@ -226,8 +316,10 @@ def extent_scaling_report(
     if extent < 1:
         msg = f"extent must be >= 1, got {extent}"
         raise ValueError(msg)
-    base = loop_bodies(fn, *make_args(extent))
-    doubled = loop_bodies(fn, *make_args(2 * extent))
+    base_args = make_args(extent)
+    double_args = make_args(2 * extent)
+    base = loop_bodies(fn, *base_args)
+    doubled = loop_bodies(fn, *double_args)
     base_paths = [b.path for b in base]
     doubled_paths = [b.path for b in doubled]
     if base_paths != doubled_paths:
@@ -236,9 +328,14 @@ def extent_scaling_report(
             f"{base_paths} vs {doubled_paths}; per-iteration work cannot be paired"
         )
         raise LoopStructureMismatchError(msg)
+    base_trips = _trip_counts_at(fn, base_args, base)
+    doubled_trips = _trip_counts_at(fn, double_args, doubled)
     findings = []
-    for small, large in zip(base, doubled, strict=True):
+    for small, large, small_trips, large_trips in zip(
+        base, doubled, base_trips, doubled_trips, strict=True
+    ):
         ratio = large.iteration_work / small.iteration_work if small.iteration_work else math.inf
+        trips_scale = _trip_growth_scales(small_trips, large_trips, threshold)
         findings.append(
             ScalingFinding(
                 path=small.path,
@@ -246,7 +343,9 @@ def extent_scaling_report(
                 work_at_extent=small.iteration_work,
                 work_at_double_extent=large.iteration_work,
                 ratio=ratio,
-                flagged=ratio >= threshold,
+                flagged=ratio >= threshold and trips_scale,
+                trip_count_at_extent=small_trips,
+                trip_count_at_double_extent=large_trips,
             )
         )
     return ExtentScalingReport(extent=extent, threshold=threshold, findings=tuple(findings))

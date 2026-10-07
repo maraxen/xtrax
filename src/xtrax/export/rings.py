@@ -41,8 +41,8 @@ isolation, so ``leaf.path`` is relative to that name alone, per
 
 Nothing here is measured for coverage (``coverage_omit``, spec section 5.5a) --
 every non-trivial branch below requires an IREE toolchain to execute for real.
-The pure JAX-only pieces (``recover_probe_names``, the section-6.2 input-class
-generators, the pytree-splitting helpers) are exercised directly by
+The pure JAX-only pieces (``recover_probe_names``, ``make_input_class`` and the
+caller's generator, the pytree-splitting helpers) are exercised directly by
 ``tests/export/test_rings.py`` without a toolchain; the execution rungs are
 exercised there against fakes standing in for ``compile_for_target`` and
 ``run_native_vmfb``.
@@ -81,6 +81,7 @@ __all__ = [
     "BUCKET_LADDER",
     "InputClassResult",
     "magnitude_extremes",
+    "make_input_class",
     "nominal",
     "r0_replay_gate",
     "r1_target_isa",
@@ -275,10 +276,9 @@ class InputClassResult:
     """One input-class generator's output, carrying its own contract label.
 
     Attributes:
-        label: The class name, e.g. ``"symmetric_geometry"`` (AC-17).
-        in_contract: Whether the artifact is expected to serve this input at
-            all. ``False`` only for ``sub_k_neighbours`` -- it is retained as
-            a diagnostic but must never carry a verdict alone (AC-17).
+        label: The class name the caller chose (AC-17).
+        in_contract: Whether a verdict may rest on this class. ``False`` marks
+            a diagnostic input that must not carry a verdict alone (AC-17).
         abstract_inputs: ``jax.ShapeDtypeStruct``s for tracing.
         concrete_inputs: Concrete arrays to execute with.
     """
@@ -307,6 +307,54 @@ def nominal(abstract_inputs: Sequence[Any], concrete_inputs: Sequence[Any]) -> I
 
 def _shape_dtype(arr: jax.Array) -> jax.ShapeDtypeStruct:
     return jax.ShapeDtypeStruct(arr.shape, arr.dtype)
+
+
+def make_input_class(
+    generator: Callable[..., Any],
+    *args: Any,
+    label: str,
+    in_contract: bool = True,
+    **kwargs: Any,
+) -> InputClassResult:
+    """Build an input class by calling ``generator``.
+
+    xtrax does not invent a downstream model's inputs. Protein and MPNN
+    geometries (an ideal helix, a k-neighbour clamp) belong with the caller;
+    this only labels whatever ``generator`` returns.
+
+    Args:
+        generator: ``generator(*args, **kwargs)`` returns the concrete inputs:
+            a tuple of arrays, or a single array.
+        *args: Positional arguments forwarded to ``generator``.
+        label: Class name carried onto every ring report for this input.
+        in_contract: Whether a verdict may rest on this class. ``False`` marks
+            a diagnostic input that must not carry a verdict alone.
+        **kwargs: Keyword arguments forwarded to ``generator``.
+
+    Returns:
+        An ``InputClassResult`` whose abstract inputs match the arrays
+        ``generator`` returned.
+    """
+    produced = generator(*args, **kwargs)
+    concrete_inputs = produced if isinstance(produced, tuple) else (produced,)
+    abstract_inputs = tuple(_shape_dtype(jnp.asarray(leaf)) for leaf in concrete_inputs)
+    return InputClassResult(
+        label=label,
+        in_contract=in_contract,
+        abstract_inputs=abstract_inputs,
+        concrete_inputs=concrete_inputs,
+    )
+
+
+def _deprecated_protein_generator(name: str) -> None:
+    warnings.warn(
+        f"{name} is a protein/MPNN input generator and is deprecated in xtrax. "
+        "It will be removed in the next release. Build input classes with "
+        "make_input_class(generator, ..., label=...); the generator callable "
+        "belongs with the caller.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 def _require_bucket_length(length: int) -> None:
@@ -344,7 +392,11 @@ def symmetric_geometry(
     Returns:
         An ``InputClassResult`` with ``(coords, mask)`` as its inputs, labelled
         ``"symmetric_geometry"`` and in-contract.
+
+    .. deprecated::
+        Protein geometry belongs with the caller. Use :func:`make_input_class`.
     """
+    _deprecated_protein_generator("symmetric_geometry")
     _require_bucket_length(length)
     if ndim < 2:
         msg = f"symmetric_geometry needs ndim >= 2 to place points on a helix, got {ndim}"
@@ -453,7 +505,12 @@ def sub_k_neighbours(
 
     Returns:
         An out-of-contract ``InputClassResult``.
+
+    .. deprecated::
+        The k-neighbour clamp is a protein/MPNN input. Use
+        :func:`make_input_class` with the caller's own generator.
     """
+    _deprecated_protein_generator("sub_k_neighbours")
     _require_bucket_length(length)
     if not 0 < k_neighbors <= length:
         msg = f"k_neighbors={k_neighbors} must be in (0, {length}]"

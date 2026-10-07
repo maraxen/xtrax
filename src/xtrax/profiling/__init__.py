@@ -24,6 +24,7 @@ from xtrax.profiling.claims import (
     permitted_claims,
     select_sources,
 )
+from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
 from xtrax.profiling.record import ProbeRecord
 
 __all__ = [
@@ -33,7 +34,9 @@ __all__ = [
     "ClaimValidityError",
     "ProbeRecord",
     "assert_claim_supported",
+    "iter_jaxpr_eqns",
     "paired_configs",
     "permitted_claims",
     "select_sources",
+    "sub_jaxprs",
 ]
