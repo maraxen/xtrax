@@ -14,6 +14,7 @@ import zarr
 import xtrax
 from xtrax.run import (
     DIGEST_ALGO_VERSION,
+    MEMORY_DIGEST_ALGO_VERSION,
     GitProvenance,
     MemorySink,
     atomic_write_bytes,
@@ -53,12 +54,144 @@ def test_memory_sink_write_readback_and_receipt() -> None:
     assert receipt.path is None
     assert receipt.run_id == "mem-run"
     assert receipt.seed == 3
-    assert receipt.digest_algo_version == DIGEST_ALGO_VERSION
+    assert receipt.digest_algo_version == MEMORY_DIGEST_ALGO_VERSION
+    assert MEMORY_DIGEST_ALGO_VERSION != DIGEST_ALGO_VERSION
     other = make_sink(SinkSpec(run_id="other", format="memory", seed=9, flush_every=100))
     assert isinstance(other, MemorySink)
     other.stage((0,), values=values, attrs={"note": "a"})
     other.drain()
     assert other.finalize().digest == receipt.digest
+
+
+def _memory_sink(**kwargs: object) -> MemorySink:
+    spec_kwargs: dict[str, object] = {"run_id": "mem", "format": "memory", "flush_every": 100}
+    spec_kwargs.update(kwargs)
+    sink = make_sink(SinkSpec(**spec_kwargs))  # type: ignore[arg-type]
+    assert isinstance(sink, MemorySink)
+    return sink
+
+
+def test_memory_append_concatenates_and_rejects_mismatch() -> None:
+    """append extends axis 0; a dtype or trailing-shape mismatch leaves the store."""
+    sink = _memory_sink(append=True)
+    sink.stage((0,), value=np.array([[1, 2], [3, 4]], dtype=np.int32))
+    sink.drain()
+    sink.stage((0,), value=np.array([[5, 6]], dtype=np.int32))
+    sink.drain()
+    np.testing.assert_array_equal(
+        sink.read((0,))["value"], np.array([[1, 2], [3, 4], [5, 6]], dtype=np.int32)
+    )
+
+    bad_dtype = _memory_sink(append=True)
+    bad_dtype.stage((0,), value=np.array([[1, 2]], dtype=np.int32))
+    bad_dtype.drain()
+    bad_dtype.stage((0,), value=np.array([[3.0, 4.0]], dtype=np.float64))
+    with pytest.raises(ValueError, match="dtype"):
+        bad_dtype.drain()
+    np.testing.assert_array_equal(bad_dtype.read((0,))["value"], np.array([[1, 2]], dtype=np.int32))
+
+    bad_shape = _memory_sink(append=True)
+    bad_shape.stage((0,), value=np.array([[1, 2]], dtype=np.int32))
+    bad_shape.drain()
+    bad_shape.stage((0,), value=np.array([9, 9, 9], dtype=np.int32))
+    with pytest.raises(ValueError, match="trailing shape"):
+        bad_shape.drain()
+    np.testing.assert_array_equal(bad_shape.read((0,))["value"], np.array([[1, 2]], dtype=np.int32))
+
+
+def test_memory_digest_includes_names_and_ignores_attrs() -> None:
+    """Renaming an array changes the digest; changing a caller attr does not.
+
+    Memory digests are not zarr content digests (different version, different inputs).
+    """
+
+    def digest(name: str, note: str) -> str:
+        sink = _memory_sink()
+        array = np.array([1, 2], dtype=np.int32)
+        sink.stage((0,), attrs={"note": note}, **{name: array})
+        sink.drain()
+        receipt = sink.finalize()
+        assert receipt.digest_algo_version == MEMORY_DIGEST_ALGO_VERSION
+        return receipt.digest
+
+    assert digest("values", "a") == digest("values", "b")
+    assert digest("values", "a") != digest("other", "a")
+
+
+def test_memory_copies_on_stage_read_and_drain() -> None:
+    """Caller mutations and read()/take() results do not alias stored bytes."""
+    src = np.array([1, 2, 3], dtype=np.int32)
+    sink = _memory_sink()
+    sink.stage((0,), values=src)
+    staged = sink._pending[(0,)]["values"]
+    assert staged is not src
+    taken = sink.take((0,))["values"]
+    assert taken is not src
+    src[0] = 9
+    assert int(taken[0]) == 1
+
+    src2 = np.array([4, 5, 6], dtype=np.int32)
+    sink.stage((0,), values=src2)
+    pending = sink._pending[(0,)]["values"]
+    sink.drain()
+    stored = sink._committed[(0,)]["values"]
+    assert stored is not src2
+    assert stored is not pending
+    src2[0] = 0
+    pending[0] = 0
+    read_back = sink.read((0,))["values"]
+    assert read_back is not stored
+    np.testing.assert_array_equal(read_back, np.array([4, 5, 6], dtype=np.int32))
+    read_back[0] = 7
+    np.testing.assert_array_equal(sink.read((0,))["values"], np.array([4, 5, 6], dtype=np.int32))
+
+
+def test_finalize_fsyncs_once_after_consolidate_before_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """finalize calls fsync_tree once, after consolidate_metadata and before the digest."""
+    import xtrax.run.zarr_sink as zarr_sink_mod
+
+    sink = ZarrStagingSink(
+        SinkSpec(run_id="fsync", output_dir=tmp_path / "out.zarr", format="zarr", flush_every=100)
+    )
+    sink.stage((0,), value=np.array([1], dtype=np.int32))
+    sink.drain()
+    order: list[str] = []
+    real_consolidate = zarr.consolidate_metadata
+    real_fsync = zarr_sink_mod.fsync_tree
+    real_digest = zarr_sink_mod.zarr_content_digest
+
+    def consolidate(store: str, *args: object, **kwargs: object) -> None:
+        order.append("consolidate")
+        real_consolidate(store, *args, **kwargs)
+
+    def fsync(path: Path) -> None:
+        order.append("fsync")
+        real_fsync(path)
+
+    def digest(path: Path, *args: object, **kwargs: object) -> str:
+        order.append("digest")
+        return real_digest(path, *args, **kwargs)
+
+    monkeypatch.setattr(zarr, "consolidate_metadata", consolidate)
+    monkeypatch.setattr(zarr_sink_mod, "fsync_tree", fsync)
+    monkeypatch.setattr(zarr_sink_mod, "zarr_content_digest", digest)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*not part in the Zarr format 3 spec.*")
+        sink.finalize()
+    assert order == ["consolidate", "fsync", "digest"]
+
+
+def test_append_with_create_or_join_raises() -> None:
+    with pytest.raises(ValueError, match="append=True is incompatible"):
+        SinkSpec(
+            run_id="r",
+            format="zarr",
+            open_mode="create_or_join",
+            store_identity={"schema": "v1"},
+            append=True,
+        )
 
 
 def test_zarr_appends_along_leading_axis_across_drains(tmp_path: Path) -> None:

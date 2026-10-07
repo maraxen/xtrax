@@ -41,7 +41,10 @@ class SinkReceipt:
 
     ``digest`` is reproducible for identical logical content (provenance such
     as run id, seed, git state, and producer version is not part of it).
-    ``digest_algo_version`` is :data:`xtrax.run.zarr_integrity.DIGEST_ALGO_VERSION`.
+    ``digest_algo_version`` is :data:`xtrax.run.zarr_integrity.DIGEST_ALGO_VERSION`
+    for a Zarr receipt and
+    :data:`xtrax.run.zarr_integrity.MEMORY_DIGEST_ALGO_VERSION` for a memory
+    receipt. Those algorithms differ; the digests are not comparable.
     ``path`` is the store directory for a Zarr sink and ``None`` for an
     in-memory sink.
     """
@@ -66,6 +69,9 @@ class SinkSpec:
     canonical identity every joiner must match). ``prefixes`` lists the group
     prefixes that must exist in the store (created atomically with the store
     root); it is normalized to a tuple of tuples of ``str``.
+
+    ``append=True`` with ``open_mode="create_or_join"`` raises ``ValueError``.
+    Durable drains commit whole keys and do not extend arrays.
     """
 
     run_id: str
@@ -119,6 +125,12 @@ class SinkSpec:
         if not isinstance(self.append, bool):
             msg = f"SinkSpec.append must be bool, got {type(self.append).__name__}"
             raise TypeError(msg)
+        if self.append and self.open_mode == "create_or_join":
+            msg = (
+                "SinkSpec append=True is incompatible with open_mode='create_or_join' "
+                "(durable drains commit whole keys and do not extend arrays)"
+            )
+            raise ValueError(msg)
         if self.provenance is not None and not isinstance(
             self.provenance, (GitProvenance, Path, Mapping)
         ):

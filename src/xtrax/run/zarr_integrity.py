@@ -35,9 +35,26 @@ if TYPE_CHECKING:
 
 #: Version of the content digest folded by :func:`zarr_content_digest`
 #: (sha256 over the canonical node walk, provenance excluded by default).
-#: Bump when that byte layout changes. Receipts record this so a later reader
-#: can tell which algorithm produced ``digest``.
+#: Bump when that byte layout changes. Zarr receipts record this so a later
+#: reader can tell which algorithm produced ``digest``.
+#:
+#: This is not :data:`CANONICAL_HASH_ALGO_VERSION` and not
+#: :data:`MEMORY_DIGEST_ALGO_VERSION`. Those label different algorithms.
+#: A zarr content digest and a memory-sink digest are not comparable.
 DIGEST_ALGO_VERSION = 1
+
+#: Version of :func:`canonical_hash` (sha256 over :func:`canonical_json_bytes`).
+#: Bump when that JSON-document hashing changes. Whole-document digests in
+#: ``xtrax.run`` go through this helper.
+CANONICAL_HASH_ALGO_VERSION = 1
+
+#: Algorithm id on :class:`~xtrax.run.memory_sink.MemorySink` receipts.
+#: Not a newer revision of :data:`DIGEST_ALGO_VERSION`: the memory digest is
+#: :func:`canonical_hash` of ``{group_path: {array_name: array_digest}}``.
+#: Array names and array bytes are inputs. Caller attrs, run id, seed, and git
+#: provenance are not, so changing an attr does not change the digest.
+#: Do not compare it to :func:`zarr_content_digest`.
+MEMORY_DIGEST_ALGO_VERSION = 2
 
 
 def canonical_json_bytes(payload: dict[str, Any]) -> bytes:
@@ -49,6 +66,20 @@ def canonical_json_bytes(payload: dict[str, Any]) -> bytes:
         ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
+
+
+def canonical_hash(payload: dict[str, Any]) -> str:
+    """sha256 hex digest of ``payload`` via :func:`canonical_json_bytes`.
+
+    ``payload`` must already be JSON-serializable. Normalize numpy values with
+    :func:`normalize_json_value` first. Algorithm version:
+    :data:`CANONICAL_HASH_ALGO_VERSION`.
+
+    This is the single JSON-document hash used by ``xtrax.run`` digest code.
+    The zarr node walk folds canonical JSON bytes into its own running hash
+    and does not call this helper: that walk is :data:`DIGEST_ALGO_VERSION`.
+    """
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def normalize_json_value(value: Any) -> Any:  # noqa: ANN401

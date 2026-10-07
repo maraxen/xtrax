@@ -2,8 +2,17 @@
 
 No optional dependency: constructing a memory sink never imports zarr. Payloads
 stay in process. :meth:`MemorySink.finalize` returns a :class:`~xtrax.run.sink.SinkReceipt`
-whose digest covers committed array bytes (not run id, seed, or git state), so
-two sinks with the same payloads and different run ids share a digest.
+labeled :data:`~xtrax.run.zarr_integrity.MEMORY_DIGEST_ALGO_VERSION`.
+
+The digest is sha256 over canonical JSON of ``{group_path: {array_name: array_digest}}``.
+Array names and array bytes are inputs. Caller attrs, run id, seed, and git
+provenance are not, so changing an attr does not change the digest and two sinks
+with the same arrays and different run ids share one. That algorithm is not the
+zarr node walk (:data:`~xtrax.run.zarr_integrity.DIGEST_ALGO_VERSION`); memory and
+zarr digests are not comparable.
+
+``stage`` copies arrays, so later mutation of the caller's input does not change
+the buffer. ``read`` returns copies of the committed arrays.
 """
 
 from __future__ import annotations
@@ -17,7 +26,7 @@ from xtrax import __version__ as _XTRAX_VERSION
 from xtrax.run._sink_names import CORE_PROVENANCE_FIELDS, PRODUCER_NAME, RESERVED_ATTR_PREFIX
 from xtrax.run.digest import array_digest, canonical_digest
 from xtrax.run.sink import SinkReceipt, SinkSpec
-from xtrax.run.zarr_integrity import DIGEST_ALGO_VERSION
+from xtrax.run.zarr_integrity import MEMORY_DIGEST_ALGO_VERSION
 
 
 def _zarr_sink():
@@ -128,7 +137,8 @@ class MemorySink:
             raise ValueError(msg)
         if attrs:
             self._validate_stage_attrs(key, attrs)
-        converted = {name: np.asarray(value) for name, value in arrays.items()}
+        # Copy at stage so take() and a later drain cannot alias the caller.
+        converted = {name: np.array(value, copy=True) for name, value in arrays.items()}
         self._pending.setdefault(key, {}).update(converted)
         if attrs:
             self._pending_attrs.setdefault(key, {}).update(attrs)
@@ -252,7 +262,7 @@ class MemorySink:
         return SinkReceipt(
             path=self._spec.output_dir,
             digest=canonical_digest(payload),
-            digest_algo_version=DIGEST_ALGO_VERSION,
+            digest_algo_version=MEMORY_DIGEST_ALGO_VERSION,
             run_id=self._spec.run_id,
             seed=self._spec.seed,
         )

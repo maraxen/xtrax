@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from xtrax.run.digest import array_digest, canonical_digest, numerics_env, source_fingerprint
+from xtrax.run.zarr_integrity import CANONICAL_HASH_ALGO_VERSION, canonical_hash
 
 
 class TestCanonicalDigest:
@@ -37,6 +38,20 @@ class TestCanonicalDigest:
         payload1 = {"outer": {"a": 1, "b": 2}}
         payload2 = {"outer": {"b": 2, "a": 1}}
         assert canonical_digest(payload1) == canonical_digest(payload2)
+
+    def test_delegates_to_canonical_hash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Document digests go through the one canonical_hash helper."""
+        seen: dict[str, object] = {}
+
+        def fake(payload: dict) -> str:
+            seen["payload"] = payload
+            return "deadbeef"
+
+        monkeypatch.setattr("xtrax.run.digest.canonical_hash", fake)
+        assert canonical_digest({"b": 1, "a": np.int32(2)}) == "deadbeef"
+        assert seen["payload"] == {"a": 2, "b": 1}
+        assert CANONICAL_HASH_ALGO_VERSION == 1
+        assert canonical_hash({"a": 1}) == canonical_hash({"a": 1})
 
 
 class TestArrayDigest:

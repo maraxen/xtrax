@@ -12,14 +12,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from xtrax.run.zarr_integrity import canonical_json_bytes, normalize_json_value
+from xtrax.run.zarr_integrity import canonical_hash, normalize_json_value
 
 
 def canonical_digest(payload: Mapping[str, Any]) -> str:
     """Compute a deterministic sha256 hexdigest of the payload.
 
     The payload is normalized (JSON-safe, sorted keys, NFC strings) and
-    serialized to canonical JSON bytes, then hashed.
+    hashed with :func:`xtrax.run.zarr_integrity.canonical_hash`
+    (:data:`~xtrax.run.zarr_integrity.CANONICAL_HASH_ALGO_VERSION`).
 
     Args:
         payload: A mapping (dict-like) to digest.
@@ -28,7 +29,7 @@ def canonical_digest(payload: Mapping[str, Any]) -> str:
         A lowercase hexadecimal sha256 hash.
     """
     normalized = dict(normalize_json_value(dict(payload)))
-    return hashlib.sha256(canonical_json_bytes(normalized)).hexdigest()
+    return canonical_hash(normalized)
 
 
 def array_digest(x: Any) -> str:  # noqa: ANN401
