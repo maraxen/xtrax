@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 import jax
 import numpy as np
+from jaxtyping import Shaped
 
 # Index dtype hashed by fold_in. Matches aminx.host.plan.compute_sample_keys.
 INDEX_DTYPE = np.dtype(np.int32)
@@ -49,10 +50,10 @@ def _resolve_base_key(seed_or_key: int | np.integer | jax.Array) -> jax.Array:
 
 
 def element_keys(
-    base_key: int | np.integer | jax.Array,
+    base_key: int | np.integer | Shaped[jax.Array, "..."],
     start: int,
     count: int,
-) -> jax.Array:
+) -> Shaped[jax.Array, "..."]:
     """PRNG keys for global indices ``[start, start + count)``.
 
     Args:
@@ -153,7 +154,7 @@ def make_chunk_plan(
 
 
 def iter_chunk_keys(
-    base_key: int | np.integer | jax.Array,
+    base_key: int | np.integer | Shaped[jax.Array, "..."],
     plan: Sequence[ChunkSpan],
 ) -> Iterator[tuple[ChunkSpan, jax.Array]]:
     """Yield ``(span, keys)`` for each span of a chunk plan.
