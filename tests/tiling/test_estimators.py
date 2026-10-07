@@ -30,6 +30,10 @@ class TestDeviceMemoryBudget:
         device = _FakeDevice({"bytes_limit": 1_000})
         assert device_memory_budget(fraction=0.9, device=device) == 900
 
+    def test_fractional_budget_truncates(self) -> None:
+        device = _FakeDevice({"bytes_limit": 7})
+        assert device_memory_budget(fraction=0.5, device=device) == 3
+
     def test_full_fraction(self) -> None:
         device = _FakeDevice({"bytes_limit": 1_000})
         assert device_memory_budget(fraction=1.0, device=device) == 1_000
