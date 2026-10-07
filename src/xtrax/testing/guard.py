@@ -1,7 +1,5 @@
 """Refuse to treat a run-twice self-comparison as parity."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from typing import Any
 

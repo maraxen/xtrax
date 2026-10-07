@@ -5,8 +5,6 @@ produce the same uniforms, the same normals, or the same permutation. Build the
 arrays once and pass them into both callables.
 """
 
-from __future__ import annotations
-
 import functools
 from collections.abc import Callable
 from dataclasses import dataclass

@@ -4,8 +4,6 @@ Each lane compares a candidate to an oracle. The distributional lane reports
 PASS only after a negative control has rejected a perturbed knob.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
