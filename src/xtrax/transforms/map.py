@@ -7,22 +7,33 @@ import jax.numpy as jnp
 T: type
 
 
+def _none_leaf(node: Any) -> bool:
+    """None is an unmapped prefix, not an empty pytree node."""
+    return node is None
+
+
+def _broadcast_axes(xs: Any, in_axes: Any) -> list[Any]:
+    """One axis per leaf of ``xs``. None means that leaf is not mapped."""
+    broadcasted = jax.tree.broadcast(in_axes, xs, is_leaf=_none_leaf)
+    return jax.tree.flatten(broadcasted, is_leaf=_none_leaf)[0]
+
+
 def _is_size1_axis(xs: Any, in_axes: Any) -> bool:
-    """True when every mapped leaf has length 1 on its mapped axis."""
+    """True when every mapped leaf has length 1 on its mapped axis.
+
+    ``in_axes`` is an int, None, or a tree prefix of ``xs``. A None node leaves
+    that subtree unmapped, the same rule ``jax.vmap`` uses for in-axes.
+    """
     leaves = jax.tree.leaves(xs)
     if not leaves:
         return False
     try:
-        if isinstance(in_axes, int):
-            return all(leaf.shape[in_axes] == 1 for leaf in leaves)
-        if in_axes is None:
-            return False
-        axes = jax.tree.leaves(in_axes)
+        axes = _broadcast_axes(xs, in_axes)
         if len(axes) != len(leaves):
             return False
         mapped = [(leaf, axis) for leaf, axis in zip(leaves, axes, strict=True) if axis is not None]
         return bool(mapped) and all(leaf.shape[axis] == 1 for leaf, axis in mapped)
-    except IndexError:
+    except (IndexError, TypeError, ValueError):
         return False
 
 
@@ -30,18 +41,17 @@ def _apply_size1(fn: Callable[..., Any], xs: Any, in_axes: Any = 0) -> Any:
     """Apply fn along a length-1 axis without vmap.
 
     Output axis 0 matches ``jax.vmap``'s default ``out_axes``. A length-1 vmap
-    miscompiles on some GPUs (#2520, aminx #2391).
+    miscompiles on some GPUs (#2520, aminx #2391). ``in_axes`` follows the same
+    tree-prefix rule as ``_is_size1_axis``.
     """
+    broadcasted = jax.tree.broadcast(in_axes, xs, is_leaf=_none_leaf)
 
     def squeeze_leaf(leaf: Any, axis: Any) -> Any:
         if axis is None:
             return leaf
         return jnp.squeeze(leaf, axis=axis)
 
-    if isinstance(in_axes, int) or in_axes is None:
-        squeezed = jax.tree.map(lambda leaf: squeeze_leaf(leaf, in_axes), xs)
-    else:
-        squeezed = jax.tree.map(squeeze_leaf, xs, in_axes)
+    squeezed = jax.tree.map(squeeze_leaf, xs, broadcasted, is_leaf=_none_leaf)
     return jax.tree.map(lambda leaf: jnp.expand_dims(leaf, axis=0), fn(squeezed))
 
 
