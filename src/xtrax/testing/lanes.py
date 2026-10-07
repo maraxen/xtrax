@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.stats import chi2 as chi2_dist
 from jax.scipy.stats import norm as norm_dist
-from numpy.typing import ArrayLike
+from jaxtyping import ArrayLike, Shaped
 
 from xtrax.testing.guard import assert_distinct_callables
 
@@ -44,7 +44,9 @@ Scorer = Callable[[np.ndarray, int, np.ndarray], np.ndarray]
 Verdict = Literal["PASS", "FAIL", "UNCONTROLLED"]
 
 
-def align_logits(logits: ArrayLike, index_map: ArrayLike) -> np.ndarray:
+def align_logits(
+    logits: Shaped[ArrayLike, "..."], index_map: Shaped[ArrayLike, "..."]
+) -> np.ndarray:
     """Gather the class axis so result ``[..., i]`` is source class ``index_map[i]``.
 
     ``index_map[i]`` is the oracle class corresponding to candidate class ``i``.
@@ -58,7 +60,9 @@ def align_logits(logits: ArrayLike, index_map: ArrayLike) -> np.ndarray:
     return np.take(values, mapping, axis=-1)
 
 
-def map_token_ids(tokens: ArrayLike, index_map: ArrayLike) -> np.ndarray:
+def map_token_ids(
+    tokens: Shaped[ArrayLike, "..."], index_map: Shaped[ArrayLike, "..."]
+) -> np.ndarray:
     """Map token ids through ``index_map`` (candidate id -> oracle id)."""
     ids = np.asarray(tokens)
     mapping = _as_index_map(index_map)
@@ -124,12 +128,12 @@ class TeacherForcedResult:
 
 
 def teacher_forced_lane(
-    sequence: ArrayLike,
-    order: ArrayLike,
+    sequence: Shaped[ArrayLike, "..."],
+    order: Shaped[ArrayLike, "..."],
     candidate: Scorer,
     oracle: Scorer,
     *,
-    alphabet_map: ArrayLike | None = None,
+    alphabet_map: Shaped[ArrayLike, "..."] | None = None,
     atol: float = 1e-5,
     rtol: float = 1e-5,
 ) -> TeacherForcedResult:
@@ -299,11 +303,11 @@ class CollapsedSamplerResult:
 
 
 def collapsed_sampler_lane(
-    candidate_logits: ArrayLike,
-    oracle_logits: ArrayLike,
+    candidate_logits: Shaped[ArrayLike, "..."],
+    oracle_logits: Shaped[ArrayLike, "..."],
     *,
     tie_margin: float,
-    alphabet_map: ArrayLike | None = None,
+    alphabet_map: Shaped[ArrayLike, "..."] | None = None,
 ) -> CollapsedSamplerResult:
     """Compare temperature-0 argmax, and report near-ties instead of failing them.
 
@@ -572,8 +576,8 @@ def _chi2_critical(alpha: float, df: int) -> float:
 
 
 def distributional_lane(
-    draws: ArrayLike,
-    oracle_probs: ArrayLike,
+    draws: Shaped[ArrayLike, "..."],
+    oracle_probs: Shaped[ArrayLike, "..."],
     *,
     alpha: float = 0.05,
     power: float = 0.8,
@@ -700,7 +704,7 @@ def _issue_negative_control(
 
 def require_negative_control(
     sampler: Callable[[Mapping[str, Any]], np.ndarray],
-    oracle_probs: ArrayLike,
+    oracle_probs: Shaped[ArrayLike, "..."],
     knobs: Mapping[str, Any],
     knob: str,
     perturbed_value: Any,

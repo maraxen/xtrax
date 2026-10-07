@@ -11,12 +11,14 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from numpy.typing import ArrayLike
+from jaxtyping import ArrayLike, Shaped
 
 __all__ = ["InjectedSource", "order_from_randn"]
 
 
-def order_from_randn(mask: ArrayLike, randn: ArrayLike, eps: float) -> np.ndarray:
+def order_from_randn(
+    mask: Shaped[ArrayLike, "..."], randn: Shaped[ArrayLike, "..."], eps: float
+) -> np.ndarray:
     """Decoding order for ``argsort((mask + eps) * abs(randn))``.
 
     The sort is ascending and stable: equal scores keep the lower index. That
