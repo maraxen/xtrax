@@ -17,8 +17,9 @@ policy = SparsePolicy(
 # BEFORE jit: sparsify the model  # verify: src/xtrax/sparse/inference.py:44-55
 sparse_model = sparsify_model(model, policy)
 
-# RECOMMENDED: Use closure pattern
-forward_fn = make_sparse_forward_fn(sparse_model)
+# RECOMMENDED: closure keeps the sparse model out of the jit partition.
+# fn is (model, inputs) -> outputs; the helper returns (inputs) -> outputs.
+forward_fn = make_sparse_forward_fn(lambda model, inputs: model(inputs), sparse_model)
 result = jax.jit(forward_fn)(x)
 
 # ALTERNATIVE: Pass to eqx.filter_jit (holds BCOO as static)
