@@ -269,6 +269,8 @@ Choose your task:
 7. **Infer AxisSpecs/BundleSchema from a typed function signature**  
    → Read `references/inference.md`
 
+8. **Compare a sampler to a reference implementation** → Read `references/parity.md`
+
 ---
 
 ## TIER-2: Deep Reference
