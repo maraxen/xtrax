@@ -48,6 +48,7 @@ exercised there against fakes standing in for ``compile_for_target`` and
 ``run_native_vmfb``.
 """
 
+import inspect
 import math
 import re
 import subprocess
@@ -346,6 +347,26 @@ def make_input_class(
     )
 
 
+def _deprecation_stacklevel() -> int:
+    """``warnings.warn`` stacklevel of the first frame outside this shim.
+
+    ``stacklevel=1`` is the frame that calls ``warnings.warn``. Jaxtyping's
+    import hook (installed for the test suite) wraps both that frame and the
+    deprecated function, so a fixed ``stacklevel`` names ``_decorator.py``
+    instead of the caller. Skip this module and those wrapper frames.
+    """
+    frames = inspect.stack()
+    warn_caller = 1
+    while warn_caller < len(frames) and "jaxtyping" in Path(frames[warn_caller].filename).parts:
+        warn_caller += 1
+    for index in range(warn_caller + 1, len(frames)):
+        path = Path(frames[index].filename)
+        if path.name == "rings.py" or "jaxtyping" in path.parts:
+            continue
+        return index - warn_caller + 1
+    return 2
+
+
 def _deprecated_protein_generator(name: str) -> None:
     warnings.warn(
         f"{name} is a protein/MPNN input generator and is deprecated in xtrax. "
@@ -353,7 +374,7 @@ def _deprecated_protein_generator(name: str) -> None:
         "make_input_class(generator, ..., label=...); the generator callable "
         "belongs with the caller.",
         DeprecationWarning,
-        stacklevel=3,
+        stacklevel=_deprecation_stacklevel(),
     )
 
 

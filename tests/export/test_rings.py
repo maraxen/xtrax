@@ -88,13 +88,19 @@ class TestInputClassGenerators:
         assert int(jnp.sum(mask)) < 16
 
     def test_protein_generators_warn_and_still_return_a_class(self):
-        """One-release shim: helix and k-neighbour generators warn, then still build."""
-        with pytest.warns(DeprecationWarning, match="symmetric_geometry"):
+        """One-release shim: helix and k-neighbour generators warn, then still build.
+
+        ``stacklevel`` must point at this caller. A warning attributed to
+        ``rings.py`` means the shim swallowed the stack frame.
+        """
+        with pytest.warns(DeprecationWarning, match="symmetric_geometry") as helix_warnings:
             helix = rings.symmetric_geometry(64)
+        assert helix_warnings[0].filename == __file__
         assert helix.label == "symmetric_geometry"
         assert helix.in_contract is True
-        with pytest.warns(DeprecationWarning, match="sub_k_neighbours"):
+        with pytest.warns(DeprecationWarning, match="sub_k_neighbours") as clamped_warnings:
             clamped = rings.sub_k_neighbours(64, k_neighbors=48)
+        assert clamped_warnings[0].filename == __file__
         assert clamped.label == "sub_k_neighbours"
         assert clamped.in_contract is False
 

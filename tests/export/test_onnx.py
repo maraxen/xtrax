@@ -24,9 +24,9 @@ import numpy as np
 import pytest
 
 from xtrax.export import onnx as onnx_mod
-from xtrax.export.compile import CompileError, compile_for_target
+from xtrax.export.compile import CompileError, CompileResult, compile_for_target
 from xtrax.export.onnx import LeafParityResult, convert_to_onnx, verify_onnx_parity
-from xtrax.export.parity import compare
+from xtrax.export.parity import ParityResult, compare
 from xtrax.export.pipeline import export_pipeline
 from xtrax.export.safety import (
     UnsupportedOperationError,
@@ -152,6 +152,43 @@ class TestWithoutToolchain:
         params = inspect.signature(convert_to_onnx).parameters
         assert params["model_name"].default == "xtrax_export"
         assert params["embed_external_data"].default is False
+
+    def test_pipeline_forwards_model_name_and_embed_external_data(self, monkeypatch, tmp_path):
+        """export_pipeline must pass both kwargs through. Defaults would hide a drop."""
+        captured: dict[str, object] = {}
+        out = tmp_path / "forwarded.onnx"
+        out.write_bytes(b"")
+
+        def fake_convert(_callable, _abstract_inputs, target, **kwargs):
+            captured.update(kwargs)
+            compiled = CompileResult(
+                target=target,
+                path=out,
+                size_bytes=0,
+                spirv_bytes=None,
+                downgraded_stablehlo=False,
+                stderr="",
+            )
+            return compiled, onnx_mod.OnnxDtypeCensus()
+
+        monkeypatch.setattr("xtrax.export.pipeline.convert_to_onnx", fake_convert)
+        monkeypatch.setattr(
+            "xtrax.export.pipeline.verify_onnx_parity",
+            lambda *_a, **_k: ParityResult(True, 0.0, 0.0, 0.0, (), ()),
+        )
+        xs = np.zeros((4, 3), np.float32)
+        export_pipeline(
+            jnp.tanh,
+            _vmap_plan(4),
+            (jax.ShapeDtypeStruct(xs.shape, xs.dtype),),
+            (xs,),
+            targets=(ONNX,),
+            reference_fn=lambda inputs: np.tanh(inputs[0]),
+            model_name="caller-graph",
+            embed_external_data=True,
+        )
+        assert captured["model_name"] == "caller-graph"
+        assert captured["embed_external_data"] is True
 
     def test_rng_audit_descends_into_function_subgraphs_and_censuses_domains(self):
         """A RandomUniform nested in a function's Loop body is not on function.node."""
@@ -536,6 +573,164 @@ class TestToolchainBehaviour:
         compiled, _ = convert_to_onnx(jnp.cumsum, (jax.ShapeDtypeStruct(x.shape, x.dtype),), ONNX)
         result = verify_onnx_parity(np.cumsum(x), compiled.path, (x,))
         assert result.passed, result.summary()
+
+    def test_graph_name_is_assigned_after_jax2onnx(self, monkeypatch, tmp_path):
+        """``model.graph.name = model_name`` is load-bearing.
+
+        jax2onnx is also told the name. This forces it to leave a different
+        name, so the assertion fails if the explicit assignment is removed.
+        """
+        import jax2onnx
+        import onnx
+
+        real = jax2onnx.to_onnx
+
+        def renamed(*args, **kwargs):
+            model = real(*args, **kwargs)
+            model.graph.name = "jax2onnx-would-keep-this"
+            return model
+
+        monkeypatch.setattr(jax2onnx, "to_onnx", renamed)
+        out = tmp_path / "named.onnx"
+        convert_to_onnx(
+            jnp.tanh,
+            (jax.ShapeDtypeStruct((4,), jnp.float32),),
+            ONNX,
+            out_path=out,
+            model_name="per_graph",
+        )
+        assert onnx.load(str(out)).graph.name == "per_graph"
+
+    def test_embed_inlines_external_tensors_in_loop_and_function(self, tmp_path):
+        """External bytes in the main graph, a Loop body, and a function are embedded.
+
+        The spill-limit test never builds an external tensor, so a no-op
+        ``_inline_external_tensors`` still passes it. This model starts external.
+        """
+        import onnx
+        from onnx import AttributeProto, TensorProto, external_data_helper, helper, numpy_helper
+
+        data_name = "weights.data"
+        arrays = {
+            "main_w": np.arange(8, dtype=np.float32),
+            "loop_w": (np.arange(8, dtype=np.int32) + 10),
+            "fn_w": (np.arange(4, dtype=np.float32) + np.float32(0.5)),
+        }
+        tensors = {}
+        expected: dict[str, bytes] = {}
+        blob = bytearray()
+        for name, array in arrays.items():
+            tensor = numpy_helper.from_array(array, name=name)
+            raw = bytes(tensor.raw_data)
+            external_data_helper.set_external_data(
+                tensor, data_name, offset=len(blob), length=len(raw)
+            )
+            tensor.ClearField("raw_data")
+            tensors[name] = tensor
+            expected[name] = raw
+            blob.extend(raw)
+        (tmp_path / data_name).write_bytes(blob)
+
+        loop_body = helper.make_graph(
+            [helper.make_node("Identity", ["carry_in"], ["carry_out"])],
+            "loop_body",
+            [
+                helper.make_tensor_value_info("iter", TensorProto.INT64, []),
+                helper.make_tensor_value_info("cond_in", TensorProto.BOOL, []),
+                helper.make_tensor_value_info("carry_in", TensorProto.FLOAT, [8]),
+            ],
+            [
+                helper.make_tensor_value_info("cond_out", TensorProto.BOOL, []),
+                helper.make_tensor_value_info("carry_out", TensorProto.FLOAT, [8]),
+            ],
+            initializer=[tensors["loop_w"]],
+        )
+        loop = helper.make_node("Loop", ["trip", "cond", "carry"], ["loop_out"], body=loop_body)
+        graph = helper.make_graph(
+            [
+                loop,
+                helper.make_node("Identity", ["x"], ["y"]),
+            ],
+            "g",
+            [
+                helper.make_tensor_value_info("x", TensorProto.FLOAT, [8]),
+                helper.make_tensor_value_info("trip", TensorProto.INT64, []),
+                helper.make_tensor_value_info("cond", TensorProto.BOOL, []),
+                helper.make_tensor_value_info("carry", TensorProto.FLOAT, [8]),
+            ],
+            [
+                helper.make_tensor_value_info("y", TensorProto.FLOAT, [8]),
+                helper.make_tensor_value_info("loop_out", TensorProto.FLOAT, [8]),
+            ],
+            initializer=[tensors["main_w"]],
+        )
+        constant = helper.make_node("Constant", [], ["c"])
+        value = constant.attribute.add()
+        value.name = "value"
+        value.type = AttributeProto.TENSOR
+        value.t.CopyFrom(tensors["fn_w"])
+        function = helper.make_function(
+            "com.example",
+            "Fn",
+            [],
+            ["c"],
+            [constant],
+            [helper.make_opsetid("", 18)],
+        )
+        model = helper.make_model(
+            graph, functions=[function], opset_imports=[helper.make_opsetid("", 18)]
+        )
+        out = tmp_path / "embedded.onnx"
+        onnx_mod._write_model(model, out, embed_external_data=True)
+        assert not (tmp_path / "embedded.onnx.data").exists()
+        loaded = onnx.load(str(out), load_external_data=False)
+        seen: dict[str, bytes] = {}
+        for tensor in onnx_mod._model_tensors(loaded):
+            assert tensor.data_location != onnx.TensorProto.EXTERNAL
+            assert len(tensor.external_data) == 0
+            seen[tensor.name] = bytes(tensor.raw_data)
+        assert seen == expected
+
+    def test_rng_and_unknown_domain_audit_a_real_function_body(self):
+        """A Loop inside a real FunctionProto is walked, not just a duck-typed stand-in."""
+        import onnx
+        from onnx import TensorProto, helper
+
+        draw = helper.make_node("RandomUniform", [], ["r"], shape=[2], name="draw")
+        custom = helper.make_node("CustomOp", ["r"], ["s"], name="custom", domain="com.example")
+        body = helper.make_graph(
+            [draw, custom],
+            "loop_body",
+            [
+                helper.make_tensor_value_info("iter", TensorProto.INT64, []),
+                helper.make_tensor_value_info("cond_in", TensorProto.BOOL, []),
+            ],
+            [
+                helper.make_tensor_value_info("cond_out", TensorProto.BOOL, []),
+                helper.make_tensor_value_info("scan_out", TensorProto.FLOAT, [2]),
+            ],
+        )
+        loop = helper.make_node("Loop", ["trip", "cond"], ["scan_out"], body=body, name="loop")
+        function = helper.make_function(
+            "",
+            "draws",
+            ["trip", "cond"],
+            ["scan_out"],
+            [loop],
+            [helper.make_opsetid("", 18)],
+        )
+        graph = helper.make_graph(
+            [helper.make_node("Identity", ["x"], ["y"], name="top")],
+            "g",
+            [helper.make_tensor_value_info("x", TensorProto.FLOAT, [2])],
+            [helper.make_tensor_value_info("y", TensorProto.FLOAT, [2])],
+        )
+        model = helper.make_model(
+            graph, functions=[function], opset_imports=[helper.make_opsetid("", 18)]
+        )
+        assert isinstance(model, onnx.ModelProto)
+        assert onnx_mod.find_onnx_rng_ops(model) == ["RandomUniform:draw"]
+        assert onnx_mod.onnx_unknown_domain_census(model) == {"com.example": 1}
 
     def test_embedding_drops_external_data_and_keeps_the_model_name(self, monkeypatch, tmp_path):
         """The spill path (limit forced to 0) must not leave external refs when embedding."""

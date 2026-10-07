@@ -218,6 +218,13 @@ def _measure_while_trips(fn: Callable[..., Any], args: tuple[Any, ...]) -> list[
     order the loops are entered (outermost first, matching :func:`loop_bodies`).
     Later invocations of the same pair -- a ``while`` inside a ``scan`` -- are
     the same loop, not a new one.
+
+    The count replaces ``jax.lax.while_loop`` on the ``jax.lax`` module for the
+    duration of the call. A name bound earlier (``from jax.lax import
+    while_loop``) still calls the original and is not counted. The replacement
+    is process-global and not thread-safe: another thread that calls
+    ``jax.lax.while_loop`` during the measurement runs the wrapper, or misses
+    the loop if the original is restored underneath it.
     """
     import jax
 
