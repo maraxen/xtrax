@@ -7,11 +7,12 @@
 Convert a dense model to sparse (BCOO) format at inference time:
 
 ```python
-from xtrax.sparse import sparsify_model, make_sparse_forward_fn  # verify: src/xtrax/sparse/inference.py
-from xtrax.sparse.policy import SparsePolicy
+from xtrax.sparse import SparseConfig, SparsePolicy, make_sparse_forward_fn, sparsify_model
 import equinox as eqx
 
-policy = SparsePolicy(target_sparsity=0.9)
+policy = SparsePolicy(
+    config=SparseConfig(nse_budget=8, update_schedule=lambda step: True),
+)
 
 # BEFORE jit: sparsify the model  # verify: src/xtrax/sparse/inference.py:44-55
 sparse_model = sparsify_model(model, policy)
@@ -39,31 +40,36 @@ Reason: BCOO structure is non-static, must be created on host.
 Initialize distributed context:
 
 ```python
-from xtrax import init_dist, is_distributed, LogicalMesh, with_manual_axes
+from xtrax.distributed import (
+    get_device_mesh,
+    get_hardware_mesh_profile,
+    init_dist,
+    is_distributed,
+)
 
-init_dist(backend="xmap")  # or "pjit"
+# Keyword-only. None discovers SLURM, then localhost and one process.
+init_dist(coordinator_address=None, num_processes=None, process_id=0)
 
 if is_distributed():
-    mesh = LogicalMesh(shape=(2, 4))  # 2×4 device mesh
-    with with_manual_axes(mesh):
-        # Distributed training code
-        pass
+    profile = get_hardware_mesh_profile()
+    mesh = get_device_mesh(
+        shape=profile["recommended_shape"],
+        axis_names=profile["recommended_axis_names"],
+    )
 ```
 
-Verify: `src/xtrax/distributed/` (full reference deferred to source)
+Verify: `src/xtrax/distributed/init.py`, `src/xtrax/distributed/sharding.py`
 
 #### Checkpoint: Save/Load Training State
 
 Persist training state for resumption:
 
 ```python
-from xtrax import save_checkpoint, load_checkpoint
+from xtrax.checkpoint import get_checkpoint_manager, load_checkpoint, save_checkpoint
 
-# Save
-save_checkpoint(state, directory="/path/to/ckpt")
-
-# Load
-state = load_checkpoint(directory="/path/to/ckpt")
+manager = get_checkpoint_manager("/path/to/ckpt")
+save_checkpoint(manager, state, step=int(state.step))
+state = load_checkpoint(manager, state_template=state)
 ```
 
-Verify: `src/xtrax/checkpoint/` (see orbax docs for full checkpoint manager API)
+Verify: `src/xtrax/checkpoint/orbax.py`
