@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import pytest
 
 from xtrax.profiling import hlo_text_for, load_trace_events
-from xtrax.profiling.trace import parse_scopes, scope_map_from_hlo_text
+from xtrax.profiling.trace import parse_hlo_op_times, parse_scopes, scope_map_from_hlo_text
 
 
 def test_load_trace_events_concatenates_sorted_gzip_traces(tmp_path: Path):
@@ -53,8 +53,6 @@ def test_hlo_text_for_jax_jit_and_filter_jit():
     def step(y):
         return y + 1
 
-    compiled = step.lower(x).compile()
-    assert not hasattr(compiled, "as_text")
     eqx_text = hlo_text_for(step, x)
     assert "HloModule" in eqx_text
 
@@ -110,40 +108,134 @@ ENTRY %main.1 (x: f32[4]) -> (s32[], f32[4]) {
     assert scopes["inner_a"][1] == 1
 
 
-def test_fusion_instruction_uses_own_op_name_when_body_has_none():
-    fusion = (
-        "  ROOT %add_add_fusion.3 = f32[4] fusion(%x), kind=kLoop, "
-        'calls=%fused_add, metadata={op_name="jit(step)/inner_b/add"}'
-    )
-    hlo = f"""
-%fused_add (p: f32[4]) -> f32[4] {{
-  ROOT %bitcast.1 = f32[4] bitcast(%p)
-}}
+def test_fusion_own_op_name_when_callee_computation_is_absent():
+    """Own ``op_name`` applies when the callee was never split out.
 
-ENTRY %main.1 (x: f32[4]) -> (s32[], f32[4]) {{
+    An inline fused body closes the parent at the inner ``}``, so the callee
+    is absent from ``computations`` and the fusion instruction is not an
+    entry in that split. The unlabeled body contributes no votes.
+    """
+    hlo = """
+ENTRY %main.1 (x: f32[4]) -> f32[4] {
+  %body (p: f32[4]) -> f32[4] {
+    ROOT %bitcast.1 = f32[4] bitcast(%p)
+  }
   %x = f32[4] parameter(0)
-{fusion}
-}}
+  ROOT %fuse.1 = f32[4] fusion(%x), kind=kLoop, calls=%body, metadata={op_name="inner_b/add"}
+}
 """
     scope_map = scope_map_from_hlo_text(hlo, frozenset({"inner_b"}))
-    assert scope_map["add_add_fusion.3"] == "inner_b"
+    assert scope_map["fuse.1"] == "inner_b"
+
+
+def test_fusion_body_majority_label():
+    """Two ``scope_a`` votes and one ``scope_b`` vote resolve to ``scope_a``."""
+    hlo = """
+%fused_add (p: f32[4]) -> f32[4] {
+  %add.1 = f32[4] add(%p, %p), metadata={op_name="scope_a/add"}
+  %add.2 = f32[4] add(%p, %p), metadata={op_name="scope_a/mul"}
+  ROOT %add.3 = f32[4] add(%p, %p), metadata={op_name="scope_b/add"}
+}
+
+ENTRY %main.1 (x: f32[4]) -> f32[4] {
+  %x = f32[4] parameter(0)
+  ROOT %add_add_fusion.3 = f32[4] fusion(%x), kind=kLoop, calls=%fused_add
+}
+"""
+    scope_map = scope_map_from_hlo_text(hlo, frozenset({"scope_a", "scope_b"}))
+    assert scope_map["add_add_fusion.3"] == "scope_a"
+    assert scope_map["fused_add"] == "scope_a"
+
+
+def test_fusion_body_tie_keeps_earliest_inserted_label():
+    """A three-way tie keeps the earliest label, ``scope_m``.
+
+    ``scope_a`` is the lexicographic minimum and ``scope_z`` the maximum,
+    so either name-based tie break misses ``scope_m``.
+    """
+    hlo = """
+%fused_tie (p: f32[4]) -> f32[4] {
+  %m.1 = f32[4] add(%p, %p), metadata={op_name="scope_m/add"}
+  %a.1 = f32[4] add(%p, %p), metadata={op_name="scope_a/add"}
+  ROOT %z.1 = f32[4] add(%p, %p), metadata={op_name="scope_z/add"}
+}
+
+ENTRY %main.1 (x: f32[4]) -> f32[4] {
+  %x = f32[4] parameter(0)
+  ROOT %tie_fusion.1 = f32[4] fusion(%x), kind=kLoop, calls=%fused_tie
+}
+"""
+    known = frozenset({"scope_m", "scope_a", "scope_z"})
+    scope_map = scope_map_from_hlo_text(hlo, known)
+    assert scope_map["tie_fusion.1"] == "scope_m"
+    assert scope_map["fused_tie"] == "scope_m"
+
+    inline = """
+ENTRY %main.1 (x: f32[4]) -> f32[4] {
+  %fused_tie (p: f32[4]) -> f32[4] {
+    %m.1 = f32[4] add(%p, %p), metadata={op_name="scope_m/add"}
+    %a.1 = f32[4] add(%p, %p), metadata={op_name="scope_a/add"}
+    ROOT %z.1 = f32[4] add(%p, %p), metadata={op_name="scope_z/add"}
+  }
+  %x = f32[4] parameter(0)
+  ROOT %tie_fusion.2 = f32[4] fusion(%x), kind=kLoop, calls=%fused_tie
+}
+"""
+    inline_map = scope_map_from_hlo_text(inline, known)
+    assert inline_map["tie_fusion.2"] == "scope_m"
+    assert inline_map["fused_tie"] == "scope_m"
+
+
+def test_entry_tuple_return_instruction_resolves():
+    """An ENTRY instruction whose return type is a tuple still maps."""
+    hlo = """
+ENTRY %main.1 (x: f32[4]) -> (s32[], f32[4]) {
+  %x = f32[4] parameter(0)
+  ROOT %add.1 = f32[4] add(%x, %x), metadata={op_name="inner_a/add"}
+}
+"""
+    scope_map = scope_map_from_hlo_text(hlo, frozenset({"inner_a"}))
+    assert scope_map["add.1"] == "inner_a"
+
+
+def test_fusion_uses_block_votes_when_callee_is_absent():
+    """Inline fused bodies are invisible to computation splitting.
+
+    Brace-stack votes still name the callee. Two ``scope_a`` instructions
+    and one ``scope_b`` instruction both win for the fusion and the block.
+    """
+    hlo = """
+ENTRY %main.1 (x: f32[4]) -> f32[4] {
+  %fused_add (p: f32[4]) -> f32[4] {
+    %add.1 = f32[4] add(%p, %p), metadata={op_name="scope_a/add"}
+    %add.2 = f32[4] add(%p, %p), metadata={op_name="scope_a/mul"}
+    ROOT %add.3 = f32[4] add(%p, %p), metadata={op_name="scope_b/add"}
+  }
+  %x = f32[4] parameter(0)
+  ROOT %loop_fusion.1 = f32[4] fusion(%x), kind=kLoop, calls=%fused_add
+}
+"""
+    scope_map = scope_map_from_hlo_text(hlo, frozenset({"scope_a", "scope_b"}))
+    assert scope_map["loop_fusion.1"] == "scope_a"
+    assert scope_map["fused_add"] == "scope_a"
 
 
 def test_cpu_profiler_attributes_named_scopes(tmp_path: Path):
-    """End-to-end: a tiny filter_jit step under jax.profiler.trace on CPU.
+    """The traced fusion thunk takes the fused body's majority scope.
 
-    Executed events name the fusion instruction. Before fusion-to-scope
-    attribution, ``parse_scopes`` is empty.
+    Three ``inner_a`` ops and a trailing ``inner_b`` root fuse into one
+    thunk. That thunk's own ``op_name`` is the root (``inner_b``); the
+    body's majority is ``inner_a``.
     """
 
     @eqx.filter_jit
     def step(x):
-        with jax.named_scope("outer"):
+        with jax.named_scope("inner_a"):
             y = x + x
-            with jax.named_scope("inner_a"):
-                y = y * y
-            with jax.named_scope("inner_b"):
-                y = jnp.sin(y) + y
+            y = y * y
+            y = jnp.sin(y)
+        with jax.named_scope("inner_b"):
+            y = y + y
         return y
 
     x = jnp.ones((8,))
@@ -152,10 +244,14 @@ def test_cpu_profiler_attributes_named_scopes(tmp_path: Path):
     with jax.profiler.trace(str(tmp_path), create_perfetto_trace=True):
         jax.block_until_ready(step(x))
     events = load_trace_events(tmp_path)
-    known = frozenset({"outer", "inner_a", "inner_b"})
-    scopes = parse_scopes(events, scope_map_from_hlo_text(hlo, known))
-    assert scopes
-    assert set(scopes) <= known
+    known = frozenset({"inner_a", "inner_b"})
+    scope_map = scope_map_from_hlo_text(hlo, known)
+    fusion_ops = [op for op in parse_hlo_op_times(events) if "fusion" in op]
+    assert fusion_ops
+    for op in fusion_ops:
+        assert op in scope_map
+        assert scope_map[op] == "inner_a"
+    assert set(parse_scopes(events, scope_map)) == {"inner_a"}
 
 
 def _write_trace(path: Path, events: list[dict]) -> None:
