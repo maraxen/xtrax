@@ -17,8 +17,6 @@ the same constructor aminx uses for ``RunSpec`` sampling seeds, so a later
 wiring can pass ``RunSpec.seed`` through unchanged.
 """
 
-from __future__ import annotations
-
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
