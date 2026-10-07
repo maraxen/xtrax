@@ -378,6 +378,23 @@ def test_hand_built_negative_control_is_refused() -> None:
         NegativeControl("x", True, 0.0, 1.0, 100, 0.05)
 
 
+def test_lane_refuses_a_control_with_a_forged_token() -> None:
+    import copy
+
+    fair = _fair_draws()
+    probs = _probs()
+
+    def sampler(knobs: dict[str, int]) -> np.ndarray:
+        if knobs["bias"] == 0:
+            return fair
+        return np.zeros(fair.shape[0], dtype=np.int64)
+
+    forged = copy.copy(require_negative_control(sampler, probs, {"bias": 0}, "bias", 1))
+    object.__setattr__(forged, "_token", object())
+    with pytest.raises(TypeError, match="issued only by require_negative_control"):
+        distributional_lane(fair, probs, negative_control=forged)
+
+
 def test_distributional_lane_requires_control_n_and_alpha_to_match() -> None:
     fair = _fair_draws()
     probs = _probs()
