@@ -1,4 +1,5 @@
 import ast
+import importlib.util
 from pathlib import Path
 
 import jax
@@ -12,10 +13,16 @@ from xtrax.data.pipeline import (
     create_distributed_pipeline,
 )
 
+requires_grain = pytest.mark.skipif(
+    importlib.util.find_spec("grain") is None,
+    reason="needs the optional grain dependency (xtrax[data])",
+)
+
 
 class TestCreateDistributedPipeline:
     """Tests for create_distributed_pipeline."""
 
+    @requires_grain
     def test_create_distributed_pipeline_accepts_valid_divisible_batch(self):
         """create_distributed_pipeline accepts divisible global_batch_size."""
         dataset = [1, 2, 3, 4, 5, 6]
@@ -41,6 +48,7 @@ class TestCreateDistributedPipeline:
                 seed=42,
             )
 
+    @requires_grain
     def test_create_distributed_pipeline_accepts_seed_param(self):
         """create_distributed_pipeline accepts and uses seed parameter."""
         dataset = [1, 2, 3, 4]
@@ -64,6 +72,7 @@ def _ints(n: int) -> list[np.int32]:
 class TestGrainPipeline:
     """Grain shuffle / pad / batch / shard / prefetch behaviour."""
 
+    @requires_grain
     def test_in_memory_source_batches_with_np_stack(self):
         """A small in-memory source comes out as stacked batches, not the raw list."""
         source = _ints(6)
@@ -80,6 +89,7 @@ class TestGrainPipeline:
         np.testing.assert_array_equal(batches[0], np.array([0, 1, 2], dtype=np.int32))
         np.testing.assert_array_equal(batches[1], np.array([3, 4, 5], dtype=np.int32))
 
+    @requires_grain
     def test_drop_remainder_controls_the_partial_batch(self):
         """Seven examples, batch size 3: the default drops the tail of one."""
 
@@ -105,6 +115,7 @@ class TestGrainPipeline:
         assert _flat(default) == list(range(6))
         np.testing.assert_array_equal(kept[-1], np.array([6], dtype=np.int32))
 
+    @requires_grain
     def test_shuffle_is_seeded(self):
         """The same seed repeats; a different seed does not."""
         kwargs = {"batch_size": 4, "num_epochs": 1, "shuffle": True}
@@ -115,6 +126,7 @@ class TestGrainPipeline:
         assert first != other
         assert sorted(first) == list(range(16))
 
+    @requires_grain
     def test_pad_fn_fixes_the_batch_shape(self):
         """Caller-supplied pad maps variable lengths onto one shape before batch."""
 
@@ -136,6 +148,7 @@ class TestGrainPipeline:
         )
         assert [batch.shape for batch in batches] == [(2, 4), (2, 4)]
 
+    @requires_grain
     def test_shard_options_split_the_source(self):
         """ShardOptions takes a consecutive even split before batching."""
         from grain.sharding import ShardOptions
@@ -162,6 +175,7 @@ class TestGrainPipeline:
         assert shard(0, drop_remainder=False, n=7) == [0, 1, 2, 3]
         assert shard(1, drop_remainder=False, n=7) == [4, 5, 6]
 
+    @requires_grain
     def test_create_distributed_pipeline_shards_by_process(self, monkeypatch):
         """Process index/count select the shard; the batch is per-device."""
         monkeypatch.setattr(jax, "process_index", lambda: 1)
@@ -179,6 +193,7 @@ class TestGrainPipeline:
         assert [batch.shape for batch in batches] == [(2,), (2,)]
         assert _flat(batches) == [4, 5, 6, 7]
 
+    @requires_grain
     def test_shard_by_process_false_yields_the_full_source(self, monkeypatch):
         """shard_by_process=False must not consult the JAX process count."""
         monkeypatch.setattr(jax, "process_index", lambda: 1)
@@ -195,6 +210,7 @@ class TestGrainPipeline:
         )
         assert got == list(range(8))
 
+    @requires_grain
     def test_repeat_none_yields_past_one_epoch(self):
         """num_epochs=None keeps yielding after the source is exhausted once."""
         pipeline = build_input_pipeline(
@@ -213,6 +229,7 @@ class TestGrainPipeline:
         np.testing.assert_array_equal(first, np.array([0, 1], dtype=np.int32))
         np.testing.assert_array_equal(second, np.array([0, 1], dtype=np.int32))
 
+    @requires_grain
     def test_device_put_moves_batches(self):
         """device_put is optional and places batches on the given device."""
         pipeline = build_input_pipeline(
@@ -231,6 +248,7 @@ class TestGrainPipeline:
         assert isinstance(batch, jax.Array)
         np.testing.assert_array_equal(np.asarray(batch), np.array([0, 1], dtype=np.int32))
 
+    @requires_grain
     def test_mp_prefetch_marks_unparsed_absl_flags(self):
         """First batch of mp_prefetch must not raise UnparsedFlagAccessError.
 

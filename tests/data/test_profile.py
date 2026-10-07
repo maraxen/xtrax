@@ -1,5 +1,6 @@
 """profile_input_pipeline throughput, wait fraction, and built-in controls."""
 
+import importlib.util
 import time
 
 import numpy as np
@@ -8,12 +9,18 @@ import pytest
 from xtrax.data.profile import InputPipelineControlError, profile_input_pipeline
 from xtrax.profiling.record import ProbeRecord
 
+requires_grain = pytest.mark.skipif(
+    importlib.util.find_spec("grain") is None,
+    reason="needs the optional grain dependency (xtrax[data])",
+)
+
 
 def _batches():
     return (np.ones(4, dtype=np.float32) for _ in range(8))
 
 
 class TestProfileInputPipeline:
+    @requires_grain
     def test_reports_throughput_wait_and_passing_controls(self):
         """Controls: slow source stalls, instant source does not."""
         result = profile_input_pipeline(_batches, step_s=0.005, n_steps=3)
@@ -39,6 +46,7 @@ class TestProfileInputPipeline:
             "positive_control",
         ]
 
+    @requires_grain
     def test_slow_source_wait_fraction_and_throughput(self):
         """A 30 ms batch read stalls the step and is counted in examples/s."""
         batch_len = 4
@@ -66,6 +74,7 @@ class TestProfileInputPipeline:
         ratio = result.examples_per_s / expected
         assert 0.4 < ratio < 2.5
 
+    @requires_grain
     def test_instant_source_barely_waits(self):
         """An instant source spends almost none of the step blocked on data."""
 
@@ -75,6 +84,7 @@ class TestProfileInputPipeline:
         result = profile_input_pipeline(factory, step_s=0.05, n_steps=4, warmup=0)
         assert result.wait_fraction < 0.1
 
+    @requires_grain
     def test_warmup_steps_are_excluded(self):
         """The first warmup batch is outside the timed window."""
         n_steps = 4
@@ -96,6 +106,7 @@ class TestProfileInputPipeline:
         # the 0.30 s warmup read drops that below ~40.
         assert result.examples_per_s > 50
 
+    @requires_grain
     def test_pending_device_compute_counts_as_wait(self):
         """A device array that is still running is part of the wait, including on CPU."""
         import jax
@@ -173,6 +184,7 @@ class TestProfileInputPipeline:
         assert result.controls.positive_passed is False
         assert result.controls_passed is False
 
+    @requires_grain
     def test_iterable_instance_is_measured(self):
         """A concrete iterable, not only a factory, is accepted."""
         result = profile_input_pipeline(

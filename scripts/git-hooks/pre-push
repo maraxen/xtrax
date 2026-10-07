@@ -28,9 +28,9 @@ cd "$REPO_ROOT"
 # from the venv. Re-install them afterwards if your follow-up work needs them.
 # Cold-cache cost is real (~919MB / minutes on slow links); warm runs are
 # sub-second. Duration is echoed below so a first-ever sync is visible.
-echo "[pre-push] uv sync --frozen --extra dev --extra eda --extra io (CI parity)"
+echo "[pre-push] uv sync --frozen --extra dev --extra eda --extra io --extra data (CI parity)"
 SYNC_START=$SECONDS
-uv sync --frozen --extra dev --extra eda --extra io
+uv sync --frozen --extra dev --extra eda --extra io --extra data
 echo "[pre-push] env sync took $((SECONDS - SYNC_START))s"
 
 echo "[pre-push] ruff check ."

@@ -1,9 +1,16 @@
+import importlib.util
+
 import numpy as np
 import pytest
 
 import xtrax.data.module as _mod
 from xtrax.data.module import DataModule, _mark_dist_initialized
 from xtrax.data.pipeline import build_input_pipeline
+
+requires_grain = pytest.mark.skipif(
+    importlib.util.find_spec("grain") is None,
+    reason="needs the optional grain dependency (xtrax[data])",
+)
 
 
 class TestDataModule:
@@ -95,6 +102,7 @@ class TestDataModuleGrainPipeline:
         yield
         _mod._dist_initialized = False
 
+    @requires_grain
     def test_train_iter_batches_and_eval_iter_does_not_shuffle(self):
         """Train shuffles with the seed; eval keeps source order."""
         source = [np.int32(i) for i in range(8)]
@@ -114,6 +122,7 @@ class TestDataModuleGrainPipeline:
         again = [int(x) for batch in module.train_iter() for x in np.asarray(batch).ravel()]
         assert again == train
 
+    @requires_grain
     def test_pad_fn_is_applied(self):
         """pad_fn runs before batching so every batch has one shape."""
 
@@ -147,6 +156,7 @@ class TestDataModuleGrainPipeline:
         with pytest.raises(RuntimeError, match="distributed=True requires init_dist"):
             list(module.train_iter())
 
+    @requires_grain
     def test_distributed_grain_shards_by_process(self, monkeypatch):
         """distributed=True shards the source with the JAX process index."""
         import jax
@@ -165,6 +175,7 @@ class TestDataModuleGrainPipeline:
         got = [int(x) for batch in module.eval_iter() for x in np.asarray(batch).ravel()]
         assert got == [0, 1, 2, 3]
 
+    @requires_grain
     def test_distributed_false_yields_the_full_source(self, monkeypatch):
         """distributed=False keeps every example even when this process is one of two."""
         import jax
@@ -182,6 +193,7 @@ class TestDataModuleGrainPipeline:
         got = [int(x) for batch in module.eval_iter() for x in np.asarray(batch).ravel()]
         assert got == list(range(8))
 
+    @requires_grain
     def test_train_iter_uses_the_module_seed(self):
         """Train order matches build_input_pipeline(seed=7), not a constant seed."""
         source = [np.int32(i) for i in range(16)]
