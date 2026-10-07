@@ -269,6 +269,15 @@ Choose your task:
 7. **Infer AxisSpecs/BundleSchema from a typed function signature**  
    → Read `references/inference.md`
 
+8. **Pad variable-length inputs to one compile per bucket rung**  
+   → Read `references/length-bucketing.md`
+
+9. **Replace local copies in an existing domain library**  
+   → Read `references/adoption.md`
+
+10. **Export one callable to ONNX (no BatchPlan), or read parity and divergence rings**  
+   → Read `references/onnx-standalone.md`
+
 ---
 
 ## TIER-2: Deep Reference
@@ -285,6 +294,9 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | Sparse/Distributed/Checkpoint | `references/sparse-distributed.md` | 5% | Pointer pattern for structured pruning, multi-device training, checkpointing |
 | Signature Inference | `references/inference.md` | — | xtrax.inference: derive AxisSpecs + BundleSchema from a typed function |
 | Export (AOT) | `references/export.md` | — | xtrax.export: export_pipeline, Target/VerificationLevel, native + wasm32 + SPIR-V codegen, dtype envelope, load_hf_weights, materialize stripping, multi-axis composition |
+| Length bucketing | `references/length-bucketing.md` | — | AxisSpec.bucket_boundaries, Bucket, host select_bucket/bucketize, BUCKET_LADDER, one compile per rung |
+| Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives |
+| Standalone ONNX | `references/onnx-standalone.md` | — | convert_to_onnx vs jax2onnx, find_onnx_rng_ops, verify_native_parity, rings, divergence |
 
 Use the Workflow Index above to pick which file(s) a given task needs — most tasks need one, some (e.g. tiled inference) need two. Don't load a reference file speculatively; load it when the task actually reaches that layer.
 
