@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Grain input pipelines** (#2085): `xtrax.data.build_input_pipeline` builds a
+  domain-free Grain pipeline (process shard, shuffle, repeat, optional
+  caller-supplied fixed-length pad, `numpy.stack` batch, threaded prefetch,
+  optional `mp_prefetch`, optional `device_put`). `create_distributed_pipeline`
+  shards that pipeline with `ShardByJaxProcess` (`jax.process_index` /
+  `jax.process_count`) instead of returning the dataset unchanged, and batches
+  at `global_batch_size // num_devices`. `DataModule(use_grain_pipeline=True)`
+  yields from the same builder (train shuffles, eval does not). Read threads
+  default to 1 and multiprocessing workers default to 0 — on cheap reads, 8
+  threads were slower than 1 (22.6k vs 2.1k examples/s). `mp_prefetch` marks
+  absl flags parsed so the first batch does not raise `UnparsedFlagAccessError`
+  outside an absl app. Grain stays an optional import (`xtrax[data]`);
+  importing `xtrax.data` does not import it.
+
+- **Input-pipeline stall profiler** (#2086): `xtrax.data.profile_input_pipeline`
+  reports `examples_per_s` and `wait_fraction` (time a simulated train step
+  spent waiting on data, over the step's wall time). It runs a slow-source
+  negative control (1 read thread, prefetch 1; `wait_fraction` must exceed
+  0.5) and an instant-source positive control (`wait_fraction` under 0.05),
+  records whether those bounds held, and can raise `InputPipelineControlError`
+  when they did not. Each measurement is emitted as an
+  `xtrax.profiling.ProbeRecord`.
+
 ## [0.4.0a12] - 2026-10-01
 
 ### Added
