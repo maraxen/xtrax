@@ -797,6 +797,13 @@ _ACCEPTED = [
     "select_bucket = print\n"
     "select_bucket(not_a_real_parameter=1)\n",
     "from xtrax.training.trainer import Trainer\nTrainer(...)\n",
+    "from xtrax.tiling.bucket import select_bucket\n"
+    "def select_bucket(x): ...\n"
+    "select_bucket(x=1)\n",
+    "from xtrax.tiling.plan import AxisSpec\n"
+    "class AxisSpec:\n"
+    "    def __init__(self, x): ...\n"
+    "AxisSpec(x=1)\n",
 ]
 
 _ACCEPTED_IDS = [
@@ -810,6 +817,8 @@ _ACCEPTED_IDS = [
     "kwargs-unpack-skipped",
     "rebound-name-not-checked",
     "ellipsis-partial-ok",
+    "def-shadows-import",
+    "class-shadows-import",
 ]
 
 
