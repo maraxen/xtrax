@@ -70,11 +70,8 @@ class TestGetSeedTrialCountsRealBathos:
     """get_seed_trial_counts against real bathos.campaigns count functions + real duckdb."""
 
     @pytest.fixture
-    def db(self, tmp_path):
-        # A ":memory:" path is not a true in-memory database here: duckdb writes
-        # a ':memory:.ses' file into the process cwd. A file under tmp_path stays
-        # out of the working tree.
-        conn = duckdb.connect(str(tmp_path / "runs.duckdb"))
+    def db(self):
+        conn = duckdb.connect(":memory:")
         conn.execute("CREATE TABLE runs (script_sha256 VARCHAR, seed INTEGER, run_id VARCHAR)")
         conn.execute(
             "INSERT INTO runs VALUES "
