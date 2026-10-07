@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`chunked_map` never vmaps an axis of length 1** (#2520). `jax.lax.map(..., batch_size=k)`
+  vmaps each chunk, so `batch_size=1`, a remainder of 1, and a leading axis of length 1
+  emitted a vmap-of-1 (the miscompile aminx #2391 hit on TITAN RTX). Those cases now run
+  unbatched: a sequential `lax.map`, a direct call on the peeled last element, or a direct
+  call when the whole axis has length 1. `ChunkedMapIterator` follows `chunked_map`;
+  `VmapIterator` does the same for a size-1 axis. Values and order are unchanged.
+
 ## [0.4.0a12] - 2026-10-01
 
 ### Added
