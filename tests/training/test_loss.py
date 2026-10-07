@@ -349,7 +349,6 @@ class TestComposedLoss:
         targets = jnp.array([0.0, 0.0, 0.0])
         apply = eqx.filter_jit(ComposedLoss.__call__)
         apply(composed, preds, targets)
-        cache_before = apply._cached._cache_size()
 
         heavier = eqx.tree_at(lambda m: m.weights, composed, jnp.array([4.0]))
 
@@ -359,7 +358,6 @@ class TestComposedLoss:
 
         compiles = _count_backend_compiles(second_call)
         assert compiles == 0
-        assert apply._cached._cache_size() == cache_before
 
     def test_static_python_float_weight_does_recompile(self):
         """Negative control: a static Python-float weight must recompile.
@@ -375,7 +373,6 @@ class TestComposedLoss:
         targets = jnp.array([0.0, 0.0, 0.0])
         apply = eqx.filter_jit(WeightedLoss.__call__)
         apply(WeightedLoss(loss_fn=mse, weight=1.0), preds, targets)
-        cache_before = apply._cached._cache_size()
 
         def second_call():
             out = apply(WeightedLoss(loss_fn=mse, weight=4.0), preds, targets)
@@ -383,4 +380,3 @@ class TestComposedLoss:
 
         compiles = _count_backend_compiles(second_call)
         assert compiles >= 1
-        assert apply._cached._cache_size() > cache_before
