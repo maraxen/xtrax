@@ -253,7 +253,7 @@ def _measure_while_trips(fn: Callable[..., Any], args: tuple[Any, ...]) -> list[
             first[key] = trips
         return result
 
-    jax.lax.while_loop = wrapped
+    jax.lax.while_loop = wrapped  # ty: ignore[invalid-assignment] -- counting shim, same call shape
     try:
         with jax.disable_jit():
             fn(*args)
