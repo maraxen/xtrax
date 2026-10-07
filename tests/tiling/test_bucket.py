@@ -260,3 +260,8 @@ class TestTrimPadAxis:
         assert padded.shape == (2, 4)
         assert padded[0, 3] == -1
         assert padded[1, 3] == -1
+
+    def test_numpy_trim_stays_numpy(self):
+        trimmed = trim_axis(np.arange(6).reshape(2, 3), 2, axis=1)
+        assert isinstance(trimmed, np.ndarray)
+        np.testing.assert_array_equal(trimmed, [[0, 1], [3, 4]])
