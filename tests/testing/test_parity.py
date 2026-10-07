@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.scipy.stats import norm as norm_dist
@@ -30,14 +29,24 @@ from xtrax.testing import (
 _ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_order_from_randn_matches_numpy_stable_argsort() -> None:
-    mask = np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0]])
-    randn = np.array([[0.2, -0.4, 0.1], [0.3, 0.5, -0.7]])
-    eps = 1e-6
-    scores = (mask + eps) * np.abs(randn)
-    got = order_from_randn(mask, randn, eps)
-    np.testing.assert_array_equal(got, np.argsort(scores, axis=-1, kind="stable"))
-    np.testing.assert_array_equal(got, np.asarray(jnp.argsort(jnp.asarray(scores), axis=-1)))
+def test_order_from_randn_eps_breaks_a_masked_unmasked_tie() -> None:
+    # eps=1 ties (mask 1, |randn|=1) with (mask 0, |randn|=2): both scores are 2.
+    # Stable argsort keeps the lower index. Dropping eps, or adding it after
+    # the product, puts the unmasked site first.
+    mask = np.array([1.0, 0.0])
+    randn = np.array([1.0, -2.0])
+    got = order_from_randn(mask, randn, eps=1.0)
+    np.testing.assert_array_equal(got, np.array([0, 1]))
+
+
+def test_order_from_randn_orders_several_unmasked_sites_by_abs_randn() -> None:
+    # Row 0 is three zeros. Ascending eps*|randn| is index 2, 0, 1 (scores
+    # 0.10, 0.25, 0.45). Row 1 scores are 0, 0.20, 0.10. Without eps, or with
+    # eps added after the product, the three zeros stay in index order.
+    mask = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    randn = np.array([[0.5, -0.9, 0.2], [0.0, 0.4, -0.2]])
+    got = order_from_randn(mask, randn, eps=0.5)
+    np.testing.assert_array_equal(got, np.array([[2, 0, 1], [0, 2, 1]]))
 
 
 def test_order_from_randn_breaks_ties_toward_the_lower_index() -> None:
@@ -71,6 +80,10 @@ def test_injected_source_feeds_the_same_arrays_to_both_callables() -> None:
 
     left = source.bind(candidate)(7)
     right = source.bind(reference)(7)
+    other = np.array([3, 1, 2, 0])
+    overridden = source.bind(candidate)(7, order=other)
+    assert overridden[0] == 7
+    np.testing.assert_array_equal(overridden[1], other)
     assert left[0] == right[0] == 7
     names = ("order", "noise", "uniform")
     provided = source.parameters()
@@ -151,6 +164,53 @@ def test_teacher_forced_lane_reverse_direction_catches_order_dependent_bias() ->
     assert any(not row.passed for row in result.positions if row.direction == "reverse")
 
 
+def test_teacher_forced_lane_applies_a_3_cycle_forward_in_both_directions() -> None:
+    cycle = np.array([1, 2, 0])
+    sequence = np.array([0, 1, 2])
+    order = np.array([2, 0, 1])
+    expected_tokens = np.array([1, 2, 0])
+    candidate_logits = np.array([3.0, 0.0, 1.0])
+    oracle_logits = np.array([1.0, 3.0, 0.0])
+    seen: list[np.ndarray] = []
+
+    def candidate(tokens: np.ndarray, position: int, known: np.ndarray) -> np.ndarray:
+        del tokens, position, known
+        return candidate_logits.copy()
+
+    def oracle(tokens: np.ndarray, position: int, known: np.ndarray) -> np.ndarray:
+        del position, known
+        seen.append(np.asarray(tokens).copy())
+        if np.array_equal(tokens, expected_tokens):
+            return oracle_logits.copy()
+        return np.array([9.0, 9.0, 9.0])
+
+    result = teacher_forced_lane(sequence, order, candidate, oracle, alphabet_map=cycle)
+    assert result.passed
+    assert all(row.passed for row in result.positions if row.direction == "forward")
+    assert all(row.passed for row in result.positions if row.direction == "reverse")
+    assert seen
+    for tokens in seen:
+        np.testing.assert_array_equal(tokens, expected_tokens)
+
+
+def test_teacher_forced_lane_scorer_mutation_does_not_corrupt_the_next_step() -> None:
+    def candidate(tokens: np.ndarray, position: int, known: np.ndarray) -> np.ndarray:
+        del tokens, position
+        logits = known.astype(np.float64)
+        known[:] = True
+        return logits
+
+    def oracle(tokens: np.ndarray, position: int, known: np.ndarray) -> np.ndarray:
+        del tokens, position
+        logits = known.astype(np.float64)
+        known[:] = True
+        return logits
+
+    result = teacher_forced_lane(np.array([0, 1]), np.array([0, 1]), candidate, oracle)
+    assert result.passed
+    assert all(row.passed for row in result.positions)
+
+
 def test_teacher_forced_lane_refuses_self_comparison() -> None:
     def score(tokens: np.ndarray, position: int, known: np.ndarray) -> np.ndarray:
         raise AssertionError("scorer should not run")
@@ -216,6 +276,39 @@ def test_collapsed_sampler_exact_tie_is_not_a_failure() -> None:
     assert result.ties[0].disagreed
 
 
+def test_collapsed_sampler_near_tie_uses_the_smaller_margin() -> None:
+    # Candidate margin 0.01, oracle margin 3. min is a tie; max is a mismatch.
+    tight_candidate = np.array([0.0, 0.01])
+    decisive_oracle = np.array([3.0, 0.0])
+    small_candidate = collapsed_sampler_lane(tight_candidate, decisive_oracle, tie_margin=0.05)
+    assert small_candidate.passed
+    assert small_candidate.mismatches == ()
+    assert len(small_candidate.ties) == 1
+    assert small_candidate.ties[0].near_tie
+    assert small_candidate.ties[0].candidate_margin == pytest.approx(0.01)
+    assert small_candidate.ties[0].oracle_margin == pytest.approx(3.0)
+
+    # Oracle margin 0.01, candidate margin 3. Candidate-margin-only would miss this.
+    decisive_candidate = np.array([0.0, 3.0])
+    tight_oracle = np.array([0.01, 0.0])
+    small_oracle = collapsed_sampler_lane(decisive_candidate, tight_oracle, tie_margin=0.05)
+    assert small_oracle.passed
+    assert small_oracle.mismatches == ()
+    assert len(small_oracle.ties) == 1
+    assert small_oracle.ties[0].candidate_margin == pytest.approx(3.0)
+    assert small_oracle.ties[0].oracle_margin == pytest.approx(0.01)
+
+
+def test_collapsed_sampler_applies_a_3_cycle_forward() -> None:
+    cycle = np.array([1, 2, 0])
+    candidate = np.array([3.0, 0.0, 1.0])
+    oracle = np.array([1.0, 3.0, 0.0])
+    aligned = collapsed_sampler_lane(candidate, oracle, tie_margin=0.1, alphabet_map=cycle)
+    assert aligned.passed
+    assert aligned.mismatches == ()
+    assert not collapsed_sampler_lane(candidate, oracle, tie_margin=0.1).passed
+
+
 def test_collapsed_sampler_aligns_a_swapped_alphabet() -> None:
     swap = np.array([1, 0])
     candidate = np.array([0.0, 5.0])
@@ -277,10 +370,100 @@ def test_distributional_lane_refuses_pass_without_a_rejecting_control() -> None:
     assert not missing.passed
     assert not missing.summary().startswith("PASS")
 
-    silent = NegativeControl(knob="bias", rejected=False, p_value=0.0, tv=1.0)
-    assert distributional_lane(fair, probs, negative_control=silent).verdict == "UNCONTROLLED"
-    lying = NegativeControl(knob="bias", rejected=True, p_value=0.9, tv=0.0)
-    assert distributional_lane(fair, probs, negative_control=lying).verdict == "UNCONTROLLED"
+
+def test_hand_built_negative_control_is_refused() -> None:
+    with pytest.raises(TypeError):
+        NegativeControl("x", True, 0.0, 1.0)
+    with pytest.raises(TypeError):
+        NegativeControl("x", True, 0.0, 1.0, 100, 0.05)
+
+
+def test_distributional_lane_requires_control_n_and_alpha_to_match() -> None:
+    fair = _fair_draws()
+    probs = _probs()
+
+    def sampler(knobs: dict[str, int]) -> np.ndarray:
+        if knobs["bias"] == 0:
+            return fair
+        return np.zeros(fair.shape[0], dtype=np.int64)
+
+    control = require_negative_control(sampler, probs, {"bias": 0}, "bias", 1)
+    assert control.n == fair.shape[0]
+    assert control.alpha == pytest.approx(0.05)
+    with pytest.raises(ValueError, match="n="):
+        distributional_lane(fair[: fair.shape[0] // 2], probs, negative_control=control)
+    with pytest.raises(ValueError, match="alpha"):
+        distributional_lane(fair, probs, alpha=0.01, negative_control=control)
+
+
+def test_chi_square_matches_counts_60_40() -> None:
+    draws = np.array([0] * 60 + [1] * 40, dtype=np.int64)
+    step = distributional_lane(draws, np.array([0.5, 0.5])).steps[0]
+    assert step.chi2 == 4.0
+    assert step.df == 1
+    assert step.p_value == pytest.approx(0.0455, abs=1e-3)
+
+
+def test_min_detectable_tv_ignores_zero_probability_classes() -> None:
+    draws = _fair_draws()
+    step = distributional_lane(draws, np.array([0.5, 0.5, 0.0])).steps[0]
+    two = min_detectable_tv(draws.shape[0], 2, 0.05, power=0.8)
+    three = min_detectable_tv(draws.shape[0], 3, 0.05, power=0.8)
+    assert step.df == 1
+    assert step.min_detectable_tv == pytest.approx(two)
+    assert two != pytest.approx(three)
+
+
+def test_distributional_power_at_the_reported_minimum_detectable_tv() -> None:
+    # Nominal power is 0.8. The normal approximation lands near 0.75, so the
+    # floor is widened to 0.60 (a halved chi-square statistic rejects near 0.45).
+    n = 2000
+    alpha = 0.05
+    oracle = np.array([0.5, 0.5])
+    null = np.random.default_rng(0).choice(2, size=n, p=oracle)
+    null_step = distributional_lane(null, oracle, alpha=alpha).steps[0]
+    assert not null_step.rejected
+    shift = null_step.min_detectable_tv
+    assert 0.0 < shift < 0.5
+    perturbed = np.array([0.5 + shift, 0.5 - shift])
+    reps = 60
+    rejects = 0
+    for index in range(reps):
+        draws = np.random.default_rng(1_000 + index).choice(2, size=n, p=perturbed)
+        step = distributional_lane(draws, oracle, alpha=alpha).steps[0]
+        rejects += int(step.rejected)
+    assert rejects / reps >= 0.60
+
+
+def test_holm_keeps_twenty_seeded_null_steps() -> None:
+    # Seed 1, n=800, T=20 has a raw p below 0.05 (an uncorrected lane FAILs)
+    # and above alpha/T, so Holm keeps every null.
+    n = 800
+    steps = 20
+    draws = np.random.default_rng(1).choice(2, size=(n, steps), p=np.array([0.5, 0.5]))
+    probs = np.tile(np.array([0.5, 0.5]), (steps, 1))
+    result = distributional_lane(draws, probs, alpha=0.05)
+    assert min(step.p_value for step in result.steps) < 0.05
+    assert all(not step.rejected for step in result.steps)
+    assert result.verdict != "FAIL"
+
+
+def test_require_negative_control_rejects_when_any_step_rejects() -> None:
+    fair = _fair_draws()
+    biased = np.zeros(fair.shape[0], dtype=np.int64)
+    mixed = np.stack([fair, biased], axis=1)
+    probs = np.array([[0.5, 0.5], [0.5, 0.5]])
+    scored = distributional_lane(mixed, probs)
+    assert [step.rejected for step in scored.steps] == [False, True]
+
+    def sampler(knobs: dict[str, int]) -> np.ndarray:
+        del knobs
+        return mixed
+
+    control = require_negative_control(sampler, probs, {"bias": 0}, "bias", 1)
+    assert control.rejected
+    assert control.n == fair.shape[0]
+    assert control.alpha == pytest.approx(0.05)
 
 
 def test_require_negative_control_asserts_the_perturbed_knob_rejects() -> None:

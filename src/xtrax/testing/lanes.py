@@ -7,7 +7,7 @@ PASS only after a negative control has rejected a perturbed knob.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 import jax.numpy as jnp
@@ -395,7 +395,11 @@ def _argmax_margin(logits: np.ndarray) -> tuple[int, float]:
 
 @dataclass(frozen=True)
 class StepDistribution:
-    """Chi-square and total variation for one conditional step."""
+    """Chi-square and total variation for one conditional step.
+
+    ``rejected`` is Holm's decision at the lane's family-wise alpha, not the
+    raw comparison of ``p_value`` with alpha.
+    """
 
     step: int
     chi2: float
@@ -407,21 +411,40 @@ class StepDistribution:
     min_expected: float
 
 
+# Private marker. ``_issue_negative_control`` is the only constructor that sets it.
+_CONTROL_TOKEN = object()
+
+
 @dataclass(frozen=True)
 class NegativeControl:
     """A perturbed-knob run of the distributional lane.
 
+    Issued only by :func:`require_negative_control`. Calling the constructor
+    raises ``TypeError``. ``n`` and ``alpha`` are the draw count and tail
+    threshold of that run; :func:`distributional_lane` accepts the control only
+    when both match the lane.
+
     Attributes:
         knob: Name of the knob that was perturbed.
-        rejected: True when the chi-square test rejected the oracle.
+        rejected: True when the Holm-adjusted chi-square test rejected the oracle.
         p_value: Smallest step-wise p-value on the perturbed run.
         tv: Largest step-wise total variation on the perturbed run.
+        n: Draws per step in the control run.
+        alpha: Tail threshold of the control run.
     """
 
     knob: str
     rejected: bool
     p_value: float
     tv: float
+    n: int
+    alpha: float
+    _token: object = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        raise TypeError(
+            "NegativeControl cannot be constructed directly; call require_negative_control"
+        )
 
 
 class NegativeControlError(AssertionError):
@@ -432,9 +455,10 @@ class NegativeControlError(AssertionError):
 class DistributionalResult:
     """Per-step conditional distribution versus oracle probabilities.
 
-    ``verdict`` is ``PASS`` only when every step keeps the null (p >= alpha) and
-    ``negative_control`` rejected at this alpha. A statistical match with no
-    rejecting control is ``UNCONTROLLED``. A rejected null is ``FAIL``.
+    ``verdict`` is ``PASS`` only when Holm's step-down procedure keeps every
+    null at family-wise level ``alpha`` and ``negative_control`` rejected at
+    this same ``alpha`` and draw count. A statistical match with no rejecting
+    control is ``UNCONTROLLED``. A rejected null is ``FAIL``.
 
     Attributes:
         steps: One record per conditional step.
@@ -562,13 +586,20 @@ def distributional_lane(
     ``draws`` is ``(N,)`` token ids for one step, or ``(N, T)`` for ``T`` steps.
     ``oracle_probs`` is ``(K,)`` or ``(T, K)`` and each row sums to 1. The
     chi-square goodness-of-fit p-value comes from ``jax.scipy.stats.chi2.sf``.
-    A step rejects when ``p < alpha``. Total variation is
-    ``0.5 * sum(|empirical - oracle|)``.
+    Total variation is ``0.5 * sum(|empirical - oracle|)``.
 
-    PASS requires every step to keep the null and a negative control whose
-    ``rejected`` flag is set and whose p-value is below ``alpha``. Otherwise the
-    verdict is FAIL (null rejected) or UNCONTROLLED (null kept, control missing
-    or not rejecting).
+    Rejection uses Holm's step-down procedure across the T steps at family-wise
+    level ``alpha``: the ordered p-values ``p_(rank)`` are compared with
+    ``alpha / (T - rank)``, and the first p-value that is not below its
+    threshold stops the procedure. An uncorrected per-step ``alpha`` would make
+    the false-FAIL probability ``1 - (1 - alpha) ** T``.
+
+    PASS requires every Holm test to keep the null and a negative control,
+    issued by :func:`require_negative_control`, whose ``rejected`` flag is set,
+    whose p-value is below ``alpha``, and whose ``n`` and ``alpha`` equal this
+    lane's. Otherwise the verdict is FAIL (null rejected) or UNCONTROLLED
+    (null kept, control missing or not rejecting). A control whose ``n`` or
+    ``alpha`` differs from the lane raises ``ValueError``.
 
     Args:
         draws: Integer token ids.
@@ -585,15 +616,22 @@ def distributional_lane(
         raise ValueError(f"alpha must be in (0, 1), got {alpha}")
     samples, probs = _draws_and_probs(draws, oracle_probs)
     n = int(samples.shape[0])
-    steps = tuple(
-        _score_step(samples[:, step], probs[step], step, alpha, power, n)
+    alpha_value = float(alpha)
+    provisional = tuple(
+        _score_step(samples[:, step], probs[step], step, alpha_value, power, n)
         for step in range(samples.shape[1])
     )
+    flags = _holm_rejections([step.p_value for step in provisional], alpha_value)
+    steps = tuple(
+        replace(step, rejected=flag) for step, flag in zip(provisional, flags, strict=True)
+    )
+    if negative_control is not None:
+        _require_matching_control(negative_control, n, alpha_value)
     stats_ok = all(not step.rejected for step in steps)
     control_ok = (
         negative_control is not None
         and negative_control.rejected
-        and negative_control.p_value < alpha
+        and negative_control.p_value < alpha_value
     )
     if not stats_ok:
         verdict: Verdict = "FAIL"
@@ -603,12 +641,63 @@ def distributional_lane(
         verdict = "PASS"
     return DistributionalResult(
         steps=steps,
-        alpha=float(alpha),
+        alpha=alpha_value,
         power=float(power),
         n=n,
         negative_control=negative_control,
         verdict=verdict,
     )
+
+
+def _holm_rejections(p_values: Sequence[float], alpha: float) -> list[bool]:
+    """Holm step-down rejections at family-wise level ``alpha``.
+
+    Ordered p-values are compared with ``alpha / (T - rank)`` (rank starting at
+    0 for the smallest). The first p-value that is not strictly below its
+    threshold stops the procedure, so larger ones are kept.
+    """
+    count = len(p_values)
+    rejected = [False] * count
+    order = sorted(range(count), key=lambda index: (p_values[index], index))
+    for rank, index in enumerate(order):
+        if p_values[index] < alpha / (count - rank):
+            rejected[index] = True
+        else:
+            break
+    return rejected
+
+
+def _require_matching_control(control: NegativeControl, n: int, alpha: float) -> None:
+    """Refuse a control that was not issued for this lane's ``n`` and ``alpha``."""
+    if control._token is not _CONTROL_TOKEN:
+        raise TypeError("NegativeControl is issued only by require_negative_control")
+    if control.n != n:
+        raise ValueError(f"negative control n={control.n} does not match the lane's n={n}")
+    if control.alpha != alpha:
+        raise ValueError(
+            f"negative control alpha={control.alpha} does not match the lane's alpha={alpha}"
+        )
+
+
+def _issue_negative_control(
+    *,
+    knob: str,
+    rejected: bool,
+    p_value: float,
+    tv: float,
+    n: int,
+    alpha: float,
+) -> NegativeControl:
+    """Build a control without going through the refused public constructor."""
+    control = NegativeControl.__new__(NegativeControl)
+    object.__setattr__(control, "knob", knob)
+    object.__setattr__(control, "rejected", rejected)
+    object.__setattr__(control, "p_value", float(p_value))
+    object.__setattr__(control, "tv", float(tv))
+    object.__setattr__(control, "n", int(n))
+    object.__setattr__(control, "alpha", float(alpha))
+    object.__setattr__(control, "_token", _CONTROL_TOKEN)
+    return control
 
 
 def require_negative_control(
@@ -624,8 +713,10 @@ def require_negative_control(
     """Re-run ``sampler`` with ``knob`` perturbed and require the lane to reject.
 
     ``sampler`` receives a knob mapping and returns draws shaped like
-    :func:`distributional_lane`. The returned control is what that lane needs
-    before it can report PASS.
+    :func:`distributional_lane`. The returned control records ``knob``, the
+    perturbed run's draw count, and ``alpha``. That is the only way to obtain a
+    :class:`NegativeControl`. The lane needs one before it can report PASS, and
+    it checks that ``n`` and ``alpha`` match.
 
     Args:
         sampler: ``knobs -> draws``.
@@ -637,7 +728,7 @@ def require_negative_control(
         power: Power passed through to the lane.
 
     Returns:
-        A control with ``rejected=True``.
+        A control with ``rejected=True``, carrying this run's ``n`` and ``alpha``.
 
     Raises:
         KeyError: ``knob`` is not in ``knobs``.
@@ -656,7 +747,14 @@ def require_negative_control(
             f"perturbing knob {knob!r} to {perturbed_value!r} did not reject the oracle "
             f"(min p={min_p:.3g}, alpha={alpha})"
         )
-    return NegativeControl(knob=knob, rejected=True, p_value=min_p, tv=max_tv)
+    return _issue_negative_control(
+        knob=knob,
+        rejected=True,
+        p_value=min_p,
+        tv=max_tv,
+        n=scored.n,
+        alpha=float(alpha),
+    )
 
 
 def _draws_and_probs(draws: ArrayLike, oracle_probs: ArrayLike) -> tuple[np.ndarray, np.ndarray]:

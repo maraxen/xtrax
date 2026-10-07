@@ -25,12 +25,16 @@ Use the first strategy the sampler allows.
 2. **Teacher-force both directions.** `teacher_forced_lane` scores one fixed
    sequence along `order` and along `order[::-1]`.
 3. **Collapse the sampler.** `collapsed_sampler_lane` compares temperature-0
-   argmax. A top-two margin at or below `tie_margin` is reported and is not a
-   failure.
+   argmax. A site is a near-tie when the smaller of the candidate and oracle
+   top-two margins is at or below `tie_margin`. That site is reported and is
+   not a failure.
 4. **Compare one-step conditionals.** `distributional_lane` tests N draws
    against oracle probabilities with a chi-square tail (`jax.scipy.stats.chi2.sf`)
    and total variation, and reports `min_detectable_tv` for that N and alpha
    (default power 0.8, least-favorable alternative `TV = 0.5 * sqrt(λ / n)`).
+   Across T steps, rejection uses Holm's step-down procedure at family-wise
+   level `alpha`: ordered p-values are compared with `alpha / (T - rank)`, and
+   the first p-value that is not below its threshold stops the procedure.
 
 ## Call the public entry point
 
@@ -50,9 +54,13 @@ implementation.
 Each lane's evidence includes a case built to fail: a swapped alphabet on the
 teacher-forced lane, a decisive argmax miss on the collapsed lane, a biased
 sampler on the distributional lane. `require_negative_control` perturbs a named
-knob and requires the chi-square test to reject. `distributional_lane` reports
-`PASS` only when that control rejected and the unperturbed draws still match.
-With no rejecting control the verdict is `UNCONTROLLED`.
+knob and requires the chi-square test to reject. It is the only constructor of
+`NegativeControl`; the control records the knob, the perturbed run's draw count
+`n`, and `alpha`. A hand-built `NegativeControl` raises `TypeError`.
+`distributional_lane` reports `PASS` only when that control rejected, its `n`
+and `alpha` match the lane, and the unperturbed draws still match under Holm.
+A control whose `n` or `alpha` differs raises `ValueError`. With no rejecting
+control the verdict is `UNCONTROLLED`.
 
 `knob_coverage(declared, varied)` lists declared knobs that were not varied, so
 an unexercised knob stays visible in the evidence.
