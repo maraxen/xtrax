@@ -59,6 +59,11 @@ tier1_exports = [
     # Run layer: execution-time configuration utilities.
     "derive_sink_spec",
     "new_run_id",
+    # Random: chunk- and resume-invariant PRNG key streams.
+    "ChunkSpan",
+    "element_keys",
+    "iter_chunk_keys",
+    "make_chunk_plan",
 ]
 
 smoke_exports = [
