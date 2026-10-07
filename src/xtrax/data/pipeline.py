@@ -26,7 +26,7 @@ __all__ = [
 
 def _import_grain() -> Any:
     try:
-        import grain
+        import grain  # ty: ignore[unresolved-import]
     except ImportError as exc:
         raise ImportError(
             "Building an xtrax data pipeline requires the optional 'grain' "
