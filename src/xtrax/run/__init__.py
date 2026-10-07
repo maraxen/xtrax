@@ -18,6 +18,7 @@ from xtrax.run.digest import (
     source_fingerprint,
 )
 from xtrax.run.ident import new_run_id
+from xtrax.run.memory_sink import MemorySink
 from xtrax.run.repro_floor import (
     ReproFloorResult,
     build_repro_floor_attestation_toml,
@@ -27,7 +28,7 @@ from xtrax.run.repro_floor import (
 )
 from xtrax.run.resolver import FeatureBatch, InputResolver, RuntimeBundle
 from xtrax.run.seed_emission import SeedAssignment, SeedEmissionInputError, seed_assignment
-from xtrax.run.sink import SinkSpec, derive_sink_spec, make_sink
+from xtrax.run.sink import GitProvenance, SinkReceipt, SinkSpec, derive_sink_spec, make_sink
 from xtrax.run.spec import RunSpec
 from xtrax.run.zarr_commit import (
     COMMIT_ATTR,
@@ -57,6 +58,9 @@ from xtrax.run.zarr_commit import (
     write_staged_group,
 )
 from xtrax.run.zarr_integrity import (
+    DIGEST_ALGO_VERSION,
+    atomic_write_bytes,
+    atomic_write_text,
     canonical_json_bytes,
     fsync_directory,
     fsync_file,
@@ -74,11 +78,17 @@ __all__ = [
     "RuntimeBundle",
     "FeatureBatch",
     "SinkSpec",
+    "GitProvenance",
+    "SinkReceipt",
+    "MemorySink",
     "derive_sink_spec",
     "new_run_id",
     "make_sink",
     "ZarrStagingSink",
     "RESERVED_ATTR_PREFIX",
+    "DIGEST_ALGO_VERSION",
+    "atomic_write_bytes",
+    "atomic_write_text",
     "canonical_json_bytes",
     "normalize_json_value",
     "update_array_digest",

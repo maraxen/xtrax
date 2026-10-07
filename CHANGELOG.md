@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`xtrax.run` output contract** (debt #2523): `make_sink` accepts `format="memory"`
+  and returns a `MemorySink` with the same stage/drain/finalize protocol as
+  `ZarrStagingSink`, including read-back. `ZarrStagingSink` appends along the
+  leading axis across drains when `SinkSpec.append=True` (the default remains
+  overwrite). `finalize()` consolidates, fsyncs, and digests the store, returning
+  a `SinkReceipt` (`path`, `digest`, `digest_algo_version`, `run_id`, `seed`).
+  `derive_sink_spec` copies `RunSpec.seed` and, when `output_dir` is omitted,
+  `RunSpec.output_root`. `RunSpec` gains optional static fields `output_root`,
+  `device_count`, `precision`, and `shard_lineage`. `SinkSpec.provenance` injects
+  precomputed git state or a path to capture from; the default no longer shells
+  out from `Path.cwd()`. Exclusive store roots record `producer` and `xtrax_version`;
+  durable roots keep those fields inside the `xtrax.store` record so the root
+  attr set stays exactly that record.
+  `level_schemas` supplies a JSON schema per key depth. `DIGEST_ALGO_VERSION`
+  labels the content digest. `atomic_write_bytes` / `atomic_write_text` write
+  via temp file, fsync, replace, and directory fsync.
+
 ## [0.4.0a12] - 2026-10-01
 
 ### Added

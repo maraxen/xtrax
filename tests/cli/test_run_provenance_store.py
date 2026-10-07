@@ -106,14 +106,17 @@ def test_explicit_run_id_flows_to_store(monkeypatch, tmp_path) -> None:
     """AC1/AC3: caller-supplied run_id is the single id across manifest + store."""
     monkeypatch.chdir(tmp_path)
     cfg = _e2e_cfg()
-    # Outside any git repo the sink must degrade HONESTLY: warn + record
-    # git_sha='unknown' rather than silently skipping provenance.
-    with pytest.warns(UserWarning, match="could not determine git state"):
+    # Default provenance does not shell out from cwd. The store still records
+    # git_sha='unknown' (an explicit SinkSpec.provenance path is what captures git).
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", UserWarning)
         run_from_config(cfg, run_id="explicit-test-id")
+    assert not any("git state" in str(item.message) for item in caught)
     manifest = json.loads(Path(".xtrax/runs/explicit-test-id/manifest.json").read_text())
     assert manifest["run_id"] == "explicit-test-id"
     root = zarr.open_group(".xtrax/runs/explicit-test-id/metrics.zarr", mode="r")
     assert root.attrs["run_id"] == "explicit-test-id"
+    assert root.attrs["git_sha"] == "unknown"
 
 
 def test_store_is_finalized_after_run(monkeypatch, tmp_path) -> None:
