@@ -242,3 +242,21 @@ class TestTrimPadAxis:
         assert padded.shape == (2, 3)
         np.testing.assert_array_equal(np.asarray(padded[:, :2]), np.asarray(trimmed))
         assert int(np.asarray(padded[0, 2])) == 0
+
+    def test_jax_pad_honors_nonzero_fill(self):
+        import jax.numpy as jnp
+
+        arr = jnp.arange(6).reshape(2, 3)
+        padded = pad_axis(arr, 4, axis=1, fill=-1)
+        assert padded.shape == (2, 4)
+        np.testing.assert_array_equal(np.asarray(padded[:, :3]), np.asarray(arr))
+        assert int(np.asarray(padded[0, 3])) == -1
+        assert int(np.asarray(padded[1, 3])) == -1
+
+    def test_numpy_input_stays_numpy(self):
+        arr = np.arange(6).reshape(2, 3)
+        padded = pad_axis(arr, 4, axis=1, fill=-1)
+        assert isinstance(padded, np.ndarray)
+        assert padded.shape == (2, 4)
+        assert padded[0, 3] == -1
+        assert padded[1, 3] == -1

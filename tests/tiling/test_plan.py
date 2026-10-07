@@ -6,6 +6,7 @@ import warnings
 import jax
 import pytest
 
+from xtrax.tiling.estimators import DEFAULT_DEVICE_MEMORY_BYTES
 from xtrax.tiling.plan import (
     AxisDecision,
     AxisSpec,
@@ -547,13 +548,12 @@ class TestBatchPlanner:
 
     def test_missing_device_stats_logs_documented_4gib_default(self, monkeypatch, caplog):
         """No bytes_limit: log once and keep the 4 GiB comparison."""
-        import xtrax.tiling.plan as plan_mod
 
         def no_stats(fraction: float = 0.9, device=None) -> int:
             raise RuntimeError("no stats")
 
         monkeypatch.setattr("xtrax.tiling.estimators.device_memory_budget", no_stats)
-        plan_mod._default_device_limit_logged = False
+        monkeypatch.setattr("xtrax.tiling.plan._default_device_limit_logged", False)
         spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
 
         def high(spec: AxisSpec) -> int:
@@ -566,3 +566,22 @@ class TestBatchPlanner:
         assert isinstance(second.strategy, ChunkedMap)
         messages = [record.message for record in caplog.records if "4 GiB" in record.message]
         assert len(messages) == 1
+
+    def test_fallback_limit_is_4gib_and_equal_estimate_stays_vmap(self, monkeypatch):
+        """Documented 4 GiB fallback. Equal-to-limit stays Vmap; over the limit chunks."""
+        assert DEFAULT_DEVICE_MEMORY_BYTES == 4 * 2**30
+
+        def no_stats(fraction: float = 0.9, device=None) -> int:
+            raise RuntimeError("no stats")
+
+        monkeypatch.setattr("xtrax.tiling.estimators.device_memory_budget", no_stats)
+        monkeypatch.setattr("xtrax.tiling.plan._default_device_limit_logged", False)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
+
+        def strategy_for(estimate: int):
+            planner = BatchPlanner(memory_estimator=lambda _spec, estimate=estimate: estimate)
+            return planner.plan([spec]).decisions[0].strategy
+
+        assert isinstance(strategy_for(DEFAULT_DEVICE_MEMORY_BYTES), Vmap)
+        assert isinstance(strategy_for(DEFAULT_DEVICE_MEMORY_BYTES + 1), ChunkedMap)
+        assert isinstance(strategy_for(5 * 2**30), ChunkedMap)
