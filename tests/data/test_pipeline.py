@@ -80,6 +80,31 @@ class TestGrainPipeline:
         np.testing.assert_array_equal(batches[0], np.array([0, 1, 2], dtype=np.int32))
         np.testing.assert_array_equal(batches[1], np.array([3, 4, 5], dtype=np.int32))
 
+    def test_drop_remainder_controls_the_partial_batch(self):
+        """Seven examples, batch size 3: the default drops the tail of one."""
+
+        def collect(drop_remainder: bool | None = None) -> list[np.ndarray]:
+            kwargs = {} if drop_remainder is None else {"drop_remainder": drop_remainder}
+            return list(
+                build_input_pipeline(
+                    _ints(7),
+                    batch_size=3,
+                    seed=0,
+                    num_epochs=1,
+                    shuffle=False,
+                    **kwargs,
+                )
+            )
+
+        default = collect()
+        dropped = collect(True)
+        kept = collect(False)
+        assert [batch.shape for batch in default] == [(3,), (3,)]
+        assert [batch.shape for batch in dropped] == [(3,), (3,)]
+        assert [batch.shape for batch in kept] == [(3,), (3,), (1,)]
+        assert _flat(default) == list(range(6))
+        np.testing.assert_array_equal(kept[-1], np.array([6], dtype=np.int32))
+
     def test_shuffle_is_seeded(self):
         """The same seed repeats; a different seed does not."""
         kwargs = {"batch_size": 4, "num_epochs": 1, "shuffle": True}
@@ -154,6 +179,22 @@ class TestGrainPipeline:
         assert [batch.shape for batch in batches] == [(2,), (2,)]
         assert _flat(batches) == [4, 5, 6, 7]
 
+    def test_shard_by_process_false_yields_the_full_source(self, monkeypatch):
+        """shard_by_process=False must not consult the JAX process count."""
+        monkeypatch.setattr(jax, "process_index", lambda: 1)
+        monkeypatch.setattr(jax, "process_count", lambda: 2)
+        got = _flat(
+            build_input_pipeline(
+                _ints(8),
+                batch_size=2,
+                seed=0,
+                num_epochs=1,
+                shuffle=False,
+                shard_by_process=False,
+            )
+        )
+        assert got == list(range(8))
+
     def test_repeat_none_yields_past_one_epoch(self):
         """num_epochs=None keeps yielding after the source is exhausted once."""
         pipeline = build_input_pipeline(
@@ -199,6 +240,11 @@ class TestGrainPipeline:
         """
         from absl import flags
 
+        if "__flags_parsed" not in getattr(flags.FLAGS, "__dict__", {}):
+            pytest.skip(
+                "absl FlagValues no longer exposes __flags_parsed; "
+                "cannot force flags into the unparsed state"
+            )
         flags.FLAGS.__dict__["__flags_parsed"] = False
         assert not flags.FLAGS.is_parsed()
         iterator = None

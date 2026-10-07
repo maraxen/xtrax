@@ -3,6 +3,7 @@ import pytest
 
 import xtrax.data.module as _mod
 from xtrax.data.module import DataModule, _mark_dist_initialized
+from xtrax.data.pipeline import build_input_pipeline
 
 
 class TestDataModule:
@@ -163,3 +164,46 @@ class TestDataModuleGrainPipeline:
         )
         got = [int(x) for batch in module.eval_iter() for x in np.asarray(batch).ravel()]
         assert got == [0, 1, 2, 3]
+
+    def test_distributed_false_yields_the_full_source(self, monkeypatch):
+        """distributed=False keeps every example even when this process is one of two."""
+        import jax
+
+        monkeypatch.setattr(jax, "process_index", lambda: 1)
+        monkeypatch.setattr(jax, "process_count", lambda: 2)
+        module = DataModule(
+            dataset=[np.int32(i) for i in range(8)],
+            batch_size=2,
+            num_epochs=1,
+            seed=0,
+            distributed=False,
+            use_grain_pipeline=True,
+        )
+        got = [int(x) for batch in module.eval_iter() for x in np.asarray(batch).ravel()]
+        assert got == list(range(8))
+
+    def test_train_iter_uses_the_module_seed(self):
+        """Train order matches build_input_pipeline(seed=7), not a constant seed."""
+        source = [np.int32(i) for i in range(16)]
+
+        def order(seed: int) -> list[int]:
+            pipeline = build_input_pipeline(
+                source,
+                batch_size=4,
+                seed=seed,
+                num_epochs=1,
+                shuffle=True,
+            )
+            return [int(x) for batch in pipeline for x in np.asarray(batch).ravel()]
+
+        module = DataModule(
+            dataset=source,
+            batch_size=4,
+            num_epochs=1,
+            seed=7,
+            distributed=False,
+            use_grain_pipeline=True,
+        )
+        train = [int(x) for batch in module.train_iter() for x in np.asarray(batch).ravel()]
+        assert train == order(7)
+        assert train != order(0)
