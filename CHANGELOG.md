@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Chunk- and resume-invariant PRNG key stream** (#2544): `xtrax.random.element_keys`
+  folds a base key, or an integer seed via `jax.random.key`, with the global element
+  index as `int32`. The derivation matches aminx `compute_sample_keys` bit-for-bit, so
+  keys depend only on `(base key, global index)`. `make_chunk_plan` and `iter_chunk_keys`
+  yield the same keys for any chunk size or resume point.
+
 ## [0.4.0a12] - 2026-10-01
 
 ### Added
