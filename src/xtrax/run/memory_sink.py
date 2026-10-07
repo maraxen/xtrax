@@ -15,8 +15,6 @@ zarr digests are not comparable.
 the buffer. ``read`` returns copies of the committed arrays.
 """
 
-from __future__ import annotations
-
 import warnings
 from typing import Any
 
@@ -282,7 +280,7 @@ class MemorySink:
             self._pending.clear()
             self._pending_attrs.clear()
 
-    def __enter__(self) -> MemorySink:
+    def __enter__(self) -> "MemorySink":
         return self
 
     def __exit__(self, *exc_info: object) -> None:
