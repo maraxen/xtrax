@@ -697,7 +697,10 @@ def _bytes_per_element(
             "plan_axis: a callable estimate needs abstract args "
             "(ShapeDtypeStruct or concrete arrays) for lowered_memory_estimate"
         )
-    key = (id(estimate), tuple(_abstract_signature(arg) for arg in abstract_args))
+    # Identity of the callable, not id(): a recycled id can serve another
+    # function's entry after the original is collected. Holding the function
+    # keeps that entry from being reused.
+    key = (estimate, tuple(_abstract_signature(arg) for arg in abstract_args))
     if memo is not None and key in memo:
         return memo[key]
     measured = lowered_memory_estimate(estimate, *abstract_args)

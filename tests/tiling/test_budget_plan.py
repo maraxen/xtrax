@@ -217,8 +217,12 @@ class TestHeterogeneousBudget:
         assert isinstance(by_name["het"].strategy, ChunkedMap)
         assert by_name["het"].strategy.batch_size == 32
         assert isinstance(by_name["hom"].strategy, Vmap)
-        assert "heterogeneous" in by_name["het"].reasoning
-        assert "budget" in by_name["het"].reasoning
+        # Pending reasoning also contains "heterogeneous" and "joint-budget".
+        # The finalized branch is the one that records the measured bytes.
+        assert (
+            "Vmap is invalid when element shapes vary (final estimate 0 B, budget 10000 B)"
+            in by_name["het"].reasoning
+        )
         assert seen
         assert all(snapshot["het"] is ChunkedMap for snapshot in seen)
 
@@ -255,6 +259,36 @@ class TestHeterogeneousBudget:
         )
         plan = planner.plan([_spec("het", cardinality=4, batch_size=4, heterogeneous=True)])
         assert isinstance(plan.decisions[0].strategy, DedupGather)
+
+    def test_over_budget_heterogeneous_dedup_falls_back_to_chunked_map(self) -> None:
+        """A DedupGather that exceeds the budget is dropped; the axis stays ChunkedMap.
+
+        cardinality <= batch_size would be Vmap for a homogeneous axis. Heterogeneous
+        still forbids that after the dedup fallback.
+        """
+        dedup = DedupSpec(
+            axis_name="het",
+            unique_indices=np.array([0, 1], dtype=np.int32),
+            index_map=np.array([0, 1, 0, 1], dtype=np.int32),
+            k=2,
+        )
+
+        def estimate(decisions) -> int:
+            if any(isinstance(decision.strategy, DedupGather) for decision in decisions):
+                return 10_000
+            return 1
+
+        planner = BatchPlanner(
+            budget=MemoryBudget(bytes=100, estimate=estimate),
+            dedup_specs=[dedup],
+        )
+        with pytest.warns(RuntimeWarning, match="without dedup"):
+            plan = planner.plan([_spec("het", cardinality=4, batch_size=4, heterogeneous=True)])
+        decision = plan.decisions[0]
+        assert isinstance(decision.strategy, ChunkedMap)
+        assert decision.strategy.batch_size == 4
+        assert "DedupSpec dropped" in decision.reasoning
+        assert "final estimate 1 B, budget 100 B" in decision.reasoning
 
 
 class TestInfeasible:

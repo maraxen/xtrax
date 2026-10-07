@@ -160,6 +160,28 @@ class TestEstimateMemoryTheoretical:
         with pytest.raises(ValueError, match="bytes_per_element"):
             estimate_memory_theoretical({"n": 2}, -1)
 
+    def test_truncates_fractional_product_toward_zero(self) -> None:
+        # 3 * 0.5 = 1.5. int() yields 1; round() would yield 2.
+        assert estimate_memory_theoretical({"n": 3}, 0.5) == 1
+
+    def test_negative_activation_multiplier_rejected(self) -> None:
+        with pytest.raises(ValueError, match="activation_multiplier"):
+            estimate_memory_theoretical({"n": 3}, 4, activation_multiplier=-1)
+
+    def test_bool_and_str_bytes_per_element_rejected(self) -> None:
+        with pytest.raises(TypeError, match="bytes_per_element"):
+            estimate_memory_theoretical({"n": 3}, True)
+        with pytest.raises(TypeError, match="bytes_per_element"):
+            estimate_memory_theoretical({"n": 3}, "4")
+
+    def test_non_int_dtype_bytes_rejected(self) -> None:
+        with pytest.raises(TypeError, match="dtype_bytes"):
+            estimate_memory_theoretical({"n": 3}, 4, dtype_bytes=1.5)
+        with pytest.raises(TypeError, match="dtype_bytes"):
+            estimate_memory_theoretical({"n": 3}, 4, dtype_bytes=True)
+        with pytest.raises(TypeError, match="dtype_bytes"):
+            estimate_memory_theoretical({"n": 3}, 4, dtype_bytes="4")
+
     def test_non_positive_dtype_bytes_rejected(self) -> None:
         with pytest.raises(ValueError, match="dtype_bytes"):
             estimate_memory_theoretical({"n": 2}, 4, dtype_bytes=0)

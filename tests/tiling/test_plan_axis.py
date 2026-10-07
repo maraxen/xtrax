@@ -50,17 +50,35 @@ class TestPlanAxisIntEstimate:
         assert strategy.batch_size == 32
 
     def test_matches_batch_planner_strategy(self) -> None:
-        spec = _spec()
-        strategy = plan_axis(spec, estimate=100, budget=500)
+        # 1024 * 4 = 4096 B under Vmap; ChunkedMap keeps one tile of 64 * 4 = 256 B.
+        spec = _spec(cardinality=1024, default_batch_size=64)
+        per_element = 4
+        budget = 256
+        strategy = plan_axis(spec, estimate=per_element, budget=budget)
 
         def joint(decisions) -> int:
-            return sum(
-                (d.spec.cardinality if isinstance(d.strategy, Vmap) else d.batch_size) * 100
-                for d in decisions
-            )
+            total = 1
+            for decision in decisions:
+                extent = (
+                    decision.spec.cardinality
+                    if isinstance(decision.strategy, Vmap)
+                    else decision.batch_size
+                )
+                total *= extent
+            return per_element * total
 
-        direct = BatchPlanner(budget=MemoryBudget(bytes=500, estimate=joint)).plan([spec])
-        assert type(strategy) is type(direct.decisions[0].strategy)
+        direct = BatchPlanner(budget=MemoryBudget(bytes=budget, estimate=joint)).plan([spec])
+        direct_strategy = direct.decisions[0].strategy
+        assert isinstance(strategy, ChunkedMap)
+        assert isinstance(direct_strategy, ChunkedMap)
+        assert strategy.batch_size == 64
+        assert strategy.batch_size == direct_strategy.batch_size
+
+    def test_bool_estimate_rejected(self) -> None:
+        with pytest.raises(ValueError, match="bytes per element"):
+            plan_axis(_spec(), estimate=True, budget=1000)
+        with pytest.raises(ValueError, match="bytes per element"):
+            plan_axis(_spec(), estimate=False, budget=1000)
 
     def test_negative_estimate_rejected(self) -> None:
         with pytest.raises(ValueError, match="bytes per element"):
@@ -110,6 +128,62 @@ class TestPlanAxisCallableEstimate:
         monkeypatch.setattr(plan_mod, "lowered_memory_estimate", _boom)
         strategy = plan_axis(_spec(), abstract, estimate=add_one, budget=10**18, memo=memo)
         assert isinstance(strategy, Vmap)
+
+    def test_memo_distinguishes_shape_and_dtype(self, monkeypatch) -> None:
+        """Shape and dtype are part of the memo key, so each signature is measured once."""
+
+        def add_one(x):
+            return x + 1.0
+
+        measured = {
+            ((4,), "float32"): 16,
+            ((64,), "float32"): 256,
+            ((4,), "float16"): 8,
+        }
+
+        def fake_lowered(fn, *args):
+            arg = args[0]
+            return measured[(tuple(arg.shape), jnp.dtype(arg.dtype).name)]
+
+        import xtrax.tiling.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "lowered_memory_estimate", fake_lowered)
+        memo: dict = {}
+        spec = _spec()
+        abstracts = (
+            jax.ShapeDtypeStruct((4,), jnp.float32),
+            jax.ShapeDtypeStruct((64,), jnp.float32),
+            jax.ShapeDtypeStruct((4,), jnp.float16),
+        )
+        for abstract in abstracts:
+            plan_axis(spec, abstract, estimate=add_one, budget=10**18, memo=memo)
+
+        assert len(memo) == 3
+        assert set(memo.values()) == {16, 256, 8}
+
+    def test_memo_does_not_collide_across_functions(self, monkeypatch) -> None:
+        """Two callables with the same abstract args keep distinct memo entries."""
+
+        def narrow(x):
+            return x + 1.0
+
+        def wide(x):
+            return x + 2.0
+
+        def fake_lowered(fn, *args):
+            return 10 if fn is narrow else 400
+
+        import xtrax.tiling.plan as plan_mod
+
+        monkeypatch.setattr(plan_mod, "lowered_memory_estimate", fake_lowered)
+        abstract = jax.ShapeDtypeStruct((4,), jnp.float32)
+        memo: dict = {}
+        plan_axis(_spec(), abstract, estimate=narrow, budget=10**18, memo=memo)
+        plan_axis(_spec(), abstract, estimate=wide, budget=10**18, memo=memo)
+
+        assert len(memo) == 2
+        assert set(memo.values()) == {10, 400}
+        assert {key[0] for key in memo} == {narrow, wide}
 
     def test_callable_without_abstract_args_rejected(self) -> None:
         with pytest.raises(TypeError, match="abstract args"):
