@@ -9,7 +9,8 @@ CORE exports (stable, always available):
     CarrySpec, CarryShape
     MemoryBudget, BudgetInfeasibleError, device_memory_budget, lowered_memory_estimate,
     estimate_memory_theoretical, plan_axis
-    VmapIterator, ChunkedMapIterator, JaxScanIterator, WhileLoopIterator, BucketIterator,
+    VmapIterator, ChunkedMapIterator, JaxScanIterator, WhileLoopIterator,
+    WhileLoopWithYsIterator, BucketIterator,
     MapIterator, ScanIterator
 
 OPTIONAL (dedup/gather machinery — import from submodules):
@@ -44,6 +45,7 @@ from xtrax.tiling.iterator import (
     ScanIterator,
     VmapIterator,
     WhileLoopIterator,
+    WhileLoopWithYsIterator,
 )
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan, BatchPlanner, plan_axis
 from xtrax.tiling.strategy import (
@@ -94,6 +96,7 @@ __all__ = [
     "ChunkedMapIterator",
     "JaxScanIterator",
     "WhileLoopIterator",
+    "WhileLoopWithYsIterator",
     "BucketIterator",
     "MapIterator",
     "ScanIterator",
