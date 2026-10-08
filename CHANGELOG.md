@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **using-xtrax skill**: end-to-end length bucketing (`AxisSpec.bucket_boundaries`,
+  host `select_bucket`/`bucketize`, `BUCKET_LADDER`, one compile per rung; #2497),
+  a local-copy replacement table and the 0.4.0a12 `SafeMap` alias removal pointing
+  at `codemods/safemap-to-chunkedmap/` (#2498), standalone `convert_to_onnx` versus
+  raw jax2onnx plus rings/divergence (#2499), limits and telemetry fail-closed
+  (`LedgerUnavailableError`; #2500), duplicated primitives including
+  `synthesize_dedup_spec` (#2501), `WhileCarry` for inference-only loops (#2103),
+  and the `ChunkedMap`/`lax.map` scan-of-while compile hazard (#2105).
 ### Fixed
 
 - **Skill examples match installed call signatures** (`agent_assets/skills`, #2496).
