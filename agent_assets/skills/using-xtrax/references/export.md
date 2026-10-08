@@ -107,6 +107,8 @@ trip count — convert to `Scan` with a static length) raise `UnsupportedStrateg
 - **Process state:** x64 is refused; the first jax2onnx conversion in a process leaves
   `jnp.cumsum` replaced, which `convert_to_onnx` undoes, and `export_pipeline` evaluates
   `reference_fn` before compiling any target.
+- A callable with no `BatchPlan` calls `convert_to_onnx` directly. Guards versus raw
+  `jax2onnx.to_onnx`, plus rings and parity: `references/onnx-standalone.md`.
 
 ## WebGPU: there is no gate, on purpose
 
