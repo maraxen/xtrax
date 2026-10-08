@@ -10,11 +10,13 @@ __all__ = [
     "ResumableState",
     "WeightedLoss",
     "MultiTaskLoss",
+    "ComposedLoss",
     "make_optimizer",
     "adamw_with_schedule",
     # Engine and IO
     "Engine",
     "BoundedCallbackHandler",
+    "EarlyStopping",
     "save_checkpoint",
     "load_checkpoint",
     # Data
@@ -75,11 +77,13 @@ _LAZY = {
     "ResumableState": "xtrax.training",
     "WeightedLoss": "xtrax.training",
     "MultiTaskLoss": "xtrax.training",
+    "ComposedLoss": "xtrax.training",
     "make_optimizer": "xtrax.training",
     "adamw_with_schedule": "xtrax.training",
     # Engine subpackage
     "Engine": "xtrax.engine",
     "BoundedCallbackHandler": "xtrax.engine",
+    "EarlyStopping": "xtrax.engine",
     # Checkpoint subpackage
     "save_checkpoint": "xtrax.checkpoint",
     "load_checkpoint": "xtrax.checkpoint",

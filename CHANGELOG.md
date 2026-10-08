@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Trainer key threading, auxiliary metrics, and engine hooks** (#2525).
+  `Trainer` accepts `takes_key` and `has_aux` (both default off, so
+  `loss_fn(predictions, targets) -> scalar` is unchanged). With `takes_key`,
+  `step` splits `state.key` once and calls `loss_fn(model, batch, key)`. With
+  `has_aux`, that callable returns `(loss, aux)` and the aux dict is merged
+  into the metrics. `accumulate_grads(..., has_aux=True)` also returns the
+  mean aux pytree: each leaf is `jnp.mean` over the microbatch axis, the same
+  reduction as the mean loss. `Engine.fit` / `fit_sync` gain a validation hook
+  (`validate_fn`, `validate_every_steps`, `validate_every_epochs`), early
+  stopping (`EarlyStopping`: metric, mode, patience, min_delta), and
+  step-cadence checkpoints (`checkpoint_every_steps`). `Engine.restore` loads
+  a checkpoint's `state.key` and `state.extras`. Fail-closed RunLedger
+  behaviour on `fit` is unchanged.
+
+- **Traced-weight loss composition** (#2088). `ComposedLoss` sums terms of
+  the form `fn(predictions, targets, **per_batch_flags) -> scalar`. Term
+  weights, and optional per-output placement weights, are traced arrays, so
+  changing a weight or a per-batch flag value does not recompile. The return
+  value is `(weighted_loss, aux)` where `aux` holds the unweighted per-term
+  scalars consumed by `Trainer(has_aux=True)`. `WeightedLoss` remains the
+  static-float combinator.
 - **`xtrax.profiling.count_backend_compiles` and `assert_no_recompile_after`** (#2083):
   context manager counting JAX `/jax/core/compile/backend_compile_duration` events
   (count and seconds), plus a helper that asserts a stepped function does not
