@@ -14,6 +14,182 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index as `int32`. The derivation matches aminx `compute_sample_keys` bit-for-bit, so
   keys depend only on `(base key, global index)`. `make_chunk_plan` and `iter_chunk_keys`
   yield the same keys for any chunk size or resume point.
+- **`xtrax.profiling.iter_jaxpr_eqns` / `sub_jaxprs`**: one public jaxpr walker.
+  It yields every equation, recursing through `pjit`/`jit`, `scan`, `while`
+  cond and body, `cond` branches, `custom_jvp`/`custom_vjp`, and `remat`.
+  `xtrax.export.safety` and `xtrax.profiling.loop_scaling` both use it (debts
+  #2526 and #2505).
+
+- **`convert_to_onnx(..., model_name=, embed_external_data=)`** (debt #2526):
+  `model_name` (default `"xtrax_export"`) is written on the graph.
+  `embed_external_data=True` stores every tensor in the protobuf, including
+  Loop-subgraph constants that an external-data sidecar leaves unloadable in
+  ORT-Web. `export_pipeline` forwards both arguments. `find_onnx_rng_ops` now
+  descends into subgraphs nested in `FunctionProto` bodies, and
+  `onnx_unknown_domain_census` counts op domains outside `""` and `"ai.onnx"`.
+
+- **`xtrax.export.rings.make_input_class(generator, ..., label=)`** (debt #2526):
+  input classes are built from a caller-supplied generator callable.
+
+### Changed
+
+- **`extent_scaling_report`** flags a loop only when both per-iteration work and
+  trip count grow with the extent (debt #2505). `jnp.searchsorted` lowers to a
+  scan of `ceil(log2(n))` steps; a vector of queries makes each step's work
+  grow, but the trip count does not, so that loop is no longer flagged. A
+  `while` with no static length is run once per extent to count its iterations.
+
+### Deprecated
+
+- **`xtrax.export.rings.symmetric_geometry` and `sub_k_neighbours`** (debt #2526):
+  protein/MPNN input generators. They emit `DeprecationWarning` and will be
+  removed in the next release. Callers pass their own generator to
+  `make_input_class`. `BUCKET_LADDER` is unchanged.
+- **`xtrax.run` output contract** (debt #2523): `make_sink` accepts `format="memory"`
+  and returns a `MemorySink` with the same stage/drain/finalize protocol as
+  `ZarrStagingSink`, including read-back. `ZarrStagingSink` appends along the
+  leading axis across drains when `SinkSpec.append=True` (the default remains
+  overwrite). `finalize()` consolidates, fsyncs, and digests the store, returning
+  a `SinkReceipt` (`path`, `digest`, `digest_algo_version`, `run_id`, `seed`).
+  `derive_sink_spec` copies `RunSpec.seed` and, when `output_dir` is omitted,
+  `RunSpec.output_root`. `RunSpec` gains optional static fields `output_root`,
+  `device_count`, `precision`, and `shard_lineage`. `SinkSpec.provenance` injects
+  precomputed git state or a path to capture from; the default no longer shells
+  out from `Path.cwd()`. Exclusive store roots record `producer` and `xtrax_version`;
+  durable roots keep those fields inside the `xtrax.store` record so the root
+  attr set stays exactly that record.
+  `level_schemas` supplies a JSON schema per key depth. `DIGEST_ALGO_VERSION`
+  labels the zarr content digest. `canonical_hash`
+  (`CANONICAL_HASH_ALGO_VERSION`) is the sha256-of-canonical-JSON helper used by
+  run-layer document digests. `atomic_write_bytes` / `atomic_write_text` write
+  via temp file, fsync, replace, and directory fsync. `xtrax run` writes
+  `manifest.json` with `atomic_write_text`.
+
+### Changed
+
+- **Reserved sink attr names** (debt #2523): `producer` and `xtrax_version` are
+  now reserved, alongside the existing provenance names. Staging an attr with
+  either name raises, and both are excluded from the default zarr content
+  digest. This is a minor compatibility break for callers who stored their own
+  attrs under those names.
+- **Memory digest version** (debt #2523): memory-sink receipts record
+  `MEMORY_DIGEST_ALGO_VERSION`, not `DIGEST_ALGO_VERSION`. The memory digest
+  covers array names and array bytes only (caller attrs do not change it). It
+  is a different algorithm from the zarr content digest and the two are not
+  comparable.
+- **CLI provenance** (debt #2523): `xtrax run` passes the process working
+  directory as sink provenance, so the metrics store records that checkout's
+  git HEAD. Outside a git repository the sink warns and records
+  `git_sha="unknown"`. Omitting `SinkSpec.provenance` in the library still
+  does not shell out.
+- **Trainer key threading, auxiliary metrics, and engine hooks** (#2525).
+  `Trainer` accepts `takes_key` and `has_aux` (both default off, so
+  `loss_fn(predictions, targets) -> scalar` is unchanged). With `takes_key`,
+  `step` splits `state.key` once and calls `loss_fn(model, batch, key)`. With
+  `has_aux`, that callable returns `(loss, aux)` and the aux dict is merged
+  into the metrics. `accumulate_grads(..., has_aux=True)` also returns the
+  mean aux pytree: each leaf is `jnp.mean` over the microbatch axis, the same
+  reduction as the mean loss. `Engine.fit` / `fit_sync` gain a validation hook
+  (`validate_fn`, `validate_every_steps`, `validate_every_epochs`), early
+  stopping (`EarlyStopping`: metric, mode, patience, min_delta), and
+  step-cadence checkpoints (`checkpoint_every_steps`). `Engine.restore` loads
+  a checkpoint's `state.key` and `state.extras`. Fail-closed RunLedger
+  behaviour on `fit` is unchanged.
+
+- **Traced-weight loss composition** (#2088). `ComposedLoss` sums terms of
+  the form `fn(predictions, targets, **per_batch_flags) -> scalar`. Term
+  weights, and optional per-output placement weights, are traced arrays, so
+  changing a weight or a per-batch flag value does not recompile. The return
+  value is `(weighted_loss, aux)` where `aux` holds the unweighted per-term
+  scalars consumed by `Trainer(has_aux=True)`. `WeightedLoss` remains the
+  static-float combinator.
+- **`xtrax.profiling.count_backend_compiles` and `assert_no_recompile_after`** (#2083):
+  context manager counting JAX `/jax/core/compile/backend_compile_duration` events
+  (count and seconds), plus a helper that asserts a stepped function does not
+  backend-compile after warmup. The private `unregister_event_duration_listener`
+  hook falls back to the public `jax.monitoring` alias and raises if JAX moves both.
+
+- **`xtrax.profiling.load_trace_events` and `hlo_text_for`** (#2084): load Perfetto
+  `traceEvents` from a `jax.profiler.trace` directory, and extract compiled HLO text
+  from both `jax.jit` and `eqx.filter_jit`. `hlo_text_for` raises `TypeError` when
+  the compiled object has no HLO text, instead of returning `None`.
+
+### Fixed
+
+- **CPU fusion scope attribution** (#2084): `scope_map_from_hlo_text` maps each
+  fusion instruction (the `hlo_op` a CPU trace executes, e.g. `add_add_fusion.3`)
+  to the named_scope label of its fused computation's instructions, or to the
+  fusion instruction's own `op_name` when the body has none. `parse_scopes` no
+  longer returns an empty attribution for fused CPU steps.
+- **Planner helpers for joint-budget consumers** (#2521): `MemoryBudget` mode
+  fixes a heterogeneous axis to `ChunkedMap` and never assigns it `Vmap`.
+  `BatchPlan.decision_for(axis_name)` returns that axis's decision
+  (`KeyError` names unknown axes). `plan_axis` is a single-axis wrapper over
+  `BatchPlanner` (an int bytes-per-element estimate, or a callable measured
+  with `lowered_memory_estimate`). `estimate_memory_theoretical` is a
+  domain-free product-of-extents estimator in `xtrax.tiling`. Body-mode
+  `Scan` in `axis_dispatch`, and whether `CarrySpec.transition` executes,
+  are unchanged and remain deferred (#2543).
+- **Host-side bucketing primitives on `xtrax.tiling`** (#2522): `BUCKET_LADDER`
+  (64..2048) now lives in `xtrax.tiling` so runtime code does not import the
+  export stack. `xtrax.export.rings.BUCKET_LADDER` is the same object. New
+  helpers: `valid_span` (valid span from the leading edge through the last
+  valid position), `select_rung` (smallest ladder rung at least the span,
+  capped at the caller's current length), `trim_axis`, and `pad_axis`.
+
+- **Layered config resolution** (#2524): `xtrax.config.resolve_layered` resolves
+  one key through an explicit argument, an environment variable (empty or
+  `none` disables that layer), `[tool.<app>]` in the nearest `pyproject.toml`,
+  the per-machine `${XDG_CONFIG_HOME:-~/.config}/<app>/config.toml`, then a
+  default, and reports which layer decided. A malformed TOML file raises
+  `ValueError`. `resolve_memory_budget` builds on it: configured values are
+  absolute byte counts; otherwise it uses `device_memory_budget` (source
+  `device`) and, when the device reports no `bytes_limit`, a logged 4 GiB
+  default scaled by `headroom`.
+
+### Changed
+
+- **`BatchPlanner` memory-limit fallback is no longer silent** (#2524): the
+  per-axis `memory_estimator` path reads the device limit via
+  `device_memory_budget(fraction=1.0)`, so a reported `bytes_limit` is still
+  compared in full. When the device does not report `bytes_limit`, the planner
+  logs once and uses the documented 4 GiB default
+  (`xtrax.tiling.estimators.DEFAULT_DEVICE_MEMORY_BYTES`) instead of
+  substituting that figure with no record. Planning decisions on devices that
+  do not report a limit are unchanged. `device_memory_budget` itself still
+  raises when the runtime cannot answer.
+- **using-xtrax skill**: end-to-end length bucketing (`AxisSpec.bucket_boundaries`,
+  host `select_bucket`/`bucketize`, `BUCKET_LADDER`, one compile per rung; #2497),
+  a local-copy replacement table and the 0.4.0a12 `SafeMap` alias removal pointing
+  at `codemods/safemap-to-chunkedmap/` (#2498), standalone `convert_to_onnx` versus
+  raw jax2onnx plus rings/divergence (#2499), limits and telemetry fail-closed
+  (`LedgerUnavailableError`; #2500), duplicated primitives including
+  `synthesize_dedup_spec` (#2501), `WhileCarry` for inference-only loops (#2103),
+  and the `ChunkedMap`/`lax.map` scan-of-while compile hazard (#2105).
+### Fixed
+
+- **Skill examples match installed call signatures** (`agent_assets/skills`, #2496).
+  Copy-paste blocks for `select_bucket` / `bucketize`, `SafetyTrainStep`, `Engine.fit`,
+  `make_optimizer` / `adamw_with_schedule`, distributed init, and checkpoints now follow
+  current source. `tests/skills/test_skill_code_blocks.py` parses every fenced Python
+  block, resolves `xtrax` names, and binds literal keyword arguments. A block whose
+  nearest non-blank line above the fence is `<!-- skill-check: skip -->` is skipped.
+  The using-xtrax preflight compares frontmatter `xtrax_version` with `xtrax.__version__`
+  and warns on mismatch.
+- **xtrax skill descriptions load for the task** (`agent_assets/skills`, #2502).
+  Frontmatter descriptions and triggers are phrased around padding and bucketing,
+  chunked maps, memory-budgeted batching, ONNX or StableHLO export, resumable
+  training, zarr sinks, citable measurements, slow scans, numerical divergence,
+  and shared-filesystem reads.
+- **`chunked_map` never vmaps an axis of length 1** (#2520). `jax.lax.map(..., batch_size=k)`
+  vmaps each chunk, so `batch_size=1`, a remainder of 1, and a leading axis of length 1
+  emitted a vmap-of-1 (the miscompile aminx #2391 hit on TITAN RTX). Those cases now run
+  unbatched: a sequential `lax.map`, a direct call on the peeled last element, or a direct
+  call when the whole axis has length 1. The same guard covers every xtrax-dispatched vmap:
+  `ChunkedMapIterator`, `VmapIterator` (including tree-structured `in_axes` and `None`
+  prefixes), unordered `execute_map_axis(Vmap)`, `axis_dispatch(Vmap)`, and the per-row
+  and dedup-gather maps in `verify_dedup_outputs`. Ordered paths are unchanged. Values
+  and order are unchanged.
 
 ## [0.4.0a12] - 2026-10-01
 

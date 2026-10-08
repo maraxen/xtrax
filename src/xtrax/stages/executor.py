@@ -90,7 +90,7 @@ import jax
 
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.tiling.strategy import ChunkedMap, Vmap
-from xtrax.transforms.map import chunked_map
+from xtrax.transforms.map import _apply_size1, _is_size1_axis, chunked_map
 from xtrax.transforms.scan import safe_scan
 
 
@@ -178,23 +178,28 @@ def execute_map_axis(
                 "executor; this is a defense-in-depth check.)"
             )
             raise ExecutorError(msg)
-        try:
-            ys = jax.vmap(wrapped)(xs)
-        except ValueError as exc:
-            if "Cannot `vmap` ordered IO callback" not in str(exc):
-                raise
-            msg = (
-                "An ordered Tap/Sink nested inside this Vmap axis's `fn` (not on the "
-                "`boundary` passed directly to this call) hit the same JAX restriction "
-                "as a direct Vmap+ordered boundary: 'Cannot vmap ordered IO callback'. "
-                "Vmap cannot host ordering at ANY nesting depth when the sunk value "
-                "depends on the vmapped axis (see this module's docstring, 'Nesting: "
-                "vmap-of-scan'). The recommended fix is NOT to nest a jax.vmap call at "
-                "all -- bake the outer axis's cardinality directly into "
-                "execute_scan_axis's carry/xs shape and write the per-step logic as "
-                "ordinary broadcasting array ops instead."
-            )
-            raise ExecutorError(msg) from exc
+        # Unordered Vmap. A length-1 axis is a direct call, not a vmap (#2520).
+        # The ordered-boundary rejection above is unchanged.
+        if _is_size1_axis(xs, 0):
+            ys = _apply_size1(wrapped, xs)
+        else:
+            try:
+                ys = jax.vmap(wrapped)(xs)
+            except ValueError as exc:
+                if "Cannot `vmap` ordered IO callback" not in str(exc):
+                    raise
+                msg = (
+                    "An ordered Tap/Sink nested inside this Vmap axis's `fn` (not on the "
+                    "`boundary` passed directly to this call) hit the same JAX restriction "
+                    "as a direct Vmap+ordered boundary: 'Cannot vmap ordered IO callback'. "
+                    "Vmap cannot host ordering at ANY nesting depth when the sunk value "
+                    "depends on the vmapped axis (see this module's docstring, 'Nesting: "
+                    "vmap-of-scan'). The recommended fix is NOT to nest a jax.vmap call at "
+                    "all -- bake the outer axis's cardinality directly into "
+                    "execute_scan_axis's carry/xs shape and write the per-step logic as "
+                    "ordinary broadcasting array ops instead."
+                )
+                raise ExecutorError(msg) from exc
         return _apply_fuse(ys, boundary)
 
     if isinstance(strategy, ChunkedMap):

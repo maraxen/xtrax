@@ -56,27 +56,53 @@ class TestInputClassGenerators:
         assert result.abstract_inputs == ai
         assert result.concrete_inputs == ci
 
-    def test_symmetric_geometry_is_in_contract_and_all_ones_mask(self):
-        """AC-17: symmetric_geometry is the primary, in-contract class (M6)."""
-        result = rings.symmetric_geometry(64)
-        assert result.label == "symmetric_geometry"
+    def test_make_input_class_uses_the_caller_generator(self):
+        """The rings API takes a generator callable; xtrax does not ship a geometry."""
+
+        def synthetic(length: int, *, width: int) -> tuple[jax.Array, jax.Array]:
+            values = jnp.ones((length, width), dtype=jnp.float32)
+            mask = jnp.ones((length,), dtype=jnp.bool_)
+            return values, mask
+
+        result = rings.make_input_class(synthetic, 32, label="synthetic", width=4)
+        assert result.label == "synthetic"
         assert result.in_contract is True
-        coords, mask = result.concrete_inputs
-        assert coords.shape == (64, 3)
+        values, mask = result.concrete_inputs
+        assert values.shape == (32, 4)
         assert bool(jnp.all(mask))
+        assert result.abstract_inputs[0].shape == (32, 4)
+        assert result.abstract_inputs[0].dtype == jnp.float32
 
-    def test_symmetric_geometry_produces_exact_geometric_ties(self):
-        """An ideal helix: pairs at equal |i-j| separation are exactly tied."""
-        result = rings.symmetric_geometry(64)
-        coords, _mask = result.concrete_inputs
-        d0 = float(jnp.linalg.norm(coords[0] - coords[2]))
-        d1 = float(jnp.linalg.norm(coords[1] - coords[3]))
-        assert d0 == pytest.approx(d1, abs=1e-4)
+    def test_make_input_class_can_mark_a_class_out_of_contract(self):
+        """AC-17: an out-of-contract label is the caller's, not a protein generator's."""
 
-    def test_symmetric_geometry_rejects_a_non_bucket_length(self):
-        """Section 6.2: length is not a free axis."""
-        with pytest.raises(ValueError, match="bucket ladder"):
-            rings.symmetric_geometry(100)
+        def partial(length: int) -> tuple[jax.Array, jax.Array]:
+            values = jnp.ones((length, 2), dtype=jnp.float32)
+            mask = jnp.ones((length,), dtype=jnp.bool_).at[length // 2 :].set(False)
+            return values, mask
+
+        result = rings.make_input_class(partial, 16, label="partial", in_contract=False)
+        assert result.label == "partial"
+        assert result.in_contract is False
+        _values, mask = result.concrete_inputs
+        assert int(jnp.sum(mask)) < 16
+
+    def test_protein_generators_warn_and_still_return_a_class(self):
+        """One-release shim: helix and k-neighbour generators warn, then still build.
+
+        ``stacklevel`` must point at this caller. A warning attributed to
+        ``rings.py`` means the shim swallowed the stack frame.
+        """
+        with pytest.warns(DeprecationWarning, match="symmetric_geometry") as helix_warnings:
+            helix = rings.symmetric_geometry(64)
+        assert helix_warnings[0].filename == __file__
+        assert helix.label == "symmetric_geometry"
+        assert helix.in_contract is True
+        with pytest.warns(DeprecationWarning, match="sub_k_neighbours") as clamped_warnings:
+            clamped = rings.sub_k_neighbours(64, k_neighbors=48)
+        assert clamped_warnings[0].filename == __file__
+        assert clamped.label == "sub_k_neighbours"
+        assert clamped.in_contract is False
 
     def test_magnitude_extremes_is_in_contract_and_finite(self):
         result = rings.magnitude_extremes(64)
@@ -93,21 +119,6 @@ class TestInputClassGenerators:
         finfo = np.finfo(np.float32)
         assert magnitudes.max() > finfo.max * 0.05
         assert magnitudes[magnitudes > 0].min() < finfo.tiny * 1e5
-
-    def test_sub_k_neighbours_is_labelled_out_of_contract(self):
-        """AC-17: sub_k_neighbours must never carry a verdict alone."""
-        result = rings.sub_k_neighbours(64, k_neighbors=48)
-        assert result.label == "sub_k_neighbours"
-        assert result.in_contract is False
-
-    def test_sub_k_neighbours_mask_is_actually_below_the_clamp(self):
-        result = rings.sub_k_neighbours(64, k_neighbors=48)
-        _coords, mask = result.concrete_inputs
-        assert int(jnp.sum(mask)) < 48
-
-    def test_sub_k_neighbours_rejects_a_non_bucket_length(self):
-        with pytest.raises(ValueError, match="bucket ladder"):
-            rings.sub_k_neighbours(100, k_neighbors=48)
 
 
 class TestMagnitudeExtremesSubnormals:
@@ -156,30 +167,6 @@ class TestInputClassGeneratorsHonourCallerDtype:
             f"magnitude_extremes({dtype=}) produced an exact zero -- underflow "
             f"from casting float32-scaled magnitudes into a narrower dtype"
         )
-
-    @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16, jnp.bfloat16])
-    def test_symmetric_geometry_and_sub_k_neighbours_do_not_overflow(self, dtype):
-        """The other section-6.2 generators do not derive magnitudes from a
-        hardcoded ``finfo`` at all, so they should already be safe for every
-        supported dtype -- this pins that down rather than assuming it.
-
-        Unlike ``magnitude_extremes``, an exact zero is NOT itself a defect
-        here: ``symmetric_geometry`` deliberately places the helix's off-axis
-        coordinate at 0 by construction ("extra dims beyond the helix axes
-        stay at 0, preserving exact ties" -- its own docstring), and
-        ``sub_k_neighbours`` draws from a standard normal that can
-        legitimately land near (if not exactly at) 0. Only non-finiteness --
-        the actual signature of a hardcoded-float32-finfo overflow -- would
-        indicate the same defect as ``magnitude_extremes``.
-        """
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", RuntimeWarning)
-            sym = rings.symmetric_geometry(64, dtype=dtype)
-            sub = rings.sub_k_neighbours(64, k_neighbors=48, dtype=dtype)
-        for result in (sym, sub):
-            coords, _mask = result.concrete_inputs
-            values = np.asarray(coords).astype(np.float64)
-            assert not np.any(np.isinf(values)), f"{result.label}({dtype=}) produced inf"
 
 
 # ---------------------------------------------------------------------------
@@ -2577,21 +2564,24 @@ class TestRunLadder:
         )
         assert seen_targets == [rings.NATIVE_PORTABLE]
 
-    def test_ac17_sub_k_neighbours_label_survives_to_every_report_level_ring_result(self):
+    def test_ac17_out_of_contract_label_survives_to_every_ring_result(self):
         """AC-17: the in-contract label must be asserted at the REPORT level.
 
         Every ``RingResult``-producing test elsewhere in this suite uses
         ``in_contract=True``, the field's default -- so a runner that dropped
         the label entirely (always defaulting to True) would still pass all
-        of them. This drives a real ``sub_k_neighbours``-labelled
-        ``InputClassResult`` (out-of-contract, AC-17) through ``run_ladder``
-        and checks the ``in_contract`` field on the resulting ``RingResult``s
-        themselves -- not just on the generator's own return value, which
-        ``TestInputClassGenerators.test_sub_k_neighbours_is_labelled_out_of_contract``
-        already covers.
+        of them. This drives a caller-supplied out-of-contract class through
+        ``run_ladder`` and checks ``in_contract`` on the resulting
+        ``RingResult``s themselves.
         """
-        ic = rings.sub_k_neighbours(64, k_neighbors=48)
-        assert ic.label == "sub_k_neighbours"
+
+        def partial(length: int) -> tuple[jax.Array, jax.Array]:
+            values = jnp.ones((length, 2), dtype=jnp.float32)
+            mask = jnp.zeros((length,), dtype=jnp.bool_)
+            return values, mask
+
+        ic = rings.make_input_class(partial, 8, label="partial", in_contract=False)
+        assert ic.label == "partial"
         assert ic.in_contract is False
 
         def fake_validate(*_args, **_kwargs):
@@ -2638,7 +2628,7 @@ class TestRunLadder:
         )
         assert results  # sanity: the ladder actually ran
         for result in results:
-            assert result.input_class == "sub_k_neighbours"
+            assert result.input_class == "partial"
             assert result.in_contract is False
 
     def test_r2a_receives_primary_names_derived_from_probe_deps_sinks(
