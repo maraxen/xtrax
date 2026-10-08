@@ -15,7 +15,7 @@ chmod +x "$(git rev-parse --git-common-dir)/hooks/pre-push"
 
 ## What's installed
 
-- `pre-push` -- first syncs the CI-parity extras (`uv sync --frozen --extra dev --extra eda --extra io`, backlog #4398), echoing how long the sync took, then runs the same 3 cheap checks as the matching steps of `.github/workflows/ci.yml`'s `lint-format-type-test` job (`ruff check .`, `ruff format --check .`, `ty check src/`) before every `git push`. Skips
+- `pre-push` -- first syncs the CI-parity extras (`uv sync --frozen --extra dev --extra eda --extra io --extra data`, backlog #4398), echoing how long the sync took, then runs the same 3 cheap checks as the matching steps of `.github/workflows/ci.yml`'s `lint-format-type-test` job (`ruff check .`, `ruff format --check .`, `ty check src/`) before every `git push`. Skips
   the expensive coverage-gated pytest tiers -- those stay CI-only.
 - Side effect to know: the sync makes `.venv` match *exactly* those extras, so
   anything extra you installed locally (torch, sphinx, ...) is stripped from

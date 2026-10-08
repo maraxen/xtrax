@@ -4130,6 +4130,7 @@ controller = [
     { name = "bathos" },
 ]
 data = [
+    { name = "absl-py" },
     { name = "grain" },
 ]
 dev = [
@@ -4192,6 +4193,7 @@ eda = [
 
 [package.metadata]
 requires-dist = [
+    { name = "absl-py", marker = "extra == 'data'", specifier = ">=2.0.0" },
     { name = "bathos", marker = "extra == 'controller'", specifier = ">=0.13.0a1,<0.14" },
     { name = "beartype", marker = "extra == 'dev'", specifier = ">=0.18.0" },
     { name = "chex", marker = "extra == 'dev'", specifier = ">=0.1.86" },
