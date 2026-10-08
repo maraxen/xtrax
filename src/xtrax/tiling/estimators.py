@@ -14,10 +14,13 @@ planning into JAX/XLA's own memory accounting:
 fallback when a compile is unnecessary.
 
 The two JAX helpers fail loud when the backend cannot answer (no silent
-defaults), matching budget mode's strictness contract. A typical
-``MemoryBudget.estimate`` calls ``lowered_memory_estimate`` on a
-representative tile of the computation for the candidate decisions and
-scales by the plan's live tile counts.
+defaults), matching budget mode's strictness contract. Callers that still need
+a number when the device cannot answer (``BatchPlanner``'s per-axis estimator,
+``xtrax.config.resolve_memory_budget``) log and use
+``DEFAULT_DEVICE_MEMORY_BYTES`` instead of substituting it silently.
+A typical ``MemoryBudget.estimate`` calls ``lowered_memory_estimate`` on a
+representative tile of the computation for the candidate decisions and scales
+by the plan's live tile counts.
 
 Spec: .praxia/docs/specs/260706_joint-budget-batch-planner.md
 """
@@ -26,6 +29,11 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 import jax
+
+# Documented fallback when the runtime does not report bytes_limit.
+# ``device_memory_budget`` itself still raises; BatchPlanner and
+# ``resolve_memory_budget`` log once and use this (headroom scales it there).
+DEFAULT_DEVICE_MEMORY_BYTES: int = 4 * 1024**3
 
 
 def device_memory_budget(fraction: float = 0.9, device: Any | None = None) -> int:

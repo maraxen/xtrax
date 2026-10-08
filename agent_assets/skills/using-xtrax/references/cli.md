@@ -170,7 +170,7 @@ Verify: `src/xtrax/config.py`; `xtrax.cli.config.load_config` is the dog-fooded 
 
 #### Minimal `config.toml` Skeleton
 
-Each section uses import-path `path`/`factory` keys plus optional `kwargs`. Verify against `tests/cli/test_config.py:16-37`:
+Each section uses import-path `path`/`factory` keys plus optional `kwargs`. Section layout matches `tests/cli/test_config.py`. `kwargs` are passed through to the factory (`src/xtrax/cli/resolve.py`); `adamw_with_schedule` takes `peak_lr`, `warmup_steps`, and `total_steps` (`src/xtrax/training/optim.py`):
 
 ```toml
 schema_version = 1
@@ -183,7 +183,7 @@ kwargs = {}
 
 [optimizer]
 path = "xtrax.training.optim:adamw_with_schedule"
-kwargs = { learning_rate = 1e-3, total_steps = 300 }
+kwargs = { peak_lr = 1e-3, warmup_steps = 10, total_steps = 300 }
 
 [loss]
 path = "mylib.losses:mse_loss"
