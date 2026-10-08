@@ -15,6 +15,7 @@ __all__ = [
     "AmbiguousAxisError",
     "AxisRole",
     "CseTraceError",
+    "InputInvarianceError",
     "MemoDonationError",
     "MemoImpurityError",
     "MemoKeyUnsupportedLeafError",
@@ -95,6 +96,23 @@ class MemoKeyUnsupportedLeafError(XtraxInferenceError):
 
 class MemoStalenessError(XtraxInferenceError):
     """Spot-check found a cached entry diverging from fresh computation."""
+
+
+class InputInvarianceError(XtraxInferenceError):
+    """An output claimed invariant along an axis reads an input that varies along it.
+
+    ``axis`` is the mapped axis, ``output_index`` the claimed output, and
+    ``input_name`` a varying input that output reads.
+    """
+
+    def __init__(self, axis: str, output_index: int, input_name: str) -> None:
+        self.axis = axis
+        self.output_index = output_index
+        self.input_name = input_name
+        super().__init__(
+            f"output {output_index} claimed invariant along axis {axis!r} "
+            f"reads varying input {input_name!r}"
+        )
 
 
 class CseTraceError(XtraxInferenceError):

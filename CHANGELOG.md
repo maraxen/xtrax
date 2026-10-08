@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-axis input invariance** (#2598, #2599): `AxisSpec.varying_inputs`
+  names the inputs that vary along a mapped axis; every other named input is
+  invariant along it. `declare_varying_inputs` rejects an unknown axis or
+  input name. The list round-trips on `BatchPlan` and is printed by
+  `xtrax plan` and `xtrax explain`. `verify_axis_invariance` traces with
+  `jax.make_jaxpr` and reports outputs and intermediates that do not read a
+  varying input. `claimed_invariant_outputs` (axis to output indices) checks
+  a hoisting claim: a claimed output that reads a varying input raises
+  `InputInvarianceError`, naming the axis, the output, and the input.
+  Invariant inputs may still combine with varying ones (weights times data).
+  The check walks callees inside `jax.checkpoint`,
+  `custom_jvp`, and `jit`/`pjit`.
+
 - **Grain input pipelines** (#2085): `xtrax.data.build_input_pipeline` builds a
   domain-free Grain pipeline (process shard, shuffle, repeat, optional
   caller-supplied fixed-length pad, `numpy.stack` batch, threaded prefetch,

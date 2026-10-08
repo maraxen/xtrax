@@ -20,6 +20,9 @@ class AxisStatsEntry(TypedDict):
         reasoning: Human-readable explanation of the decision.
         memory_estimate_bytes: Estimated memory consumption (in bytes)
             for this axis (optional).
+        varying_inputs: Named inputs that vary along this axis. Other named
+            inputs are invariant along it. Empty when the spec does not
+            declare any.
     """
 
     name: str
@@ -28,6 +31,7 @@ class AxisStatsEntry(TypedDict):
     batch_size: int
     reasoning: str
     memory_estimate_bytes: NotRequired[int | None]
+    varying_inputs: NotRequired[list[str]]
 
 
 class DedupStatsEntry(TypedDict):
