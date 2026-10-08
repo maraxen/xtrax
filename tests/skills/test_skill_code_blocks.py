@@ -869,3 +869,14 @@ def test_non_python_fence_is_ignored(tmp_path: Path) -> None:
 def test_matching_keyword_binds(tmp_path: Path, source: str) -> None:
     _write_block(tmp_path, source)
     assert check_tree(tmp_path) == []
+
+
+def test_tiling_skill_rejects_hand_typed_activation_estimates() -> None:
+    """Joint-budget estimates are a lowered tile scaled by live tile counts.
+
+    A hand-typed count of output logits was about 290x under XLA's
+    argument + output + temp total and the plan walked off a memory cliff.
+    """
+    text = (SKILLS / "using-xtrax" / "references" / "tiling.md").read_text(encoding="utf-8")
+    assert "Hand-typed activation-byte estimates are unsupported" in text
+    assert "lowered_memory_estimate" in text

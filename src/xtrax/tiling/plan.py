@@ -72,6 +72,10 @@ class AxisSpec:
             provided, the planner selects the Bucket strategy (length-padding to the
             nearest boundary) instead of the cardinality-based rules. None disables
             bucketing (default).
+        element_input_bytes: Per-element input size in bytes, when the caller
+            knows it. A per-axis ``memory_estimator`` result below this value
+            raises ``ValueError``. None means the spec has no element shape or
+            dtype, so the planner skips that check.
     """
 
     name: str
@@ -82,9 +86,17 @@ class AxisSpec:
     dedup_eligible: bool = False
     bucket_boundaries: tuple[int, ...] | list[int] | None = None
     role: AxisRole = AxisRole.KNOWN
+    element_input_bytes: int | None = None
 
     def __post_init__(self) -> None:
-        """Normalize and validate bucket_boundaries when provided."""
+        """Validate element_input_bytes and normalize bucket_boundaries."""
+        if self.element_input_bytes is not None:
+            value = self.element_input_bytes
+            if isinstance(value, bool) or value < 0:
+                raise ValueError(
+                    f"AxisSpec(name={self.name!r}): element_input_bytes must be a "
+                    f"non-negative int, got {value!r}."
+                )
         if self.bucket_boundaries is None:
             return
         boundaries = tuple(self.bucket_boundaries)
@@ -188,6 +200,19 @@ class BatchPlanner:
     allocator limit. The limit is ``device_memory_budget(fraction=1.0)``
     (the full ``bytes_limit``). If the device does not report one, the
     comparison uses the documented 4 GiB default and logs that once.
+    An estimator that raises fails ``plan()`` with ``RuntimeError`` naming
+    the axis; the original exception is chained. A missing device limit is
+    not an estimator failure.
+
+    When ``AxisSpec.element_input_bytes`` is set, that value is the
+    per-element input-byte lower bound: an estimate below it raises
+    ``ValueError`` naming the axis, the estimate, and the bound. When the
+    field is None, the spec has no element shape or dtype, so no lower
+    bound is derivable and the check is skipped.
+
+    When memory_estimator is None, rules 3 and 4 stay as written. When rule 3
+    then selects Vmap with no memory estimate, the planner logs a warning once
+    per planner and axis.
 
     When budget is provided (joint-budget mode), rules 3-4 are replaced for
     non-bucket axes: every eligible homogeneous axis starts at Vmap, then axes
@@ -217,8 +242,12 @@ class BatchPlanner:
                 limit, ChunkedMap is preferred over Vmap. The limit comes from
                 ``device_memory_budget(fraction=1.0)``; when the device reports no
                 ``bytes_limit``, a documented 4 GiB default is logged once and used.
-                If the estimator itself raises, falls back to the cardinality rules.
-                Mutually exclusive with budget.
+                If the estimator raises, ``plan()`` raises ``RuntimeError`` naming
+                the axis (the original exception is chained). When this argument
+                is None, cardinality rules are unchanged; a Vmap chosen without an
+                estimate logs a warning once per planner and axis. An estimate below
+                ``AxisSpec.element_input_bytes``, when that field is set, raises
+                ``ValueError``. Mutually exclusive with budget.
             carry_specs: Optional list of CarrySpec objects declaring which axes
                 should use Scan strategy (Phase 0 pre-demotion), or WhileCarry
                 when CarrySpec.collect_outputs=False.
@@ -245,6 +274,7 @@ class BatchPlanner:
         self.dedup_specs = dedup_specs or []
         self.heterogeneous_axes = heterogeneous_axes or set()
         self.budget = budget
+        self._missing_estimator_warned_axes: set[str] = set()
 
     def plan(self, specs: Sequence[AxisSpec]) -> BatchPlan:
         """Generate a tiling plan for the given specs.
@@ -266,7 +296,10 @@ class BatchPlanner:
             BatchPlan with decisions for each spec.
 
         Raises:
-            ValueError: If a CarrySpec targets a heterogeneous axis.
+            ValueError: If a CarrySpec targets a heterogeneous axis, or if a
+                per-axis memory estimate is below ``AxisSpec.element_input_bytes``.
+            RuntimeError: If ``memory_estimator`` raises. The message names the
+                axis and the original exception is chained.
             AmbiguousAxisError: If an axis has an unresolved UNKNOWN role.
             BudgetInfeasibleError: In budget mode, if demoting every candidate
                 -- and, as a last resort, planning dedup axes without dedup --
@@ -574,6 +607,17 @@ class BatchPlanner:
                 strategy=decision.strategy,
             )
 
+    def _warn_missing_memory_estimator(self, spec: AxisSpec) -> None:
+        """Log once when cardinality rules run with no per-axis estimator."""
+        if spec.name in self._missing_estimator_warned_axes:
+            return
+        self._missing_estimator_warned_axes.add(spec.name)
+        logger.warning(
+            "BatchPlanner memory_estimator is None for axis %r; "
+            "cardinality rules select Vmap when cardinality <= default_batch_size.",
+            spec.name,
+        )
+
     def _decide_strategy(self, spec: AxisSpec) -> AxisDecision:
         """Decide strategy for a single AxisSpec following selection rules."""
 
@@ -599,18 +643,25 @@ class BatchPlanner:
             # No special handling: fall through to cardinality-based rules
             pass
 
-        # Check memory estimate before deciding between Vmap and ChunkedMap
+        # Check memory estimate before deciding between Vmap and ChunkedMap.
+        # A missing device limit is not an estimator failure; that path logs the
+        # documented 4 GiB default inside _memory_estimator_device_limit.
         should_prefer_safemap_for_memory = False
         if self.memory_estimator is not None:
             try:
                 estimated_bytes = self.memory_estimator(spec)
-                if estimated_bytes > _memory_estimator_device_limit():
-                    should_prefer_safemap_for_memory = True
-            except Exception:
-                # Estimator failures fall back to the cardinality rules. A missing
-                # device limit is not an estimator failure; that path logs the
-                # documented 4 GiB default inside _memory_estimator_device_limit.
-                pass
+            except Exception as exc:
+                raise RuntimeError(
+                    f"BatchPlanner memory_estimator failed for axis {spec.name!r}: {exc}"
+                ) from exc
+            bound = spec.element_input_bytes
+            if bound is not None and estimated_bytes < bound:
+                raise ValueError(
+                    f"memory_estimator for axis {spec.name!r} returned {estimated_bytes} "
+                    f"bytes, below the per-element input lower bound of {bound} bytes"
+                )
+            if estimated_bytes > _memory_estimator_device_limit():
+                should_prefer_safemap_for_memory = True
 
         # Rule 3: cardinality <= batch_size → Vmap (unless memory override)
         if spec.cardinality <= spec.default_batch_size:
@@ -625,6 +676,8 @@ class BatchPlanner:
                     strategy=strategy,
                 )
             else:
+                if self.memory_estimator is None:
+                    self._warn_missing_memory_estimator(spec)
                 strategy = Vmap()
                 return AxisDecision(
                     spec=spec,
