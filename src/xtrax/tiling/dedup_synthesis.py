@@ -49,6 +49,7 @@ import numpy as np
 from jax import lax
 
 from xtrax.tiling.dedup import DedupSpec
+from xtrax.transforms.map import _apply_size1, _is_size1_axis
 
 __all__ = [
     "DedupSpecCollisionError",
@@ -468,6 +469,31 @@ def merge_dedup_specs(
     return result
 
 
+def _dedup_output_maps(
+    fn: Any,
+    *,
+    dedup_fn: Any,
+    gather_fn: Any,
+    unique_idx: Any,
+    index_map: Any,
+) -> tuple[Any, Any]:
+    """Return the per-row and dedup-gather programs `verify_dedup_outputs` compares."""
+
+    def _map_rows(batch: Any) -> Any:
+        # A length-1 axis is a direct call, not a vmap (#2520).
+        if _is_size1_axis(batch, 0):
+            return _apply_size1(fn, batch)
+        return jax.vmap(fn)(batch)
+
+    def _per_row(batch: Any) -> Any:
+        return _map_rows(batch)
+
+    def _dedup_path(batch: Any) -> Any:
+        return gather_fn(_map_rows(dedup_fn(batch, unique_idx)), index_map)
+
+    return _per_row, _dedup_path
+
+
 def verify_dedup_outputs(
     spec: DedupSpec,
     fn: Any,
@@ -480,9 +506,10 @@ def verify_dedup_outputs(
     """Check claim (ii): the dedup path reproduces fn's per-row outputs (#5217).
 
     Evaluates `fn` two ways over the batch `xs` (a pytree whose leaves share the
-    leading axis N): per row, `jax.vmap(fn)(xs)`; and the way DedupGather dispatches
-    it, `fn` vmapped over the K canonical rows then gathered back to N through the
-    spec's dedup/gather functions. The two are compared NUMERICALLY, never bitwise
+    leading axis N): once per row, and once the way DedupGather dispatches it
+    (`fn` over the K canonical rows, then gathered back to N). A mapped axis of
+    length 1 is a direct call, not a vmap (#2520). The two are compared
+    NUMERICALLY, never bitwise
     (spec 260825 §10.2/10.3): XLA fuses the two programs differently, and float32
     outputs legitimately differ in the last bits (measured 260930: 3.3e-6 at
     N=2000, K=7). Integer and bool output leaves are compared exactly.
@@ -516,11 +543,13 @@ def verify_dedup_outputs(
     unique_idx = jnp.asarray(dg.unique_indices)
     index_map = jnp.asarray(dg.index_map)
 
-    def _per_row(batch: Any) -> Any:
-        return jax.vmap(fn)(batch)
-
-    def _dedup_path(batch: Any) -> Any:
-        return dg.gather_fn(jax.vmap(fn)(dg.dedup_fn(batch, unique_idx)), index_map)
+    _per_row, _dedup_path = _dedup_output_maps(
+        fn,
+        dedup_fn=dg.dedup_fn,
+        gather_fn=dg.gather_fn,
+        unique_idx=unique_idx,
+        index_map=index_map,
+    )
 
     # Production dispatch is jitted, and XLA fusion is where the two paths differ.
     run_per_row: Any = jax.jit(_per_row) if jit else _per_row

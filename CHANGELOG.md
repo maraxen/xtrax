@@ -27,6 +27,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the named_scope label of its fused computation's instructions, or to the
   fusion instruction's own `op_name` when the body has none. `parse_scopes` no
   longer returns an empty attribution for fused CPU steps.
+- **Planner helpers for joint-budget consumers** (#2521): `MemoryBudget` mode
+  fixes a heterogeneous axis to `ChunkedMap` and never assigns it `Vmap`.
+  `BatchPlan.decision_for(axis_name)` returns that axis's decision
+  (`KeyError` names unknown axes). `plan_axis` is a single-axis wrapper over
+  `BatchPlanner` (an int bytes-per-element estimate, or a callable measured
+  with `lowered_memory_estimate`). `estimate_memory_theoretical` is a
+  domain-free product-of-extents estimator in `xtrax.tiling`. Body-mode
+  `Scan` in `axis_dispatch`, and whether `CarrySpec.transition` executes,
+  are unchanged and remain deferred (#2543).
+- **Host-side bucketing primitives on `xtrax.tiling`** (#2522): `BUCKET_LADDER`
+  (64..2048) now lives in `xtrax.tiling` so runtime code does not import the
+  export stack. `xtrax.export.rings.BUCKET_LADDER` is the same object. New
+  helpers: `valid_span` (valid span from the leading edge through the last
+  valid position), `select_rung` (smallest ladder rung at least the span,
+  capped at the caller's current length), `trim_axis`, and `pad_axis`.
+
+- **Layered config resolution** (#2524): `xtrax.config.resolve_layered` resolves
+  one key through an explicit argument, an environment variable (empty or
+  `none` disables that layer), `[tool.<app>]` in the nearest `pyproject.toml`,
+  the per-machine `${XDG_CONFIG_HOME:-~/.config}/<app>/config.toml`, then a
+  default, and reports which layer decided. A malformed TOML file raises
+  `ValueError`. `resolve_memory_budget` builds on it: configured values are
+  absolute byte counts; otherwise it uses `device_memory_budget` (source
+  `device`) and, when the device reports no `bytes_limit`, a logged 4 GiB
+  default scaled by `headroom`.
+
+### Changed
+
+- **`BatchPlanner` memory-limit fallback is no longer silent** (#2524): the
+  per-axis `memory_estimator` path reads the device limit via
+  `device_memory_budget(fraction=1.0)`, so a reported `bytes_limit` is still
+  compared in full. When the device does not report `bytes_limit`, the planner
+  logs once and uses the documented 4 GiB default
+  (`xtrax.tiling.estimators.DEFAULT_DEVICE_MEMORY_BYTES`) instead of
+  substituting that figure with no record. Planning decisions on devices that
+  do not report a limit are unchanged. `device_memory_budget` itself still
+  raises when the runtime cannot answer.
+- **using-xtrax skill**: end-to-end length bucketing (`AxisSpec.bucket_boundaries`,
+  host `select_bucket`/`bucketize`, `BUCKET_LADDER`, one compile per rung; #2497),
+  a local-copy replacement table and the 0.4.0a12 `SafeMap` alias removal pointing
+  at `codemods/safemap-to-chunkedmap/` (#2498), standalone `convert_to_onnx` versus
+  raw jax2onnx plus rings/divergence (#2499), limits and telemetry fail-closed
+  (`LedgerUnavailableError`; #2500), duplicated primitives including
+  `synthesize_dedup_spec` (#2501), `WhileCarry` for inference-only loops (#2103),
+  and the `ChunkedMap`/`lax.map` scan-of-while compile hazard (#2105).
+### Fixed
+
+- **Skill examples match installed call signatures** (`agent_assets/skills`, #2496).
+  Copy-paste blocks for `select_bucket` / `bucketize`, `SafetyTrainStep`, `Engine.fit`,
+  `make_optimizer` / `adamw_with_schedule`, distributed init, and checkpoints now follow
+  current source. `tests/skills/test_skill_code_blocks.py` parses every fenced Python
+  block, resolves `xtrax` names, and binds literal keyword arguments. A block whose
+  nearest non-blank line above the fence is `<!-- skill-check: skip -->` is skipped.
+  The using-xtrax preflight compares frontmatter `xtrax_version` with `xtrax.__version__`
+  and warns on mismatch.
+- **xtrax skill descriptions load for the task** (`agent_assets/skills`, #2502).
+  Frontmatter descriptions and triggers are phrased around padding and bucketing,
+  chunked maps, memory-budgeted batching, ONNX or StableHLO export, resumable
+  training, zarr sinks, citable measurements, slow scans, numerical divergence,
+  and shared-filesystem reads.
+- **`chunked_map` never vmaps an axis of length 1** (#2520). `jax.lax.map(..., batch_size=k)`
+  vmaps each chunk, so `batch_size=1`, a remainder of 1, and a leading axis of length 1
+  emitted a vmap-of-1 (the miscompile aminx #2391 hit on TITAN RTX). Those cases now run
+  unbatched: a sequential `lax.map`, a direct call on the peeled last element, or a direct
+  call when the whole axis has length 1. The same guard covers every xtrax-dispatched vmap:
+  `ChunkedMapIterator`, `VmapIterator` (including tree-structured `in_axes` and `None`
+  prefixes), unordered `execute_map_axis(Vmap)`, `axis_dispatch(Vmap)`, and the per-row
+  and dedup-gather maps in `verify_dedup_outputs`. Ordered paths are unchanged. Values
+  and order are unchanged.
 
 ## [0.4.0a12] - 2026-10-01
 

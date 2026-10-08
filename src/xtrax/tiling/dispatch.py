@@ -15,7 +15,7 @@ from typing import Any
 import jax
 
 from xtrax.tiling.strategy import AxisStrategy, ChunkedMap, Scan, Vmap, WhileCarry
-from xtrax.transforms.map import chunked_map
+from xtrax.transforms.map import _apply_size1, _is_size1_axis, chunked_map
 from xtrax.transforms.scan import safe_scan
 
 
@@ -141,6 +141,9 @@ def axis_dispatch(
         # Vmap: vectorize over the leading axis
         if fn is None:
             raise ValueError("axis_dispatch: Vmap requires fn")
+        # A length-1 axis is a direct call, not a vmap (#2520).
+        if _is_size1_axis(xs, 0):
+            return _apply_size1(fn, xs)
         return jax.vmap(fn)(xs)
 
     elif isinstance(strategy, ChunkedMap):

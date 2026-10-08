@@ -1,9 +1,10 @@
 """MemoryBudget — declare a joint memory budget for BatchPlanner.
 
 Used by BatchPlanner callers who need whole-plan memory planning: start every
-eligible axis at Vmap, then greedily demote axes to ChunkedMap (in the order specs
-were given) until the joint estimate fits the budget. Mirrors the
-CarrySpec/DedupSpec pattern: caller declares, planner enforces.
+eligible homogeneous axis at Vmap, then greedily demote axes to ChunkedMap (in
+the order specs were given) until the joint estimate fits the budget.
+Heterogeneous axes are fixed to ChunkedMap and are never started at Vmap.
+Mirrors the CarrySpec/DedupSpec pattern: caller declares, planner enforces.
 
 Unlike the per-axis ``memory_estimator`` (which swallows estimator errors and
 reads the device limit implicitly), budget mode is strict: estimator exceptions

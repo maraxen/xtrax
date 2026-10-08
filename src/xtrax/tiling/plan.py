@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, MutableMapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
-
-import jax
+from typing import TYPE_CHECKING, Any, cast
 
 from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
+from xtrax.tiling.estimators import lowered_memory_estimate
 from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
 from xtrax.tiling.strategy import (
     AxisStrategy,
@@ -25,6 +25,36 @@ from xtrax.tiling.strategy import (
 if TYPE_CHECKING:
     from xtrax.tiling.carry import CarrySpec
     from xtrax.tiling.dedup import DedupSpec
+
+logger = logging.getLogger(__name__)
+
+_default_device_limit_logged = False
+
+
+def _memory_estimator_device_limit() -> int:
+    """Byte limit the per-axis ``memory_estimator`` override compares against.
+
+    A device that reports ``memory_stats()["bytes_limit"]`` contributes that
+    full limit (``device_memory_budget(fraction=1.0)``), which is the comparison
+    this path has always made. When the runtime cannot answer, log once and
+    return the documented 4 GiB default. ``device_memory_budget`` itself still
+    raises; the fallback lives here so planning on CPU keeps a defined limit.
+    """
+    global _default_device_limit_logged
+    from xtrax.tiling.estimators import DEFAULT_DEVICE_MEMORY_BYTES, device_memory_budget
+
+    try:
+        return device_memory_budget(fraction=1.0)
+    except Exception:
+        if not _default_device_limit_logged:
+            _default_device_limit_logged = True
+            logger.info(
+                "BatchPlanner memory_estimator: device did not report "
+                "memory_stats()['bytes_limit']; using the documented default "
+                "of %s bytes (4 GiB).",
+                DEFAULT_DEVICE_MEMORY_BYTES,
+            )
+        return DEFAULT_DEVICE_MEMORY_BYTES
 
 
 @dataclass(frozen=True)
@@ -120,6 +150,28 @@ class BatchPlan:
 
     decisions: tuple[AxisDecision, ...]
 
+    def decision_for(self, axis_name: str) -> AxisDecision:
+        """Return the decision for ``axis_name``.
+
+        Args:
+            axis_name: Axis name to look up (``AxisSpec.name``).
+
+        Returns:
+            The ``AxisDecision`` for that axis, including its strategy.
+
+        Raises:
+            KeyError: If no decision in this plan has ``spec.name == axis_name``.
+                The message names the missing axis and the axes that are present.
+        """
+        for decision in self.decisions:
+            if decision.spec.name == axis_name:
+                return decision
+        known = ", ".join(repr(decision.spec.name) for decision in self.decisions)
+        known_desc = known if known else "(none)"
+        raise KeyError(
+            f"BatchPlan has no decision for axis {axis_name!r}; known axes: {known_desc}"
+        )
+
 
 class BatchPlanner:
     """Planner that selects tiling strategies based on axis properties.
@@ -132,15 +184,21 @@ class BatchPlanner:
        ragged final chunk is handled by the chunked map itself (#5565).
 
     When memory_estimator is provided, it overrides rule 3/4 decisions
-    to prefer ChunkedMap if estimated Vmap memory exceeds device limit.
+    to prefer ChunkedMap if estimated Vmap memory exceeds the device
+    allocator limit. The limit is ``device_memory_budget(fraction=1.0)``
+    (the full ``bytes_limit``). If the device does not report one, the
+    comparison uses the documented 4 GiB default and logs that once.
 
     When budget is provided (joint-budget mode), rules 3-4 are replaced for
-    non-bucket axes: every eligible axis starts at Vmap, then axes with
-    cardinality > default_batch_size are greedily demoted to ChunkedMap — in the
-    order specs were given — until budget.estimate() over the whole plan fits
-    budget.bytes. Callers express demotion priority by spec order (axes they
-    are most willing to sequentialize first). Estimator exceptions propagate;
-    an unfittable plan raises BudgetInfeasibleError.
+    non-bucket axes: every eligible homogeneous axis starts at Vmap, then axes
+    with cardinality > default_batch_size are greedily demoted to ChunkedMap —
+    in the order specs were given — until budget.estimate() over the whole plan
+    fits budget.bytes. A heterogeneous axis is not eligible for Vmap: element
+    shapes vary, so it is fixed to ChunkedMap(batch_size=default_batch_size)
+    for the whole joint plan and is never a demotion candidate. Callers express
+    demotion priority by spec order (axes they are most willing to sequentialize
+    first). Estimator exceptions propagate; an unfittable plan raises
+    BudgetInfeasibleError.
     """
 
     def __init__(
@@ -155,9 +213,12 @@ class BatchPlanner:
 
         Args:
             memory_estimator: Optional function that estimates Vmap memory (bytes)
-                for a given AxisSpec. If provided and estimate exceeds device limit,
-                ChunkedMap is preferred over Vmap. If the estimator raises an exception,
-                falls back to default rules silently. Mutually exclusive with budget.
+                for a given AxisSpec. If provided and the estimate exceeds the device
+                limit, ChunkedMap is preferred over Vmap. The limit comes from
+                ``device_memory_budget(fraction=1.0)``; when the device reports no
+                ``bytes_limit``, a documented 4 GiB default is logged once and used.
+                If the estimator itself raises, falls back to the cardinality rules.
+                Mutually exclusive with budget.
             carry_specs: Optional list of CarrySpec objects declaring which axes
                 should use Scan strategy (Phase 0 pre-demotion), or WhileCarry
                 when CarrySpec.collect_outputs=False.
@@ -320,10 +381,11 @@ class BatchPlanner:
         """Resolve pending axes under the joint MemoryBudget (greedy demotion).
 
         Fills decisions[idx] in place for every idx in pending. Every pending
-        axis starts at Vmap; axes with cardinality > default_batch_size are
-        demoted to ChunkedMap one at a time — in the order given — until
-        budget.estimate() over the full plan (fixed decisions included) fits
-        budget.bytes.
+        homogeneous axis starts at Vmap; heterogeneous axes are fixed to
+        ChunkedMap (Vmap is invalid when element shapes vary). Homogeneous
+        axes with cardinality > default_batch_size are demoted to ChunkedMap
+        one at a time — in the order given — until budget.estimate() over the
+        full plan (fixed decisions included) fits budget.bytes.
 
         DedupGather axes (Phase 0b) are fixed decisions, so on their own they
         could turn a plan that fits the budget without a DedupSpec into an
@@ -417,22 +479,25 @@ class BatchPlanner:
         pending: list[int],
         budget: MemoryBudget,
     ) -> tuple[int, int]:
-        """Vmap every pending axis, then demote candidates in order until the joint
-        estimate fits. Returns (final estimate, number of demotion candidates)."""
+        """Assign initial strategies, then demote candidates until the joint estimate fits.
+
+        Homogeneous pending axes start at Vmap. Heterogeneous pending axes start
+        at ChunkedMap and are excluded from demotion: element shapes vary, so
+        Vmap is invalid for the whole joint plan, including when the budget
+        would otherwise keep the axis mapped. Returns (final estimate, number
+        of demotion candidates).
+        """
         for idx in pending:
-            spec = specs[idx]
-            decisions[idx] = AxisDecision(
-                spec=spec,
-                batch_size=spec.default_batch_size,
-                reasoning="joint-budget: Vmap (pending final estimate)",
-                strategy=Vmap(),
-            )
+            decisions[idx] = self._budget_initial_decision(specs[idx])
 
         def _snapshot() -> tuple[AxisDecision, ...]:
             return tuple(d for d in decisions if d is not None)
 
         candidates = [
-            idx for idx in pending if specs[idx].cardinality > specs[idx].default_batch_size
+            idx
+            for idx in pending
+            if not specs[idx].heterogeneous
+            and specs[idx].cardinality > specs[idx].default_batch_size
         ]
         estimate = budget.estimate(_snapshot())
         step = 0
@@ -470,12 +535,27 @@ class BatchPlanner:
         estimate: int,
         budget: MemoryBudget,
     ) -> None:
-        """Finalize reasoning for pending axes that kept Vmap."""
+        """Finalize reasoning for pending axes that kept their initial strategy."""
         for idx in pending:
             decision = decisions[idx]
-            if decision is None or not isinstance(decision.strategy, Vmap):
+            if decision is None:
                 continue
             spec = specs[idx]
+            if spec.heterogeneous and isinstance(decision.strategy, ChunkedMap):
+                decisions[idx] = AxisDecision(
+                    spec=spec,
+                    batch_size=spec.default_batch_size,
+                    reasoning=(
+                        "joint-budget: heterogeneous axis fixed to "
+                        f"ChunkedMap(batch_size={spec.default_batch_size}); "
+                        "Vmap is invalid when element shapes vary "
+                        f"(final estimate {estimate} B, budget {budget.bytes} B)"
+                    ),
+                    strategy=decision.strategy,
+                )
+                continue
+            if not isinstance(decision.strategy, Vmap):
+                continue
             if spec.cardinality <= spec.default_batch_size:
                 reasoning = (
                     f"joint-budget: Vmap (cardinality {spec.cardinality} <= "
@@ -524,16 +604,12 @@ class BatchPlanner:
         if self.memory_estimator is not None:
             try:
                 estimated_bytes = self.memory_estimator(spec)
-                # Get device memory limit (default 4 GiB)
-                try:
-                    device_limit = jax.devices()[0].memory_stats().get("bytes_limit", 4 * (2**30))
-                except Exception:
-                    device_limit = 4 * (2**30)
-
-                if estimated_bytes > device_limit:
+                if estimated_bytes > _memory_estimator_device_limit():
                     should_prefer_safemap_for_memory = True
             except Exception:
-                # Fall back silently to default rules
+                # Estimator failures fall back to the cardinality rules. A missing
+                # device limit is not an estimator failure; that path logs the
+                # documented 4 GiB default inside _memory_estimator_device_limit.
                 pass
 
         # Rule 3: cardinality <= batch_size → Vmap (unless memory override)
@@ -582,3 +658,136 @@ class BatchPlanner:
             reasoning=reasoning,
             strategy=strategy,
         )
+
+    def _budget_initial_decision(self, spec: AxisSpec) -> AxisDecision:
+        """Initial joint-budget strategy for one pending axis.
+
+        Heterogeneous axes are fixed to ChunkedMap. Homogeneous axes start at
+        Vmap and may be demoted later.
+        """
+        if spec.heterogeneous:
+            return AxisDecision(
+                spec=spec,
+                batch_size=spec.default_batch_size,
+                reasoning=(
+                    "joint-budget: heterogeneous axis fixed to "
+                    f"ChunkedMap(batch_size={spec.default_batch_size}) "
+                    "(pending final estimate)"
+                ),
+                strategy=ChunkedMap(batch_size=spec.default_batch_size),
+            )
+        return AxisDecision(
+            spec=spec,
+            batch_size=spec.default_batch_size,
+            reasoning="joint-budget: Vmap (pending final estimate)",
+            strategy=Vmap(),
+        )
+
+
+def _live_extent(decision: AxisDecision) -> int:
+    """Elements live at once: full cardinality under Vmap, otherwise the tile."""
+    if isinstance(decision.strategy, Vmap):
+        return decision.spec.cardinality
+    return decision.batch_size
+
+
+def _abstract_signature(arg: Any) -> tuple[Any, ...]:
+    """Hashable shape/dtype identity for one lowered_memory_estimate input."""
+    shape = getattr(arg, "shape", None)
+    dtype = getattr(arg, "dtype", None)
+    if shape is not None or dtype is not None:
+        shape_key = tuple(shape) if shape is not None else None
+        return ("shaped", shape_key, str(dtype))
+    return ("repr", repr(arg))
+
+
+def _bytes_per_element(
+    estimate: int | Callable[..., Any],
+    abstract_args: tuple[Any, ...],
+    memo: MutableMapping[Any, int] | None,
+) -> int:
+    """Resolve ``plan_axis``'s estimate to bytes for one live element."""
+    if isinstance(estimate, bool) or isinstance(estimate, int):
+        if isinstance(estimate, bool) or estimate < 0:
+            raise ValueError(
+                f"plan_axis: int estimate is bytes per element and must be >= 0, got {estimate!r}"
+            )
+        if abstract_args:
+            raise TypeError(
+                "plan_axis: abstract args are only valid when estimate is a callable "
+                "passed to lowered_memory_estimate"
+            )
+        return estimate
+    if not callable(estimate):
+        raise TypeError(
+            "plan_axis: estimate must be an int (bytes per element) or a callable "
+            f"to measure with lowered_memory_estimate, got {type(estimate).__name__}"
+        )
+    if not abstract_args:
+        raise TypeError(
+            "plan_axis: a callable estimate needs abstract args "
+            "(ShapeDtypeStruct or concrete arrays) for lowered_memory_estimate"
+        )
+    # Identity of the callable, not id(): a recycled id can serve another
+    # function's entry after the original is collected. Holding the function
+    # keeps that entry from being reused.
+    key = (estimate, tuple(_abstract_signature(arg) for arg in abstract_args))
+    if memo is not None and key in memo:
+        return memo[key]
+    measured = lowered_memory_estimate(estimate, *abstract_args)
+    if memo is not None:
+        memo[key] = measured
+    return measured
+
+
+def plan_axis(
+    spec: AxisSpec,
+    *abstract_args: Any,
+    estimate: int | Callable[..., Any],
+    budget: int,
+    memo: MutableMapping[Any, int] | None = None,
+) -> AxisStrategy:
+    """Choose one axis's strategy with ``BatchPlanner`` joint-budget mode.
+
+    Thin wrapper: builds a one-axis ``MemoryBudget`` and returns the strategy
+    ``BatchPlanner.plan`` selected. Not a second planner.
+
+    ``estimate`` is either:
+
+    - an ``int`` — bytes per live element. Vmap keeps ``cardinality`` elements
+      live; every other strategy keeps ``batch_size`` live. The joint estimate
+      is that extent times ``estimate``.
+    - a callable plus ``abstract_args`` — measured once with
+      ``lowered_memory_estimate`` and then scaled the same way on every greedy
+      step. Pass abstract args that describe one element. ``memo``, if given,
+      caches that lowered byte count by function identity and abstract
+      shape/dtype so repeated ``plan_axis`` calls do not recompile.
+
+    Args:
+        spec: Axis to plan.
+        *abstract_args: Abstract inputs for a callable ``estimate``. Must be
+            empty when ``estimate`` is an int.
+        estimate: Bytes per live element, or a JAX-traceable callable.
+        budget: Joint memory budget in bytes (``MemoryBudget.bytes``).
+        memo: Optional cache of lowered per-element byte counts.
+
+    Returns:
+        The ``AxisStrategy`` for ``spec``.
+
+    Raises:
+        TypeError: If ``estimate`` is neither an int nor a callable, or if
+            abstract args are paired with the wrong form.
+        ValueError: If an int ``estimate`` is negative. ``budget`` is
+            validated by ``MemoryBudget``.
+        BudgetInfeasibleError: If ChunkedMap still exceeds ``budget``.
+    """
+    per_element = _bytes_per_element(estimate, abstract_args, memo)
+
+    def joint_estimate(decisions: Sequence[AxisDecision]) -> int:
+        live = 1
+        for decision in decisions:
+            live *= _live_extent(decision)
+        return int(per_element * live)
+
+    plan = BatchPlanner(budget=MemoryBudget(bytes=budget, estimate=joint_estimate)).plan([spec])
+    return plan.decisions[0].strategy
