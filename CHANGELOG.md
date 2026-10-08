@@ -17,6 +17,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`LedgerUnavailableError`; #2500), duplicated primitives including
   `synthesize_dedup_spec` (#2501), `WhileCarry` for inference-only loops (#2103),
   and the `ChunkedMap`/`lax.map` scan-of-while compile hazard (#2105).
+### Fixed
+
+- **Skill examples match installed call signatures** (`agent_assets/skills`, #2496).
+  Copy-paste blocks for `select_bucket` / `bucketize`, `SafetyTrainStep`, `Engine.fit`,
+  `make_optimizer` / `adamw_with_schedule`, distributed init, and checkpoints now follow
+  current source. `tests/skills/test_skill_code_blocks.py` parses every fenced Python
+  block, resolves `xtrax` names, and binds literal keyword arguments. A block whose
+  nearest non-blank line above the fence is `<!-- skill-check: skip -->` is skipped.
+  The using-xtrax preflight compares frontmatter `xtrax_version` with `xtrax.__version__`
+  and warns on mismatch.
+- **xtrax skill descriptions load for the task** (`agent_assets/skills`, #2502).
+  Frontmatter descriptions and triggers are phrased around padding and bucketing,
+  chunked maps, memory-budgeted batching, ONNX or StableHLO export, resumable
+  training, zarr sinks, citable measurements, slow scans, numerical divergence,
+  and shared-filesystem reads.
+- **`chunked_map` never vmaps an axis of length 1** (#2520). `jax.lax.map(..., batch_size=k)`
+  vmaps each chunk, so `batch_size=1`, a remainder of 1, and a leading axis of length 1
+  emitted a vmap-of-1 (the miscompile aminx #2391 hit on TITAN RTX). Those cases now run
+  unbatched: a sequential `lax.map`, a direct call on the peeled last element, or a direct
+  call when the whole axis has length 1. The same guard covers every xtrax-dispatched vmap:
+  `ChunkedMapIterator`, `VmapIterator` (including tree-structured `in_axes` and `None`
+  prefixes), unordered `execute_map_axis(Vmap)`, `axis_dispatch(Vmap)`, and the per-row
+  and dedup-gather maps in `verify_dedup_outputs`. Ordered paths are unchanged. Values
+  and order are unchanged.
 
 ## [0.4.0a12] - 2026-10-01
 

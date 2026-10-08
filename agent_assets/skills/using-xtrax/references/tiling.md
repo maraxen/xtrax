@@ -198,9 +198,9 @@ from xtrax.tiling.bucket import select_bucket, bucketize
 boundaries = (32, 64, 128)  # Pad up to nearest boundary
 strategy = Bucket(boundaries=boundaries)
 
-# Host-side operation: select bucket, pad, send to jit
-bucket_idx = select_bucket(sequence_length=50, boundaries=boundaries)  # → 1 (64)
-padded_seq = bucketize(sequence, boundaries=boundaries)                # → (64,)
+# Host-side, before jit. select_bucket returns the boundary value (64 for length 50).
+bucket = select_bucket(length=50, boundaries=boundaries)
+padded, mask = bucketize(sequence, bucket_size=bucket)
 ```
 
 🚫 HALTS: `Bucket` cannot be passed to `make_axis_dispatch`.  
@@ -357,8 +357,8 @@ spec = AxisSpec(
 
 # At runtime: select bucket and pad
 seq_length = 50
-bucket_idx = select_bucket(seq_length, boundaries=spec.bucket_boundaries)  # → 1 (64)
-padded_seq = bucketize(sequence, boundaries=spec.bucket_boundaries)        # → (64,)
+bucket = select_bucket(length=seq_length, boundaries=spec.bucket_boundaries)  # 64
+padded, mask = bucketize(sequence, bucket_size=bucket)
 ```
 
 Verify: `src/xtrax/tiling/bucket.py`
@@ -418,8 +418,8 @@ dedup_decision, bucket_decision = plan.decisions
 
 # 1. Bucket axis: pad on the host, in plain Python, BEFORE jit — no dispatch call.
 boundaries = bucket_decision.strategy.boundaries
-bucket_idx = select_bucket(seq_length, boundaries=boundaries)
-padded_seq = bucketize(sequence, boundaries=boundaries)
+bucket = select_bucket(length=seq_length, boundaries=boundaries)
+padded, mask = bucketize(sequence, bucket_size=bucket)
 
 # 2. DedupGather axis: eager three-phase shim (dedup → chunked_map → gather).
 ys = axis_dispatch(dedup_decision.strategy, fn, xs)
