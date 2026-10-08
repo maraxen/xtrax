@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`xtrax.testing` reference-parity harness** (#2324): framework-neutral primitives
+  for comparing a candidate sampler to an independent oracle. `order_from_randn`
+  and `InjectedSource` feed one host order/noise/uniform draw to both sides.
+  `teacher_forced_lane` compares conditional logits in both decoding directions,
+  with an alphabet-index map. `collapsed_sampler_lane` compares temperature-0
+  argmax and reports near-ties. `distributional_lane` reports per-step chi-square
+  and total variation plus a minimum detectable TV, and reports PASS only after
+  `require_negative_control` has rejected a perturbed knob. `knob_coverage` lists
+  declared knobs that were not varied. `assert_distinct_callables` refuses a
+  run-twice self-comparison.
+
+- **using-xtrax parity reference** (#2325): `agent_assets/skills/using-xtrax/references/parity.md`
+  on shared host randomness, the four comparison strategies, and the requirement
+  that a sampler comparison call the public entry point with a must-fail control.
 - **Chunk- and resume-invariant PRNG key stream** (#2544): `xtrax.random.element_keys`
   folds a base key, or an integer seed via `jax.random.key`, with the global element
   index as `int32`. The derivation matches aminx `compute_sample_keys` bit-for-bit, so

@@ -278,6 +278,9 @@ Choose your task:
 10. **Export one callable to ONNX (no BatchPlan), or read parity and divergence rings**  
    → Read `references/onnx-standalone.md`
 
+11. **Compare a sampler to a reference implementation**  
+   → Read `references/parity.md`
+
 ---
 
 ## TIER-2: Deep Reference
