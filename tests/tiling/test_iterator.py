@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from xtrax.tiling import WhileLoopWithYsIterator
 from xtrax.tiling.iterator import (
     BucketIterator,
     ChunkedMapIterator,
@@ -376,3 +377,214 @@ class TestWhileLoopIterator:
         result = iterator(cond, body, jnp.array(0))
 
         assert result == 0
+
+
+def _python_while_ys(cond, body, init, max_steps):
+    """Host reference: same stop rule as WhileLoopWithYsIterator, ys as a list."""
+    carry = init
+    ys = []
+    step = 0
+    while bool(cond(carry)) and step < max_steps:
+        carry, y = body(carry)
+        ys.append(y)
+        step += 1
+    return carry, ys, step
+
+
+def _stack_ys(ys):
+    return jax.tree_util.tree_map(lambda *leaves: jnp.stack(leaves), *ys)
+
+
+def _assert_tree_equal(actual, expected):
+    jax.tree_util.tree_map(
+        lambda left, right: assert_array_equal(left, right),
+        actual,
+        expected,
+    )
+
+
+def assert_array_equal(left, right):
+    assert jnp.array_equal(left, right), f"{left} != {right}"
+
+
+def _primitive_names(jaxpr):
+    names = []
+    for eqn in jaxpr.eqns:
+        names.append(eqn.primitive.name)
+        for param in eqn.params.values():
+            names.extend(_names_in_param(param))
+    return names
+
+
+def _names_in_param(param):
+    sub = getattr(param, "jaxpr", None)
+    if sub is not None:
+        return _primitive_names(sub)
+    if isinstance(param, tuple | list):
+        names = []
+        for item in param:
+            names.extend(_names_in_param(item))
+        return names
+    return []
+
+
+class TestWhileLoopWithYsIterator:
+    """while_loop that stores each step's y in a preallocated buffer."""
+
+    def test_pytree_ys_match_python_reference(self):
+        """ys[:length] matches a host loop, including a pytree of outputs."""
+
+        def cond(carry):
+            return carry < 3
+
+        def body(carry):
+            nxt = carry + 1
+            return nxt, {"token": nxt, "feat": jnp.array([nxt, nxt * 2])}
+
+        init = jnp.int32(0)
+        prototype = {"token": jnp.int32(0), "feat": jnp.zeros((2,), dtype=jnp.int32)}
+        max_steps = 6
+        iterator = WhileLoopWithYsIterator(max_steps=max_steps)
+        final, ys, length = iterator(cond, body, init, prototype)
+        ref_carry, ref_ys, ref_len = _python_while_ys(cond, body, init, max_steps)
+
+        assert length == ref_len
+        assert final == ref_carry
+        _assert_tree_equal(
+            jax.tree_util.tree_map(lambda buf: buf[: int(length)], ys),
+            _stack_ys(ref_ys),
+        )
+        assert ys["token"].shape == (max_steps,)
+        assert ys["feat"].shape == (max_steps, 2)
+
+    def test_early_stop_fill_region_is_zero(self):
+        """Indices at and after length are the zero fill, not body outputs."""
+
+        def cond(carry):
+            return carry < jnp.float32(3)
+
+        def body(carry):
+            nxt = carry + jnp.float32(1)
+            return nxt, nxt * jnp.float32(10)
+
+        init = jnp.float32(0)
+        # Nonzero prototype: the buffer fill is 0, not a copy of this value.
+        prototype = jnp.float32(7)
+        max_steps = 5
+        iterator = WhileLoopWithYsIterator(max_steps=max_steps)
+        _final, ys, length = iterator(cond, body, init, prototype)
+
+        assert length == 3
+        assert jnp.array_equal(ys[: int(length)], jnp.array([10.0, 20.0, 30.0]))
+        assert jnp.all(ys[int(length) :] == 0)
+
+    def test_max_steps_with_cond_still_true_returns_full_buffer(self):
+        """Hitting the cap with cond still true yields length == max_steps."""
+
+        def cond(carry):
+            return carry < jnp.int32(100)
+
+        def body(carry):
+            nxt = carry + jnp.int32(1)
+            return nxt, nxt
+
+        init = jnp.int32(0)
+        max_steps = 4
+        iterator = WhileLoopWithYsIterator(max_steps=max_steps)
+        final, ys, length = iterator(cond, body, init, jnp.int32(0))
+        ref_carry, ref_ys, ref_len = _python_while_ys(cond, body, init, max_steps)
+
+        assert length == max_steps
+        assert length == ref_len
+        assert bool(cond(final))
+        assert final == ref_carry
+        assert jnp.array_equal(ys, _stack_ys(ref_ys))
+
+    def test_cond_false_at_cap_also_fills_the_buffer(self):
+        """A full buffer with cond false means the predicate ended the loop."""
+
+        def cond(carry):
+            return carry < jnp.int32(4)
+
+        def body(carry):
+            nxt = carry + jnp.int32(1)
+            return nxt, nxt
+
+        init = jnp.int32(0)
+        max_steps = 4
+        iterator = WhileLoopWithYsIterator(max_steps=max_steps)
+        final, ys, length = iterator(cond, body, init, jnp.int32(0))
+
+        assert length == max_steps
+        assert not bool(cond(final))
+        assert final == 4
+        assert jnp.array_equal(ys, jnp.array([1, 2, 3, 4], dtype=jnp.int32))
+
+    def test_zero_iterations_keeps_init_and_zero_fill(self):
+        """A cond that is false at the start writes nothing."""
+
+        def cond(carry):
+            return carry < jnp.int32(0)
+
+        def body(carry):
+            return carry + jnp.int32(100), carry + jnp.int32(100)
+
+        init = jnp.int32(0)
+        iterator = WhileLoopWithYsIterator(max_steps=5)
+        final, ys, length = iterator(cond, body, init, jnp.int32(9))
+
+        assert length == 0
+        assert final == init
+        assert ys.shape == (5,)
+        assert jnp.all(ys == 0)
+
+    def test_jit_matches_python_reference(self):
+        """The same buffer and length are produced under jax.jit."""
+
+        def cond(carry):
+            return carry < jnp.int32(3)
+
+        def body(carry):
+            nxt = carry + jnp.int32(1)
+            return nxt, {"n": nxt, "pair": jnp.array([nxt, -nxt])}
+
+        init = jnp.int32(0)
+        prototype = {"n": jnp.int32(0), "pair": jnp.zeros((2,), dtype=jnp.int32)}
+        max_steps = 8
+        iterator = WhileLoopWithYsIterator(max_steps=max_steps)
+
+        @jax.jit
+        def run(carry, proto):
+            return iterator(cond, body, carry, proto)
+
+        final, ys, length = run(init, prototype)
+        ref_carry, ref_ys, ref_len = _python_while_ys(cond, body, init, max_steps)
+
+        assert length == ref_len
+        assert final == ref_carry
+        _assert_tree_equal(
+            jax.tree_util.tree_map(lambda buf: buf[: int(length)], ys),
+            _stack_ys(ref_ys),
+        )
+        assert jnp.all(ys["n"][int(length) :] == 0)
+        assert jnp.all(ys["pair"][int(length) :] == 0)
+
+    def test_jaxpr_lowers_to_while_without_scan(self):
+        """The collected loop is a lax.while_loop."""
+
+        def cond(carry):
+            return carry < jnp.int32(3)
+
+        def body(carry):
+            nxt = carry + jnp.int32(1)
+            return nxt, nxt
+
+        iterator = WhileLoopWithYsIterator(max_steps=5)
+
+        def run(carry, proto):
+            return iterator(cond, body, carry, proto)
+
+        closed = jax.make_jaxpr(run)(jnp.int32(0), jnp.int32(0))
+        names = _primitive_names(closed.jaxpr)
+        assert "while" in names
+        assert "scan" not in names

@@ -89,23 +89,54 @@ Each `AxisDecision` contains:
 
 `BatchPlanner(budget=MemoryBudget(bytes=..., estimate=...))` replaces the independent per-axis rules 3-5 with whole-plan greedy demotion: every eligible axis starts at `Vmap`, then axes with `cardinality > default_batch_size` are demoted to `ChunkedMap` **in the order specs were given** until the joint estimate fits the budget. Callers express demotion priority by spec order (axes they are most willing to sequentialize first). Carry/dedup/bucket decisions stay fixed but participate in the estimate; budget-mode reasoning strings carry the byte numbers for `xtrax explain`.
 
+**Compiler estimates.** `MemoryBudget.estimate` and `memory_estimator` call `lowered_memory_estimate` on a representative tile and scale that byte count by the plan's live tile counts (`Vmap`: `spec.cardinality`; every other strategy: `decision.batch_size`). Hand-typed activation-byte estimates are unsupported. A logit-only count omitted argument and temp bytes from `Compiled.memory_analysis()` (about 290× under the compile) and the plan hit a memory cliff.
+
 ```python
-from xtrax.tiling import (  # all exported at xtrax.tiling level, same tier as CarrySpec
-    BatchPlanner, MemoryBudget, BudgetInfeasibleError,
-    device_memory_budget, lowered_memory_estimate,
+import jax
+from xtrax.tiling import (  # exported at xtrax.tiling, same tier as CarrySpec
+    BatchPlanner,
+    BudgetInfeasibleError,
+    MemoryBudget,
+    Vmap,
+    device_memory_budget,
+    lowered_memory_estimate,
 )
 
+def forward(tile):
+    return tile.sum()
+
+# One representative tile. Compile once; scale by live tile counts below.
+tile = jax.ShapeDtypeStruct((128,), jax.numpy.float32)
+per_tile = lowered_memory_estimate(forward, tile)
+
+def estimate(decisions):
+    """Peak bytes for one candidate plan: lowered tile times live tile count."""
+    live = 1
+    for decision in decisions:
+        if isinstance(decision.strategy, Vmap):
+            live *= decision.spec.cardinality
+        else:
+            live *= decision.batch_size
+    return per_tile * live
+
 budget = MemoryBudget(
-    bytes=device_memory_budget(fraction=0.9),   # bytes from XLA allocator's bytes_limit
-    estimate=my_estimate_fn,                    # Sequence[AxisDecision] -> estimated peak bytes
+    bytes=device_memory_budget(fraction=0.9),  # XLA allocator bytes_limit
+    estimate=estimate,
 )
 planner = BatchPlanner(budget=budget)
 plan = planner.plan(specs)  # may raise BudgetInfeasibleError
+
+def memory_estimator(spec):
+    """Per-axis path: a full vmap keeps every element of this axis live."""
+    return per_tile * spec.cardinality
+
+# Mutually exclusive with budget= above.
+axis_planner = BatchPlanner(memory_estimator=memory_estimator)
 ```
 
-Verify: `src/xtrax/tiling/budget.py:23-56`, `src/xtrax/tiling/estimators.py:27-97`
+Verify: `src/xtrax/tiling/budget.py:34-57`, `src/xtrax/tiling/estimators.py:72-109`, `src/xtrax/tiling/plan.py:650-664`
 
-**Strict by design** (unlike per-axis `memory_estimator`, which swallows estimator errors):
+**Strict by design** (the per-axis `memory_estimator` re-raises estimator errors as `RuntimeError` naming the axis; budget mode propagates them unchanged):
 - 🚫 HALTS: `budget` and `memory_estimator` are mutually exclusive — passing both raises.
 - 🚫 HALTS: estimator exceptions propagate unchanged; there is no silent fallback in budget mode.
 - 🚫 HALTS: `BudgetInfeasibleError` when every demotion candidate is already `ChunkedMap` and the joint estimate still exceeds `budget.bytes` — the message names budget, final estimate, and per-axis strategy state.
@@ -113,7 +144,7 @@ Verify: `src/xtrax/tiling/budget.py:23-56`, `src/xtrax/tiling/estimators.py:27-9
 
 **Native estimator building blocks** (`xtrax.tiling.estimators`):
 - `device_memory_budget(fraction=0.9, device=None) -> int` — budget bytes from the XLA allocator's `Device.memory_stats()["bytes_limit"]`; fails loud when the backend reports no stats (e.g. some CPU builds).
-- `lowered_memory_estimate(fn, *abstract_args) -> int` — AOT-compiles from `ShapeDtypeStruct`s and returns XLA's own buffer-assignment bytes (argument + output + temp) via `Compiled.memory_analysis()`.
+- `lowered_memory_estimate(fn, *abstract_args) -> int` — AOT-compiles from `ShapeDtypeStruct`s and returns XLA's own buffer-assignment bytes (argument + output + temp) via `Compiled.memory_analysis()`. Pass one representative tile and scale by live tile counts, as in the example above.
 
 Spec: `.praxia/docs/specs/260706_joint-budget-batch-planner.md`
 
@@ -143,7 +174,7 @@ strategy = ChunkedMap(batch_size=32)
 # Applied via: results = chunked_map(fn, inputs, batch_size=32)  # verify: src/xtrax/transforms/map.py
 ```
 
-Memory estimation (optional): Provide a `memory_estimator` to `BatchPlanner` to prevent Vmap if estimated memory > device limit.
+Memory estimation: pass a `memory_estimator` that returns `lowered_memory_estimate` on one tile scaled by `spec.cardinality`. Hand-typed activation-byte estimates are unsupported. The callback prefers ChunkedMap when that estimate exceeds the device limit; an estimator that raises fails `plan()` with `RuntimeError` naming the axis.
 
 **3. Scan** — Carry-bearing sequential iteration.  
 Selected when: `CarrySpec` declares this axis as stateful (e.g., accumulating loss, sampling state).  

@@ -6,9 +6,10 @@ the order specs were given) until the joint estimate fits the budget.
 Heterogeneous axes are fixed to ChunkedMap and are never started at Vmap.
 Mirrors the CarrySpec/DedupSpec pattern: caller declares, planner enforces.
 
-Unlike the per-axis ``memory_estimator`` (which swallows estimator errors and
-reads the device limit implicitly), budget mode is strict: estimator exceptions
-propagate, and a plan that cannot fit raises BudgetInfeasibleError.
+Unlike the per-axis ``memory_estimator`` (which wraps estimator errors in
+``RuntimeError`` naming the axis, and reads the device limit implicitly),
+budget mode leaves estimator exceptions unchanged, and a plan that cannot
+fit raises BudgetInfeasibleError.
 
 Spec: .praxia/docs/specs/260706_joint-budget-batch-planner.md
 """

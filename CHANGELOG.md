@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the traced region raises. `AxisBoundary(sink_receives_index=True)` passes
   the mapped-axis index to the sink as `(y, index)` for `Vmap`, `ChunkedMap`
   (including a remainder chunk), and `Scan`. The default call stays `sink(y)`.
+- **Skill delivery** (#2107, #2596, #2597): joint-budget `memory_estimator` and
+  `MemoryBudget` estimates in the using-xtrax tiling skill come from
+  `lowered_memory_estimate` on a representative tile, scaled by live tile
+  counts. `.praxia/manifest.toml` lists every `agent_assets/skills` skill and
+  tracks `xtrax.__version__`. `scripts/install_skills.py --check` reports
+  installed copies that are missing or whose `xtrax_version` differs from the
+  repo (`--target` or `XTRAX_SKILLS_TARGET`).
+- **`WhileLoopWithYsIterator`** (#2589): a `lax.while_loop` iterator that writes
+  each step's `y` into a preallocated buffer of caller-supplied `max_steps`
+  and returns `(final_carry, ys_buffer, length)`. Buffer fill is `0`. When
+  `length == max_steps` and `cond(final_carry)` is still true, the cap stopped
+  the loop and every index holds a body output.
 
 - **Grain input pipelines** (#2085): `xtrax.data.build_input_pipeline` builds a
   domain-free Grain pipeline (process shard, shuffle, repeat, optional
@@ -73,6 +85,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`xtrax.export.rings.make_input_class(generator, ..., label=)`** (debt #2526):
   input classes are built from a caller-supplied generator callable.
+
+### Fixed
+
+- **BatchPlanner per-axis `memory_estimator`** (#2593, #2594): an estimator
+  that raises fails `plan()` with `RuntimeError` naming the axis, instead of
+  falling back to the cardinality rules and selecting Vmap. A missing device
+  `bytes_limit` is still logged once and compared against the documented 4 GiB
+  default. `memory_estimator=None` keeps those cardinality rules; when they pick
+  Vmap without an estimate, the planner logs a warning once per planner and
+  axis. When `AxisSpec.element_input_bytes` is
+  set, an estimate below that per-element input size raises `ValueError`
+  naming the axis, the estimate, and the bound. Specs that omit it have no
+  element shape or dtype, so that check is skipped.
 
 ### Changed
 
