@@ -1,16 +1,14 @@
 ---
 name: xtrax-optimizing
-description: This skill should be used when the user asks to "optimize a JAX function", "make this faster", "why is my scan/vmap slow", "reduce host sync or device round trips", "should this be computed on-the-fly instead of precomputed", "prefetch batches", "donate buffers", "compare encoding strategies", "benchmark before and after a perf change", or mentions optimization tiers, tap/sink cost accounting, data-movement tuning, composition-level rewrites, ProbeRecord-gated keep/revert decisions, prof_stage0_onehot_cost, prof_stage1_onehot_micro, prof_stage1_host_boundary, or prof_stage1_feed_overlap. Covers the three-tier taxonomy separating host-boundary mechanics, data movement, and program composition changes, plus the preregister-and-probe measurement protocol every optimization claim must pass.
+description: "Use when a JAX scan or vmap is slow, host or device round trips dominate, a table should be computed in the graph instead of materialized, batches should be prefetched, or a speed change needs a before-and-after measurement before it is kept. Covers host-boundary cost, data movement, and composition rewrites."
 xtrax_version: 0.4.0a12
 triggers:
-  - optimize / speed up / why slow (JAX programs)
-  - tap / sink / io_callback round-trip cost
-  - prefetch / double-buffer / H2D transfer
-  - on-the-fly encoding / one-hot in-graph vs materialized
-  - donate_argnums / remat / strategy swap
-  - Tier-1 / Tier-2 / Tier-3 optimization
-  - prof_stage0_onehot_cost / prof_stage1_onehot_micro
-  - prof_stage1_host_boundary / prof_stage1_feed_overlap
+  - scan or vmap is slow
+  - host sync or device round trip dominates a step
+  - prefetch batches or overlap host-to-device transfer
+  - compute a table in the graph instead of materializing it
+  - donate buffers or rematerialize an activation
+  - measure a speed change before keeping it
 ---
 
 # xtrax-optimizing
