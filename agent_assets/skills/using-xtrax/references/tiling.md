@@ -134,7 +134,7 @@ def memory_estimator(spec):
 axis_planner = BatchPlanner(memory_estimator=memory_estimator)
 ```
 
-Verify: `src/xtrax/tiling/budget.py:34-57`, `src/xtrax/tiling/estimators.py:72-109`, `src/xtrax/tiling/plan.py:687-691`
+Verify: `src/xtrax/tiling/budget.py:34-57`, `src/xtrax/tiling/estimators.py:72-109`, `src/xtrax/tiling/plan.py:650-664`
 
 **Strict by design** (the per-axis `memory_estimator` re-raises estimator errors as `RuntimeError` naming the axis; budget mode propagates them unchanged):
 - 🚫 HALTS: `budget` and `memory_estimator` are mutually exclusive — passing both raises.
@@ -174,7 +174,7 @@ strategy = ChunkedMap(batch_size=32)
 # Applied via: results = chunked_map(fn, inputs, batch_size=32)  # verify: src/xtrax/transforms/map.py
 ```
 
-Memory estimation: pass a `memory_estimator` that returns `lowered_memory_estimate` on one tile scaled by `spec.cardinality`. Hand-typed activation-byte estimates are unsupported. The callback prefers ChunkedMap when that estimate exceeds the device limit.
+Memory estimation: pass a `memory_estimator` that returns `lowered_memory_estimate` on one tile scaled by `spec.cardinality`. Hand-typed activation-byte estimates are unsupported. The callback prefers ChunkedMap when that estimate exceeds the device limit; an estimator that raises fails `plan()` with `RuntimeError` naming the axis.
 
 **3. Scan** — Carry-bearing sequential iteration.  
 Selected when: `CarrySpec` declares this axis as stateful (e.g., accumulating loss, sampling state).  
