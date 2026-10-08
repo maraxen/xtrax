@@ -76,6 +76,25 @@ class TestAxisSpec:
         with pytest.raises(ValueError, match="positive"):
             AxisSpec(name="seq", cardinality=10, default_batch_size=4, bucket_boundaries=(0, 8))
 
+    def test_element_input_bytes_defaults_to_none(self):
+        """A spec with no element size leaves the per-element input-byte check unset."""
+        spec = AxisSpec(name="batch", cardinality=8, default_batch_size=4)
+        assert spec.element_input_bytes is None
+
+    def test_element_input_bytes_rejects_non_byte_counts(self):
+        """Negative sizes and bools (an int subclass) are rejected."""
+        for bad in (-1, True):
+            with pytest.raises(ValueError, match="element_input_bytes") as excinfo:
+                AxisSpec(
+                    name="batch",
+                    cardinality=8,
+                    default_batch_size=4,
+                    element_input_bytes=bad,
+                )
+            message = str(excinfo.value)
+            assert "batch" in message
+            assert repr(bad) in message
+
 
 class TestAxisDecision:
     """AxisDecision dataclass creation."""
@@ -467,8 +486,8 @@ class TestBatchPlanner:
         decision = plan.decisions[0]
         assert isinstance(decision.strategy, ChunkedMap)
 
-    def test_memory_estimator_exception_fallback_to_defaults(self):
-        """When memory_estimator raises, fall back to default rules silently."""
+    def test_memory_estimator_exception_names_the_axis(self):
+        """An estimator that raises fails plan() with the axis name, not a silent Vmap."""
 
         def failing_estimate(spec: AxisSpec) -> int:
             raise RuntimeError("Device query failed")
@@ -476,11 +495,71 @@ class TestBatchPlanner:
         spec = AxisSpec(name="batch", cardinality=50, default_batch_size=100)
         planner = BatchPlanner(memory_estimator=failing_estimate)
 
-        # Should not raise — falls back silently
-        plan = planner.plan([spec])
+        with pytest.raises(RuntimeError, match="axis 'batch'") as excinfo:
+            planner.plan([spec])
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+        assert "Device query failed" in str(excinfo.value.__cause__)
 
-        # Rule 2: cardinality <= batch_size → Vmap
-        assert isinstance(plan.decisions[0].strategy, Vmap)
+    def test_missing_memory_estimator_warns_once_per_planner_and_keeps_strategy(self, caplog):
+        """memory_estimator=None keeps the cardinality rules; a Vmap pick warns once per axis."""
+        small = AxisSpec(name="batch", cardinality=50, default_batch_size=100)
+        large = AxisSpec(name="seq", cardinality=100, default_batch_size=50)
+        planner = BatchPlanner(memory_estimator=None)
+
+        with caplog.at_level(logging.WARNING, logger="xtrax.tiling.plan"):
+            first = planner.plan([small, large])
+            second = planner.plan([small, large])
+            other = BatchPlanner().plan([small])
+
+        assert isinstance(first.decisions[0].strategy, Vmap)
+        assert isinstance(first.decisions[1].strategy, ChunkedMap)
+        assert isinstance(second.decisions[0].strategy, Vmap)
+        assert isinstance(second.decisions[1].strategy, ChunkedMap)
+        assert isinstance(other.decisions[0].strategy, Vmap)
+        warnings_for = [
+            record.message
+            for record in caplog.records
+            if record.levelno >= logging.WARNING and "memory_estimator" in record.message
+        ]
+        assert sum("axis 'batch'" in message for message in warnings_for) == 2
+        # ChunkedMap is already memory-bounded, so the 'seq' axis needs no warning.
+        assert sum("axis 'seq'" in message for message in warnings_for) == 0
+
+    def test_estimate_below_element_input_bytes_raises(self):
+        """An estimate below the per-element input size names the axis, estimate, and bound."""
+        spec = AxisSpec(
+            name="residues",
+            cardinality=100,
+            default_batch_size=50,
+            element_input_bytes=4000,
+        )
+
+        def tiny_estimate(spec: AxisSpec) -> int:
+            return 13
+
+        with pytest.raises(ValueError, match="residues") as excinfo:
+            BatchPlanner(memory_estimator=tiny_estimate).plan([spec])
+        message = str(excinfo.value)
+        assert "13" in message
+        assert "4000" in message
+
+    def test_estimate_at_element_input_bytes_keeps_vmap_without_warning(self, caplog):
+        """An estimate equal to the per-element input size is accepted with no warning."""
+        spec = AxisSpec(
+            name="residues",
+            cardinality=100,
+            default_batch_size=50,
+            element_input_bytes=1000,
+        )
+
+        def at_bound(spec: AxisSpec) -> int:
+            return 1000
+
+        with caplog.at_level(logging.WARNING, logger="xtrax.tiling.plan"):
+            decision = BatchPlanner(memory_estimator=at_bound).plan([spec]).decisions[0]
+        assert isinstance(decision.strategy, Vmap)
+        assert "memory safe" in decision.reasoning
+        assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
 
     def test_memory_estimator_device_stats_query(self):
         """memory_estimator receives AxisSpec and can query device memory."""

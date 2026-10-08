@@ -1,9 +1,73 @@
 [plugin]
 name            = "xtrax"
-version         = "0.4.0a5"
+version         = "0.4.0a12"
 description     = "High-performance composable JAX library"
 requires_praxia = ">=0.1.0"
 
 [[plugin.workflows]]
 name          = "port_validation"
 template_path = "agent_assets/workflows/port_validation.yaml"
+
+# version above tracks xtrax.__version__ (src/xtrax/__init__.py).
+# triggers mirror each skill's frontmatter; skills are pinned by xtrax_version there.
+
+[[plugin.skills]]
+name     = "using-xtrax"
+path     = "agent_assets/skills/using-xtrax/SKILL.md"
+triggers = [
+  "padding or bucketing loop for variable-length sequences before a JIT step",
+  "chunked vmap or lax.map over a large batch",
+  "memory-budgeted batching / batch plan that must fit a device budget",
+  "ONNX or StableHLO export of a JAX pipeline",
+  "resumable training loop / resume training from a checkpoint",
+  "zarr output sink / staged zarr writes",
+  "TOML file that should launch or resume a training run",
+  "infer batch axes from a typed function signature",
+  "sparsify a dense model for inference",
+  "compose batching primitives into your own CLI",
+]
+
+[[plugin.skills]]
+name     = "xtrax-activation-parity"
+path     = "agent_assets/skills/xtrax-activation-parity/SKILL.md"
+triggers = [
+  "two implementations disagree numerically / which tensor diverges first",
+  "a port's outputs do not match the reference and the parity test does not say where",
+  "capture intermediates without changing the forward pass",
+  "diff parameter inventories against a reference checkpoint",
+  "a constant or bias is present on one side and missing on the other",
+]
+
+[[plugin.skills]]
+name     = "xtrax-io-on-shared-filesystems"
+path     = "agent_assets/skills/xtrax-io-on-shared-filesystems/SKILL.md"
+triggers = [
+  "job hits walltime reading large files on NFS, Lustre, or GPFS",
+  "CPU time far below elapsed time, process state D, iowait",
+  "seek or strided reader versus a sequential read",
+  "copy a trajectory, zarr shard, or HDF5 file to local disk before analysis",
+  "cache one slim copy and read it many times",
+]
+
+[[plugin.skills]]
+name     = "xtrax-optimizing"
+path     = "agent_assets/skills/xtrax-optimizing/SKILL.md"
+triggers = [
+  "scan or vmap is slow",
+  "host sync or device round trip dominates a step",
+  "prefetch batches or overlap host-to-device transfer",
+  "compute a table in the graph instead of materializing it",
+  "donate buffers or rematerialize an activation",
+  "measure a speed change before keeping it",
+]
+
+[[plugin.skills]]
+name     = "xtrax-probing"
+path     = "agent_assets/skills/xtrax-probing/SKILL.md"
+triggers = [
+  "a timing or dispatch count that a later claim will cite",
+  "benchmark result quoted beyond the scale that was measured",
+  "performance gate needs a dispatch-count or compile-count ceiling",
+  "bottleneck report from stored measurements",
+  "persist a benchmark so the number stays attachable to a claim",
+]
