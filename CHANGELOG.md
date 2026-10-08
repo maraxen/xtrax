@@ -73,6 +73,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`xtrax.export.rings.make_input_class(generator, ..., label=)`** (debt #2526):
   input classes are built from a caller-supplied generator callable.
 
+### Fixed
+
+- **BatchPlanner per-axis `memory_estimator`** (#2593, #2594): an estimator
+  that raises fails `plan()` with `RuntimeError` naming the axis, instead of
+  falling back to the cardinality rules and selecting Vmap. A missing device
+  `bytes_limit` is still logged once and compared against the documented 4 GiB
+  default. `memory_estimator=None` keeps those cardinality rules; when they pick
+  Vmap without an estimate, the planner logs a warning once per planner and
+  axis. When `AxisSpec.element_input_bytes` is
+  set, an estimate below that per-element input size raises `ValueError`
+  naming the axis, the estimate, and the bound. Specs that omit it have no
+  element shape or dtype, so that check is skipped.
+
 ### Changed
 
 - **`extent_scaling_report`** flags a loop only when both per-iteration work and

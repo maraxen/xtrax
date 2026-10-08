@@ -105,7 +105,7 @@ plan = planner.plan(specs)  # may raise BudgetInfeasibleError
 
 Verify: `src/xtrax/tiling/budget.py:23-56`, `src/xtrax/tiling/estimators.py:27-97`
 
-**Strict by design** (unlike per-axis `memory_estimator`, which swallows estimator errors):
+**Strict by design** (the per-axis `memory_estimator` re-raises estimator errors as `RuntimeError` naming the axis; budget mode propagates them unchanged):
 - 🚫 HALTS: `budget` and `memory_estimator` are mutually exclusive — passing both raises.
 - 🚫 HALTS: estimator exceptions propagate unchanged; there is no silent fallback in budget mode.
 - 🚫 HALTS: `BudgetInfeasibleError` when every demotion candidate is already `ChunkedMap` and the joint estimate still exceeds `budget.bytes` — the message names budget, final estimate, and per-axis strategy state.
