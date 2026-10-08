@@ -7,7 +7,8 @@ CORE exports (stable, always available):
     WhileCarry, WhileBodyFn, WhileCondFn, fixed_step_count_cond
     make_axis_dispatch, axis_dispatch, DispatchRejected
     CarrySpec, CarryShape
-    MemoryBudget, BudgetInfeasibleError, device_memory_budget, lowered_memory_estimate
+    MemoryBudget, BudgetInfeasibleError, device_memory_budget, lowered_memory_estimate,
+    estimate_memory_theoretical, plan_axis
     VmapIterator, ChunkedMapIterator, JaxScanIterator, WhileLoopIterator, BucketIterator,
     MapIterator, ScanIterator
 
@@ -30,7 +31,11 @@ from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
 from xtrax.tiling.carry import CarrySpec
 from xtrax.tiling.carry_shape import CarryShape
 from xtrax.tiling.dispatch import DispatchRejected, axis_dispatch, make_axis_dispatch
-from xtrax.tiling.estimators import device_memory_budget, lowered_memory_estimate
+from xtrax.tiling.estimators import (
+    device_memory_budget,
+    estimate_memory_theoretical,
+    lowered_memory_estimate,
+)
 from xtrax.tiling.iterator import (
     BucketIterator,
     ChunkedMapIterator,
@@ -40,7 +45,7 @@ from xtrax.tiling.iterator import (
     VmapIterator,
     WhileLoopIterator,
 )
-from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan, BatchPlanner
+from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan, BatchPlanner, plan_axis
 from xtrax.tiling.strategy import (
     Bucket,
     ChunkedMap,
@@ -83,6 +88,8 @@ __all__ = [
     "BudgetInfeasibleError",
     "device_memory_budget",
     "lowered_memory_estimate",
+    "estimate_memory_theoretical",
+    "plan_axis",
     "VmapIterator",
     "ChunkedMapIterator",
     "JaxScanIterator",

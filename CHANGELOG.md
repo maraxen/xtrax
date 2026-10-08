@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Planner helpers for joint-budget consumers** (#2521): `MemoryBudget` mode
+  fixes a heterogeneous axis to `ChunkedMap` and never assigns it `Vmap`.
+  `BatchPlan.decision_for(axis_name)` returns that axis's decision
+  (`KeyError` names unknown axes). `plan_axis` is a single-axis wrapper over
+  `BatchPlanner` (an int bytes-per-element estimate, or a callable measured
+  with `lowered_memory_estimate`). `estimate_memory_theoretical` is a
+  domain-free product-of-extents estimator in `xtrax.tiling`. Body-mode
+  `Scan` in `axis_dispatch`, and whether `CarrySpec.transition` executes,
+  are unchanged and remain deferred (#2543).
 - **Host-side bucketing primitives on `xtrax.tiling`** (#2522): `BUCKET_LADDER`
   (64..2048) now lives in `xtrax.tiling` so runtime code does not import the
   export stack. `xtrax.export.rings.BUCKET_LADDER` is the same object. New
