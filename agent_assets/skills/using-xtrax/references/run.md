@@ -251,7 +251,25 @@ boundary = AxisBoundary(
 )
 ```
 
-Verify: `src/xtrax/stages/boundaries.py:84-98`
+`sink_receives_index=True` opts that sink into `(y, index)`. `index` is the
+`int32` position along the axis for `Vmap`, `ChunkedMap` (including a remainder
+chunk), and `Scan`. The default stays `sink(y)`. The executor reads the flag
+and does not inspect the callable.
+
+`sink_session` opens a host sink, yields an ordered callback pinned to
+`xtrax.stages._callback`, and closes the session on the way out, including when
+the traced region raises. Call the callback from a scan or a sequential map.
+
+```python
+from xtrax.stages import AxisBoundary, sink_session
+
+indexed = AxisBoundary(sink=my_sink, sink_receives_index=True)
+
+with sink_session(my_sink) as session:
+    session.io_callback(value)
+```
+
+Verify: `src/xtrax/stages/boundaries.py:84-98`, `src/xtrax/stages/session.py`
 
 **Invariant**: `AxisBoundary` fields are **all static** (`eqx.field(static=True)`). It has no dynamic leaves.
 
@@ -321,7 +339,8 @@ Fields: `ordered: bool` (require step order?)
 Example: Log intermediate tensors to disk.
 
 **Sink[T]** — Terminal side effect (outside jit, host-side).  
-Signature: `T -> None` (consumes value, leaves pipeline)  
+Signature: `T -> None` (consumes value, leaves pipeline). With
+`AxisBoundary(sink_receives_index=True)` the executor calls `sink(y, index)`.  
 Fields: `ordered: bool` (require step order?)  
 Example: Write final results to H5.
 

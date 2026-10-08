@@ -84,6 +84,7 @@ class AxisBoundary(eqx.Module):
     tap: Tap | BoundaryCallable | None = eqx.field(static=True, default=None)    # verify: src/xtrax/stages/boundaries.py:97
     sink: Sink | BoundaryCallable | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:98
     materialize: bool = eqx.field(static=True, default=False)  # verify: boundaries.py:99 -- export-only: declared-materializing sink is stripped
+    sink_receives_index: bool = eqx.field(static=True, default=False)  # verify: boundaries.py -- opt-in (y, index)
     # No dynamic leaves; tree_flatten returns empty leaves
 ```
 

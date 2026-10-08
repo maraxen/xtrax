@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sink session and opt-in element index** (#2587, #2588): `xtrax.stages.sink_session`
+  opens a host sink, yields an ordered `io_callback` pinned to
+  `xtrax.stages._callback`, and closes the session on the way out, including
+  when the traced region raises. `AxisBoundary(sink_receives_index=True)` passes
+  the mapped-axis index to the sink as `(y, index)` for `Vmap`, `ChunkedMap`
+  (including a remainder chunk), and `Scan`. The default call stays `sink(y)`.
+
 - **Grain input pipelines** (#2085): `xtrax.data.build_input_pipeline` builds a
   domain-free Grain pipeline (process shard, shuffle, repeat, optional
   caller-supplied fixed-length pad, `numpy.stack` batch, threaded prefetch,

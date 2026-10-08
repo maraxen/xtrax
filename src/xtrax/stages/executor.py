@@ -12,6 +12,12 @@ axis's iteration completes, over the assembled stacked output -- never per-step,
 `boundary.tap`/`boundary.sink` at the right per-step position, and `boundary.fuse` at the right
 post-iteration position. It never touches `xtrax.stages._callback.io_callback` directly.
 
+``boundary.sink_receives_index`` defaults to False, and the call stays ``sink(y)``.
+Set it True to call ``sink(y, index)`` with the ``int32`` position along this axis.
+The index is zipped with the inputs before ``Vmap``, ``ChunkedMap``, or ``Scan``,
+so a remainder chunk keeps the global position. The flag is explicit: the
+callable's signature is not inspected.
+
 Scope: this executes ONE axis at a time (`execute_map_axis` for `Vmap`/`ChunkedMap`,
 `execute_scan_axis` for `Scan`). Nested composition (e.g. vmap-of-scan) is not built or
 certified here -- each function returns an ordinary array/callable result, so nesting composes
@@ -84,9 +90,10 @@ counter-example this section warns against.
 """
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import jax
+import jax.numpy as jnp
 
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.tiling.strategy import ChunkedMap, Vmap
@@ -113,22 +120,67 @@ def _has_ordered_op(boundary: AxisBoundary | None) -> bool:
     return bool(tap_ordered or sink_ordered)
 
 
-def _wrap_step(fn: Callable[[Any], Any], boundary: AxisBoundary | None) -> Callable[[Any], Any]:
+def _sink_receives_index(boundary: AxisBoundary | None) -> bool:
+    """True when this axis's sink opted in to ``(y, index)``.
+
+    Requires ``sink_receives_index`` and a sink. The callable's parameters are
+    not read.
+    """
+    if boundary is None or boundary.sink is None:
+        return False
+    return bool(boundary.sink_receives_index)
+
+
+def _attach_index(xs: Any) -> tuple[Any, jax.Array]:
+    """Pair ``xs`` with ``int32`` positions along the leading axis."""
+    n = jax.tree.leaves(xs)[0].shape[0]
+    return xs, jnp.arange(n, dtype=jnp.int32)
+
+
+def _apply_step_boundary(
+    y: Any,
+    boundary: AxisBoundary | None,
+    *,
+    with_index: bool,
+    index: Any,
+) -> Any:
+    """Run tap, then sink. ``index`` is passed only when ``with_index`` is set."""
+    if boundary is None:
+        return y
+    if boundary.tap is not None:
+        y = boundary.tap(y)
+    if boundary.sink is not None:
+        if with_index:
+            # Opt-in is the flag, not the one-arg Sink protocol.
+            emit = cast(Callable[..., Any], boundary.sink)
+            emit(y, index)
+        else:
+            boundary.sink(y)
+    return y
+
+
+def _wrap_step(
+    fn: Callable[[Any], Any],
+    boundary: AxisBoundary | None,
+    *,
+    with_index: bool,
+) -> Callable[[Any], Any]:
     """Wrap `fn` so its per-step output passes through `boundary.tap`/`boundary.sink`.
 
     `tap`'s return value replaces the step output (continues downstream / gets stacked);
     `sink`'s return value is discarded, matching its `T -> None` contract.
+    When ``with_index`` is set, the wrapped input is ``(x, index)`` and the sink
+    is called as ``sink(y, index)``.
     """
     if boundary is None or (boundary.tap is None and boundary.sink is None):
         return fn
 
     def _wrapped(x: Any) -> Any:
+        index = None
+        if with_index:
+            x, index = x
         y = fn(x)
-        if boundary.tap is not None:
-            y = boundary.tap(y)
-        if boundary.sink is not None:
-            boundary.sink(y)
-        return y
+        return _apply_step_boundary(y, boundary, with_index=with_index, index=index)
 
     return _wrapped
 
@@ -165,8 +217,12 @@ def execute_map_axis(
         A `ChunkedMap` axis with an ordered tap/sink does NOT raise, but silently ignores
         `strategy.batch_size` and runs one element at a time -- see the module docstring
         ("`ChunkedMap` + `ordered=True` is a steeper cliff than it first looks").
+        ``sink_receives_index=True`` calls ``sink(y, index)`` with the global
+        position, including on a remainder chunk.
     """
-    wrapped = _wrap_step(fn, boundary)
+    with_index = _sink_receives_index(boundary)
+    mapped_xs = _attach_index(xs) if with_index else xs
+    wrapped = _wrap_step(fn, boundary, with_index=with_index)
 
     if isinstance(strategy, Vmap):
         if _has_ordered_op(boundary):
@@ -180,11 +236,11 @@ def execute_map_axis(
             raise ExecutorError(msg)
         # Unordered Vmap. A length-1 axis is a direct call, not a vmap (#2520).
         # The ordered-boundary rejection above is unchanged.
-        if _is_size1_axis(xs, 0):
-            ys = _apply_size1(wrapped, xs)
+        if _is_size1_axis(mapped_xs, 0):
+            ys = _apply_size1(wrapped, mapped_xs)
         else:
             try:
-                ys = jax.vmap(wrapped)(xs)
+                ys = jax.vmap(wrapped)(mapped_xs)
             except ValueError as exc:
                 if "Cannot `vmap` ordered IO callback" not in str(exc):
                     raise
@@ -213,9 +269,9 @@ def execute_map_axis(
             # a time, regardless of the configured batch_size. This is a real,
             # possibly large performance cliff relative to the unordered path -- see
             # the module docstring; it is not a corner case, it is unconditional.
-            ys = jax.lax.map(wrapped, xs)
+            ys = jax.lax.map(wrapped, mapped_xs)
         else:
-            ys = chunked_map(wrapped, xs, batch_size=strategy.batch_size)
+            ys = chunked_map(wrapped, mapped_xs, batch_size=strategy.batch_size)
         return _apply_fuse(ys, boundary)
 
     msg = f"execute_map_axis: unsupported strategy type {type(strategy)}"
@@ -238,18 +294,20 @@ def execute_scan_axis(
 
     Returns:
         `(final_carry, ys)` -- `ys` is optionally fused; `fuse` never receives `final_carry`.
+        ``sink_receives_index=True`` calls ``sink(y, index)`` with the scan step.
     """
+    with_index = _sink_receives_index(boundary)
+    scan_xs = _attach_index(xs) if with_index else xs
 
     def _wrapped_transition(carry: Any, x: Any) -> tuple[Any, Any]:
+        index = None
+        if with_index:
+            x, index = x
         carry, y = fn(carry, x)
-        if boundary is not None:
-            if boundary.tap is not None:
-                y = boundary.tap(y)
-            if boundary.sink is not None:
-                boundary.sink(y)
+        y = _apply_step_boundary(y, boundary, with_index=with_index, index=index)
         return carry, y
 
-    final_carry, ys = safe_scan(_wrapped_transition, init, xs)
+    final_carry, ys = safe_scan(_wrapped_transition, init, scan_xs)
     return final_carry, _apply_fuse(ys, boundary)
 
 
