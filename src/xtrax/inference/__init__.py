@@ -14,6 +14,7 @@ from xtrax.inference.errors import (
     AmbiguousAxisError,
     AxisRole,
     CseTraceError,
+    InputInvarianceError,
     MemoDonationError,
     MemoImpurityError,
     MemoKeyUnsupportedLeafError,
@@ -21,18 +22,22 @@ from xtrax.inference.errors import (
     MemoStalenessError,
     StructureMismatchError,
 )
+from xtrax.inference.invariance import AxisInvariance, InvarianceReport, verify_axis_invariance
 from xtrax.inference.ir_schema import emit_ir_schema
 from xtrax.inference.memo import MemoPolicy, memoize_jaxpr
 from xtrax.inference.schema import BundleSchema
 
 __all__ = [
     "AmbiguousAxisError",
+    "AxisInvariance",
     "AxisOverride",
     "AxisRole",
     "BundleSchema",
     "CseDuplicateClass",
     "CseReport",
     "CseTraceError",
+    "InvarianceReport",
+    "InputInvarianceError",
     "MemoDonationError",
     "MemoImpurityError",
     "MemoKeyUnsupportedLeafError",
@@ -46,4 +51,5 @@ __all__ = [
     "infer_bundle",
     "memoize_jaxpr",
     "synthesize_axes",
+    "verify_axis_invariance",
 ]

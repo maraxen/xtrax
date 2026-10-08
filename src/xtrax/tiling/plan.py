@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import warnings
-from collections.abc import Callable, MutableMapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
@@ -76,6 +76,11 @@ class AxisSpec:
             knows it. A per-axis ``memory_estimator`` result below this value
             raises ``ValueError``. None means the spec has no element shape or
             dtype, so the planner skips that check.
+        varying_inputs: Named inputs that vary along this axis. Every other named
+            input is invariant along it. Empty means all named inputs are invariant.
+            ``declare_varying_inputs`` checks the names against the known axes and
+            inputs. The field lives here because a plan stores this spec on each
+            decision, and plan/explain already print spec fields.
     """
 
     name: str
@@ -87,9 +92,10 @@ class AxisSpec:
     bucket_boundaries: tuple[int, ...] | list[int] | None = None
     role: AxisRole = AxisRole.KNOWN
     element_input_bytes: int | None = None
+    varying_inputs: tuple[str, ...] | list[str] | str = ()
 
     def __post_init__(self) -> None:
-        """Validate element_input_bytes and normalize bucket_boundaries."""
+        """Validate element_input_bytes and varying_inputs; normalize bucket_boundaries."""
         if self.element_input_bytes is not None:
             value = self.element_input_bytes
             if isinstance(value, bool) or value < 0:
@@ -97,6 +103,13 @@ class AxisSpec:
                     f"AxisSpec(name={self.name!r}): element_input_bytes must be a "
                     f"non-negative int, got {value!r}."
                 )
+        varying = self.varying_inputs
+        if isinstance(varying, str):
+            raise ValueError(
+                f"AxisSpec(name={self.name!r}): varying_inputs must be a sequence of "
+                f"input names, not the string {varying!r}."
+            )
+        object.__setattr__(self, "varying_inputs", tuple(varying))
         if self.bucket_boundaries is None:
             return
         boundaries = tuple(self.bucket_boundaries)
@@ -133,6 +146,51 @@ class AxisSpec:
             )
             return object.__getattribute__(self, "tile_granularity")
         raise AttributeError(f"type object 'AxisSpec' has no attribute {name!r}")
+
+
+def declare_varying_inputs(
+    specs: Sequence[AxisSpec],
+    varying: Mapping[str, Sequence[str]],
+    input_names: Sequence[str],
+) -> tuple[AxisSpec, ...]:
+    """Return specs annotated with the inputs that vary along each axis.
+
+    Inputs absent from an axis's list are invariant along that axis. Axes
+    absent from ``varying`` keep the ``varying_inputs`` already stored on the
+    spec. Duplicate names in one list are dropped, first occurrence kept.
+
+    Args:
+        specs: Axis specs the declaration may name.
+        varying: Map from axis name to the input names that vary along it.
+        input_names: Input names the declaration may use.
+
+    Returns:
+        Specs in input order, with ``varying_inputs`` set from ``varying``.
+
+    Raises:
+        ValueError: ``varying`` names an axis absent from ``specs``, or an
+            input name absent from ``input_names``. The message quotes the
+            unknown name and lists the known names.
+    """
+    known_axes = {spec.name for spec in specs}
+    unknown_axes = [axis for axis in varying if axis not in known_axes]
+    if unknown_axes:
+        known = ", ".join(repr(spec.name) for spec in specs) or "(none)"
+        raise ValueError(f"unknown axis {unknown_axes[0]!r}; known axes: {known}")
+    known_inputs = set(input_names)
+    for names in varying.values():
+        for name in names:
+            if name not in known_inputs:
+                known = ", ".join(repr(n) for n in input_names) or "(none)"
+                raise ValueError(f"unknown input {name!r}; known inputs: {known}")
+    updated: list[AxisSpec] = []
+    for spec in specs:
+        if spec.name not in varying:
+            updated.append(spec)
+            continue
+        deduped = tuple(dict.fromkeys(varying[spec.name]))
+        updated.append(replace(spec, varying_inputs=deduped))
+    return tuple(updated)
 
 
 @dataclass(frozen=True)

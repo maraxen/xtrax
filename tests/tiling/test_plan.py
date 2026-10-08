@@ -690,3 +690,112 @@ class TestBatchPlanner:
         assert isinstance(strategy_for(DEFAULT_DEVICE_MEMORY_BYTES), Vmap)
         assert isinstance(strategy_for(DEFAULT_DEVICE_MEMORY_BYTES + 1), ChunkedMap)
         assert isinstance(strategy_for(5 * 2**30), ChunkedMap)
+
+
+class TestVaryingInputs:
+    """Which named inputs vary along a mapped axis (#2598).
+
+    The declaration lives on AxisSpec: BatchPlan stores that spec on each
+    decision, and plan/explain already surface spec fields. Inputs omitted
+    from the per-axis list are invariant along that axis.
+    """
+
+    def test_declaration_round_trips_through_plan_and_explain(self, capsys):
+        """A valid varying-input list survives planning and shows up in plan/explain."""
+        from types import SimpleNamespace
+
+        from xtrax.cli.emit import emit
+        from xtrax.cli.plan import print_plan_summary
+        from xtrax.eda.explain import explain_plan
+        from xtrax.tiling.plan import declare_varying_inputs
+
+        bare = AxisSpec(name="batch", cardinality=8, default_batch_size=4)
+        specs = declare_varying_inputs(
+            (bare, AxisSpec(name="sequence", cardinality=16, default_batch_size=8)),
+            {"batch": ("x", "x")},
+            input_names=("params", "x"),
+        )
+        assert specs[0].varying_inputs == ("x",)
+        assert specs[1].varying_inputs == ()
+
+        plan = BatchPlanner().plan(specs)
+        assert plan.decision_for("batch").spec.varying_inputs == ("x",)
+        assert plan.decision_for("sequence").spec.varying_inputs == ()
+
+        stats = explain_plan(plan)
+        by_name = {entry["name"]: entry for entry in stats["axes"]}
+        assert by_name["batch"]["varying_inputs"] == ["x"]
+        assert by_name["sequence"]["varying_inputs"] == []
+
+        print_plan_summary(plan)
+        plan_text = capsys.readouterr().out
+        assert "Varying inputs: x" in plan_text
+        assert "Varying inputs: (none)" in plan_text
+
+        emit(stats, plan, "text")
+        explain_text = capsys.readouterr().out
+        assert "Varying inputs: x" in explain_text
+        assert "Varying inputs: (none)" in explain_text
+
+        # A spec that only has the AxisSpecLike fields still explains.
+        foreign = SimpleNamespace(name="batch", cardinality=4)
+        decision = SimpleNamespace(spec=foreign, batch_size=4, reasoning="vmap", strategy=Vmap())
+        foreign_stats = explain_plan(SimpleNamespace(decisions=(decision,)))
+        assert foreign_stats["axes"][0]["varying_inputs"] == []
+
+    def test_list_of_varying_inputs_is_stored_as_a_tuple(self):
+        """A list is coerced so the frozen spec stays hashable."""
+        spec = AxisSpec(
+            name="batch",
+            cardinality=4,
+            default_batch_size=2,
+            varying_inputs=["x", "mask"],
+        )
+        assert spec.varying_inputs == ("x", "mask")
+        assert hash(spec) == hash(spec)
+
+    def test_string_varying_inputs_raises(self):
+        """A bare string is not a sequence of input names."""
+        with pytest.raises(ValueError, match="varying_inputs"):
+            AxisSpec(
+                name="batch",
+                cardinality=4,
+                default_batch_size=2,
+                varying_inputs="x",
+            )
+
+    def test_unknown_axis_raises(self):
+        """Naming an axis that is not in the specs raises."""
+        from xtrax.tiling.plan import declare_varying_inputs
+
+        specs = (AxisSpec(name="batch", cardinality=4, default_batch_size=2),)
+        with pytest.raises(ValueError, match="unknown axis 'token'") as exc:
+            declare_varying_inputs(specs, {"token": ("x",)}, input_names=("x",))
+        assert "batch" in str(exc.value)
+
+    def test_unknown_input_raises(self):
+        """Naming an input that is not in the known inputs raises."""
+        from xtrax.tiling.plan import declare_varying_inputs
+
+        specs = (AxisSpec(name="batch", cardinality=4, default_batch_size=2),)
+        with pytest.raises(ValueError, match="unknown input 'weight'") as exc:
+            declare_varying_inputs(specs, {"batch": ("weight",)}, input_names=("params", "x"))
+        assert "params" in str(exc.value)
+        assert "x" in str(exc.value)
+
+    def test_unknown_input_with_empty_catalog_lists_none(self):
+        """An empty input catalog still names the unknown input."""
+        from xtrax.tiling.plan import declare_varying_inputs
+
+        specs = (AxisSpec(name="batch", cardinality=4, default_batch_size=2),)
+        with pytest.raises(ValueError, match="unknown input 'x'") as exc:
+            declare_varying_inputs(specs, {"batch": ("x",)}, input_names=())
+        assert "(none)" in str(exc.value)
+
+    def test_unknown_axis_with_no_specs_lists_none(self):
+        """An empty spec list still names the unknown axis."""
+        from xtrax.tiling.plan import declare_varying_inputs
+
+        with pytest.raises(ValueError, match="unknown axis 'batch'") as exc:
+            declare_varying_inputs((), {"batch": ("x",)}, input_names=())
+        assert "(none)" in str(exc.value)

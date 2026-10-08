@@ -102,6 +102,8 @@ def print_plan_summary(plan: Any) -> None:
         print(f"  Tile granularity: {spec.tile_granularity}")
         print(f"  Heterogeneous: {spec.heterogeneous}")
         print(f"  Dedup eligible: {spec.dedup_eligible}")
+        varying = ", ".join(spec.varying_inputs) if spec.varying_inputs else "(none)"
+        print(f"  Varying inputs: {varying}")
         print(f"  Role: {spec.role.value}")
         print(f"  Strategy: {type(decision.strategy).__name__}")
         print(f"  Reasoning: {decision.reasoning}")

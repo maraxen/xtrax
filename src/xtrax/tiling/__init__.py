@@ -1,7 +1,7 @@
 """Tiling module for composable axis strategy selection and execution.
 
 CORE exports (stable, always available):
-    AxisSpec, BatchPlanner, BatchPlan, AxisDecision
+    AxisSpec, BatchPlanner, BatchPlan, AxisDecision, declare_varying_inputs
     Vmap, ChunkedMap, Scan, ScanTransition, Bucket, select_bucket, bucketize,
     BUCKET_LADDER, valid_span, select_rung, trim_axis, pad_axis
     WhileCarry, WhileBodyFn, WhileCondFn, fixed_step_count_cond
@@ -47,7 +47,14 @@ from xtrax.tiling.iterator import (
     WhileLoopIterator,
     WhileLoopWithYsIterator,
 )
-from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan, BatchPlanner, plan_axis
+from xtrax.tiling.plan import (
+    AxisDecision,
+    AxisSpec,
+    BatchPlan,
+    BatchPlanner,
+    declare_varying_inputs,
+    plan_axis,
+)
 from xtrax.tiling.strategy import (
     Bucket,
     ChunkedMap,
@@ -65,6 +72,7 @@ __all__ = [
     "AxisDecision",
     "BatchPlan",
     "BatchPlanner",
+    "declare_varying_inputs",
     "Vmap",
     "ChunkedMap",
     "Scan",

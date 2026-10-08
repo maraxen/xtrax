@@ -30,11 +30,14 @@ import jax
 import numpy as np
 
 from xtrax.inference.errors import CseTraceError
+from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
 
 __all__ = [
     "CseDuplicateClass",
     "CseReport",
+    "align_call_invars",
     "analyze_cse",
+    "trace_input_dependence",
 ]
 
 
@@ -82,6 +85,16 @@ class CseReport:
         "commutativity)."
     )
     trace_cache_hit: bool = False
+
+
+def _is_literal(value: Any) -> bool:
+    """True for a jaxpr Literal operand.
+
+    Jaxpr literals are not a public class the walker can import without jax,
+    so the check is the runtime type name, the same test ``analyze_cse`` uses
+    when it canonicalizes constant operands.
+    """
+    return type(value).__name__ == "Literal"
 
 
 def _literal_key(lit) -> tuple[str, bytes]:
@@ -171,7 +184,7 @@ def analyze_cse(
                 var_token[id(ov)] = tok
 
         def _op_token(v) -> tuple:
-            if type(v).__name__ == "Literal":
+            if _is_literal(v):
                 return ("lit", _literal_key(v))
             return var_token.get(id(v), ("free", id(v)))
 
@@ -243,3 +256,118 @@ def analyze_cse(
         duplicate_eqns=total_dup,
         trace_cache_hit=cache_hit,
     )
+
+
+def align_call_invars(
+    outer: Sequence[Any],
+    inner: Sequence[Any],
+) -> tuple[tuple[Any, Any | None], ...]:
+    """Pair callee invars with the caller invars that bind them.
+
+    Pairs are aligned from the right. A longer caller list drops its prefix
+    (``cond``'s predicate is that prefix). A longer callee list pairs its
+    leading invars with ``None`` (closed-over consts with no caller input).
+
+    Args:
+        outer: Invars of the calling equation, in order.
+        inner: Invars of the callee jaxpr, in order.
+
+    Returns:
+        ``(callee invar, caller invar or None)`` pairs, one per callee invar.
+    """
+    if len(inner) <= len(outer):
+        start = len(outer) - len(inner)
+        return tuple((inner[i], outer[start + i]) for i in range(len(inner)))
+    pad = len(inner) - len(outer)
+    leading = tuple((inner[i], None) for i in range(pad))
+    trailing = tuple((inner[pad + i], outer[i]) for i in range(len(outer)))
+    return leading + trailing
+
+
+@dataclass(frozen=True)
+class InputDependence:
+    """Data dependence of a traced function on its top-level invars.
+
+    Attributes:
+        intermediates: ``(primitive, input indices)`` for every produced value,
+            in walker order. A value's index set is the top-level inputs it reads.
+        outputs: One input-index set per top-level output, in output order.
+    """
+
+    intermediates: tuple[tuple[str, frozenset[int]], ...]
+    outputs: tuple[frozenset[int], ...]
+
+
+def _dep_of(value: Any, deps: dict[int, frozenset[int]]) -> frozenset[int]:
+    if _is_literal(value):
+        return frozenset()
+    return deps.get(id(value), frozenset())
+
+
+def trace_input_dependence(closed: Any) -> InputDependence:
+    """Map every produced value to the top-level inputs it reads.
+
+    ``analyze_cse`` stays detection-only. This walk reuses its literal test
+    and the public jaxpr walker (``iter_jaxpr_eqns``, ``sub_jaxprs``) so a
+    ``sin`` inside ``remat`` / ``custom_jvp`` / ``jit`` (pjit) is visible.
+
+    Call-equation outputs take the callee's per-output dependence, not the
+    union of every operand. ``cond`` also unions the predicate, which is not
+    a branch invar.
+
+    Args:
+        closed: A closed jaxpr from ``jax.make_jaxpr``, or a bare jaxpr.
+
+    Returns:
+        InputDependence for intermediates and outputs.
+    """
+    deps: dict[int, frozenset[int]] = {}
+    for const in getattr(closed, "constvars", ()):
+        deps[id(const)] = frozenset()
+    for index, invar in enumerate(closed.invars):
+        deps[id(invar)] = frozenset((index,))
+
+    order = {id(eqn): index for index, eqn in enumerate(iter_jaxpr_eqns(closed))}
+    produced: list[tuple[int, str, frozenset[int]]] = []
+
+    def _record(eqn: Any, per_out: Sequence[frozenset[int]]) -> None:
+        slot = order[id(eqn)]
+        for out, dep in zip(eqn.outvars, per_out, strict=True):
+            deps[id(out)] = dep
+            produced.append((slot, eqn.primitive.name, dep))
+
+    def _bind(eqn: Any, sub: Any, paired_outer: set[int]) -> list[frozenset[int]]:
+        for inner, outer in align_call_invars(eqn.invars, sub.invars):
+            if outer is None:
+                deps[id(inner)] = frozenset()
+                continue
+            paired_outer.add(id(outer))
+            deps[id(inner)] = _dep_of(outer, deps)
+        _visit(sub)
+        return [_dep_of(out, deps) for out in sub.outvars]
+
+    def _visit(jaxpr: Any) -> None:
+        for eqn in jaxpr.eqns:
+            op_deps = tuple(_dep_of(v, deps) for v in eqn.invars)
+            subs = list(sub_jaxprs(eqn.params))
+            if not subs:
+                union = frozenset().union(*op_deps)
+                _record(eqn, (union,) * len(eqn.outvars))
+                continue
+            paired_outer: set[int] = set()
+            first, *rest = subs
+            merged = _bind(eqn, first, paired_outer)
+            for sub in rest:
+                nxt = _bind(eqn, sub, paired_outer)
+                merged = [left | right for left, right in zip(merged, nxt, strict=True)]
+            extra: frozenset[int] = frozenset()
+            for value in eqn.invars:
+                if id(value) not in paired_outer:
+                    extra = extra | _dep_of(value, deps)
+            _record(eqn, [dep | extra for dep in merged])
+
+    _visit(closed)
+    produced.sort(key=lambda item: item[0])
+    outputs = tuple(_dep_of(out, deps) for out in closed.outvars)
+    intermediates = tuple((name, dep) for _, name, dep in produced)
+    return InputDependence(intermediates, outputs)
