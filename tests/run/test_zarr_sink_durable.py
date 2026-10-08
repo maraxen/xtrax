@@ -448,6 +448,10 @@ class TestRootNeverRewritten:
         attrs = dict(zarr.open_group(str(store), mode="r").attrs)
         assert set(attrs) == {zc.STORE_ATTR}
         assert attrs[zc.STORE_ATTR]["creator_run_id"] == "run-creator"
+        # Producer lives inside the store record so the root attr set stays
+        # exactly STORE_ATTR. Exclusive-mode roots use top-level attrs instead.
+        assert attrs[zc.STORE_ATTR]["producer"] == "xtrax"
+        assert attrs[zc.STORE_ATTR]["xtrax_version"]
         assert sink.store_record["creator_run_id"] == "run-creator"
         assert sink.store_record["identity_payload"] == IDENTITY
 

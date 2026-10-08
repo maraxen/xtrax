@@ -19,6 +19,8 @@ import hashlib
 import json
 import os
 import unicodedata
+import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,9 +28,33 @@ import numpy as np
 
 from xtrax.run._sink_names import CORE_PROVENANCE_FIELDS as _CORE_PROVENANCE_FIELDS
 from xtrax.run._sink_names import RESERVED_ATTR_PREFIX
+from xtrax.run._sink_names import ROOT_STAMPED_FIELDS as _ROOT_STAMPED_FIELDS
 
 if TYPE_CHECKING:
     import zarr
+
+#: Version of the content digest folded by :func:`zarr_content_digest`
+#: (sha256 over the canonical node walk, provenance excluded by default).
+#: Bump when that byte layout changes. Zarr receipts record this so a later
+#: reader can tell which algorithm produced ``digest``.
+#:
+#: This is not :data:`CANONICAL_HASH_ALGO_VERSION` and not
+#: :data:`MEMORY_DIGEST_ALGO_VERSION`. Those label different algorithms.
+#: A zarr content digest and a memory-sink digest are not comparable.
+DIGEST_ALGO_VERSION = 1
+
+#: Version of :func:`canonical_hash` (sha256 over :func:`canonical_json_bytes`).
+#: Bump when that JSON-document hashing changes. Whole-document digests in
+#: ``xtrax.run`` go through this helper.
+CANONICAL_HASH_ALGO_VERSION = 1
+
+#: Algorithm id on :class:`~xtrax.run.memory_sink.MemorySink` receipts.
+#: Not a newer revision of :data:`DIGEST_ALGO_VERSION`: the memory digest is
+#: :func:`canonical_hash` of ``{group_path: {array_name: array_digest}}``.
+#: Array names and array bytes are inputs. Caller attrs, run id, seed, and git
+#: provenance are not, so changing an attr does not change the digest.
+#: Do not compare it to :func:`zarr_content_digest`.
+MEMORY_DIGEST_ALGO_VERSION = 2
 
 
 def canonical_json_bytes(payload: dict[str, Any]) -> bytes:
@@ -40,6 +66,20 @@ def canonical_json_bytes(payload: dict[str, Any]) -> bytes:
         ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
+
+
+def canonical_hash(payload: dict[str, Any]) -> str:
+    """sha256 hex digest of ``payload`` via :func:`canonical_json_bytes`.
+
+    ``payload`` must already be JSON-serializable. Normalize numpy values with
+    :func:`normalize_json_value` first. Algorithm version:
+    :data:`CANONICAL_HASH_ALGO_VERSION`.
+
+    This is the single JSON-document hash used by ``xtrax.run`` digest code.
+    The zarr node walk folds canonical JSON bytes into its own running hash
+    and does not call this helper: that walk is :data:`DIGEST_ALGO_VERSION`.
+    """
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def normalize_json_value(value: Any) -> Any:  # noqa: ANN401
@@ -86,8 +126,9 @@ def update_zarr_node_digest(
 
     By default (``include_provenance=False``), excludes provenance-tracking attrs that
     may vary between runs:
-    - ROOT GROUP (``path == "/"``): excludes all five core provenance field names:
-      ``git_sha``, ``git_branch``, ``git_dirty``, ``run_id``, ``created_at``, plus
+    - ROOT GROUP (``path == "/"``): excludes every core provenance field name
+      (``git_sha``, ``git_branch``, ``git_dirty``, ``run_id``, ``created_at``,
+      ``seed``, ``producer``, ``xtrax_version``), plus
       any attr whose key starts with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
     - NON-ROOT GROUPS: excludes only ``run_id`` and ``git_sha`` (the per-key pointer pair),
       plus any attr whose key starts with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
@@ -125,7 +166,9 @@ def update_zarr_node_digest(
         # the natural `root.path` would otherwise land in the non-root branch and
         # silently keep created_at/git_branch/git_dirty in the digest -- exactly
         # the #5013 bug, reintroduced through the public API with no error.
-        exclude_keys = _CORE_PROVENANCE_FIELDS
+        # ``seed`` is root-stamped run metadata. Callers may still stage an
+        # attr of that name on a non-root group (it is not a reserved field).
+        exclude_keys = _CORE_PROVENANCE_FIELDS | _ROOT_STAMPED_FIELDS
     else:
         # Non-root group: exclude only run_id and git_sha (the per-key pointer pair).
         exclude_keys = _CORE_PROVENANCE_FIELDS & {"run_id", "git_sha"}
@@ -170,7 +213,8 @@ def zarr_content_digest(path: Path, *, include_provenance: bool = False) -> str:
 
     By default, excludes provenance-tracking attrs:
     - ROOT GROUP: excludes ``git_sha``, ``git_branch``, ``git_dirty``, ``run_id``,
-      ``created_at``, plus attrs starting with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
+      ``created_at``, ``seed``, ``producer``, ``xtrax_version``, plus attrs
+      starting with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
     - NON-ROOT GROUPS: excludes ``run_id`` and ``git_sha`` (the per-key pointer pair),
       plus attrs starting with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
     - ARRAYS: excludes no provenance field names, but attrs starting with
@@ -239,3 +283,34 @@ def fsync_tree(path: Path) -> None:
     for d in dirs:
         fsync_directory(d)
     fsync_directory(path)
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Atomically replace ``path`` with ``data``.
+
+    Writes a sibling temp file, fsyncs it, ``os.replace``s it onto ``path``,
+    then fsyncs the parent directory. An exception before the replace leaves
+    any pre-existing ``path`` bytes unchanged (the temp file is removed).
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        with tmp.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
+    fsync_directory(path.parent)
+
+
+def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Atomically replace ``path`` with ``text`` encoded as ``encoding``.
+
+    See :func:`atomic_write_bytes` for the tmp/fsync/replace/dir-fsync sequence.
+    """
+    atomic_write_bytes(path, text.encode(encoding))

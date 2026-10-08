@@ -248,6 +248,7 @@ source_modules = [
   "xtrax.tombstone",
   "xtrax.telemetry",
   "xtrax.export",
+  "xtrax.testing",
 ]
 forbidden_modules = ["xtrax.devtools"]
 

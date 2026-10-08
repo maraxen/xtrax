@@ -198,9 +198,9 @@ from xtrax.tiling.bucket import select_bucket, bucketize
 boundaries = (32, 64, 128)  # Pad up to nearest boundary
 strategy = Bucket(boundaries=boundaries)
 
-# Host-side operation: select bucket, pad, send to jit
-bucket_idx = select_bucket(sequence_length=50, boundaries=boundaries)  # → 1 (64)
-padded_seq = bucketize(sequence, boundaries=boundaries)                # → (64,)
+# Host-side, before jit. select_bucket returns the boundary value (64 for length 50).
+bucket = select_bucket(length=50, boundaries=boundaries)
+padded, mask = bucketize(sequence, bucket_size=bucket)
 ```
 
 🚫 HALTS: `Bucket` cannot be passed to `make_axis_dispatch`.  
@@ -304,27 +304,24 @@ Block until confirmed.
 
 #### DedupSpec and get_k_bucket
 
-Configure deduplication for repeated elements:
+Build the spec with `synthesize_dedup_spec` (byte-exact native bytes per leaf). It always sets `axis_name="batch"`. `k_bucket` is computed later by `get_k_bucket` inside `to_dedup_gather` — it is not a `DedupSpec` field. End-to-end caller notes: `references/adoption.md`.
 
 ```python
-from xtrax.tiling.dedup import DedupSpec, get_k_bucket
+import numpy as np
+from xtrax.tiling.dedup_synthesis import synthesize_dedup_spec
+from xtrax.tiling.plan import AxisSpec, BatchPlanner
 
-# Identify unique elements in a batch
-batch = jax.numpy.array([0, 1, 0, 2, 1, 1])
-unique_vals, unique_indices = jax.numpy.unique(batch, return_index=True)
-k = len(unique_indices)  # 3 unique elements
-
-# Configure dedup strategy (k_bucket is computed internally — do NOT pass it)
-spec = DedupSpec(
-    axis_name="batch",              # Must match AxisSpec.name of a dedup_eligible axis
-    unique_indices=unique_indices,  # (k,) indices of unique elements in original
-    index_map=...,                  # (n,) inverse: position i uses result from slot index_map[i]
-    k=k,                            # Number of distinct elements (== len(unique_indices))
+rows = np.array(
+    [[1.0, 2.0], [1.0, 2.0], [3.0, 4.0], [1.0, 2.0], [3.0, 4.0], [1.0, 2.0]],
+    dtype=np.float32,
 )
+result = synthesize_dedup_spec([rows])  # stage="synthesized", spec.axis_name=="batch", k=2
+spec = result.spec
 
-# Pass to planner:
 planner = BatchPlanner(dedup_specs=[spec])
-plan = planner.plan([axis_spec_with_dedup_eligible_true])
+plan = planner.plan([
+    AxisSpec(name="batch", cardinality=6, default_batch_size=4, dedup_eligible=True),
+])
 ```
 
 Verify: `src/xtrax/tiling/dedup.py`
@@ -343,6 +340,8 @@ For k > 256, this wastes up to 2× compute per element (worst case: k=257 → bu
 
 #### Bucket: Variable-Length Axis Handling
 
+End-to-end recipe (host pad, one compile per rung, `BUCKET_LADDER`): `references/length-bucketing.md`.
+
 For axes with variable-length elements (e.g., sequences), use bucketing to limit recompilation:
 
 ```python
@@ -358,8 +357,8 @@ spec = AxisSpec(
 
 # At runtime: select bucket and pad
 seq_length = 50
-bucket_idx = select_bucket(seq_length, boundaries=spec.bucket_boundaries)  # → 1 (64)
-padded_seq = bucketize(sequence, boundaries=spec.bucket_boundaries)        # → (64,)
+bucket = select_bucket(length=seq_length, boundaries=spec.bucket_boundaries)  # 64
+padded, mask = bucketize(sequence, bucket_size=bucket)
 ```
 
 Verify: `src/xtrax/tiling/bucket.py`
@@ -388,9 +387,10 @@ tokens_spec = AxisSpec(name="tokens", cardinality=8, default_batch_size=4,
 seqlen_spec = AxisSpec(name="seqlen", cardinality=1000, default_batch_size=32,
                        bucket_boundaries=(32, 64, 128))
 
-# DedupSpec is DATA-DEPENDENT: caller must have already inspected the batch
-# (e.g. np.unique on the host) to compute these — unlike Bucket/Vmap/ChunkedMap,
-# which are static config.
+# DedupSpec is DATA-DEPENDENT. Build the indices with synthesize_dedup_spec
+# (byte-exact; see the DedupSpec section above). That helper always names the
+# axis "batch", so this axis copies them onto axis_name="tokens". The literal
+# arrays below are that spec's fields. Bucket/Vmap/ChunkedMap stay static config.
 dedup = DedupSpec(
     axis_name="tokens",                                       # matches AxisSpec.name
     unique_indices=np.array([0, 1, 3], dtype=np.int32),       # (k,) first-occurrence slots
@@ -418,8 +418,8 @@ dedup_decision, bucket_decision = plan.decisions
 
 # 1. Bucket axis: pad on the host, in plain Python, BEFORE jit — no dispatch call.
 boundaries = bucket_decision.strategy.boundaries
-bucket_idx = select_bucket(seq_length, boundaries=boundaries)
-padded_seq = bucketize(sequence, boundaries=boundaries)
+bucket = select_bucket(length=seq_length, boundaries=boundaries)
+padded, mask = bucketize(sequence, bucket_size=bucket)
 
 # 2. DedupGather axis: eager three-phase shim (dedup → chunked_map → gather).
 ys = axis_dispatch(dedup_decision.strategy, fn, xs)
@@ -435,4 +435,4 @@ Enforcement: `src/xtrax/tiling/dispatch.py:78-82` (DedupGather), `src/xtrax/tili
 🚫 HALTS: `axis_dispatch(Bucket(...), fn, xs)` also raises `TypeError`, by design: "Bucket is a host-side strategy and is not executed by axis_dispatch. Pad to a bucket shape on the host with select_bucket()/bucketize() before your jitted step, then dispatch the per-bucket compute with a device-tier strategy (e.g. Vmap/ChunkedMap)."  
 Enforcement: `src/xtrax/tiling/dispatch.py:163-171`
 
-⚠ WARN: `DedupSpec` inputs are data-dependent. `unique_indices`/`index_map`/`k` must be computed from the **actual batch** on the host before `planner.plan()` is called; if the batch changes, rebuild the `DedupSpec` and re-plan. The other axes in a composed plan (Bucket boundaries, Vmap/ChunkedMap cardinality) are static config and survive batch changes unchanged.
+⚠ WARN: `DedupSpec` inputs are data-dependent. Build `unique_indices`/`index_map`/`k` from the **actual batch** with `synthesize_dedup_spec` before `planner.plan()`; if the batch changes, synthesize again and re-plan. The other axes in a composed plan (Bucket boundaries, Vmap/ChunkedMap cardinality) are static config and survive batch changes unchanged.

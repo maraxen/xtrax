@@ -1,6 +1,7 @@
 """run_from_config: cli-private glue wiring TrainConfig → Engine.fit_sync (AC5)."""
 
 import dataclasses
+import json
 import os
 import uuid
 from pathlib import Path
@@ -10,7 +11,7 @@ from xtrax.cli.hash import config_hash as compute_config_hash
 from xtrax.cli.manifest import write_manifest
 from xtrax.cli.resolve import resolve_components
 from xtrax.engine.engine import Engine
-from xtrax.run import RunSpec, derive_sink_spec, make_sink
+from xtrax.run import RunSpec, atomic_write_text, derive_sink_spec, make_sink
 from xtrax.training import ResumableState, init_state
 from xtrax.training.trainer import Trainer
 
@@ -82,8 +83,12 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
     # every default-config production run). .xtrax/ is also gitignored, making
     # capture honest regardless of ordering.
     # Created BEFORE fit: missing zarr fails loud before compute is wasted, and
-    # a mid-fit crash leaves a root-provenance tombstone (git sha of the code
-    # that was running) instead of no trace at all.
+    # a mid-fit crash leaves a root-provenance tombstone instead of no trace.
+    #
+    # provenance=Path.cwd() is explicit at the CLI: the store records the git
+    # HEAD of the checkout that is running (or warns and records git_sha
+    # 'unknown' when that path is not a repository). The library default
+    # (provenance omitted) does not shell out.
     driver_spec = RunSpec(
         seed=cfg.seed,
         axes=[],
@@ -91,7 +96,13 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
         boundaries=None,
         run_id=run_id,
     )
-    sink = make_sink(derive_sink_spec(driver_spec, output_dir=Path(run_dir) / "metrics.zarr"))
+    sink = make_sink(
+        derive_sink_spec(
+            driver_spec,
+            output_dir=Path(run_dir) / "metrics.zarr",
+            provenance=Path.cwd(),
+        )
+    )
     # derive_sink_spec pins format="zarr", so make_sink cannot return None here
     # (None is reserved for format="none"). Narrow for the ty hard CI gate.
     assert sink is not None, "derive_sink_spec pins format='zarr'; make_sink must yield a sink"
@@ -99,7 +110,8 @@ def run_from_config(cfg: TrainConfig, run_id: str | None = None) -> ResumableSta
     # AC6: always-write the manifest BEFORE training, not after. The manifest is
     # the contract `resume` consumes; writing it only on success would leave a
     # crashed-but-checkpointed run (the exact resume use-case) unresumable.
-    write_manifest(run_dir, cfg, run_id=run_id, config_hash_val=hash_val)
+    manifest = write_manifest(run_dir, cfg, run_id=run_id, config_hash_val=hash_val, persist=False)
+    atomic_write_text(Path(run_dir) / "manifest.json", json.dumps(manifest, indent=2))
 
     engine = Engine(trainer=Trainer(loss_fn, optimizer), callbacks=())
     # Pass the CLI's config-hash run_id through to the ledger. Engine opens one

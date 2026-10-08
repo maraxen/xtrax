@@ -1,10 +1,12 @@
 """Tests for xtrax.tiling.plan — AxisSpec, AxisDecision, BatchPlan, BatchPlanner."""
 
+import logging
 import warnings
 
 import jax
 import pytest
 
+from xtrax.tiling.estimators import DEFAULT_DEVICE_MEMORY_BYTES
 from xtrax.tiling.plan import (
     AxisDecision,
     AxisSpec,
@@ -114,6 +116,32 @@ class TestBatchPlan:
         plan = BatchPlan(decisions=(decision,))
         assert len(plan.decisions) == 1
         assert plan.decisions[0] is decision
+
+    def test_decision_for_returns_named_decision(self):
+        """decision_for returns the AxisDecision (and its strategy) for a known axis."""
+        batch = AxisSpec(name="batch", cardinality=8, default_batch_size=8)
+        seq = AxisSpec(name="seq", cardinality=64, default_batch_size=8)
+        plan = BatchPlanner().plan([batch, seq])
+        decision = plan.decision_for("seq")
+        assert decision.spec.name == "seq"
+        assert isinstance(decision.strategy, ChunkedMap)
+        assert decision is plan.decisions[1]
+
+    def test_decision_for_unknown_axis_raises_keyerror(self):
+        """Unknown axes raise KeyError naming the missing axis and the known ones."""
+        spec = AxisSpec(name="batch", cardinality=8, default_batch_size=8)
+        plan = BatchPlanner().plan([spec])
+        with pytest.raises(KeyError, match="no decision for axis 'missing'") as excinfo:
+            plan.decision_for("missing")
+        assert "batch" in str(excinfo.value)
+
+    def test_decision_for_exported_on_public_batchplan(self):
+        """decision_for is on the BatchPlan exported from xtrax.tiling and xtrax."""
+        import xtrax
+        from xtrax.tiling import BatchPlan as PublicBatchPlan
+
+        assert PublicBatchPlan.decision_for is BatchPlan.decision_for
+        assert xtrax.BatchPlan.decision_for is BatchPlan.decision_for
 
 
 class TestBatchPlanner:
@@ -528,3 +556,58 @@ class TestBatchPlanner:
 
         decision = plan.decisions[0]
         assert decision.batch_size == spec.default_batch_size
+
+    def test_memory_estimator_uses_reported_device_limit(self, monkeypatch):
+        """A reported bytes_limit replaces the 4 GiB fallback (fraction 1.0)."""
+        seen: dict[str, float] = {}
+
+        def fake_budget(fraction: float = 0.9, device=None) -> int:
+            seen["fraction"] = fraction
+            return 500
+
+        monkeypatch.setattr("xtrax.tiling.estimators.device_memory_budget", fake_budget)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
+        decision = BatchPlanner(memory_estimator=lambda spec: 1000).plan([spec]).decisions[0]
+        assert seen["fraction"] == 1.0
+        # 1000 bytes exceeds the reported 500 and is far below 4 GiB.
+        assert isinstance(decision.strategy, ChunkedMap)
+
+    def test_missing_device_stats_logs_documented_4gib_default(self, monkeypatch, caplog):
+        """No bytes_limit: log once and keep the 4 GiB comparison."""
+
+        def no_stats(fraction: float = 0.9, device=None) -> int:
+            raise RuntimeError("no stats")
+
+        monkeypatch.setattr("xtrax.tiling.estimators.device_memory_budget", no_stats)
+        monkeypatch.setattr("xtrax.tiling.plan._default_device_limit_logged", False)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
+
+        def high(spec: AxisSpec) -> int:
+            return 10 * (2**30)
+
+        with caplog.at_level(logging.INFO, logger="xtrax.tiling.plan"):
+            first = BatchPlanner(memory_estimator=high).plan([spec]).decisions[0]
+            second = BatchPlanner(memory_estimator=high).plan([spec]).decisions[0]
+        assert isinstance(first.strategy, ChunkedMap)
+        assert isinstance(second.strategy, ChunkedMap)
+        messages = [record.message for record in caplog.records if "4 GiB" in record.message]
+        assert len(messages) == 1
+
+    def test_fallback_limit_is_4gib_and_equal_estimate_stays_vmap(self, monkeypatch):
+        """Documented 4 GiB fallback. Equal-to-limit stays Vmap; over the limit chunks."""
+        assert DEFAULT_DEVICE_MEMORY_BYTES == 4 * 2**30
+
+        def no_stats(fraction: float = 0.9, device=None) -> int:
+            raise RuntimeError("no stats")
+
+        monkeypatch.setattr("xtrax.tiling.estimators.device_memory_budget", no_stats)
+        monkeypatch.setattr("xtrax.tiling.plan._default_device_limit_logged", False)
+        spec = AxisSpec(name="batch", cardinality=100, default_batch_size=50)
+
+        def strategy_for(estimate: int):
+            planner = BatchPlanner(memory_estimator=lambda _spec, estimate=estimate: estimate)
+            return planner.plan([spec]).decisions[0].strategy
+
+        assert isinstance(strategy_for(DEFAULT_DEVICE_MEMORY_BYTES), Vmap)
+        assert isinstance(strategy_for(DEFAULT_DEVICE_MEMORY_BYTES + 1), ChunkedMap)
+        assert isinstance(strategy_for(5 * 2**30), ChunkedMap)

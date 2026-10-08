@@ -1,6 +1,6 @@
 """Loss combinators for multi-task and weighted training."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import equinox as eqx
@@ -24,6 +24,8 @@ class WeightedLoss(eqx.Module):
     Attributes:
         loss_fn: A callable implementing the LossFunction protocol.
         weight: A Python float (compile-time constant) multiplying the loss.
+            A traced weight that must survive a value change without
+            recompiling belongs on :class:`ComposedLoss`, not here.
     """
 
     loss_fn: LossFunction
@@ -105,3 +107,116 @@ class MultiTaskLoss(eqx.Module):
             total = total * self.weight_schedule(step)
 
         return total
+
+
+class ComposedLoss(eqx.Module):
+    """Sum of loss terms with traced weights and unweighted per-term aux.
+
+    ``WeightedLoss`` holds a static Python float, so changing that float
+    recompiles a jitted caller. ``ComposedLoss.weights`` is a rank-1 JAX
+    array (a traced pytree leaf). Changing a weight value, a placement-weight
+    value, or a per-batch flag array does not change the pytree structure or
+    any static field, so a jitted caller does not recompile.
+
+    Each term is ``fn(predictions, targets, **per_batch_flags) -> scalar``.
+    The set of keyword names is part of the compile key; the array values
+    passed under those names are traced.
+
+    ``placement_weights`` is an optional per-term tuple. A non-None entry is
+    forwarded to that term as the keyword ``placement_weights`` (per-output
+    supervision: a mask or a weight per output position). A batch that passes
+    the same keyword in ``per_batch_flags`` overrides the stored entry.
+    ``None`` for a term means that term is called without the keyword.
+
+    Returns ``(weighted_loss, aux)``. ``aux`` maps each term name to its
+    scalar **before** multiplication by ``weights`` (placement, when applied
+    inside the term, is already included). That dict is what
+    ``Trainer(has_aux=True)`` merges into metrics.
+
+    Attributes:
+        terms: Static tuple of term callables.
+        names: Static tuple of unique term names, aligned with ``terms``.
+        weights: Traced array of shape ``(n_terms,)``.
+        placement_weights: ``None``, or a tuple of length ``n_terms`` whose
+            entries are arrays or ``None``.
+    """
+
+    terms: tuple[Callable[..., Array], ...] = eqx.field(static=True)
+    names: tuple[str, ...] = eqx.field(static=True)
+    weights: Array
+    placement_weights: tuple[Array | None, ...] | None = None
+
+    def __init__(
+        self,
+        terms: Sequence[tuple[str, Callable[..., Array]]],
+        weights: Array | Sequence[float],
+        placement_weights: Sequence[Array | None] | None = None,
+    ):
+        names = tuple(name for name, _fn in terms)
+        fns = tuple(fn for _name, fn in terms)
+        self.terms = fns
+        self.names = names
+        self.weights = jnp.asarray(weights)
+        if placement_weights is None:
+            self.placement_weights = None
+        else:
+            self.placement_weights = tuple(placement_weights)
+
+    def __check_init__(self):
+        n = len(self.terms)
+        if n == 0:
+            raise ValueError("ComposedLoss requires at least one term")
+        if len(self.names) != n:
+            raise ValueError(f"ComposedLoss: {len(self.names)} names for {n} terms")
+        if len(set(self.names)) != n:
+            raise ValueError(f"ComposedLoss term names must be unique, got {self.names}")
+        if self.weights.shape != (n,):
+            raise ValueError(
+                f"ComposedLoss.weights must have shape {(n,)}, got {self.weights.shape}"
+            )
+        if self.placement_weights is not None and len(self.placement_weights) != n:
+            raise ValueError(
+                "ComposedLoss.placement_weights must have one entry per term, "
+                f"got {len(self.placement_weights)} for {n} terms"
+            )
+
+    def __call__(
+        self,
+        predictions: PyTree,
+        targets: PyTree,
+        **per_batch_flags: Any,
+    ) -> tuple[Array, dict[str, Array]]:
+        """Return ``(weighted sum, unweighted per-term aux)``.
+
+        Args:
+            predictions: Model predictions passed through to every term.
+            targets: Targets passed through to every term.
+            **per_batch_flags: Extra traced arrays (masks, ablations) forwarded
+                to every term. A ``placement_weights`` entry here overrides the
+                stored per-term placement weight.
+
+        Returns:
+            ``(loss, aux)`` where ``loss = sum(weights * unweighted)`` and
+            ``aux[name]`` is that term's unweighted scalar.
+        """
+        # Static-length tuple comprehension — unrolls at trace time.
+        # This is structural unrolling over a fixed-length tuple, same as
+        # MultiTaskLoss, not a data-axis hot loop.
+        unweighted: list[Array] = []
+        for i, fn in enumerate(self.terms):
+            flags = dict(per_batch_flags)
+            if (
+                self.placement_weights is not None
+                and self.placement_weights[i] is not None
+                and "placement_weights" not in flags
+            ):
+                flags["placement_weights"] = self.placement_weights[i]
+            if flags:
+                unweighted.append(fn(predictions, targets, **flags))
+            else:
+                unweighted.append(fn(predictions, targets))
+
+        values = jnp.stack(unweighted)
+        loss = jnp.sum(self.weights * values)
+        aux = {name: values[i] for i, name in enumerate(self.names)}
+        return loss, aux

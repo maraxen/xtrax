@@ -7,7 +7,11 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from xtrax.tiling import device_memory_budget, lowered_memory_estimate
+from xtrax.tiling import (
+    device_memory_budget,
+    estimate_memory_theoretical,
+    lowered_memory_estimate,
+)
 
 
 class _FakeDevice:
@@ -25,6 +29,10 @@ class TestDeviceMemoryBudget:
     def test_reads_bytes_limit_with_fraction(self) -> None:
         device = _FakeDevice({"bytes_limit": 1_000})
         assert device_memory_budget(fraction=0.9, device=device) == 900
+
+    def test_fractional_budget_truncates(self) -> None:
+        device = _FakeDevice({"bytes_limit": 7})
+        assert device_memory_budget(fraction=0.5, device=device) == 3
 
     def test_full_fraction(self) -> None:
         device = _FakeDevice({"bytes_limit": 1_000})
@@ -119,3 +127,70 @@ class TestLoweredMemoryEstimate:
         monkeypatch.setattr(estimators_module, "jax", _FakeJax())
         with pytest.raises(RuntimeError, match="memory_analysis"):
             lowered_memory_estimate(lambda x: x, object())
+
+
+class TestEstimateMemoryTheoretical:
+    """Product-of-extents estimator (domain-free)."""
+
+    def test_product_of_extents_times_bytes(self) -> None:
+        assert estimate_memory_theoretical({"a": 4, "b": 8}, 10) == 320
+
+    def test_dtype_bytes_scales_value_count(self) -> None:
+        assert estimate_memory_theoretical({"n": 10, "d": 8}, 1, dtype_bytes=4) == 320
+
+    def test_activation_multiplier(self) -> None:
+        assert estimate_memory_theoretical({"n": 10}, 4, activation_multiplier=2.5) == 100
+
+    def test_empty_extents_is_the_base_element(self) -> None:
+        assert estimate_memory_theoretical({}, 16, dtype_bytes=4) == 64
+
+    def test_extent_order_does_not_matter(self) -> None:
+        left = estimate_memory_theoretical({"a": 3, "b": 5}, 2)
+        right = estimate_memory_theoretical({"b": 5, "a": 3}, 2)
+        assert left == right == 30
+
+    def test_zero_extent_is_zero(self) -> None:
+        assert estimate_memory_theoretical({"n": 0, "d": 8}, 4) == 0
+
+    def test_negative_extent_rejected(self) -> None:
+        with pytest.raises(ValueError, match="extent"):
+            estimate_memory_theoretical({"n": -1}, 4)
+
+    def test_bool_extent_rejected(self) -> None:
+        with pytest.raises(TypeError, match="extent"):
+            estimate_memory_theoretical({"n": True}, 4)
+
+    def test_negative_bytes_rejected(self) -> None:
+        with pytest.raises(ValueError, match="bytes_per_element"):
+            estimate_memory_theoretical({"n": 2}, -1)
+
+    def test_truncates_fractional_product_toward_zero(self) -> None:
+        # 3 * 0.5 = 1.5. int() yields 1; round() would yield 2.
+        assert estimate_memory_theoretical({"n": 3}, 0.5) == 1
+
+    def test_negative_activation_multiplier_rejected(self) -> None:
+        with pytest.raises(ValueError, match="activation_multiplier"):
+            estimate_memory_theoretical({"n": 3}, 4, activation_multiplier=-1)
+
+    def test_bool_and_str_bytes_per_element_rejected(self) -> None:
+        with pytest.raises(TypeError, match="bytes_per_element"):
+            estimate_memory_theoretical({"n": 3}, True)
+        with pytest.raises(TypeError, match="bytes_per_element"):
+            estimate_memory_theoretical({"n": 3}, "4")
+
+    def test_non_int_dtype_bytes_rejected(self) -> None:
+        with pytest.raises(TypeError, match="dtype_bytes"):
+            estimate_memory_theoretical({"n": 3}, 4, dtype_bytes=1.5)
+        with pytest.raises(TypeError, match="dtype_bytes"):
+            estimate_memory_theoretical({"n": 3}, 4, dtype_bytes=True)
+        with pytest.raises(TypeError, match="dtype_bytes"):
+            estimate_memory_theoretical({"n": 3}, 4, dtype_bytes="4")
+
+    def test_non_positive_dtype_bytes_rejected(self) -> None:
+        with pytest.raises(ValueError, match="dtype_bytes"):
+            estimate_memory_theoretical({"n": 2}, 4, dtype_bytes=0)
+
+    def test_importable_from_tiling(self) -> None:
+        import xtrax.tiling as tiling
+
+        assert tiling.estimate_memory_theoretical is estimate_memory_theoretical

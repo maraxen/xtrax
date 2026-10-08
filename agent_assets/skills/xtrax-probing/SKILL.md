@@ -1,16 +1,13 @@
 ---
 name: xtrax-probing
-description: This skill should be used when the user asks to "profile a JAX function", "run stage-0 or stage-1 probes", "emit a ProbeRecord", "validate a ProbeRecord", "debug a ClaimValidityError", "check whether a claim is supported", "cite TERM_RANKING or DISPATCH_COUNT evidence", "persist benchmark results as ProbeRecords", "add dispatch-count tripwires to the performance gate", "attach probe records to controller passes", "generate a bottleneck report", or mentions ProbeRecord, xtrax.profiling, stage-0/stage-1/stage-2 probes, claim-validity, unanimity guards, XTRAX_BENCH_RECORD_DIR, or outputs/profiling. Covers the ProbeRecord contract, claim-validity rules, probe drivers, the benchmark bridge, gate and controller integration, and report generation.
+description: "Use when a JAX timing, dispatch count, or compile count has to stay citable, when a benchmark result is being quoted past the scale that was measured, or when a performance gate needs a dispatch-count ceiling. Covers stored probe records, claim-validity checks, and bottleneck reports."
 xtrax_version: 0.4.0a12
 triggers:
-  - ProbeRecord / xtrax.profiling
-  - emit_probe_record / ClaimValidityError / permitted_claims / assert_claim_supported
-  - stage-0 / stage-1 / stage-2 probes / STRUCTURAL / DISPATCH_COUNT / TERM_RANKING / END_TO_END
-  - prof_stage0_tiling_cost / prof_stage1_tiling_micro / outputs/profiling
-  - XTRAX_BENCH_RECORD_DIR / benchmark ProbeRecords / pytest-benchmark bridge
-  - dispatch tripwires / max_compilations / max_jit_traces / performance.dispatch_violation_count
-  - run_one_candidate_pass probe_record_dir / bottleneck report / discover_records
-  - unanimity guard / SCALE_EXTRAPOLATION_LIMIT / contract_version
+  - a timing or dispatch count that a later claim will cite
+  - benchmark result quoted beyond the scale that was measured
+  - performance gate needs a dispatch-count or compile-count ceiling
+  - bottleneck report from stored measurements
+  - persist a benchmark so the number stays attachable to a claim
 ---
 
 # xtrax-probing
