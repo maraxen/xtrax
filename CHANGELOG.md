@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Skill delivery** (#2107, #2596, #2597): joint-budget `memory_estimator` and
+  `MemoryBudget` estimates in the using-xtrax tiling skill come from
+  `lowered_memory_estimate` on a representative tile, scaled by live tile
+  counts. `.praxia/manifest.toml` lists every `agent_assets/skills` skill and
+  tracks `xtrax.__version__`. `scripts/install_skills.py --check` reports
+  installed copies that are missing or whose `xtrax_version` differs from the
+  repo (`--target` or `XTRAX_SKILLS_TARGET`).
 - **`WhileLoopWithYsIterator`** (#2589): a `lax.while_loop` iterator that writes
   each step's `y` into a preallocated buffer of caller-supplied `max_steps`
   and returns `(final_carry, ys_buffer, length)`. Buffer fill is `0`. When

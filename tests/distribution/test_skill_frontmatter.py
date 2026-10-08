@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+import xtrax
+
 yaml = pytest.importorskip("yaml")
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,3 +34,6 @@ def test_skill_frontmatter_parses(skill: Path) -> None:
     assert data.get("name") == skill.parent.name
     assert isinstance(data.get("description"), str)
     assert data["description"].strip()
+    # audit_project_hygiene also gates this marker. Pin it here so a skill
+    # can parse and still ship a version other than the package.
+    assert data.get("xtrax_version") == xtrax.__version__
