@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`xtrax.run` output contract** (debt #2523): `make_sink` accepts `format="memory"`
+  and returns a `MemorySink` with the same stage/drain/finalize protocol as
+  `ZarrStagingSink`, including read-back. `ZarrStagingSink` appends along the
+  leading axis across drains when `SinkSpec.append=True` (the default remains
+  overwrite). `finalize()` consolidates, fsyncs, and digests the store, returning
+  a `SinkReceipt` (`path`, `digest`, `digest_algo_version`, `run_id`, `seed`).
+  `derive_sink_spec` copies `RunSpec.seed` and, when `output_dir` is omitted,
+  `RunSpec.output_root`. `RunSpec` gains optional static fields `output_root`,
+  `device_count`, `precision`, and `shard_lineage`. `SinkSpec.provenance` injects
+  precomputed git state or a path to capture from; the default no longer shells
+  out from `Path.cwd()`. Exclusive store roots record `producer` and `xtrax_version`;
+  durable roots keep those fields inside the `xtrax.store` record so the root
+  attr set stays exactly that record.
+  `level_schemas` supplies a JSON schema per key depth. `DIGEST_ALGO_VERSION`
+  labels the zarr content digest. `canonical_hash`
+  (`CANONICAL_HASH_ALGO_VERSION`) is the sha256-of-canonical-JSON helper used by
+  run-layer document digests. `atomic_write_bytes` / `atomic_write_text` write
+  via temp file, fsync, replace, and directory fsync. `xtrax run` writes
+  `manifest.json` with `atomic_write_text`.
+
+### Changed
+
+- **Reserved sink attr names** (debt #2523): `producer` and `xtrax_version` are
+  now reserved, alongside the existing provenance names. Staging an attr with
+  either name raises, and both are excluded from the default zarr content
+  digest. This is a minor compatibility break for callers who stored their own
+  attrs under those names.
+- **Memory digest version** (debt #2523): memory-sink receipts record
+  `MEMORY_DIGEST_ALGO_VERSION`, not `DIGEST_ALGO_VERSION`. The memory digest
+  covers array names and array bytes only (caller attrs do not change it). It
+  is a different algorithm from the zarr content digest and the two are not
+  comparable.
+- **CLI provenance** (debt #2523): `xtrax run` passes the process working
+  directory as sink provenance, so the metrics store records that checkout's
+  git HEAD. Outside a git repository the sink warns and records
+  `git_sha="unknown"`. Omitting `SinkSpec.provenance` in the library still
+  does not shell out.
 - **Trainer key threading, auxiliary metrics, and engine hooks** (#2525).
   `Trainer` accepts `takes_key` and `has_aux` (both default off, so
   `loss_fn(predictions, targets) -> scalar` is unchanged). With `takes_key`,
