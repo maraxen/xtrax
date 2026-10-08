@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
-
-import jax
 
 from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
 from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
@@ -25,6 +24,36 @@ from xtrax.tiling.strategy import (
 if TYPE_CHECKING:
     from xtrax.tiling.carry import CarrySpec
     from xtrax.tiling.dedup import DedupSpec
+
+logger = logging.getLogger(__name__)
+
+_default_device_limit_logged = False
+
+
+def _memory_estimator_device_limit() -> int:
+    """Byte limit the per-axis ``memory_estimator`` override compares against.
+
+    A device that reports ``memory_stats()["bytes_limit"]`` contributes that
+    full limit (``device_memory_budget(fraction=1.0)``), which is the comparison
+    this path has always made. When the runtime cannot answer, log once and
+    return the documented 4 GiB default. ``device_memory_budget`` itself still
+    raises; the fallback lives here so planning on CPU keeps a defined limit.
+    """
+    global _default_device_limit_logged
+    from xtrax.tiling.estimators import DEFAULT_DEVICE_MEMORY_BYTES, device_memory_budget
+
+    try:
+        return device_memory_budget(fraction=1.0)
+    except Exception:
+        if not _default_device_limit_logged:
+            _default_device_limit_logged = True
+            logger.info(
+                "BatchPlanner memory_estimator: device did not report "
+                "memory_stats()['bytes_limit']; using the documented default "
+                "of %s bytes (4 GiB).",
+                DEFAULT_DEVICE_MEMORY_BYTES,
+            )
+        return DEFAULT_DEVICE_MEMORY_BYTES
 
 
 @dataclass(frozen=True)
@@ -132,7 +161,10 @@ class BatchPlanner:
        ragged final chunk is handled by the chunked map itself (#5565).
 
     When memory_estimator is provided, it overrides rule 3/4 decisions
-    to prefer ChunkedMap if estimated Vmap memory exceeds device limit.
+    to prefer ChunkedMap if estimated Vmap memory exceeds the device
+    allocator limit. The limit is ``device_memory_budget(fraction=1.0)``
+    (the full ``bytes_limit``). If the device does not report one, the
+    comparison uses the documented 4 GiB default and logs that once.
 
     When budget is provided (joint-budget mode), rules 3-4 are replaced for
     non-bucket axes: every eligible axis starts at Vmap, then axes with
@@ -155,9 +187,12 @@ class BatchPlanner:
 
         Args:
             memory_estimator: Optional function that estimates Vmap memory (bytes)
-                for a given AxisSpec. If provided and estimate exceeds device limit,
-                ChunkedMap is preferred over Vmap. If the estimator raises an exception,
-                falls back to default rules silently. Mutually exclusive with budget.
+                for a given AxisSpec. If provided and the estimate exceeds the device
+                limit, ChunkedMap is preferred over Vmap. The limit comes from
+                ``device_memory_budget(fraction=1.0)``; when the device reports no
+                ``bytes_limit``, a documented 4 GiB default is logged once and used.
+                If the estimator itself raises, falls back to the cardinality rules.
+                Mutually exclusive with budget.
             carry_specs: Optional list of CarrySpec objects declaring which axes
                 should use Scan strategy (Phase 0 pre-demotion), or WhileCarry
                 when CarrySpec.collect_outputs=False.
@@ -524,16 +559,12 @@ class BatchPlanner:
         if self.memory_estimator is not None:
             try:
                 estimated_bytes = self.memory_estimator(spec)
-                # Get device memory limit (default 4 GiB)
-                try:
-                    device_limit = jax.devices()[0].memory_stats().get("bytes_limit", 4 * (2**30))
-                except Exception:
-                    device_limit = 4 * (2**30)
-
-                if estimated_bytes > device_limit:
+                if estimated_bytes > _memory_estimator_device_limit():
                     should_prefer_safemap_for_memory = True
             except Exception:
-                # Fall back silently to default rules
+                # Estimator failures fall back to the cardinality rules. A missing
+                # device limit is not an estimator failure; that path logs the
+                # documented 4 GiB default inside _memory_estimator_device_limit.
                 pass
 
         # Rule 3: cardinality <= batch_size → Vmap (unless memory override)
