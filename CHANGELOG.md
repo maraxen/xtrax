@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`xtrax.profiling.count_backend_compiles` and `assert_no_recompile_after`** (#2083):
+  context manager counting JAX `/jax/core/compile/backend_compile_duration` events
+  (count and seconds), plus a helper that asserts a stepped function does not
+  backend-compile after warmup. The private `unregister_event_duration_listener`
+  hook falls back to the public `jax.monitoring` alias and raises if JAX moves both.
+
+- **`xtrax.profiling.load_trace_events` and `hlo_text_for`** (#2084): load Perfetto
+  `traceEvents` from a `jax.profiler.trace` directory, and extract compiled HLO text
+  from both `jax.jit` and `eqx.filter_jit`. `hlo_text_for` raises `TypeError` when
+  the compiled object has no HLO text, instead of returning `None`.
+
+### Fixed
+
+- **CPU fusion scope attribution** (#2084): `scope_map_from_hlo_text` maps each
+  fusion instruction (the `hlo_op` a CPU trace executes, e.g. `add_add_fusion.3`)
+  to the named_scope label of its fused computation's instructions, or to the
+  fusion instruction's own `op_name` when the body has none. `parse_scopes` no
+  longer returns an empty attribution for fused CPU steps.
 - **Planner helpers for joint-budget consumers** (#2521): `MemoryBudget` mode
   fixes a heterogeneous axis to `ChunkedMap` and never assigns it `Vmap`.
   `BatchPlan.decision_for(axis_name)` returns that axis's decision
