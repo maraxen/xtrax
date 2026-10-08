@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Chunk- and resume-invariant PRNG key stream** (#2544): `xtrax.random.element_keys`
+  folds a base key, or an integer seed via `jax.random.key`, with the global element
+  index as `int32`. The derivation matches aminx `compute_sample_keys` bit-for-bit, so
+  keys depend only on `(base key, global index)`. `make_chunk_plan` and `iter_chunk_keys`
+  yield the same keys for any chunk size or resume point.
 - **`xtrax.profiling.iter_jaxpr_eqns` / `sub_jaxprs`**: one public jaxpr walker.
   It yields every equation, recursing through `pjit`/`jit`, `scan`, `while`
   cond and body, `cond` branches, `custom_jvp`/`custom_vjp`, and `remat`.

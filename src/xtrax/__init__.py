@@ -65,6 +65,11 @@ __all__ = [
     # Run layer (execution-time configuration)
     "derive_sink_spec",
     "new_run_id",
+    # PRNG key stream
+    "ChunkSpan",
+    "element_keys",
+    "iter_chunk_keys",
+    "make_chunk_plan",
 ]
 
 _LAZY = {
@@ -133,6 +138,11 @@ _LAZY = {
     # Run layer (execution-time configuration)
     "derive_sink_spec": "xtrax.run",
     "new_run_id": "xtrax.run",
+    # PRNG key stream
+    "ChunkSpan": "xtrax.random",
+    "element_keys": "xtrax.random",
+    "iter_chunk_keys": "xtrax.random",
+    "make_chunk_plan": "xtrax.random",
 }
 
 
