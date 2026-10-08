@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Module provenance for ported code** (#2590, #2591, #2592):
+  `xtrax.provenance.Provenance` records an upstream repository, a revision
+  (commit sha or tag), an SPDX licence, and a relationship (`vendored`,
+  `ported`, `derived`, `inspired`). A missing revision or licence requires
+  `waiver_reason`. Ported modules set `__provenance__`.
+  `scripts/audit_port_provenance.py` fails when a `port/manifests` kernel, or
+  a module docstring that says the code was ported, vendored, adapted, or
+  upstreamed from somewhere, has no declaration. The check is
+  `just audit-port-provenance`, and `just audit-port` runs it (CI job
+  `audit-port`). `scripts/port_init.py` prints a declaration from the
+  arguments the porter supplies.
+
 - **Grain input pipelines** (#2085): `xtrax.data.build_input_pipeline` builds a
   domain-free Grain pipeline (process shard, shuffle, repeat, optional
   caller-supplied fixed-length pad, `numpy.stack` batch, threaded prefetch,
