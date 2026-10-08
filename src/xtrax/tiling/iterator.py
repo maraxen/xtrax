@@ -23,7 +23,7 @@ import equinox as eqx
 import jax
 import jax.lax
 
-from xtrax.transforms.map import chunked_map
+from xtrax.transforms.map import _apply_size1, _is_size1_axis, chunked_map
 
 
 @runtime_checkable
@@ -93,6 +93,7 @@ class VmapIterator(eqx.Module):
 
     All elements are materialized and computed simultaneously. Use when
     memory budget allows and elements are independent (no cross-talk).
+    A mapped axis of length 1 is a direct call, not a vmap (#2520).
     """
 
     def __call__(
@@ -113,6 +114,9 @@ class VmapIterator(eqx.Module):
             Output after vmapping over the specified axis.
 
         """
+        # Same length-1 guard as chunked_map: never emit a vmap-of-1 (#2520).
+        if _is_size1_axis(xs, in_axes):
+            return _apply_size1(fn, xs, in_axes)
         return jax.vmap(fn, in_axes=in_axes)(xs)
 
 
