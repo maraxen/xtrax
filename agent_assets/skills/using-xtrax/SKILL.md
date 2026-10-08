@@ -1,29 +1,18 @@
 ---
 name: using-xtrax
-description: "Use when writing JAX pipelines with xtrax, building domain libraries on top of xtrax, running `xtrax run` from TOML (`TrainConfig`), loading your own TOML config via the domain-agnostic `xtrax.config` primitives, composing xtrax's own CLI verbs (`REGISTRY`) into your own CLI, or analyzing batching plans via CLI/EDA (`xtrax plan`/`explain`). Covers: AxisSpec/BatchPlanner/BatchPlan incl. joint-budget planning (MemoryBudget), composition (Fuse/Tap/Sink/AxisBoundary), plan topology validation + the two-tier boundary executor (xtrax.stages), the run layer (RunSpec/InputResolver/StageBundle/SinkSpec/ZarrStagingSink/zarr_integrity), training (Trainer/Engine/ResumableState/init_state), CLI verbs (plan/explain/export/run/resume/sweep/graph-validate/graph-plan/graph-author/ledger), the xtrax.config TOML primitives, EDA, sparsification, the signature-inference layer (xtrax.inference), and ahead-of-time export via the xtrax.export subpackage (export_pipeline/Target/VerificationLevel/materialize/load_hf_weights, native + wasm32 + SPIR-V codegen)."
+description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function, or when a model is sparsified for inference. The library is xtrax."
 xtrax_version: 0.4.0a12
 triggers:
-  - writing JAX pipeline with xtrax
-  - building domain library on xtrax
-  - AxisSpec / BatchPlanner / BatchPlan / AxisBoundary
-  - Fuse / Tap / Sink / RunSpec / CarrySpec
-  - MemoryBudget / BudgetInfeasibleError / device_memory_budget / lowered_memory_estimate
-  - validate_plan_topology / PlanTopologyError / execute_map_axis / execute_scan_axis
-  - SinkSpec / make_sink / ZarrStagingSink / zarr_content_digest / fsync_tree
-  - explain_plan / render / EDA
-  - sparsify_model / SparsePolicy
-  - infer_bundle / BundleSchema / AxisOverride / axis_config
-  - signature inference / xtrax.inference / AxisRole / AmbiguousAxisError
-  - xtrax run / xtrax plan / xtrax explain / xtrax export / xtrax resume / xtrax sweep / xtrax ledger
-  - xtrax.export / export_pipeline / Target / VerificationLevel / CODEGEN_ONLY
-  - IREE / vmfb / wasm32 / SPIR-V / ahead-of-time export / load_hf_weights
-  - TrainConfig / load_config / ConfigError / init_state
-  - load_fn / CLIError / CLIImportError / REGISTRY (stable public xtrax.cli primitives)
-  - xtrax graph-validate / xtrax graph-plan / xtrax graph-author
-  - GraphValidateArgs / GraphPlanArgs / GraphAuthorArgs / validate_graph / TemplateGenerator
-  - xtrax.config / load_toml_document / require_sections / require_field
-  - check_schema_version / classify_schema_version / SchemaVersionStatus
-  - REGISTRY composition / building your own CLI on xtrax's verbs
+  - padding or bucketing loop for variable-length sequences before a JIT step
+  - chunked vmap or lax.map over a large batch
+  - memory-budgeted batching / batch plan that must fit a device budget
+  - ONNX or StableHLO export of a JAX pipeline
+  - resumable training loop / resume training from a checkpoint
+  - zarr output sink / staged zarr writes
+  - TOML file that should launch or resume a training run
+  - infer batch axes from a typed function signature
+  - sparsify a dense model for inference
+  - compose batching primitives into your own CLI
 ---
 
 # using-xtrax
@@ -35,16 +24,27 @@ triggers:
 Before writing any xtrax code, verify your installation:
 
 ```python
+import warnings
+from pathlib import Path
+
 import xtrax
 
-# Version check — the alpha this skill was written against is the `xtrax_version` in
-# its own frontmatter (gated against __version__ by audit-project-hygiene, so it does
-# not drift). The 0.4.0 alpha line moves fast; any 0.4.0aN is close enough, but
-# re-verify sections touched by later alphas.
-assert xtrax.__version__.startswith("0.4.0"), f"Expected xtrax 0.4.0aN, got {xtrax.__version__}"
-
-# Verify in live source: read src/xtrax/__init__.py:1 to confirm __version__ definition
-# This assertion is blind to forks maintaining the same version string without a code bump
+# Frontmatter `xtrax_version` is the alpha these examples were written against.
+# audit-project-hygiene keeps that marker equal to __version__ in the repo.
+# Warn when the installed package disagrees, then read src/xtrax/__init__.py.
+_skill_md = Path("agent_assets/skills/using-xtrax/SKILL.md")
+_frontmatter = _skill_md.read_text(encoding="utf-8").split("---", 2)[1]
+_declared = next(
+    line.split(":", 1)[1].strip().strip("'\"")
+    for line in _frontmatter.splitlines()
+    if line.startswith("xtrax_version:")
+)
+if _declared != xtrax.__version__:
+    warnings.warn(
+        f"using-xtrax xtrax_version {_declared} != xtrax.__version__ {xtrax.__version__}. "
+        "Read src/xtrax/__init__.py and the sections you are about to copy.",
+        stacklevel=2,
+    )
 ```
 
 If you see a version mismatch, verify current behavior directly in the source tree before proceeding with any code example in this skill.
@@ -111,7 +111,7 @@ This invariant ensures JIT does not retrace when `AxisBoundary` instances change
 Three distinct regions exist:
 
 - **Outside jit**: `sparsify_model(model, policy)` MUST run here. (verify: `src/xtrax/sparse/inference.py:44`)
-  ```python
+  ```text
   🚫 HALTS RuntimeError if sparsify_model is called inside jax.jit
   # Enforcement at src/xtrax/sparse/inference.py:44-55 (assert_not_tracing)
   ```
@@ -269,7 +269,17 @@ Choose your task:
 7. **Infer AxisSpecs/BundleSchema from a typed function signature**  
    → Read `references/inference.md`
 
-8. **Compare a sampler to a reference implementation** → Read `references/parity.md`
+8. **Pad variable-length inputs to one compile per bucket rung**  
+   → Read `references/length-bucketing.md`
+
+9. **Replace local copies in an existing domain library**  
+   → Read `references/adoption.md`
+
+10. **Export one callable to ONNX (no BatchPlan), or read parity and divergence rings**  
+   → Read `references/onnx-standalone.md`
+
+11. **Compare a sampler to a reference implementation**  
+   → Read `references/parity.md`
 
 ---
 
@@ -287,6 +297,9 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | Sparse/Distributed/Checkpoint | `references/sparse-distributed.md` | 5% | Pointer pattern for structured pruning, multi-device training, checkpointing |
 | Signature Inference | `references/inference.md` | — | xtrax.inference: derive AxisSpecs + BundleSchema from a typed function |
 | Export (AOT) | `references/export.md` | — | xtrax.export: export_pipeline, Target/VerificationLevel, native + wasm32 + SPIR-V codegen, dtype envelope, load_hf_weights, materialize stripping, multi-axis composition |
+| Length bucketing | `references/length-bucketing.md` | — | AxisSpec.bucket_boundaries, Bucket, host select_bucket/bucketize, BUCKET_LADDER, one compile per rung |
+| Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives |
+| Standalone ONNX | `references/onnx-standalone.md` | — | convert_to_onnx vs jax2onnx, find_onnx_rng_ops, verify_native_parity, rings, divergence |
 
 Use the Workflow Index above to pick which file(s) a given task needs — most tasks need one, some (e.g. tiled inference) need two. Don't load a reference file speculatively; load it when the task actually reaches that layer.
 

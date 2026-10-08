@@ -10,11 +10,13 @@ __all__ = [
     "ResumableState",
     "WeightedLoss",
     "MultiTaskLoss",
+    "ComposedLoss",
     "make_optimizer",
     "adamw_with_schedule",
     # Engine and IO
     "Engine",
     "BoundedCallbackHandler",
+    "EarlyStopping",
     "save_checkpoint",
     "load_checkpoint",
     # Data
@@ -63,6 +65,11 @@ __all__ = [
     # Run layer (execution-time configuration)
     "derive_sink_spec",
     "new_run_id",
+    # PRNG key stream
+    "ChunkSpan",
+    "element_keys",
+    "iter_chunk_keys",
+    "make_chunk_plan",
 ]
 
 _LAZY = {
@@ -75,11 +82,13 @@ _LAZY = {
     "ResumableState": "xtrax.training",
     "WeightedLoss": "xtrax.training",
     "MultiTaskLoss": "xtrax.training",
+    "ComposedLoss": "xtrax.training",
     "make_optimizer": "xtrax.training",
     "adamw_with_schedule": "xtrax.training",
     # Engine subpackage
     "Engine": "xtrax.engine",
     "BoundedCallbackHandler": "xtrax.engine",
+    "EarlyStopping": "xtrax.engine",
     # Checkpoint subpackage
     "save_checkpoint": "xtrax.checkpoint",
     "load_checkpoint": "xtrax.checkpoint",
@@ -129,6 +138,11 @@ _LAZY = {
     # Run layer (execution-time configuration)
     "derive_sink_spec": "xtrax.run",
     "new_run_id": "xtrax.run",
+    # PRNG key stream
+    "ChunkSpan": "xtrax.random",
+    "element_keys": "xtrax.random",
+    "iter_chunk_keys": "xtrax.random",
+    "make_chunk_plan": "xtrax.random",
 }
 
 

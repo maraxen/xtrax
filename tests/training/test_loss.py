@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from xtrax.training.loss import MultiTaskLoss, WeightedLoss
+from xtrax.training.loss import ComposedLoss, MultiTaskLoss, WeightedLoss
 from xtrax.training.types import LossFunction
 
 
@@ -233,3 +233,150 @@ class TestMultiTaskLoss:
         multi_loss = MultiTaskLoss(losses=(loss1,))
 
         assert multi_loss.weight_schedule is None
+
+
+_BACKEND_COMPILE = "/jax/core/compile/backend_compile_duration"
+
+
+def _mse(predictions, targets, **_flags):
+    return jnp.mean((predictions - targets) ** 2)
+
+
+def _count_backend_compiles(fn) -> int:
+    """Count JAX backend compiles during ``fn``. The listener is removed after."""
+    seen: list[str] = []
+
+    def listener(event, duration_secs, **kwargs):
+        if event == _BACKEND_COMPILE:
+            seen.append(event)
+
+    jax.monitoring.register_event_duration_secs_listener(listener)
+    try:
+        fn()
+    finally:
+        jax.monitoring.unregister_event_duration_listener(listener)
+    return len(seen)
+
+
+class TestComposedLoss:
+    """Traced-weight composer. Aux values are unweighted term scalars."""
+
+    def test_weighted_sum_and_unweighted_aux(self):
+        def mae(predictions, targets, **_flags):
+            return jnp.mean(jnp.abs(predictions - targets))
+
+        composed = ComposedLoss(
+            terms=(("mse", _mse), ("mae", mae)),
+            weights=jnp.array([2.0, 0.5]),
+        )
+        preds = jnp.array([1.0, 2.0, 4.0])
+        targets = jnp.array([1.0, 0.0, 1.0])
+
+        loss, aux = composed(preds, targets)
+
+        assert jnp.allclose(aux["mse"], _mse(preds, targets))
+        assert jnp.allclose(aux["mae"], mae(preds, targets))
+        assert jnp.allclose(loss, 2.0 * aux["mse"] + 0.5 * aux["mae"])
+
+    def test_weight_value_does_not_change_unweighted_aux(self):
+        composed = ComposedLoss(terms=(("mse", _mse),), weights=jnp.array([1.0]))
+        heavier = eqx.tree_at(lambda m: m.weights, composed, jnp.array([4.0]))
+        preds = jnp.array([1.0, 3.0])
+        targets = jnp.array([0.0, 1.0])
+
+        loss_a, aux_a = composed(preds, targets)
+        loss_b, aux_b = heavier(preds, targets)
+
+        assert jnp.allclose(aux_a["mse"], aux_b["mse"])
+        assert jnp.allclose(loss_b, 4.0 * loss_a)
+
+    def test_per_batch_flag_and_placement_weights(self):
+        def head_loss(index):
+            def fn(predictions, targets, placement_weights, **_flags):
+                err = (predictions[index] - targets[index]) ** 2
+                return jnp.sum(err * placement_weights) / jnp.sum(placement_weights)
+
+            return fn
+
+        preds = (jnp.array([1.0, 3.0]), jnp.array([0.0, 4.0]))
+        targets = (jnp.array([1.0, 1.0]), jnp.array([2.0, 2.0]))
+        placement = (jnp.array([1.0, 0.0]), jnp.array([0.0, 1.0]))
+        composed = ComposedLoss(
+            terms=(("h0", head_loss(0)), ("h1", head_loss(1))),
+            weights=jnp.array([0.25, 0.75]),
+            placement_weights=placement,
+        )
+
+        loss, aux = composed(preds, targets)
+        manual_0 = head_loss(0)(preds, targets, placement_weights=placement[0])
+        manual_1 = head_loss(1)(preds, targets, placement_weights=placement[1])
+        assert jnp.allclose(aux["h0"], manual_0)
+        assert jnp.allclose(aux["h1"], manual_1)
+        assert jnp.allclose(loss, 0.25 * manual_0 + 0.75 * manual_1)
+
+        def masked(predictions, targets, mask=None, placement_weights=None):
+            weights = mask if placement_weights is None else placement_weights
+            err = (predictions - targets) ** 2
+            return jnp.sum(err * weights) / jnp.sum(weights)
+
+        row_preds = jnp.array([1.0, 3.0])
+        row_targets = jnp.array([1.0, 1.0])
+        stored = jnp.array([1.0, 0.0])
+        flagged = ComposedLoss(
+            terms=(("mse", masked),),
+            weights=jnp.array([1.0]),
+            placement_weights=(stored,),
+        )
+        _stored_loss, stored_aux = flagged(row_preds, row_targets)
+        assert jnp.allclose(stored_aux["mse"], masked(row_preds, row_targets, stored))
+
+        override = jnp.array([0.0, 1.0])
+        _over_loss, over_aux = flagged(row_preds, row_targets, placement_weights=override)
+        assert jnp.allclose(over_aux["mse"], masked(row_preds, row_targets, override))
+
+        batch_mask = jnp.array([1.0, 0.0, 1.0])
+        batch_preds = jnp.array([1.0, 9.0, 3.0])
+        batch_targets = jnp.array([0.0, 0.0, 0.0])
+        with_flag = ComposedLoss(terms=(("mse", masked),), weights=jnp.array([2.0]))
+        flagged_loss, flagged_aux = with_flag(batch_preds, batch_targets, mask=batch_mask)
+        assert jnp.allclose(flagged_aux["mse"], masked(batch_preds, batch_targets, batch_mask))
+        assert jnp.allclose(flagged_loss, 2.0 * flagged_aux["mse"])
+
+    def test_traced_weight_does_not_recompile(self):
+        """Changing a traced weight value must not backend-compile again."""
+        composed = ComposedLoss(terms=(("mse", _mse),), weights=jnp.array([1.0]))
+        preds = jnp.array([1.0, 2.0, 3.0])
+        targets = jnp.array([0.0, 0.0, 0.0])
+        apply = eqx.filter_jit(ComposedLoss.__call__)
+        apply(composed, preds, targets)
+
+        heavier = eqx.tree_at(lambda m: m.weights, composed, jnp.array([4.0]))
+
+        def second_call():
+            out, _aux = apply(heavier, preds, targets)
+            out.block_until_ready()
+
+        compiles = _count_backend_compiles(second_call)
+        assert compiles == 0
+
+    def test_static_python_float_weight_does_recompile(self):
+        """Negative control: a static Python-float weight must recompile.
+
+        This fails if WeightedLoss.weight is accidentally traced. A second
+        float has to miss the jit cache and backend-compile again.
+        """
+
+        def mse(predictions, targets):
+            return jnp.mean((predictions - targets) ** 2)
+
+        preds = jnp.array([1.0, 2.0, 3.0])
+        targets = jnp.array([0.0, 0.0, 0.0])
+        apply = eqx.filter_jit(WeightedLoss.__call__)
+        apply(WeightedLoss(loss_fn=mse, weight=1.0), preds, targets)
+
+        def second_call():
+            out = apply(WeightedLoss(loss_fn=mse, weight=4.0), preds, targets)
+            out.block_until_ready()
+
+        compiles = _count_backend_compiles(second_call)
+        assert compiles >= 1

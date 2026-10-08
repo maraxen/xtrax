@@ -14,6 +14,7 @@ import pytest
 
 from xtrax.profiling.loop_scaling import (
     LoopStructureMismatchError,
+    _measure_while_trips,
     extent_scaling_report,
     loop_bodies,
 )
@@ -67,6 +68,45 @@ def full_recompute_while(x: jax.Array) -> jax.Array:
     return jax.lax.while_loop(cond, body, (0, x))[1]
 
 
+def binary_search_while(x: jax.Array) -> jax.Array:
+    """Halve a range each trip (log-n) while dotting the whole extent (work grows)."""
+    n = x.shape[0]
+
+    def cond(state):
+        lo, hi, _acc = state
+        return hi - lo > 1
+
+    def body(state):
+        lo, hi, acc = state
+        mid = (lo + hi) // 2
+        acc = acc + jnp.dot(x, x)
+        return lo, mid, acc
+
+    _lo, _hi, acc = jax.lax.while_loop(cond, body, (jnp.int32(0), jnp.int32(n), jnp.float32(0.0)))
+    return acc
+
+
+def while_inside_scan(x: jax.Array) -> jax.Array:
+    """A linear ``while`` repeated by a fixed-length scan. One loop, not one per step."""
+    n = x.shape[0]
+    w = jnp.eye(x.shape[1])
+
+    def scan_body(carry, _):
+        def cond(state):
+            i, _acc = state
+            return i < n
+
+        def body(state):
+            i, acc = state
+            acc = acc + carry @ w
+            return i + 1, acc
+
+        _i, acc = jax.lax.while_loop(cond, body, (jnp.int32(0), jnp.zeros_like(carry)))
+        return acc, None
+
+    return jax.lax.scan(scan_body, x, None, length=3)[0]
+
+
 def _seq(n: int) -> tuple[jax.Array]:
     return (jnp.ones((n, D)),)
 
@@ -110,6 +150,35 @@ def test_iteration_work_times_trip_count() -> None:
     assert body.max_dot_output_elements == 16
 
 
+def _scan_of_dots(x):
+    return jax.lax.scan(lambda c, _: (c @ c, None), x, None, length=10)[0]
+
+
+def _custom_jvp_scan():
+    @jax.custom_jvp
+    def g(x):
+        return _scan_of_dots(x)
+
+    @g.defjvp
+    def _g_jvp(primals, tangents):
+        return g(primals[0]), tangents[0]
+
+    return g
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [jax.checkpoint, lambda f: _custom_jvp_scan()],
+    ids=["checkpoint", "custom_jvp"],
+)
+def test_loop_inside_a_callee_is_reported_with_its_work(wrap) -> None:
+    """A scan hidden behind remat / custom_jvp is still found, and its dots counted."""
+    (body,) = loop_bodies(wrap(_scan_of_dots), jnp.ones((4, 4)))
+    assert body.trip_count == 10
+    assert body.iteration_work == 128
+    assert body.max_dot_output_elements == 16
+
+
 def test_while_has_unknown_trip_count() -> None:
     (body,) = loop_bodies(jax.jit(full_recompute_while), jnp.ones((4, D)))
     assert body.trip_count is None
@@ -143,3 +212,92 @@ def test_structure_change_between_extents_raises() -> None:
 def test_extent_must_be_positive() -> None:
     with pytest.raises(ValueError, match="extent must be >= 1"):
         extent_scaling_report(incremental_scan, _seq, 0)
+
+
+def test_searchsorted_log_n_trip_count_is_not_flagged() -> None:
+    """searchsorted's binary search is O(log n) trips. Per-step work grows with a
+    vector of queries, but the trip count does not scale with the extent, so the
+    loop is not the O(L^2) shape extent_scaling_report exists to flag.
+    """
+
+    def searchsorted_program(x: jax.Array) -> jax.Array:
+        queries = jnp.linspace(0.0, 1.0, x.shape[0], dtype=x.dtype)
+        return jnp.searchsorted(x, queries)
+
+    report = extent_scaling_report(
+        searchsorted_program,
+        lambda n: (jnp.linspace(0.0, 1.0, n, dtype=jnp.float32),),
+        32,
+    )
+    (finding,) = report.findings
+    assert finding.primitive == "scan"
+    # Per-step work still grows with the query vector (the old false positive).
+    assert finding.ratio >= report.threshold
+    assert finding.trip_count_at_extent is not None
+    assert finding.trip_count_at_double_extent is not None
+    trip_growth = finding.trip_count_at_double_extent / finding.trip_count_at_extent
+    assert trip_growth < report.threshold
+    assert report.flagged == ()
+
+
+def test_while_binary_search_log_n_trip_count_is_not_flagged() -> None:
+    """A ``while`` binary search is log-n trips. Work grows with the extent; trips do not."""
+    report = extent_scaling_report(
+        binary_search_while,
+        lambda n: (jnp.linspace(0.0, 1.0, n, dtype=jnp.float32),),
+        32,
+    )
+    (finding,) = report.findings
+    assert finding.primitive == "while"
+    assert finding.ratio >= report.threshold
+    assert finding.trip_count_at_extent == 5
+    assert finding.trip_count_at_double_extent == 6
+    assert report.flagged == ()
+
+
+def test_unmeasured_linear_while_stays_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An eager measurement failure must not drop a genuinely O(L) ``while``.
+
+    Missing trip counts are treated as scaling. Swallowing the failure, or
+    treating ``None`` as "does not scale", would hide the true positive.
+    """
+
+    def boom(*_args, **_kwargs):
+        msg = "eager measurement failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("xtrax.profiling.loop_scaling._measure_while_trips", boom)
+    report = extent_scaling_report(jax.jit(full_recompute_while), _seq, 16)
+    (finding,) = report.flagged
+    assert finding.primitive == "while"
+    assert finding.trip_count_at_extent is None
+    assert finding.trip_count_at_double_extent is None
+
+
+def test_while_inside_scan_counts_one_loop() -> None:
+    """A ``while`` re-entered by ``scan`` is one loop. Its trips are the while's, not n*scan."""
+    report = extent_scaling_report(while_inside_scan, lambda n: (jnp.ones((n, D)),), 16)
+    assert [finding.primitive for finding in report.findings] == ["scan", "while"]
+    scan, body = report.findings
+    assert scan.flagged is False
+    assert scan.trip_count_at_extent == 3
+    assert body.flagged is True
+    assert body.trip_count_at_extent == 16
+    assert body.trip_count_at_double_extent == 32
+
+
+def test_direct_import_of_while_loop_is_not_counted() -> None:
+    """``_measure_while_trips`` patches ``jax.lax.while_loop`` only.
+
+    A ``from jax.lax import while_loop`` binding is the documented miss.
+    """
+    from jax.lax import while_loop as bound_while
+
+    def via_attribute(n):
+        return jax.lax.while_loop(lambda i: i < n, lambda i: i + 1, jnp.int32(0))
+
+    def via_binding(n):
+        return bound_while(lambda i: i < n, lambda i: i + 1, jnp.int32(0))
+
+    assert _measure_while_trips(via_attribute, (jnp.int32(4),)) == [4]
+    assert _measure_while_trips(via_binding, (jnp.int32(4),)) == []

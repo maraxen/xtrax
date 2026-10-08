@@ -18,6 +18,8 @@ def write_manifest_dict(
     evaluator_paths: list[str] | None = None,
     split_paths: list[str] | None = None,
     metric_def_paths: list[str] | None = None,
+    *,
+    persist: bool = True,
 ) -> dict:
     """Write manifest from a dict representation of the config.
 
@@ -63,10 +65,11 @@ def write_manifest_dict(
             "metric_def_paths": metric_def_paths or [],
         }
 
-    manifest_path = Path(run_dir) / "manifest.json"
-    os.makedirs(run_dir, exist_ok=True)
-    with open(manifest_path, "w") as f:
-        json.dump(manifest, f, indent=2)
+    if persist:
+        manifest_path = Path(run_dir) / "manifest.json"
+        os.makedirs(run_dir, exist_ok=True)
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
 
     return manifest
 
@@ -76,6 +79,8 @@ def write_manifest(
     cfg: TrainConfig,
     run_id: str,
     config_hash_val: str,
+    *,
+    persist: bool = True,
 ) -> dict:
     """
     Write manifest.json to .xtrax/runs/<run_id>/manifest.json.
@@ -96,6 +101,7 @@ def write_manifest(
         evaluator_paths=closure.get("evaluator_paths"),
         split_paths=closure.get("split_paths"),
         metric_def_paths=closure.get("metric_def_paths"),
+        persist=persist,
     )
 
 

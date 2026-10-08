@@ -63,18 +63,17 @@ Verify: `src/xtrax/training/trainer.py:12-74`
 Numerical safety wrappers for gradient computation:
 
 ```python
-from xtrax.training.types import SafetyTrainStep
+from xtrax.safety.manager import SafetyManager
+from xtrax.training.step import SafetyTrainStep
 
-# Gradient clipping, NaN detection, etc.
+# NaN/Inf checks. Gradient clipping is make_optimizer(base, clip_norm=).
 safety = SafetyTrainStep(
-    grad_clip_norm=1.0,      # Clip gradients by norm
-    check_nans=True,          # Detect NaN losses
+    trainer=trainer,
+    safety_manager=SafetyManager(enabled=True, check_nans=True, check_infs=True),
 )
-
-# Applied inside Trainer.step or Engine
 ```
 
-Verify: `src/xtrax/training.types`
+Verify: `src/xtrax/training/step.py`, `src/xtrax/safety/manager.py`
 
 #### Engine: Async Training Loop
 
@@ -82,33 +81,30 @@ High-level training orchestration with callbacks:
 
 ```python
 from xtrax.engine.engine import Engine
-import asyncio
 
 engine = Engine(
     trainer=trainer,
-    data_loader=resolver,
-    callbacks=[callback1, callback2],
+    callbacks=(callback1, callback2),
 )
 
-# Async iteration
-async def train():
-    async for new_state, metrics in engine.fit(state, num_epochs=10):
-        print(f"Step {new_state.step}, Loss: {metrics['loss']}")
+# data.train_iter() yields batches. Both calls return the final ResumableState.
+final_state = engine.fit_sync(state, data, num_epochs=10)
 
-# Blocking alternative: fit_sync
-for new_state, metrics in engine.fit_sync(state, num_epochs=10):
-    print(f"Step {new_state.step}, Loss: {metrics['loss']}")
+
+async def train():
+    return await engine.fit(state, data, num_epochs=10)
 ```
 
 Verify: `src/xtrax/engine/engine.py`
 
-⚠ NOTE: `Engine.fit` is **async**. Use `fit_sync()` for blocking usage.
+⚠ NOTE: `Engine.fit` is async. `fit_sync` is the blocking wrapper. Both return the final `ResumableState`. `data` is a `fit` argument (`DataModule` or any object with `train_iter`).
 
 #### Callback Protocol
 
 Extend training with custom hooks:
 
 ```python
+from xtrax.engine.engine import Engine
 from xtrax.training.types import Callback
 
 class LoggingCallback(Callback):
@@ -122,7 +118,7 @@ class LoggingCallback(Callback):
         print(f"Epoch {epoch} end")
 
 trainer = Trainer(...)
-engine = Engine(trainer=trainer, callbacks=[LoggingCallback()])
+engine = Engine(trainer=trainer, callbacks=(LoggingCallback(),))
 ```
 
 Verify: `src/xtrax/training/types.py`
@@ -160,9 +156,10 @@ opt_with_schedule = optax.chain(
     optax.adam(learning_rate=schedule),
 )
 
-# Utility functions
-opt = make_optimizer(learning_rate=1e-4)
-opt = adamw_with_schedule(init_lr=1e-4, warmup_steps=1000, total_steps=10000)
+# make_optimizer wraps a base GradientTransformation with optional clipping.
+base = optax.adamw(learning_rate=1e-4)
+opt = make_optimizer(base, clip_norm=1.0)
+opt = adamw_with_schedule(peak_lr=1e-4, warmup_steps=1000, total_steps=10000)
 ```
 
 Verify: `src/xtrax/training/optim.py` (definitions); re-exported at `src/xtrax/training/__init__.py:4`

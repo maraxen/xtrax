@@ -1,14 +1,13 @@
 ---
 name: xtrax-io-on-shared-filesystems
-description: Use when a job that reads large files (MD trajectories, XTC/DCD/NetCDF, zarr/HDF5 shards, datasets) from NFS, Lustre, GPFS or another shared/network filesystem is slow, hits walltime, shows CPU time far below elapsed time, sits in process state D, or when choosing between a seek/strided/random-access reader and a sequential read or local staging copy.
+description: "Use when a job that reads large files (MD trajectories, XTC/DCD/NetCDF, zarr or HDF5 shards) from NFS, Lustre, GPFS, or another shared filesystem is slow, hits walltime, shows CPU time far below elapsed time, or sits in process state D. Also when choosing a seek or strided reader versus a sequential read or a copy onto local disk."
 xtrax_version: 0.4.0a12
 triggers:
-  - job slow / hits walltime reading trajectories on NFS / shared storage
-  - sstat AveCPU << elapsed, ps STAT D, iowait
-  - seek reader vs sequential read vs copy-to-local
-  - strided read (stride=k) of XTC / DCD / large binary files
-  - stage to node-local /tmp before analysis
-  - cache a slim / strided copy once, read many times
+  - job hits walltime reading large files on NFS, Lustre, or GPFS
+  - CPU time far below elapsed time, process state D, iowait
+  - seek or strided reader versus a sequential read
+  - copy a trajectory, zarr shard, or HDF5 file to local disk before analysis
+  - cache one slim copy and read it many times
 ---
 
 # xtrax-io-on-shared-filesystems
