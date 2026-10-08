@@ -23,6 +23,8 @@ jobs:
               - 'tests/contract/test_port_emit_schema.py'
               - 'scripts/audit_port_trace_count.py'
               - 'scripts/audit_port_oracle_seal.py'
+              - 'scripts/audit_port_provenance.py'
+              - 'scripts/port_init.py'
               - 'Justfile'
 
   controller-changes:

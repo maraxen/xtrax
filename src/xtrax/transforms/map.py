@@ -4,6 +4,20 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from xtrax.provenance import Provenance
+
+__provenance__ = Provenance(
+    upstream="port/reference/safe_map",
+    relationship="ported",
+    waiver_reason=(
+        "Listed in port/manifests/wave_001_example.toml. The sealed oracle is "
+        "port/reference/safe_map at version v0.1.0 "
+        "(content sha256:52fd5458018d46d3c333287f803152eb38f66b618f540363521d825b518aea34 "
+        "in port/port_target.toml). That digest is not a git commit or tag, and "
+        "the reference records no SPDX licence."
+    ),
+)
+
 T: type
 
 

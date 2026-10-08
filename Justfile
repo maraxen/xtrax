@@ -347,7 +347,7 @@ audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint aud
     just audit-port-emit-contract
 
 # Port validation gates (Epic #2180 Wave 1)
-audit-port: audit-port-oracle-seal audit-port-static audit-port-parity audit-port-emit-contract
+audit-port: audit-port-oracle-seal audit-port-static audit-port-parity audit-port-emit-contract audit-port-provenance
 
 audit-port-oracle-seal:
     uv run python scripts/audit_port_oracle_seal.py --target port/port_target.toml
@@ -361,6 +361,9 @@ audit-port-parity:
 
 audit-port-emit-contract:
     uv run pytest tests/contract/test_port_emit_schema.py -v
+
+audit-port-provenance:
+    uv run --no-sync python scripts/audit_port_provenance.py
 
 audit-port-bridge:
     uv run python scripts/lint_port_bridge_map.py
