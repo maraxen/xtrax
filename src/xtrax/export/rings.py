@@ -77,6 +77,7 @@ from xtrax.export.divergence import (
     validate_probe_deps,
 )
 from xtrax.export.targets import NATIVE, NATIVE_PORTABLE, Target
+from xtrax.tiling.bucket import BUCKET_LADDER
 
 __all__ = [
     "BUCKET_LADDER",
@@ -97,7 +98,7 @@ __all__ = [
 
 # The bucket ladder length is not a free axis (spec section 6.2): every
 # input-class generator below draws its length from here, never a sweep.
-BUCKET_LADDER: tuple[int, ...] = (64, 128, 256, 512, 1024, 1536, 2048)
+# ``BUCKET_LADDER`` is defined in ``xtrax.tiling.bucket`` and re-exported.
 
 
 # ---------------------------------------------------------------------------

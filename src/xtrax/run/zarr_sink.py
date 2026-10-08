@@ -7,11 +7,13 @@ payload maps to which JAX op, and firing the actual
 ``jax.experimental.io_callback`` -- is the caller's responsibility; this
 module only owns staging and Zarr storage.
 
-Provenance tracking: the sink auto-captures static run provenance at
-construction time (git SHA/branch/dirty status, ``SinkSpec.run_id``, and a
-UTC creation timestamp) and stamps it onto the store's root group, plus a
-minimal ``run_id``/``git_sha`` pointer on each drained key's own group. See
-task ``260824_default-sink-provenance-tracking``.
+Provenance tracking: git state comes from ``SinkSpec.provenance`` (a
+precomputed record, or a path to capture from). The default records
+``git_sha="unknown"`` and does not shell out from ``Path.cwd()``. The sink
+also stamps ``SinkSpec.run_id``, optional seed, producer name, xtrax version,
+and a UTC creation timestamp onto the store's root group, plus a minimal
+``run_id``/``git_sha`` pointer on each drained key's own group. See task
+``260824_default-sink-provenance-tracking`` and debt #2523.
 
 Requires the optional ``zarr`` dependency: ``pip install xtrax[io]``. Zarr
 itself is imported lazily inside :meth:`ZarrStagingSink.__init__`, so
@@ -32,11 +34,17 @@ from typing import Any
 
 import numpy as np
 
+from xtrax import __version__ as _XTRAX_VERSION
 from xtrax.run import zarr_commit as zc
-from xtrax.run._sink_names import CORE_PROVENANCE_FIELDS, RESERVED_ATTR_PREFIX
+from xtrax.run._sink_names import CORE_PROVENANCE_FIELDS, PRODUCER_NAME, RESERVED_ATTR_PREFIX
 from xtrax.run.digest import canonical_digest, numerics_env
-from xtrax.run.sink import SinkSpec
-from xtrax.run.zarr_integrity import normalize_json_value
+from xtrax.run.sink import GitProvenance, SinkReceipt, SinkSpec
+from xtrax.run.zarr_integrity import (
+    DIGEST_ALGO_VERSION,
+    fsync_tree,
+    normalize_json_value,
+    zarr_content_digest,
+)
 
 #: Core provenance field names written by the sink itself (defined in
 #: ``_sink_names`` to avoid an import cycle). Caller-staged attrs may not use
@@ -95,9 +103,121 @@ def _capture_git_state(cwd: Path) -> tuple[str, str, bool]:
     except subprocess.CalledProcessError as e:
         stderr = e.stderr or ""
         if "not a git repository" in stderr.lower():
-            raise _GitCaptureFailed("the working directory is not inside a git repository") from e
+            raise _GitCaptureFailed(f"{cwd} is not inside a git repository") from e
         raise _GitCaptureFailed(f"a git shellout failed ({e.cmd})") from e
     return sha, branch, dirty
+
+
+def _resolve_git_provenance(provenance: object) -> tuple[str, str, bool]:
+    """Return ``(sha, branch, dirty)`` without shelling out unless ``provenance`` is a path.
+
+    ``None`` records unknown and does not spawn git. A :class:`GitProvenance`
+    or mapping is used as given. A :class:`~pathlib.Path` is captured via
+    :func:`_capture_git_state`; failure warns and records unknown.
+    """
+    if provenance is None:
+        return _GIT_UNKNOWN, _GIT_UNKNOWN, False
+    if isinstance(provenance, GitProvenance):
+        return provenance.git_sha, provenance.git_branch, provenance.git_dirty
+    if isinstance(provenance, Path):
+        try:
+            return _capture_git_state(provenance)
+        except _GitCaptureFailed as e:
+            warnings.warn(
+                f"ZarrStagingSink: could not determine git state ({e.cause}); "
+                f"recording git_sha={_GIT_UNKNOWN!r} in the store's provenance record.",
+                UserWarning,
+                stacklevel=3,
+            )
+        except Exception as e:  # provenance capture alone must never raise
+            warnings.warn(
+                f"ZarrStagingSink: could not determine git state (a git shellout failed "
+                f"unexpectedly: {e!r}); recording git_sha={_GIT_UNKNOWN!r} in the store's "
+                "provenance record.",
+                UserWarning,
+                stacklevel=3,
+            )
+        return _GIT_UNKNOWN, _GIT_UNKNOWN, False
+    if isinstance(provenance, Mapping):
+        sha = provenance.get("git_sha")
+        branch = provenance.get("git_branch")
+        dirty = provenance.get("git_dirty", False)
+        if not isinstance(sha, str) or not isinstance(branch, str) or not isinstance(dirty, bool):
+            msg = (
+                "SinkSpec.provenance mapping requires str git_sha, str git_branch, "
+                f"and bool git_dirty; got {provenance!r}"
+            )
+            raise TypeError(msg)
+        return sha, branch, dirty
+    msg = (
+        "SinkSpec.provenance must be a GitProvenance, pathlib.Path, mapping, or None, "
+        f"got {type(provenance).__name__}"
+    )
+    raise TypeError(msg)
+
+
+def _schema_for_key(spec: SinkSpec, key: tuple[Any, ...]) -> dict[str, Any] | None:
+    """Schema for ``key``: ``level_schemas[len(key)]`` wins, else ``extension_schema``."""
+    levels = spec.level_schemas
+    if levels is not None and len(key) in levels:
+        return dict(levels[len(key)])
+    return spec.extension_schema
+
+
+def _schema_label(spec: SinkSpec, key: tuple[Any, ...]) -> str:
+    """Human name of the schema :func:`_schema_for_key` would apply."""
+    levels = spec.level_schemas
+    if levels is not None and len(key) in levels:
+        return f"level_schemas[{len(key)}]"
+    return "extension_schema"
+
+
+def _reject_unappendable(group: Any, name: str, array: np.ndarray) -> None:
+    """Raise when ``name`` exists and cannot be extended along axis 0. No writes."""
+    if name not in group:
+        return
+    existing = group[name]
+    if array.ndim == 0 or int(existing.ndim) == 0:
+        msg = f"ZarrStagingSink.drain: cannot append scalar array {name!r} along a leading axis"
+        raise ValueError(msg)
+    if array.ndim != int(existing.ndim) or tuple(array.shape[1:]) != tuple(existing.shape[1:]):
+        msg = (
+            f"ZarrStagingSink.drain: cannot append array {name!r}: trailing shape "
+            f"{tuple(array.shape[1:])} does not match stored {tuple(existing.shape[1:])}"
+        )
+        raise ValueError(msg)
+    if np.dtype(array.dtype) != np.dtype(existing.dtype):
+        msg = (
+            f"ZarrStagingSink.drain: cannot append array {name!r}: dtype {array.dtype} "
+            f"does not match stored {existing.dtype}"
+        )
+        raise ValueError(msg)
+
+
+def _write_array(group: Any, name: str, array: np.ndarray, *, append: bool) -> None:
+    """Create ``name`` or, when ``append`` and it already exists, extend axis 0.
+
+    Chunk edges are at least 1 (zarr rejects 0). Call :func:`_reject_unappendable`
+    first when appending several names so a conflict does not partially extend.
+    """
+    existing = group[name] if append and name in group else None
+    if existing is not None:
+        _reject_unappendable(group, name, array)
+        old = int(existing.shape[0])
+        new_shape = (old + int(array.shape[0]),) + tuple(int(dim) for dim in existing.shape[1:])
+        existing.resize(new_shape)
+        existing[old:] = array
+        return
+    created = group.create_array(
+        name=name,
+        shape=array.shape,
+        dtype=array.dtype,
+        # One chunk per array, rank-matched to its shape: 0-d gets chunks=()
+        # and zero-length dims get edge 1 (zarr rejects 0).
+        chunks=tuple(max(int(dim), 1) for dim in array.shape),
+        overwrite=True,
+    )
+    created[...] = array
 
 
 def _prefix_message(e: Exception, context: str) -> None:
@@ -171,14 +291,17 @@ class ZarrStagingSink:
     disk once ``spec.flush_every`` stage calls have accumulated (or
     :meth:`drain` is called explicitly).
 
-    Provenance: construction captures git SHA/branch/dirty status (never
-    raising; falls back to ``git_sha="unknown"`` with a ``UserWarning``),
-    plus ``spec.run_id`` and a UTC ``created_at`` timestamp, captured once.
+    Provenance: git state comes from ``spec.provenance``. The default
+    (``None``) records ``git_sha="unknown"`` and does not shell out. A path
+    that cannot be read warns and records unknown. ``spec.run_id``, optional
+    ``spec.seed``, producer name, xtrax version, and a UTC ``created_at`` are
+    captured once. ``spec.append=True`` extends an existing array along axis 0
+    across drains; the default remains overwrite.
     The full record lands on the store's root group; each drained key's own
     group gets a minimal ``run_id``/``git_sha`` pointer. Call
-    :meth:`finalize` once at run end to consolidate store metadata; it
-    refuses to run while staged payloads are undrained, so nothing is ever
-    stranded silently.
+    :meth:`finalize` once at run end to consolidate, fsync, and digest the
+    store; it returns a receipt and refuses to run while staged payloads are
+    undrained, so nothing is ever stranded silently.
 
     Durable mode: ``SinkSpec(open_mode="create_or_join", store_identity=...)``
     opens a multi-writer, crash-safe store instead. The sink never opens the
@@ -266,40 +389,20 @@ class ZarrStagingSink:
         self._finalized = False
 
         # Core provenance record: captured once, here; re-written idempotently
-        # (same values) on every drain().
+        # (same values) on every drain(). Git is taken from spec.provenance;
+        # the default does not shell out.
+        git_sha, git_branch, git_dirty = _resolve_git_provenance(spec.provenance)
         self._provenance: dict[str, Any] = {
             "run_id": spec.run_id,
             "created_at": datetime.now(UTC).isoformat(),
+            "git_sha": git_sha,
+            "git_branch": git_branch,
+            "git_dirty": git_dirty,
+            "producer": PRODUCER_NAME,
+            "xtrax_version": _XTRAX_VERSION,
         }
-        # Git capture must never raise, whatever the cause (broad outer wrapper
-        # around the narrow per-command catches inside _capture_git_state).
-        try:
-            git_sha, git_branch, git_dirty = _capture_git_state(Path.cwd())
-        except _GitCaptureFailed as e:
-            self._provenance["git_sha"] = _GIT_UNKNOWN
-            self._provenance["git_branch"] = _GIT_UNKNOWN
-            self._provenance["git_dirty"] = False
-            warnings.warn(
-                f"ZarrStagingSink: could not determine git state ({e.cause}); "
-                f"recording git_sha={_GIT_UNKNOWN!r} in the store's provenance record.",
-                UserWarning,
-                stacklevel=2,
-            )
-        except Exception as e:  # provenance capture alone must never raise
-            self._provenance["git_sha"] = _GIT_UNKNOWN
-            self._provenance["git_branch"] = _GIT_UNKNOWN
-            self._provenance["git_dirty"] = False
-            warnings.warn(
-                f"ZarrStagingSink: could not determine git state (a git shellout failed "
-                f"unexpectedly: {e!r}); recording git_sha={_GIT_UNKNOWN!r} in the store's "
-                "provenance record.",
-                UserWarning,
-                stacklevel=2,
-            )
-        else:
-            self._provenance["git_sha"] = git_sha
-            self._provenance["git_branch"] = git_branch
-            self._provenance["git_dirty"] = git_dirty
+        if spec.seed is not None:
+            self._provenance["seed"] = spec.seed
 
         if self._durable:
             self._init_durable()
@@ -407,6 +510,7 @@ class ZarrStagingSink:
                     "git_sha": self._provenance["git_sha"],
                     "git_branch": self._provenance["git_branch"],
                     "created_at": self._provenance["created_at"],
+                    **({"seed": self._provenance["seed"]} if "seed" in self._provenance else {}),
                 },
                 meta={},
                 run_id=run_id,
@@ -524,20 +628,19 @@ class ZarrStagingSink:
                 "reserved for the sink's own use. Use stamp_reserved() to write reserved attrs."
             )
             raise ValueError(msg)
-        if self._spec.extension_schema is None:
+        schema = _schema_for_key(self._spec, key)
+        if schema is None:
             return
         # Type-check the post-merge view for this key: any invalid value fails
         # immediately (a later overwrite cannot mask it). Required fields may
         # still arrive in a later stage() call, so completeness is drain's job.
         merged = dict(self._pending_attrs.get(key, {}))
         merged.update(attrs)
-        errors = _validate_attrs_against_schema(
-            merged, self._spec.extension_schema, check_required=False
-        )
+        errors = _validate_attrs_against_schema(merged, schema, check_required=False)
         if errors:
             msg = (
                 f"ZarrStagingSink: staged attrs for key={key!r} violate the SinkSpec "
-                f"extension_schema: {'; '.join(errors)}"
+                f"{_schema_label(self._spec, key)}: {'; '.join(errors)}"
             )
             raise ValueError(msg)
 
@@ -549,11 +652,13 @@ class ZarrStagingSink:
         across stage() calls and across earlier drains. Raises before any
         write, leaving the buffer intact for the caller to complete and retry.
         """
-        schema = self._spec.extension_schema
-        if schema is None or not schema.get("required"):
+        if self._spec.extension_schema is None and not self._spec.level_schemas:
             return
         failures: list[str] = []
         for key, pending in self._pending_attrs.items():
+            schema = _schema_for_key(self._spec, key)
+            if schema is None or not schema.get("required"):
+                continue
             group_path = "/".join(str(part) for part in key)
             existing = self._root.get(group_path) if group_path else self._root
             merged = dict(existing.attrs) if hasattr(existing, "attrs") else {}
@@ -564,7 +669,7 @@ class ZarrStagingSink:
         if failures:
             msg = (
                 "ZarrStagingSink: drain() refuses to persist attrs that are incomplete "
-                f"under the SinkSpec extension_schema ({' | '.join(failures)}); nothing "
+                f"under the SinkSpec schema ({' | '.join(failures)}); nothing "
                 "was written and the buffer is intact -- stage() the missing fields, "
                 "then drain() again."
             )
@@ -795,18 +900,13 @@ class ZarrStagingSink:
         for key, arrays in self._pending.items():
             group_path = "/".join(str(part) for part in key)
             group = self._root.require_group(group_path) if group_path else self._root
+            if self._spec.append:
+                # Reject a bad extend before mutating, so a retry cannot append twice.
+                for name, array in arrays.items():
+                    _reject_unappendable(group, name, array)
             for name, array in arrays.items():
                 try:
-                    arr = group.create_array(
-                        name=name,
-                        shape=array.shape,
-                        dtype=array.dtype,
-                        # One chunk per array, rank-matched to its shape: 0-d gets
-                        # chunks=() and zero-length dims get edge 1 (zarr rejects 0).
-                        chunks=tuple(max(d, 1) for d in array.shape),
-                        overwrite=True,
-                    )
-                    arr[...] = array
+                    _write_array(group, name, array, append=self._spec.append)
                 except Exception as e:
                     # #5552: zarr's own message names only zarr internals, and from an
                     # io_callback JAX re-renders just the original exception's message
@@ -928,11 +1028,18 @@ class ZarrStagingSink:
         group = self._root.require_group(group_path) if group_path else self._root
         group.attrs[RESERVED_ATTR_PREFIX + name] = normalized
 
-    def finalize(self) -> None:
-        """Signal run completion: consolidate store metadata exactly once.
+    def finalize(self) -> SinkReceipt:
+        """Signal run completion: consolidate, fsync, digest, and return a receipt.
 
-        Calls ``zarr.consolidate_metadata()`` on the store. After this, no
-        further ``stage()``/``drain()`` calls are legitimate on this instance.
+        Calls ``zarr.consolidate_metadata()``, fsyncs the store tree, then
+        digests logical content (provenance excluded, so two runs with the same
+        payloads and different run ids share a digest). After this, no further
+        ``stage()``/``drain()`` calls are legitimate on this instance.
+
+        Returns:
+            A :class:`~xtrax.run.sink.SinkReceipt` with the store path, content
+            digest, :data:`~xtrax.run.zarr_integrity.DIGEST_ALGO_VERSION`,
+            ``run_id``, and ``seed``.
 
         Raises:
             RuntimeError: If staged payloads are still pending (``drain()``
@@ -957,8 +1064,18 @@ class ZarrStagingSink:
             raise RuntimeError(msg)
         import zarr
 
-        zarr.consolidate_metadata(str(self._spec.output_dir))
+        out = self._output_dir
+        zarr.consolidate_metadata(str(out))
+        fsync_tree(out)
+        digest = zarr_content_digest(out)
         self._finalized = True
+        return SinkReceipt(
+            path=out,
+            digest=digest,
+            digest_algo_version=DIGEST_ALGO_VERSION,
+            run_id=self._spec.run_id,
+            seed=self._spec.seed,
+        )
 
     def lookup(
         self, key: tuple[str, ...], input_digest: str, *, verify: bool = True

@@ -18,9 +18,18 @@ from xtrax.run.zarr_integrity import zarr_content_digest
 from xtrax.run.zarr_sink import ZarrStagingSink
 
 
-def _sink(tmp_path: Path, flush_every: int = 1, run_id: str = "test-run") -> ZarrStagingSink:
+def _sink(
+    tmp_path: Path,
+    flush_every: int = 1,
+    run_id: str = "test-run",
+    provenance: object = None,
+) -> ZarrStagingSink:
     spec = SinkSpec(
-        run_id=run_id, output_dir=tmp_path / "out.zarr", format="zarr", flush_every=flush_every
+        run_id=run_id,
+        output_dir=tmp_path / "out.zarr",
+        format="zarr",
+        flush_every=flush_every,
+        provenance=provenance,  # type: ignore[arg-type]
     )
     return ZarrStagingSink(spec)
 
@@ -217,7 +226,7 @@ def test_run_id_is_required_on_spec() -> None:
 
 
 def test_core_provenance_record_on_root(git_repo: Path) -> None:
-    sink = _sink(git_repo.parent)
+    sink = _sink(git_repo.parent, provenance=git_repo)
     sink.stage((0,), value=np.array([1]))
     sink.drain()
 
@@ -233,7 +242,7 @@ def test_core_provenance_record_on_root(git_repo: Path) -> None:
 
 def test_git_dirty_flag_true_when_worktree_dirty(git_repo: Path) -> None:
     (git_repo / "wip.txt").write_text("wip\n")  # untracked file before sink construction
-    sink = _sink(git_repo.parent)
+    sink = _sink(git_repo.parent, provenance=git_repo)
     sink.drain()
 
     root = zarr.open_group(str(git_repo.parent / "out.zarr"), mode="r")
@@ -255,9 +264,9 @@ def test_provenance_stable_across_drains(git_repo: Path) -> None:
 
 
 def test_git_unknown_outside_repo_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)  # plain dir -- no repository anywhere above it
+    monkeypatch.chdir(tmp_path)  # cwd is not consulted; capture uses the given root
     with pytest.warns(UserWarning, match="not inside a git repository"):
-        _sink(tmp_path)
+        _sink(tmp_path, provenance=tmp_path)
     root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
     assert root.attrs["git_sha"] == "unknown"
 
@@ -268,7 +277,7 @@ def test_git_unknown_missing_binary_warns(tmp_path: Path, monkeypatch: pytest.Mo
     fake_bin.mkdir()
     monkeypatch.setenv("PATH", str(fake_bin))  # no git executable resolvable
     with pytest.warns(UserWarning, match="'git' executable was not found"):
-        _sink(tmp_path)
+        _sink(tmp_path, provenance=tmp_path)
     root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
     assert root.attrs["git_sha"] == "unknown"
 
@@ -287,7 +296,7 @@ def test_git_unknown_failing_shellout_warns(
     # ("a git shellout failed (...)"); the broad-catch fallback says
     # "failed unexpectedly: ..." and must NOT satisfy this match.
     with pytest.warns(UserWarning, match=r"shellout failed \("):
-        _sink(tmp_path)
+        _sink(tmp_path, provenance=tmp_path)
     root = zarr.open_group(str(tmp_path / "out.zarr"), mode="r")
     assert root.attrs["git_sha"] == "unknown"
 
@@ -308,7 +317,18 @@ def test_per_key_group_gets_minimal_pointer(tmp_path: Path) -> None:
     assert "git_dirty" not in dict(group.attrs)
 
 
-@pytest.mark.parametrize("field", ["git_sha", "git_branch", "git_dirty", "run_id", "created_at"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "git_sha",
+        "git_branch",
+        "git_dirty",
+        "run_id",
+        "created_at",
+        "producer",
+        "xtrax_version",
+    ],
+)
 def test_stage_rejects_reserved_core_field_names(tmp_path: Path, field: str) -> None:
     sink = _sink(tmp_path)
     with pytest.raises(ValueError, match="reserved core provenance"):

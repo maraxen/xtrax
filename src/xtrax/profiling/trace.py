@@ -40,10 +40,17 @@ contract-stable across JAX upgrades. Re-spike presence-not-spelling before
 trusting dispatch counts from a newer JAX.
 """
 
+import gzip
+import json
 import re
+from pathlib import Path
 from typing import Any
 
-_HEADER_RE = re.compile(r"^(?:ENTRY\s+)?%([\w.\-]+)\s*\([^)]*\)\s*->\s*\S+\s*\{\s*$")
+# Return types may be tuples with spaces, e.g. `(s32[], f32[8])`. `\S+`
+# dropped those ENTRY computations, so the fusion instruction a CPU trace
+# executes never became a map key.
+_HEADER_RE = re.compile(r"^(?:ENTRY\s+)?%([\w.\-]+)\s*\([^()]*\)\s*->\s*.+\{\s*$")
+_FUSION_OPCODE_RE = re.compile(r"=\s*(?:\([^)]*\)|\S+)\s+fusion\s*\(")
 _CLOSE_RE = re.compile(r"^\}\s*$")
 _INSTR_NAME_RE = re.compile(r"^\s*(ROOT\s+)?%([\w.\-]+)\s*=")
 _OP_NAME_RE = re.compile(r'op_name="([^"]*)"')
@@ -203,6 +210,12 @@ def scope_map_from_hlo_text(hlo_text: str, known_labels: frozenset[str]) -> dict
     computation, not ENTRY itself). Each instruction is resolved
     independently from wherever it lives, so a while-body's, fusion's, or
     ENTRY's instructions are all covered uniformly by the same lookup.
+
+    CPU traces name the fusion *instruction* (``hlo_op='add_add_fusion.3'``),
+    not the instructions inside the fused computation (``add.1914``) and not
+    always the fused computation's own name. Each fusion instruction is keyed
+    to the majority named_scope of its callee's instructions, or to its own
+    ``op_name`` when that body carries none.
     """
     computations = _split_computations(hlo_text)
     result: dict[str, str | None] = {}
@@ -268,7 +281,78 @@ def scope_map_from_hlo_text(hlo_text: str, known_labels: frozenset[str]) -> dict
                 counts[v] = counts.get(v, 0) + 1
             result[block_name] = max(counts.items(), key=lambda kv: kv[1])[0]
 
+    _attribute_fusion_instructions(hlo_text, computations, known_labels, block_votes, result)
     return result
+
+
+def _majority_label(votes: list[str]) -> str:
+    """Most common label. Ties keep the earliest-inserted one."""
+    counts: dict[str, int] = {}
+    for vote in votes:
+        counts[vote] = counts.get(vote, 0) + 1
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def _scope_votes(
+    lines: list[str],
+    computations: dict[str, list[str]],
+    known_labels: frozenset[str],
+) -> list[str]:
+    """Known-scope labels voted by instructions in ``lines``."""
+    votes: list[str] = []
+    for line in lines:
+        op_match = _OP_NAME_RE.search(line)
+        if op_match:
+            cand = _deepest_known_label(op_match.group(1), known_labels)
+            if cand is not None:
+                votes.append(cand)
+                continue
+        name_match = _INSTR_NAME_RE.match(line)
+        if name_match:
+            cand = _resolve_scope(name_match.group(2), lines, computations, known_labels)
+            if cand is not None:
+                votes.append(cand)
+    return votes
+
+
+def _attribute_fusion_instructions(
+    hlo_text: str,
+    computations: dict[str, list[str]],
+    known_labels: frozenset[str],
+    block_votes: dict[str, list[str]],
+    result: dict[str, str | None],
+) -> None:
+    """Key each fusion instruction by its fused body's named scope.
+
+    Executed CPU thunks are named after the fusion instruction
+    (``add_add_fusion.3``). The scope labels live on instructions inside the
+    fused computation (``add.1914``), or on the fusion instruction's own
+    ``op_name`` when the body has none. A body that mixes several labels keeps
+    the majority; a tie keeps the earliest-inserted label.
+    """
+    for line in hlo_text.splitlines():
+        name_match = _INSTR_NAME_RE.match(line)
+        if name_match is None or _FUSION_OPCODE_RE.search(line) is None:
+            continue
+        instr_name = name_match.group(2)
+        calls_match = _CALLS_RE.search(line)
+        callee = calls_match.group(1) if calls_match else None
+        callee_lines = computations.get(callee) if callee else None
+        if callee_lines:
+            votes = _scope_votes(callee_lines, computations, known_labels)
+        elif callee is not None:
+            votes = list(block_votes.get(callee, ()))
+        else:
+            votes = []
+        if votes:
+            result[instr_name] = _majority_label(votes)
+            continue
+        op_match = _OP_NAME_RE.search(line)
+        own = _deepest_known_label(op_match.group(1), known_labels) if op_match else None
+        if own is not None:
+            result[instr_name] = own
+        elif instr_name not in result:
+            result[instr_name] = None
 
 
 def parse_scopes(
@@ -388,3 +472,75 @@ def parse_dispatch_counts(
         "n_compilations": n_compilations,
         "n_jit_traces": n_jit_traces,
     }
+
+
+def load_trace_events(trace_dir: str | Path) -> list[dict[str, Any]]:
+    """Load Perfetto ``traceEvents`` written by ``jax.profiler.trace``.
+
+    Reads every ``<trace_dir>/**/*.trace.json.gz`` produced with
+    ``create_perfetto_trace=True`` and concatenates their ``traceEvents`` in
+    sorted path order. JAX nests the file under ``plugins/profile/<stamp>/``.
+
+    Args:
+        trace_dir: Directory passed to ``jax.profiler.trace``.
+
+    Returns:
+        The concatenated ``traceEvents`` list.
+
+    Raises:
+        FileNotFoundError: No ``*.trace.json.gz`` file under ``trace_dir``.
+        ValueError: A trace file has no ``traceEvents`` list.
+    """
+    root = Path(trace_dir)
+    files = sorted(root.rglob("*.trace.json.gz"))
+    if not files:
+        raise FileNotFoundError(f"no perfetto trace under {trace_dir}")
+    events: list[dict[str, Any]] = []
+    for path in files:
+        with gzip.open(path, "rt") as fh:
+            payload = json.load(fh)
+        chunk = payload.get("traceEvents") if isinstance(payload, dict) else None
+        if not isinstance(chunk, list):
+            raise ValueError(f"{path} has no traceEvents list")
+        events.extend(chunk)
+    return events
+
+
+def hlo_text_for(jitted: Any, *args: Any) -> str:
+    """Compiled HLO text for a ``jax.jit`` or ``eqx.filter_jit`` function.
+
+    ``jax.jit(...).lower(*args).compile()`` has ``as_text()``. Equinox's
+    ``Compiled`` wrapper does not; the JAX compiled object lives on
+    ``.compiled``. An object that exposes neither raises ``TypeError``.
+    Returning ``None`` would drop scope attribution with no signal.
+
+    Args:
+        jitted: A jitted callable with ``.lower(*args).compile()``.
+        *args: Arguments to lower against (the shapes the executable saw).
+
+    Returns:
+        The compiled module's HLO text.
+
+    Raises:
+        TypeError: ``jitted`` cannot be lowered, or the compiled object has
+            no HLO text method.
+    """
+    lower = getattr(jitted, "lower", None)
+    if not callable(lower):
+        raise TypeError(
+            f"cannot extract HLO text from {type(jitted).__name__}: "
+            "expected a jax.jit or eqx.filter_jit callable with .lower()"
+        )
+    compiled = lower(*args).compile()
+    as_text = getattr(compiled, "as_text", None)
+    if callable(as_text):
+        return as_text()
+    inner = getattr(compiled, "compiled", None)
+    inner_as_text = getattr(inner, "as_text", None) if inner is not None else None
+    if callable(inner_as_text):
+        return inner_as_text()
+    raise TypeError(
+        f"cannot extract HLO text from {type(compiled).__name__}: "
+        "expected Compiled.as_text() (jax.jit) or "
+        "Compiled.compiled.as_text() (eqx.filter_jit)"
+    )

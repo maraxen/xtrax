@@ -657,11 +657,18 @@ def create_store(
 
     normalized_identity = dict(normalize_json_value(dict(identity_payload)))
     identity_digest = canonical_digest(normalized_identity)
+    from xtrax import __version__
+    from xtrax.run._sink_names import PRODUCER_NAME
+
+    # Producer rides inside the store record. Durable roots carry no other attrs
+    # (TestRootNeverRewritten: the attr set is exactly STORE_ATTR).
     root.attrs[STORE_ATTR] = {
         "identity_payload": normalized_identity,
         "identity_digest": identity_digest,
         "creator_run_id": creator_run_id,
         "created_at": datetime.now(UTC).isoformat(),
+        "producer": PRODUCER_NAME,
+        "xtrax_version": __version__,
     }
 
     # Create all prefix groups.
