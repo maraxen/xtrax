@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`xtrax.profiling.iter_jaxpr_eqns` / `sub_jaxprs`**: one public jaxpr walker.
+  It yields every equation, recursing through `pjit`/`jit`, `scan`, `while`
+  cond and body, `cond` branches, `custom_jvp`/`custom_vjp`, and `remat`.
+  `xtrax.export.safety` and `xtrax.profiling.loop_scaling` both use it (debts
+  #2526 and #2505).
+
+- **`convert_to_onnx(..., model_name=, embed_external_data=)`** (debt #2526):
+  `model_name` (default `"xtrax_export"`) is written on the graph.
+  `embed_external_data=True` stores every tensor in the protobuf, including
+  Loop-subgraph constants that an external-data sidecar leaves unloadable in
+  ORT-Web. `export_pipeline` forwards both arguments. `find_onnx_rng_ops` now
+  descends into subgraphs nested in `FunctionProto` bodies, and
+  `onnx_unknown_domain_census` counts op domains outside `""` and `"ai.onnx"`.
+
+- **`xtrax.export.rings.make_input_class(generator, ..., label=)`** (debt #2526):
+  input classes are built from a caller-supplied generator callable.
+
+### Changed
+
+- **`extent_scaling_report`** flags a loop only when both per-iteration work and
+  trip count grow with the extent (debt #2505). `jnp.searchsorted` lowers to a
+  scan of `ceil(log2(n))` steps; a vector of queries makes each step's work
+  grow, but the trip count does not, so that loop is no longer flagged. A
+  `while` with no static length is run once per extent to count its iterations.
+
+### Deprecated
+
+- **`xtrax.export.rings.symmetric_geometry` and `sub_k_neighbours`** (debt #2526):
+  protein/MPNN input generators. They emit `DeprecationWarning` and will be
+  removed in the next release. Callers pass their own generator to
+  `make_input_class`. `BUCKET_LADDER` is unchanged.
 - **`xtrax.run` output contract** (debt #2523): `make_sink` accepts `format="memory"`
   and returns a `MemorySink` with the same stage/drain/finalize protocol as
   `ZarrStagingSink`, including read-back. `ZarrStagingSink` appends along the

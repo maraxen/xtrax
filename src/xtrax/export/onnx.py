@@ -49,6 +49,7 @@ from xtrax.export.parity import LeafParityResult, compare_leaves, narrow_inputs
 from xtrax.export.targets import Backend, Target
 
 __all__ = [
+    "ONNX_DEFAULT_DOMAINS",
     "ONNX_OPSET",
     "ONNX_RNG_OP_TYPES",
     "LeafParityResult",
@@ -56,6 +57,7 @@ __all__ = [
     "convert_to_onnx",
     "find_onnx_rng_ops",
     "onnx_dtype_census",
+    "onnx_unknown_domain_census",
     "run_onnx",
     "verify_onnx_parity",
 ]
@@ -65,6 +67,10 @@ _MISSING_EXTRA = "install the ONNX toolchain with: pip install xtrax[onnx]"
 #: The opset every graph is emitted at. jax2onnx 0.17's default; pinned here so
 #: a converter upgrade cannot move it silently.
 ONNX_OPSET = 23
+
+#: Op domains a default-domain runtime is expected to implement. Anything else
+#: (including ``ai.onnx.ml``) is reported by :func:`onnx_unknown_domain_census`.
+ONNX_DEFAULT_DOMAINS = frozenset({"", "ai.onnx"})
 
 #: ONNX operators that draw random numbers. None of them is seeded by a JAX key
 #: tensor, so none can reproduce a JAX draw.
@@ -167,7 +173,32 @@ def _model_tensors(model: Any) -> Iterator[Any]:
                 yield from attr.tensors
 
 
-def _write_model(model: Any, out_path: Path) -> int:
+def _inline_external_tensors(model: Any, base_dir: Path) -> None:
+    """Copy every external tensor's bytes into the protobuf.
+
+    Loop-subgraph constants left as external-data references do not load in
+    ORT-Web. Tensors that already hold ``raw_data`` only have the external
+    marker cleared. The rest are read from ``base_dir``.
+    """
+    onnx = _require_onnx()
+    from onnx import external_data_helper  # ty: ignore[unresolved-import]
+
+    for tensor in _model_tensors(model):
+        external = tensor.data_location == onnx.TensorProto.EXTERNAL or tensor.external_data
+        if not external:
+            continue
+        if tensor.HasField("raw_data") and tensor.raw_data:
+            del tensor.external_data[:]
+            tensor.data_location = onnx.TensorProto.DEFAULT
+            continue
+        try:
+            external_data_helper.load_external_data_for_tensor(tensor, str(base_dir))
+        except Exception as exc:
+            msg = f"could not embed external data for tensor {tensor.name!r} from {base_dir}: {exc}"
+            raise CompileError(msg) from exc
+
+
+def _write_model(model: Any, out_path: Path, *, embed_external_data: bool = False) -> int:
     """Write ``model`` to ``out_path``; return the bytes written (both files).
 
     Below protobuf's limit, one file. At or above it, every tensor of at least
@@ -178,6 +209,15 @@ def _write_model(model: Any, out_path: Path) -> int:
     whether the data file exists relative to the process's CWD, not the model's
     directory, so an unrelated file of that name in the CWD failed the export.
     The model's in-memory tensor bytes are cleared by the external write.
+
+    Args:
+        model: The ``onnx.ModelProto`` to write.
+        out_path: Destination ``.onnx`` path.
+        embed_external_data: When True, every tensor -- including constants in
+            Loop subgraphs and function bodies -- is stored in the protobuf and
+            no ``.onnx.data`` sidecar is written. ORT-Web cannot load external
+            data. When False, a model at or above protobuf's limit spills large
+            tensors to ``<out_path>.data``.
 
     Raises:
         CompileError: If serialization or the write fails.
@@ -191,6 +231,11 @@ def _write_model(model: Any, out_path: Path) -> int:
         # to the end), so a stale one from an earlier export would grow and be
         # counted again. Neither layout may leave one behind.
         data_path.unlink(missing_ok=True)
+        if embed_external_data:
+            _inline_external_tensors(model, out_path.parent)
+            data = model.SerializeToString()
+            out_path.write_bytes(data)
+            return len(data)
         if model.ByteSize() < _PROTOBUF_LIMIT_BYTES:
             data = model.SerializeToString()
             out_path.write_bytes(data)
@@ -240,12 +285,28 @@ def _walk_graphs(graph: Any) -> Iterator[Any]:
                 yield from _walk_graphs(sub)
 
 
+def _nodes_of_graph(graph: Any) -> Iterator[Any]:
+    """Every node in ``graph`` and in subgraphs nested in its node attributes."""
+    for sub in _walk_graphs(graph):
+        yield from sub.node
+
+
 def _all_nodes(model: Any) -> Iterator[Any]:
-    """Every node in the model: the main graph, its subgraphs, and functions."""
-    for graph in _walk_graphs(model.graph):
-        yield from graph.node
+    """Every node in the model: the main graph, its subgraphs, and functions.
+
+    A ``FunctionProto`` is not a graph. Its body nodes are visited, and so are
+    subgraphs those nodes carry (a Loop or If inside a function), which a walk
+    of ``function.node`` alone misses.
+    """
+    yield from _nodes_of_graph(model.graph)
     for function in model.functions:
-        yield from function.node
+        for node in function.node:
+            yield node
+            for attr in node.attribute:
+                if attr.HasField("g"):
+                    yield from _nodes_of_graph(attr.g)
+                for sub in attr.graphs:
+                    yield from _nodes_of_graph(sub)
 
 
 def find_onnx_rng_ops(model: Any) -> list[str]:
@@ -258,6 +319,28 @@ def find_onnx_rng_ops(model: Any) -> list[str]:
         ``"<op_type>:<node name>"`` for each RNG node, in discovery order.
     """
     return [f"{n.op_type}:{n.name}" for n in _all_nodes(model) if n.op_type in ONNX_RNG_OP_TYPES]
+
+
+def onnx_unknown_domain_census(model: Any) -> dict[str, int]:
+    """Count nodes whose op domain is outside :data:`ONNX_DEFAULT_DOMAINS`.
+
+    The walk is the same one :func:`find_onnx_rng_ops` uses, so a custom-domain
+    op inside a function body or a Loop subgraph is counted.
+
+    Args:
+        model: An ``onnx.ModelProto``.
+
+    Returns:
+        ``{domain: node count}`` for every domain other than ``""`` and
+        ``"ai.onnx"``, in first-seen order. Empty when every node is in the
+        default domain.
+    """
+    counts: Counter[str] = Counter()
+    for node in _all_nodes(model):
+        domain = node.domain or ""
+        if domain not in ONNX_DEFAULT_DOMAINS:
+            counts[domain] += 1
+    return dict(counts)
 
 
 @dataclass(frozen=True)
@@ -349,6 +432,8 @@ def convert_to_onnx(
     target: Target,
     *,
     out_path: Path | None = None,
+    model_name: str = "xtrax_export",
+    embed_external_data: bool = False,
 ) -> tuple[CompileResult, OnnxDtypeCensus]:
     """Convert a traceable callable to an ONNX graph for ``target``.
 
@@ -359,6 +444,13 @@ def convert_to_onnx(
         target: An ``onnx``-backend target.
         out_path: Destination for the ``.onnx`` file. A fresh temp file is used
             if omitted.
+        model_name: Name written on the graph (``model.graph.name``) and passed
+            through to jax2onnx. One artifact per graph, not the hardcoded
+            ``"xtrax_export"`` for every caller.
+        embed_external_data: Store every tensor in the protobuf. Loop-subgraph
+            constants left as external-data references break ORT-Web. Defaults
+            to False, which still spills tensors to ``<out_path>.data`` when the
+            model reaches protobuf's 2 GiB limit.
 
     Returns:
         The written artifact as a ``CompileResult`` (``spirv_bytes`` None,
@@ -389,7 +481,8 @@ def convert_to_onnx(
     flat, specs = _flat_callable(callable_, abstract_inputs)
     try:
         with _restoring_jax_namespaces():
-            model = jax2onnx.to_onnx(flat, specs, model_name="xtrax_export", opset=ONNX_OPSET)
+            model = jax2onnx.to_onnx(flat, specs, model_name=model_name, opset=ONNX_OPSET)
+        model.graph.name = model_name
     except Exception as exc:
         msg = f"jax2onnx could not convert the pipeline for target {target.name!r}: {exc}"
         raise CompileError(msg) from exc
@@ -412,7 +505,7 @@ def convert_to_onnx(
         out_path = Path(handle.name)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     census = onnx_dtype_census(model)  # before writing: external data clears tensor bytes
-    size_bytes = _write_model(model, out_path)
+    size_bytes = _write_model(model, out_path, embed_external_data=embed_external_data)
 
     compiled = CompileResult(
         target=target,

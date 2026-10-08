@@ -196,6 +196,8 @@ def export_pipeline(
     request_features: frozenset[str] = frozenset(),
     scan_init: Any = None,
     reference_fn: Callable[[Sequence[Any]], Any] | None = None,
+    model_name: str = "xtrax_export",
+    embed_external_data: bool = False,
 ) -> dict[str, ExportResult]:
     """Export a planned pipeline to one artifact per target.
 
@@ -215,6 +217,10 @@ def export_pipeline(
         reference_fn: An independently-computed oracle over ``concrete_inputs``,
             required if any target is EXECUTED. Must not be built from the
             callable under test -- see ``verify_native_parity``.
+        model_name: Graph name passed to ``convert_to_onnx`` for an ``onnx``
+            target. Ignored by IREE targets.
+        embed_external_data: When True, the ONNX artifact stores every tensor
+            in the protobuf (no external-data sidecar). Ignored by IREE targets.
 
     Returns:
         A dict keyed by target name.
@@ -331,7 +337,13 @@ def export_pipeline(
     for target in targets:
         census: OnnxDtypeCensus | None = None
         if target.backend is Backend.ONNX:
-            compiled, census = convert_to_onnx(callable_, abstract_inputs, target)
+            compiled, census = convert_to_onnx(
+                callable_,
+                abstract_inputs,
+                target,
+                model_name=model_name,
+                embed_external_data=embed_external_data,
+            )
         else:
             exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
             compiled = compile_for_target(exported.mlir_module(), target)

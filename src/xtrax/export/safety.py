@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from xtrax.export.targets import Backend, Target
+from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.stages.topology import AxisDecisionLike, validate_plan_topology
 
@@ -379,43 +380,6 @@ _UNBATCHED_THREEFRY_DETAIL = (
 )
 
 
-def _sub_jaxprs(params: Mapping[str, Any]) -> list[Any]:
-    """Return every jaxpr-like object reachable from one eqn's params.
-
-    Covers both a lone value (``scan``'s ``jaxpr`` param) and a list/tuple of
-    values (some higher-order primitives carry more than one branch jaxpr).
-    Each candidate is treated as jaxpr-like if it exposes ``.eqns`` after
-    unwrapping ``.jaxpr`` -- which is a no-op for a plain ``Jaxpr`` and
-    unwraps a ``ClosedJaxpr`` down to the walkable core.
-    """
-    found: list[Any] = []
-    for value in params.values():
-        candidates = value if isinstance(value, (list, tuple)) else (value,)
-        for candidate in candidates:
-            inner = getattr(candidate, "jaxpr", candidate)
-            if hasattr(inner, "eqns"):
-                found.append(inner)
-    return found
-
-
-def _walk_jaxpr_eqns(jaxpr: Any) -> list[Any]:
-    """Return every equation in ``jaxpr``, recursing into nested sub-jaxprs.
-
-    Recursion is mandatory, not an optimisation: ``top_k`` inside a
-    ``lax.scan`` is only visible one level down inside the scan's sub-jaxpr,
-    ``jnp.argsort``'s ``sort`` primitive is only visible inside a nested
-    ``pjit`` sub-jaxpr, and ``jax.random.permutation``'s ``_shuffle`` jit is
-    likewise never at the top level. A top-level-only walk finds none of
-    these and reports a false all-clear.
-    """
-    eqns: list[Any] = []
-    for eqn in jaxpr.eqns:
-        eqns.append(eqn)
-        for sub in _sub_jaxprs(eqn.params):
-            eqns.extend(_walk_jaxpr_eqns(sub))
-    return eqns
-
-
 def _input_derived_var_ids(jaxpr: Any, seeded: frozenset[int]) -> set[int]:
     """Return ``id()`` of every var transitively derived from a runtime input.
 
@@ -449,7 +413,7 @@ def _input_derived_var_ids(jaxpr: Any, seeded: frozenset[int]) -> set[int]:
     tainted: set[int] = set(seeded)
     for eqn in jaxpr.eqns:
         consumes_tainted = any(id(v) in tainted for v in eqn.invars)
-        for sub in _sub_jaxprs(eqn.params):
+        for sub in sub_jaxprs(eqn.params):
             if not consumes_tainted:
                 continue
             if len(sub.invars) == len(eqn.invars):
@@ -615,7 +579,7 @@ def _program_dtype_blockers(
     for var in top.outvars:
         note("output", var)
     if target.backend is Backend.ONNX:
-        for eqn in _walk_jaxpr_eqns(top):
+        for eqn in iter_jaxpr_eqns(top):
             if eqn.primitive.name in _ONNX_DTYPE_AGNOSTIC_PRIMITIVES:
                 continue
             for var in (*eqn.invars, *eqn.outvars):
@@ -633,7 +597,7 @@ def _onnx_op_blockers(top: Any) -> list[ExportBlocker]:
     """The onnx target's op rules: one blocker per RNG primitive in the program."""
     return [
         ExportBlocker(axis=eqn.primitive.name, rule=_ONNX_RNG_RULE, detail=_ONNX_RNG_DETAIL)
-        for eqn in _walk_jaxpr_eqns(top)
+        for eqn in iter_jaxpr_eqns(top)
         if eqn.primitive.name in _JAX_RNG_PRIMITIVES
     ]
 
@@ -642,7 +606,7 @@ def _iree_op_blockers(top: Any) -> list[ExportBlocker]:
     """The IREE targets' op rules, each measured on iree-base-compiler 3.11."""
     input_derived = _input_derived_var_ids(top, frozenset(id(v) for v in top.invars))
     blockers: list[ExportBlocker] = []
-    for eqn in _walk_jaxpr_eqns(top):
+    for eqn in iter_jaxpr_eqns(top):
         name = eqn.primitive.name
         if name == "top_k":
             blockers.append(

@@ -31,6 +31,7 @@ from xtrax.profiling.compile_count import (
     assert_no_recompile_after,
     count_backend_compiles,
 )
+from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
 from xtrax.profiling.record import ProbeRecord
 from xtrax.profiling.trace import hlo_text_for, load_trace_events
 
@@ -44,8 +45,10 @@ __all__ = [
     "assert_no_recompile_after",
     "count_backend_compiles",
     "hlo_text_for",
+    "iter_jaxpr_eqns",
     "load_trace_events",
     "paired_configs",
     "permitted_claims",
     "select_sources",
+    "sub_jaxprs",
 ]
