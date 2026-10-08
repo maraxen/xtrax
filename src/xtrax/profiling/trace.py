@@ -40,6 +40,17 @@ contract-stable across JAX upgrades. Re-spike presence-not-spelling before
 trusting dispatch counts from a newer JAX.
 """
 
+__provenance__ = {
+    "upstream": "prolix",
+    "relationship": "ported",
+    "waiver_reason": (
+        "Upstreamed from prolix; the module docstring and "
+        ".praxia/docs/specs/260824_upstream-profiling-probe-tooling-from-prolix.md "
+        "name branch wt-20260807-132628, which is not a commit sha or tag, and "
+        "this repo records no SPDX licence for prolix."
+    ),
+}
+
 import gzip
 import json
 import re

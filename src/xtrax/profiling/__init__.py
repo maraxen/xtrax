@@ -17,6 +17,17 @@ so upgrades show up in grep. The trace instruments ``load_trace_events`` and
 ``assert_no_recompile_after``, are public.
 """
 
+__provenance__ = {
+    "upstream": "prolix",
+    "relationship": "ported",
+    "waiver_reason": (
+        "Upstreamed from prolix; the module docstring and "
+        ".praxia/docs/specs/260824_upstream-profiling-probe-tooling-from-prolix.md "
+        "name branch wt-20260807-132628, which is not a commit sha or tag, and "
+        "this repo records no SPDX licence for prolix."
+    ),
+}
+
 from xtrax.profiling.claims import (
     CONTRACT_VERSION,
     SCALE_EXTRAPOLATION_LIMIT,
