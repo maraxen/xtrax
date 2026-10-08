@@ -319,3 +319,17 @@ class TestGrainPipeline:
                 else:
                     continue
                 assert not any(name == "grain" or name.startswith("grain.") for name in names), path
+
+
+class TestBuildInputPipelineArguments:
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"batch_size": 0}, "batch_size must be positive"),
+            ({"batch_size": -2}, "batch_size must be positive"),
+            ({"batch_size": 2, "mp_workers": -1}, "mp_workers must be >= 0"),
+        ],
+    )
+    def test_bad_arguments_are_rejected(self, kwargs, match):
+        with pytest.raises(ValueError, match=match):
+            build_input_pipeline(_ints(4), seed=0, **kwargs)

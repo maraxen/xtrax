@@ -6,7 +6,11 @@ import time
 import numpy as np
 import pytest
 
-from xtrax.data.profile import InputPipelineControlError, profile_input_pipeline
+from xtrax.data.profile import (
+    InputPipelineControlError,
+    _example_count,
+    profile_input_pipeline,
+)
 from xtrax.profiling.record import ProbeRecord
 
 requires_grain = pytest.mark.skipif(
@@ -193,3 +197,52 @@ class TestProfileInputPipeline:
             n_steps=2,
         )
         assert result.examples_per_s > 0
+
+
+class TestArgumentChecks:
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"n_steps": 0, "step_s": 0.01}, "n_steps must be >= 1"),
+            ({"n_steps": 1, "step_s": 0.0}, "step_s must be positive"),
+            ({"n_steps": 1, "step_s": -1.0}, "step_s must be positive"),
+        ],
+    )
+    def test_bad_loop_shape_is_rejected_before_measuring(self, kwargs, match):
+        def factory():
+            raise AssertionError("the subject must not be opened")
+
+        with pytest.raises(ValueError, match=match):
+            profile_input_pipeline(factory, **kwargs)
+
+
+class TestExampleCount:
+    @pytest.mark.parametrize(
+        ("batch", "expected"),
+        [
+            (np.ones((5, 2)), 5),
+            ({"x": np.ones((3, 2)), "y": np.ones(7)}, 3),
+            ({"meta": "tag", "x": np.ones((6,))}, 6),
+            ([np.ones((4, 2)), np.ones(9)], 4),
+            ((np.ones(2),), 2),
+            ({"meta": "tag"}, 1),
+            ({}, 1),
+            ([], 1),
+            (["a", "b"], 1),
+            (np.float32(1.0), 1),
+        ],
+        ids=[
+            "array",
+            "dict-first-array",
+            "dict-skips-non-array",
+            "list",
+            "tuple",
+            "dict-no-array",
+            "empty-dict",
+            "empty-list",
+            "list-no-array",
+            "scalar",
+        ],
+    )
+    def test_leading_dimension_of_the_first_array_is_counted(self, batch, expected):
+        assert _example_count(batch) == expected
