@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sink session and opt-in element index** (#2587, #2588): `xtrax.stages.sink_session`
+  opens a host sink, yields an ordered `io_callback` pinned to
+  `xtrax.stages._callback`, and closes the session on the way out, including
+  when the traced region raises. `AxisBoundary(sink_receives_index=True)` passes
+  the mapped-axis index to the sink as `(y, index)` for `Vmap`, `ChunkedMap`
+  (including a remainder chunk), and `Scan`. The default call stays `sink(y)`.
 - **Skill delivery** (#2107, #2596, #2597): joint-budget `memory_estimator` and
   `MemoryBudget` estimates in the using-xtrax tiling skill come from
   `lowered_memory_estimate` on a representative tile, scaled by live tile

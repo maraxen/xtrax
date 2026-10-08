@@ -128,5 +128,23 @@ class AxisBoundary(eqx.Module):
     field exists — one recompile, expected and harmless.
     """
 
+    sink_receives_index: bool = eqx.field(static=True, default=False)
+    """Call ``sink(y, index)`` with the element's position on this axis.
+
+    Default False keeps the one-argument call ``sink(y)``. Set True and the
+    executor passes ``(y, index)``, where ``index`` is an ``int32`` scalar: the
+    position along the mapped axis. ``Vmap``, ``ChunkedMap`` (including a
+    remainder chunk), and ``Scan`` all use that global position.
+
+    The flag is the opt-in. The executor does not read the sink's signature, so
+    a two-parameter callable still receives one argument until this is True.
+    The flag lives on the boundary because the executor is what knows the axis
+    position; a second sink type would still need the same branch, and matching
+    on the callable would slide into signature inspection.
+
+    Static, like the other fields. An ``AxisBoundary`` pickled before this
+    field existed has no entry for it.
+    """
+
 
 __all__ = ["AxisBoundary", "Fuse", "Sink", "Tap"]
