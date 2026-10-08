@@ -1,10 +1,11 @@
 """Iterator protocols and concrete implementations for axis iteration.
 
-Four iterator strategies control how a mapped axis is iterated:
+Five iterator strategies control how a mapped axis is iterated:
 - VmapIterator: jax.vmap — fully parallel, stateless.
 - ChunkedMapIterator: chunked_map with tiling — memory-bounded, stateless.
 - JaxScanIterator: jax.lax.scan — carry-bearing, sequential.
 - WhileLoopIterator: jax.lax.while_loop — carry-bearing, no output collection.
+- WhileLoopWithYsIterator: jax.lax.while_loop — carry-bearing, buffered ys.
 
 MapIterator and ScanIterator are runtime_checkable Protocols defining the
 two fundamental iteration patterns: stateless (MapIterator) and carry-bearing
@@ -22,6 +23,7 @@ from typing import Any, Protocol, runtime_checkable
 import equinox as eqx
 import jax
 import jax.lax
+import jax.numpy as jnp
 
 from xtrax.transforms.map import _apply_size1, _is_size1_axis, chunked_map
 
@@ -199,6 +201,79 @@ class WhileLoopIterator(eqx.Module):
         return jax.lax.while_loop(cond, body, init)
 
 
+class WhileLoopWithYsIterator(eqx.Module):
+    """``lax.while_loop`` that records each step's ``y`` in a fixed buffer.
+
+    ``WhileLoopIterator`` returns only the final carry. This iterator's
+    ``body(carry)`` returns ``(new_carry, y)``, and the iterator returns
+    ``(final_carry, ys_buffer, length)``.
+
+    ``max_steps`` is a static Python int: the leading dimension of every
+    buffer leaf. ``y_prototype`` is a pytree of arrays. Each leaf is allocated
+    with ``jnp.zeros((max_steps, *leaf.shape), dtype=leaf.dtype)``. The fill
+    value is ``0`` of that leaf's dtype. Indices ``>= length`` hold fill;
+    the valid outputs are the prefix ``ys[:length]``. Values in
+    ``y_prototype`` supply shape and dtype only.
+
+    The loop runs while ``cond(carry)`` is true and ``step < max_steps``.
+    ``length`` is that step count, an int32 scalar. A return with
+    ``length == max_steps`` and ``cond(final_carry)`` still true means the
+    cap stopped the loop and every buffer index holds a body output.
+    ``cond(final_carry)`` distinguishes that full buffer from one whose
+    predicate became false on the last step.
+
+    Lowers to ``jax.lax.while_loop``.
+    """
+
+    max_steps: int = eqx.field(static=True)
+
+    def __call__(
+        self,
+        cond: Any,
+        body: Any,
+        init: Any,
+        y_prototype: Any,
+    ) -> tuple[Any, Any, Any]:
+        """Run ``body`` until ``cond`` fails or ``max_steps`` is reached.
+
+        Args:
+            cond: Callable(carry) -> scalar bool. True means continue.
+            body: Callable(carry) -> (new_carry, y). ``y`` matches
+                ``y_prototype`` leaf for leaf.
+            init: Initial carry.
+            y_prototype: Pytree of arrays giving each ``y`` leaf's shape and
+                dtype. The stored values are ignored.
+
+        Returns:
+            ``(final_carry, ys_buffer, length)``. ``ys_buffer`` has leading
+            dimension ``max_steps``. ``length`` counts body calls. The fill
+            value in ``ys_buffer[length:]`` is ``0``.
+
+        """
+        ys0 = jax.tree_util.tree_map(
+            lambda leaf: jnp.zeros((self.max_steps, *leaf.shape), dtype=leaf.dtype),
+            y_prototype,
+        )
+        step0 = jnp.zeros((), dtype=jnp.int32)
+
+        def loop_cond(state: tuple[Any, Any, Any]) -> Any:
+            step, carry, _ys = state
+            return jnp.logical_and(step < self.max_steps, cond(carry))
+
+        def loop_body(state: tuple[Any, Any, Any]) -> tuple[Any, Any, Any]:
+            step, carry, ys = state
+            new_carry, y = body(carry)
+            ys = jax.tree_util.tree_map(lambda buf, val: buf.at[step].set(val), ys, y)
+            return step + jnp.int32(1), new_carry, ys
+
+        step, final_carry, ys = jax.lax.while_loop(
+            loop_cond,
+            loop_body,
+            (step0, init, ys0),
+        )
+        return final_carry, ys, step
+
+
 class BucketIterator:
     """Iterator that buckets data by boundaries with different batch sizes each.
 
@@ -292,4 +367,5 @@ __all__ = [
     "VmapIterator",
     "BucketIterator",
     "WhileLoopIterator",
+    "WhileLoopWithYsIterator",
 ]

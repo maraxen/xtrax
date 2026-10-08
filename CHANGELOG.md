@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`WhileLoopWithYsIterator`** (#2589): a `lax.while_loop` iterator that writes
+  each step's `y` into a preallocated buffer of caller-supplied `max_steps`
+  and returns `(final_carry, ys_buffer, length)`. Buffer fill is `0`. When
+  `length == max_steps` and `cond(final_carry)` is still true, the cap stopped
+  the loop and every index holds a body output.
+
 - **Grain input pipelines** (#2085): `xtrax.data.build_input_pipeline` builds a
   domain-free Grain pipeline (process shard, shuffle, repeat, optional
   caller-supplied fixed-length pad, `numpy.stack` batch, threaded prefetch,
