@@ -5,7 +5,7 @@ import pytest
 
 from xtrax.eda.stats import extract_plan_stats
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
-from xtrax.tiling.strategy import Bucket, DedupGather, SafeMap, Vmap
+from xtrax.tiling.strategy import Bucket, ChunkedMap, DedupGather, Vmap
 
 
 class TestPlanToDataframe:
@@ -100,7 +100,7 @@ class TestPlanToDataframe:
             spec=spec2,
             batch_size=256,
             reasoning="safemap for large cardinality",
-            strategy=SafeMap(batch_size=256),
+            strategy=ChunkedMap(batch_size=256),
         )
         plan = BatchPlan(decisions=(decision1, decision2))
         stats = extract_plan_stats(plan)
@@ -111,7 +111,7 @@ class TestPlanToDataframe:
         assert df.loc[0, "name"] == "batch"
         assert df.loc[0, "strategy"] == "Vmap"
         assert df.loc[1, "name"] == "sequence"
-        assert df.loc[1, "strategy"] == "SafeMap"
+        assert df.loc[1, "strategy"] == "ChunkedMap"
 
     def test_dataframe_includes_dedup_columns(self):
         """plan_to_dataframe includes dedup columns where applicable."""

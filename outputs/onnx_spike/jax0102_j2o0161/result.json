@@ -1,0 +1,42 @@
+{
+  "versions": {
+    "jax": "0.10.2",
+    "jaxlib": "0.10.2",
+    "jax2onnx": "0.16.1",
+    "onnx": "1.23.0",
+    "onnxruntime": "1.30.0",
+    "equinox": "0.13.8",
+    "xtrax": "0.4.0a10"
+  },
+  "seed": 0,
+  "smoke": false,
+  "controls": {
+    "ties_visible_argsort": true,
+    "ties_visible_topk": true,
+    "cmp_detects_swap": true,
+    "cmp_identity_ok": true,
+    "bits_detects_ulp": true,
+    "n_distinct_keys": 4,
+    "n_distinct_vals": 8,
+    "perturbed_mlp_converted": true,
+    "perturbed_mlp_max_abs": 0.010136377066373825,
+    "perturbed_mlp_detected": true,
+    "perturbed_oracle_differs": true
+  },
+  "controls_ok": true,
+  "n_variants": 20,
+  "n_converted": 18,
+  "n_unconverted": 2,
+  "n_value_divergent": 0,
+  "n_ort_failed": 2,
+  "n_io_dtype_changed": 0,
+  "n_graphs_with_int64": 14,
+  "divergent": [],
+  "unconverted": [
+    "threefry_nested_split/standard",
+    "threefry_nested_split/web"
+  ],
+  "io_dtype_changed": [],
+  "per_case_path": "outputs/onnx_spike/jax0102_j2o0161/cases.jsonl",
+  "note": "ORT Python CPU EP is not ORT Web; this is not browser evidence."
+}

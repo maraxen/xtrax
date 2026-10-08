@@ -178,7 +178,7 @@ def test_end_to_end_real_conftest_writes_declared_records(tmp_path):
     This is the closed loop: plugin collects fixtures, benches declare via
     extra_info, sessionfinish writes one validated record per bench into
     XTRAX_BENCH_RECORD_DIR. Runs only bench_tiling.py to bound jax startup
-    cost while still exercising parametrized identities ([vmap]/[safe_map]
+    cost while still exercising parametrized identities ([vmap]/[chunked_map]
     /[dedup]).
     """
     env = dict(os.environ)

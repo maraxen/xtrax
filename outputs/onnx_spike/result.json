@@ -1,0 +1,48 @@
+{
+  "versions": {
+    "jax": "0.11.1",
+    "jaxlib": "0.11.1",
+    "jax2onnx": "0.16.1",
+    "onnx": "1.23.0",
+    "onnxruntime": "1.30.0",
+    "equinox": "0.13.8",
+    "xtrax": "0.4.0a10"
+  },
+  "seed": 0,
+  "smoke": false,
+  "controls": {
+    "ties_visible_argsort": true,
+    "ties_visible_topk": true,
+    "cmp_detects_swap": true,
+    "cmp_identity_ok": true,
+    "bits_detects_ulp": true,
+    "n_distinct_keys": 4,
+    "n_distinct_vals": 8,
+    "perturbed_mlp_converted": true,
+    "perturbed_mlp_max_abs": 0.010136377066373825,
+    "perturbed_mlp_detected": true,
+    "perturbed_oracle_differs": true
+  },
+  "controls_ok": true,
+  "n_variants": 20,
+  "n_converted": 12,
+  "n_unconverted": 8,
+  "n_value_divergent": 0,
+  "n_ort_failed": 0,
+  "n_io_dtype_changed": 0,
+  "n_graphs_with_int64": 10,
+  "divergent": [],
+  "unconverted": [
+    "argsort_desc_stable_float/standard",
+    "argsort_desc_stable_float/web",
+    "argsort_stable/standard",
+    "argsort_stable/web",
+    "threefry_nested_split/standard",
+    "threefry_nested_split/web",
+    "threefry_uniform/standard",
+    "threefry_uniform/web"
+  ],
+  "io_dtype_changed": [],
+  "per_case_path": "outputs/onnx_spike/cases.jsonl",
+  "note": "ORT Python CPU EP is not ORT Web; this is not browser evidence."
+}

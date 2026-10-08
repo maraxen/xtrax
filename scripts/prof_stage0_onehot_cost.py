@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage 0 one-hot probe: XLA cost analysis over categorical encoding variants. Never executes.
+"""Stage 0 one-hot probe: XLA cost and memory analysis over categorical variants. Never executes.
 
 P1 of .praxia/docs/specs/260825_jax-optimizing-skill-scope.md (Tier-3 exemplar).
 Compares materialized vs on-the-fly categorical encoding over a representative
@@ -10,8 +10,9 @@ gather-classify kernel:
   - "onthefly": host passes int32 class indices [N]; the program computes the
     one-hot inside jit via jax.nn.one_hot and multiplies through.
 
-Both programs are lowered+compiled for cost_analysis() only -- never executed
-here, the same never-execute pattern as prof_stage0_tiling_cost.py.
+Both programs are lowered+compiled for cost_analysis() and memory_analysis() only -- never executed
+here, the same never-execute pattern as prof_stage0_tiling_cost.py. Memory analysis emits
+peak and live buffer estimates without execution.
 
 Stage 0 records support STRUCTURAL claims only; they cannot back a term
 ranking (that needs an executed, GPU-measured Stage-2 trace).
@@ -73,6 +74,37 @@ def _numeric_cost_metrics(analysis: dict) -> dict[str, float]:
     return metrics
 
 
+def _numeric_memory_metrics(mem_stats: object) -> dict[str, float]:
+    """Normalize memory_analysis() stats object to float-valued metrics; drop the rest.
+
+    Reads numeric attributes from CompiledMemoryStats and skips non-numeric
+    (e.g., serialized_buffer_assignment_proto bytes) and boolean values.
+    """
+    metrics: dict[str, float] = {}
+    for attr_name in dir(mem_stats):
+        if attr_name.startswith("_"):
+            continue
+        try:
+            value = getattr(mem_stats, attr_name)
+        except Exception:
+            continue
+        # Skip callables and booleans
+        if callable(value) or isinstance(value, bool):
+            continue
+        # Skip binary data and other non-numeric types
+        if isinstance(value, bytes):
+            continue
+        # Convert to float and keep only finite values
+        key = attr_name.strip().lower()
+        try:
+            coerced = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(coerced):
+            metrics[key] = coerced
+    return metrics
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -89,9 +121,11 @@ def main(argv: list[str] | None = None) -> int:
     inputs = {"materialized": oh, "onthefly": idx}
     written: list[Path] = []
     for variant, program in programs.items():
-        # Cost analysis on the LOWERED program only -- never executed here.
+        # Cost and memory analysis on the LOWERED program only -- never executed here.
         lowered = jax.jit(program).lower(inputs[variant])
-        analysis = lowered.compile().cost_analysis()
+        # Compile once, then call both cost_analysis() and memory_analysis() on it.
+        compiled = lowered.compile()
+        analysis = compiled.cost_analysis()
         assert isinstance(analysis, dict), type(analysis)
         metrics = _numeric_cost_metrics(analysis)
         if not metrics:
@@ -99,6 +133,22 @@ def main(argv: list[str] | None = None) -> int:
                 f"cost_analysis yielded no numeric fields for {variant}: "
                 f"{sorted(map(str, analysis))}"
             )
+
+        # Collect memory analysis metrics (with mem_ prefix to avoid collision).
+        try:
+            mem_stats = compiled.memory_analysis()
+            mem_metrics = _numeric_memory_metrics(mem_stats)
+            if not mem_metrics:
+                print(
+                    f"warning: memory_analysis yielded no numeric fields for {variant} "
+                    f"(may be unsupported on this backend)"
+                )
+            else:
+                # Merge memory metrics under mem_ prefix.
+                for key, value in mem_metrics.items():
+                    metrics[f"mem_{key}"] = value
+        except Exception as e:
+            print(f"warning: memory_analysis failed for {variant}: {e}")
 
         path = args.out_dir / f"stage0_onehot_{variant}.json"
         record = emit_probe_record(

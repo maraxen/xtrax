@@ -238,6 +238,7 @@ def load_release_readiness_config(config_path: Path) -> ReleaseReadinessConfig:
 
 
 def run_prerequisite_sync(root: Path, config: ReleaseReadinessConfig) -> tuple[bool, str]:
+    # First release-gate step on fresh environment; reads and applies extras/groups from config.
     cmd = ["uv", "sync"]
     for extra in config.prerequisite_sync:
         cmd.append(f"--extra={extra}")
@@ -403,6 +404,13 @@ def build_backlog_report(
                 # Map gate recipe to check by running gate directly in backlog phase
                 row["status"] = "not_run"
                 row["gate_passed"] = False
+            elif result.get("skipped"):
+                # A --quick skip is not a failure. Recording it as one made the report
+                # say `failed` / FAIL for gates that were never run, which is how a
+                # --quick report came to name four "blockers" that were all skips.
+                row["status"] = "skipped"
+                row["gate_passed"] = False
+                row["gate_skipped"] = True
             else:
                 row["status"] = "completed" if result["passed"] else "failed"
                 row["gate_passed"] = result["passed"]
@@ -424,12 +432,23 @@ def compute_verdict(
     if workflow_failures:
         reasons.extend(workflow_failures)
 
+    # A skip is not a failure. Conflating them made a --quick run report "automated check
+    # failed" for checks that never ran, which reads identically to a real regression and
+    # sent at least one investigation looking for a break that did not exist.
     failed_blocking = [
-        item for item in automated_results if item["blocking"] and not item["passed"]
+        item
+        for item in automated_results
+        if item["blocking"] and not item["passed"] and not item.get("skipped")
+    ]
+    skipped_blocking = [
+        item for item in automated_results if item["blocking"] and item.get("skipped")
     ]
     if config.require_automated_pass and failed_blocking:
         for item in failed_blocking:
             reasons.append(f"automated check failed: {item['name']}")
+    if config.require_automated_pass and skipped_blocking:
+        for item in skipped_blocking:
+            reasons.append(f"automated check not run (--quick): {item['name']}")
 
     open_human = [
         row
@@ -448,14 +467,28 @@ def compute_verdict(
         if row["blocking"]
         and row["gate_type"] != "human"
         and not row.get("gate_passed", False)
+        and not row.get("gate_skipped", False)
         and row["id"] != 1462
     ]
     for row in failed_backlog:
         reasons.append(f"backlog gate failed: #{row['id']} {row['slug']}")
 
+    skipped_backlog = [
+        row
+        for row in backlog_rows
+        if row["blocking"] and row["gate_type"] != "human" and row.get("gate_skipped", False)
+    ]
+    for row in skipped_backlog:
+        reasons.append(f"backlog gate not run (--quick): #{row['id']} {row['slug']}")
+
     if reasons:
         if failed_blocking or failed_backlog or workflow_failures:
             return "BLOCKED_AUTOMATED", reasons
+        # Skips still block -- a run that did not execute its slow gates has not
+        # established readiness -- but they are reported as incomplete, not as failures.
+        # --quick therefore cannot yield READY, by construction, without claiming a break.
+        if skipped_blocking or skipped_backlog:
+            return "BLOCKED_INCOMPLETE", reasons
         return "BLOCKED_MANUAL", reasons
     return "READY", []
 
@@ -486,6 +519,8 @@ def render_markdown_report(payload: dict[str, Any]) -> str:
     for row in payload["backlog"]:
         status = row.get("status", "")
         passed = "PASS" if row.get("gate_passed") else "FAIL"
+        if row.get("gate_skipped"):
+            passed = "SKIP"
         if row.get("gate_type") == "human":
             passed = "MANUAL"
         if row.get("gate_type") == "meta":
@@ -518,7 +553,7 @@ def render_markdown_report(payload: dict[str, Any]) -> str:
             "## Release policy",
             "",
             "- Do **not** push release tags until this report is `READY`.",
-            "- Complete human gate #1454 (PyPI + TestPyPI Trusted Publisher) first.",
+            "- Complete human gate #1454 (PyPI Trusted Publisher) first.",
             "- Re-run: `just audit-release-readiness`",
             "",
         ]
@@ -540,7 +575,23 @@ def audit_release_readiness(
     *,
     quick: bool = False,
     skip_sync: bool = False,
+    report_root: Path | None = None,
 ) -> tuple[bool, dict[str, Any]]:
+    """Run the gates and write the readiness report.
+
+    ``report_root`` decides where the report lands; it defaults to ``root``,
+    which is the release-time behaviour. It is separate from ``root`` because
+    the two are not the same axis: ``root`` is where the gates *execute* (they
+    are ``just`` recipes and need the real repo), while the report is just an
+    artifact. Redirecting ``root`` to relocate the report would break every
+    gate.
+
+    The split exists because the report is a *tracked* file. Without it,
+    anything that runs this script against the real repo -- notably
+    ``tests/distribution/test_release_readiness.py``, which runs in the
+    ``audit-deterministic`` chain -- overwrites the committed release
+    attestation with its own output (#5003).
+    """
     config = load_release_readiness_config(config_path)
     failures: list[str] = []
 
@@ -653,11 +704,13 @@ def audit_release_readiness(
         },
     }
 
-    report_json = root / config.report_json
+    out_root = report_root if report_root is not None else root
+    report_json = out_root / config.report_json
     report_json.parent.mkdir(parents=True, exist_ok=True)
     report_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    report_md = root / config.report_markdown
+    report_md = out_root / config.report_markdown
+    report_md.parent.mkdir(parents=True, exist_ok=True)
     report_md.write_text(render_markdown_report(payload), encoding="utf-8")
 
     passed = verdict == "READY"
@@ -688,18 +741,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip uv sync prerequisite step",
     )
+    parser.add_argument(
+        "--report-root",
+        type=Path,
+        default=None,
+        help=(
+            "Directory to write the report under (default: --root). Gates still "
+            "run in --root; this only relocates the artifact, so a caller that is "
+            "not cutting a release can avoid overwriting the tracked report."
+        ),
+    )
     args = parser.parse_args(argv)
 
+    report_root = args.report_root.resolve() if args.report_root is not None else None
     passed, payload = audit_release_readiness(
         root=args.root.resolve(),
         config_path=args.config.resolve(),
         quick=args.quick,
         skip_sync=args.skip_sync,
+        report_root=report_root,
     )
     config = load_release_readiness_config(args.config.resolve())
+    out_root = report_root if report_root is not None else args.root.resolve()
     print(f"Release readiness verdict: {payload['verdict']}")
-    print(f"JSON report: {args.root.resolve() / config.report_json}")
-    print(f"Markdown report: {args.root.resolve() / config.report_markdown}")
+    print(f"JSON report: {out_root / config.report_json}")
+    print(f"Markdown report: {out_root / config.report_markdown}")
     if passed:
         print("PASS: release readiness gate")
         return 0

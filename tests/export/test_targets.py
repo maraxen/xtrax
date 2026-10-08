@@ -1,0 +1,204 @@
+"""The target registry is plain data and must stay importable without IREE."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+
+import pytest
+
+from xtrax.export.targets import (
+    ALL_TARGETS,
+    IREE_TARGETS,
+    METAL_SPIRV,
+    NATIVE,
+    NATIVE_PORTABLE,
+    ONNX,
+    VULKAN_SPIRV,
+    WASM32,
+    Backend,
+    Target,
+    VerificationLevel,
+    target_by_name,
+)
+
+
+class TestRegistryContents:
+    def test_the_five_iree_targets_are_registered(self):
+        assert IREE_TARGETS == (
+            NATIVE,
+            NATIVE_PORTABLE,
+            WASM32,
+            VULKAN_SPIRV,
+            METAL_SPIRV,
+        )
+
+    def test_all_targets_is_iree_plus_onnx(self):
+        assert ALL_TARGETS == (*IREE_TARGETS, ONNX)
+
+    @pytest.mark.parametrize("target", IREE_TARGETS)
+    def test_iree_targets_default_to_the_iree_backend(self, target: Target):
+        assert target.backend is Backend.IREE
+        assert target.iree_backend
+
+    def test_onnx_is_an_executed_non_iree_target(self):
+        assert ONNX.backend is Backend.ONNX
+        assert ONNX.iree_backend == ""
+        assert ONNX.verification_level is VerificationLevel.EXECUTED
+        assert not ONNX.emits_spirv
+
+    def test_onnx_envelope_is_the_measured_one(self):
+        """Measured 260930; tests/export/test_onnx.py re-measures it for real.
+
+        bf16 converts but ORT has no CPU kernel for it, so an EXECUTED target
+        cannot carry it; i64/f64 need x64, which the converter refuses.
+        """
+        assert ONNX.supported_dtypes == frozenset(
+            {"f32", "f16", "i32", "i16", "i8", "u32", "u16", "u8", "bool"}
+        )
+        assert not {"bf16", "i64", "f64"} & ONNX.supported_dtypes
+
+    def test_no_target_is_registered_as_validated(self):
+        """export_pipeline refuses VALIDATED, having nothing to populate it with."""
+        levels = {t.verification_level for t in ALL_TARGETS}
+        assert VerificationLevel.VALIDATED not in levels
+
+    def test_only_vulkan_emits_spirv(self):
+        """metal-spirv is named for its input dialect; it dumps MSL, not SPIR-V."""
+        emitters = {t.name for t in ALL_TARGETS if t.emits_spirv}
+        assert emitters == {"vulkan-spirv"}
+
+    @pytest.mark.parametrize("target", ALL_TARGETS)
+    def test_no_target_claims_f64(self, target: Target):
+        """IREE demotes f64 to f32 everywhere and rewrites the public signature.
+
+        Listing it would promise a dtype no artifact actually carries; the gate
+        rejects it up front instead.
+        """
+        assert "f64" not in target.supported_dtypes
+        assert "f64" not in target.optional_dtypes
+
+    def test_executed_target_excludes_bf16(self):
+        """IREE's runtime cannot map bf16 buffers to numpy, so it cannot be verified."""
+        assert "bf16" not in NATIVE.supported_dtypes
+
+    @pytest.mark.parametrize("target", [WASM32, VULKAN_SPIRV, METAL_SPIRV])
+    def test_codegen_only_targets_carry_bf16(self, target: Target):
+        """bf16 compiles and its signature is untouched; nothing here is executed."""
+        assert "bf16" in target.supported_dtypes
+
+    @pytest.mark.parametrize("target", IREE_TARGETS)
+    def test_the_envelope_splits_by_level_not_by_backend(self, target: Target):
+        """Measured: every backend compiles the same set; only the runtime differs."""
+        expected = NATIVE.supported_dtypes | {"bf16"}
+        if target.verification_level is VerificationLevel.EXECUTED:
+            expected = NATIVE.supported_dtypes
+        assert target.supported_dtypes == expected
+
+    @pytest.mark.parametrize("target", ALL_TARGETS)
+    def test_no_optional_dtypes_are_invented(self, target: Target):
+        """The machinery stays; nothing populates it without a measured reason."""
+        assert target.optional_dtypes == frozenset()
+
+    def test_target_is_not_hashable(self):
+        """Documents a real consequence of optional_dtype_features being a Mapping.
+
+        Targets are looked up by name and results are keyed by name, so nothing
+        needs to hash one -- but a caller reaching for a set of targets should
+        find out here rather than at their own call site.
+        """
+        with pytest.raises(TypeError, match="unhashable"):
+            {NATIVE}  # noqa: B018
+
+    def test_native_is_executed(self):
+        assert NATIVE.verification_level is VerificationLevel.EXECUTED
+
+    def test_wasm32_is_codegen_only(self):
+        """Executing wasm32 needs an emsdk-built runtime that has no package."""
+        assert WASM32.verification_level is VerificationLevel.CODEGEN_ONLY
+
+    def test_both_use_the_llvm_cpu_backend(self):
+        assert NATIVE.iree_backend == "llvm-cpu"
+        assert WASM32.iree_backend == "llvm-cpu"
+
+    def test_wasm32_carries_the_emscripten_triple(self):
+        joined = " ".join(WASM32.extra_compiler_flags)
+        assert "wasm32-unknown-emscripten" in joined
+
+    def test_wasm32_sets_target_cpu_explicitly(self):
+        """Left unset, IREE falls back to a generic CPU it documents as slow."""
+        joined = " ".join(WASM32.extra_compiler_flags)
+        assert "--iree-llvmcpu-target-cpu=generic" in joined
+
+    def test_native_targets_the_host(self):
+        assert "--iree-llvmcpu-target-cpu=host" in NATIVE.extra_compiler_flags
+
+    def test_native_portable_is_executed(self):
+        assert NATIVE_PORTABLE.verification_level is VerificationLevel.EXECUTED
+
+    def test_native_portable_uses_the_llvm_cpu_backend(self):
+        assert NATIVE_PORTABLE.iree_backend == "llvm-cpu"
+
+    def test_native_portable_targets_the_v2_baseline_not_the_host(self):
+        assert "--iree-llvmcpu-target-cpu=x86-64-v2" in NATIVE_PORTABLE.extra_compiler_flags
+        assert "host" not in " ".join(NATIVE_PORTABLE.extra_compiler_flags)
+
+    def test_native_portable_carries_no_target_triple(self):
+        """A triple is measured to be inert (byte-identical artifact) and would
+        misdescribe an artifact that commits to no OS."""
+        joined = " ".join(NATIVE_PORTABLE.extra_compiler_flags)
+        assert "target-triple" not in joined
+
+    def test_native_portable_shares_natives_dtype_envelope(self):
+        assert NATIVE_PORTABLE.supported_dtypes == NATIVE.supported_dtypes
+
+
+class TestTargetLookup:
+    @pytest.mark.parametrize("target", ALL_TARGETS)
+    def test_round_trips_by_name(self, target: Target):
+        assert target_by_name(target.name) is target
+
+    def test_unknown_name_raises_and_lists_the_known_ones(self):
+        with pytest.raises(KeyError, match="native"):
+            target_by_name("cuda")
+
+
+class TestTargetIsPlainData:
+    def test_target_is_frozen(self):
+        with pytest.raises(AttributeError):
+            NATIVE.name = "other"  # type: ignore[misc]
+
+    def test_importing_the_package_does_not_pull_in_iree(self):
+        """AC-1: target selection must work on a base install.
+
+        Run in a fresh interpreter, because the toolchain may well be installed
+        in this one -- an in-process check would pass for the wrong reason.
+        """
+        code = (
+            "import sys; import xtrax.export; "
+            "mods = [m for m in sys.modules if m == 'iree' or m.startswith('iree.')]; "
+            "assert not mods, mods; print('clean')"
+        )
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", code], capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stderr
+        assert "clean" in result.stdout
+
+    def test_importing_the_package_does_not_pull_in_the_onnx_toolchain(self):
+        """The onnx target's toolchain is lazy exactly like IREE's.
+
+        Fresh interpreter for the same reason as above: the onnx extra may be
+        installed here, and jax2onnx imports flax, orbax and more on load.
+        """
+        code = (
+            "import sys; import xtrax.export; "
+            "bad = ('jax2onnx', 'onnxruntime', 'onnx'); "
+            "mods = [m for m in sys.modules if m.split('.')[0] in bad]; "
+            "assert not mods, mods; print('clean')"
+        )
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", code], capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stderr
+        assert "clean" in result.stdout

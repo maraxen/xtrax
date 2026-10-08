@@ -46,7 +46,7 @@ def test_invalid_qualname_fails_when_map_populated(tmp_path: Path) -> None:
 def test_valid_qualname_passes_when_map_populated(tmp_path: Path) -> None:
     map_path = tmp_path / "composition_map.toml"
     map_path.write_text(
-        '[symbols]\n"xtrax.transforms.map.safe_map" = "transforms.safe_map"\n',
+        '[symbols]\n"xtrax.transforms.map.chunked_map" = "transforms.chunked_map"\n',
         encoding="utf-8",
     )
     failures, exit_code = lint_port_bridge_map.lint_composition_map(map_path)

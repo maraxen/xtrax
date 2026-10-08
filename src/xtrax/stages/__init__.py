@@ -10,6 +10,7 @@ from xtrax.stages.evaluate import (
 )
 from xtrax.stages.executor import ExecutorError, execute_map_axis, execute_scan_axis
 from xtrax.stages.protocols import RollingFn, TransformFn
+from xtrax.stages.session import SinkSession, sink_session
 from xtrax.stages.topology import (
     PlanTopologyError,
     axis_boundaries_by_name,
@@ -22,6 +23,8 @@ __all__ = [
     "Fuse",
     "Tap",
     "Sink",
+    "SinkSession",
+    "sink_session",
     "AxisBoundary",
     "PlanTopologyError",
     "axis_boundaries_by_name",

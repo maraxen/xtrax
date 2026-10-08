@@ -1,0 +1,286 @@
+"""StableHLO -> IREE vmfb, for any registered target.
+
+The spike this was promoted from hardcoded two string targets; here the backend
+and flags come off the ``Target`` object, so adding a target is data rather than
+a new branch.
+
+Version skew note: StableHLO's compatibility guarantees apply to *portable
+artifacts* serialized at a target version. ``Exported.mlir_module()`` emits
+current-version text, so if IREE rejects it we retry once through a portable
+artifact pinned to IREE's own minimum version.
+
+That retry is **inert on the pinned toolchain**: ``iree-base-compiler`` 3.11.0
+ships no ``stablehlo`` module under ``iree.compiler.dialects`` at all (measured
+260902), so ``_downgrade_to_portable`` always raises. Its remaining effect is
+the error message -- a rejected module reports both why the direct compile
+failed and that no downgrade was available, rather than only one of the two. The
+code is kept because the binding's absence is a property of this build, not of
+the API, and the ``ImportError`` path handles either case.
+
+IREE is imported lazily inside each function. Importing this module requires
+only the base install; a missing toolchain surfaces as a CompileError naming the
+extra to install, at the point of use.
+"""
+
+import contextlib
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import jax
+
+from xtrax.export.spirv import spirv_binaries_in
+from xtrax.export.targets import Backend, Target
+
+__all__ = [
+    "CompileError",
+    "CompileResult",
+    "compile_for_target",
+    "run_native_vmfb",
+]
+
+_MISSING_EXTRA = "install the export toolchain with: pip install xtrax[export]"
+
+
+class CompileError(Exception):
+    """Wraps an IREE compiler failure with target name, backend, and stderr."""
+
+
+@dataclass(frozen=True)
+class CompileResult:
+    """Outcome of one iree-compile invocation.
+
+    Attributes:
+        target: The target that was compiled for.
+        path: The written vmfb. A real file, because the only proven executor
+            mmaps it.
+        size_bytes: Size of the vmfb.
+        spirv_bytes: Extracted SPIR-V keyed by executable name, for targets that
+            emit it; None otherwise.
+        downgraded_stablehlo: Whether the portable-artifact retry was needed.
+        stderr: Compiler diagnostics, empty on a clean first compile.
+    """
+
+    target: Target
+    path: Path
+    size_bytes: int
+    spirv_bytes: dict[str, bytes] | None
+    downgraded_stablehlo: bool
+    stderr: str
+
+
+def _require_compiler() -> Any:
+    """Import iree.compiler.tools, or raise CompileError naming the extra."""
+    try:
+        from iree.compiler import tools as iree_tools  # ty: ignore[unresolved-import]
+    except ImportError as exc:
+        msg = f"iree-base-compiler is not installed: {_MISSING_EXTRA}"
+        raise CompileError(msg) from exc
+    return iree_tools
+
+
+def _downgrade_to_portable(mlir_text: str) -> bytes:
+    """Re-serialize as a version-pinned StableHLO portable artifact.
+
+    Only called as a fallback: if IREE's bundled StableHLO is older than the one
+    jax emits, the current-version text can carry ops it cannot parse.
+
+    Always raises on ``iree-base-compiler`` 3.11.0, which ships no such bindings
+    (see the module docstring). Do not treat a successful direct compile as
+    evidence that this path works.
+
+    Args:
+        mlir_text: Current-version StableHLO MLIR.
+
+    Returns:
+        The portable artifact bytes.
+
+    Raises:
+        CompileError: If IREE's stablehlo bindings are unavailable.
+    """
+    try:
+        from iree.compiler.dialects import (  # ty: ignore[unresolved-import]
+            stablehlo as iree_stablehlo,
+        )
+    except ImportError as exc:
+        msg = (
+            "IREE rejected the StableHLO and its Python stablehlo bindings are "
+            "unavailable, so it cannot be downgraded. Pin a matching jax/IREE pair."
+        )
+        raise CompileError(msg) from exc
+
+    version = iree_stablehlo.get_minimum_version()
+    return iree_stablehlo.serialize_portable_artifact(mlir_text, version)
+
+
+def compile_for_target(
+    mlir_text: str,
+    target: Target,
+    *,
+    out_path: Path | None = None,
+) -> CompileResult:
+    """Compile StableHLO text to a vmfb for ``target``.
+
+    Args:
+        mlir_text: StableHLO MLIR, e.g. from ``Exported.mlir_module()``.
+        target: The target to compile for; supplies the IREE backend and flags.
+        out_path: Destination for the vmfb. A fresh temp file is used if omitted.
+
+    Returns:
+        A CompileResult describing the written artifact.
+
+    Raises:
+        ValueError: If ``target`` is not an IREE-backend target (e.g. ``ONNX``,
+            which ``xtrax.export.onnx.convert_to_onnx`` handles).
+        CompileError: Compiler missing, or compilation failed even after a
+            portable-artifact downgrade.
+    """
+    if target.backend is not Backend.IREE:
+        msg = (
+            f"compile_for_target needs an IREE-backend target, got {target.name!r} "
+            f"(backend {target.backend.value!r}); use xtrax.export.onnx.convert_to_onnx "
+            f"for onnx, or export_pipeline, which dispatches on the backend."
+        )
+        raise ValueError(msg)
+    tools = _require_compiler()
+
+    if out_path is None:
+        handle = tempfile.NamedTemporaryFile(  # noqa: SIM115 - closed immediately below
+            suffix=f".{target.name}.vmfb", delete=False
+        )
+        handle.close()
+        out_path = Path(handle.name)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    args = [
+        f"--iree-hal-target-backends={target.iree_backend}",
+        *target.extra_compiler_flags,
+    ]
+
+    # Ask for the executable dump only when the target could carry SPIR-V. The
+    # flag is harmless elsewhere but the directory would just be scanned for
+    # nothing, and llvm-cpu writes object files that are not shaders at all.
+    dump_ctx: Any = contextlib.nullcontext(None)
+    if target.emits_spirv:
+        dump_ctx = tempfile.TemporaryDirectory(prefix=f"xtrax-spirv-{target.name}-")
+
+    with dump_ctx as dump_name:
+        dump_dir = Path(dump_name) if dump_name is not None else None
+        if dump_dir is not None:
+            args.append(f"--iree-hal-dump-executable-binaries-to={dump_dir}")
+        return _compile_with(tools, mlir_text, target, args, out_path, dump_dir)
+
+
+def _compile_with(
+    tools: Any,
+    mlir_text: str,
+    target: Target,
+    args: list[str],
+    out_path: Path,
+    dump_dir: Path | None,
+) -> "CompileResult":
+    """Run the compiler, retry through a portable artifact once, and write the vmfb.
+
+    Split out so ``compile_for_target`` can hold the dump directory open across
+    both attempts: the retry re-runs the compiler and re-populates it.
+    """
+    downgraded = False
+    stderr = ""
+    try:
+        binary = tools.compile_str(mlir_text, input_type="stablehlo", extra_args=args)
+    except Exception as first_exc:
+        stderr = str(first_exc)
+        # Retry once through a version-pinned portable artifact before giving up.
+        try:
+            portable = _downgrade_to_portable(mlir_text)
+            binary = tools.compile_str(portable, input_type="stablehlo", extra_args=args)
+            downgraded = True
+        except CompileError as downgrade_exc:
+            # The downgrade itself was unavailable. Report why the compile failed
+            # too -- that diagnostic is the one the caller needs, and re-raising
+            # bare would discard it.
+            msg = (
+                f"iree-compile failed for target {target.name!r} "
+                f"(backend {target.iree_backend!r}), and the StableHLO could not "
+                f"be downgraded to retry.\n"
+                f"  direct:    {first_exc}\n"
+                f"  downgrade: {downgrade_exc}"
+            )
+            raise CompileError(msg) from first_exc
+        except Exception as retry_exc:
+            msg = (
+                f"iree-compile failed for target {target.name!r} "
+                f"(backend {target.iree_backend!r}).\n"
+                f"  direct:   {first_exc}\n"
+                f"  portable: {retry_exc}"
+            )
+            raise CompileError(msg) from first_exc
+
+    # Read the dump before the caller's TemporaryDirectory closes over it. A
+    # target that emits no SPIR-V keeps spirv_bytes None rather than an empty
+    # dict, so "not applicable" stays distinguishable from "asked, found none".
+    spirv_bytes: dict[str, bytes] | None = None
+    if dump_dir is not None:
+        spirv_bytes = spirv_binaries_in(dump_dir)
+
+    out_path.write_bytes(binary)
+    return CompileResult(
+        target=target,
+        path=out_path,
+        size_bytes=len(binary),
+        spirv_bytes=spirv_bytes,
+        downgraded_stablehlo=downgraded,
+        stderr=stderr,
+    )
+
+
+def run_native_vmfb(vmfb_path: Path, *args: Any, function: str = "main") -> Any:
+    """Execute a native vmfb through the IREE runtime and return its output.
+
+    Native only. A wasm32 or SPIR-V vmfb cannot be executed here.
+
+    The VM module's name is derived from the traced function -- jax names it
+    ``jit_<fn>`` -- so it is resolved from the module rather than hardcoded.
+
+    Args:
+        vmfb_path: Path to a native vmfb.
+        *args: Concrete arguments to pass to the entry point. Any pytree
+            per-element input (e.g. a dict or tuple of arrays) is flattened
+            to its leaves before the call, to match the exported signature --
+            see the flattening note below.
+        function: Entry point name within the module.
+
+    Returns:
+        Whatever the entry point returns.
+
+    Raises:
+        CompileError: If the runtime is missing, or the module has no such entry
+            point.
+    """
+    try:
+        import iree.runtime as ireert  # ty: ignore[unresolved-import]
+    except ImportError as exc:
+        msg = f"iree-base-runtime is not installed: {_MISSING_EXTRA}"
+        raise CompileError(msg) from exc
+
+    config = ireert.Config("local-task")
+    ctx = ireert.SystemContext(config=config)
+    vm_module = ireert.VmModule.mmap(ctx.instance, str(vmfb_path))
+    ctx.add_vm_module(vm_module)
+
+    loaded = ctx.modules[vm_module.name]
+    try:
+        entry = loaded[function]
+    except (KeyError, AttributeError) as exc:
+        msg = f"vmfb {vmfb_path.name} (module {vm_module.name!r}) has no entry point {function!r}."
+        raise CompileError(msg) from exc
+
+    # jax.export flattens pytrees to leaves at the export boundary, so the
+    # vmfb's entry point has one input per leaf, not one per (possibly
+    # pytree-shaped) per-element argument. Flattening here, rather than at
+    # each call site, fixes every caller (parity and any direct caller)
+    # uniformly. It is a no-op for the already-flat case: jax.tree.leaves of
+    # a tuple of arrays is that same list of arrays. Ordering is safe because
+    # jax.export and jax.tree.leaves flatten in the same tree order.
+    return entry(*jax.tree.leaves(args))

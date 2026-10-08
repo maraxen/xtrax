@@ -18,7 +18,7 @@ This separation lets you choose your level of abstraction: start with `Trainer.s
 Real models and datasets have multiple axes that must be scheduled for compute. xtrax provides four **axis strategies** to handle them:
 
 1. **Vmap**: Vectorize the entire axis using `jax.vmap`. Fastest when memory permits.
-2. **SafeMap**: Chunk the axis into batches and loop (`jax.lax.map` with batch-wise vmap). When an axis is too large to vectorize, SafeMap chunks it automatically.
+2. **ChunkedMap**: Chunk the axis into batches and loop (`jax.lax.map` with batch-wise vmap). When an axis is too large to vectorize, ChunkedMap chunks it automatically.
 3. **Scan**: Carry-bearing sequential iteration. For axes that must maintain state across steps (e.g., RNN hidden states).
 4. **DedupGather**: When an axis has repeated elements, deduplicate them, compute on unique values only, then scatter results. Transparent speedup for skewed distributions.
 

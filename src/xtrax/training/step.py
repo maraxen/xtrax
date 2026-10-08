@@ -94,22 +94,36 @@ def create_train_step(
     optimizer: optax.GradientTransformation,
     safety: bool = False,
     safety_manager: SafetyManager | None = None,
+    *,
+    has_aux: bool = False,
+    takes_key: bool = False,
 ) -> Trainer | SafetyTrainStep:
     """Factory for training step: returns Trainer or SafetyTrainStep.
 
     Args:
-        loss_fn: Loss function callable(predictions, targets) -> scalar Array.
+        loss_fn: Loss function. The default form is
+            ``callable(predictions, targets) -> scalar Array``. ``has_aux`` and
+            ``takes_key`` select the other Trainer calling conventions.
         optimizer: optax.GradientTransformation for parameter updates.
         safety: If False, return Trainer. If True, return SafetyTrainStep.
         safety_manager: SafetyManager instance (only used if safety=True).
                        If None and safety=True, create a default SafetyManager
                        with enabled=True, check_nans=True, check_infs=True.
+        has_aux: Passed through to Trainer. When True, ``loss_fn`` returns
+            ``(loss, aux)``.
+        takes_key: Passed through to Trainer. When True, ``loss_fn`` is
+            ``callable(model, batch, key)``.
 
     Returns:
         Trainer if safety=False.
         SafetyTrainStep if safety=True.
     """
-    trainer = Trainer(loss_fn=loss_fn, optimizer=optimizer)
+    trainer = Trainer(
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        has_aux=has_aux,
+        takes_key=takes_key,
+    )
 
     if not safety:
         return trainer

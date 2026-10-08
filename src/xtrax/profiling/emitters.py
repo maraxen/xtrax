@@ -15,6 +15,19 @@ collapse and failed at claim time; the behavior is pinned by
 tests/profiling/test_emitters.py.
 """
 
+__provenance__ = {
+    "upstream": "prolix",
+    "relationship": "derived",
+    "waiver_reason": (
+        "Adapted from prolix "
+        "scripts/experiments/profile_b1_flash_vs_autodiff_forces.py::_emit_probe_record. "
+        "Sibling modules and "
+        ".praxia/docs/specs/260824_upstream-profiling-probe-tooling-from-prolix.md "
+        "name branch wt-20260807-132628, which is not a commit sha or tag, and "
+        "this repo records no SPDX licence for prolix."
+    ),
+}
+
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 

@@ -9,7 +9,7 @@ Both PASS and FAIL are valid outcomes: FAIL documents the gap.
 
 API translation from prolix.AxisSpec to xtrax.AxisSpec:
   prolix default_batch_size=0 (vmap)    -> xtrax default_batch_size=cardinality
-  prolix default_batch_size=1 (safe_map) -> xtrax default_batch_size=1
+  prolix default_batch_size=1 (chunked_map) -> xtrax default_batch_size=1
   prolix tile_granularity               -> xtrax tile_granularity
 """
 

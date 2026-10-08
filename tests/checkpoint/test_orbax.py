@@ -202,3 +202,60 @@ def test_checkpoint_preserves_key_precision(tmp_checkpoint_dir):
 
     assert loaded.key.dtype == key.dtype
     assert jnp.array_equal(loaded.key, key)
+
+
+# --- debt #739: off orbax's deprecated CheckpointManager kwargs -----------------
+
+
+def _save_steps(manager, state, steps):
+    for s in steps:
+        save_checkpoint(manager, state, step=s)
+
+
+def test_retention_is_latest_n_union_every_period(tmp_checkpoint_dir, dummy_state):
+    """max_to_keep=3 + keep_period=10 keeps the last 3 steps plus every multiple of 10.
+
+    Behavioral invariant: must hold identically on the legacy options and on
+    the preservation_policy form they migrate to.
+    """
+    manager = get_checkpoint_manager(tmp_checkpoint_dir, max_to_keep=3, keep_period=10)
+    _save_steps(manager, dummy_state, range(1, 26))
+    assert sorted(manager.all_steps()) == [10, 20, 23, 24, 25]
+
+
+def test_max_to_keep_none_keeps_everything(tmp_checkpoint_dir, dummy_state):
+    manager = get_checkpoint_manager(tmp_checkpoint_dir, max_to_keep=None)
+    _save_steps(manager, dummy_state, range(1, 8))
+    assert sorted(manager.all_steps()) == list(range(1, 8))
+
+
+def test_manager_uses_preservation_policy_not_deprecated_fields(tmp_checkpoint_dir):
+    """orbax documents max_to_keep/keep_period/item_handlers as 'deprecated, do not use'."""
+    import orbax.checkpoint as ocp
+
+    manager = get_checkpoint_manager(tmp_checkpoint_dir, max_to_keep=3, keep_period=10)
+    options = manager._options  # noqa: SLF001 -- orbax exposes the resolved options only here
+    assert options.max_to_keep is None
+    assert options.keep_period is None
+    assert isinstance(options.preservation_policy, ocp.checkpoint_managers.AnyPreservationPolicy)
+
+
+def test_checkpoint_written_by_legacy_item_handlers_api_still_loads(
+    tmp_checkpoint_dir, dummy_state
+):
+    """Runs checkpointed by earlier xtrax (item_handlers + items=) must stay resumable."""
+    import orbax.checkpoint as ocp
+
+    legacy = ocp.CheckpointManager(
+        tmp_checkpoint_dir.resolve(),
+        options=ocp.CheckpointManagerOptions(max_to_keep=5),
+        item_handlers={"state": ocp.PyTreeCheckpointHandler()},
+    )
+    legacy.save(step=7, items={"state": dummy_state})
+    legacy.wait_until_finished()
+    legacy.close()
+
+    loaded = load_checkpoint(get_checkpoint_manager(tmp_checkpoint_dir), dummy_state)
+    assert int(loaded.step) == int(dummy_state.step)
+    assert jnp.array_equal(loaded.model.weights, dummy_state.model.weights)
+    assert jnp.array_equal(loaded.key, dummy_state.key)

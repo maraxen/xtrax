@@ -154,14 +154,16 @@ Zarr sinks auto-capture static run provenance: git SHA/branch/dirty +
 Call `sink.finalize()` once at run end to consolidate store metadata; no
 `stage()`/`drain()` is legitimate afterwards. A second sink opened against
 the same `output_dir` must carry the same `run_id`, or construction raises.
-Optional `SinkSpec.extension_schema` (JSON-Schema-style dict) validates
-caller attrs at `stage()` time; core field names (`git_sha`, `git_branch`,
+Optional `SinkSpec.extension_schema` (JSON-Schema-style dict) type-checks
+caller attrs at `stage()` time and enforces its `required` fields at `drain()`
+over the key's merged view (on-disk + pending attrs), so required fields may be
+split across `stage()` calls; core field names (`git_sha`, `git_branch`,
 `git_dirty`, `run_id`, `created_at`) are reserved.
 
-Verify: `src/xtrax/run/sink.py:14-39`
+Verify: `src/xtrax/run/sink.py:19-58`
 
 🚫 HALTS: `make_sink` raises `NotImplementedError` for `"jsonl"` and `"h5"` — only `"zarr"` and `"none"` are backed by a real implementation today; `jsonl`/`h5` remain routing-only stub values pending their own writers.  
-Enforcement: `src/xtrax/run/sink.py:32-39`
+Enforcement: `src/xtrax/run/sink.py:41-58`
 
 #### ZarrStagingSink: Keyed Staging for io_callback Streaming (0.4.0a3+)
 
@@ -170,7 +172,7 @@ A keyed staging buffer for JAX `io_callback`-driven streaming output, draining i
 ```python
 from xtrax.run import SinkSpec, ZarrStagingSink
 
-sink = ZarrStagingSink(SinkSpec(output_dir=out_dir, format="zarr", flush_every=8))
+sink = ZarrStagingSink(SinkSpec(run_id="run-001", output_dir=out_dir, format="zarr", flush_every=8))
 
 # Buffer named arrays (and optional JSON-safe metadata) under an opaque key tuple.
 # Key components, stringified and joined by "/", become the Zarr group path.
@@ -179,15 +181,17 @@ sink.stage((batch_idx, chunk_start), attrs={"model": "v3"}, logits=logits, seqs=
 # Repeated stage() for the same key merges: same-name arrays overwrite, new names accumulate.
 # Auto-drains to disk every spec.flush_every stage calls, or explicitly:
 sink.drain()   # write all pending payloads + attrs into the Zarr store, clear buffer
+               # (0-d and zero-length arrays are stored as-is, #161; extension_schema
+               # `required` is checked here, before any write, #1540)
 
 payload = sink.take(key)  # pop a still-buffered payload WITHOUT persisting
 len(sink)                  # number of keys currently buffered (not yet drained)
 ```
 
-Verify: `src/xtrax/run/zarr_sink.py:24-125`
+Verify: `src/xtrax/run/zarr_sink.py:134-446`
 
 ⚠ WARN: `zarr` is an optional extra (`pip install xtrax[io]`), imported lazily inside `ZarrStagingSink.__init__` — `xtrax.run` stays importable without it; constructing a sink without zarr raises `ImportError` naming the install command.  
-🚫 HALTS: `ZarrStagingSink` requires `spec.format == "zarr"` and a non-None `output_dir` (`ValueError` otherwise). Verify: `src/xtrax/run/zarr_sink.py:36-41`  
+🚫 HALTS: `ZarrStagingSink` requires `spec.format == "zarr"`, a non-None `output_dir`, and a non-blank `run_id` (`ValueError` otherwise). Verify: `src/xtrax/run/zarr_sink.py:155-167`  
 ⚠ WARN: `take()` discards any pending `attrs` for the key — it returns the in-memory payload without persisting; use `drain()` to persist. `take()` on an unknown key raises `KeyError`.
 
 #### zarr_integrity: Content Digests + Durability (0.4.0a5+)
@@ -201,9 +205,10 @@ fsync_tree(store_path)                    # durabilize directory-of-many-files b
 digest = zarr_content_digest(store_path)  # deterministic sha256 over full logical content
 ```
 
-- `zarr_content_digest(path)` — sha256 over the store's paths, attrs, and array data; unaffected by filesystem metadata or which process wrote it.
+- `zarr_content_digest(path, *, include_provenance=False)` — sha256 over the store's paths, array data, and caller attrs; excludes sink-written run-provenance fields (git SHA/branch/dirty, run_id, created_at on root; run_id/git_sha pointer on non-root groups) by default. Pass `include_provenance=True` to include them. Unaffected by filesystem metadata; excluding provenance means it is now unaffected by which process wrote it.
+- `update_zarr_node_digest(digest, node, path, *, include_provenance=False)` — folds one group/array node's path, attrs and data into an existing `hashlib` digest, recursing into children; `path` is the node's store path, so `"/"` selects the root exclusion set. Same `include_provenance` semantics as `zarr_content_digest`.
 - `fsync_tree(path)` — fsync every file and directory bottom-up; call before trusting the digest.
-- Lower-level building blocks also exported from `xtrax.run`: `canonical_json_bytes`, `normalize_json_value`, `update_array_digest`, `update_zarr_node_digest`, `fsync_file`, `fsync_directory`.
+- Lower-level building blocks also exported from `xtrax.run`: `canonical_json_bytes`, `normalize_json_value`, `update_array_digest`, `fsync_file`, `fsync_directory`.
 
 Verify: `src/xtrax/run/zarr_integrity.py`
 
@@ -246,7 +251,25 @@ boundary = AxisBoundary(
 )
 ```
 
-Verify: `src/xtrax/stages/boundaries.py:84-98`
+`sink_receives_index=True` opts that sink into `(y, index)`. `index` is the
+`int32` position along the axis for `Vmap`, `ChunkedMap` (including a remainder
+chunk), and `Scan`. The default stays `sink(y)`. The executor reads the flag
+and does not inspect the callable.
+
+`sink_session` opens a host sink, yields an ordered callback pinned to
+`xtrax.stages._callback`, and closes the session on the way out, including when
+the traced region raises. Call the callback from a scan or a sequential map.
+
+```python
+from xtrax.stages import AxisBoundary, sink_session
+
+indexed = AxisBoundary(sink=my_sink, sink_receives_index=True)
+
+with sink_session(my_sink) as session:
+    session.io_callback(value)
+```
+
+Verify: `src/xtrax/stages/boundaries.py:84-98`, `src/xtrax/stages/session.py`
 
 **Invariant**: `AxisBoundary` fields are **all static** (`eqx.field(static=True)`). It has no dynamic leaves.
 
@@ -254,7 +277,7 @@ Topology rules (ordered tap/sink + Vmap conflict; Scan on heterogeneous axis) ar
 
 #### Plan Topology Validation: validate_plan_topology + PlanTopologyError (0.3.1+)
 
-> `validate_plan_topology`/`PlanTopologyError`: 0.3.1+. `axis_boundaries_by_name`: unreleased `main` only (T1-02) — not in the 0.4.0a5 wheel.
+> `validate_plan_topology`/`PlanTopologyError`: 0.3.1+. `axis_boundaries_by_name`: 0.4.0a6+ (T1-02).
 
 Catches structurally-impossible plan/boundary pairings before any JAX trace:
 
@@ -279,16 +302,16 @@ Rules enforced (first violation raises `PlanTopologyError`):
 
 ⚠ NOTE: the validator is **structural/duck-typed** — it matches by `type(strategy).__name__`, not `isinstance` against xtrax's own classes, so it works on any library's plan objects with matching field names (e.g. a parallel `aminx.tiling` BatchPlanner whose strategy instances are distinct classes).
 
-#### Boundary Executor: execute_map_axis / execute_scan_axis (Unreleased, T1-04)
+#### Boundary Executor: execute_map_axis / execute_scan_axis (0.4.0a6+, T1-04)
 
 The first code that actually runs `AxisBoundary` ops. Two-tier contract: ordered `Tap`/`Sink` fire **inside** the per-axis iterator body (per step), because a run-layer wrapper only ever sees the fully stacked output and physically cannot deliver per-step order; `Fuse` fires once, **after** the axis's iteration completes, over the assembled stacked output — never per-step, and never over a `Scan`'s carry.
 
 ```python
 from xtrax.stages import ExecutorError, execute_map_axis, execute_scan_axis
-from xtrax.tiling import SafeMap, Vmap
+from xtrax.tiling import ChunkedMap, Vmap
 
-# Vmap/SafeMap axis: tap/sink per step, fuse once over stacked ys
-ys = execute_map_axis(fn, xs, strategy=SafeMap(batch_size=32), boundary=boundary)
+# Vmap/ChunkedMap axis: tap/sink per step, fuse once over stacked ys
+ys = execute_map_axis(fn, xs, strategy=ChunkedMap(batch_size=32), boundary=boundary)
 
 # Scan axis: fn is (carry, x) -> (carry, y); fuse never receives final_carry
 final_carry, ys = execute_scan_axis(transition, init, xs, boundary=boundary)
@@ -298,11 +321,11 @@ Verify: `src/xtrax/stages/executor.py`
 
 🚫 HALTS: `execute_map_axis` with `Vmap` + an ordered tap/sink raises `ExecutorError` — JAX cannot lower this at all (`ValueError: Cannot vmap ordered IO callback`). Defense-in-depth behind `validate_plan_topology`.
 
-⚠ WARN: **`SafeMap` + `ordered=True` silently ignores `batch_size` and runs one element at a time — unconditionally.** `jax.lax.map(..., batch_size=B)` batches via `jax.vmap` internally for ANY B >= 1 (verified empirically — even `batch_size=1` raises the vmap-ordered error); only the no-`batch_size` pure-scan path tolerates `ordered=True`. There is no partially-batched middle ground: an ordered `SafeMap` axis is architecturally identical in cost to a sequential `Scan`. If you need both ordering AND real batching throughput, there isn't one today — consider `Scan`, which makes the sequential cost explicit.
+⚠ WARN: **`ChunkedMap` + `ordered=True` silently ignores `batch_size` and runs one element at a time — unconditionally.** `jax.lax.map(..., batch_size=B)` batches via `jax.vmap` internally for ANY B >= 1 (verified empirically — even `batch_size=1` raises the vmap-ordered error); only the no-`batch_size` pure-scan path tolerates `ordered=True`. There is no partially-batched middle ground: an ordered `ChunkedMap` axis is architecturally identical in cost to a sequential `Scan`. If you need both ordering AND real batching throughput, there isn't one today — consider `Scan`, which makes the sequential cost explicit.
 
 ⚠ WARN: `ordered=True` is a real, structural cost, not a default knob: it threads an XLA token as a genuine data dependency between consecutive ordered calls (JEP-10657), so XLA cannot reorder, overlap, or pipeline them with other work. Only set it when correctness genuinely depends on host-observed order; keep `ordered=False` on every other axis's boundary ops.
 
-⚠ NOTE: nested composition (e.g. vmap-of-scan) composes naturally by passing one executor call as the `fn` of an enclosing axis, but ordering preservation under nesting is **not certified** — that is T1-05's stress-harness job, not this module's.
+⚠ NOTE: nested composition (e.g. vmap-of-scan) composes naturally by passing one executor call as the `fn` of an enclosing axis, and ordering preservation under nesting is certified by T1-05's stress harness (`tests/stages/test_nested_ordering.py`, `N_TRIALS = 20`, 0.4.0a6+), not by this module.
 
 #### Fuse, Tap, Sink Protocols
 
@@ -316,13 +339,14 @@ Fields: `ordered: bool` (require step order?)
 Example: Log intermediate tensors to disk.
 
 **Sink[T]** — Terminal side effect (outside jit, host-side).  
-Signature: `T -> None` (consumes value, leaves pipeline)  
+Signature: `T -> None` (consumes value, leaves pipeline). With
+`AxisBoundary(sink_receives_index=True)` the executor calls `sink(y, index)`.  
 Fields: `ordered: bool` (require step order?)  
 Example: Write final results to H5.
 
 Verify: `src/xtrax/stages/boundaries.py:32-82`
 
-⚠ NOTE: `Tap.ordered` / `Sink.ordered` have a real performance cost, not just a correctness constraint — see the Boundary Executor section above (XLA token dependency, no vmap compatibility, `SafeMap` batch_size silently ignored when ordered).
+⚠ NOTE: `Tap.ordered` / `Sink.ordered` have a real performance cost, not just a correctness constraint — see the Boundary Executor section above (XLA token dependency, no vmap compatibility, `ChunkedMap` batch_size silently ignored when ordered).
 
 #### StageBundle: Typed Bag of Optional Callable Stage Slots
 

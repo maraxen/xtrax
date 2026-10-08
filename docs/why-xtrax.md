@@ -42,7 +42,7 @@ bucket boundaries); `BatchPlanner` selects a strategy per axis and returns a
 
 | Decision the compiler can't make | xtrax strategy |
 | --- | --- |
-| Narrow a `vmap` that exceeds memory | `SafeMap` (chunked; delegates to `jax.lax.map(batch_size=)`) or `Scan` |
+| Narrow a `vmap` that exceeds memory | `ChunkedMap` (chunked; delegates to `jax.lax.map(batch_size=)`) or `Scan` |
 | Bound recompiles on ragged axes | `Bucket` — pad to configured boundaries |
 | Skip duplicate work when N inputs hold K unique elements | `DedupGather` — compute on unique values, scatter back; power-of-2 padding bounds variants at O(log K) |
 | Explain the batching topology it was given | `xtrax plan` / `xtrax explain` — per-axis decisions, with reasons |

@@ -58,7 +58,7 @@ with open("plan.html", "w") as f:
     f.write(html)
 ```
 
-**Benefit**: Catch suboptimal strategy choices (e.g., SafeMap when Vmap would fit) before first JIT compilation.
+**Benefit**: Catch suboptimal strategy choices (e.g., ChunkedMap when Vmap would fit) before first JIT compilation.
 
 #### analyze_dedup, analyze_bucket
 

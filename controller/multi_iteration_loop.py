@@ -269,6 +269,12 @@ class MultiIterationLoopResult:
         """
         return sum(1 for result in self.iterations if result.accepted)
 
+    @property
+    def held_count(self) -> int:
+        """Count of iterations whose result may be reported as held: promoted AND past the
+        seed/trial floor (`OneCandidatePassResult.held`, #4584 option 2)."""
+        return sum(1 for result in self.iterations if result.held)
+
 
 def run_multi_iteration_loop(
     dispatch_backend: DispatchBackend,

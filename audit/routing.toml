@@ -5,7 +5,12 @@
 # supervisor decision artifacts to:
 #   .praxia/port/routing/<wave_id>_<finding_id>.toml
 #
-# Proposed interim defaults per epic #2180 — audit-fw maintainer review (TD-2180-03).
+# domain=port rows: OWNED by the port_validation workflow (epic #2180, TD-2180-03).
+# Adopted 2026-09-30 after verification -- no longer "proposed interim defaults".
+# A deterministic tier FAIL -> block_ci is enforced by the audit-port CI job
+# (just audit-port -> pytest port/tests/), not by code reading this file; that
+# chain is pinned by tests/audit/test_port_block_ci_wiring.py. Changing a
+# domain=port row means updating that test and port/docs/workflow.md with it.
 
 [matrix]
 schema = "cc5-routing-v0"

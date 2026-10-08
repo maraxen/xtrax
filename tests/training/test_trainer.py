@@ -4,7 +4,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
+import pytest
 
+from xtrax.training.step import SafetyTrainStep, create_train_step
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import ResumableState
 
@@ -252,3 +254,193 @@ def test_trainer_preserves_state_immutability():
     assert jnp.array_equal(state.step, orig_step)
     assert jnp.array_equal(state.model.w, orig_w)
     assert jnp.array_equal(state.model.b, orig_b)
+
+
+def test_trainer_legacy_loss_leaves_key_unchanged():
+    """Default loss_fn(predictions, targets) still works and does not split the key."""
+    key = jax.random.PRNGKey(0)
+    model = SimpleLinearModel(w=jnp.array(0.5), b=jnp.array(0.1))
+    opt = optax.sgd(learning_rate=0.01)
+    opt_state = opt.init(eqx.filter(model, eqx.is_array))
+    state = ResumableState(
+        step=jnp.array(0, dtype=jnp.int32),
+        key=key,
+        model=model,
+        opt_state=opt_state,
+    )
+    trainer = Trainer(loss_fn=mse_loss, optimizer=opt)
+    batch = {"inputs": jnp.array([1.0, 2.0]), "targets": jnp.array([2.0, 4.0])}
+
+    new_state, metrics = trainer.step(state, batch)
+
+    assert "loss" in metrics
+    assert metrics["loss"].shape == ()
+    assert jnp.array_equal(jax.random.key_data(new_state.key), jax.random.key_data(key))
+    assert not trainer.takes_key
+    assert not trainer.has_aux
+
+
+def _keyed_loss(model, batch, key):
+    predictions = model(batch["inputs"])
+    loss = jnp.mean((predictions - batch["targets"]) ** 2)
+    return loss, {"key_data": jax.random.key_data(key)}
+
+
+def test_trainer_takes_key_and_has_aux():
+    """takes_key splits state.key once; has_aux merges the aux dict into metrics."""
+    key = jax.random.PRNGKey(5)
+    model = SimpleLinearModel(w=jnp.array(0.5), b=jnp.array(0.1))
+    opt = optax.sgd(learning_rate=0.01)
+    opt_state = opt.init(eqx.filter(model, eqx.is_array))
+    state = ResumableState(
+        step=jnp.array(0, dtype=jnp.int32),
+        key=key,
+        model=model,
+        opt_state=opt_state,
+    )
+    trainer = Trainer(loss_fn=_keyed_loss, optimizer=opt, has_aux=True, takes_key=True)
+    batch = {"inputs": jnp.array([1.0, 2.0]), "targets": jnp.array([2.0, 4.0])}
+    step_key, new_key = jax.random.split(key)
+
+    new_state, metrics = trainer.step(state, batch)
+
+    assert jnp.array_equal(metrics["key_data"], jax.random.key_data(step_key))
+    assert jnp.array_equal(jax.random.key_data(new_state.key), jax.random.key_data(new_key))
+    assert metrics["loss"].shape == ()
+    assert int(new_state.step) == 1
+
+    # A second step consumes the carried key, not the original one.
+    step_key_2, new_key_2 = jax.random.split(new_state.key)
+    newer, metrics_2 = trainer.step(new_state, batch)
+    assert jnp.array_equal(metrics_2["key_data"], jax.random.key_data(step_key_2))
+    assert jnp.array_equal(jax.random.key_data(newer.key), jax.random.key_data(new_key_2))
+
+
+def test_trainer_has_aux_without_key_keeps_predictions_signature():
+    """has_aux=True alone still calls loss_fn(predictions, targets) -> (loss, aux)."""
+
+    def loss_with_mae(predictions, targets):
+        err = predictions - targets
+        return jnp.mean(err**2), {"mae": jnp.mean(jnp.abs(err))}
+
+    key = jax.random.PRNGKey(1)
+    model = SimpleLinearModel(w=jnp.array(0.2), b=jnp.array(0.0))
+    opt = optax.sgd(learning_rate=0.01)
+    state = ResumableState(
+        step=jnp.array(0, dtype=jnp.int32),
+        key=key,
+        model=model,
+        opt_state=opt.init(eqx.filter(model, eqx.is_array)),
+    )
+    trainer = Trainer(loss_fn=loss_with_mae, optimizer=opt, has_aux=True)
+    batch = {"inputs": jnp.array([1.0, 2.0]), "targets": jnp.array([2.0, 4.0])}
+
+    new_state, metrics = trainer.step(state, batch)
+
+    preds = model(batch["inputs"])
+    expected_loss, expected_aux = loss_with_mae(preds, batch["targets"])
+    assert jnp.allclose(metrics["loss"], expected_loss)
+    assert jnp.allclose(metrics["mae"], expected_aux["mae"])
+    assert jnp.array_equal(jax.random.key_data(new_state.key), jax.random.key_data(key))
+
+
+def test_trainer_has_aux_consumes_composed_loss_unweighted_terms():
+    """ComposedLoss aux is the unweighted term; metrics['loss'] is the weighted sum."""
+    from xtrax.training.loss import ComposedLoss
+
+    def mse(predictions, targets):
+        return jnp.mean((predictions - targets) ** 2)
+
+    composed = ComposedLoss(terms=(("mse", mse),), weights=jnp.array([3.0]))
+    key = jax.random.PRNGKey(2)
+    model = SimpleLinearModel(w=jnp.array(0.2), b=jnp.array(0.0))
+    opt = optax.sgd(learning_rate=0.0)
+    state = ResumableState(
+        step=jnp.array(0, dtype=jnp.int32),
+        key=key,
+        model=model,
+        opt_state=opt.init(eqx.filter(model, eqx.is_array)),
+    )
+    trainer = Trainer(loss_fn=composed, optimizer=opt, has_aux=True)
+    batch = {"inputs": jnp.array([1.0, 2.0]), "targets": jnp.array([2.0, 4.0])}
+
+    _state, metrics = trainer.step(state, batch)
+
+    assert jnp.allclose(metrics["loss"], 3.0 * metrics["mse"])
+
+
+def test_create_train_step_forwards_has_aux_and_takes_key():
+    """Factory kwargs land on Trainer, including the SafetyTrainStep wrapper."""
+
+    def keyed_aux(model, batch, key):
+        predictions = model(batch["inputs"])
+        loss = jnp.mean((predictions - batch["targets"]) ** 2)
+        return loss, {"key_sum": jnp.sum(jax.random.key_data(key)).astype(jnp.float32)}
+
+    opt = optax.sgd(learning_rate=0.01)
+    trainer = create_train_step(keyed_aux, opt, has_aux=True, takes_key=True)
+    assert isinstance(trainer, Trainer)
+    assert trainer.has_aux is True
+    assert trainer.takes_key is True
+
+    wrapped = create_train_step(keyed_aux, opt, safety=True, has_aux=True, takes_key=True)
+    assert isinstance(wrapped, SafetyTrainStep)
+    assert wrapped.trainer.has_aux is True
+    assert wrapped.trainer.takes_key is True
+
+    key = jax.random.PRNGKey(5)
+    model = SimpleLinearModel(w=jnp.array(0.5), b=jnp.array(0.1))
+    state = ResumableState(
+        step=jnp.array(0, dtype=jnp.int32),
+        key=key,
+        model=model,
+        opt_state=opt.init(eqx.filter(model, eqx.is_array)),
+    )
+    batch = {"inputs": jnp.array([1.0, 2.0]), "targets": jnp.array([2.0, 4.0])}
+    _step_key, new_key = jax.random.split(key)
+
+    new_state, metrics = trainer.step(state, batch)
+
+    assert "key_sum" in metrics
+    assert jnp.array_equal(jax.random.key_data(new_state.key), jax.random.key_data(new_key))
+
+
+def test_trainer_has_aux_rejects_non_dict_aux():
+    def loss_fn(predictions, targets):
+        return jnp.mean((predictions - targets) ** 2), jnp.array(1.0)
+
+    key = jax.random.PRNGKey(0)
+    model = SimpleLinearModel(w=jnp.array(0.2), b=jnp.array(0.0))
+    opt = optax.sgd(learning_rate=0.0)
+    state = ResumableState(
+        step=jnp.array(0, dtype=jnp.int32),
+        key=key,
+        model=model,
+        opt_state=opt.init(eqx.filter(model, eqx.is_array)),
+    )
+    trainer = Trainer(loss_fn=loss_fn, optimizer=opt, has_aux=True)
+    batch = {"inputs": jnp.array([1.0, 2.0]), "targets": jnp.array([2.0, 4.0])}
+
+    with pytest.raises(TypeError, match="has_aux=True requires loss_fn"):
+        trainer.step(state, batch)
+
+
+def test_trainer_has_aux_rejects_loss_key_in_aux():
+    def loss_fn(predictions, targets):
+        err = predictions - targets
+        return jnp.mean(err**2), {"loss": jnp.mean(jnp.abs(err))}
+
+    key = jax.random.PRNGKey(0)
+    model = SimpleLinearModel(w=jnp.array(0.2), b=jnp.array(0.0))
+    opt = optax.sgd(learning_rate=0.0)
+    state = ResumableState(
+        step=jnp.array(0, dtype=jnp.int32),
+        key=key,
+        model=model,
+        opt_state=opt.init(eqx.filter(model, eqx.is_array)),
+    )
+    trainer = Trainer(loss_fn=loss_fn, optimizer=opt, has_aux=True)
+    batch = {"inputs": jnp.array([1.0, 2.0]), "targets": jnp.array([2.0, 4.0])}
+
+    with pytest.raises(ValueError, match="must not include 'loss'"):
+        trainer.step(state, batch)

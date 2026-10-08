@@ -1,10 +1,11 @@
 """Iterator protocols and concrete implementations for axis iteration.
 
-Four iterator strategies control how a mapped axis is iterated:
+Five iterator strategies control how a mapped axis is iterated:
 - VmapIterator: jax.vmap — fully parallel, stateless.
-- SafeMapIterator: safe_map with tiling — memory-bounded, stateless.
+- ChunkedMapIterator: chunked_map with tiling — memory-bounded, stateless.
 - JaxScanIterator: jax.lax.scan — carry-bearing, sequential.
 - WhileLoopIterator: jax.lax.while_loop — carry-bearing, no output collection.
+- WhileLoopWithYsIterator: jax.lax.while_loop — carry-bearing, buffered ys.
 
 MapIterator and ScanIterator are runtime_checkable Protocols defining the
 two fundamental iteration patterns: stateless (MapIterator) and carry-bearing
@@ -22,8 +23,9 @@ from typing import Any, Protocol, runtime_checkable
 import equinox as eqx
 import jax
 import jax.lax
+import jax.numpy as jnp
 
-from xtrax.transforms.map import safe_map
+from xtrax.transforms.map import _apply_size1, _is_size1_axis, chunked_map
 
 
 @runtime_checkable
@@ -93,6 +95,7 @@ class VmapIterator(eqx.Module):
 
     All elements are materialized and computed simultaneously. Use when
     memory budget allows and elements are independent (no cross-talk).
+    A mapped axis of length 1 is a direct call, not a vmap (#2520).
     """
 
     def __call__(
@@ -113,11 +116,14 @@ class VmapIterator(eqx.Module):
             Output after vmapping over the specified axis.
 
         """
+        # Same length-1 guard as chunked_map: never emit a vmap-of-1 (#2520).
+        if _is_size1_axis(xs, in_axes):
+            return _apply_size1(fn, xs, in_axes)
         return jax.vmap(fn, in_axes=in_axes)(xs)
 
 
-class SafeMapIterator(eqx.Module):
-    """Iterate via safe_map with tile chunking — memory-bounded, stateless.
+class ChunkedMapIterator(eqx.Module):
+    """Iterate via chunked_map with tile chunking — memory-bounded, stateless.
 
     Elements are processed in tiles to avoid memory exhaustion and XLA
     loop construct issues. No carry state; elements are independent.
@@ -132,23 +138,23 @@ class SafeMapIterator(eqx.Module):
         *,
         in_axes: Any = 0,
     ) -> Any:
-        """Apply fn using safe_map with tiling.
+        """Apply fn using chunked_map with tiling.
 
         Args:
             fn: Callable to apply per-element.
             xs: Input pytree.
-            in_axes: Axis specification (default 0; safe_map always uses axis 0).
+            in_axes: Axis specification (default 0; chunked_map always uses axis 0).
 
         Returns:
-            Output after safe_map over the first axis.
+            Output after chunked_map over the first axis.
 
         """
-        # Note: safe_map always iterates over axis 0; in_axes parameter is
+        # Note: chunked_map always iterates over axis 0; in_axes parameter is
         # accepted for protocol compatibility.
         if in_axes != 0:
-            msg = "SafeMapIterator currently only supports in_axes=0"
+            msg = "ChunkedMapIterator currently only supports in_axes=0"
             raise NotImplementedError(msg)
-        return safe_map(fn, xs, batch_size=self.tile)
+        return chunked_map(fn, xs, batch_size=self.tile)
 
 
 class JaxScanIterator(eqx.Module):
@@ -193,6 +199,79 @@ class WhileLoopIterator(eqx.Module):
 
         """
         return jax.lax.while_loop(cond, body, init)
+
+
+class WhileLoopWithYsIterator(eqx.Module):
+    """``lax.while_loop`` that records each step's ``y`` in a fixed buffer.
+
+    ``WhileLoopIterator`` returns only the final carry. This iterator's
+    ``body(carry)`` returns ``(new_carry, y)``, and the iterator returns
+    ``(final_carry, ys_buffer, length)``.
+
+    ``max_steps`` is a static Python int: the leading dimension of every
+    buffer leaf. ``y_prototype`` is a pytree of arrays. Each leaf is allocated
+    with ``jnp.zeros((max_steps, *leaf.shape), dtype=leaf.dtype)``. The fill
+    value is ``0`` of that leaf's dtype. Indices ``>= length`` hold fill;
+    the valid outputs are the prefix ``ys[:length]``. Values in
+    ``y_prototype`` supply shape and dtype only.
+
+    The loop runs while ``cond(carry)`` is true and ``step < max_steps``.
+    ``length`` is that step count, an int32 scalar. A return with
+    ``length == max_steps`` and ``cond(final_carry)`` still true means the
+    cap stopped the loop and every buffer index holds a body output.
+    ``cond(final_carry)`` distinguishes that full buffer from one whose
+    predicate became false on the last step.
+
+    Lowers to ``jax.lax.while_loop``.
+    """
+
+    max_steps: int = eqx.field(static=True)
+
+    def __call__(
+        self,
+        cond: Any,
+        body: Any,
+        init: Any,
+        y_prototype: Any,
+    ) -> tuple[Any, Any, Any]:
+        """Run ``body`` until ``cond`` fails or ``max_steps`` is reached.
+
+        Args:
+            cond: Callable(carry) -> scalar bool. True means continue.
+            body: Callable(carry) -> (new_carry, y). ``y`` matches
+                ``y_prototype`` leaf for leaf.
+            init: Initial carry.
+            y_prototype: Pytree of arrays giving each ``y`` leaf's shape and
+                dtype. The stored values are ignored.
+
+        Returns:
+            ``(final_carry, ys_buffer, length)``. ``ys_buffer`` has leading
+            dimension ``max_steps``. ``length`` counts body calls. The fill
+            value in ``ys_buffer[length:]`` is ``0``.
+
+        """
+        ys0 = jax.tree_util.tree_map(
+            lambda leaf: jnp.zeros((self.max_steps, *leaf.shape), dtype=leaf.dtype),
+            y_prototype,
+        )
+        step0 = jnp.zeros((), dtype=jnp.int32)
+
+        def loop_cond(state: tuple[Any, Any, Any]) -> Any:
+            step, carry, _ys = state
+            return jnp.logical_and(step < self.max_steps, cond(carry))
+
+        def loop_body(state: tuple[Any, Any, Any]) -> tuple[Any, Any, Any]:
+            step, carry, ys = state
+            new_carry, y = body(carry)
+            ys = jax.tree_util.tree_map(lambda buf, val: buf.at[step].set(val), ys, y)
+            return step + jnp.int32(1), new_carry, ys
+
+        step, final_carry, ys = jax.lax.while_loop(
+            loop_cond,
+            loop_body,
+            (step0, init, ys0),
+        )
+        return final_carry, ys, step
 
 
 class BucketIterator:
@@ -283,9 +362,10 @@ class BucketIterator:
 __all__ = [
     "JaxScanIterator",
     "MapIterator",
-    "SafeMapIterator",
+    "ChunkedMapIterator",
     "ScanIterator",
     "VmapIterator",
     "BucketIterator",
     "WhileLoopIterator",
+    "WhileLoopWithYsIterator",
 ]

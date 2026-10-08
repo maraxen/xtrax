@@ -3,7 +3,7 @@
 
 Phase B of .praxia/docs/specs/
 260824_upstream-profiling-probe-tooling-from-prolix.md. Emits one Stage-0
-ProbeRecord per tiling strategy (Vmap / SafeMap / DedupGather) applied to a
+ProbeRecord per tiling strategy (Vmap / ChunkedMap / DedupGather) applied to a
 representative batched kernel, via jax.jit(fn).lower().compile().cost_analysis()
 -- the same never-execute pattern as prolix's prof_stage0_cost_analysis.py.
 
@@ -27,7 +27,7 @@ import jax.numpy as jnp
 
 from xtrax.profiling.emitters import emit_probe_record
 from xtrax.tiling.dispatch import axis_dispatch, make_axis_dispatch
-from xtrax.tiling.strategy import DedupGather, SafeMap, Vmap
+from xtrax.tiling.strategy import ChunkedMap, DedupGather, Vmap
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -56,7 +56,7 @@ def _build_programs(rows: int, cols: int, safemap_batch: int, dedup_k_bucket: in
 
     return {
         "vmap": via_iterator(make_axis_dispatch(Vmap())),
-        "safemap": via_iterator(make_axis_dispatch(SafeMap(batch_size=safemap_batch))),
+        "safemap": via_iterator(make_axis_dispatch(ChunkedMap(batch_size=safemap_batch))),
         "dedup_gather": lambda x: axis_dispatch(dedup, _core, x),
     }, xs
 

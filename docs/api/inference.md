@@ -152,7 +152,7 @@ from xtrax.tiling import BatchPlanner
 
 planner = BatchPlanner()
 plan = planner.plan(axes)  # No error
-print(plan.decisions[0].strategy)  # e.g., "SafeMap"
+print(plan.decisions[0].strategy)  # e.g., "ChunkedMap"
 ```
 
 ## Worked Examples (Detailed)
@@ -306,6 +306,113 @@ Raised when `verify_against` is provided and the abstract-traced output structur
 Lower-level function that synthesizes `AxisSpec` objects from abstract inputs. Called internally by `infer_bundle()`. Returns a list of AxisSpec with explicit role assignments:
 - Axes with overrides: role = KNOWN
 - Axes without overrides: role = UNKNOWN
+
+## Value memoization (`memoize_jaxpr`)
+
+```python
+from xtrax.inference import MemoPolicy, memoize_jaxpr
+```
+
+`memoize_jaxpr` wraps a pure, JAX-traceable callable with a content-keyed
+value cache. Admission is opt-in purity *attestation*: at wrap time (for
+zero-parameter callables) or on the first call with each new call signature
+(otherwise), the function is traced and screened for detectably-impure
+primitives and for donation markers, before any concrete execution.
+A signature is the argument tree structure, including kwargs, plus each
+array's container type, shape, dtype and weak type, and each static scalar's
+exact value.
+
+**Impure primitives.** Rejected at any depth: host callbacks (`pure_callback`,
+`io_callback`, `debug_callback`, `debug_print`) and draws (`random_bits`,
+`random_gamma`, `random_seed`, `rng_bit_generator`, `rng_uniform`, `threefry2x32`,
+`threefry4x32`, `philox2x32`, `philox4x32`). Key plumbing on a key argument (`random_split`, `random_fold_in`,
+`random_wrap`, `random_unwrap`, `random_clone`) is admitted: it is deterministic in
+the key and draws nothing. A function that closes over a mutable `jax.Ref` is
+rejected; a ref allocated inside the function is admitted.
+
+**Donation is rejected, unconditionally.** `memoize_jaxpr` never admits a
+function whose traced jaxpr carries a donation marker, at any depth — this
+covers both `donate_argnums`/`donate_argnames` (visible as a `True` in a
+`donated_invars` equation param) and `jax.device_put(x, donate=True)`
+(visible as a `DONATE_INPUT` element of a `device_put` equation's
+`copy_semantics` param). The walk recurses into every nested jaxpr reachable
+from an equation's params — `jit`/`pjit`, `lax.cond` branches, `lax.scan`
+bodies, `lax.while_loop`, `custom_jvp`/`custom_vjp` — with no depth cap. Both
+screens run in one walk.
+
+Rejection raises `MemoDonationError` (a `MemoImpurityError` subclass), whose
+`.sites` attribute lists every offending site. A function that also contains
+an impure primitive raises `MemoImpurityError` for the impurity. **This is
+deliberately
+conservative and over-rejects**: even donation of a value that is purely
+*internal* to the wrapped function (never visible to the caller) is rejected,
+because provenance-tracing which donations are caller-visible would need a
+per-primitive map from sub-jaxpr invars to outer vars that can fail open, and
+would still miss constvars.
+
+**Screening modes.**
+
+- ABSTRACT mode (tried first): arrays, and plain `int`/`float` arguments, are
+  traced abstractly, so one trace covers every value.
+- `bool`, enum and other `int`/`float` subclasses, `str` and `bytes` are always
+  held static.
+- If the abstract trace fails and a plain scalar is present, STATIC mode
+  re-traces with the scalars held static. That costs one trace per distinct
+  scalar value.
+- A Python int outside the default int range gets its own signature, so it never
+  forces STATIC mode on in-range ints.
+
+**Refusals.**
+
+- A function that consults the value of an array argument in Python (branching
+  on it, boolean indexing, `np.asarray`) raises `MemoKeyUnsupportedLeafError`.
+- `TypeError`s raised while tracing surface as `MemoKeyUnsupportedLeafError`
+  (chained to the original); other errors propagate unchanged.
+
+**Latch.** A screen rejection on any signature latches the wrapper, and every
+later call raises until `.memo_rewrap()`.
+
+**Keys.** String and bytes arguments key on their exact bytes (no Unicode
+normalization). Python `float` arguments key on their exact value; a NaN keys
+on its bit pattern, so NaNs with different payloads are distinct keys.
+`np.ndarray` and `jax.Array` inputs with equal values are distinct keys.
+
+**Spot checks** replay the call's own positional and keyword arguments.
+
+**Blind spots (not screened):**
+
+- out-of-trace impurity: closure state, time, I/O;
+- `custom_vjp` `bwd` and `custom_jvp` rule callables;
+- trace/eager divergence (#5233), **by default**: a cache miss runs the function
+  eagerly, so a path chosen by identity or type checks (`isinstance(n, int)` on a
+  plain `int` traced abstractly, `isinstance(x, jax.core.Tracer)`, `np.ndarray` vs
+  `jax.Array` checks) or by catching `ConcretizationTypeError` can differ from the
+  screened trace. `MemoPolicy(execute_screened=True)` closes this: a miss runs the
+  jitted screened program itself (one compile per signature; outputs are fresh
+  buffers, Python scalars the function returns come back as arrays, and spot checks
+  re-run the screened program rather than the function);
+- `np.bool_` and numpy-scalar enums are array leaves traced abstractly, so the
+  static rule for `bool` does not cover `x is np.True_`.
+
+**Fixed in this release:** per-signature screening (#5214), kwargs traced
+(#5215), uncapped purity walk (#5216), and kwarg-faithful spot-check replay
+(#5231).
+
+**Output aliasing and `copy_on_return`.** By default (`copy_on_return=False`,
+the default), a cache hit returns the cached object **by identity**, and a
+miss returns whatever the wrapped function returned, which may itself alias
+one of the caller's input arguments (exactly as the unwrapped function
+would). **Unless `copy_on_return=True`, do not donate or `.delete()` a value
+returned by a memoized function, nor an argument whose value the wrapped
+function may return unchanged** (e.g. `lambda x: x`) — doing so can corrupt
+the cache entry for every future call with that key.
+
+Setting `MemoPolicy(copy_on_return=True)` makes every hit (plain or
+spot-checked) return a fresh, independent copy of the cached value, and the
+store itself always keeps a defensive copy separate from whatever a miss
+returns to the caller — so the caller is always free to mutate/delete/donate
+whatever `memoize_jaxpr` hands back. Only `jax.Array`/`np.ndarray` leaves are
+copied; other leaves (immutable Python scalars, strings) are returned as-is.
 
 ## Deferred and TBD Features
 

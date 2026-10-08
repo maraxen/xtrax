@@ -89,7 +89,7 @@ Notes for callers:
 | `ordered=True` tap/sink on a **`Vmap`** axis | **HALTS** `PlanTopologyError` at plan construction | `topology.py`, `validate_plan_topology` rule 2 |
 | same, reaching the executor directly | **HALTS** `ExecutorError` (defense in depth) | `executor.py`, `execute_map_axis` |
 | an ordered capture nested inside a `Vmap` axis's `fn` | **HALTS** `ExecutorError`, re-raised from JAX's own `ValueError` | `executor.py` |
-| `ordered=True` tap/sink on a **`SafeMap`** axis | **runs, silently ignoring `strategy.batch_size`** -- one element at a time, unconditionally, at any batch size | `executor.py`, `execute_map_axis` SafeMap branch |
+| `ordered=True` tap/sink on a **`ChunkedMap`** axis | **runs, silently ignoring `strategy.batch_size`** -- one element at a time, unconditionally, at any batch size | `executor.py`, `execute_map_axis` ChunkedMap branch |
 | `Scan` strategy on a **heterogeneous** axis | **HALTS** `PlanTopologyError` | `topology.py` rule 1 |
 
 The underlying JAX error string the executor matches on is
@@ -138,19 +138,21 @@ Traps, in the order they bite:
    comparison its own `output_dir`.**
 4. **Reserved attrs names.** `stage(attrs=...)` raises on any of `git_sha`,
    `git_branch`, `git_dirty`, `run_id`, `created_at` (`_CORE_PROVENANCE_FIELDS`)
-   -- the sink owns those. When `spec.extension_schema` is set, attrs are
-   validated at `stage()` time against the post-merge view for that key.
-5. **A 0-d payload crashes `drain()`.** `drain` computes
-   `chunks=array.shape if array.shape else (1,)`, so `shape == ()` yields a
-   1-dimensional chunk grid against a 0-dimensional shape and zarr 3.2.1 raises
-   `ValueError: chunk_grid and shape need to have the same number of dimensions`.
-   A `(0,)`-shaped payload fails differently (`integer chunk edge length must
-   be >= 1, got 0`). Everything with all-positive dimensions is fine.
-   **Wrap every staged payload in `np.atleast_1d` and skip empties.**
+   -- the sink owns those. When `spec.extension_schema` is set, attr value
+   types are checked at `stage()` time; its `required` fields are enforced at
+   `drain()` against the key's merged view (on-disk + pending attrs), so a
+   capture may add required metadata over several `stage()` calls. With
+   `flush_every=1` every `stage()` drains, so each call must be complete.
+5. **0-d and zero-length payloads are stored as-is.** `drain` chunks each
+   array as one rank-matched chunk (`chunks=tuple(max(d, 1) for d in shape)`),
+   so per-step scalars keep `shape == ()` and `(0,)`/`(0, 3)` round-trip
+   (`tests/run/test_zarr_sink.py::test_drain_round_trips_degenerate_shapes`).
+   Before xtrax #161 these crashed `drain()`; do not reintroduce an
+   `np.atleast_1d` wrap -- it changes the stored shape both sides compare on.
 6. **Errors raised inside a capture callback surface as
    `jax.errors.JaxRuntimeError: INTERNAL: CpuCallback error calling callback`**,
-   with the real exception buried in the nested traceback. Trap 5 presents this
-   way. When a capture harness dies opaquely, read past the JAX frames.
+   with the real exception's frames embedded in that message's text. When a
+   capture harness dies opaquely, read past the JAX frames.
 7. **`finalize()` refuses while payloads are pending** and may run only once;
    `stage()`/`drain()` after it raise. Call `drain()` then `finalize()` -- it
    consolidates store metadata and will not strand buffered payloads silently.
@@ -166,28 +168,36 @@ arrays) dtype/shape/little-endian-canonicalized bytes into one sha256
 (`zarr_integrity.py`). It is unaffected by filesystem metadata -- mtimes, chunk
 file layout -- or by which process wrote the store.
 
-**It is NOT a cross-side equality oracle, and treating it as one will mislead
-you.** `ZarrStagingSink` stamps a wall-clock `created_at` onto the root group,
-and the digest folds attrs in. Measured on this version: two stores holding
-**bit-identical data under identical `run_id` and identical keys** produce
-**different** digests, because their `created_at` values differ by
-milliseconds. Different `run_id` and different key paths also each change the
-digest, independently of the data.
+**Sink provenance is excluded by default** (`include_provenance=False`, xtrax
+#5013, `update_zarr_node_digest`): the root group skips all five core fields
+(`git_sha`, `git_branch`, `git_dirty`, `run_id`, `created_at`) and each non-root
+group skips its `run_id`/`git_sha` pointer. So two stores with identical data,
+identical key paths and identical caller attrs digest **equal** even under
+different `run_id`s and wall-clock `created_at`s
+(`tests/run/test_zarr_integrity.py::test_digest_equal_across_different_run_ids_by_default`).
+Before 0.4.0a10 this was false -- `created_at` alone made every store unique.
+
+**It is still not a cross-side equality oracle for a parity trace.** It folds
+node **paths** and every non-provenance attr, so keying by
+`(side, tensor_name, step)` -- the layout recommended above -- makes the two
+sides' digests differ by construction, and a caller attr that differs between
+sides (a tolerance, a source tag) does the same. And a whole-store verdict
+cannot localize: "the digests differ" says nothing about *which* tensor.
 
 So:
 
 - **Use `zarr_content_digest` for self-verification**: record it in a done
   marker and re-compute later to prove a capture has not drifted or been
   partially rewritten. Re-reading an unchanged store reproduces it exactly.
+  Pass `include_provenance=True` when you want the run identity sealed in too.
 - **Use `update_array_digest` for cross-side content comparison.** It folds
   `dtype | shape | canonicalized bytes` and **nothing else** -- no path, no
   attrs. Fold a fixed name ordering into your own `hashlib.sha256()` and you
   have a content-only fingerprint that matches across independently written
-  stores. Verified discriminating: bit-identical tensor sets agree; a `1e-7`
-  perturbation and an `f32 -> f64` dtype change each break it.
+  stores, per tensor -- which is what a first-divergence table needs.
 - `update_zarr_node_digest(digest, node, path)` is public if you want a
-  subtree rather than the whole store -- but note the per-key groups also carry
-  `run_id`/`git_sha` attrs, so a subtree digest is still side-specific.
+  subtree rather than the whole store; it applies the same default exclusions
+  (the root is matched on the stripped path, so `root.path == ""` works).
 
 **`fsync_tree(path)` before trusting any digest.** A Zarr store is a directory
 of many chunk and metadata files, unlike a single-file HDF5; content

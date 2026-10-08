@@ -209,3 +209,52 @@ class TestAccumulateGrads:
 
         with pytest.raises(ValueError, match="same leading axis"):
             accumulate_grads(loss_fn, model, microbatches)
+
+    def test_has_aux_means_each_aux_leaf_over_microbatches(self):
+        """has_aux=True returns the unweighted mean of each aux leaf.
+
+        Aggregation matches mean_loss: jnp.mean over the leading microbatch
+        axis. Microbatches are equal-sized, so the mean is not reweighted.
+        Gradients stay the same as the scalar-loss path.
+        """
+        key = jax.random.PRNGKey(0)
+        model = eqx.nn.Linear(in_features=3, out_features=1, key=key)
+        x = jax.random.normal(jax.random.PRNGKey(1), (2, 4, 3))
+        y = jax.random.normal(jax.random.PRNGKey(2), (2, 4, 1))
+
+        def loss_only(params, batch):
+            x_batch, y_batch = batch
+            pred = jax.vmap(lambda xi: params(xi))(x_batch)
+            return jnp.mean((pred - y_batch) ** 2)
+
+        def loss_and_aux(params, batch):
+            x_batch, y_batch = batch
+            pred = jax.vmap(lambda xi: params(xi))(x_batch)
+            err = pred - y_batch
+            loss = jnp.mean(err**2)
+            aux = {"mae": jnp.mean(jnp.abs(err)), "max_abs": jnp.max(jnp.abs(err))}
+            return loss, aux
+
+        mean_grads, mean_loss, mean_aux = accumulate_grads(
+            loss_and_aux, model, (x, y), has_aux=True
+        )
+        plain_grads, plain_loss = accumulate_grads(loss_only, model, (x, y))
+
+        per_batch_mae = []
+        per_batch_max = []
+        for i in range(2):
+            _loss, aux = loss_and_aux(model, (x[i], y[i]))
+            per_batch_mae.append(aux["mae"])
+            per_batch_max.append(aux["max_abs"])
+
+        assert mean_aux["mae"].shape == ()
+        assert mean_aux["max_abs"].shape == ()
+        assert jnp.allclose(mean_aux["mae"], jnp.mean(jnp.stack(per_batch_mae)))
+        assert jnp.allclose(mean_aux["max_abs"], jnp.mean(jnp.stack(per_batch_max)))
+        assert jnp.allclose(mean_loss, plain_loss)
+        for left, right in zip(
+            jax.tree.leaves(eqx.filter(mean_grads, eqx.is_array)),
+            jax.tree.leaves(eqx.filter(plain_grads, eqx.is_array)),
+            strict=True,
+        ):
+            assert jnp.allclose(left, right)

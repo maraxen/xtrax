@@ -9,7 +9,7 @@ import pytest
 from xtrax.stages._callback import io_callback
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.stages.executor import ExecutorError, execute_map_axis, execute_scan_axis
-from xtrax.tiling.strategy import SafeMap, Scan, Vmap
+from xtrax.tiling.strategy import ChunkedMap, Scan, Vmap
 
 
 class HostRecordSink:
@@ -43,7 +43,7 @@ class TestCounterTestOrderPreserved:
 
         @jax.jit
         def run(xs: jax.Array) -> jax.Array:
-            return execute_map_axis(lambda x: x, xs, SafeMap(batch_size=4), boundary)
+            return execute_map_axis(lambda x: x, xs, ChunkedMap(batch_size=4), boundary)
 
         out = run(xs)
         jax.block_until_ready(out)
@@ -66,7 +66,7 @@ class TestCounterTestOrderPreserved:
 
 
 class TestSafeMapOrderedIgnoresBatchSize:
-    """Documents the discovered cliff: ordered SafeMap always runs one element at a time,
+    """Documents the discovered cliff: ordered ChunkedMap always runs one element at a time,
     regardless of the configured batch_size (jax.lax.map(..., batch_size=B) batches via
     jax.vmap for any B >= 1, which JAX itself rejects for ordered io_callback).
 
@@ -83,14 +83,14 @@ class TestSafeMapOrderedIgnoresBatchSize:
         boundary = AxisBoundary(sink=HostRecordSink(records, ordered=True))
         xs = jnp.arange(8)
 
-        execute_map_axis(lambda x: x, xs, SafeMap(batch_size=batch_size), boundary)
+        execute_map_axis(lambda x: x, xs, ChunkedMap(batch_size=batch_size), boundary)
 
         assert records == list(range(8))
 
     def test_unordered_safemap_output_is_unaffected_by_this_change(self) -> None:
         """Regression guard: the unordered path's own logic is untouched by this PR."""
         xs = jnp.arange(8)
-        out = execute_map_axis(lambda x: x + 1, xs, SafeMap(batch_size=4), None)
+        out = execute_map_axis(lambda x: x + 1, xs, ChunkedMap(batch_size=4), None)
         assert list(out) == list(range(1, 9))
 
 
@@ -160,7 +160,7 @@ class TestFuseCalledOncePostHoc:
         boundary = AxisBoundary(fuse=fuse)
         xs = jnp.arange(8)
 
-        out = execute_map_axis(lambda x: x, xs, SafeMap(batch_size=4), boundary)
+        out = execute_map_axis(lambda x: x, xs, ChunkedMap(batch_size=4), boundary)
 
         assert calls == [(8,)]
         assert out == int(xs.sum())
@@ -192,7 +192,7 @@ def test_execute_map_axis_rejects_unsupported_strategy() -> None:
     """execute_map_axis's own TypeError fallback matters for production use (beartype's
     runtime enforcement is a test-time-only convenience, wired in tests/conftest.py's
     pytest_configure -- not active for a real xtrax consumer without pytest), but under
-    pytest here the `strategy: Vmap | SafeMap` annotation is intercepted by beartype first,
+    pytest here the `strategy: Vmap | ChunkedMap` annotation is intercepted by beartype first,
     so either error is an acceptable, equally loud rejection of an unsupported strategy.
     """
     from jaxtyping import TypeCheckError

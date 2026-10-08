@@ -19,13 +19,42 @@ import hashlib
 import json
 import os
 import unicodedata
+import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from xtrax.run._sink_names import CORE_PROVENANCE_FIELDS as _CORE_PROVENANCE_FIELDS
+from xtrax.run._sink_names import RESERVED_ATTR_PREFIX
+from xtrax.run._sink_names import ROOT_STAMPED_FIELDS as _ROOT_STAMPED_FIELDS
+
 if TYPE_CHECKING:
     import zarr
+
+#: Version of the content digest folded by :func:`zarr_content_digest`
+#: (sha256 over the canonical node walk, provenance excluded by default).
+#: Bump when that byte layout changes. Zarr receipts record this so a later
+#: reader can tell which algorithm produced ``digest``.
+#:
+#: This is not :data:`CANONICAL_HASH_ALGO_VERSION` and not
+#: :data:`MEMORY_DIGEST_ALGO_VERSION`. Those label different algorithms.
+#: A zarr content digest and a memory-sink digest are not comparable.
+DIGEST_ALGO_VERSION = 1
+
+#: Version of :func:`canonical_hash` (sha256 over :func:`canonical_json_bytes`).
+#: Bump when that JSON-document hashing changes. Whole-document digests in
+#: ``xtrax.run`` go through this helper.
+CANONICAL_HASH_ALGO_VERSION = 1
+
+#: Algorithm id on :class:`~xtrax.run.memory_sink.MemorySink` receipts.
+#: Not a newer revision of :data:`DIGEST_ALGO_VERSION`: the memory digest is
+#: :func:`canonical_hash` of ``{group_path: {array_name: array_digest}}``.
+#: Array names and array bytes are inputs. Caller attrs, run id, seed, and git
+#: provenance are not, so changing an attr does not change the digest.
+#: Do not compare it to :func:`zarr_content_digest`.
+MEMORY_DIGEST_ALGO_VERSION = 2
 
 
 def canonical_json_bytes(payload: dict[str, Any]) -> bytes:
@@ -37,6 +66,20 @@ def canonical_json_bytes(payload: dict[str, Any]) -> bytes:
         ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
+
+
+def canonical_hash(payload: dict[str, Any]) -> str:
+    """sha256 hex digest of ``payload`` via :func:`canonical_json_bytes`.
+
+    ``payload`` must already be JSON-serializable. Normalize numpy values with
+    :func:`normalize_json_value` first. Algorithm version:
+    :data:`CANONICAL_HASH_ALGO_VERSION`.
+
+    This is the single JSON-document hash used by ``xtrax.run`` digest code.
+    The zarr node walk folds canonical JSON bytes into its own running hash
+    and does not call this helper: that walk is :data:`DIGEST_ALGO_VERSION`.
+    """
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def normalize_json_value(value: Any) -> Any:  # noqa: ANN401
@@ -76,8 +119,30 @@ def update_zarr_node_digest(
     digest: "hashlib._Hash",
     node: "zarr.Group | zarr.Array",
     path: str,
+    *,
+    include_provenance: bool = False,
 ) -> None:
     """Recursively fold a Zarr group/array's path, attrs, and data into ``digest``.
+
+    By default (``include_provenance=False``), excludes provenance-tracking attrs that
+    may vary between runs:
+    - ROOT GROUP (``path == "/"``): excludes every core provenance field name
+      (``git_sha``, ``git_branch``, ``git_dirty``, ``run_id``, ``created_at``,
+      ``seed``, ``producer``, ``xtrax_version``), plus
+      any attr whose key starts with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
+    - NON-ROOT GROUPS: excludes only ``run_id`` and ``git_sha`` (the per-key pointer pair),
+      plus any attr whose key starts with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
+    - ARRAYS: excludes no provenance field names (arrays hold none), but attrs whose key
+      starts with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``) are excluded on array nodes too.
+
+    This exclusion is unconditional by attr **name**, regardless of origin. A hand-built
+    store whose root group carries a domain-meaningful attr named, e.g., ``git_branch``,
+    will have that attr silently excluded from the digest under the default. Likewise,
+    any non-root group with a caller-authored ``run_id`` attr loses it. Pass
+    ``include_provenance=True`` to digest all attrs including these collisions.
+
+    See backlog #5031 for the structurally correct fix (namespacing sink-written keys so
+    the digest can skip exactly them).
 
     Requires the optional ``zarr`` dependency at call time (not import time).
     """
@@ -85,8 +150,40 @@ def update_zarr_node_digest(
 
     digest.update(path.encode("utf-8"))
     digest.update(b"\n")
+
+    # Determine which attr names to exclude based on node type and path.
+    if isinstance(node, zarr.Array):
+        # Arrays skip no provenance names (the reserved-prefix filter below still applies).
+        exclude_keys = set()
+    elif include_provenance:
+        # Caller explicitly wants provenance included.
+        exclude_keys = set()
+    elif path.strip("/") == "":
+        # Root group: exclude all core provenance fields.
+        #
+        # Matched on the STRIPPED path, not the literal "/", because zarr's own
+        # root group reports `path == ""` (only `name` is "/"). A caller passing
+        # the natural `root.path` would otherwise land in the non-root branch and
+        # silently keep created_at/git_branch/git_dirty in the digest -- exactly
+        # the #5013 bug, reintroduced through the public API with no error.
+        # ``seed`` is root-stamped run metadata. Callers may still stage an
+        # attr of that name on a non-root group (it is not a reserved field).
+        exclude_keys = _CORE_PROVENANCE_FIELDS | _ROOT_STAMPED_FIELDS
+    else:
+        # Non-root group: exclude only run_id and git_sha (the per-key pointer pair).
+        exclude_keys = _CORE_PROVENANCE_FIELDS & {"run_id", "git_sha"}
+
+    # When include_provenance=True, we skip only the named exclusions.
+    # When include_provenance=False, we also skip reserved attrs.
+    exclude_reserved = not include_provenance
     attrs_payload = {
-        str(key): normalize_json_value(value) for key, value in sorted(node.attrs.items())
+        str(key): normalize_json_value(value)
+        for key, value in sorted(node.attrs.items())
+        # str(key) to match the payload's own normalization one line above: a
+        # non-str attr key would otherwise be recorded as "run_id" while failing
+        # to match the exclusion set, and be hashed anyway.
+        if str(key) not in exclude_keys
+        and not (exclude_reserved and str(key).startswith(RESERVED_ATTR_PREFIX))
     }
     digest.update(canonical_json_bytes(attrs_payload))
     digest.update(b"\n")
@@ -96,15 +193,43 @@ def update_zarr_node_digest(
         return
     for key in sorted(node.keys()):
         child = node[key]
-        update_zarr_node_digest(digest, child, f"{path}/{key}")
+        update_zarr_node_digest(
+            digest, child, f"{path}/{key}", include_provenance=include_provenance
+        )
 
 
-def zarr_content_digest(path: Path) -> str:
+def zarr_content_digest(path: Path, *, include_provenance: bool = False) -> str:
     """Compute a deterministic sha256 content digest of the Zarr store at ``path``.
 
-    Covers every node's path, attrs, and (for arrays) data -- unaffected by
-    filesystem metadata (mtimes, chunk-file layout) or which process/session
-    wrote the store, only by the store's logical content.
+    Covers every node's path, attrs, and (for arrays) data. By default
+    (``include_provenance=False``) it is determined only by the store's logical
+    content: unaffected by filesystem metadata (mtimes, chunk-file layout), and
+    unaffected by which process or session wrote the store, or when. Identical
+    logical content staged through two :class:`ZarrStagingSink` instances with
+    different run IDs digests to the same value.
+
+    That second guarantee holds *because of* the exclusion below, not
+    independently of it.
+
+    By default, excludes provenance-tracking attrs:
+    - ROOT GROUP: excludes ``git_sha``, ``git_branch``, ``git_dirty``, ``run_id``,
+      ``created_at``, ``seed``, ``producer``, ``xtrax_version``, plus attrs
+      starting with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
+    - NON-ROOT GROUPS: excludes ``run_id`` and ``git_sha`` (the per-key pointer pair),
+      plus attrs starting with ``RESERVED_ATTR_PREFIX`` (``"xtrax."``).
+    - ARRAYS: excludes no provenance field names, but attrs starting with
+      ``RESERVED_ATTR_PREFIX`` (``"xtrax."``) are excluded on array nodes too.
+
+    This exclusion is unconditional by attr **name**, regardless of origin. A
+    hand-built store whose root group carries a domain-meaningful attr named
+    ``git_branch``, ``created_at``, ``run_id``, ``git_sha``, or ``git_dirty``
+    will have that attr silently excluded from the digest by default. Likewise,
+    any non-root group with a caller-authored ``run_id`` or ``git_sha`` attr
+    loses it from the default digest. Pass ``include_provenance=True`` to digest
+    all attrs, including these collisions.
+
+    See backlog #5031 for the structurally correct fix (namespacing sink-written
+    keys so the digest can skip exactly them).
 
     Raises:
         ImportError: If the optional ``zarr`` dependency is not installed.
@@ -120,7 +245,7 @@ def zarr_content_digest(path: Path) -> str:
 
     digest = hashlib.sha256()
     root = zarr.open_group(str(path), mode="r")
-    update_zarr_node_digest(digest, root, "/")
+    update_zarr_node_digest(digest, root, "/", include_provenance=include_provenance)
     return digest.hexdigest()
 
 
@@ -158,3 +283,34 @@ def fsync_tree(path: Path) -> None:
     for d in dirs:
         fsync_directory(d)
     fsync_directory(path)
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Atomically replace ``path`` with ``data``.
+
+    Writes a sibling temp file, fsyncs it, ``os.replace``s it onto ``path``,
+    then fsyncs the parent directory. An exception before the replace leaves
+    any pre-existing ``path`` bytes unchanged (the temp file is removed).
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        with tmp.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
+    fsync_directory(path.parent)
+
+
+def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Atomically replace ``path`` with ``text`` encoded as ``encoding``.
+
+    See :func:`atomic_write_bytes` for the tmp/fsync/replace/dir-fsync sequence.
+    """
+    atomic_write_bytes(path, text.encode(encoding))

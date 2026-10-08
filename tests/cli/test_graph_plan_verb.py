@@ -143,7 +143,7 @@ class TestAC1GraphPlanParity:
         first node it happens to share a graph with). `_other_node_fn`'s default_batch_size=5
         (vs `_traced_fn`'s 2) makes their plans structurally distinct -- cardinality 4 <=
         batch_size 5 selects Vmap for "other", while cardinality 4 > batch_size 2 selects
-        SafeMap for "traced" -- so a bug that always plans the first node would produce a
+        ChunkedMap for "traced" -- so a bug that always plans the first node would produce a
         strategy-type mismatch here, not just a coincidentally-equal plan.
         """
         ir_path = self._build_two_node_graph(tmp_path)

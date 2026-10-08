@@ -1,0 +1,373 @@
+"""End-to-end export: plan -> traceable callable -> artifact.
+
+IREE targets go traceable callable -> StableHLO -> vmfb; the ``onnx`` target
+goes traceable callable -> jax2onnx -> ``.onnx``. Both are gated by the same
+``validate_export_safe`` call, whose op rules are keyed on the backend.
+
+The logic lives here rather than in ``__init__.py`` because the coverage config
+omits every ``*/__init__.py``; putting it there would make the package's
+coverage gate measure nothing.
+"""
+
+import dataclasses
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import jax
+
+from xtrax.export.compile import CompileResult, compile_for_target
+from xtrax.export.composer import ComposerError, build_traceable_callable
+from xtrax.export.onnx import OnnxDtypeCensus, convert_to_onnx, verify_onnx_parity
+from xtrax.export.parity import ParityResult, verify_native_parity
+from xtrax.export.safety import (
+    _NOT_TRACEABLE,
+    trace_for_export_safety,
+    validate_export_safe,
+)
+from xtrax.export.spirv import SpirvValidationResult
+from xtrax.export.targets import NATIVE, WASM32, Backend, Target, VerificationLevel
+from xtrax.stages.boundaries import AxisBoundary
+from xtrax.stages.topology import validate_plan_topology
+
+__all__ = ["ExportResult", "export_pipeline"]
+
+
+@dataclass(frozen=True)
+class ExportResult:
+    """One target's compiled artifact and whatever was established about it.
+
+    Attributes:
+        target: The target this was compiled for.
+        path: The compiled artifact on disk. Execution and parity always go
+            through this; a test wanting the real executed array calls
+            ``run_native_vmfb(result.path, *concrete_inputs)``, or
+            ``run_onnx(result.path, *concrete_inputs)`` for ``onnx``.
+        vmfb_bytes: The artifact's bytes, read once from ``path`` -- a vmfb for
+            IREE targets, a serialized ONNX model for ``onnx`` (see
+            ``artifact_bytes``). Convenience only.
+        size_bytes: Size of the artifact.
+        spirv_bytes: Extracted SPIR-V keyed by executable name, or None.
+        verification_level: How far this target's artifact is verified.
+        verified: EXECUTED -> parity passed; VALIDATED -> validation passed;
+            CODEGEN_ONLY -> always False, since nothing beyond compilation was
+            established. Read ``verification_level`` to tell that apart from a
+            genuine failure.
+        parity: The parity comparison, for EXECUTED targets only.
+        spirv_validation: The shader validation, for VALIDATED targets only.
+        diagnostics: Notes worth surfacing, e.g. a StableHLO downgrade, or int64
+            tensors inside an ONNX graph.
+        onnx_census: Where each dtype occurs in the ONNX graph, for ``onnx``
+            only; None for IREE targets.
+    """
+
+    target: Target
+    path: Path
+    vmfb_bytes: bytes
+    size_bytes: int
+    spirv_bytes: dict[str, bytes] | None
+    verification_level: VerificationLevel
+    verified: bool
+    parity: ParityResult | None
+    spirv_validation: SpirvValidationResult | None
+    diagnostics: tuple[str, ...]
+    onnx_census: OnnxDtypeCensus | None = None
+
+    @property
+    def artifact_bytes(self) -> bytes:
+        """The artifact's bytes under a backend-neutral name.
+
+        Identical to ``vmfb_bytes``, which keeps its name for existing callers
+        but holds a serialized ONNX model, not a vmfb, for the ``onnx`` target.
+        Branch on ``target.backend`` before treating these as a vmfb.
+        """
+        return self.vmfb_bytes
+
+
+class _StrippedSink:
+    """A no-op standing in for a materializing sink during export.
+
+    Preserves the original sink's ``ordered`` flag. That matters: the executor's
+    branch selection reads ``boundary.sink.ordered``, so replacing a sink with
+    bare None flips an ordered ChunkedMap axis off the ``jax.lax.map`` path onto
+    ``chunked_map(..., batch_size=...)`` -- a different lowering from the one the
+    configuration was verified with, so the exported program would not be the
+    one that ran.
+
+    Calling it does nothing and returns None, so no io_callback reaches the
+    trace, which is the whole point of stripping.
+    """
+
+    __slots__ = ("ordered",)
+
+    def __init__(self, ordered: bool) -> None:
+        self.ordered = ordered
+
+    def __call__(self, x: Any) -> None:
+        """Discard ``x``; the exported program carries the values as output."""
+        return None
+
+
+def _boundaries_for_export(
+    axis_boundaries: Mapping[str, AxisBoundary] | None,
+) -> Mapping[str, AxisBoundary] | None:
+    """Return a view of ``axis_boundaries`` with materializing sinks stripped.
+
+    Every axis that does not materialize is passed through by identity, not
+    reconstructed, so callers keep object identity for untouched axes.
+
+    Args:
+        axis_boundaries: The caller's boundaries, or None.
+
+    Returns:
+        The same mapping when nothing materializes, else a new mapping where each
+        materializing axis's ``sink`` is a ``_StrippedSink``.
+    """
+    if not axis_boundaries:
+        return axis_boundaries
+
+    result: dict[str, AxisBoundary] = {}
+    changed = False
+    for name, boundary in axis_boundaries.items():
+        if getattr(boundary, "materialize", False) and boundary.sink is not None:
+            # dataclasses.replace, not a field-by-field rebuild: it preserves any
+            # field added later and does not downcast an AxisBoundary subclass.
+            # eqx.tree_at cannot be used -- every field is static, i.e. aux_data
+            # rather than a pytree leaf.
+            stripped = _StrippedSink(bool(getattr(boundary.sink, "ordered", False)))
+            result[name] = dataclasses.replace(boundary, sink=stripped)
+            changed = True
+        else:
+            result[name] = boundary
+    return result if changed else axis_boundaries
+
+
+def _verified_for(
+    level: VerificationLevel,
+    parity: ParityResult | None,
+    validation: SpirvValidationResult | None,
+) -> bool:
+    """Resolve ``ExportResult.verified`` for one verification level."""
+    if level is VerificationLevel.EXECUTED:
+        return bool(parity is not None and parity.passed)
+    if level is VerificationLevel.VALIDATED:
+        return bool(validation is not None and validation.valid)
+    return False
+
+
+def _diagnostics_for(
+    compiled: CompileResult, census: OnnxDtypeCensus | None = None
+) -> tuple[str, ...]:
+    """Collect notes worth surfacing from one compile."""
+    notes: list[str] = []
+    if compiled.downgraded_stablehlo:
+        notes.append(
+            f"{compiled.target.name}: StableHLO downgraded to a portable artifact "
+            f"before IREE accepted it"
+        )
+    data_path = compiled.path.with_name(compiled.path.name + ".data")
+    if compiled.target.backend is Backend.ONNX and data_path.exists():
+        notes.append(
+            f"{compiled.target.name}: the model is {compiled.size_bytes} bytes, over "
+            f"protobuf's 2 GiB limit, so its tensors are in {data_path.name} beside "
+            f"{compiled.path.name}. The artifact is both files: vmfb_bytes holds only "
+            f"the graph, and ONNX Runtime loads the data from the model's directory."
+        )
+    if census is not None and census.n_int64:
+        producers = ", ".join(f"{op} x{n}" for op, n in sorted(census.int64_producers.items()))
+        notes.append(
+            f"{compiled.target.name}: {census.n_int64} int64 tensor(s) inside the graph "
+            f"({producers}); graph I/O is {census.graph_inputs} -> {census.graph_outputs}. "
+            f"ORT Web's WebGPU execution provider has no int64, so those nodes would run "
+            f"on another execution provider there."
+        )
+    return tuple(notes)
+
+
+def export_pipeline(
+    fn: Callable[..., Any],
+    plan: Any,
+    abstract_inputs: Sequence[Any],
+    concrete_inputs: Sequence[Any] | None = None,
+    *,
+    axis_boundaries: Mapping[str, AxisBoundary] | None = None,
+    targets: Sequence[Target] = (NATIVE, WASM32),
+    request_features: frozenset[str] = frozenset(),
+    scan_init: Any = None,
+    reference_fn: Callable[[Sequence[Any]], Any] | None = None,
+    model_name: str = "xtrax_export",
+    embed_external_data: bool = False,
+) -> dict[str, ExportResult]:
+    """Export a planned pipeline to one artifact per target.
+
+    All-or-nothing across ``targets``: they are processed in order, and the first
+    target-level exception aborts the whole call. No partial dict is returned.
+
+    Args:
+        fn: Per-element function, or a Scan transition.
+        plan: A BatchPlan.
+        abstract_inputs: Abstract inputs to trace with.
+        concrete_inputs: Concrete inputs, required if any target is EXECUTED.
+        axis_boundaries: Name-keyed boundaries. Axes declared ``materialize=True``
+            have their sink stripped before tracing.
+        targets: Targets to compile for.
+        request_features: Device features unlocking a target's optional dtypes.
+        scan_init: Initial carry for a Scan axis.
+        reference_fn: An independently-computed oracle over ``concrete_inputs``,
+            required if any target is EXECUTED. Must not be built from the
+            callable under test -- see ``verify_native_parity``.
+        model_name: Graph name passed to ``convert_to_onnx`` for an ``onnx``
+            target. Ignored by IREE targets.
+        embed_external_data: When True, the ONNX artifact stores every tensor
+            in the protobuf (no external-data sidecar). Ignored by IREE targets.
+
+    Returns:
+        A dict keyed by target name.
+
+    Raises:
+        ValueError: If an EXECUTED target is requested without
+            ``concrete_inputs`` or without ``reference_fn``.
+        PlanTopologyError: Propagated from the safety gate.
+        DtypeNotSupportedError: If a leaf's dtype is rejected by a target.
+        UnsupportedOperationError: If a target's op rules reject the program.
+        ComposerError: If the plan cannot be composed into one callable (and its
+            subclasses). Raised after every target's gate, so it never hides a
+            dtype or op blocker.
+        CompileError: If IREE (or, for ``onnx``, jax2onnx) rejects the program
+            or is not installed, or an ``onnx`` conversion is attempted under
+            ``jax_enable_x64``.
+    """
+    targets = tuple(targets)
+    executed = [t for t in targets if t.verification_level is VerificationLevel.EXECUTED]
+
+    if executed and concrete_inputs is None:
+        names = ", ".join(t.name for t in executed)
+        msg = (
+            f"concrete_inputs is required because target(s) {names} are EXECUTED "
+            f"and must be run to be verified."
+        )
+        raise ValueError(msg)
+    if executed and reference_fn is None:
+        names = ", ".join(t.name for t in executed)
+        msg = (
+            f"reference_fn is required because target(s) {names} are EXECUTED. "
+            f"It must be an independently-computed oracle over concrete_inputs -- "
+            f"passing jax.jit(build_traceable_callable(...)) compares the composed "
+            f"callable against itself and verifies nothing."
+        )
+        raise ValueError(msg)
+
+    # SPIR-V extraction and shader validation are not wired in yet, so a
+    # VALIDATED target could only ever report verified=False -- a green-looking
+    # result establishing nothing. Refuse it rather than emit that.
+    validated = [t for t in targets if t.verification_level is VerificationLevel.VALIDATED]
+    if validated:
+        names = ", ".join(t.name for t in validated)
+        msg = (
+            f"target(s) {names} are VALIDATED, but SPIR-V extraction and shader "
+            f"validation are not wired into export_pipeline yet, so `verified` "
+            f"could only ever report False. Use a CODEGEN_ONLY target, or wait "
+            f"for the SPIR-V targets."
+        )
+        raise NotImplementedError(msg)
+
+    decisions = list(plan.decisions)
+    results: dict[str, ExportResult] = {}
+
+    # Topology first: stripping the materializing sinks (below) and composing are
+    # only meaningful once every materializing axis is known to be well-formed.
+    # validate_export_safe re-checks it per target; this call makes it come first.
+    validate_plan_topology(decisions, axis_boundaries or {}, export_safe=True)
+
+    # The callable is composed once, and traced once, for every target: the gates
+    # judge the batched program actually exported (a per-element `fn` cannot be
+    # traced against the batched abstract inputs, which used to skip the op rules
+    # silently, #5690), and N targets no longer cost N traces and N compositions.
+    # The composer never sees `materialize` itself.
+    # A composition error (e.g. a Scan axis with no init) is held until the gates
+    # have run, so it never hides their dtype/op blockers. If the composed callable
+    # cannot be composed or traced, `fn` itself is traced, once, for every gate.
+    boundaries = _boundaries_for_export(axis_boundaries)
+    # The composer can also raise while the callable is TRACED (e.g. a lane-dependent
+    # ordered sink under Vmap-over-Scan); that error is held the same way, so it
+    # surfaces as ComposerError rather than a later CompileError from conversion.
+    composer_error: ComposerError | None = None
+    callable_: Callable[..., Any] | None = None
+    traced: Any = None
+    try:
+        callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
+        traced = trace_for_export_safety(callable_, abstract_inputs, reraise=(ComposerError,))
+    except ComposerError as exc:
+        composer_error = exc
+    if traced is None:
+        traced = trace_for_export_safety(fn, abstract_inputs)
+    if traced is None:
+        traced = _NOT_TRACEABLE  # tried twice: the gates must not re-trace per target
+
+    # Every target's gate runs first, so a rejected export fails fast without
+    # paying for the oracle (often an unbatched per-row loop), and a gate's error
+    # is never masked by an exception from reference_fn.
+    for target in targets:
+        validate_export_safe(
+            decisions,
+            axis_boundaries or {},
+            abstract_inputs,
+            fn,
+            target,
+            request_features=request_features,
+            traced_jaxpr=traced,
+        )
+    if composer_error is not None:
+        raise composer_error
+    assert callable_ is not None  # noqa: S101 - set whenever composer_error is None
+
+    # The oracle is then evaluated once, before any target is compiled. That is
+    # a correctness requirement, not an optimisation: jax2onnx leaves a patched
+    # jax.numpy attribute behind after converting (measured: cumsum), so an
+    # oracle computed after an onnx conversion could run code the caller never
+    # wrote. convert_to_onnx also restores those attributes; this ordering makes
+    # the reference independent of whether that restoration is complete.
+    expected: Any = None
+    if executed:
+        assert concrete_inputs is not None  # noqa: S101 - guarded above
+        assert reference_fn is not None  # noqa: S101 - guarded above
+        expected = reference_fn(concrete_inputs)
+
+    for target in targets:
+        census: OnnxDtypeCensus | None = None
+        if target.backend is Backend.ONNX:
+            compiled, census = convert_to_onnx(
+                callable_,
+                abstract_inputs,
+                target,
+                model_name=model_name,
+                embed_external_data=embed_external_data,
+            )
+        else:
+            exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
+            compiled = compile_for_target(exported.mlir_module(), target)
+
+        parity: ParityResult | None = None
+        if target.verification_level is VerificationLevel.EXECUTED:
+            assert concrete_inputs is not None  # noqa: S101 - guarded above
+            if target.backend is Backend.ONNX:
+                parity = verify_onnx_parity(expected, compiled.path, concrete_inputs)
+            else:
+                parity = verify_native_parity(expected, compiled.path, concrete_inputs)
+
+        results[target.name] = ExportResult(
+            target=target,
+            path=compiled.path,
+            vmfb_bytes=compiled.path.read_bytes(),
+            size_bytes=compiled.size_bytes,
+            spirv_bytes=compiled.spirv_bytes,
+            verification_level=target.verification_level,
+            verified=_verified_for(target.verification_level, parity, None),
+            parity=parity,
+            spirv_validation=None,
+            diagnostics=_diagnostics_for(compiled, census),
+            onnx_census=census,
+        )
+
+    return results

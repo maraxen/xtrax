@@ -1,6 +1,6 @@
 """Training module for supervised learning with JAX."""
 
-from xtrax.training.loss import MultiTaskLoss, WeightedLoss
+from xtrax.training.loss import ComposedLoss, MultiTaskLoss, WeightedLoss
 from xtrax.training.optim import adamw_with_schedule, make_optimizer
 from xtrax.training.state import init_state
 from xtrax.training.step import SafetyTrainStep, create_train_step
@@ -17,6 +17,7 @@ __all__ = [
     "ResumableState",
     "WeightedLoss",
     "MultiTaskLoss",
+    "ComposedLoss",
     "make_optimizer",
     "adamw_with_schedule",
 ]

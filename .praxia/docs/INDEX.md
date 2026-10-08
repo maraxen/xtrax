@@ -1,12 +1,16 @@
-# preserve-wt Internal Docs
+# onnx-spike-260930 Internal Docs
 
 ## Daily
 
 ## Handoffs
+- [260923_260923_5035-audit-labels-memo-followups-pr-handoff](handoffs/260923_260923_5035-audit-labels-memo-followups-pr-handoff.md) — VERIFY PASS hand-off: coverage-DAG verdict labels (#5035) and memoize_jaxpr review follow-ups (#5241, #5240)
 - [260807_apply-confirmed-disposition-for-s4-closure-declaration-schema-not-one-write](handoffs/260807_apply-confirmed-disposition-for-s4-closure-declaration-schema-not-one-write.md) — User-confirmed plan: amend #4093 and file a new backlog row for the real xtrax-side scope of S4, blocked on plugin:praxia:core MCP not connecting from the affigit corpus session
 - [260623_e1-e2-composition-layer](handoffs/260623_e1-e2-composition-layer.md) — session handoff: E1-MVP (xtrax.inference) + #2561 hardening + E2-MVP (xtrax.cli plan/explain/export) all merged to main (341 tests); deferred run/sweep/resume verbs + push pending
 
 ## Plans
+- [260909_release-trail-fail-loud](plans/260909_release-trail-fail-loud.md) — Sprint spec: fix zarr_content_digest determinism (#5013), consolidate the divergent dev dependency tables and the runtime-deps list (#4969, #4967), and make the test-rigor gate report its own failure (#5021) as the prerequisite for #5002
+- [260909_runnable-artifact-and-wasm-price](plans/260909_runnable-artifact-and-wasm-price.md) — Sprint spec: give xtrax a portable EXECUTED target, iteratively unblock IREE compilation of aminx's scoring function (two blockers known, count unknown), and ship a verified artifact in aminx's wheel; wasm execution is measured to need an emsdk-built IREE runtime with no published prior art, so it is a spike, not a deliverable
+- [260903_controller-gate-gap](plans/260903_controller-gate-gap.md) — Wire controller/ into ty and a coverage tier, install the controller extra in CI so the real-bathos surface runs, then fix the three defects that exposes
 - [260623_e1-mvp-backlog-dag](plans/260623_e1-mvp-backlog-dag.md) — E1-MVP implementation DAG (staff → adversarial plan-audit NEEDS_WORK, all 8 fixes folded in): 12 tasks incl. split E1.3a/E1.3b keystone, w1.5 decision gate (explicit AxisRole field; in-test InputResolver adapter), AC2/AC8 ownership fixes
 - [260623_e2-mvp-backlog-dag](plans/260623_e2-mvp-backlog-dag.md) — E2-MVP xtrax.cli DAG (staff → adversarial plan-audit NEEDS_WORK, 7 fixes folded): 9 tasks T0–T8 + roadmap node; caught the import-linter-lazy-import trap + AC4-unreachable-without-decorated-fixture; critical path through the explain+emit long pole
 - [260623_e3-run-verb-backlog-dag](plans/260623_e3-run-verb-backlog-dag.md) — E3-MVP `xtrax run` DAG (staff): 11 tasks T0–T9 + Z, single L keystone T7 `run_from_config`; corrects two under-specified anchors (`fit_sync` is `Engine` method; `DataModule` arity), maps all 4 pre-mortem invariants to tests, 3 judgment flags for Cursor hand-off
@@ -14,6 +18,13 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [260923_5035-audit-labels-memo-followups](specs/260923_5035-audit-labels-memo-followups.md) — Sprint spec for #5035 (coverage-DAG PASS label over failing tiers), #5241 (memo hot-path and duplicate-walker cleanup), #5240 (all-default wrap-time screening, NaN static keys)
+- [260922_conformance-residuals](specs/260922_conformance-residuals.md) — Two items the converged 260825 spec requires but PR #104 did not ship, the synthesizer row-identity unsoundness found while specifying them, and the verified CI-gate bug #5205
+- [260922_memo-screen-hardening](specs/260922_memo-screen-hardening.md) — Per-signature purity/donation screening with static non-array leaves and kwargs, uncapped sub-jaxpr traversal for the impurity screen, and kwarg-faithful spot-check replay (#5214, #5215, #5216)
+- [260911_export-divergence-mapping](specs/260911_export-divergence-mapping.md) — A comparison ladder and a reusable fixture that localizes where a compiled artifact departs from production JAX, instead of reporting one scalar
+- [260910_compilable-boundaries](specs/260910_compilable-boundaries.md) — Spec for an effect-classification scheme over Fuse/Tap/Sink and the 7 training Callback hooks — SplitTap makes taps exportable structurally, the DedupGather and Vmap-over-Scan boundary holes are closed by refusal, and JAX's anonymous host_callbacks refusal gains a named xtrax error
+- [260910_webgpu-export-route](specs/260910_webgpu-export-route.md) — Re-specification of WebGPU for xtrax.export after AC-8 was falsified — four mutually-exclusive routes, a recommendation (R2″) that adds structural SPIR-V validation without moving any verification level, and a TD-WGPU debt register
+- [260901_xtrax-export-webgpu](specs/260901_xtrax-export-webgpu.md) — Spec for src/xtrax/export/ — native/wasm32/vulkan-spirv/metal-spirv targets, wgpu/naga WebGPU-validity gate, three-PR rollout
 - [260825_hmw-give-xtrax-a-runtime-compute-reuse-c](specs/260825_hmw-give-xtrax-a-runtime-compute-reuse-c.md)
 - [260825_jax-optimizing-skill-scope](specs/260825_jax-optimizing-skill-scope.md)
 - [260825_xtrax-cse-runtime-opt-spec](specs/260825_xtrax-cse-runtime-opt-spec.md)
@@ -57,8 +68,13 @@
 ## Actuation Surfaces
 
 ## Audits
+- [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [260930_onnx-route-spike](research/260930_onnx-route-spike.md) — Three pre-registered bathos runs: every tied sort/argsort/top_k/argmax/scatter case is exact on ORT CPU; jax2onnx 0.16.1 breaks nested jit on jax 0.11; threefry is replaced by ONNX RandomUniform and does not run
+- [260922_conformance-residuals-probes](research/260922_conformance-residuals-probes.md) — Measured JAX 0.11.1 / numpy 2.5.1 CPU behaviours behind spec 260922_conformance-residuals §1.1 — donation carriers in jaxprs, synthesizer row-identity unsoundness, byte bitcasts, and which host-transfer oracles work on CPU
+- [260914_browser-inference-routes-jaxjs-jax2onnx](research/260914_browser-inference-routes-jaxjs-jax2onnx.md) — Measured coverage of the non-IREE browser paths — jax-js is a reimplementation not a converter, jax2onnx takes Equinox directly and covers every primitive aminx needs, but ONNX mandates int64 TopK indices which ORT Web's WebGPU EP does not support
+- [260901_webgpu-export-measurement-pass](research/260901_webgpu-export-measurement-pass.md) — Empirical de-risking of the xtrax.export spec before implementation — pins resolve, but AC-8's WebGPU-validity gate is falsified by IREE's push-constant ABI
 - [260825_cse-recon](research/260825_cse-recon.md)
 - [260825_jax-cse-ecosystem](research/260825_jax-cse-ecosystem.md)
 - [260825_spec-challenger-r1](research/260825_spec-challenger-r1.md)
@@ -72,6 +88,8 @@
 - [260702_roadmap-research-synthesis](research/260702_roadmap-research-synthesis.md) — roadmap-cycle research synthesis (task 260702_research-roadmap-dags): 6 adversarially-verified themes → #2181 autoresearch ratchet-loop architecture + gate catalog + bathos capability map, #2174 minimal composition substrate child item (D1–D4, AC1–AC6), neuro-symbolic placement (grounding node in #2174, entry criterion for #2181), praxia plugin contract + rig-run dispatch gaps, cross-cutting gate-design template; brainstorm fork list + dropped-claims appendix
 
 ## Decisions
+- [260930_gate-b-ruling-holds-with-controller](decisions/260930_gate-b-ruling-holds-with-controller.md) — Addendum to 260909: the gate-(b) closure is the declared evaluator/split/metric paths hashed by closure_lock; controller harness code outside it (main_loop acceptance plumbing) is not gate (b). Applied to #4584: pre-scoring halt, self-consistent CandidateRunResult and adapter docstring ship as an ordinary PR; reconciling `accepted` and moving the stats/seed gates ahead of the lineage advance goes in a separate PR for Marielle's explicit sign-off.
+- [260909_gate-b-scope-loop-evaluator-not-ci-gates](decisions/260909_gate-b-scope-loop-evaluator-not-ci-gates.md) — Marielle's ruling: gate (b)'s 'evaluator code / test splits / metric definitions' means the #2181 loop's EvaluateFn closure; repo audit gates such as test_rigor are outside it and need no per-event attestation
 - [260813_3653-gw06-remaining-gate-wiring-decisions](decisions/260813_3653-gw06-remaining-gate-wiring-decisions.md) — [GW-06] Remaining human-approval gate wiring decisions (T2-29, T2-30, T2-31)
 - [260811_4117-closure-declaration-persistence-layering](decisions/260811_4117-closure-declaration-persistence-layering.md) — Resolves the open design question in backlog
 - [260716_t2-33-island-upgrade-delta-scope](decisions/260716_t2-33-island-upgrade-delta-scope.md) — T2-33 (P4-gated island/population-search) scoped as a documented delta only, no code: formalizes T2-03's GEAR+AutoSOTA read into a spec (evaluate() seam unchanged; GEAR-style bounded elite frontier + UCB parent selection extends T2-17/T2-18 rather than literal island migration; bathos B2-03 already covers multi-parent lineage); implementation blocked on a T2-31 scope-expansion approval that does not yet exist
@@ -96,6 +114,7 @@
 - [260702_03-dag-plugin-workflows](roadmaps/research-epics/260702_03-dag-plugin-workflows.md) — T3 backlog DAG: 5 phase-1 xtrax + 3 gating probes + 6 praxia cross-repo edges; strict-mode registry double-gated
 
 ## Archive
+- [handoffs_migrated_260828_001](archive/handoffs_migrated_260828_001.md)
 
 ## Misc
 

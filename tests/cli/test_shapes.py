@@ -160,3 +160,69 @@ class TestParseShapesShapeDtypeStruct:
         """Verify dictionary keys match the provided names."""
         result = parse_shapes("a=(1,)f32 b=(2,)i32 c=(3,)bool")
         assert set(result.keys()) == {"a", "b", "c"}
+
+
+class TestParseShapesDtypeForms:
+    """#5174: the documented `<dtype>` read as literal syntax and was rejected."""
+
+    @pytest.mark.parametrize(
+        ("spec", "dtype"),
+        [
+            ("x=(4,3)float32", np.float32),
+            ("x=(4,3)float64", np.float64),
+            ("x=(4,3)int32", np.int32),
+            ("x=(4,3)<f32>", np.float32),
+            ("x=(4,3)<float32>", np.float32),
+            ("x=(4,3)<bool>", np.bool_),
+        ],
+    )
+    def test_long_aliases_and_bracketed_form(self, spec, dtype):
+        assert parse_shapes(spec)["x"].dtype == dtype
+
+    @pytest.mark.parametrize("spec", ["x=(4,3)<f32", "x=(4,3)f32>", "x=(4,3)<>", "x=(4,3)<f128>"])
+    def test_malformed_brackets_and_unknown_bracketed_dtype_still_rejected(self, spec):
+        with pytest.raises(ShapeParseError):
+            parse_shapes(spec)
+
+    def test_missing_dtype_names_the_problem(self):
+        with pytest.raises(ShapeParseError, match="missing dtype"):
+            parse_shapes("x=(4,3)")
+
+    @pytest.mark.parametrize("spec", ["", "x", "=(4,)f32", "x=(4,)", "x=4,3)f32", "1x=(4,)f32"])
+    def test_every_error_shows_a_concrete_example_not_a_placeholder(self, spec):
+        with pytest.raises(ShapeParseError) as info:
+            parse_shapes(spec)
+        assert "<dtype>" not in str(info.value)
+        assert "e.g. x=(4,3)f32" in str(info.value)
+
+
+def test_cli_accepts_bracketed_long_dtype_end_to_end():
+    """Subprocess-level: the documented form works through the real `xtrax explain`."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    code = "import sys; from xtrax.cli import main; sys.argv = ['xtrax', *sys.argv[1:]]; main()"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            "explain",
+            "--fn",
+            "tests.cli.test_entrypoint:decorated_fn",
+            "--shapes",
+            "x=(4,)<float32>",
+            "--fmt",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        env={**__import__("os").environ, "JAX_PLATFORMS": "cpu"},
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert json.loads(proc.stdout)["total_axes"] == 1

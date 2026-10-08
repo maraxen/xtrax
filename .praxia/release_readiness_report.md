@@ -1,18 +1,9 @@
 # xtrax Release Readiness Report
 
 - **Epic:** #1451 xtrax distribution readiness (N0-N10)
-- **Generated:** 2026-08-25T21:00:58.422225+00:00
-- **Verdict:** `BLOCKED_AUTOMATED`
-- **Package version:** `0.4.0a6`
-
-## Blockers
-- .github/workflows/publish.yml missing marker: 'publish-testpypi'
-- .github/workflows/publish.yml missing marker: 'test.pypi.org/legacy'
-- automated check failed: ruff_format
-- automated check failed: coverage_tier1
-- automated check failed: coverage_tier2
-- automated check failed: audit_contracts
-- backlog gate failed: #1457 n4a_docs_plumbing
+- **Generated:** 2026-09-09T13:53:34.525376+00:00
+- **Verdict:** `READY`
+- **Package version:** `0.4.0a9`
 
 ## Distribution backlog (N0-N10)
 
@@ -22,7 +13,7 @@
 | 1452 | n1_version_wheel | completed | PASS | yes |
 | 1453 | n3_public_api | completed | PASS | yes |
 | 1455 | n2_packaging_metadata | completed | PASS | yes |
-| 1457 | n4a_docs_plumbing | failed | FAIL | yes |
+| 1457 | n4a_docs_plumbing | completed | PASS | yes |
 | 1458 | n4b_narrative_docs | completed | PASS | yes |
 | 1459 | n5_output_sink_docs | completed | PASS | yes |
 | 1460 | n8_project_hygiene | completed | PASS | yes |
@@ -36,6 +27,7 @@
 - **audit-version-wheel** (backlog): PASS
 - **audit-public-api** (backlog): PASS
 - **audit-packaging-metadata** (backlog): PASS
+- **audit-docs-build** (backlog): PASS
 - **audit-narrative-docs** (backlog): PASS
 - **audit-output-sink-docs** (backlog): PASS
 - **audit-project-hygiene** (backlog): PASS
@@ -46,33 +38,20 @@
 - **substrate_lock** (foundation): PASS
 - **jax_pin** (foundation): PASS
 - **ruff_lint** (ci_lint): PASS
-- **ruff_format** (ci_lint): FAIL
-  ```
-  Would reformat: tests/cli/test_run_from_config.py
-1 file would be reformatted, 483 files already formatted
-  ```
+- **ruff_format** (ci_lint): PASS
 - **ty_check** (ci_lint): PASS
-- **coverage_tier1** (coverage): FAIL
-  ```
-  skipped in --quick mode
-  ```
-- **coverage_tier2** (coverage): FAIL
-  ```
-  skipped in --quick mode
-  ```
+- **coverage_tier1** (coverage): PASS
+- **coverage_tier2** (coverage): PASS
 - **io_reexport_doctest** (docs): PASS
-- **audit_contracts** (deterministic_track): FAIL
-  ```
-  skipped in --quick mode
-  ```
+- **audit_contracts** (deterministic_track): PASS
 - **added_types_diff** (type_hardening): PASS
 
 ## Coverage state
 
-- `tier1_core`: line 93.5% / branch 88.0%
+- `tier1_core`: line 90.6% / branch 84.6%
 
 ## Release policy
 
 - Do **not** push release tags until this report is `READY`.
-- Complete human gate #1454 (PyPI + TestPyPI Trusted Publisher) first.
+- Complete human gate #1454 (PyPI Trusted Publisher) first.
 - Re-run: `just audit-release-readiness`

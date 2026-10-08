@@ -84,11 +84,13 @@ def render(
         output was written to path.
 
     Raises:
-        ValueError: If metadata=True but path is None, or if panels
-            contains unknown names.
+        ValueError: If fmt is not "png", "svg" or "html", if metadata=True but
+            path is None, or if panels contains unknown names.
         TypeError: If stats_transform returns a dict missing required keys.
     """
     # Validation
+    if fmt not in ("png", "svg", "html"):
+        raise ValueError(f"Unknown fmt {fmt!r}; expected 'png', 'svg' or 'html'")
     if metadata and path is None:
         raise ValueError("metadata=True requires path to be set")
 
@@ -112,272 +114,164 @@ def render(
                 f"missing: {missing!r}"
             )
 
-    # Filter panels
     active_panels = panels if panels is not None else set(_VALID_PANELS)
-
-    # Build figure
-    # EMPTY PLAN GUARD: if stats["total_axes"] == 0, render a placeholder
-    if stats["total_axes"] == 0:
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.text(
-            0.5,
-            0.5,
-            "No axes in plan",
-            ha="center",
-            va="center",
-            fontsize=16,
-            transform=ax.transAxes,
-        )
-        ax.axis("off")
-        panel_names = []
-    else:
-        # Calculate number of rows based on active panels with data
-        panel_names = []
-        panel_count = 0
-        if "strategy" in active_panels:
-            panel_names.append("strategy")
-            panel_count += 1
-        if "cardinality" in active_panels and stats["total_axes"] > 0:
-            panel_names.append("cardinality")
-            panel_count += 1
-        if "dedup" in active_panels and stats["dedup_stats"]:
-            panel_names.append("dedup")
-            panel_count += 1
-        if "bucket" in active_panels and stats["bucket_stats"]:
-            panel_names.append("bucket")
-            panel_count += 1
-        if "memory" in active_panels and stats["memory_warnings"]:
-            panel_names.append("memory")
-            panel_count += 1
-        if "reasoning" in active_panels:
-            panel_names.append("reasoning")
-            panel_count += 1
-
-        # Default to at least 2 rows (strategy + cardinality)
-        if panel_count == 0:
-            panel_count = 2
-
-        fig, axes = plt.subplots(panel_count, 1, figsize=(10, 4 * panel_count), tight_layout=True)
-
-        # Ensure axes is always a list
-        if panel_count == 1:
-            axes = [axes]
-
-        ax_idx = 0
-
-        # Strategy panel
-        if "strategy" in panel_names:
-            ax = axes[ax_idx]
-            strategy_data = stats["strategy_counts"]
-            if strategy_data:
-                strategies = list(strategy_data.keys())
-                counts = list(strategy_data.values())
-                sns.barplot(
-                    x=strategies, y=counts, ax=ax, hue=strategies, legend=False, palette="Set2"
-                )
-                ax.set_xlabel("Strategy Type")
-                ax.set_ylabel("Count")
-                ax.set_title("Strategy Distribution")
-            else:
-                ax.text(
-                    0.5,
-                    0.5,
-                    "No strategy data",
-                    ha="center",
-                    va="center",
-                    transform=ax.transAxes,
-                )
-                ax.axis("off")
-            ax_idx += 1
-
-        # Cardinality panel
-        if "cardinality" in panel_names:
-            ax = axes[ax_idx]
-            axes_data = stats["axes"]
-            if axes_data:
-                names = [a["name"] for a in axes_data]
-                cardinalities = [a["cardinality"] for a in axes_data]
-                sns.scatterplot(
-                    x=names,
-                    y=cardinalities,
-                    s=200,
-                    ax=ax,
-                    palette="husl",
-                    hue=names,
-                    legend=False,
-                )
-                ax.set_ylabel("Cardinality")
-                ax.set_xlabel("Axis Name")
-                ax.set_title("Cardinality by Axis")
-            else:
-                ax.text(
-                    0.5,
-                    0.5,
-                    "No cardinality data",
-                    ha="center",
-                    va="center",
-                    transform=ax.transAxes,
-                )
-                ax.axis("off")
-            ax_idx += 1
-
-        # Dedup panel
-        if "dedup" in panel_names:
-            ax = axes[ax_idx]
-            dedup_data = stats["dedup_stats"]
-            if dedup_data:
-                axis_names = [d["axis_name"] for d in dedup_data]
-                ratios = [d["dedup_ratio"] for d in dedup_data]
-                sns.barplot(
-                    x=axis_names, y=ratios, ax=ax, hue=axis_names, legend=False, palette="muted"
-                )
-                ax.set_ylabel("Dedup Ratio (unique / total)")
-                ax.set_xlabel("Axis Name")
-                ax.set_title("Deduplication Efficiency")
-                ax.set_ylim([0, 1])
-            else:
-                ax.text(
-                    0.5,
-                    0.5,
-                    "No dedup data",
-                    ha="center",
-                    va="center",
-                    transform=ax.transAxes,
-                )
-                ax.axis("off")
-            ax_idx += 1
-
-        # Bucket panel
-        if "bucket" in panel_names:
-            ax = axes[ax_idx]
-            bucket_data = stats["bucket_stats"]
-            if bucket_data:
-                axis_names = [b["axis_name"] for b in bucket_data]
-                bucket_counts = [b["bucket_count"] for b in bucket_data]
-                sns.barplot(
-                    x=axis_names,
-                    y=bucket_counts,
-                    ax=ax,
-                    hue=axis_names,
-                    legend=False,
-                    palette="Set1",
-                )
-                ax.set_ylabel("Number of Buckets")
-                ax.set_xlabel("Axis Name")
-                ax.set_title("Bucket Configuration")
-            else:
-                ax.text(
-                    0.5,
-                    0.5,
-                    "No bucket data",
-                    ha="center",
-                    va="center",
-                    transform=ax.transAxes,
-                )
-                ax.axis("off")
-            ax_idx += 1
-
-        # Memory panel
-        if "memory" in panel_names:
-            ax = axes[ax_idx]
-            warnings = stats["memory_warnings"]
-            if warnings:
-                ax.text(
-                    0.05,
-                    0.95,
-                    "Memory Warnings:\n" + "\n".join(f"• {w}" for w in warnings),
-                    ha="left",
-                    va="top",
-                    transform=ax.transAxes,
-                    fontsize=10,
-                    family="monospace",
-                )
-                ax.axis("off")
-            ax_idx += 1
-
-        # Reasoning panel (always last if present)
-        if "reasoning" in panel_names:
-            ax = axes[ax_idx]
-            axes_data = stats["axes"]
-            if axes_data:
-                reasoning_text = "\n".join([f"{a['name']}: {a['reasoning']}" for a in axes_data])
-                ax.text(
-                    0.05,
-                    0.95,
-                    "Decision Reasoning:\n" + reasoning_text,
-                    ha="left",
-                    va="top",
-                    transform=ax.transAxes,
-                    fontsize=9,
-                    family="monospace",
-                )
-                ax.axis("off")
-
-    # Render to format
-    buf = io.BytesIO()
-
-    if fmt == "png":
-        plt.savefig(buf, format="png", bbox_inches="tight", dpi=100)
-        result: bytes | str = buf.getvalue()
-    elif fmt == "svg":
-        plt.savefig(buf, format="svg", bbox_inches="tight")
-        svg_bytes = buf.getvalue()
-        svg_str = svg_bytes.decode("utf-8")
-
-        # Post-process SVG to inject data-panel attributes
-        # Add a comment with panel names for each subplot group
-        if panel_names:
-            svg_str = _inject_panel_attributes(svg_str, panel_names)
-
-        result = svg_str.encode("utf-8")
-    elif fmt == "html":
-        plt.savefig(buf, format="svg", bbox_inches="tight")
-        svg_bytes = buf.getvalue()
-        svg_str = svg_bytes.decode("utf-8")
-
-        # Post-process SVG to inject data-panel attributes
-        if panel_names:
-            svg_str = _inject_panel_attributes(svg_str, panel_names)
-
-        # Wrap in minimal HTML
-        html_content = (
-            f"<!DOCTYPE html>\n"
-            f"<html>\n"
-            f"<head>\n"
-            f'  <meta charset="utf-8">\n'
-            f"  <title>Plan Visualization</title>\n"
-            f"</head>\n"
-            f"<body>\n"
-            f"  {svg_str}\n"
-            f"</body>\n"
-            f"</html>"
-        )
-        result = html_content
-
+    panel_names = _draw_figure(stats, active_panels)
+    result = _encode_figure(fmt, panel_names)
     plt.close("all")
 
-    # Write to path or return
     if path is not None:
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
+        _write_output(Path(path), result, fmt, stats if metadata else None)
+    if logger is not None:
+        logger.log_figure(figure=result, fmt=fmt, step=step)
+    return None if path is not None else result
 
-        if fmt == "html":
-            p.write_text(result if isinstance(result, str) else result.decode())
-        else:
-            p.write_bytes(result if isinstance(result, bytes) else result.encode())
 
-        if metadata:
-            metadata_path = p.with_suffix(".json")
-            metadata_path.write_text(json.dumps(stats, default=str))
+def _placeholder(ax, text: str, **text_kwargs) -> None:  # noqa: ANN001
+    ax.text(0.5, 0.5, text, ha="center", va="center", transform=ax.transAxes, **text_kwargs)
+    ax.axis("off")
 
-        if logger is not None:
-            logger.log_figure(figure=result, fmt=fmt, step=step)
 
-        return None
+def _draw_strategy(ax, stats: PlanStatsDict) -> None:  # noqa: ANN001
+    strategy_data = stats["strategy_counts"]
+    if not strategy_data:
+        _placeholder(ax, "No strategy data")
+        return
+    strategies = list(strategy_data.keys())
+    counts = list(strategy_data.values())
+    sns.barplot(x=strategies, y=counts, ax=ax, hue=strategies, legend=False, palette="Set2")
+    ax.set_xlabel("Strategy Type")
+    ax.set_ylabel("Count")
+    ax.set_title("Strategy Distribution")
+
+
+def _draw_cardinality(ax, stats: PlanStatsDict) -> None:  # noqa: ANN001
+    axes_data = stats["axes"]
+    if not axes_data:
+        _placeholder(ax, "No cardinality data")
+        return
+    names = [a["name"] for a in axes_data]
+    cardinalities = [a["cardinality"] for a in axes_data]
+    sns.scatterplot(x=names, y=cardinalities, s=200, ax=ax, palette="husl", hue=names, legend=False)
+    ax.set_ylabel("Cardinality")
+    ax.set_xlabel("Axis Name")
+    ax.set_title("Cardinality by Axis")
+
+
+def _draw_dedup(ax, stats: PlanStatsDict) -> None:  # noqa: ANN001
+    dedup_data = stats["dedup_stats"]
+    if not dedup_data:
+        _placeholder(ax, "No dedup data")
+        return
+    axis_names = [d["axis_name"] for d in dedup_data]
+    ratios = [d["dedup_ratio"] for d in dedup_data]
+    sns.barplot(x=axis_names, y=ratios, ax=ax, hue=axis_names, legend=False, palette="muted")
+    ax.set_ylabel("Dedup Ratio (unique / total)")
+    ax.set_xlabel("Axis Name")
+    ax.set_title("Deduplication Efficiency")
+    ax.set_ylim([0, 1])
+
+
+def _draw_bucket(ax, stats: PlanStatsDict) -> None:  # noqa: ANN001
+    bucket_data = stats["bucket_stats"]
+    if not bucket_data:
+        _placeholder(ax, "No bucket data")
+        return
+    axis_names = [b["axis_name"] for b in bucket_data]
+    bucket_counts = [b["bucket_count"] for b in bucket_data]
+    sns.barplot(x=axis_names, y=bucket_counts, ax=ax, hue=axis_names, legend=False, palette="Set1")
+    ax.set_ylabel("Number of Buckets")
+    ax.set_xlabel("Axis Name")
+    ax.set_title("Bucket Configuration")
+
+
+def _draw_text_panel(ax, title: str, lines: list[str], fontsize: int) -> None:  # noqa: ANN001
+    if not lines:
+        return
+    ax.text(
+        0.05,
+        0.95,
+        f"{title}:\n" + "\n".join(lines),
+        ha="left",
+        va="top",
+        transform=ax.transAxes,
+        fontsize=fontsize,
+        family="monospace",
+    )
+    ax.axis("off")
+
+
+def _draw_memory(ax, stats: PlanStatsDict) -> None:  # noqa: ANN001
+    lines = [f"• {w}" for w in stats["memory_warnings"]]
+    _draw_text_panel(ax, "Memory Warnings", lines, fontsize=10)
+
+
+def _draw_reasoning(ax, stats: PlanStatsDict) -> None:  # noqa: ANN001
+    lines = [f"{a['name']}: {a['reasoning']}" for a in stats["axes"]]
+    _draw_text_panel(ax, "Decision Reasoning", lines, fontsize=9)
+
+
+# Panel order on the figure, each with the stats it needs to be drawn at all.
+_PANELS: tuple[tuple[str, Callable[[PlanStatsDict], bool], Callable], ...] = (
+    ("strategy", lambda _: True, _draw_strategy),
+    ("cardinality", lambda s: s["total_axes"] > 0, _draw_cardinality),
+    ("dedup", lambda s: bool(s["dedup_stats"]), _draw_dedup),
+    ("bucket", lambda s: bool(s["bucket_stats"]), _draw_bucket),
+    ("memory", lambda s: bool(s["memory_warnings"]), _draw_memory),
+    ("reasoning", lambda _: True, _draw_reasoning),  # always last if present
+)
+
+
+def _draw_figure(stats: PlanStatsDict, active_panels: set[str]) -> list[str]:
+    """Draw the dashboard on a new current figure; return the drawn panel names."""
+    if stats["total_axes"] == 0:
+        _, ax = plt.subplots(figsize=(8, 4))
+        _placeholder(ax, "No axes in plan", fontsize=16)
+        return []
+    selected = [(name, draw) for name, has, draw in _PANELS if name in active_panels and has(stats)]
+    rows = len(selected) or 2  # at least 2 rows (strategy + cardinality) when none apply
+    _, axes = plt.subplots(rows, 1, figsize=(10, 4 * rows), tight_layout=True)
+    if rows == 1:
+        axes = [axes]
+    for ax, (_, draw) in zip(axes, selected, strict=False):
+        draw(ax, stats)
+    return [name for name, _ in selected]
+
+
+def _encode_figure(fmt: str, panel_names: list[str]) -> bytes | str:
+    buf = io.BytesIO()
+    if fmt == "png":
+        plt.savefig(buf, format="png", bbox_inches="tight", dpi=100)
+        return buf.getvalue()
+    plt.savefig(buf, format="svg", bbox_inches="tight")
+    svg_str = buf.getvalue().decode("utf-8")
+    if panel_names:
+        svg_str = _inject_panel_attributes(svg_str, panel_names)
+    if fmt == "svg":
+        return svg_str.encode("utf-8")
+    return (
+        f"<!DOCTYPE html>\n"
+        f"<html>\n"
+        f"<head>\n"
+        f'  <meta charset="utf-8">\n'
+        f"  <title>Plan Visualization</title>\n"
+        f"</head>\n"
+        f"<body>\n"
+        f"  {svg_str}\n"
+        f"</body>\n"
+        f"</html>"
+    )
+
+
+def _write_output(
+    p: Path, result: bytes | str, fmt: str, metadata_stats: PlanStatsDict | None
+) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "html":
+        p.write_text(result if isinstance(result, str) else result.decode())
     else:
-        if logger is not None:
-            logger.log_figure(figure=result, fmt=fmt, step=step)
-        return result
+        p.write_bytes(result if isinstance(result, bytes) else result.encode())
+    if metadata_stats is not None:
+        p.with_suffix(".json").write_text(json.dumps(metadata_stats, default=str))
 
 
 def _inject_panel_attributes(svg_str: str, panel_names: list[str]) -> str:

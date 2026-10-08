@@ -14,10 +14,12 @@ tier1_exports = [
     "ResumableState",
     "WeightedLoss",
     "MultiTaskLoss",
+    "ComposedLoss",
     "make_optimizer",
     "adamw_with_schedule",
     "Engine",
     "BoundedCallbackHandler",
+    "EarlyStopping",
     "save_checkpoint",
     "load_checkpoint",
     "DataModule",
@@ -27,7 +29,7 @@ tier1_exports = [
     "BatchPlan",
     "BatchPlanner",
     "Vmap",
-    "SafeMap",
+    "ChunkedMap",
     "DedupGather",
     "Bucket",
     "select_bucket",
@@ -40,7 +42,7 @@ tier1_exports = [
     "sparse_filter_jit",
     "init_dist",
     "is_distributed",
-    "safe_map",
+    "chunked_map",
     "safe_scan",
     "safe_norm",
     "safe_reciprocal",
@@ -56,6 +58,14 @@ tier1_exports = [
     "compact_ledger",
     "iter_rows",
     "find_run",
+    # Run layer: execution-time configuration utilities.
+    "derive_sink_spec",
+    "new_run_id",
+    # Random: chunk- and resume-invariant PRNG key streams.
+    "ChunkSpan",
+    "element_keys",
+    "iter_chunk_keys",
+    "make_chunk_plan",
 ]
 
 smoke_exports = [
@@ -66,7 +76,7 @@ smoke_exports = [
     "DedupGather",
     "SparseConfig",
     "init_dist",
-    "safe_map",
+    "chunked_map",
     "safe_norm",
     "TransformFn",
 ]

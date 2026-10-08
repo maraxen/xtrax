@@ -1,7 +1,7 @@
 """CarrySpec — declare a carry-bearing scan or while-loop on a named axis.
 
 Used by SamplingSpecification (and custom experiment specs) to indicate which
-axes should use jax.lax.scan with a carry, rather than safe_map (stateless).
+axes should use jax.lax.scan with a carry, rather than chunked_map (stateless).
 BatchPlanner.plan() reads CarrySpec list in Phase 0 and pre-demotes matching
 axes to Scan(init, transition) decisions before Phases 1 and 2 -- or, when
 collect_outputs=False, to WhileCarry(init, body, cond) instead.

@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 import zarr
 
+from xtrax.run import SinkSpec, ZarrStagingSink, new_run_id
 from xtrax.run.freshness import evaluate_freshness
 from xtrax.run.repro_floor import (
     ReproFloorResult,
@@ -97,6 +98,53 @@ class TestRunReproFloor:
 
         run_repro_floor(compute, seed=7, rerun_count=4, run_id="run-y")
         assert seen_seeds == [7, 7, 7, 7]
+
+
+def _real_sink_compute(tmp_path: Path):
+    """Returns a `compute(seed) -> Path` that builds a REAL ZarrStagingSink per
+    rerun, writing genuinely seed-deterministic array content -- but each call
+    gets a FRESH output_dir (zarr_sink.py:215-222 raises ValueError if a
+    directory already holds provenance for a different run_id, so reusing one
+    directory across reruns would hit that guard instead of the assertion path
+    this test exists to observe)."""
+    calls = {"n": 0}
+
+    def compute(seed: int) -> Path:
+        calls["n"] += 1
+        output_dir = tmp_path / f"sink_run_{calls['n']}.zarr"
+        sink = ZarrStagingSink(SinkSpec(run_id=new_run_id(), output_dir=output_dir, format="zarr"))
+        sink.stage(("k",), data=np.array([seed, seed * 2, seed * 3], dtype=np.int32))
+        sink.drain()
+        return output_dir
+
+    return compute
+
+
+class TestRunReproFloorRealSinkProvenance:
+    """#5013: run_repro_floor drives zarr_content_digest with its default
+    arguments. Regression pin for the provenance-clobber bug: a ZarrStagingSink
+    stamps a fresh run_id (and created_at timestamp) into the store on every
+    construction, so today every rerun's digest differs purely from that
+    per-construction provenance -- even though `compute` here is genuinely
+    seed-deterministic and writes byte-identical array content every time.
+    """
+
+    def test_identical_content_across_reruns_is_reproducible(self, tmp_path: Path) -> None:
+        """Post-#5013-fix invariant: ZarrStagingSink instances with different run_ids,
+        writing seed-deterministic array content, must produce identical digests under
+        the default zarr_content_digest(include_provenance=False). Identical logical
+        content across reruns is reproducible once provenance is excluded from the
+        digest by default.
+        """
+        compute = _real_sink_compute(tmp_path)
+        result = run_repro_floor(compute, seed=11, rerun_count=3, run_id="run-real-sink")
+
+        assert len(result.rerun_digests) == 3
+        assert result.passed is True, (
+            "identical seed-deterministic array content "
+            "across reruns must compare reproducible once provenance is excluded "
+            "from the digest by default"
+        )
 
 
 class TestBuildReproFloorAttestationToml:

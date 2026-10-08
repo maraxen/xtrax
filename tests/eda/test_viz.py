@@ -11,8 +11,8 @@ from xtrax.eda.viz import render
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
 from xtrax.tiling.strategy import (
     Bucket,
+    ChunkedMap,
     DedupGather,
-    SafeMap,
     Vmap,
 )
 
@@ -37,8 +37,8 @@ def simple_plan() -> BatchPlan:
     decision2 = AxisDecision(
         spec=spec2,
         batch_size=64,
-        reasoning="SafeMap for larger axis",
-        strategy=SafeMap(batch_size=64),
+        reasoning="ChunkedMap for larger axis",
+        strategy=ChunkedMap(batch_size=64),
     )
 
     return BatchPlan(decisions=(decision1, decision2))

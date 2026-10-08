@@ -11,7 +11,14 @@ from xtrax.run.component_binding import (
     ComponentSidecarRefMissingError,
     component_sidecar_binding,
 )
+from xtrax.run.digest import (
+    array_digest,
+    canonical_digest,
+    numerics_env,
+    source_fingerprint,
+)
 from xtrax.run.ident import new_run_id
+from xtrax.run.memory_sink import MemorySink
 from xtrax.run.repro_floor import (
     ReproFloorResult,
     build_repro_floor_attestation_toml,
@@ -21,9 +28,42 @@ from xtrax.run.repro_floor import (
 )
 from xtrax.run.resolver import FeatureBatch, InputResolver, RuntimeBundle
 from xtrax.run.seed_emission import SeedAssignment, SeedEmissionInputError, seed_assignment
-from xtrax.run.sink import SinkSpec, derive_sink_spec, make_sink
+from xtrax.run.sink import GitProvenance, SinkReceipt, SinkSpec, derive_sink_spec, make_sink
 from xtrax.run.spec import RunSpec
+from xtrax.run.zarr_commit import (
+    COMMIT_ATTR,
+    FAULT_ENV,
+    STORE_ATTR,
+    CommitConflictError,
+    CommitRecord,
+    Committed,
+    Corrupt,
+    Duplicate,
+    DurableStoreError,
+    Missing,
+    NotADurableStoreError,
+    Reuse,
+    Stale,
+    StoreIdentityMismatch,
+    UnknownPrefixError,
+    commit_key,
+    committed_keys,
+    create_store,
+    gc_staging,
+    key_path,
+    lookup,
+    open_store,
+    read_record,
+    staging_root,
+    write_staged_group,
+)
 from xtrax.run.zarr_integrity import (
+    CANONICAL_HASH_ALGO_VERSION,
+    DIGEST_ALGO_VERSION,
+    MEMORY_DIGEST_ALGO_VERSION,
+    atomic_write_bytes,
+    atomic_write_text,
+    canonical_hash,
     canonical_json_bytes,
     fsync_directory,
     fsync_file,
@@ -33,7 +73,7 @@ from xtrax.run.zarr_integrity import (
     update_zarr_node_digest,
     zarr_content_digest,
 )
-from xtrax.run.zarr_sink import ZarrStagingSink
+from xtrax.run.zarr_sink import RESERVED_ATTR_PREFIX, ZarrStagingSink
 
 __all__ = [
     "RunSpec",
@@ -41,15 +81,29 @@ __all__ = [
     "RuntimeBundle",
     "FeatureBatch",
     "SinkSpec",
+    "GitProvenance",
+    "SinkReceipt",
+    "MemorySink",
     "derive_sink_spec",
     "new_run_id",
     "make_sink",
     "ZarrStagingSink",
+    "RESERVED_ATTR_PREFIX",
+    "CANONICAL_HASH_ALGO_VERSION",
+    "DIGEST_ALGO_VERSION",
+    "MEMORY_DIGEST_ALGO_VERSION",
+    "atomic_write_bytes",
+    "atomic_write_text",
+    "canonical_hash",
     "canonical_json_bytes",
     "normalize_json_value",
     "update_array_digest",
     "update_zarr_node_digest",
     "zarr_content_digest",
+    "canonical_digest",
+    "array_digest",
+    "source_fingerprint",
+    "numerics_env",
     "fsync_file",
     "fsync_directory",
     "fsync_tree",
@@ -68,4 +122,29 @@ __all__ = [
     "SeedAssignment",
     "SeedEmissionInputError",
     "seed_assignment",
+    "DurableStoreError",
+    "CommitConflictError",
+    "UnknownPrefixError",
+    "StoreIdentityMismatch",
+    "NotADurableStoreError",
+    "CommitRecord",
+    "Committed",
+    "Duplicate",
+    "Missing",
+    "Stale",
+    "Corrupt",
+    "Reuse",
+    "COMMIT_ATTR",
+    "STORE_ATTR",
+    "FAULT_ENV",
+    "key_path",
+    "staging_root",
+    "write_staged_group",
+    "commit_key",
+    "read_record",
+    "lookup",
+    "committed_keys",
+    "gc_staging",
+    "create_store",
+    "open_store",
 ]

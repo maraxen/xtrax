@@ -49,7 +49,7 @@ class Tap(Protocol, Generic[T]):  # noqa: UP046
     """Identity transform with side effect. T -> T.
 
     Value continues downstream unchanged; side effect fires at each step.
-    `ordered`: if True, requires SafeMap or Scan strategy on this axis —
+    `ordered`: if True, requires ChunkedMap or Scan strategy on this axis —
     vmap does not preserve step order. Validator enforces this.
     Implementations must use io_callback internally.
 
@@ -67,7 +67,7 @@ class Tap(Protocol, Generic[T]):  # noqa: UP046
 class Sink(Protocol, Generic[T]):  # noqa: UP046
     """Terminal side effect. T -> None. Value leaves the pipeline.
 
-    `ordered`: if True, requires SafeMap or Scan strategy on this axis.
+    `ordered`: if True, requires ChunkedMap or Scan strategy on this axis.
     Implementations must use io_callback(ordered=self.ordered) internally.
     Example: IoCallbackEncoderSink (writes encoded tensors to H5).
 
@@ -96,6 +96,55 @@ class AxisBoundary(eqx.Module):
     fuse: Fuse | BoundaryCallable | None = eqx.field(static=True, default=None)
     tap: Tap | BoundaryCallable | None = eqx.field(static=True, default=None)
     sink: Sink | BoundaryCallable | None = eqx.field(static=True, default=None)
+    materialize: bool = eqx.field(static=True, default=False)
+    """Declare `sink` as a *materializing* sink, so it can cross an export boundary.
+
+    Only xtrax.export reads this. An eager run fires `sink` exactly as before,
+    whatever it is set to.
+
+    The executor's per-step return value already equals what `sink` receives:
+    execute_scan_axis calls `boundary.sink(y)` and returns `_apply_fuse(ys, ...)`,
+    where `ys` stacks those same `y`. So when a caller declares the sink
+    materializing, xtrax.export.pipeline strips the call before tracing rather
+    than rejecting the plan, and reads the values off the exported output
+    instead. topology.py Rule 3 rejects an *undeclared* sink exactly as before.
+
+    Never applies to `tap`: a Tap is `T -> T` and participates in dataflow, so it
+    is not droppable on any target.
+
+    This is a precondition on `sink`, not a proof about it. The slot accepts any
+    callable, and the `T -> None` contract is enforced by convention alone.
+    Stripping guarantees only that the call is absent from the exported trace; it
+    says nothing about a side effect a non-conforming sink would have performed.
+
+    Materializing costs memory: it allocates the full stacked array where an
+    io_callback sink would have streamed each step and discarded it. Hence
+    opt-in, defaulting to False.
+
+    Two caveats from this field being `static=True`, i.e. treedef aux_data rather
+    than a pytree leaf. An `AxisBoundary` pickled before this field existed has no
+    entry for it, and whether such a pickle loads correctly is untested. And any
+    `jax.jit` cache keyed on the old three-field treedef invalidates once this
+    field exists — one recompile, expected and harmless.
+    """
+
+    sink_receives_index: bool = eqx.field(static=True, default=False)
+    """Call ``sink(y, index)`` with the element's position on this axis.
+
+    Default False keeps the one-argument call ``sink(y)``. Set True and the
+    executor passes ``(y, index)``, where ``index`` is an ``int32`` scalar: the
+    position along the mapped axis. ``Vmap``, ``ChunkedMap`` (including a
+    remainder chunk), and ``Scan`` all use that global position.
+
+    The flag is the opt-in. The executor does not read the sink's signature, so
+    a two-parameter callable still receives one argument until this is True.
+    The flag lives on the boundary because the executor is what knows the axis
+    position; a second sink type would still need the same branch, and matching
+    on the callable would slide into signature inspection.
+
+    Static, like the other fields. An ``AxisBoundary`` pickled before this
+    field existed has no entry for it.
+    """
 
 
 __all__ = ["AxisBoundary", "Fuse", "Sink", "Tap"]

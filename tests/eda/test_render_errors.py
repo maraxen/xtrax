@@ -60,6 +60,24 @@ class TestMetadataWithoutPath:
             render(plan, metadata=True, path=None)
 
 
+def test_unknown_fmt_raises_value_error() -> None:
+    """An unknown fmt used to reach an unbound local after the figure was drawn.
+
+    Unwrapped: under the suite's beartype hook the Literal annotation rejects "pdf"
+    first, and library callers run without that hook."""
+    import inspect
+
+    plan = BatchPlan(
+        decisions=(
+            AxisDecision(
+                spec=AxisSpec("batch", 64, 128), batch_size=128, reasoning="t", strategy=Vmap()
+            ),
+        )
+    )
+    with pytest.raises(ValueError, match="Unknown fmt 'pdf'"):
+        inspect.unwrap(render)(plan, fmt="pdf")
+
+
 class TestInvalidPanelRaises:
     """Criterion 11: panels= containing unknown names raises ValueError."""
 

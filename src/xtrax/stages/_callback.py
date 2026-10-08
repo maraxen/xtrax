@@ -30,7 +30,7 @@ import inspect
 import jax.experimental
 
 #: (min inclusive, max exclusive) -- keep in sync with pyproject.toml's jax bound.
-PINNED_JAX_RANGE = ((0, 10, 2), (0, 11, 0))
+PINNED_JAX_RANGE = ((0, 10, 2), (0, 12, 0))
 
 _EXPECTED_PARAMS = (
     "callback",

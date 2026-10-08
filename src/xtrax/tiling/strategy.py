@@ -63,7 +63,7 @@ class Vmap:
 
 
 @dataclass(frozen=True)
-class SafeMap:
+class ChunkedMap:
     """Safe chunked map strategy: vmap with explicit chunking via lax.map."""
 
     batch_size: int
@@ -153,4 +153,4 @@ def fixed_step_count_cond(n_steps: int) -> WhileCondFn:
     return _cond
 
 
-AxisStrategy = Vmap | SafeMap | Scan | DedupGather | Bucket | WhileCarry
+AxisStrategy = Vmap | ChunkedMap | Scan | DedupGather | Bucket | WhileCarry

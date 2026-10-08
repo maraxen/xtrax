@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +24,7 @@ from xtrax.devtools.gates.test_rigor import (
     GateResult,
     parse_coverage_json,
     parse_pytest_summary,
+    run_pytest_coverage,
     run_test_rigor_gate,
 )
 from xtrax.devtools.rubrics import load_rubric
@@ -101,6 +103,7 @@ def test_run_test_rigor_gate_passes_at_baseline(tmp_path: Path) -> None:
         branch_pct=40.0,
         tests_run=10,
         tests_failed=0,
+        returncode=0,
     )
 
     with patch(
@@ -149,6 +152,7 @@ def test_run_test_rigor_gate_fails_on_regression(tmp_path: Path) -> None:
         branch_pct=75.0,
         tests_run=20,
         tests_failed=0,
+        returncode=0,
     )
 
     with patch(
@@ -190,6 +194,7 @@ def test_run_test_rigor_gate_tightens_baseline(tmp_path: Path) -> None:
         branch_pct=8.0,
         tests_run=5,
         tests_failed=0,
+        returncode=0,
     )
 
     with patch(
@@ -249,6 +254,7 @@ def test_audit_test_rigor_gate_cli_exits_zero_with_mock(
         branch_pct=1.0,
         tests_run=1,
         tests_failed=0,
+        returncode=0,
     )
     mock_result = GateResult(
         passed=True,
@@ -278,3 +284,239 @@ def test_audit_test_rigor_gate_cli_exits_zero_with_mock(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "PASS" in captured.out
+
+
+def _extract_cov_report_path(cmd: list[str]) -> Path:
+    """Pull the ``--cov-report=json:<path>`` target out of a pytest cmd list."""
+    for arg in cmd:
+        if arg.startswith("--cov-report=json:"):
+            return Path(arg.removeprefix("--cov-report=json:"))
+    msg = f"no --cov-report=json: arg found in {cmd!r}"
+    raise AssertionError(msg)
+
+
+def test_run_pytest_coverage_raises_runtime_error_when_report_missing(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for #5021: the missing-report branch must stay reachable.
+
+    Before the fix ``tempfile.NamedTemporaryFile`` pre-created an empty file at
+    ``cov_path`` before the subprocess ran, so ``cov_path.is_file()`` was always
+    True, the "missing" branch was dead code, and control fell through to
+    ``parse_coverage_json``, which raised a bare ``json.JSONDecodeError``. This
+    test failed that way when written. It now pins the shipped behaviour: a
+    ``RuntimeError`` naming the exit code and the captured output.
+    """
+
+    def fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        capture_output: bool = True,
+        text: bool = True,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        # Deliberately do NOT touch the report path -- simulate pytest dying
+        # before pytest-cov ever wrote a report.
+        _extract_cov_report_path(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=17,
+            stdout="",
+            stderr="boom-case1-no-report-stderr",
+        )
+
+    with patch(
+        "xtrax.devtools.gates.test_rigor.subprocess.run",
+        side_effect=fake_run,
+    ):
+        with pytest.raises(RuntimeError) as exc_info:
+            run_pytest_coverage(root=tmp_path)
+
+    message = str(exc_info.value)
+    # Anchored, not a bare "17": a loose substring check would also match a
+    # returncode echoed anywhere in the captured output, and would stay green
+    # against a regression that dropped the exit code from the message.
+    assert "exit=17" in message
+    assert "boom-case1-no-report-stderr" in message
+
+
+def test_run_pytest_coverage_raises_distinct_runtime_error_when_report_unparsable(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for #5021: a present-but-unusable report is its own failure.
+
+    Distinct from the missing-report case: the file genuinely exists (pytest-cov
+    started writing it) but is empty or truncated. Before the fix both cases
+    raised the same bare ``json.JSONDecodeError``, because a pre-created empty
+    temp file was indistinguishable from a partially-written one. The two now
+    produce different messages, and this test asserts it is the unparsable one.
+    """
+
+    def fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        capture_output: bool = True,
+        text: bool = True,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        cov_path = _extract_cov_report_path(cmd)
+        # Explicitly write a zero-byte report -- present-but-unparsable,
+        # distinct in intent from "never written" above.
+        cov_path.write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="5 passed in 0.1s",
+            stderr="",
+        )
+
+    with patch(
+        "xtrax.devtools.gates.test_rigor.subprocess.run",
+        side_effect=fake_run,
+    ):
+        with pytest.raises(RuntimeError) as exc_info:
+            run_pytest_coverage(root=tmp_path)
+
+    message = str(exc_info.value)
+    # "0" alone matched "exit=0", "report size=0 bytes" AND the "0.1s" in the
+    # echoed stdout, so it could not tell a correct message from a wrong one.
+    assert "exit=0" in message
+    assert "report size=0 bytes" in message
+    assert "5 passed in 0.1s" in message
+    # And it must be the UNPARSABLE message, not the missing-report one.
+    assert "unparsable" in message
+    assert "missing" not in message
+
+
+def test_run_test_rigor_gate_fails_on_red_suite_despite_good_coverage(
+    tmp_path: Path,
+) -> None:
+    """C4 case 3: a failing suite must fail the gate even at good coverage.
+
+    Drives the real gate end-to-end (``run_pytest_coverage`` is NOT mocked
+    out) with a stubbed subprocess that reports excellent coverage
+    percentages but a non-zero exit code and failed tests. Against current
+    code ``passed = passes_line and passes_branch`` ignores the suite result
+    entirely, so this fails -- either because ``result.passed`` is
+    (wrongly) True, or because ``GateResult`` has no ``failure_detail``
+    field yet (an AttributeError on a frozen/slots dataclass is a legitimate
+    red here too).
+    """
+    baseline_path = tmp_path / "audit_baseline.json"
+    audits_path = tmp_path / "audits.jsonl"
+    seed = AuditBaseline(
+        schema_version=BASELINE_SCHEMA_VERSION,
+        updated_at="2026-06-19T00:00:00+00:00",
+        metrics={
+            LINE_METRIC: MetricEntry(
+                key=LINE_METRIC,
+                value=0.0,
+                comparator="maximize",
+            ),
+            BRANCH_METRIC: MetricEntry(
+                key=BRANCH_METRIC,
+                value=0.0,
+                comparator="maximize",
+            ),
+        },
+    )
+    save_baseline(seed, path=baseline_path)
+
+    def fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        capture_output: bool = True,
+        text: bool = True,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        cov_path = _extract_cov_report_path(cmd)
+        cov_path.write_text(
+            json.dumps(
+                {
+                    "totals": {
+                        "percent_covered": 99.0,
+                        "percent_branches_covered": 99.0,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=1,
+            stdout="....... [100%]\n3 failed, 7 passed in 2.1s",
+            stderr="",
+        )
+
+    with patch(
+        "xtrax.devtools.gates.test_rigor.subprocess.run",
+        side_effect=fake_run,
+    ):
+        result = run_test_rigor_gate(
+            audits_path=audits_path,
+            baseline_path=baseline_path,
+            root=tmp_path,
+            write_baseline=False,
+        )
+
+    assert result.passed is False
+    # Assert the parsed fields and the anchored phrases, not bare digits: "1"
+    # matched the "100%" in the echoed progress line, and "3" would have passed
+    # just as happily with returncode and tests_failed swapped or hardcoded.
+    assert result.stats.returncode == 1
+    assert result.stats.tests_failed == 3
+    assert "pytest exit code 1" in result.failure_detail
+    assert "3 tests failed" in result.failure_detail
+
+
+def test_stderr_mentioning_errors_does_not_poison_the_summary(tmp_path: Path) -> None:
+    """Regression guard: a GREEN suite must not be failed by stderr noise.
+
+    ``parse_pytest_summary`` scans in reverse and breaks on the first line
+    matching ``(\\d+) error``. The captured output was originally passed to it as
+    ``stdout + "\\n" + stderr``, so ``reversed()`` reached STDERR first: measured,
+    a stdout of "40 passed in 12.0s" with a stderr line reading
+    "WARNING: 2 errors were suppressed by the plugin" parsed as ``(2, 2)``.
+
+    That was merely a wrong count in an info finding until #5021 made
+    ``tests_failed`` load-bearing in the verdict -- at which point it would fail
+    the gate on a passing suite, in a repo whose JAX stack writes plenty of
+    stderr. The summary is parsed from stdout alone.
+    """
+
+    def fake_run(
+        cmd: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        capture_output: bool = True,
+        text: bool = True,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        cov_path = _extract_cov_report_path(cmd)
+        cov_path.write_text(
+            json.dumps({"totals": {"percent_covered": 91.0, "percent_branches_covered": 82.0}}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="....... [100%]\n40 passed in 12.0s",
+            stderr="WARNING: 2 errors were suppressed by the plugin\nnoise",
+        )
+
+    with patch(
+        "xtrax.devtools.gates.test_rigor.subprocess.run",
+        side_effect=fake_run,
+    ):
+        stats = run_pytest_coverage(root=tmp_path)
+
+    assert stats.tests_run == 40
+    assert stats.tests_failed == 0
+    assert stats.returncode == 0

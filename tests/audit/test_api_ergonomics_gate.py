@@ -235,7 +235,9 @@ def test_committed_baseline_has_api_ergonomics_metric() -> None:
     assert METRIC_KEY in loaded.metrics
     entry = loaded.metrics[METRIC_KEY]
     assert entry.comparator == "minimize"
-    assert entry.value == 0.0
+    # Re-seeded 2026-10-01 at the measured count (#5682): the ratchet stops growth from
+    # there; it does not claim the tree is free of param sprawl.
+    assert entry.value >= 0.0
 
 
 def test_audit_api_ergonomics_gate_cli_exits_zero_on_clean_tree(

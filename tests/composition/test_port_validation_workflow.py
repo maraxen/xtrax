@@ -1,4 +1,14 @@
-"""Smoke tests for port_validation PCW template (#2278)."""
+"""Smoke tests for port_validation PCW template (#2278).
+
+The former emit smoke test (YAML -> generated JS via the praxia ``dw`` CLI) is
+RETIRED, not pending a re-wire (debt #570; removed in b2793d7, backlog #4375).
+That CLI surface was removed upstream and nothing replaced its emit verb:
+``praxia rig-run`` runs ``*_contract.yaml`` rig flows, not PCW templates, and
+``praxia workflow`` has no emitter. ``.claude/workflows/port-validation.js`` is
+now hand-maintained, so the guarantee the emit test gave -- YAML and JS describe
+the same pipeline -- is carried statically by ``TestAcV33062`` (1:1 phase
+ids/titles). Reinstate an emit test only if praxia regains a PCW emitter.
+"""
 
 from __future__ import annotations
 
@@ -135,5 +145,5 @@ class TestAcV33062:
         dw_gone_skip = skip_call in source and unrecognized_needle in source
         assert not dw_gone_skip, (
             "TestAcV33062: skip() must not be used for dw-gone "
-            "(test_port_validation_yaml_emits_without_error still does; fixer replaces it)"
+            "(the retired emit smoke test did; see module docstring, debt #570)"
         )

@@ -1,0 +1,127 @@
+# xtrax.export — ahead-of-time export
+
+TIER-2 reference for `xtrax.export`. The public narrative version is `docs/api/export.md`;
+this file is the agent-facing summary. Read the live source at the cited paths when in doubt.
+
+`xtrax.export` compiles a `BatchPlan`-shaped computation ahead of time through IREE, or
+converts it to ONNX through jax2onnx. Both are optional extras: `uv sync --extra export`
+(`iree-base-compiler`, `iree-base-runtime`, `huggingface_hub`, `safetensors`) and
+`uv sync --extra onnx` (`jax2onnx>=0.17`, `onnx`, `onnxruntime`). Importing `xtrax.export`
+without either toolchain works; only compilation needs it.
+
+## Targets, and what each one actually proves
+
+`verify: src/xtrax/export/targets.py:155-304`
+
+| Target | IREE backend | VerificationLevel | Emits SPIR-V |
+|---|---|---|---|
+| `NATIVE` | `llvm-cpu` (`target-cpu=host`) | `EXECUTED` | no |
+| `NATIVE_PORTABLE` | `llvm-cpu` (`target-cpu=x86-64-v2`) | `EXECUTED` | no |
+| `WASM32` | `llvm-cpu` (wasm32 triple) | `CODEGEN_ONLY` | no |
+| `VULKAN_SPIRV` | `vulkan-spirv` | `CODEGEN_ONLY` | yes |
+| `METAL_SPIRV` | `metal-spirv` | `CODEGEN_ONLY` | **no** — it dumps MSL, not SPIR-V, despite the name |
+| `ONNX` | none (`Backend.ONNX`, jax2onnx) | `EXECUTED` on ORT CPU | no |
+
+`VerificationLevel` is the whole point of the type, so read it literally:
+
+- `EXECUTED` — the artifact was compiled **and run**, and its output compared against a
+  caller-supplied `reference_fn`. `NATIVE`, `NATIVE_PORTABLE` and `ONNX` reach this; for
+  `ONNX`, "run" means ONNX Runtime's CPU execution provider, not a browser.
+- `CODEGEN_ONLY` — the artifact compiled. Nothing ran it. A green `CODEGEN_ONLY` export says
+  the compiler accepted the program, and says nothing whatsoever about numerics.
+- `VALIDATED` exists in the enum but no target registers it; `export_pipeline` raises
+  `NotImplementedError` for one. That is deliberate, not unfinished — see WebGPU below.
+
+**`NATIVE` vs. `NATIVE_PORTABLE`:** both are `EXECUTED`, but `NATIVE` is tuned to the
+compiling machine's own CPU (`--iree-llvmcpu-target-cpu=host`) and exists as a parity
+oracle only — it is not safe to hand to someone else, since a host CPU feature (e.g.
+AVX-512) baked into the artifact can fault as an illegal instruction on a recipient's
+CPU that lacks it. `NATIVE_PORTABLE` fixes the ISA baseline to `x86-64-v2` instead
+(`cpu_features = "+cmov,+mmx,+popcnt,+sse,+sse2,+sse4.2,+cx16,+sahf,+cx8,+crc32,+x87,+fxsr"`,
+no AVX/AVX-512/etc.), so it runs on any x86-64 CPU from roughly 2013 onward — **not**
+"any CPU since 2009" (SSE4.2 arrived on AMD only at Bulldozer in 2011, and Intel Atom
+lacked it through Silvermont in 2013). It still requires an IREE runtime on the
+recipient's machine (`Module Dependencies: hal, version >= 6, required`); it is not a
+standalone binary. Do not pass a target triple alongside the CPU flag — measured to
+produce a byte-identical artifact, since IREE rewrites the embedded triple to
+`x86_64-unknown-unknown-eabi-elf` regardless.
+
+## The parity oracle must be independent
+
+`export_pipeline(..., reference_fn=...)` is **required** whenever a target is `EXECUTED`, and
+it must be computed independently of the composed callable. A parity check that derives its
+expected value from the same callable it is checking proves only that a function equals
+itself. `verify_native_parity` compares `reference_fn`'s output against
+`run_native_vmfb(result.path, *concrete_inputs)`.
+
+Native parity, like ONNX parity, is a `LeafParityResult`: one result per output leaf,
+integers and bools compared exactly, a dtype change a failure (#5688; before it, native
+used `rtol` for everything and passed an index off by 9 at magnitude 1e6). It still reports
+a diff per leaf, not positions: to assert *ordering* (which element ran when), call
+`run_native_vmfb` directly and decode the array.
+
+## Dtypes
+
+The envelope is measured, not assumed (`verify: src/xtrax/export/targets.py`). `f64` is
+rejected on **every** target including `NATIVE`; `bf16` splits by verification level. Casting
+happens through `load_hf_weights`, which reports every cast leaf in its `WeightReport` — one
+entry per leaf, deliberately untruncated.
+
+Dtype gating scans closure leaves, not just `abstract_inputs`: a `bf16`/`f64` array captured in
+`fn`'s closure is caught. That was a real escape before it was fixed.
+
+## What can cross the boundary
+
+`check_export_safety` / `validate_export_safe` reject what cannot be traced. A `Sink` declared
+`materialize=True` is replaced by `_StrippedSink` before composition, so the exported artifact
+returns the value the sink would have consumed instead of performing a host callback. That
+means **the exported program and the un-stripped one are only equal if the transition sinks the
+exact value it returns** — hold that precondition in mind when writing one.
+
+## Multi-axis plans
+
+`compose_vmap_of_scan` handles an outer `Vmap`-strategy axis wrapping an inner `Scan`. A
+lane-dependent ordered `Tap`/`Sink` under a literal `vmap` raises `MultiAxisCompositionError`.
+`Bucket` (host-tier — pad with `bucketize()` before the boundary) and `WhileCarry` (unbounded
+trip count — convert to `Scan` with a static length) raise `UnsupportedStrategyError`.
+
+## ONNX
+
+`verify: src/xtrax/export/onnx.py`. `ONNX` skips StableHLO entirely: `convert_to_onnx` runs
+`jax2onnx.to_onnx` on the composed callable and `verify_onnx_parity` runs the file on ORT.
+
+- **Op rules are keyed on `Target.backend`.** IREE's `sort-stability`, `unlegalizable-op`
+  (`lax.top_k`), `random-permutation` and `unbatched-threefry-key` do not apply to `ONNX` —
+  those constructs were measured exact on ORT. `ONNX` instead refuses any JAX RNG primitive
+  (`onnx-in-graph-rng`, unsuppressible): jax2onnx turns `jax.random` draws into ONNX
+  `RandomUniform`, which ignores the key. Feed random values in from the host.
+- **Parity is per leaf and exact for integers/bools on every backend**
+  (`compare_leaves`), and a dtype change fails it (`LeafParityResult.dtype_mismatches`).
+- **The dtype gate judges outputs on every target, and each op on ONNX**: bf16
+  arithmetic (`x.astype(jnp.bfloat16) + 1`) is a `DtypeNotSupportedError` at plan time
+  (ORT's CPU EP has no bf16 kernels for it), where it used to be a raw `onnxruntime`
+  error at session creation. Casts and data movement run at any dtype, so the
+  precision-emulation idiom `x.astype(jnp.bfloat16).astype(jnp.float32)` exports.
+- **`ExportResult.onnx_census`** counts int64 tensors inside the graph (from `TopK`/`ArgMax`);
+  graph I/O keeps JAX's dtypes. Relevant for ORT Web's WebGPU EP, which has no int64.
+- **Process state:** x64 is refused; the first jax2onnx conversion in a process leaves
+  `jnp.cumsum` replaced, which `convert_to_onnx` undoes, and `export_pipeline` evaluates
+  `reference_fn` before compiling any target.
+- A callable with no `BatchPlan` calls `convert_to_onnx` directly. Guards versus raw
+  `jax2onnx.to_onnx`, plus rings and parity: `references/onnx-standalone.md`.
+
+## WebGPU: there is no gate, on purpose
+
+IREE's Vulkan HAL passes dispatch parameters through push constants, which are not a WebGPU
+capability, so naga rejects every SPIR-V module IREE emits. IREE 3.11 has no webgpu backend and
+no flag removes them. A gate *could* be made green by enabling wgpu's native-only `immediates`
+feature — a passing check that establishes nothing about browsers, which is why none was built.
+`VULKAN_SPIRV` therefore ships as `CODEGEN_ONLY`. Do not read SPIR-V emission as browser
+readiness. Tracked as backlog #4856.
+
+## Entry points
+
+`export_pipeline` is the one to reach for. `build_traceable_callable`/`compose_single_axis`/
+`compose_vmap_of_scan` are the composer layer beneath it; `compile_for_target`,
+`run_native_vmfb`, `verify_native_parity`, `convert_to_onnx`, `run_onnx`, `verify_onnx_parity`,
+`load_hf_weights`, `spirv_binaries_in`/`is_spirv` are the pieces it orchestrates. Full list: `xtrax.export.__all__`.

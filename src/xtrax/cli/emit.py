@@ -99,6 +99,9 @@ def _emit_text(stats: Mapping[str, Any]) -> None:
             print(f"    Memory est.: {mem} bytes")
         if reasoning:
             print(f"    Reasoning:   {reasoning}")
+        varying_inputs = entry.get("varying_inputs", ())
+        varying = ", ".join(varying_inputs) if varying_inputs else "(none)"
+        print(f"    Varying inputs: {varying}")
         print()
 
     if memory_warnings:

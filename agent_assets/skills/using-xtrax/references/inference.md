@@ -3,7 +3,7 @@
 # Signature Inference (xtrax.inference) — derive AxisSpecs + BundleSchema from a typed function
 
 > **Availability**: shipped in the 0.3.0 release (Tier-1 MVP, E1).  
-> Import paths: `from xtrax.inference import ...` (all 8 public symbols re-exported from `__init__`).  
+> Import paths: `from xtrax.inference import ...` (the 20 names in `__all__`, `src/xtrax/inference/__init__.py`).  
 > `AxisRole` lives canonically in `xtrax.tiling.roles` (zero xtrax deps) and is re-exported by `xtrax.inference` for convenience. Verify: `src/xtrax/inference/errors.py:12`, `src/xtrax/tiling/roles.py:14`.
 
 #### `infer_bundle`: The Entrypoint
@@ -28,6 +28,7 @@ def infer_bundle(
     *,
     verify_against: Sequence[Any] | None = None,
 ) -> tuple[BundleSchema, list[AxisSpec]]:
+    ...
 ```
 
 Internally: calls `jax.eval_shape` (zero FLOPs) to extract the output schema, reads any `@axis_config` sidecar on `fn`, synthesizes one `AxisSpec` per qualifying input leaf (ndim >= 1), and optionally calls `verify_structure`.  

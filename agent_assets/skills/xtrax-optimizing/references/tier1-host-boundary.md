@@ -33,7 +33,7 @@ Readings:
   (`src/xtrax/stages/executor.py` module docstring).
 - Vmap cannot lower an ordered io_callback at all; topology rejects the plan
   up front (`src/xtrax/stages/topology.py::validate_plan_topology`).
-- Ordered SafeMap silently degrades to one element at a time regardless of
+- Ordered ChunkedMap silently degrades to one element at a time regardless of
   configured batch_size (`tests/stages/test_executor.py::TestSafeMapOrderedIgnoresBatchSize`)
   -- do not expect batching to amortize ordering.
 - Batching the payload (fewer, larger callbacks -- e.g. ZarrStagingSink-style

@@ -1,18 +1,13 @@
 ---
 name: xtrax-activation-parity
-description: This skill should be used when two implementations of the same model disagree numerically and the question is WHERE -- a vendored/published reference versus a JAX port, a wheel versus a source tree, two checkpoints loaded by different loaders. Triggers on "find the first divergence", "which tensor diverges first", "trace activations between two implementations", "my port's outputs don't match the reference", "cross-implementation parity failed but the graded parity test doesn't say why", "capture intermediates without changing the forward pass", "diff parameter inventories against a reference checkpoint", or mentions first-divergence tracing, activation capture via Tap/Sink, ZarrStagingSink for intermediates, zarr_content_digest for capture integrity, or parameter-inventory diffing. Covers the escalation ladder (constants, then parameters, then inputs, then activations), non-perturbing capture through xtrax.stages boundaries, the first-divergence table, and the harness negative control that makes "no divergence found" mean something.
-xtrax_version: 0.4.0a7
+description: "Use when two implementations of the same model disagree numerically and the task is to find the first tensor that diverges: a published reference versus a JAX port, a wheel versus a source tree, or two checkpoints loaded by different loaders. Covers checking constants, parameters, and inputs before capturing activations, and capture that leaves the forward pass unchanged."
+xtrax_version: 0.4.0a12
 triggers:
-  - first divergence / first-divergence trace / which tensor diverges first
-  - cross-implementation parity / reference vs port disagree numerically
-  - activation capture / capture intermediates without perturbing the forward pass
-  - Tap / Sink / AxisBoundary for observation (not transformation)
-  - ZarrStagingSink for encoder intermediates / keyed staging of activations
-  - zarr_content_digest / update_array_digest / fsync_tree for capture integrity
-  - parameter inventory diff / orphan reference tensor / phantom untrained bias
-  - dropped constant / atom_context_num-class constant mismatch
-  - non-degeneracy assertion before parity comparison
-  - planted-perturbation negative control for a trace harness
+  - two implementations disagree numerically / which tensor diverges first
+  - a port's outputs do not match the reference and the parity test does not say where
+  - capture intermediates without changing the forward pass
+  - diff parameter inventories against a reference checkpoint
+  - a constant or bias is present on one side and missing on the other
 ---
 
 # xtrax-activation-parity
@@ -111,9 +106,7 @@ class CaptureSink:
 
     def __call__(self, x: jax.Array) -> None:
         def _write(v):
-            # np.atleast_1d is load-bearing: a 0-d payload crashes drain().
-            self.sink.stage((self.side, self.name, self._step),
-                            value=np.atleast_1d(np.asarray(v)))
+            self.sink.stage((self.side, self.name, self._step), value=np.asarray(v))
             self._step += 1
             return np.zeros((), dtype=np.int32)
         io_callback(_write, jax.ShapeDtypeStruct((), jnp.int32), x, ordered=self.ordered)
@@ -130,7 +123,7 @@ host two run ids (`ZarrStagingSink.__init__` refuses). Then `drain()`,
 `finalize()`, `fsync_tree()`, and only then digest.
 
 An `ordered=True` capture on a `Vmap` axis **halts** -- and an ordered capture
-on a `SafeMap` axis silently discards its `batch_size`. Both, plus every other
+on a `ChunkedMap` axis silently discards its `batch_size`. Both, plus every other
 trap in the capture path, are enumerated with verify-paths in
 `references/capture-mechanics.md`; read it before wiring a harness.
 

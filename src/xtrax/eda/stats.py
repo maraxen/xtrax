@@ -67,6 +67,7 @@ def extract_plan_stats(plan: BatchPlanLike) -> PlanStatsDict:
             "batch_size": decision.batch_size,
             "reasoning": decision.reasoning,
             "memory_estimate_bytes": None,
+            "varying_inputs": list(getattr(decision.spec, "varying_inputs", ())),
         }
         axes.append(axis_entry)
 

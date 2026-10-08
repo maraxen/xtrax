@@ -17,6 +17,8 @@ Contract under test:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -102,18 +104,58 @@ def test_final_record_attrs_match_manifest(monkeypatch, tmp_path) -> None:
     assert "git_sha" in final_group.attrs
 
 
+def _git(repo: Path, *args: str) -> str:
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        }
+    )
+    result = subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return result.stdout.strip()
+
+
 def test_explicit_run_id_flows_to_store(monkeypatch, tmp_path) -> None:
-    """AC1/AC3: caller-supplied run_id is the single id across manifest + store."""
+    """AC1/AC3: caller-supplied run_id is the single id across manifest + store.
+
+    Outside a git repository the CLI warns and records git_sha='unknown'.
+    """
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     cfg = _e2e_cfg()
-    # Outside any git repo the sink must degrade HONESTLY: warn + record
-    # git_sha='unknown' rather than silently skipping provenance.
     with pytest.warns(UserWarning, match="could not determine git state"):
         run_from_config(cfg, run_id="explicit-test-id")
     manifest = json.loads(Path(".xtrax/runs/explicit-test-id/manifest.json").read_text())
     assert manifest["run_id"] == "explicit-test-id"
     root = zarr.open_group(".xtrax/runs/explicit-test-id/metrics.zarr", mode="r")
     assert root.attrs["run_id"] == "explicit-test-id"
+    assert root.attrs["git_sha"] == "unknown"
+
+
+def test_run_records_real_head_sha_inside_git_repo(monkeypatch, tmp_path) -> None:
+    """Inside a git checkout the CLI store records that checkout's HEAD sha."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    (repo / "seed.txt").write_text("seed\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "seed")
+    sha = _git(repo, "rev-parse", "HEAD")
+    monkeypatch.chdir(repo)
+    run_from_config(_e2e_cfg(), run_id="in-repo")
+    root = zarr.open_group(".xtrax/runs/in-repo/metrics.zarr", mode="r")
+    assert root.attrs["git_sha"] == sha
+    assert root.attrs["git_sha"] != "unknown"
 
 
 def test_store_is_finalized_after_run(monkeypatch, tmp_path) -> None:
@@ -182,6 +224,27 @@ def test_real_fit_saves_checkpoints_with_relative_cli_dir(monkeypatch, tmp_path)
     run_from_config(cfg)
     checkpoints = list(Path(".xtrax/runs").glob("*/checkpoints/*"))
     assert checkpoints, "epoch-end checkpoint must be persisted by the real fit"
+
+
+def test_manifest_write_failure_keeps_old_file_and_no_tmp(monkeypatch, tmp_path: Path) -> None:
+    """A crash during the atomic manifest write leaves the previous file and no temp."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    run_dir = Path(".xtrax/runs/explicit-test-id")
+    run_dir.mkdir(parents=True)
+    manifest_path = run_dir / "manifest.json"
+    manifest_path.write_text('{"kept": true}\n', encoding="utf-8")
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("interrupted")
+
+    monkeypatch.setattr("xtrax.run.zarr_integrity.os.fsync", boom)
+    with pytest.warns(UserWarning, match="could not determine git state"):
+        with pytest.raises(OSError, match="interrupted"):
+            run_from_config(_e2e_cfg(), run_id="explicit-test-id")
+    assert manifest_path.read_text(encoding="utf-8") == '{"kept": true}\n'
+    leftovers = [p.name for p in run_dir.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == []
 
 
 def test_cli_layer_never_constructs_sink_spec_literally() -> None:

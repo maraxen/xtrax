@@ -12,7 +12,7 @@ never in the library package (D8).
 
 - `scripts/prof_stage0_tiling_cost.py` -- cost analysis only, never executes.
 - `scripts/prof_stage1_tiling_micro.py` -- one jitted program exercising
-  Vmap/SafeMap/DedupGather under named scopes; two-input trace+HLO
+  Vmap/ChunkedMap/DedupGather under named scopes; two-input trace+HLO
   attribution; warm-up outside the measurement window; live self-check that
   TERM_RANKING over its own output fails closed.
 

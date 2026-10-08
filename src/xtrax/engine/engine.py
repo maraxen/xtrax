@@ -12,7 +12,8 @@ Key invariants:
 """
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -50,6 +51,78 @@ def _resolve_ledger(
     from xtrax.run.ident import new_run_id
 
     return RunLedger.open(run_id or new_run_id(), kind=kind, context=context), True
+
+
+@dataclass(frozen=True)
+class EarlyStopping:
+    """Host-side early stopping config for :meth:`Engine.fit`.
+
+    ``patience`` is the number of consecutive non-improving checks tolerated
+    before ``fit`` returns. The first observation sets the best value and does
+    not consume patience. An observation improves when ``mode == "min"`` and
+    ``value < best - min_delta``, or when ``mode == "max"`` and
+    ``value > best + min_delta``.
+
+    Checks come from ``validate_fn`` at each validation point. When no
+    ``validate_fn`` is set, ``fit`` checks the last training-step metrics at
+    the end of each epoch instead.
+
+    ``fit`` returns the state from the step that exhausted patience. It does
+    not roll the model back to the best checkpoint.
+
+    Attributes:
+        metric: Key in the metrics dict. The value must be a scalar array.
+        mode: ``"min"`` or ``"max"``.
+        patience: Positive number of non-improving checks to tolerate.
+        min_delta: Non-negative minimum improvement. ``0`` accepts any strict
+            improvement.
+    """
+
+    metric: str
+    mode: str
+    patience: int
+    min_delta: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("min", "max"):
+            raise ValueError(f"EarlyStopping.mode must be 'min' or 'max', got {self.mode!r}")
+        if self.patience < 1:
+            raise ValueError(f"EarlyStopping.patience must be >= 1, got {self.patience}")
+        if self.min_delta < 0:
+            raise ValueError(f"EarlyStopping.min_delta must be >= 0, got {self.min_delta}")
+
+
+class _EarlyStopTracker:
+    """Host-side patience counter. Metric values are converted with float()."""
+
+    def __init__(self, config: EarlyStopping):
+        self.config = config
+        self.best: float | None = None
+        self.wait = 0
+
+    def update(self, metrics: dict[str, Any]) -> bool:
+        if self.config.metric not in metrics:
+            raise KeyError(
+                f"early stopping metric {self.config.metric!r} is not in metrics {sorted(metrics)}"
+            )
+        value = float(metrics[self.config.metric])
+        if self.best is None or _improved(self.config, self.best, value):
+            self.best = value
+            self.wait = 0
+            return False
+        self.wait += 1
+        return self.wait >= self.config.patience
+
+
+def _improved(config: EarlyStopping, best: float, value: float) -> bool:
+    if config.mode == "min":
+        return value < best - config.min_delta
+    return value > best + config.min_delta
+
+
+def _require_positive(name: str, value: int | None) -> None:
+    if value is not None and value < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value}")
 
 
 @runtime_checkable
@@ -96,6 +169,11 @@ class Engine(eqx.Module):
         ledger: Any = None,
         run_id: str | None = None,
         context: dict[str, str] | None = None,
+        validate_fn: Callable[[ResumableState], dict[str, Any]] | None = None,
+        validate_every_steps: int | None = None,
+        validate_every_epochs: int | None = None,
+        early_stop: EarlyStopping | None = None,
+        checkpoint_every_steps: int | None = None,
     ) -> ResumableState:
         """Execute multi-epoch training with callback hooks.
 
@@ -108,10 +186,21 @@ class Engine(eqx.Module):
         only honest option. Set XTRAX_TELEMETRY_OPTOUT=1 to proceed anyway --
         that still writes a row, marked non-citable.
 
-        Iterates through data.train_iter() exactly num_epochs times, calling
+        Iterates through data.train_iter() up to num_epochs times, calling
         trainer.step once per batch. State is incremented by 1 per batch.
+        Early stopping returns before num_epochs is exhausted; that return is
+        a completed run, not a failed one, and still closes the ledger.
 
         If checkpoint_dir is set, saves state after each epoch via orbax.
+        ``checkpoint_every_steps`` additionally saves whenever the post-step
+        counter is a positive multiple of that cadence. The epoch-end save
+        still runs, including on the epoch where early stopping fires.
+
+        ``validate_fn(state)`` returns a metrics dict. It runs on the host,
+        outside the step jit. With neither cadence set, it runs once per epoch.
+        ``validate_every_steps`` fires after a step whose counter is a multiple
+        of N. ``validate_every_epochs`` fires after a completed epoch count that
+        is a multiple of N. Setting both cadences runs both checks.
 
         Fires callbacks in order:
           1. on_train_start (once)
@@ -129,10 +218,33 @@ class Engine(eqx.Module):
             data: DataModule with train_iter() generator
             num_epochs: Number of training epochs
             checkpoint_dir: Optional directory for saving checkpoints after each epoch
+            resume: When True, fire ``on_resume`` after ``on_train_start``.
+                This does not load a checkpoint; use :meth:`restore` for that.
+            validate_fn: Optional host callable ``(state) -> metrics dict``.
+            validate_every_steps: Step cadence for ``validate_fn``.
+            validate_every_epochs: Epoch cadence for ``validate_fn``.
+            early_stop: Optional :class:`EarlyStopping` config.
+            checkpoint_every_steps: Extra checkpoint cadence, in steps.
 
         Returns:
-            Final ResumableState after training completes
+            Final ResumableState after training completes (or early-stops).
         """
+        _require_positive("validate_every_steps", validate_every_steps)
+        _require_positive("validate_every_epochs", validate_every_epochs)
+        _require_positive("checkpoint_every_steps", checkpoint_every_steps)
+        if checkpoint_every_steps is not None and checkpoint_dir is None:
+            raise ValueError("checkpoint_every_steps requires checkpoint_dir")
+        if validate_fn is None and (
+            validate_every_steps is not None or validate_every_epochs is not None
+        ):
+            raise ValueError("validate_every_steps/validate_every_epochs requires validate_fn")
+        if (
+            validate_fn is not None
+            and validate_every_steps is None
+            and validate_every_epochs is None
+        ):
+            validate_every_epochs = 1
+
         # Initialize checkpoint manager if needed
         if checkpoint_dir is not None:
             from xtrax.checkpoint.orbax import get_checkpoint_manager, save_checkpoint
@@ -151,6 +263,8 @@ class Engine(eqx.Module):
         # Local, not the static field: the telemetry callback is appended per
         # call so an Engine constructed with callbacks=() is still instrumented.
         callbacks = (*self.callbacks, telemetry)
+        tracker = _EarlyStopTracker(early_stop) if early_stop is not None else None
+        stopped = False
 
         try:
             # Fire on_train_start hook
@@ -169,6 +283,7 @@ class Engine(eqx.Module):
 
                 # Iterate through this epoch's data
                 # Note: data.train_iter() is a fresh generator each call
+                epoch_metrics: dict[str, Any] | None = None
                 for batch in data.train_iter():
                     # Capture the executed IR once, on the first batch. That
                     # first step IS the compile, so this lands at the compile
@@ -191,6 +306,25 @@ class Engine(eqx.Module):
 
                         await callback_handler.submit(fire_step_end(cb, state, metrics))
 
+                    epoch_metrics = metrics
+                    step_index = int(state.step)
+                    if (
+                        manager is not None
+                        and checkpoint_every_steps is not None
+                        and step_index % checkpoint_every_steps == 0
+                    ):
+                        save_checkpoint(manager, state)
+
+                    if (
+                        validate_fn is not None
+                        and validate_every_steps is not None
+                        and step_index % validate_every_steps == 0
+                    ):
+                        val_metrics = validate_fn(state)
+                        if tracker is not None and tracker.update(val_metrics):
+                            stopped = True
+                            break
+
                 # Wait for all pending step callbacks to complete before next epoch
                 await callback_handler.wait_all()
 
@@ -198,9 +332,34 @@ class Engine(eqx.Module):
                 for cb in callbacks:
                     cb.on_epoch_end(state, epoch)
 
-                # Save checkpoint after epoch if requested
+                if (
+                    not stopped
+                    and validate_fn is not None
+                    and validate_every_epochs is not None
+                    and (epoch + 1) % validate_every_epochs == 0
+                ):
+                    val_metrics = validate_fn(state)
+                    if tracker is not None and tracker.update(val_metrics):
+                        stopped = True
+
+                # No validation hook: early stopping watches the last training
+                # metrics of the epoch (host-side, after the step jit returns).
+                if (
+                    not stopped
+                    and tracker is not None
+                    and validate_fn is None
+                    and epoch_metrics is not None
+                    and tracker.update(epoch_metrics)
+                ):
+                    stopped = True
+
+                # Save checkpoint after epoch if requested, including the epoch
+                # on which early stopping fired.
                 if manager is not None:
                     save_checkpoint(manager, state)
+
+                if stopped:
+                    break
 
         except BaseException as exc:
             # A crashed run is when the record matters most; mark it before the
@@ -326,18 +485,28 @@ class Engine(eqx.Module):
         ledger: Any = None,
         run_id: str | None = None,
         context: dict[str, str] | None = None,
+        validate_fn: Callable[[ResumableState], dict[str, Any]] | None = None,
+        validate_every_steps: int | None = None,
+        validate_every_epochs: int | None = None,
+        early_stop: EarlyStopping | None = None,
+        checkpoint_every_steps: int | None = None,
     ) -> ResumableState:
         """Synchronous wrapper around fit() using asyncio.run().
 
         Convenience method for single-threaded use when asyncio event loop
-        is not already running.
+        is not already running. Keyword arguments match :meth:`fit`.
 
         Args:
             state: Initial ResumableState
             data: DataModule
             num_epochs: Number of epochs
             checkpoint_dir: Optional checkpoint directory
-            resume: Whether to resume training from checkpoint
+            resume: Whether to fire on_resume. Does not load a checkpoint.
+            validate_fn: Optional host validation callable. See :meth:`fit`.
+            validate_every_steps: Step cadence for ``validate_fn``.
+            validate_every_epochs: Epoch cadence for ``validate_fn``.
+            early_stop: Optional :class:`EarlyStopping` config.
+            checkpoint_every_steps: Extra checkpoint cadence, in steps.
 
         Returns:
             Final ResumableState
@@ -352,5 +521,43 @@ class Engine(eqx.Module):
                 ledger=ledger,
                 run_id=run_id,
                 context=context,
+                validate_fn=validate_fn,
+                validate_every_steps=validate_every_steps,
+                validate_every_epochs=validate_every_epochs,
+                early_stop=early_stop,
+                checkpoint_every_steps=checkpoint_every_steps,
             )
         )
+
+    def restore(
+        self,
+        checkpoint_dir: str | Path,
+        state_template: ResumableState,
+        step: int | None = None,
+    ) -> ResumableState:
+        """Load a checkpoint, including ``state.key`` and ``state.extras``.
+
+        The template supplies pytree structure (model, optimizer state, and
+        the keys of ``extras``). Orbax matches that structure, then replaces
+        the stored values. The returned ``key`` and ``extras`` are the
+        checkpoint's values, not the template's. Extras keys absent from the
+        template are not invented: the template must carry the same extras
+        structure the checkpoint was saved with.
+
+        Args:
+            checkpoint_dir: Directory passed to ``fit(..., checkpoint_dir=)``.
+            state_template: ResumableState whose structure matches the checkpoint.
+            step: Checkpoint step. ``None`` loads the latest step.
+
+        Returns:
+            The loaded ResumableState.
+        """
+        from xtrax.checkpoint.orbax import get_checkpoint_manager, load_checkpoint
+
+        manager = get_checkpoint_manager(checkpoint_dir)
+        loaded = load_checkpoint(manager, state_template, step=step)
+        if not isinstance(loaded, ResumableState):
+            raise TypeError(
+                f"checkpoint restore returned {type(loaded).__name__}, expected ResumableState"
+            )
+        return loaded

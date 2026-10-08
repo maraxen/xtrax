@@ -72,7 +72,7 @@ audit-correctness-gate:
     uv run python scripts/audit_correctness_gate.py --no-write-baseline
 
 audit-jax-purity-gate:
-    uv run ruff check src/xtrax/devtools/gates/_jaxlint.py src/xtrax/devtools/gates/jax_purity.py scripts/audit_jax_purity_gate.py tests/audit/test_jax_purity_gate.py
+    uv run ruff check src/xtrax/jaxlint_runner.py src/xtrax/devtools/gates/jax_purity.py scripts/audit_jax_purity_gate.py tests/audit/test_jax_purity_gate.py
     uv run pytest tests/audit/test_jax_purity_gate.py tests/audit/test_correctness_gate.py -v
     uv run python scripts/audit_jax_purity_gate.py --no-write-baseline
 
@@ -85,6 +85,14 @@ audit-added-types-diff:
     uv run ruff check src/xtrax/devtools/gates/added_types_diff.py scripts/audit_added_types_diff.py tests/audit/test_added_types_diff.py
     uv run pytest tests/audit/test_added_types_diff.py -v
     uv run python scripts/audit_added_types_diff.py --no-emit
+
+# #5090: a shipped public dataclass's field shape (removed/renamed/retyped fields,
+# lost defaults, new required fields) must not change without a CHANGELOG line
+# naming the class. added-types-diff audits annotations only, never fields.
+audit-dataclass-shape-diff:
+    uv run ruff check src/xtrax/devtools/gates/dataclass_shape_diff.py src/xtrax/devtools/wheel_contents.py scripts/audit_dataclass_shape_diff.py tests/audit/test_dataclass_shape_diff.py
+    uv run pytest tests/audit/test_dataclass_shape_diff.py -v
+    uv run python scripts/audit_dataclass_shape_diff.py
 
 audit-performance-gate:
     uv run ruff check src/xtrax/devtools/gates/_trace_probe.py src/xtrax/devtools/gates/_performance_probes.py src/xtrax/devtools/gates/performance.py scripts/audit_performance_gate.py tests/audit/test_performance_gate.py
@@ -106,15 +114,17 @@ audit-api-ergonomics-gate:
     uv run pytest tests/audit/test_api_ergonomics_gate.py -v
     uv run python scripts/audit_api_ergonomics_gate.py --no-write-baseline
 
+# Explicit --extra flags guarantee these tools are present when run from a narrower
+# local environment. uv run is inexact by default and does not prune.
 audit-test-rigor-gate:
-    uv run ruff check src/xtrax/devtools/gates/test_rigor.py scripts/audit_test_rigor_gate.py tests/audit/test_test_rigor_gate.py
-    uv run pytest tests/audit/test_test_rigor_gate.py -v
-    uv run python scripts/audit_test_rigor_gate.py --no-write-baseline
+    uv run --extra dev --extra io ruff check src/xtrax/devtools/gates/test_rigor.py scripts/audit_test_rigor_gate.py tests/audit/test_test_rigor_gate.py
+    uv run --extra dev --extra io pytest tests/audit/test_test_rigor_gate.py -v
+    uv run --extra dev --extra io python scripts/audit_test_rigor_gate.py --no-write-baseline
 
 audit-test-rigor-gate-quick:
-    uv run ruff check src/xtrax/devtools/gates/test_rigor.py scripts/audit_test_rigor_gate.py tests/audit/test_test_rigor_gate.py
-    uv run pytest tests/audit/test_test_rigor_gate.py -v
-    uv run python scripts/audit_test_rigor_gate.py --quick --no-write-baseline
+    uv run --extra dev --extra io ruff check src/xtrax/devtools/gates/test_rigor.py scripts/audit_test_rigor_gate.py tests/audit/test_test_rigor_gate.py
+    uv run --extra dev --extra io pytest tests/audit/test_test_rigor_gate.py -v
+    uv run --extra dev --extra io python scripts/audit_test_rigor_gate.py --quick --no-write-baseline
 
 audit-structure-complexity-gate:
     uv run ruff check src/xtrax/devtools/gates/structure_complexity.py scripts/audit_structure_complexity_gate.py tests/audit/test_structure_complexity_gate.py
@@ -194,19 +204,57 @@ audit-foundation: audit-imports audit-no-future-annotations audit-jaxlint
 
 audit-coverage-hygiene:
     uv run python scripts/audit_coverage_hygiene.py
+    uv run pytest tests/distribution/test_coverage_hygiene.py -v
 
 audit-version-wheel:
     uv run python scripts/audit_version_wheel.py
+    uv run pytest tests/distribution/test_version_wheel.py -v
 
 audit-packaging-metadata:
     uv run python scripts/audit_packaging_metadata.py
+    uv run pytest tests/distribution/test_packaging_metadata.py -v
 
 audit-public-api:
     uv run python scripts/audit_public_api.py
+    uv run pytest tests/distribution/test_public_api.py -v
 
-audit-docs-build:
+# Contract half -- ruff, the whole test file, and the manifest/conf wiring check. Safe to
+# run inside a chain, which the full gate below still is not.
+#
+# Until #131 this deselected test_audit_docs_plumbing_builds_docs. That test calls the real
+# gate with skip_build=False against the real repo root, and the gate then shelled out to
+# `uv sync --group=docs --extra=eda`. `uv sync` REPLACES the environment rather than adding
+# to it, so it silently dropped beartype -- the one package that lives only in
+# [project.optional-dependencies].dev and that nothing else requires. (jaxtyping SURVIVES:
+# equinox, a core dependency, requires it.) Every later gate in audit-deterministic then
+# died on an unrelated ModuleNotFoundError while this recipe itself still exited 0.
+#
+# #131 moved the groups and extras onto `uv run`, which resolves additively and leaves the
+# environment alone. The deselect lost its reason to exist, so the whole file runs here.
+#
+# That is worth its cost -- the whole file runs in ~13s here, 23.5s for that one test from
+# a cold build dir -- and not merely for tidiness: .github/workflows/docs.yml invokes
+# `sphinx-build` DIRECTLY and never goes through audit_docs_plumbing.py, so it does not
+# cover this gate's own build-command construction -- which is precisely the code #131
+# rewrote. With the deselect in place that code had no per-commit coverage anywhere.
+#
+# That root cause is closed (#4969). The groups are now thin self-referential
+# aliases -- [dependency-groups].dev is exactly ["xtrax[dev]"] -- so the group has
+# no content of its own and cannot drift from the extra. The shape is enforced for
+# any name declared in BOTH tables by tests/distribution/test_dependency_group_alias.py
+# and by scripts/audit_project_hygiene.py, so a future edit that re-splits them
+# fails this gate rather than silently uninstalling beartype again.
+audit-docs-build-contract:
     uv run ruff check scripts/audit_docs_plumbing.py tests/distribution/test_docs_plumbing.py
     uv run pytest tests/distribution/test_docs_plumbing.py -v
+    uv run python scripts/audit_docs_plumbing.py --check-only
+
+# Full gate: runs the real `sphinx-build -W -n` over the whole docs tree through the gate's
+# own entry point. It no longer mutates the shared venv (#131), so the old "never inside a
+# chain" hazard is gone -- what keeps it out of audit-deterministic now is only cost, since
+# the contract half above already exercises one real build via
+# test_audit_docs_plumbing_builds_docs. Run it at release time.
+audit-docs-build: audit-docs-build-contract
     uv run python scripts/audit_docs_plumbing.py
 
 audit-project-hygiene:
@@ -233,13 +281,24 @@ audit-promotion-gate:
     uv run ruff check scripts/audit_promotion_gate.py tests/audit/test_promotion_gate_ci.py
     uv run pytest tests/audit/test_promotion_gate_ci.py -v
 
-audit-release-readiness:
+# Hermetic half: the gate's config and its tests agree with the real workflows.
+# Wired into audit-deterministic, like every other tests/distribution gate, so
+# marker drift is caught on the commit that causes it. The full gate below is
+# run by hand at release time and went unrun from 2026-07-02 to 2026-09-02,
+# during which it was red the whole time and nothing said so.
+audit-release-readiness-contract:
     uv run ruff check scripts/audit_release_readiness.py tests/distribution/test_release_readiness.py
     uv run pytest tests/distribution/test_release_readiness.py -v
+
+# Full gate: adds the live probes (uv sync of prerequisite groups, PyPI and git
+# tag freshness), so it needs a network and is too slow for the per-commit
+# chain. Run it before cutting a release -- it is the thing that says READY.
+audit-release-readiness: audit-release-readiness-contract
     uv run python scripts/audit_release_readiness.py
 
 audit-coverage-dag:
     uv run python scripts/audit_coverage_dag.py
+    uv run pytest tests/distribution/test_coverage_dag.py -v
 
 audit-coverage-dag-all:
     uv run python scripts/audit_coverage_dag.py --all-tiers
@@ -250,8 +309,31 @@ audit-coverage-tier1:
 audit-coverage-tier2:
     uv run python scripts/audit_coverage_dag.py --tier tier2_eda --enforce tier2_eda
 
+# ty over controller/ needs the -c override: [tool.ty.src] include is scoped to
+# "src/**/*.py", which filters controller/ out before the CLI path is consulted, so a
+# bare `ty check controller/` prints "WARN No python files found" and then "All checks
+# passed!" -- a green that means nothing. The controller extra is required too, or the
+# bathos imports resolve to 10 spurious unresolved-import errors.
+audit-controller-types:
+    uv run --extra dev --extra io --extra controller ty check -c 'src.include=["controller/**/*.py"]' controller/
+
+audit-coverage-tier4: audit-controller-types
+    uv run python scripts/audit_coverage_dag.py --tier tier4_controller --enforce tier4_controller
+
+# Reports which audit-* recipes no workflow reaches, and FAILS if a workflow names a
+# recipe the Justfile no longer defines. The report half is informational; the dangling
+# check is the gate, and it is in audit-deterministic so a renamed recipe is caught on the
+# commit that renames it rather than at the next scheduled run.
+#
+# .github/workflows/audit-orphans.yml runs the reported recipes weekly. That workflow does
+# not gate -- see its header, and #5002 for the phase that will.
+audit-orphan-recipes:
+    uv run ruff check scripts/audit_orphan_recipes.py tests/audit/test_orphan_recipes.py
+    uv run pytest tests/audit/test_orphan_recipes.py -v
+    uv run python scripts/audit_orphan_recipes.py --format report
+
 # CI-safe deterministic track (N5.1): foundation gates + contract tests, no live judgment gates.
-audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-publish-oidc audit-added-types-diff
+audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint audit-jax-purity-gate audit-telemetry-coverage audit-substrate-lock audit-wave1-load-bearing audit-jax-pin audit-coverage-hygiene audit-version-wheel audit-packaging-metadata audit-public-api audit-project-hygiene audit-narrative-docs audit-output-sink-docs audit-docs-build-contract audit-publish-oidc audit-release-readiness-contract audit-added-types-diff audit-dataclass-shape-diff audit-orphan-recipes
     uv run pytest tests/audit/ -v
     just audit-coverage-dag
     just audit-bootstrap-dry
@@ -265,7 +347,7 @@ audit-deterministic: audit-imports audit-no-future-annotations audit-jaxlint aud
     just audit-port-emit-contract
 
 # Port validation gates (Epic #2180 Wave 1)
-audit-port: audit-port-oracle-seal audit-port-static audit-port-parity audit-port-emit-contract
+audit-port: audit-port-oracle-seal audit-port-static audit-port-parity audit-port-emit-contract audit-port-provenance
 
 audit-port-oracle-seal:
     uv run python scripts/audit_port_oracle_seal.py --target port/port_target.toml
@@ -279,6 +361,9 @@ audit-port-parity:
 
 audit-port-emit-contract:
     uv run pytest tests/contract/test_port_emit_schema.py -v
+
+audit-port-provenance:
+    uv run --no-sync python scripts/audit_port_provenance.py
 
 audit-port-bridge:
     uv run python scripts/lint_port_bridge_map.py

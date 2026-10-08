@@ -103,6 +103,28 @@ class TestEndToEndTinyRuns:
             assert record.stage == 0
             assert record.probe_id == path.stem
 
+    def test_stage0_onehot_includes_memory_metrics(self, tmp_path: Path) -> None:
+        from xtrax.profiling.record import ProbeRecord
+
+        assert (
+            stage0_main(
+                ["--out-dir", str(tmp_path), "--rows", "16", "--classes", "4", "--cols", "4"]
+            )
+            == 0
+        )
+        paths = sorted(tmp_path.glob("stage0_onehot_*.json"))
+        assert len(paths) == 2
+        for path in paths:
+            record = ProbeRecord.read(path)
+            # Assert at least one mem_-prefixed metric is present
+            mem_metrics = [k for k in record.metrics.keys() if k.startswith("mem_")]
+            assert len(mem_metrics) > 0, (
+                f"No mem_* metrics found in {path.name}: {sorted(record.metrics.keys())}"
+            )
+            # Assert that pre-existing cost metrics are still present
+            assert "flops" in record.metrics
+            assert "bytes_accessed" in record.metrics
+
     def test_host_boundary_tiny_run_record_is_readable(self, tmp_path: Path) -> None:
         from xtrax.profiling.record import ProbeRecord
 

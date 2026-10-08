@@ -16,6 +16,7 @@ quickstart
 why-xtrax
 concepts
 architecture
+dependency-boundaries
 ```
 
 ```{toctree}
@@ -33,6 +34,7 @@ api/distributed
 api/transforms
 api/safety
 api/stages
+api/export
 api/output-sinks
 api/eda
 ```

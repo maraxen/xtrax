@@ -4,10 +4,10 @@ import pytest
 
 from xtrax.tiling.strategy import (
     Bucket,
+    ChunkedMap,
     DedupFn,
     DedupGather,
     GatherFn,
-    SafeMap,
     Scan,
     ScanTransition,
     Vmap,
@@ -27,9 +27,9 @@ class TestAxisStrategyInstantiation:
         assert isinstance(strategy, Vmap)
 
     def test_safemap_instantiates(self):
-        """SafeMap with batch_size instantiates."""
-        strategy = SafeMap(batch_size=32)
-        assert isinstance(strategy, SafeMap)
+        """ChunkedMap with batch_size instantiates."""
+        strategy = ChunkedMap(batch_size=32)
+        assert isinstance(strategy, ChunkedMap)
         assert strategy.batch_size == 32
 
     def test_scan_instantiates(self):
@@ -108,8 +108,8 @@ class TestFrozenDataclasses:
             strategy.anything = True
 
     def test_safemap_frozen(self):
-        """SafeMap is immutable."""
-        strategy = SafeMap(batch_size=32)
+        """ChunkedMap is immutable."""
+        strategy = ChunkedMap(batch_size=32)
         with pytest.raises(Exception):
             strategy.batch_size = 64
 
@@ -183,9 +183,9 @@ class TestAxisStrategyUnion:
         assert isinstance(strategy, Vmap)
 
     def test_safemap_is_axis_strategy(self):
-        """SafeMap is a valid AxisStrategy."""
-        strategy = SafeMap(batch_size=32)
-        assert isinstance(strategy, SafeMap)
+        """ChunkedMap is a valid AxisStrategy."""
+        strategy = ChunkedMap(batch_size=32)
+        assert isinstance(strategy, ChunkedMap)
 
     def test_scan_is_axis_strategy(self):
         """Scan is a valid AxisStrategy."""

@@ -1,0 +1,774 @@
+"""Plan-time gating for the export boundary.
+
+Two entry points over the same rules: ``check_export_safety`` returns every
+blocker it finds, ``validate_export_safe`` raises on the first batch. Both
+delegate topology to ``xtrax.stages.topology.validate_plan_topology`` and let
+its ``PlanTopologyError`` propagate unwrapped -- topology violations are
+structural and are never demoted into a blocker list.
+
+Blockers cover the rules this module owns:
+
+- ``"dtype"``: a leaf's dtype the target's backend does not accept.
+- ``"unlegalizable-op"``: an op that IREE's StableHLO importer rejects
+  outright, on every target -- currently ``jax.lax.top_k``, which lowers to a
+  ``stablehlo.composite`` wrapping ``chlo.top_k`` that the importer marks
+  explicitly illegal.
+- ``"sort-stability"``: a stable sort/argsort, whose tie-breaking order IREE
+  does not preserve relative to XLA. This is not a compile failure -- it
+  silently produces different index results on ties, invisible to a
+  float-tolerance parity check because the divergence lives entirely in
+  integer indices.
+- ``"random-permutation"``: ``jax.random.permutation``, which lowers to a
+  nested ``_shuffle`` jit. IREE can compile it and still return a valid but
+  wrong permutation; float parity then passes because the divergence lives
+  entirely in integer indices. Unlike ``"unlegalizable-op"``, this rule is
+  suppressible via ``acknowledged``. It is **necessary but not sufficient**:
+  the defect is really the split-derived key, and a large enough program
+  diverges on ``jnp.argsort(jax.random.bits(k1, ...))`` too, so a clean run of
+  this rule does not certify a model's randomness. See its detail string.
+- ``"unbatched-threefry-key"``: threefry driven by a key that arrives as a
+  runtime input with at most one lane. Unlike the rules above this is not a
+  wrong answer but a hard abort at invocation -- IREE's HAL rejects the
+  command buffer with a bogus 2**39-ish length. A constant key is exempt and
+  two or more lanes are exempt, so the rule tests input provenance, not the
+  primitive alone. Suppressible, though suppressing it only passes the gate
+  and does not make the artifact runnable.
+- ``"onnx-in-graph-rng"``: a JAX random-number primitive in a program bound for
+  the ``onnx`` target. jax2onnx lowers ``jax.random`` draws to ONNX's own
+  attribute-seeded ``RandomUniform``-family ops rather than threefry, so the
+  artifact cannot reproduce JAX's key-determined bits; ``random_split`` has no
+  converter at all. Unsuppressible: no acknowledgement makes the draws JAX's.
+
+The four ``"unlegalizable-op"``/``"sort-stability"``/``"random-permutation"``/
+``"unbatched-threefry-key"`` rules were each measured on IREE and apply only to
+IREE-backend targets. On the ``onnx`` target the same constructs were measured
+exact (``lax.top_k``, stable sort/argsort; 260930 spike), so applying IREE's
+rules there would refuse correct programs.
+
+They are collected rather than raised one at a time so a caller fixing a model
+sees every offending leaf/op at once.
+"""
+
+import math
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+from xtrax.export.targets import Backend, Target
+from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
+from xtrax.stages.boundaries import AxisBoundary
+from xtrax.stages.topology import AxisDecisionLike, validate_plan_topology
+
+__all__ = [
+    "DtypeNotSupportedError",
+    "ExportBlocker",
+    "ExportSafetyError",
+    "UnsupportedOperationError",
+    "check_export_safety",
+    "dtype_name",
+    "find_bcoo_leaves",
+    "trace_for_export_safety",
+    "validate_export_safe",
+]
+
+
+class ExportSafetyError(Exception):
+    """Base for this package's own plan-time gate failures.
+
+    Distinct from xtrax.stages.topology.PlanTopologyError, which both entry
+    points here let propagate unchanged rather than wrapping.
+    """
+
+
+class DtypeNotSupportedError(ExportSafetyError):
+    """A leaf's dtype is not accepted by the requested target."""
+
+
+class UnsupportedOperationError(ExportSafetyError):
+    """A traced op cannot legalize, or relies on a guarantee IREE breaks."""
+
+
+@dataclass(frozen=True)
+class ExportBlocker:
+    """One reason a plan or leaf cannot cross the export boundary.
+
+    Attributes:
+        axis: Axis name, or the leaf keypath for a dtype blocker.
+        rule: Short rule identifier, e.g. ``"dtype"``.
+        detail: Human-readable explanation naming the offending value.
+    """
+
+    axis: str
+    rule: str
+    detail: str
+
+
+def dtype_name(dtype: Any) -> str:
+    """Render a numpy/JAX dtype in the short form targets are keyed by.
+
+    Args:
+        dtype: Anything with a ``name``, or a value convertible by ``str``.
+
+    Returns:
+        A short name such as ``"f32"``, ``"bf16"``, ``"i32"``, or ``"bool"``.
+        Unrecognised dtypes are returned as their own name, which will simply
+        fail the membership check against a target's dtype sets.
+    """
+    raw = getattr(dtype, "name", None) or str(dtype)
+    if raw == "bool":
+        return "bool"
+    prefixes = (("float", "f"), ("bfloat", "bf"), ("int", "i"), ("uint", "u"), ("complex", "c"))
+    for long, short in prefixes:
+        if raw.startswith(long):
+            return short + raw[len(long) :]
+    return raw
+
+
+def find_bcoo_leaves(tree: Any) -> list[str]:
+    """Return the keypaths of any BCOO leaves in ``tree``.
+
+    Sparsified models substitute BCOO at leaf positions, and BCOO is a pytree
+    *node* rather than a leaf, so the tree structure changes. Under
+    ``jax.export`` a closure-held BCOO is baked in as constants, which is what a
+    self-contained artifact wants; this exists so a caller knows that is
+    happening rather than discovering it in the MLIR.
+
+    Args:
+        tree: Any pytree, typically the model held in the exported closure.
+
+    Returns:
+        Keypath strings for each BCOO leaf; empty when sparse is unavailable.
+    """
+    try:
+        import jax
+        from jax.experimental.sparse import BCOO
+    except ImportError:  # pragma: no cover - sparse ships with jax today
+        return []
+
+    found: list[str] = []
+    flat = jax.tree_util.tree_flatten_with_path(tree, is_leaf=lambda x: isinstance(x, BCOO))[0]
+    for path, leaf in flat:
+        if isinstance(leaf, BCOO):
+            found.append(jax.tree_util.keystr(path))
+    return found
+
+
+def _dtype_blocker(
+    where: str,
+    dtype: Any,
+    target: Target,
+    request_features: frozenset[str],
+) -> ExportBlocker | None:
+    """Judge one dtype against a target, or None if the target accepts it.
+
+    Args:
+        where: Location to name in the blocker, e.g. ``"abstract_inputs[0]"`` or
+            a closure leaf's keypath.
+        dtype: The leaf's dtype.
+        target: The target being compiled for.
+        request_features: Device features the caller will request.
+
+    Returns:
+        A blocker, or None when the dtype is accepted outright or unlocked by a
+        requested feature.
+    """
+    name = dtype_name(dtype)
+    if name in target.supported_dtypes:
+        return None
+    if name in target.optional_dtypes:
+        feature = target.optional_dtype_features.get(name)
+        if feature is not None and feature in request_features:
+            return None
+        return ExportBlocker(
+            axis=where,
+            rule="dtype",
+            detail=(
+                f"dtype {name!r} is optional on target {target.name!r} and "
+                f"needs feature {feature!r}, which was not requested. Pass "
+                f"request_features=frozenset({{{feature!r}}})."
+            ),
+        )
+    supported = ", ".join(sorted(target.supported_dtypes))
+    detail = f"dtype {name!r} is not supported by target {target.name!r}. Supported: {supported}."
+    if name == "f64":
+        # Worth saying outright: IREE does not reject f64, it silently demotes
+        # it to f32 and rewrites the artifact's public signature. Without this
+        # the reader assumes a capability gap and goes looking for a flag.
+        detail += (
+            " IREE demotes f64 to f32 on every backend and rewrites the entry "
+            "point's signature to match, so the artifact would not have the "
+            "dtype you asked for. Cast to f32 yourself, so the precision loss "
+            "is yours rather than the compiler's."
+        )
+    return ExportBlocker(axis=where, rule="dtype", detail=detail)
+
+
+def _closure_dtype_leaves(fn: Any) -> list[tuple[str, Any]]:
+    """Return ``(keypath, dtype)`` for every array leaf reachable from ``fn``.
+
+    ``abstract_inputs`` covers only what the caller passes at trace time. A
+    model's weights typically ride along in the callable's closure instead --
+    an Equinox module holding a bf16 or f64 array is never an argument -- so
+    checking arguments alone leaves the commonest case unchecked.
+
+    Args:
+        fn: The callable being exported.
+
+    Returns:
+        One entry per leaf that has a ``dtype``, keypath first. Empty when the
+        callable holds no array leaves, which is the usual case for a plain
+        function.
+    """
+    try:
+        import jax
+    except ImportError:  # pragma: no cover - jax is a hard dependency
+        return []
+
+    try:
+        flat = jax.tree_util.tree_flatten_with_path(fn)[0]
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return []
+
+    leaves: list[tuple[str, Any]] = []
+    for path, leaf in flat:
+        dtype = getattr(leaf, "dtype", None)
+        if dtype is not None:
+            leaves.append((f"closure{jax.tree_util.keystr(path)}", dtype))
+    return leaves
+
+
+def _dtype_blockers(
+    abstract_inputs: Sequence[Any],
+    fn: Any,
+    target: Target,
+    request_features: frozenset[str],
+) -> list[ExportBlocker]:
+    """Collect a blocker for every input or closure leaf whose dtype is rejected.
+
+    Inputs are flattened to their leaves first, so a dict or tuple input's leaves are
+    judged too (``abstract_inputs[0]['a']``); a bare array input keeps the plain
+    ``abstract_inputs[<i>]`` name.
+    """
+    import jax
+
+    blockers: list[ExportBlocker] = []
+    flat, _ = jax.tree_util.tree_flatten_with_path(list(abstract_inputs))
+    for path, spec in flat:
+        dtype = getattr(spec, "dtype", None)
+        if dtype is None:
+            continue
+        where = f"abstract_inputs{jax.tree_util.keystr(path)}"
+        blocker = _dtype_blocker(where, dtype, target, request_features)
+        if blocker is not None:
+            blockers.append(blocker)
+
+    for where, dtype in _closure_dtype_leaves(fn):
+        blocker = _dtype_blocker(where, dtype, target, request_features)
+        if blocker is not None:
+            blockers.append(blocker)
+    return blockers
+
+
+_UNLEGALIZABLE_OP_RULE = "unlegalizable-op"
+_SORT_STABILITY_RULE = "sort-stability"
+_RANDOM_PERMUTATION_RULE = "random-permutation"
+_UNBATCHED_THREEFRY_RULE = "unbatched-threefry-key"
+_ONNX_RNG_RULE = "onnx-in-graph-rng"
+
+#: Rules a caller cannot suppress via ``acknowledged``. Unlegalizable ops,
+#: because acknowledging one does not make it compile -- it only moves the
+#: identical failure later, into ``compile_for_target``. In-graph RNG on the
+#: onnx target, because no acknowledgement makes ONNX's RNG produce JAX's draws.
+_UNSUPPRESSIBLE_RULES = frozenset({_UNLEGALIZABLE_OP_RULE, _ONNX_RNG_RULE})
+
+#: JAX primitives that draw, derive, or seed random bits. Key wrapping alone
+#: (``random_wrap``/``random_unwrap``) moves no bits and is not listed.
+_JAX_RNG_PRIMITIVES = frozenset(
+    {
+        "random_bits",
+        "random_fold_in",
+        "random_seed",
+        "random_split",
+        "rng_bit_generator",
+        "rng_uniform",
+        "threefry2x32",
+    }
+)
+
+_ONNX_RNG_DETAIL = (
+    "This program draws random numbers inside the exported graph, which the "
+    "onnx target cannot preserve. jax2onnx lowers jax.random draws to ONNX "
+    "RandomUniform/RandomUniformLike -- ONNX's own RNG, seeded by a node "
+    "attribute rather than by the key tensor -- so the artifact cannot "
+    "reproduce JAX's key-determined bits; jax.random.split has no converter "
+    "at all. Measured 260930 on jax2onnx 0.16.1 and 0.17.0. Draw the random "
+    "values on the host and pass them in as inputs (this is how aminx's browser "
+    "sampler feeds its Gumbel noise). Not suppressible."
+)
+
+_TOP_K_DETAIL = (
+    "jax.lax.top_k cannot be legalized by IREE's StableHLO importer on any "
+    "target: it lowers to a stablehlo.composite wrapping chlo.top_k, which "
+    "the importer marks explicitly illegal. Replace it with "
+    "jnp.argsort(-x, axis=-1, stable=True)[..., :k] plus take_along_axis, "
+    "which compiles and is bit-exact on values and indices -- but that "
+    "replacement is itself a stable sort, so it inherits the sort-stability "
+    "problem below and needs the same tiebreak fix."
+)
+
+_SORT_STABILITY_DETAIL = (
+    "This sort relies on stable tie-breaking (is_stable=True), but IREE does "
+    "not honour JAX's documented stable-sort tie order -- ties can land at "
+    "different positions than XLA produces, and the divergence is carried "
+    "entirely by integer indices, so a float-tolerance parity check sees "
+    "bit-identical values and passes. Fold an explicit index tiebreak into "
+    "the sort key instead of relying on backend stability: sort "
+    "lexicographically on (-x, index) rather than sorting x alone."
+)
+
+_RANDOM_PERMUTATION_DETAIL = (
+    "jax.random.permutation lowers to a nested _shuffle jit that IREE "
+    "miscompiles when the permutation key is a split half and the sibling "
+    "half is also consumed. The artifact returns a valid but wrong "
+    "permutation; nothing crashes, and a float-tolerance parity check "
+    "reports max_abs_diff 0.0 because the divergence is carried entirely "
+    "by integer indices. Measured 260911 on iree-base-compiler 3.11: 248 of "
+    "256 positions differ, byte-identical across two --iree-llvmcpu-target-cpu "
+    "values, so it is a lowering defect rather than float reassociation. "
+    "THIS RULE IS NECESSARY BUT NOT SUFFICIENT. permutation is the most "
+    "sensitive construct -- it diverges even in a tiny program -- but the "
+    "underlying defect is the SPLIT-DERIVED KEY, not the permutation. In a "
+    "large program jnp.argsort(jax.random.bits(k1, ...)) on a split half "
+    "diverges too, while the same spelling on the RAW, unsplit key is exact. "
+    "So swapping the construct is not a fix on its own; only an unsplit key "
+    "was measured exact end to end. Do not read a clean run of this gate as "
+    "'this model's randomness is safe to export'. This rule is suppressible "
+    "via acknowledged=frozenset({'random-permutation'}) if an informed caller "
+    "accepts the risk."
+)
+
+_UNBATCHED_THREEFRY_DETAIL = (
+    "This program runs threefry on a key that arrives as a RUNTIME INPUT and "
+    "is un-batched (a scalar key<fry>[] or a single-lane key<fry>[1]). IREE "
+    "does not miscompile this -- it aborts at INVOCATION, before returning "
+    "anything, with a HAL command-buffer validation failure: "
+    "OUT_OF_RANGE, length=549755813960 against a 192-byte binding. The bogus "
+    "length is 2**39 plus a small offset that tracks the shape (2**39+200 for "
+    "a bare key, 2**39+224 for a one-lane vmap), so bit 39 is set spuriously "
+    "-- a width or sign confusion in a buffer-size computation rather than a "
+    "genuine overflow. "
+    "Measured 260913 on iree-base-compiler 3.11. The boundary is the LANE "
+    "COUNT, not the rank of the key input and not vmap-vs-not: an un-batched "
+    "draw fails from a (2,), a (1,2) and a (4,2) key input alike, a one-lane "
+    "vmap fails, and two or more lanes are bit-exact. The draw size is "
+    "irrelevant (2, 64 and 1024 all fail). It is not input marshalling -- a "
+    "(2,) uint32 passthrough and a hand-written xor/shift/add loop on the same "
+    "input are both exact -- and not backend codegen, since the reference vmvx "
+    "backend aborts identically. "
+    "A key BAKED IN as a constant is genuinely exempt, not merely "
+    "const-folded: it stays exact under --iree-opt-const-eval=false. That is "
+    "why this rule tests input provenance rather than matching the primitive "
+    "alone; the two spellings are otherwise jaxpr-identical. "
+    "Two workarounds, both measured: give the key two or more lanes (vmap the "
+    "draw over a (>=2, 2) key), or set jax_threefry_partitionable=False, which "
+    "was confirmed against a red control in the same process and changes the "
+    "emitted MLIR. The second narrows the defect to the partitionable threefry "
+    "lowering, and unlike #5093 this one does NOT reproduce under both "
+    "lowerings. This rule is suppressible via "
+    "acknowledged=frozenset({'unbatched-threefry-key'}); suppressing it does "
+    "not make the artifact runnable, it only lets a caller past the gate."
+)
+
+
+def _input_derived_var_ids(jaxpr: Any, seeded: frozenset[int]) -> set[int]:
+    """Return ``id()`` of every var transitively derived from a runtime input.
+
+    A forward taint pass, seeded with the ids of ``jaxpr``'s own input vars and
+    propagated through each equation to its outputs. Needed by the
+    ``"unbatched-threefry-key"`` rule, which must tell a key that arrives as a
+    runtime input (aborts the IREE runtime) from one baked in as a constant
+    (measured exact, even with const-eval disabled) -- two programs whose
+    jaxprs are otherwise identical at the ``random_*`` level.
+
+    Sub-jaxprs inherit taint only when the enclosing equation consumes a
+    tainted operand. Where the arities line up -- the ordinary ``jit``/``pjit``
+    case -- operands map to sub-inputs positionally and taint stays exact.
+    Where they do not, as for ``scan``'s const/carry/xs split, every sub-input
+    is tainted instead. That over-approximates: a constant key built inside a
+    ``scan`` that also consumes a tainted operand is flagged although it would
+    run. The bias is deliberate -- the failure being gated is a hard abort at
+    invocation, and this rule is suppressible -- but it is an over-approximation
+    and not a precise slice.
+
+    Identity is by ``id()``, which is sound only while the jaxpr is alive; the
+    caller holds it for the duration.
+
+    Args:
+        jaxpr: The jaxpr to taint.
+        seeded: ``id()`` of ``jaxpr.invars`` entries that are already tainted.
+
+    Returns:
+        The ``id()`` of every tainted var found at this level or below.
+    """
+    tainted: set[int] = set(seeded)
+    for eqn in jaxpr.eqns:
+        consumes_tainted = any(id(v) in tainted for v in eqn.invars)
+        for sub in sub_jaxprs(eqn.params):
+            if not consumes_tainted:
+                continue
+            if len(sub.invars) == len(eqn.invars):
+                sub_seed = frozenset(
+                    id(inner)
+                    for inner, outer in zip(sub.invars, eqn.invars, strict=True)
+                    if id(outer) in tainted
+                )
+            else:
+                sub_seed = frozenset(id(inner) for inner in sub.invars)
+            tainted |= _input_derived_var_ids(sub, sub_seed)
+        if consumes_tainted:
+            tainted.update(id(v) for v in eqn.outvars)
+    return tainted
+
+
+def _is_unbatched_key(eqn: Any) -> bool:
+    """Whether a ``random_wrap`` equation produces a key with at most one lane.
+
+    ``key<fry>[]`` (a bare key input) and ``key<fry>[1]`` (a one-lane vmap)
+    both abort at invocation; ``key<fry>[2]`` and wider are bit-exact.
+    """
+    aval = getattr(eqn.outvars[0], "aval", None) if eqn.outvars else None
+    shape = getattr(aval, "shape", None)
+    return shape is not None and math.prod(shape) <= 1
+
+
+# Passed as ``traced_jaxpr`` once tracing has been tried and failed, so the gate
+# does not re-trace ``fn`` once per target (export_pipeline).
+_NOT_TRACEABLE = object()
+
+
+def trace_for_export_safety(
+    fn: Callable[..., Any],
+    abstract_inputs: Sequence[Any],
+    *,
+    reraise: tuple[type[BaseException], ...] = (),
+) -> Any:
+    """Trace ``fn`` once for the op and program-dtype rules, or None if it cannot be.
+
+    Pass the result as ``traced_jaxpr`` to judge several targets from one trace.
+    ``export_pipeline`` traces the composed callable it actually exports -- the
+    batched program -- so a per-element ``fn`` (which usually cannot be traced
+    against the BATCHED ``abstract_inputs``) is still judged.
+
+    Tracing failures are swallowed rather than surfaced: a callable that
+    ``jax.make_jaxpr`` cannot trace is not something these rules could have
+    usefully judged, and it fails identically -- at export or conversion time,
+    with a clearer error pointing at the actual call site -- moments later.
+    Exceptions of a type in ``reraise`` propagate instead (``export_pipeline``
+    passes ``ComposerError``, which the composer can raise at trace time).
+    """
+    import jax
+
+    try:
+        closed = jax.make_jaxpr(fn)(*abstract_inputs)
+    except reraise:
+        raise
+    except Exception:  # noqa: BLE001 - see docstring: never masks a real failure
+        return None
+    return getattr(closed, "jaxpr", closed)
+
+
+def _op_blockers(top: Any, target: Target) -> list[ExportBlocker]:
+    """Collect blockers for ops ``target``'s backend cannot legalize or preserve.
+
+    Each backend gets only the rules measured on it: the IREE rules for IREE
+    targets, the in-graph-RNG rule for onnx. ``top`` is None when the program
+    could not be traced (see ``trace_for_export_safety``).
+    """
+    if top is None:
+        return []
+    if target.backend is Backend.ONNX:
+        return _onnx_op_blockers(top)
+    return _iree_op_blockers(top)
+
+
+# Primitives ONNX Runtime's CPU EP runs at a dtype outside the onnx envelope: pure
+# data movement, casts, and the reductions measured to have bf16 kernels. Each is
+# pinned by an ORT run in tests/export/test_export_review_followups.py
+# (test_allowlisted_primitive_runs_in_bf16_on_ort), with arithmetic (add, mul, dot,
+# neg, max, gt, select_n, pad, broadcast_to's Expand) as the failing control. Call
+# wrappers emit no op of their own; their bodies are walked separately.
+_ONNX_DTYPE_AGNOSTIC_PRIMITIVES = frozenset(
+    {
+        "convert_element_type",
+        "reshape",
+        "transpose",
+        "squeeze",
+        "slice",
+        "dynamic_slice",
+        "concatenate",
+        "gather",
+        "rev",
+        "reduce_sum",
+        "pjit",
+        "jit",
+        "closed_call",
+        "custom_jvp_call",
+        "custom_vjp_call",
+        "remat",
+        "checkpoint",
+    }
+)
+
+
+def _judged_dtype(dtype: Any) -> bool:
+    """Whether a program value's dtype is one the dtype rules judge at all.
+
+    JAX's extended dtypes (PRNG keys) and ``float0`` never reach an artifact as a
+    tensor (an RNG key is the op rules' concern). ``float0`` needs its own check:
+    ``issubdtype(float0, extended)`` is False.
+    """
+    import jax
+
+    if dtype is None or dtype == jax.dtypes.float0:
+        return False
+    return not jax.dtypes.issubdtype(dtype, jax.dtypes.extended)
+
+
+def _boundary_dtype_names(abstract_inputs: Sequence[Any], fn: Any) -> frozenset[str]:
+    """Dtype names ``_dtype_blockers`` already judged (inputs and closure leaves)."""
+    import jax
+
+    names = {
+        dtype_name(spec.dtype)
+        for spec in jax.tree_util.tree_leaves(list(abstract_inputs))
+        if getattr(spec, "dtype", None) is not None
+    }
+    names |= {dtype_name(d) for _, d in _closure_dtype_leaves(fn)}
+    return frozenset(names)
+
+
+def _program_dtype_blockers(
+    top: Any, target: Target, request_features: frozenset[str], judged: frozenset[str]
+) -> list[ExportBlocker]:
+    """One dtype blocker per rejected dtype the program returns or (onnx) computes in.
+
+    Outputs, every target: an artifact returns its outputs' dtypes, so a program
+    returning bf16 is refused on ``native`` just as a bf16 input is.
+
+    Ops, onnx only: ONNX Runtime needs a kernel for each op at the dtype it runs in,
+    so ``x.astype(jnp.bfloat16) + 1`` fails at session creation with
+    ``NOT_IMPLEMENTED`` even when every input and output is f32. An op is judged by
+    the dtypes of its operands AND results (a bf16 comparison returns bool),
+    except primitives in ``_ONNX_DTYPE_AGNOSTIC_PRIMITIVES``, which ORT runs at any
+    dtype -- so the bf16 precision-emulation idiom
+    ``x.astype(jnp.bfloat16).astype(jnp.float32)`` passes. IREE compiles such
+    intermediates; for its targets only the boundary is judged.
+
+    Dtypes in ``judged`` (inputs and closure leaves, which ``_dtype_blockers``
+    already reported) are skipped, so one cause is one blocker.
+    """
+    if top is None:
+        return []
+    found: dict[str, str] = {}
+
+    def note(where: str, var: Any) -> None:
+        dtype = getattr(getattr(var, "aval", None), "dtype", None)
+        if _judged_dtype(dtype) and dtype_name(dtype) not in judged:
+            found.setdefault(dtype_name(dtype), where)
+
+    for var in top.outvars:
+        note("output", var)
+    if target.backend is Backend.ONNX:
+        for eqn in iter_jaxpr_eqns(top):
+            if eqn.primitive.name in _ONNX_DTYPE_AGNOSTIC_PRIMITIVES:
+                continue
+            for var in (*eqn.invars, *eqn.outvars):
+                note(eqn.primitive.name, var)
+
+    blockers: list[ExportBlocker] = []
+    for name, where in found.items():
+        blocker = _dtype_blocker(f"program:{where}", name, target, request_features)
+        if blocker is not None:
+            blockers.append(blocker)
+    return blockers
+
+
+def _onnx_op_blockers(top: Any) -> list[ExportBlocker]:
+    """The onnx target's op rules: one blocker per RNG primitive in the program."""
+    return [
+        ExportBlocker(axis=eqn.primitive.name, rule=_ONNX_RNG_RULE, detail=_ONNX_RNG_DETAIL)
+        for eqn in iter_jaxpr_eqns(top)
+        if eqn.primitive.name in _JAX_RNG_PRIMITIVES
+    ]
+
+
+def _iree_op_blockers(top: Any) -> list[ExportBlocker]:
+    """The IREE targets' op rules, each measured on iree-base-compiler 3.11."""
+    input_derived = _input_derived_var_ids(top, frozenset(id(v) for v in top.invars))
+    blockers: list[ExportBlocker] = []
+    for eqn in iter_jaxpr_eqns(top):
+        name = eqn.primitive.name
+        if name == "top_k":
+            blockers.append(
+                ExportBlocker(axis=name, rule=_UNLEGALIZABLE_OP_RULE, detail=_TOP_K_DETAIL)
+            )
+        elif name == "sort" and eqn.params.get("is_stable"):
+            blockers.append(
+                ExportBlocker(axis=name, rule=_SORT_STABILITY_RULE, detail=_SORT_STABILITY_DETAIL)
+            )
+        elif name in {"jit", "pjit"} and eqn.params.get("name") == "_shuffle":
+            blockers.append(
+                ExportBlocker(
+                    axis=name,
+                    rule=_RANDOM_PERMUTATION_RULE,
+                    detail=_RANDOM_PERMUTATION_DETAIL,
+                )
+            )
+        elif (
+            name == "random_wrap"
+            and _is_unbatched_key(eqn)
+            and any(id(v) in input_derived for v in eqn.invars)
+        ):
+            blockers.append(
+                ExportBlocker(
+                    axis=name,
+                    rule=_UNBATCHED_THREEFRY_RULE,
+                    detail=_UNBATCHED_THREEFRY_DETAIL,
+                )
+            )
+    return blockers
+
+
+def _apply_acknowledged(
+    blockers: list[ExportBlocker], acknowledged: frozenset[str]
+) -> list[ExportBlocker]:
+    """Drop blockers whose rule is acknowledged, except unsuppressible ones.
+
+    Rules in ``_UNSUPPRESSIBLE_RULES`` -- ``"unlegalizable-op"`` and
+    ``"onnx-in-graph-rng"`` -- are never suppressed here: the caller can pass them
+    in ``acknowledged`` and it has no effect, because the artifact cannot be built
+    (or cannot reproduce the pipeline's draws) regardless of who acknowledged it.
+    """
+    return [b for b in blockers if b.rule not in acknowledged or b.rule in _UNSUPPRESSIBLE_RULES]
+
+
+def check_export_safety(
+    decisions: Sequence[AxisDecisionLike],
+    axis_boundaries: Mapping[str, AxisBoundary],
+    abstract_inputs: Sequence[Any],
+    fn: Callable[..., Any],
+    target: Target,
+    *,
+    request_features: frozenset[str] = frozenset(),
+    acknowledged: frozenset[str] = frozenset(),
+    traced_jaxpr: Any = None,
+) -> list[ExportBlocker]:
+    """List every blocker between this plan and the export boundary.
+
+    Deliberately does not call ``validate_plan_topology``: topology violations
+    always raise directly and are never converted into a blocker list.
+
+    Args:
+        decisions: Axis decisions from the plan.
+        axis_boundaries: Map of axis name -> AxisBoundary.
+        abstract_inputs: Abstract inputs the callable will be traced with.
+        fn: The callable being exported. Its closure-reachable leaves are scanned
+            for dtype violations alongside ``abstract_inputs``, and its traced
+            jaxpr (including nested sub-jaxprs, e.g. inside ``lax.scan`` or a
+            ``pjit``-wrapped ``argsort`` or ``_shuffle``) is scanned for the
+            op rules of ``target``'s backend: unlegalizable ops, sorts relying
+            on stable tie-breaking, ``jax.random.permutation`` and un-batched
+            threefry keys for IREE; in-graph RNG for onnx.
+        target: The target being compiled for. Its ``backend`` selects the op
+            rules.
+        request_features: Device features the caller will request, unlocking the
+            target's optional dtypes.
+        acknowledged: Rule names to suppress from the returned list. Every rule
+            except ``"unlegalizable-op"`` and ``"onnx-in-graph-rng"`` is
+            suppressible this way -- those two cannot produce a correct artifact
+            at all, so acknowledging them would only move the failure later.
+        traced_jaxpr: The jaxpr of the callable actually exported, from
+            ``trace_for_export_safety(callable_, abstract_inputs)``. When given,
+            the op and program-dtype rules read it instead of tracing ``fn``, so a
+            per-element ``fn`` is judged through the batched program it is
+            exported as, and several targets share one trace. When omitted,
+            ``fn`` is traced against ``abstract_inputs``, and a per-element
+            ``fn`` that cannot be traced that way is not judged by those rules.
+
+    Returns:
+        Every blocker found, in discovery order, minus any whose rule is in
+        ``acknowledged`` (except unsuppressible rules). Empty means no
+        objection.
+    """
+    del decisions, axis_boundaries
+    if traced_jaxpr is _NOT_TRACEABLE:
+        top = None
+    elif traced_jaxpr is not None:
+        top = traced_jaxpr
+    else:
+        top = trace_for_export_safety(fn, abstract_inputs)
+    blockers = _dtype_blockers(abstract_inputs, fn, target, request_features)
+    judged = _boundary_dtype_names(abstract_inputs, fn)
+    blockers += _program_dtype_blockers(top, target, request_features, judged)
+    blockers += _op_blockers(top, target)
+    return _apply_acknowledged(blockers, acknowledged)
+
+
+def validate_export_safe(
+    decisions: Sequence[AxisDecisionLike],
+    axis_boundaries: Mapping[str, AxisBoundary],
+    abstract_inputs: Sequence[Any],
+    fn: Callable[..., Any],
+    target: Target,
+    *,
+    request_features: frozenset[str] = frozenset(),
+    acknowledged: frozenset[str] = frozenset(),
+    traced_jaxpr: Any = None,
+) -> None:
+    """Raise unless this plan can cross the export boundary for ``target``.
+
+    Args:
+        decisions: Axis decisions from the plan.
+        axis_boundaries: Map of axis name -> AxisBoundary.
+        abstract_inputs: Abstract inputs the callable will be traced with.
+        fn: The callable being exported.
+        target: The target being compiled for.
+        request_features: Device features the caller will request.
+        acknowledged: Rule names to suppress. See ``check_export_safety``;
+            ``"unlegalizable-op"`` and ``"onnx-in-graph-rng"`` are not suppressible.
+        traced_jaxpr: The exported callable's jaxpr. See ``check_export_safety``.
+
+    Raises:
+        PlanTopologyError: Propagated unwrapped from validate_plan_topology --
+            including its MaterializeFuseConflictError,
+            MaterializeWithoutSinkError, and MultipleMaterializeAxesError
+            subclasses.
+        DtypeNotSupportedError: If any leaf's dtype is rejected by the target.
+            Takes precedence over UnsupportedOperationError below: if the
+            blocker list contains *any* dtype blocker, this is raised instead
+            of UnsupportedOperationError, even when op blockers are also
+            present -- so existing callers that only ever expected a dtype
+            failure keep seeing one. Either way, the message lists every
+            blocker found, across both rule families, not just the first.
+        UnsupportedOperationError: If no dtype blocker is present but at least
+            one op blocker (e.g. ``"unlegalizable-op"``, ``"sort-stability"``,
+            ``"random-permutation"``, or ``"onnx-in-graph-rng"``) is.
+    """
+    validate_plan_topology(decisions, axis_boundaries, export_safe=True)
+
+    blockers = check_export_safety(
+        decisions,
+        axis_boundaries,
+        abstract_inputs,
+        fn,
+        target,
+        request_features=request_features,
+        acknowledged=acknowledged,
+        traced_jaxpr=traced_jaxpr,
+    )
+    if blockers:
+        detail = "\n".join(f"  - {b.axis} ({b.rule}): {b.detail}" for b in blockers)
+        msg = f"{len(blockers)} export blocker(s) for target {target.name!r}:\n{detail}"
+        if any(b.rule == "dtype" for b in blockers):
+            raise DtypeNotSupportedError(msg)
+        raise UnsupportedOperationError(msg)

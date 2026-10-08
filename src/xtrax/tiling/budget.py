@@ -1,13 +1,15 @@
 """MemoryBudget — declare a joint memory budget for BatchPlanner.
 
 Used by BatchPlanner callers who need whole-plan memory planning: start every
-eligible axis at Vmap, then greedily demote axes to SafeMap (in the order specs
-were given) until the joint estimate fits the budget. Mirrors the
-CarrySpec/DedupSpec pattern: caller declares, planner enforces.
+eligible homogeneous axis at Vmap, then greedily demote axes to ChunkedMap (in
+the order specs were given) until the joint estimate fits the budget.
+Heterogeneous axes are fixed to ChunkedMap and are never started at Vmap.
+Mirrors the CarrySpec/DedupSpec pattern: caller declares, planner enforces.
 
-Unlike the per-axis ``memory_estimator`` (which swallows estimator errors and
-reads the device limit implicitly), budget mode is strict: estimator exceptions
-propagate, and a plan that cannot fit raises BudgetInfeasibleError.
+Unlike the per-axis ``memory_estimator`` (which wraps estimator errors in
+``RuntimeError`` naming the axis, and reads the device limit implicitly),
+budget mode leaves estimator exceptions unchanged, and a plan that cannot
+fit raises BudgetInfeasibleError.
 
 Spec: .praxia/docs/specs/260706_joint-budget-batch-planner.md
 """
@@ -23,7 +25,7 @@ if TYPE_CHECKING:
 class BudgetInfeasibleError(Exception):
     """Raised when no demotion sequence brings the plan under its MemoryBudget.
 
-    Every demotion candidate has been demoted to SafeMap and the joint
+    Every demotion candidate has been demoted to ChunkedMap and the joint
     estimate still exceeds ``MemoryBudget.bytes``. The message names the
     budget, the final estimate, and the per-axis strategy state so the caller
     can see exactly what was tried.

@@ -161,9 +161,16 @@ def run_sphinx_build(root: Path, config: DocsPlumbingConfig) -> tuple[bool, str]
     source = root / config.source_dir
     build_dir = root / config.build_dir
     build_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "uv",
-        "run",
+    # The groups/extras go on `uv run`, not through a separate `uv sync`. `uv run` resolves
+    # additively and leaves the environment alone; `uv sync` REPLACES it, which is how this
+    # gate used to strip beartype out of the shared venv and break every audit sequenced
+    # after it. Self-sufficient either way -- the caller need not pre-install anything.
+    cmd = ["uv", "run"]
+    for group in config.install_groups:
+        cmd.extend(["--group", group])
+    for extra in config.install_extras:
+        cmd.extend(["--extra", extra])
+    cmd += [
         "sphinx-build",
         "-b",
         config.sphinx_builder,
@@ -200,11 +207,11 @@ def audit_docs_plumbing(
     if skip_build:
         return len(failures) == 0, failures
 
-    sync_ok, sync_error = run_uv_sync(root, config)
-    if not sync_ok:
-        failures.append(f"uv sync failed: {sync_error}")
-        return False, failures
-
+    # No `uv sync` here. run_sphinx_build carries the groups/extras on its own `uv run`,
+    # which is additive. Syncing first replaced the shared venv and silently dropped
+    # beartype, so every gate sequenced after this one failed on an unrelated ImportError
+    # -- and because this audit still exited 0, the corruption was invisible at the point
+    # it happened. run_uv_sync is kept only for the tests that assert the old failure path.
     build_ok, build_output = run_sphinx_build(root, config)
     if not build_ok:
         failures.append("sphinx-build -W -n failed")

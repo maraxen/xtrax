@@ -9,24 +9,40 @@ import jax.numpy as jnp
 
 
 def accumulate_grads(
-    loss_fn: Callable[[Any, Any], jax.Array],
+    loss_fn: Callable[..., Any],
     params: Any,
     microbatches: Any,  # pre-stacked PyTree; leading axis = num_microbatches
     filter_spec: Callable | None = None,
-) -> tuple[Any, jax.Array]:
+    *,
+    has_aux: bool = False,
+) -> tuple[Any, ...]:
     """Accumulate gradients over microbatches using jax.lax.scan.
 
     Args:
-        loss_fn: Callable that takes (params, microbatch) and returns scalar loss.
+        loss_fn: Callable that takes ``(params, microbatch)``. Returns a scalar
+            loss, or ``(loss, aux)`` when ``has_aux`` is True. ``aux`` is a
+            PyTree of arrays with the same structure on every microbatch.
         params: Model parameters (PyTree).
         microbatches: Pre-stacked PyTree with leading axis num_microbatches.
                      All leaves must have same leading axis size.
-        filter_spec: Filter function (defaults to eqx.is_array).
+        filter_spec: Filter function (defaults to eqx.is_array). Accepted for
+            callers that already pass it; differentiation uses
+            ``eqx.filter_value_and_grad``, which filters to inexact arrays.
+        has_aux: When True, ``loss_fn`` returns ``(loss, aux)`` and the result
+            is ``(mean_grads, mean_loss, mean_aux)``. ``has_aux`` is a static
+            mode flag (a Python bool), not a traced value. Default False
+            returns ``(mean_grads, mean_loss)``.
 
     Returns:
-        (mean_grads, mean_loss): Tuple of mean gradients and mean loss.
-                                mean_grads is a PyTree matching params structure.
-                                mean_loss is a scalar Array.
+        ``has_aux=False``: ``(mean_grads, mean_loss)``.
+        ``has_aux=True``: ``(mean_grads, mean_loss, mean_aux)``.
+
+        ``mean_grads`` matches ``params``. ``mean_loss`` is a scalar.
+        ``mean_aux`` has the same PyTree structure as one microbatch's aux.
+        Every aux leaf is reduced with ``jnp.mean(..., axis=0)``, the same
+        reduction as ``mean_loss``. Microbatches are already required to share
+        a leading size and a second-axis size, so this is an unweighted mean
+        of the per-microbatch aux values (there is no size reweighting).
 
     Raises:
         ValueError: If microbatch shapes are inconsistent.
@@ -76,7 +92,7 @@ def accumulate_grads(
                 f"but got: {set(second_sizes_flat)}"
             )
 
-    # Define scan body: process one microbatch at a time
+    # has_aux is a Python bool, so exactly one of these scan bodies is traced.
     def scan_fn(carry, microbatch):
         """Compute loss and grad for one microbatch.
 
@@ -85,16 +101,27 @@ def accumulate_grads(
             microbatch: One slice along the leading axis of the input PyTree
 
         Returns:
-            (carry, (grads, loss)): carry unchanged, grads and loss as output
+            (carry, outputs): carry unchanged. outputs is (grads, loss), or
+            (grads, loss, aux) when has_aux is True.
         """
+        if has_aux:
+            (loss, aux), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+                params, microbatch
+            )
+            return carry, (grads, loss, aux)
         loss, grads = eqx.filter_value_and_grad(loss_fn)(params, microbatch)
         return carry, (grads, loss)
 
-    # Run scan over leading axis
-    _, (all_grads, all_losses) = jax.lax.scan(scan_fn, None, microbatches)
+    # Run scan over leading axis. Mean over axis 0 is the microbatch reduction
+    # for grads, the scalar loss, and (when requested) every aux leaf.
+    if has_aux:
+        _, (all_grads, all_losses, all_aux) = jax.lax.scan(scan_fn, None, microbatches)
+        mean_grads = jax.tree.map(lambda g: jnp.mean(g, axis=0), all_grads)
+        mean_loss = jnp.mean(all_losses)
+        mean_aux = jax.tree.map(lambda a: jnp.mean(a, axis=0), all_aux)
+        return mean_grads, mean_loss, mean_aux
 
-    # Compute mean gradients and mean loss
+    _, (all_grads, all_losses) = jax.lax.scan(scan_fn, None, microbatches)
     mean_grads = jax.tree.map(lambda g: jnp.mean(g, axis=0), all_grads)
     mean_loss = jnp.mean(all_losses)
-
     return mean_grads, mean_loss

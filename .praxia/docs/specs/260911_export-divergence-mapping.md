@@ -1,0 +1,1130 @@
+---
+title: Divergence mapping for exported artifacts
+description: A comparison ladder and a reusable fixture that localizes where a compiled artifact departs from production JAX, instead of reporting one scalar
+task_id: 260911_export-divergence-map
+status: ready
+revision: 7 (260915; R1/R2b probe population (#5210b) + UNCOMPARABLE class (#5209) + per-probe budget handling)
+---
+
+# Divergence mapping for exported artifacts
+
+> **Revision 2.** Revised against an adversarial challenge (9 BLOCKER / 13 MAJOR).
+> Changes of substance: the ring taxonomy lost two of its five rows, which were
+> not rings; the calibrated tolerance gained a formula, a floor, and a scope
+> limit; probe ordering became an explicitly declared DAG rather than an
+> inferred sequence; the coverage metric became a backward-slice difference and
+> is no longer claimed as a bound; the fidelity precondition stopped gating on
+> the one quantity that reads zero for the target bug class. §2's headline claim
+> was narrowed after measurement — see §2.3.
+>
+> **Revision 3.** Adjudicated against the defense, which upheld both of revision
+> 2's rejections but found six blocking items, four of them introduced *by*
+> revision 2. Fixed: the load-bearing measurement moved from a regime the
+> artifact refuses to an in-contract one (M6); the aminx probe DAG was corrected
+> and given slice-subset validation, revision 2 having linearized a join in the
+> paragraph arguing against linearizing joins; the tolerance floor was
+> redenominated in ULP, which its own rationale required; treedef and leaf
+> mismatch were separated; `DISCRETE_FLIP` stopped relabelling inherited index
+> flips as fresh injections; and every task now maps to a criterion.
+>
+> **Revision 4.** Convergence pass; three blocking text defects, no new
+> measurement. AC-1 still said "structure mismatch … continues", contradicting
+> AC-13's raise. The `AMPLIFIED`/`ATTENUATED` ordering became **cross-dtype** the
+> moment `DISCRETE_FLIP` began quantifying over discrete predecessors, and float
+> and discrete metrics are not comparable — leaving the classifier undefined on
+> the dogfood's first edge; fixed with a severity ordinal. AC-10 asserted an
+> answer to the question §2.3 declares open, which would have inverted the
+> instrument: a true positive on the reference input would have read as a fixture
+> failure. Also: the slice-subset check's three false-accept modes are now
+> stated, `probe_deps` is documented as configuration-dependent, and the last
+> task without a criterion has one.
+>
+> **Revision 5 (260914).** Pre-execution pass, against a staleness audit and a
+> second challenger round. Two classes of change.
+>
+> *Correctness.* Revision 4 restated `AMPLIFIED` and `ATTENUATED` in terms of the
+> severity ordinal it introduced, but left `INJECTED` and `CLEAN` phrased in terms
+> of bit-identity. Under the stated precedence that made **every** within-budget
+> float leaf with clean predecessors `INJECTED` — firing the "changed semantics
+> under lowering" signal on exactly the last-bit fusion noise §3.2's floor exists
+> to tolerate, and no criterion caught it. Both classes are now severity-phrased
+> and AC-19 pins the boundary. This is the revision-4 fix breaking a definition
+> the revision-4 fix did not revisit, which is the second time in this document's
+> history that a convergence pass introduced a defect of its own.
+>
+> *Currency.* The spec's motivating construct no longer exists. aminx PR #155
+> merged 33 seconds after this document's first commit; PR #156 then replaced the
+> measured `jnp.argsort(-x, stable=True)` form outright, and PR #157 applied the
+> same fix at a second site. §8's "file separately" recommendation — fold an index
+> tiebreak into the sort key — **is therefore already shipped, unconditionally, at
+> both sites**, which inverts AC-10's negative control from a fix to be applied
+> into the current behaviour of `main`. AC-10 is rewritten around the resulting
+> natural experiment. Every stale `file:line` citation is corrected, and T12 is
+> explicitly deferred out of the implementing sprint.
+>
+> Also: `run_ladder` and `budget_leaf` were pinned public surface that no task
+> owned and no module claimed (§6.0 now fixes both), and AC-3b was missing from
+> §7's self-described exhaustive mapping.
+>
+> **Revision 6 (260915).** Two decisions, taken by the user against backlog
+> #5210 and #5209, closing a gap the dogfood's own instrument exposed: a caller
+> doing `all(r.passed for r in results)` concluded "no divergence" for exactly
+> the integer-index flip this document exists to catch.
+>
+> **#5210, option (b).** `RingResult.passed` stays structural for R1 and R2b —
+> precondition-held-and-comparable, never value agreement — but both rungs now
+> populate `probes`. `r1_target_isa` and `r2b_lowering` gain a keyword
+> `probe_deps` (default `None`); when given, they run `classify_probes` over the
+> leaves they already compare, against R2a's budgets, and return the reports.
+> Incomplete budgets are handled per probe, never raise (revision 7 fixed this
+> from an initial all-or-nothing `probes == ()`, see below); R1's refusal
+> paths keep `probes == ()` unconditionally. `run_ladder` passes
+> `probe_deps` to both. §3.2's "advisory on R2b" now has an operational meaning
+> (§3.2, §6.0, AC-21). Option (a) — making `passed` fail on beyond-budget
+> divergence — was rejected: it would make R2b's budget authoritative,
+> contradicting §3.2's own argument that a bound on fusion sensitivity is not a
+> bound on lowering fidelity.
+>
+> **#5209.** A sixth class, `UNCOMPARABLE`: any probe with a structurally failed
+> leaf (shape/dtype mismatch, `metrics={}`) classifies `UNCOMPARABLE` regardless
+> of predecessors, and precedence becomes `UNCOMPARABLE, DISCRETE_FLIP,
+> INJECTED, AMPLIFIED, ATTENUATED, CLEAN` — first, because `DISCRETE_FLIP` and
+> `INJECTED` would assert a value comparison that never ran and `CLEAN` would
+> assert an agreement that was never checked (§5.3, AC-22).
+>
+> **Revision 7 (260915).** A code-review fix to revision 6's own #5210(b),
+> caught before merge: `rings.py`'s `_classify_rung_probes` classified all of a
+> rung's declared probes in a single `classify_probes` call and caught
+> `MissingBudgetError` for the **whole rung**, so one diverged float probe
+> with no R2a budget erased every other probe's class — including an
+> unrelated integer probe's genuine `DISCRETE_FLIP`, which is exactly the
+> signal revision 6 exists to surface. Fixed to be per-probe: a probe with a
+> diverged float leaf and no matching budget, and any probe that
+> transitively depends on it (its class would rest on that unresolved
+> predecessor severity), are omitted from `probes` and named in a note; every
+> other declared probe is still classified. `divergence.py` gained a shared
+> predicate, `_leaf_needs_budget`, used by both `_resolve_leaf_severity` (so
+> the two can never drift) and a new `_unbudgeted_probes` helper that
+> `rings.py` calls to compute the per-rung blocked set. No change to
+> `classify_probes`'s own classification rules or to any already-passing
+> AC — this only stops `rings.py` from discarding classifiable probes
+> alongside an unrelated unbudgeted one. AC-21 (below) restates the affected
+> assertion; §6.0's per-rung table is updated to match.
+
+## 1. The problem, stated as a measurement failure
+
+`xtrax.export.parity.compare` reduces an entire comparison to one scalar,
+`max_abs_diff`, over one array (`parity.py:62-104`). When the aminx ProteinMPNN
+artifact diverged (#5093) it reported `score 4.938e-02`, `logits 2.160e+00`,
+`decoding order not exact`. Those three numbers are the complete diagnostic
+output of the current system. They name no stage, no operation, and no input
+class.
+
+Localization was therefore done by hand across four throwaway scripts, each
+hypothesis hand-coded and each result discarded. That is the process this spec
+replaces.
+
+**This is not a debugging convenience.** A scalar float tolerance is
+*structurally blind* to the bug class demonstrated in §2: a divergence carried
+entirely by integer indices, with every float leaf bit-identical. `compare()`
+returns `max_abs_diff = 0.0` and passes. For this class the instrument does not
+merely lose resolution — it reads zero.
+
+## 2. The motivating measurement
+
+Measured 260911 against `iree-base-compiler 3.11.0rc20260316`, `jax 0.10.2`,
+`llvm-cpu`, `--iree-llvmcpu-target-cpu=host`. Reproduce with:
+
+```
+uv run --extra export --extra export-runtime python \
+    scripts/measure_iree_sort_stability.py
+```
+
+| # | Question | Result |
+|---|---|---|
+| M1 | Does a multi-output pytree survive `jax.export` → IREE → runtime? | **Yes.** Returns a flat `tuple`. Keys are NOT carried. |
+| M2 | Is `ireert.Config("local-task")` (multi-threaded) deterministic? | **Yes**, bit-identical across 20 runs. |
+| M3 | Does IREE reproduce XLA's *integer* `sort_key_val` tie-break? | **No.** 64 slots / 4 distinct keys differ at **45 of 64** positions. |
+| M4 | Does IREE honour `jnp.argsort(stable=True)` on a tie-heavy float row? | **No.** Indices diverge, values bit-identical (`0.000e+00`); all-distinct control exact. |
+| M5 | Does the divergence reach a **live** (`mask==1`) row? | **Only under exact ties.** See §2.2. |
+| M6 | Does an **in-contract** input (no padding, `L >= k`) diverge? | **Yes.** Ideal α-helix: 58 of 64 live rows, 846 of 3072 index slots. Irregular control: 0. |
+
+### 2.1 The construct measured
+
+M4's construct is verbatim `aminx/model/features.py:66` **as it stood when the
+measurement was taken**, on branch `feat/xtrax-export-dogfood` (aminx PR #155).
+Revision 4 called that branch "unmerged" and said `main` still carried the
+`jax.lax.top_k` wrapper. Both statements expired almost immediately — see the
+currency note below the code block:
+
+```python
+order = jnp.argsort(-x, axis=-1, stable=True)[..., :k]
+```
+
+The branch mattered because the two trees differed. `jax.lax.top_k` lowers to a
+`stablehlo.composite` that IREE rejects outright, so **among artifacts that
+compute their own kNN**, the argsort form was the only one that compiled.
+
+> **Currency (verified 260914).** None of that describes aminx `main` any more.
+> PR #155 merged at 2026-09-11 17:04:36, thirty-three seconds after this
+> document's first commit; PR #156 (2026-09-12) then replaced the argsort form
+> entirely. Current `main` contains **neither** `jax.lax.top_k` **nor**
+> `jnp.argsort(..., stable=True)` as executable code — both survive only in a
+> docstring, named as rejected approaches. The live construct is
+> `src/aminx/model/features.py:90`:
+>
+> ```python
+> index = jax.lax.broadcasted_iota(jnp.int32, x.shape, x.ndim - 1)
+> _, order = jax.lax.sort((-x, index), dimension=-1, is_stable=False, num_keys=2)
+> ```
+>
+> M3/M4/M6 remain valid measurements **of IREE**, which is what they were taken
+> to establish; they are no longer measurements of any code aminx ships. What
+> that costs this spec is confined to AC-10, and is dealt with there.
+
+Revision 2 said "necessarily", which was too strong. There is a third path:
+`features.py:152` branches on `if rbf_features is not None`, setting
+`distances = None` (`:158-162`), and the sole `top_k` call at `:202` is gated on
+`if distances is not None` (`:182`). An artifact exported in precomputed-features
+mode contains **no sort at all** and compiles regardless. (Precisely: that holds
+when `neighbor_indices` is *also* supplied. Supplying `rbf_features` alone still
+reaches the `top_k` at `:202`, since the indices must come from somewhere.) That
+matters twice —
+it bounds this section's claim, and it is a live alternative explanation for
+#5093 (§2.3).
+
+`jnp.argsort` is stable by JAX's documented default, and PR #155 calls that
+stability "load-bearing, not cosmetic" — correctly, since `lax.top_k` breaks
+ties toward the lower index. **IREE does not honour it.** On a row whose 20
+masked slots sit at indices 0–19, top-8 selection gives:
+
+| | selected indices |
+|---|---|
+| XLA (stable — first tied wins) | `[0 1 2 3 4 5 6 7]` |
+| IREE | `[12 13 14 15 16 17 18 19]` |
+
+Disjoint sets, with `max|value diff|` at `0.000e+00` because every entry holds
+the same sentinel.
+
+### 2.2 When it reaches a live row — M5 (out of contract) and M6 (in contract)
+
+aminx masks by `jnp.where(mask[:,None]*mask[None,:], distances, jnp.inf)`
+(`features.py:182-189`), so masked pairs become `+inf` and sort **last**. They
+are selected only when a row holds fewer than `k_neighbors` finite entries.
+Measured at `L=64, k=48`:
+
+| regime | finite per live row | ties selected | rows differing | **live** rows differing |
+|---|---|---|---|---|
+| no padding | 64 | no | 0 | **0** |
+| sub-`k` padding | 40 | yes | 40 | **40** |
+
+Two conclusions, and the first corrects this spec's revision 1:
+
+1. **With every row at or above `k` finite entries there is no divergence at
+   all.** Revision 1 claimed "the tie path is the common case, not an edge
+   case". That was overreach and is withdrawn. Euclidean distances between
+   distinct float32 coordinates are not tied in general.
+2. **Below `k`, the divergence lands squarely on live rows** — all 40 of them. A
+   live row with fewer than `k` valid neighbours is *forced* to select tied
+   `-inf` padding. The tie-saturated rows are emphatically not the dead rows.
+
+**But neither regime above carries the claim, and M5 alone cannot.** The sub-`k`
+regime is precisely the one the artifact *refuses*: the bucket-ladder decision
+makes padding score-preserving iff `L >= k_neighbors`, and the artifact declines
+below the clamp. Demonstrating a divergence in a regime that is never served
+proves nothing about served inputs.
+
+The in-contract route is **exact geometric ties at `L >= k` with no padding at
+all**, and it is measured as M6. An ideal α-helix has constant rise and turn, so
+`d(i,j)` depends only on `|i-j|` and pairs at equal separation are equidistant in
+exact arithmetic. After the float32 cast most, not all, of that structure
+survives — the script measures 60 of 64 rows carrying an exact duplicate, which
+is the honest figure and is what the tie surface actually is:
+
+| input (L=64, k=48, mask all ones) | tied rows | live rows diverging | index slots diverging |
+|---|---|---|---|
+| ideal α-helix | 60 / 64 | **58 / 64** | **846 / 3072 (27.5%)** |
+| irregular backbone (control) | 0 / 64 | 0 / 64 | 0 |
+
+No padding, no sub-`k` row, no refusal — over a quarter of the kNN graph
+differs. Idealised and symmetric backbones are not a curiosity for ProteinMPNN;
+they are the standard input of de novo design. **This, not M5, is the load-bearing
+measurement.**
+
+(Revision 2 found this route by accident — a constant 3.8 Å backbone step makes
+`d(i,i-1)` and `d(i,i+1)` exactly equal — and mistook it for a generator
+artefact to be jittered away. It was the in-contract case.)
+
+**Propagation to the score.** M5 and M6 establish that differing rows are live;
+liveness alone is not propagation. The two sites that carry it:
+`encoder.py:239-249` updates edge features with no mask applied, and
+`decoder.py:144` gates attention as `attention_mask = ar_mask[neighbor_indices]`
+then `mask_bw = mask[:,None] * attention_mask` — the row's own validity times the
+*neighbour's autoregressive state*, never `mask[neighbour]`. So a changed
+neighbour set reaches the score through both, and padding-slot edge features are
+not neutralised downstream.
+
+### 2.3 What this does and does not establish about #5093
+
+**Established:** IREE does not preserve XLA's sort tie-breaking (M3, M4); under
+exact ties this changes the kNN graph on live rows, both out of contract (M5)
+and **in** contract (M6); and the changed graph reaches the score through an
+unmasked encoder edge update and a neighbour-indexed decoder gate (§2.2).
+
+**Not established:** that #5093's specific artifact met that condition. Whether
+its inputs carried tied geometry has not been measured, and there is a competing
+explanation that does not involve sorting at all — if the artifact was exported
+in precomputed-features mode (§2.1) it contains no sort, and #5093's divergence
+must then come from somewhere else entirely. Two candidate causes, neither
+eliminated.
+
+This is deliberately left open rather than hand-resolved: distinguishing them is
+exactly what the fixture is for, and §9 makes it an acceptance criterion. A spec
+that guessed here would be asserting the thing its own instrument exists to
+measure.
+
+**Partially retired:** the FMA hypothesis. `jax.random.permutation` is
+`lax.sort_key_val` over uint32 random bits (`jax._src.random.core._shuffle`), so
+no floating-point arithmetic participates and reassociation cannot perturb it.
+That retires FMA **for the decoding-order leg only**. #5093's `score` and
+`logits` legs are float outputs of message passing where reassociation under
+`-march=native` remains entirely live and independent of the sort question.
+R1 (§3) settles that leg directly and should be run first.
+
+### 2.4 Scope beyond aminx
+
+Any JAX model relying on documented stable-sort tie-breaking diverges silently
+through IREE, whenever its inputs produce exact ties. That is an export-safety
+class, not one model's bug (§8).
+
+## 3. The comparison ladder
+
+"Self-consistency ring" is not defined anywhere in xtrax or aminx (verified:
+zero hits in source or docs of either). Revision 1 proposed a definition that
+its own table then violated in two rows. The corrected definition:
+
+> A **ring** is a controlled comparison with exactly one independent variable
+> and a shared reference input. Both sides are the same computation, so a
+> disagreement is attributable to the varied axis and nothing else.
+
+The word "ring" is retained as the user's name for the construct. Revision 1's
+"closed comparison loop" imagery is dropped — nothing here is closed or a loop,
+and that undischarged metaphor is what admitted two non-rings.
+
+**R0 is not a ring.** Replaying one artifact on one input varies *nothing*. It
+is the ladder's **validity gate**: if the system is nondeterministic, no ring's
+disagreement localizes to anything. It runs first and gates everything.
+
+| | Independent variable | Edits program outputs | Isolates |
+|---|---|---|---|
+| **R0** *(gate, not a ring)* | — replay, same artifact | no | runtime nondeterminism |
+| **R1 Target** | target CPU: `native` vs `native-portable` | no | ISA-dependent codegen (FMA, vector reductions) |
+| **R2a Fusion** | eager vs `jit` — same compiler, different graph | no | the model's own fusion sensitivity |
+| **R2b Lowering** | `jit` XLA vs IREE — same graph, different backend | no | export/lowering fidelity |
+| **R3 Probe** | cut depth — named intermediates as extra outputs | **yes** | spatial onset inside the model |
+
+**R4 was removed.** Input class is not an independent variable *of the system* —
+it varies the input, and its two sides are two invocations of some other ring.
+It is a **stratification variable** applied to R1/R2/R3, not a peer rung. §2.2 is
+R2b stratified by padding regime, and naming that honestly is what made the
+result legible. Input-class generators are specified in §6.2.
+
+**R1 has two executable legs, not three.** `targets.py:15` records that `wasm32`
+"is compiled only. Executing it needs an emsdk-built IREE runtime." A ring needs
+two *runnable* sides, so wasm32 cannot be a leg. R1 must also assert its legs
+genuinely differ: `targets.py:155-165` documents that on a non-x86-64 host, LLVM
+warns-and-ignores `x86-64-v2` and `native-portable` silently falls back to
+host-tuned codegen, which would report "no ISA divergence" for the wrong reason.
+`test_parity_multi_size.py` already reads back real `cpu_features` via
+`iree-dump-module`; R1 reuses that check as a precondition.
+
+### 3.1 Ordering
+
+Run R0, then the non-editing rings, then R3.
+
+**Within the non-editing rings, R2a runs first.** R2a is the measurement that
+produces `m_leaf`, and hence the per-leaf budgets every other float comparison
+is judged against (§3.2). Running R1 or R2b ahead of it would leave them with no
+calibrated budget at all, so the executed sequence is:
+
+```
+R0  →  R2a  →  R1  →  R2b  →  R3
+```
+
+The ring table in §3 lists R1 before R2a because that table is ordered by what
+each ring *varies* — it is descriptive, not an execution order. Revision 5 states
+the executed sequence here explicitly because AC-20's test was otherwise
+asserting the implementation's own choice back at itself, which cannot catch an
+ordering regression in either direction.
+
+The justification for R0-first and R3-last is **interpretability, not cost.** Revision 1 claimed cost
+ordering; that was false on this spec's own facts, since §9's aminx probes
+already exist and R3 there costs one export while R1 costs a recompile per
+target. The real argument is that **R3's result is uninterpretable until §5.4
+passes**, because instrumenting a program changes its fusion decisions. A ring
+that edits the program's outputs must come after the ones that do not.
+
+Note the column heading: *edits program outputs*, not "perturbing". R1 emits a
+different binary and R2a changes the fusion graph — both perturb in the ordinary
+sense. The property that singles out R3 is that it requires modifying what the
+program returns.
+
+### 3.2 The tolerance budget
+
+Revision 1 asserted the budget should derive from measured fusion sensitivity
+but gave no formula, no floor, and no scope. All three are now fixed, and the
+scope limit is the important one.
+
+Let `m_leaf` be R2a's measured `eager`-vs-`jit` divergence for a float leaf,
+**denominated in `max_ulp_diff`** (§5.2) so that it and the floor share units.
+
+```
+budget_leaf = max(ULP_FLOOR, SLACK * m_leaf)   ULP_FLOOR = 4 ULP, SLACK = 4.0
+```
+
+**The floor is denominated in ULP, not absolute.** Revision 2 used
+`FLOOR = 1e-6` absolute, which contradicts its own justification: 1e-6 is
+*tighter* than one ULP for float32 magnitudes above about 8.4, so the floor
+meant to tolerate last-bit noise would have rejected it on any leaf with
+ordinary-sized values. `max_ulp_diff` is already in the metric set (§5.2) and is
+the correct denomination; `SLACK * m_leaf` is likewise compared in ULP.
+
+- **The floor is mandatory and is not a defeat.** `eager == jit` bit-identical is
+  the *normal* case for graphs where fusion is a no-op. Without a floor such a
+  model gets budget 0 and fails on a 1-ULP difference, defeating §5.2's own
+  rationale for `max_ulp_diff`. The floor is what makes the mechanism usable;
+  the calibration is what adapts it upward for genuinely sensitive models.
+  Consequently the budget is **flat below `ULP_FLOOR / SLACK`** — two models with
+  different but tiny sensitivities get the same budget. That is intended, and
+  AC-7 tests monotonicity only above the floor.
+- **It is a heuristic, not an error bound.** A bound on fusion sensitivity is not
+  a bound on lowering fidelity; they are different failure surfaces measured in
+  the same units. A model whose length-2048 reduction measures `m ≈ 1e-2` from
+  reassociation alone would be granted a budget that could mask a genuine 1e-3
+  mis-lowering. R2a and R2b are therefore always **reported separately**, and
+  the budget is advisory on R2b rather than authoritative. Stated plainly so
+  nobody mistakes it for soundness. Operationally (#5210, revision 6):
+  `r2b_lowering`'s `passed` never gates on a probe's classification — it stays
+  a comparability judgment — while its `probes`, when `probe_deps` is given,
+  report the classes computed against R2a's budgets for anyone who reads past
+  `passed`. The budget shapes what gets reported, never what gets returned.
+- **`m_leaf` is per `(model, input_class)`** and must be re-derived under each
+  stratification, since fusion sensitivity is input-dependent.
+
+**Calibration applies to float leaves only.** For integer and bool leaves the
+criterion is absolute — `exact_match_fraction == 1.0` — and no measurement
+loosens it. This is not a limitation to apologise for: §2's entire bug class
+lives on integer leaves, so the budget is *inert* for the case this document was
+written about. Revision 1 claimed calibration was "what makes the ring
+self-consistent"; that claim is withdrawn. Calibration is a convenience for
+float comparisons. The discrete criterion is what catches the bug.
+
+## 4. Non-goals
+
+- Not a replacement for `parity.compare`. Parity asks *is it correct*;
+  divergence mapping asks *where did it stop being correct*. Both ship.
+- Not automatic root-causing. The fixture localizes and classifies; a human reads
+  the report.
+- Not a fix for the IREE sort-stability gap (§8).
+- Not multi-axis plan support.
+
+## 5. Design
+
+### 5.1 Probe mechanism — ordinary pytree outputs
+
+Recon established three facts that kill the obvious design and dictate the real
+one:
+
+- `Tap` is contractually an `io_callback` wrapper (`stages/boundaries.py:47-63`)
+  and `topology.py:201-209` rejects **any** Tap at the export boundary
+  unconditionally. Taps cannot become outputs.
+- `materialize` is a single-slot mechanism: one sink, one axis
+  (`MultipleMaterializeAxesError`), never a Tap.
+- The composer/executor layer is **pytree-transparent**.
+
+Therefore **a probe is a named entry in the step function's ordinary return
+pytree.** No change to `topology.py`, `pipeline.py`, or the boundary protocol.
+
+M1 confirms this survives compilation, with one trap: the runtime returns a flat
+tuple carrying no key information. Probe names MUST be recovered from the
+exported `out_tree`. Binding names positionally in declaration order is silently
+wrong for a `dict`, which JAX flattens in **sorted key** order, and silently
+right for a `NamedTuple`, which flattens in **field** order. Both appear in
+practice (§9 uses a NamedTuple), so both are tested (AC-2).
+
+### 5.2 Dtype-aware metrics
+
+| dtype | metrics |
+|---|---|
+| floating | `max_abs_diff`, `max_rel_diff`, `max_ulp_diff`, `n_nonfinite_mismatch` |
+| integer | `exact_match_fraction`, `first_mismatch_index`, `n_mismatched` |
+| bool | `hamming_distance`, `first_mismatch_index` |
+
+`max_ulp_diff` is computed on finite pairs only; non-finite disagreements are
+counted separately rather than folded into a magnitude.
+
+Two mismatch kinds must be distinguished; revision 2 conflated them under
+"structure mismatch" and left the harder one undefined.
+
+- **Leaf mismatch** — treedefs agree, a leaf's shape or dtype does not. Leaves
+  still correspond pairwise, so `compare_pytree` **records a per-leaf failure and
+  continues**. A pytree walk is a report, not an assertion, and aborting on leaf
+  1 would discard the evidence that localizes the problem.
+- **Treedef mismatch** — the structures themselves differ. There is no leaf
+  correspondence at all, so "one `LeafDivergence` per leaf" is not even
+  well-formed. `compare_pytree` **raises** `ProbeStructureError` naming both
+  treedefs. Pairing by position across differing structures would silently
+  compare unrelated arrays, which is worse than failing.
+
+This is not hypothetical for the dogfood: `ProteinEdgeStageTensors.node_features_out`
+is typed `jax.Array | None` (`features.py:79`), and JAX flattens `None` as an
+empty node — so the output **arity is configuration-dependent** and the two sides
+of a comparison can legitimately differ in structure. Detecting that loudly is
+the point.
+
+This differs from `compare`, which returns a single failed `ParityResult` for a
+shape mismatch; the divergence path is deliberately stricter rather than
+inheriting that behaviour.
+
+### 5.3 Probe dependency and classification
+
+**Probe order must be declared, not inferred.** Revision 1 said "the
+immediately-upstream probe", which presupposes a chain. Two independent problems
+made that unimplementable:
+
+- Pytree flatten order is not dataflow order. Under a sorted-dict flatten,
+  `final` would become the predecessor of `neighbor_indices` — suppressing the
+  discrete flip and failing the dogfood on its own worked example.
+- The real graph is a DAG. aminx's edge stage (`features.py:212-247`) is:
+
+  ```
+  neighbor_indices ──┬──────────────► rbf ──────────┐
+                     │                              ├──► edges_concat
+                     └──► encoded_positions ────────┘         │
+                                                              ▼
+                                        final ◄── after_norm ◄── after_w_e
+  ```
+
+  `encoded_positions` derives from `neighbor_indices` through
+  `neighbor_offsets`/`edge_chains_neighbors` (`:216,222-240`) and **never from
+  `rbf`**; `edges_concat = concatenate([encoded_positions, rbf])` (`:242`) is the
+  join. Revision 2 of this spec wrote that chain as a straight line — committing,
+  in the paragraph introducing declared dependencies, precisely the error
+  declared dependencies exist to prevent. Which is the argument for the
+  validation below: a human transcribing a DAG by hand gets it wrong.
+- Real models are DAGs, not chains. aminx's encoder consumes *and* produces both
+  `h_V` and `h_E` (`mpnn.py:165-169`), so a per-layer probe is a join with two
+  predecessors. Classifying against the wrong one manufactures a false
+  `INJECTED` at exactly the points where divergence merges.
+
+The consumer therefore supplies `probe_deps: Mapping[str, tuple[str, ...]]`
+naming each probe's immediate predecessors. Classification is against the
+**worst predecessor** — `max` over the predecessor set — never an arbitrary one.
+Dataflow edges cannot be recovered from a flat output tuple, so there is no
+inference fallback; an undeclared dependency is an error, not a default.
+
+**A declared graph must be validated, or the fixture produces confident
+nonsense.** A fabricated edge is invisible to every other check. The validation
+is free, because §5.5b already computes backward slices: for a declared edge
+`p → q`, `slice(p)` must be a **subset** of `slice(q)` — if `q` truly depends on
+`p`, every op needed for `p` is needed for `q`. A declared edge failing that
+subset test is rejected with both slices named. This catches the exact error
+revision 2 made: `slice(rbf) ⊄ slice(encoded_positions)`, because
+`encoded_positions` does not consume `rbf`.
+
+The check is **one-directional**: no false rejections (backward slices are
+transitively closed, and pre-optimization StableHLO preserves sharing), but three
+false-accept modes, which it must not be sold as covering:
+
+- a **transitive** edge `p → r` passes when the truth is `p → q → r`;
+- a **passthrough** probe with an empty slice (aminx's `prng_key`,
+  `node_features_out`) is a subset of everything;
+- a **missing** edge is invisible — the check validates declared edges, never
+  completeness.
+
+It is a cheap guard against the most likely authoring error, not a proof that a
+declared graph is right.
+
+**The graph is configuration-dependent.** `forward_edge_stages` has three
+branches — kNN computed vs. `neighbor_indices` supplied (`features.py:212-213`),
+and `rbf` computed vs. `rbf_features` supplied (`:152-162`) — and two of them
+lack the `neighbor_indices → rbf` edge entirely. `probe_deps` is therefore a
+property of *the exported configuration*, not of the model, and the consumer
+declares it per export.
+
+Classes:
+
+- **UNCOMPARABLE** *(revision 6, #5209)* — the probe has at least one leaf with
+  `failed=True` (§5.2's leaf mismatch: shape or dtype differ, no element-wise
+  comparison ran, `metrics={}`), regardless of predecessors. `DISCRETE_FLIP` and
+  `INJECTED` would assert a value comparison that never happened; `CLEAN` would
+  assert an agreement that was never checked. A failed leaf is severity 2
+  (§5.3's severity table), so a probe downstream of an `UNCOMPARABLE` probe
+  cannot itself be `DISCRETE_FLIP` or `INJECTED` on that account — it can only
+  be `AMPLIFIED`, `ATTENUATED`, or `UNCOMPARABLE` in its own right.
+- **CLEAN** — severity ≤ 1: within the §3.2 budget (float), or exact
+  (discrete). A severity-1 leaf is CLEAN, not a weak signal; tolerating last-bit
+  fusion noise is the entire purpose of the budget and its floor.
+- **AMPLIFIED** — some predecessor already diverged, and this probe's divergence
+  is `>= ` that of every predecessor.
+- **ATTENUATED** — some predecessor diverged and this probe's is strictly
+  smaller. Renormalizing operations do this routinely; aminx has a `LayerNorm`
+  between `after_w_e` and `after_norm`. Revision 1 had no class for it and its
+  classifier was undefined on that input.
+- **INJECTED** — **every** predecessor is severity 0 and this probe is
+  **severity 2**. This is the signal: it names an operation that changed
+  semantics under lowering.
+
+  **Phrased in severity, deliberately.** Revisions 1–4 said "every predecessor
+  was bit-identical and this probe is not", which is a *severity ≥ 1* condition.
+  Since the precedence order evaluates `INJECTED` before `CLEAN`, that reading
+  classified every within-budget float leaf below a clean predecessor as an
+  operation that changed semantics under lowering — an `INJECTED` storm on
+  ordinary fusion noise, and precisely the outcome §3.2's `ULP_FLOOR` exists to
+  prevent. Revision 4 restated `AMPLIFIED` and `ATTENUATED` in severity terms
+  and did not revisit these two. AC-19 now pins the boundary.
+- **DISCRETE_FLIP** — an integer or bool leaf mismatched while every
+  predecessor was bit-identical **on all leaves, discrete included**. Its own
+  class because the float metrics read zero. A probe with an **empty**
+  predecessor set and a mismatched discrete leaf is `DISCRETE_FLIP` by rule,
+  stated explicitly rather than falling out of quantification over an empty set
+  — this is the aminx case, since `neighbor_indices` is the first thing computed.
+  This applies only when the comparison ran and the leaf mismatched; a discrete
+  leaf that failed structurally (shape/dtype mismatch) makes the probe `UNCOMPARABLE`
+  instead, which precedence evaluates first.
+
+  The "discrete included" clause is load-bearing. Revision 2 quantified only over
+  predecessors' *float* leaves, so a downstream probe merely **inheriting** an
+  already-flipped index set would be relabelled `DISCRETE_FLIP` and announced as
+  "an operation that changed semantics under lowering" — readmitting, through the
+  discrete branch, exactly the propagation-as-injection error that declared
+  dependencies were introduced to stop. An index mismatch whose predecessor also
+  had one is `AMPLIFIED`.
+
+**Severity, and why magnitudes cannot be compared directly.** `AMPLIFIED` and
+`ATTENUATED` compare a probe's divergence against its predecessors', and
+max-over-predecessors needs an ordering. But §5.2's float and discrete metric
+sets are **disjoint and non-comparable** — there is no meaningful sense in which
+`3 ULP` is more or less than `7 mismatched indices`. Since `DISCRETE_FLIP` now
+quantifies over discrete predecessors too, the comparison is unavoidably
+cross-dtype: the dogfood's very first edge is `neighbor_indices` (int) → `rbf`
+(float).
+
+Every leaf therefore carries an ordinal **severity**, which *is* comparable:
+
+| severity | meaning |
+|---|---|
+| 0 | bit-identical |
+| 1 | diverged but within budget — float leaves only, since discrete has no budget (§3.2) |
+| 2 | beyond budget, any discrete mismatch, or a structurally failed leaf (`failed=True`, §5.2) |
+
+A probe's severity is the max over its leaves; `max`-over-predecessors is taken
+on severity. Magnitude comparisons (`max_ulp_diff`, `n_mismatched`) are used only
+**within** a dtype class, to order two float leaves or two discrete leaves
+against each other — never across. `AMPLIFIED` means severity ≥ every
+predecessor's with at least one predecessor above 0; `ATTENUATED` means strictly
+below the predecessor max.
+
+**Precedence.** A probe may qualify under more than one class — typically float
+divergence beyond budget *and* a discrete mismatch, or (revision 6) a
+structurally failed leaf alongside a genuine discrete mismatch on another leaf.
+Evaluate in this order and take the first match: `UNCOMPARABLE`,
+`DISCRETE_FLIP`, `INJECTED`, `AMPLIFIED`, `ATTENUATED`, `CLEAN`. `UNCOMPARABLE`
+goes first because it is the only class that reflects the absence of a
+comparison rather than its outcome — every class after it presupposes that an
+element-wise comparison actually ran, which a failed leaf makes false regardless
+of what any other leaf on the same probe shows. Discrete outranks float because
+a flipped index is a semantic change while a float excursion may be tolerable,
+and because the discrete signal is the one a float-only instrument cannot see.
+
+"Amplified" is defined by the `>=` comparison above, not by the word "smoothly",
+which revision 1 left with no operational meaning and which AC-3 could not test.
+
+### 5.4 Instrumentation fidelity
+
+> **On "two-sided" (clarifying, revision 5).** The phrase describes what a
+> single symmetric check *catches*, not two code paths. Items 1-2 below specify
+> one instrumented-vs-uninstrumented comparison of the primary leaves; any
+> disagreement trips the guard, whichever direction produced it. No
+> direction-discriminating logic is expected, and AC-6's two fixtures exercise
+> the same branch.
+
+**The most serious threat to R3's validity.** Adding outputs changes DCE and
+fusion in both XLA and IREE. A probe that forces materialization can suppress
+the very fusion that caused the divergence.
+
+R3 is invalid unless it first reproduces what it is explaining. Before any probe
+is interpreted:
+
+1. Compute the **full §5.2 metric set over every primary leaf** for both the
+   instrumented and uninstrumented artifacts. Revision 1 gated on the primary
+   *float* divergence — the one quantity §1 establishes reads `0.0` for this bug
+   class, so the guard's blind spot was identical to the blind spot the document
+   exists to fix.
+2. Float leaves must agree within `budget` (§3.2). **Discrete leaves must match
+   as exact sets**: the divergence is an index set, and M2's determinism
+   (bit-identical across 20 runs) makes exact equality achievable, so nothing
+   weaker is justified. If R0 fails, exact equality is unachievable by
+   construction and R3 must not run at all.
+3. The check is **two-sided**. Instrumentation that *creates* a divergence — a
+   probe forcing materialization of a value XLA would otherwise have held in
+   wider precision — is as disqualifying as one that suppresses it.
+
+On failure the fixture reports `INSTRUMENTATION_CHANGED_RESULT` and refuses to
+emit a probe map. It must never report "no divergence found": a vanishing
+divergence is itself the finding, and says the cause is fusion-dependent.
+
+### 5.5 Coverage
+
+**(a) Code coverage.** `tier1_core` measures `coverage_packages = ["xtrax"]` at
+90% line / 80% branch enforced, syncing only `["dev","io"]`
+(`distribution/coverage_dag.toml:16,25`). Anything importing IREE is unreachable
+there. This forces the module split in §6. Note `rings.py` is *also* in package
+`xtrax` and is genuinely uncoverable without a toolchain, so it carries an
+explicit `coverage_omit` entry — the pure/execution split alone does not solve
+this, it only moves the problem to the half that must be omitted by name.
+
+**(b) Probe resolution.** A probe map is only as good as its resolution, and a
+two-probe map on a forty-stage model is structurally indistinguishable from a
+thorough one. Revision 1 proposed "StableHLO op count between consecutive
+probes", which is not computable: a probe is a *return operand*, not a position,
+and the op list is one arbitrary topological linearization of a DAG. There is no
+"between".
+
+The computable quantity is the **backward-slice difference**: for probes `p` and
+`q` with `q` depending on `p`, `|slice(q) \ slice(p)|` — the ops needed for `q`
+that were not needed for `p` — obtained by def-use walk over
+`exported.mlir_module(serialized=False)`. The argument is load-bearing: it
+defaults to `True` and returns a **string** (`jax/_src/export/_export.py:216`),
+while `False` returns a live `ir.Module` the walk can traverse. jaxlib ships its
+own `mlir/dialects/stablehlo.py`, so this does not depend on the missing IREE
+stablehlo binding noted at `compile.py:12-18`.
+
+Reported as `slice_delta` per declared edge, plus `unattributed_ops` for ops in
+no slice difference. The same slices power the §5.3 edge validation, so the
+metric pays for itself twice.
+
+Three honest caveats, all of which revision 1 got wrong:
+
+- Sibling slices **overlap** (shared subexpressions belong to both), so slice
+  deltas do not partition the module and do not sum to the total.
+- Counts are **static**. A 10-op `scan` body executing L times counts as 10
+  (`composer.py:285`; cited as `:274` before xtrax PR #150 shifted it), so the most heavily executed region can look like the
+  best covered.
+- It measures the **instrumented** module's StableHLO, *before* IREE's own
+  fusion and DCE — which is where the divergence lives.
+
+It is therefore a **heuristic proxy for localization resolution, not a bound**.
+Revision 1 called it "the true upper bound on localization precision" in a
+section whose entire argument was about not overclaiming.
+
+## 6. Module layout and interfaces
+
+```
+src/xtrax/export/divergence.py    # pure: metrics, classification, slices
+src/xtrax/export/rings.py         # execution: R0-R3 runners  (coverage_omit)
+tests/export/test_divergence.py   # pure-logic tests, no toolchain
+tests/export/test_rings.py        # toolchain-gated + fake-injected
+```
+
+Public surface: `LeafDivergence`, `ProbeReport`, `DivergenceClass`,
+`RingResult`, `Severity`, `budget_leaf`, `compare_pytree`, `classify_probes`,
+`probe_resolution`, `validate_probe_deps`, `run_ladder`. `compare` stays
+unchanged for the single-array parity path.
+
+### 6.0 Pinned interfaces
+
+These shapes are fixed **here** so that T1–T3b (`divergence.py`) and T4–T8b
+(`rings.py`) can be implemented in parallel without negotiating a contract
+mid-sprint. `divergence.py` owns every type below; `rings.py` imports them and
+redefines none.
+
+```python
+class Severity(IntEnum):          # §5.3
+    IDENTICAL = 0
+    WITHIN_BUDGET = 1
+    BEYOND_BUDGET = 2
+
+@dataclass(frozen=True)
+class LeafDivergence:
+    path: str                             # jax.tree_util.keystr of the leaf
+    dtype_class: Literal["float", "integer", "bool"]
+    severity: Severity
+    metrics: Mapping[str, float]          # §5.2 keys for this dtype_class
+    failed: bool                          # leaf shape/dtype mismatch (§5.2)
+    message: str | None
+
+@dataclass(frozen=True)
+class ProbeReport:
+    name: str
+    predecessors: tuple[str, ...]
+    leaves: tuple[LeafDivergence, ...]
+    severity: Severity                    # max over leaves
+    divergence_class: DivergenceClass
+
+@dataclass(frozen=True)
+class RingResult:
+    ring: Literal["R0", "R1", "R2a", "R2b", "R3"]
+    passed: bool
+    input_class: str                      # §6.2 label
+    in_contract: bool                     # §6.2 / AC-17
+    probes: tuple[ProbeReport, ...]
+    notes: tuple[str, ...]
+
+def budget_leaf(m_leaf_ulp: float) -> float: ...
+```
+
+**`budget_leaf` lives in `divergence.py`, not `rings.py`.** It is pure arithmetic
+over §3.2's formula, so putting it beside the classifier keeps one definition and
+keeps AC-12 ("imports nothing from `iree`") true. The division of labour is:
+`rings.py` (T5) *measures* `m_leaf` — which requires executing R2a — and calls
+`budget_leaf` on the result; `classify_probes` receives the resulting per-leaf
+budgets as an explicit `budgets: Mapping[str, float]` argument and never measures
+or derives one. A leaf absent from `budgets` is an error, not a default, for the
+same reason an undeclared `probe_deps` edge is.
+
+R2a itself runs **before any budget exists** and is therefore reported, never
+judged: it is the measurement that produces `m_leaf`, so gating it on a budget
+would be circular.
+
+**What `passed` means, per rung** *(revision 6, #5210)*. `passed` is
+structural at every rung — it records that a comparison ran and its
+precondition (if any) held — and never records value agreement beyond what is
+stated below:
+
+| rung | `passed` means | populates `probes`? |
+|---|---|---|
+| R0 | the replay agrees with itself | never |
+| R2a | the measurement completed over comparable leaves (reported, never judged — see above) | never |
+| R1 | the `cpu_features` precondition held **and** every leaf was comparable across both legs — not that the legs agree | when `probe_deps` given, per probe (260915: a probe with a diverged float leaf and no matching R2a budget, and its dependents, are omitted; every other declared probe is classified) |
+| R2b | every leaf was comparable across both legs — not that they agree | when `probe_deps` given, per probe (260915: a probe with a diverged float leaf and no matching R2a budget, and its dependents, are omitted; every other declared probe is classified) |
+| R3 | R0 passed, the §5.4 fidelity precondition held, and a probe map was emitted | always |
+
+So a same-shape, same-dtype int32 index leaf with half its entries flipped
+gives `passed=True` at R1 and R2b: nothing above checks value equality on that
+leaf, only that it exists and lines up structurally. The divergence itself
+shows up only in `probes`, classified `DISCRETE_FLIP` or worse. `r1_target_isa`
+and `r2b_lowering` signatures both gain a `probe_deps: Mapping[str, tuple[str,
+...]] | None = None` keyword (§6.1); when it is omitted, `probes == ()`
+unconditionally, the same as R0 and R2a. `run_ladder` always passes
+`probe_deps` through to both.
+
+### 6.1 Probe declaration
+
+```python
+run_ladder(
+    fn, plan, abstract_inputs, concrete_inputs,
+    probe_deps={"rbf": ("neighbor_indices",), "final": ("after_norm",), ...},
+    input_classes=(...),
+)
+```
+
+### 6.2 Input-class generators
+
+Revision 1 listed "ties, masks, magnitudes, lengths" — a list of words, not a
+specification. Concretely, each generator returns inputs plus a label:
+
+| class | generator | in contract? | rationale |
+|---|---|---|---|
+| `nominal` | the artifact's own reference input | yes | baseline |
+| `symmetric_geometry` | ideal α-helix / idealised coordinates | **yes** | M6 — the load-bearing tie route |
+| `magnitude_extremes` | values near float32 overflow and denormal | yes | reassociation sensitivity |
+| `sub_k_neighbours` | mask leaving fewer than `k_neighbors` valid | **no — refused** | M5; diagnostic only |
+
+`symmetric_geometry` is the primary class, not `sub_k_neighbours`. Revision 2 had
+that backwards. The artifact is bucket-aligned and **refuses** below the clamp
+(bucket ladder `(64,128,256,512,1024,1536,2048)`, padding score-preserving iff
+`L >= k_neighbors`), so `sub_k_neighbours` exercises a regime that is never
+served. It is retained because a diagnostic tool should be able to characterise
+inputs the artifact rejects, but it must be **labelled out-of-contract in the
+report** so no verdict rests on it alone.
+
+**Length is not a free axis** either — lengths are drawn from the ladder, not
+swept.
+
+## 7. Tasks
+
+| # | Task | Deliverable |
+|---|---|---|
+| T1 | `compare_pytree` + dtype-aware `LeafDivergence`, per-leaf failure records | `divergence.py` |
+| T2 | `classify_probes` over a declared DAG, max-over-predecessors, 6 classes | `divergence.py` |
+| T3 | `probe_resolution` — backward-slice deltas from `mlir_module(serialized=False)` | `divergence.py` |
+| T3b | `validate_probe_deps` — slice-subset check on every declared edge (§5.3) | `divergence.py` |
+| T4 | R0 gate + R1 (two legs, `cpu_features` precondition) | `rings.py` |
+| T5 | R2a/R2b runners + §3.2 budget derivation | `rings.py` |
+| T6 | R3 runner **with** the §5.4 two-sided fidelity precondition | `rings.py` |
+| T7 | `out_tree` name recovery; dict and NamedTuple | `rings.py` |
+| T8 | §6.2 input-class generators | `rings.py` |
+| T9 | Pure-logic tests, no toolchain, ≥90% line / ≥80% branch | `test_divergence.py` |
+| T10 | Toolchain tests + fakes + `coverage_omit` entry | `test_rings.py` |
+| T8b | `run_ladder` — top-level orchestrator: `validate_probe_deps`, then §3.1 ring order, then `classify_probes` + `probe_resolution` | `rings.py` |
+| T11 | `docs/api/export.md` — the ladder and when to escalate | docs |
+| T12 | aminx dogfood (§9) — **deferred out of this sprint** (§9) | aminx PR |
+| T13 | *(revision 6)* `probe_deps` keyword on R1/R2b + `UNCOMPARABLE` classification | `divergence.py` + `rings.py` |
+
+Every task maps to at least one acceptance criterion and every criterion to a
+task: T1→AC-1/AC-13, T2→AC-3/AC-3b/4/5/14/AC-19, T3→AC-9, T3b→AC-15, T4→AC-16,
+T5→AC-7/8, T6→AC-6, T7→AC-2, T8→AC-17, T8b→AC-20, T9/T10→AC-12, T11→AC-18,
+T12→AC-10, T13→AC-21/AC-22, and AC-11 is T4/T5's API surface. Revision 2 left T4 — the R0 gate and
+R1's `cpu_features` precondition, both normative — with no criterion at all, and
+AC-11 with no task. Revision 4 added AC-3b and omitted it from this list, which
+is the same defect one layer down; revision 5 adds it, plus T8b/AC-20 for the
+orchestrator that was pinned public surface owned by no task.
+
+**Sprint scope.** T1–T11 land in xtrax and are the implementing sprint. **T12 is
+deferred**: it is cross-repo, needs a real 110 MB checkpoint under a real IREE
+toolchain, and — per §9 — now requires swapping the `top_k` construct rather than
+adding a tiebreak. It is filed separately and AC-10 is not a merge gate for the
+xtrax sprint.
+
+## 8. Consequences to file separately
+
+- **`check_export_safety` should flag stable-sort reliance.** M3/M4 show
+  `jnp.argsort(stable=True)`, `jnp.sort` and `lax.sort_key_val` do not preserve
+  XLA tie-breaking through IREE. Pairs with the unlegalizable-op work in #5092.
+- ~~**aminx PR #155's `top_k` needs an explicit tiebreak.**~~ **DONE — shipped
+  before this spec was ever executed (verified 260914).** The recommendation was
+  to fold a deterministic index tiebreak into the sort key, "e.g. sort on
+  `(-x, index)` lexicographically". aminx implemented exactly that, at **two**
+  sites, within 18 hours of this document's first commit:
+  `src/aminx/model/features.py:90` (PR #156) and
+  `src/aminx/utils/decoding_order.py:99-105` (PR #157, on the autoregressive
+  decode path, whose comment reads "Same fix as `model.features.top_k`
+  (PR #156)"). Both pass `is_stable=False` deliberately, stability having become
+  irrelevant once the index is a sort key. The consequence for this spec is that
+  AC-10's negative control is no longer a patch to apply — it is the behaviour of
+  `main`, which inverts the dogfood's construction.
+- **#5093 should be updated**, not closed: FMA is retired for the decoding-order
+  leg only (§2.3); sort stability is a demonstrated mechanism whose applicability
+  to that artifact is still unmeasured.
+
+## 9. Dogfood on aminx
+
+aminx supplies the probes and the schema, so no *production* model changes are
+needed — but see the control-pair note at the end of this section, which does
+require substituting one function at fixture level:
+
+- `features.py:109` `forward_edge_stages()` returns `ProteinEdgeStageTensors`,
+  documented verbatim as *"Intermediate edge tensors for parity diagnosis"*.
+  Production `__call__` calls it and discards all but four. It has **nine**
+  fields — seven edge-stage tensors plus `node_features_out` and `prng_key` — of
+  which the seven are the probe set. Revision 2 called it "seven intermediates",
+  conflating the probe set with the tuple.
+- `node_features_out` is typed `jax.Array | None` (`features.py:79`) and JAX
+  flattens `None` as an empty node, so the **output arity is
+  configuration-dependent**. This is the concrete reason §5.2 must separate
+  treedef mismatch from leaf mismatch. Note it cannot arise *within* a ring — no
+  ring varies configuration, so both sides always share a treedef — but it does
+  arise across exports and when a caller supplies a probe set built under a
+  different configuration, which is the realistic authoring mistake rather
+  than theoretical.
+- It is a `NamedTuple`, so it flattens in field order, which *coincides* with a
+  topological order of the real DAG — a coincidence the fixture must not rely on
+  (the DAG is not a chain; see §5.3), which is why declared dependencies are
+  required regardless.
+- Encoder/decoder layers are accessible lists (`model.encoder.layers[i]`), so
+  per-layer probes need only an external re-drive of the loop.
+- `src/aminx/parity/evidence.py` already defines `EvidenceMetricRecord` /
+  `EvidencePointRecord`; the fixture emits into that schema.
+
+**Line citations in this section were corrected 260914.** PR #155/#156 inserted a
+~44-line `top_k` function near the top of `features.py`, shifting everything
+below it: `forward_edge_stages` 109 → **153**, `node_features_out`
+79 → **105**, the edge-stage DAG 212-247 → **~208-286**, `edges_concat`
+242 → **268**, the three-way branch 152/158-162/182/202 →
+**178/188/208/228**. The *content* at every one of those sites is unchanged —
+field count, field names, types, and the DAG topology of §5.3 were all
+re-verified against `origin/main` and still hold. Only the pointers moved.
+
+**The control pair, restated (this is what changed).** AC-10 originally asked for
+`DISCRETE_FLIP` on today's model and its absence "after applying §8's tiebreak".
+The tiebreak is now unconditional on `main`, so that construction is
+unsatisfiable as written: there is nothing left to apply. What replaces it is
+strictly better, because both halves are now *real shipped code* rather than one
+real and one hypothetical:
+
+| leg | construct | expectation |
+|---|---|---|
+| **positive** | pre-#156 `jnp.argsort(-x, axis=-1, stable=True)[..., :k]`, substituted for `features.top_k` at fixture level | `DISCRETE_FLIP` on `neighbor_indices` under `symmetric_geometry` |
+| **negative** | current `main` — `lax.sort((-x, index), num_keys=2)` | **no** `DISCRETE_FLIP`, same input class |
+
+Substitution is a fixture-level monkeypatch of one function, not an edit to
+aminx's production source, which is what keeps §9's "no model changes" framing
+honest. The positive leg's construct is recoverable verbatim from aminx git
+history and must be quoted from there, not retyped.
+
+**Acceptance:** the ladder, run on the real `proteinmpnn_v_48_020` artifact under
+the §6.2 input classes, must produce the two-leg result above. The `nominal`
+result is reported rather than asserted (AC-10). It must additionally *answer
+§2.3's open question*: whether the exported artifact computes its own kNN at all
+(§2.1's precomputed-features path contains no sort), and if it does, whether its
+reference input carries ties. Those are the two competing explanations for
+#5093 — and note that aminx having since removed the sort dependency makes the
+question **decidable rather than merely open**: if #5093 still reproduces on
+post-#156 `main`, sort stability was never its cause.
+
+## 10. Acceptance criteria
+
+- **AC-1** `compare_pytree` returns one `LeafDivergence` per leaf with
+  dtype-appropriate metrics; a **leaf** mismatch (matching treedefs, differing
+  leaf shape or dtype) yields a per-leaf failure record and continues, asserted
+  on a pytree with one mismatched leaf among matching ones. Treedef mismatch is
+  AC-13's, and raises. Revision 3 left this criterion saying "structure
+  mismatch … and continues", which directly contradicted AC-13.
+- **AC-2** Probe names are recovered from `out_tree`. Two tests: a **dict** whose
+  sorted key order differs from declaration order, and a **NamedTuple** whose
+  field order differs from sorted order. Both assert names bind to the right
+  arrays.
+- **AC-3** `classify_probes` labels a DAG containing a join with one clean and
+  one diverged predecessor as `AMPLIFIED` (max-over-predecessors), **not**
+  `INJECTED` — the false-injection-at-a-join regression, and the reason
+  dependencies are declared rather than inferred.
+- **AC-3b** Classification is defined across a dtype boundary: an edge from a
+  **discrete** predecessor to a **float** probe (the dogfood's first edge,
+  `neighbor_indices → rbf`) is classified by §5.3's severity ordinal, and a test
+  asserts a definite class rather than an error.
+- **AC-4** `ATTENUATED` is produced for a probe whose divergence is strictly
+  smaller than its predecessor's.
+- **AC-5** `DISCRETE_FLIP` is raised for a mismatched int leaf with
+  bit-identical predecessor floats, **and** for the empty-predecessor case.
+- **AC-6** R3 reports `INSTRUMENTATION_CHANGED_RESULT` in both directions —
+  suppression and creation — and emits no probe map in either.
+- **AC-7** `budget_leaf` satisfies §3.2: two fixtures with sensitivities
+  `ULP_FLOOR/SLACK < m₁ < m₂` yield `budget₁ < budget₂`, and a fixture with
+  `m = 0` yields exactly `ULP_FLOOR`. Monotonicity is asserted **only above the
+  floor** — revision 2 demanded it unconditionally, which `max(FLOOR, SLACK*m)`
+  violates for any two sensitivities below `ULP_FLOOR/SLACK`, so the criterion
+  contradicted its own formula. (Revision 1's "is a function of, not a constant"
+  was separately unfalsifiable — `1e-5 + 0*m` satisfied it.)
+- **AC-8** Integer leaves are judged by exact match regardless of any budget —
+  asserted by running a calibrated ladder with a deliberately huge float budget
+  and confirming a single flipped index still fails.
+- **AC-9** `probe_resolution` reports `slice_delta` per declared edge and
+  `unattributed_ops`, and its docstring states the three §5.5b caveats.
+  `unattributed_ops` must be asserted against a **known-shape graph at a concrete
+  value**, not merely `>= 0`: that bound is true by construction, since the
+  quantity is `total_ops - len(covered)` over a covered set that is structurally
+  a subset. Both degenerate implementations — attribute everything, attribute
+  nothing — satisfy `>= 0` and would otherwise ship.
+- **AC-10** *(T12 — deferred out of the implementing sprint; not a merge gate
+  for T1–T11)* aminx dogfood, **two legs, both real code** (§9): `DISCRETE_FLIP`
+  on `neighbor_indices` under `symmetric_geometry` (in-contract; revision 2 named
+  the refused `sub_k_neighbours` class here) with the **pre-#156** `argsort`
+  construct substituted at fixture level, and — the **negative control**, without
+  which this AC is unfalsifiable — **no** `DISCRETE_FLIP` under the same input
+  class on **current `main`**, whose `(-x, index)` two-key sort already carries
+  the tiebreak. A fixture that hardcodes the expected answer passes the first
+  clause and fails the second.
+
+  Revision 4 worded the control as "after applying §8's explicit index tiebreak
+  to the same model". That is no longer constructible: the tiebreak shipped in
+  aminx PR #156/#157 and is unconditional, so there is no un-tiebroken model to
+  apply it to. The polarity is therefore inverted — `main` is the *negative*
+  leg — and the positive leg is obtained by substitution from git history rather
+  than by patching forward.
+
+  **`nominal` is deliberately not asserted either way.** Whether the reference
+  input carries ties is the open question of §2.3; asserting "no `DISCRETE_FLIP`
+  under `nominal`" would encode an answer the instrument is supposed to supply,
+  and would invert it — a true positive would read as a fixture failure whose
+  obvious remedy is to perturb the input until it passes. The `nominal` result is
+  **reported, not asserted**.
+- **AC-11** R0 and R2a runners accept no probe argument at all. R1 and R2b
+  accept `probe_deps` (revision 6, #5210) **solely as classification
+  metadata**: it selects what `classify_probes` reports in `probes`, never
+  what `fn` computes — both rungs run `fn` exactly as given and edit no
+  program output, same as before revision 6. This is an **API-surface**
+  claim, not a guarantee: since a probe is an ordinary pytree entry (§5.1),
+  nothing type-level distinguishes an instrumented callable from a plain one,
+  so a caller can still pass one. Stated at its true strength rather than
+  implying more.
+- **AC-12** `divergence.py` imports nothing from `iree` (asserted by test) and
+  reaches ≥90% line / ≥80% branch under `tier1_core` with no export extra.
+- **AC-13** A **treedef** mismatch raises `ProbeStructureError` naming both
+  treedefs, while a **leaf** mismatch under a matching treedef produces a
+  per-leaf failure record and continues (§5.2). Both asserted, including the
+  `None`-valued-field case that makes aminx's output arity vary.
+- **AC-14** A probe whose predecessor *also* had a discrete mismatch is
+  `AMPLIFIED`, **not** `DISCRETE_FLIP` — the propagation-through-the-discrete-branch
+  regression. Plus: a probe qualifying under two classes resolves by the §5.3
+  precedence order.
+- **AC-15** `validate_probe_deps` rejects a declared edge whose slice-subset
+  relation fails, naming both slices. Asserted on this spec's own revision-2
+  error — a declared `rbf → encoded_positions` edge for the aminx graph, which
+  must be rejected because `encoded_positions` does not consume `rbf`.
+- **AC-16** R0 reports non-determinism as a hard gate (a deliberately
+  nondeterministic fake artifact prevents any ring from running), and R1 refuses
+  to interpret its legs when the `cpu_features` readback shows them identical —
+  the silent-fallback case `targets.py:155-165` documents.
+- **AC-17** Each §6.2 generator is labelled in the report with its
+  in-contract/out-of-contract status, and `sub_k_neighbours` results are marked
+  out-of-contract so no verdict rests on them alone. The label must be asserted
+  **at the report level** — a `RingResult` carrying `in_contract=False` — and not
+  only on the generator's own return value. `in_contract=True` is the field's
+  default, so a test suite that never drives the false case through a rung would
+  pass against a runner that dropped the label entirely.
+- **AC-18** `docs/api/export.md` documents the ladder, the escalation order, and
+  the §5.5b caveats, and `just audit-narrative-docs` passes over it. T11 was the
+  last task with no criterion — the same defect revision 3 fixed for T4, and
+  worth fixing rather than exempting docs on principle.
+
+- **AC-19** The `INJECTED`/`CLEAN` boundary is asserted directly: a probe whose
+  leaves are **severity 1** (float divergence strictly inside `budget_leaf`) with
+  **all predecessors severity 0** classifies as `CLEAN`, and the same probe at
+  **severity 2** classifies as `INJECTED`. Both assertions are required — the
+  first alone is satisfied by a classifier that never emits `INJECTED`, and the
+  literal revision-4 reading fails it. Add the empty-predecessor case at severity
+  1, which must also be `CLEAN`.
+- **AC-20** `run_ladder` (T8b) refuses before executing anything when
+  `validate_probe_deps` rejects a declared edge, and on a well-formed input runs
+  the rungs in **exactly** the §3.1 executed sequence
+  `R0, R2a, R1, R2b, R3` (validation first); asserted on a fake whose rungs
+  record their invocation order. The sequence is quoted from §3.1 rather than
+  read off the implementation — a test that mirrors the code's own order proves
+  only that the code agrees with itself. It is the only entry point AC-10 calls,
+  so an unexercised orchestrator would make the dogfood untestable.
+- **AC-21** *(revision 6, #5210; per-probe budget handling added 260915)* R1
+  and R2b populate `probes` when given `probe_deps`. Asserted with a fake leg
+  returning a same-shape, same-dtype int32 index array with half its entries
+  wrong: `passed is True` **and** the index probe in `probes` is
+  `DISCRETE_FLIP`. The same fake run without `probe_deps` yields
+  `probes == ()` — the control that shows `passed` alone is blind to the
+  divergence, which is the defect this decision exists to close. Also
+  asserted: an incomplete R2a budget is handled **per probe**, not
+  all-or-nothing — a probe with a diverged float leaf and no matching budget
+  entry, and any probe that transitively depends on it, are omitted from
+  `probes` and named in a note explaining why; every other declared probe is
+  still classified normally; neither omission raises or changes `passed`. The
+  review scenario that pins this: a fake leg where an unbudgeted float probe
+  (`out`) diverges *and*, independently, a same-shape int32 index probe
+  (`idx`, not a dependent of `out`) has half its entries flipped —
+  `idx` must still classify `DISCRETE_FLIP` in `probes`, unsuppressed by
+  `out` being unbudgeted. `run_ladder` forwards `probe_deps` to both
+  `r1_target_isa` and `r2b_lowering`.
+- **AC-22** *(revision 6, #5209)* `UNCOMPARABLE` is produced for: a probe with
+  one failed leaf and otherwise-clean predecessors; a probe with a failed leaf
+  and an **empty** predecessor set; and a probe with a failed leaf below a
+  predecessor that itself diverged. A probe with both a failed leaf and a
+  genuine discrete mismatch on a different leaf resolves to `UNCOMPARABLE` by
+  precedence, not `DISCRETE_FLIP`. A descendant of an `UNCOMPARABLE` probe
+  that itself has a genuine discrete mismatch (no failed leaf of its own) is
+  `AMPLIFIED`, not `DISCRETE_FLIP` — it inherits the predecessor's severity-2
+  status, it does not inherit a value comparison that never ran.
+
+**Merge gate, not an acceptance criterion:** `just audit-deterministic` exits 0
+*and* its log contains no `FAILED` (the known audit-masking trap). It is
+satisfied or broken by unrelated work and carries no information about whether
+this feature works, so it is listed here rather than above.
+
+## 11. Risks
+
+| Risk | Mitigation |
+|---|---|
+| Instrumentation suppresses or creates a divergence | §5.4 two-sided precondition; AC-6 |
+| Probe map looks authoritative but is low-resolution | `slice_delta` + stated caveats; AC-9 |
+| `rings.py` drags the tier1 aggregate | Explicit `coverage_omit`; AC-12 scoped to `divergence.py` |
+| Calibrated budget masks a real mis-lowering | R2a/R2b always reported separately; budget advisory on R2b; discrete criterion absolute (§3.2) |
+| R1 legs silently identical on a non-x86-64 host | `cpu_features` readback precondition (§3) |
+| Declared probe DAG is wrong or incomplete | `unattributed_ops` surfaces unreachable regions; an undeclared dep is an error, not a default |
+| §2.3's open question quietly forgotten | §9 acceptance requires the dogfood to answer it |
+| Caller reads `passed` as "no divergence" *(revision 6, #5210)* | §6.0's per-rung `passed` table states what each rung's `passed` actually means; R1/R2b populate `probes` when given `probe_deps`, so the divergence is visible to anything that reads past `passed`; AC-21 |

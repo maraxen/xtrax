@@ -1,4 +1,4 @@
-__version__ = "0.4.0a7"
+__version__ = "0.4.0a12"
 
 __all__ = [
     # Core training
@@ -10,11 +10,13 @@ __all__ = [
     "ResumableState",
     "WeightedLoss",
     "MultiTaskLoss",
+    "ComposedLoss",
     "make_optimizer",
     "adamw_with_schedule",
     # Engine and IO
     "Engine",
     "BoundedCallbackHandler",
+    "EarlyStopping",
     "save_checkpoint",
     "load_checkpoint",
     # Data
@@ -26,7 +28,7 @@ __all__ = [
     "BatchPlan",
     "BatchPlanner",
     "Vmap",
-    "SafeMap",
+    "ChunkedMap",
     "DedupGather",
     "Bucket",
     "select_bucket",
@@ -42,7 +44,7 @@ __all__ = [
     "init_dist",
     "is_distributed",
     # Transforms
-    "safe_map",
+    "chunked_map",
     "safe_scan",
     # Safety
     "safe_norm",
@@ -60,6 +62,14 @@ __all__ = [
     "compact_ledger",
     "iter_rows",
     "find_run",
+    # Run layer (execution-time configuration)
+    "derive_sink_spec",
+    "new_run_id",
+    # PRNG key stream
+    "ChunkSpan",
+    "element_keys",
+    "iter_chunk_keys",
+    "make_chunk_plan",
 ]
 
 _LAZY = {
@@ -72,11 +82,13 @@ _LAZY = {
     "ResumableState": "xtrax.training",
     "WeightedLoss": "xtrax.training",
     "MultiTaskLoss": "xtrax.training",
+    "ComposedLoss": "xtrax.training",
     "make_optimizer": "xtrax.training",
     "adamw_with_schedule": "xtrax.training",
     # Engine subpackage
     "Engine": "xtrax.engine",
     "BoundedCallbackHandler": "xtrax.engine",
+    "EarlyStopping": "xtrax.engine",
     # Checkpoint subpackage
     "save_checkpoint": "xtrax.checkpoint",
     "load_checkpoint": "xtrax.checkpoint",
@@ -89,7 +101,7 @@ _LAZY = {
     "BatchPlan": "xtrax.tiling",
     "BatchPlanner": "xtrax.tiling",
     "Vmap": "xtrax.tiling",
-    "SafeMap": "xtrax.tiling",
+    "ChunkedMap": "xtrax.tiling",
     "DedupGather": "xtrax.tiling.strategy",
     "Bucket": "xtrax.tiling",
     "select_bucket": "xtrax.tiling",
@@ -105,7 +117,7 @@ _LAZY = {
     "init_dist": "xtrax.distributed",
     "is_distributed": "xtrax.distributed",
     # Transforms subpackage
-    "safe_map": "xtrax.transforms",
+    "chunked_map": "xtrax.transforms",
     "safe_scan": "xtrax.transforms",
     # Safety subpackage
     "safe_norm": "xtrax.safety",
@@ -123,6 +135,14 @@ _LAZY = {
     "compact_ledger": "xtrax.telemetry",
     "iter_rows": "xtrax.telemetry",
     "find_run": "xtrax.telemetry",
+    # Run layer (execution-time configuration)
+    "derive_sink_spec": "xtrax.run",
+    "new_run_id": "xtrax.run",
+    # PRNG key stream
+    "ChunkSpan": "xtrax.random",
+    "element_keys": "xtrax.random",
+    "iter_chunk_keys": "xtrax.random",
+    "make_chunk_plan": "xtrax.random",
 }
 
 

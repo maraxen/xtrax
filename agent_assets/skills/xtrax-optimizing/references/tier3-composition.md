@@ -22,7 +22,7 @@ the highest of the three tiers.
 
 ## Strategy swaps (tiling)
 
-Vmap / SafeMap / DedupGather / Bucket are the closed strategy vocabulary
+Vmap / ChunkedMap / DedupGather / Bucket are the closed strategy vocabulary
 (`src/xtrax/tiling/strategy.py`, dispatched via `src/xtrax/tiling/dispatch.py`).
 Constraints that are already enforced, do not rediscover them:
 

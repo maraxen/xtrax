@@ -17,7 +17,7 @@ seaborn = pytest.importorskip("seaborn")
 from xtrax.eda.types import PlanStatsDict
 from xtrax.eda.viz import render
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlan
-from xtrax.tiling.strategy import SafeMap, Vmap
+from xtrax.tiling.strategy import ChunkedMap, Vmap
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def simple_plan() -> BatchPlan:
         spec=spec2,
         batch_size=64,
         reasoning="Sequence axis",
-        strategy=SafeMap(batch_size=64),
+        strategy=ChunkedMap(batch_size=64),
     )
 
     return BatchPlan(decisions=(decision1, decision2))

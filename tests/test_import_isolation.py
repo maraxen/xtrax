@@ -25,6 +25,8 @@ _PACKAGES = [
     "xtrax.loop",
     "xtrax.loop.admission",
     "xtrax.config",
+    "xtrax.export",
+    "xtrax.testing",
 ]
 
 
