@@ -164,6 +164,8 @@ def estimate_cooccurrence_bytes(
     pair_tile: int,
     weight_itemsize: int,
     code_itemsize: int,
+    differentiable: bool = False,
+    layout: Literal["dense", "pairs"] = "dense",
 ) -> int:
     """Estimate peak temporary plus resident bytes of one call (spec §5).
 
@@ -182,6 +184,10 @@ def estimate_cooccurrence_bytes(
         pair_tile: Pairs per map step (scatter).
         weight_itemsize: Bytes per weight element.
         code_itemsize: Bytes per code element.
+        differentiable: Add the backward-pass gather temporaries (spec §5):
+            ``r_tile*row_block*Pb*t_chunk*4`` for the dense layout, or
+            ``r_tile*pair_tile*t_chunk*4`` for the pairs layout.
+        layout: ``"dense"`` or ``"pairs"``; selects the backward term.
 
     Returns:
         Estimated bytes, as in spec §5.
@@ -209,7 +215,11 @@ def estimate_cooccurrence_bytes(
         pair_tile=pair_tile,
         weight_itemsize=wb,
     )
-    return int(inputs + output + per_tile + _OVERHEAD_BYTES)
+    backward = 0
+    if differentiable:
+        joint_entries = row_block * n_b if layout == "dense" else pair_tile
+        backward = r_tile * joint_entries * t_chunk * 4
+    return int(inputs + output + per_tile + backward + _OVERHEAD_BYTES)
 
 
 def device_budget_bytes(fraction: float = 0.5) -> int:
@@ -302,8 +312,9 @@ def plan_cooccurrence(
         n_pairs: Pairs computed. For the dense layout this is ``Pa*Pb``.
         weight_itemsize: Bytes per weight element.
         code_itemsize: Bytes per code element.
-        strategy: Only ``"exact_int"`` in Stage 1.
-        differentiable: Only False in Stage 1.
+        strategy: Must be ``"exact_int"``. ``"float"`` runs untiled and has no plan.
+        differentiable: True for the ``custom_vjp`` path (spec §4.6). Its backward
+            temporaries are added to the estimate. The kernel is the same int32 one.
         method: ``"auto"``, ``"matmul"`` or ``"scatter"``.
         layout: ``"dense"`` or ``"pairs"``.
         byte_budget: None, an int of bytes, or ``"device"``.
@@ -313,14 +324,13 @@ def plan_cooccurrence(
         The ``CooccurrencePlan`` the kernel executes.
 
     Raises:
-        NotImplementedError: For ``strategy="float"`` or ``differentiable=True``.
-        ValueError: For inconsistent sizes or an invalid budget.
+        ValueError: For ``strategy="float"``, inconsistent sizes or an invalid budget.
         TypeError: For a budget that is neither an int, ``"device"`` nor None.
         BudgetInfeasibleError: If the full result alone, or the smallest tile
             plan, exceeds ``byte_budget``.
     """
-    if strategy != "exact_int" or differentiable:
-        raise NotImplementedError("strategy='float' and differentiable=True land in task 1.7")
+    if strategy != "exact_int":
+        raise ValueError("strategy='float' runs untiled and has no tile plan")
     if layout not in ("dense", "pairs"):
         raise ValueError(f"layout must be 'dense' or 'pairs', got {layout!r}")
     n_dense = n_a * n_b
@@ -351,6 +361,8 @@ def plan_cooccurrence(
             pair_tile=pair_tile,
             weight_itemsize=weight_itemsize,
             code_itemsize=code_itemsize,
+            differentiable=differentiable,
+            layout=layout,
         )
 
     def build(row_block: int, t_chunk: int, pair_tile: int, r_tile: int, budget: int | None):

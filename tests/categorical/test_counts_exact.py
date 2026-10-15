@@ -244,8 +244,7 @@ def test_traced_pairs_under_jit_match_concrete_pairs() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "exc", "match"),
     [
-        ({"strategy": "float"}, NotImplementedError, "task 1.7"),
-        ({"differentiable": True}, NotImplementedError, "task 1.7"),
+        ({"strategy": "bogus"}, ValueError, "strategy"),
         ({"method": "bogus"}, ValueError, "method"),
     ],
 )

@@ -1,11 +1,16 @@
 """Exact integer weighted co-occurrence counts over categorical codes.
 
-Stage 1 covers the ``exact_int`` path with the ``matmul`` and ``scatter``
-methods, the dense, pairs and self layouts, circular shifts, traced
-preconditions, the row-block iterator and the byte-budget planner. Counts are
-int32 throughout: one-hots and weights are integer, every dot product sets
-``preferred_element_type=int32``, scatter-adds accumulate in int32, and no float
-touches the counts.
+Three routes share one front end:
+
+- ``strategy="exact_int"``, ``differentiable=False`` (default): int32 throughout.
+  One-hots and weights are integer, every dot product sets
+  ``preferred_element_type=int32``, scatter-adds accumulate in int32, and no
+  float touches the counts.
+- ``strategy="exact_int"``, ``differentiable=True``: the same int32 kernel under
+  a ``custom_vjp`` (``_vjp.py``). All four outputs are float32, exact while
+  ``total < 2**24``; the gradient is with respect to float weights only.
+- ``strategy="float"``: a soft-assignment bilinear form in float32 with plain
+  autodiff, accepting hard codes or soft ``(P, T, K)`` assignments.
 
 Frames are gathered per chunk inside the scan (spec §4.2 step 1), so no
 ``(P, T)`` shifted copy is ever materialized.
@@ -41,10 +46,11 @@ class CooccurrenceCounts(eqx.Module):
 
     Attributes:
         joint: Dense layout ``(R, Pa, Pb, Ka, Kb)``; pairs layout
-            ``(R, n_pairs, Ka, Kb)``. int32.
-        marginal_a: Shape ``(R, Pa, Ka)``, int32.
-        marginal_b: Shape ``(R, Pb, Kb)``, int32.
-        total: Shape ``(R,)``, int32; the summed weight per replicate.
+            ``(R, n_pairs, Ka, Kb)``. int32, or float32 on the differentiable
+            and float-strategy paths.
+        marginal_a: Shape ``(R, Pa, Ka)``; same dtype as ``joint``.
+        marginal_b: Shape ``(R, Pb, Kb)``; same dtype as ``joint``.
+        total: Shape ``(R,)``; the summed weight per replicate, same dtype.
         layout: ``"dense"`` (all ``Pa*Pb`` variable pairs) or ``"pairs"``
             (only the requested rows).
         method: Method actually run, ``"matmul"`` or ``"scatter"``.
@@ -397,6 +403,170 @@ def _check_preconditions(
     return xa, xb, w
 
 
+_FLOAT32_EXACT_TOTAL = 2**24
+_HIGHEST = lax.Precision.HIGHEST
+
+
+def _check_codes(x: jax.Array, k: int, message: str) -> jax.Array:
+    """Enforce C1 (``0 <= x < k``) for one code array under trace; returns the checked array."""
+    return eqx.error_if(x, jnp.any((x < 0) | (x >= k)), message)
+
+
+def _prepare_float_weights(weights: ArrayLike | None, n_frames: int) -> jax.Array:
+    """Return float32 weights ``(R, T)``; ones when ``weights`` is None.
+
+    Integer and float inputs are both accepted and cast to float32. The cast is
+    exact for integer weights below ``2**24`` and integer-valued float weights,
+    and C3 enforces that bound on the exact paths.
+    """
+    if weights is None:
+        return jnp.ones((1, n_frames), dtype=jnp.float32)
+    w = jnp.asarray(weights)
+    if not (jnp.issubdtype(w.dtype, jnp.integer) or jnp.issubdtype(w.dtype, jnp.floating)):
+        raise TypeError(f"weights must be real-valued, got dtype {w.dtype}")
+    if w.ndim == 1:
+        w = w[None, :]
+    if w.ndim != 2 or w.shape[1] != n_frames:
+        raise ValueError(f"weights must have shape (T,) or (R, T) with T={n_frames}, got {w.shape}")
+    return w.astype(jnp.float32)
+
+
+def _check_float_weights(w: jax.Array, *, require_integral: bool, exact_bound: bool) -> jax.Array:
+    """Enforce C2 and C3 on float32 weights under trace (spec §3.2).
+
+    C2: ``w >= 0``, and with ``require_integral`` also ``w == round(w)``.
+
+    C3 (``exact_bound``): each replicate's total stays below ``2**24``, so the
+    float32 counts are exact. The bound applies only when every weight is
+    integer-valued. Non-integer weights make the float path approximate, with no
+    total bound (spec §6.3). The running sum cannot wrap before the flag fires:
+    each element is clipped to ``2**24``, so any prefix that is still below the
+    bound is below ``2**25``, and the first prefix to reach the bound is flagged.
+
+    Args:
+        w: float32 weights ``(R, T)`` or ``(1, T)``.
+        require_integral: Also reject non-integer weights (the exact float32 path).
+        exact_bound: Assert ``total < 2**24`` for integer-valued weights.
+
+    Returns:
+        ``w`` with the checks attached.
+    """
+    integral = w == jnp.round(w)
+    w = eqx.error_if(w, jnp.any(w < 0), "C2 failed: weights must be >= 0")
+    if require_integral:
+        w = eqx.error_if(
+            w, jnp.any(~integral), "C2 failed: float32 exact weights must be integer-valued"
+        )
+    if exact_bound:
+        capped = jnp.clip(w, 0.0, float(_FLOAT32_EXACT_TOTAL)).astype(jnp.int32)
+        running = jnp.cumsum(capped, axis=1, dtype=jnp.int32)
+        over = jnp.any(w >= _FLOAT32_EXACT_TOTAL) | jnp.any(running >= _FLOAT32_EXACT_TOTAL)
+        w = eqx.error_if(
+            w,
+            jnp.all(integral) & over,
+            "C3 failed: total >= 2**24 is not exact in float32",
+        )
+    return w
+
+
+def _anchor_checks(w: jax.Array) -> jax.Array:
+    """Return ``w`` with an exactly-zero self-dependence, so its checks survive ``grad``.
+
+    ``eqx.error_if`` is a ``pure_callback``, which JAX dead-code-eliminates when no
+    later value reads the checked array. A function linear in the weights has a
+    gradient that never reads them, so under ``jit(grad)`` the weight checks
+    would otherwise be dropped (spec S1-G3). The term ``0 * w * w`` is exactly
+    zero for finite weights, and so is its derivative ``0 * 2w``, so values and
+    gradients are unchanged. Non-finite weights are rejected by C2/C3 when
+    ``check=True``, and this is applied only then.
+    """
+    return w + 0.0 * (w * w)
+
+
+def _float_operand(codes: object, name: str) -> tuple[jax.Array, int, bool]:
+    """Return ``(operand, K, is_hard)`` for one side of the float strategy.
+
+    Hard codes come back as the raw code array ``(P, T)``, to be checked and then
+    one-hot encoded. Soft assignments come back as float32 ``(P, T, K)``.
+
+    Raises:
+        TypeError: If ``codes`` is neither ``CategoricalCodes`` nor a float 3-D array.
+    """
+    if isinstance(codes, CategoricalCodes):
+        return jnp.asarray(codes.codes), codes.n_categories, True
+    soft = jnp.asarray(codes)
+    if soft.ndim != 3 or not jnp.issubdtype(soft.dtype, jnp.floating):
+        raise TypeError(
+            f"{name} must be CategoricalCodes or a float (P, T, K) soft array, "
+            f"got dtype {soft.dtype} with shape {soft.shape}"
+        )
+    return soft.astype(jnp.float32), int(soft.shape[2]), False
+
+
+def _to_soft(operand: jax.Array, k: int, is_hard: bool) -> jax.Array:
+    """One-hot encode checked hard codes to float32 ``(P, T, K)``; pass soft input through."""
+    if is_hard:
+        return jax.nn.one_hot(operand.astype(jnp.int32), k, dtype=jnp.float32)
+    return operand
+
+
+def _float_counts(
+    xa: jax.Array,
+    xb: jax.Array,
+    w: jax.Array,
+    sa: jax.Array,
+    sb: jax.Array,
+    pair_a: jax.Array | None,
+    pair_b: jax.Array | None,
+    *,
+    layout: str,
+    n_frames: int,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Soft-assignment bilinear counts in float32, with plain autodiff (spec §3.1, §6.3).
+
+    For replicate ``r``, ``joint[a,b,i,j]`` is ``sum_t w[t] X_a[a,(t-s_a) mod T,i]
+    X_b[b,(t-s_b) mod T,j]``, with the marginals and total as the matching sums.
+    Hard codes are one-hot encoded first, so the same form covers both. Replicates
+    run through ``lax.map``. There is no frame tiling on this path.
+
+    Args:
+        xa: float32 ``(Pa, T, Ka)`` assignments, unshifted.
+        xb: float32 ``(Pb, T, Kb)`` assignments, unshifted.
+        w: float32 weights ``(R, T)``.
+        sa: int32 shifts ``(R, Pa)``.
+        sb: int32 shifts ``(R, Pb)``.
+        pair_a: int32 ``a`` index per pair (pairs layout) or None.
+        pair_b: int32 ``b`` index per pair (pairs layout) or None.
+        layout: ``"dense"`` or ``"pairs"``.
+        n_frames: Unpadded frame count ``T``.
+
+    Returns:
+        ``(joint, marginal_a, marginal_b, total)`` in float32, with a leading ``R`` axis.
+    """
+    t = jnp.arange(n_frames, dtype=jnp.int32)
+
+    def shifted(x: jax.Array, s_r: jax.Array) -> jax.Array:
+        idx = jnp.mod(t[None, :] - jnp.mod(s_r, n_frames)[:, None], n_frames)
+        return jnp.take_along_axis(x, jnp.broadcast_to(idx[:, :, None], x.shape), axis=1)
+
+    def one(args: tuple[jax.Array, ...]) -> tuple[jax.Array, ...]:
+        w_r, sa_r, sb_r = args
+        xa_r = shifted(xa, sa_r)
+        xb_r = shifted(xb, sb_r)
+        ma = jnp.einsum("ati,t->ai", xa_r, w_r, precision=_HIGHEST)
+        mb = jnp.einsum("btj,t->bj", xb_r, w_r, precision=_HIGHEST)
+        tot = jnp.sum(w_r)
+        if layout == "dense":
+            joint = jnp.einsum("ati,btj,t->abij", xa_r, xb_r, w_r, precision=_HIGHEST)
+        else:
+            joint = jnp.einsum(
+                "pti,ptj,t->pij", xa_r[pair_a], xb_r[pair_b], w_r, precision=_HIGHEST
+            )
+        return joint, ma, mb, tot
+
+    return lax.map(one, (w, sa, sb))
+
+
 def _check_pairs(
     pair_a: jax.Array, pair_b: jax.Array, pa: int, pb: int
 ) -> tuple[jax.Array, jax.Array]:
@@ -544,14 +714,17 @@ def cooccurrence_counts(
 ) -> CooccurrenceCounts:
     """Exact weighted co-occurrence counts between two sets of categorical codes.
 
-    Stage 1 implements ``strategy="exact_int"``, ``differentiable=False``, both
-    methods, circular shifts, the dense, pairs and self layouts, the traced
-    preconditions C1-C3, and the planner with optional byte budget. Options
-    outside Stage 1 raise ``NotImplementedError`` until their task lands.
+    Three routes (see the module docstring). ``strategy="exact_int"`` returns
+    int32 counts, or float32 counts with a reverse-mode gradient in ``w`` when
+    ``differentiable=True``. ``strategy="float"`` returns float32 counts from a
+    bilinear form, for hard codes or soft assignments. Shifts, the dense, pairs
+    and self layouts, the traced preconditions C1-C3 and the planner all apply
+    to the exact routes. The float route is untiled.
 
     Args:
         codes_a: Hard codes for the ``a`` variables, ``(Pa, T)``, as
-            ``CategoricalCodes``.
+            ``CategoricalCodes``. With ``strategy="float"`` a float soft
+            assignment ``(Pa, T, Ka)`` is also accepted.
         codes_b: Hard codes for the ``b`` variables, ``(Pb, T)``. ``None`` selects
             the self layout, in which ``a`` and ``b`` are the same variables.
         weights: Non-negative integer weights, ``(R, T)`` or ``(T,)``. ``None``
@@ -565,11 +738,16 @@ def cooccurrence_counts(
             layout: ``joint`` is then ``(R, n_pairs, Ka, Kb)``. Rows may repeat.
             In the self layout the pair indices refer to ``codes_a``. May be
             traced; then ``check=True`` range-checks it under trace.
-        strategy: ``"exact_int"`` only in Stage 1.
-        differentiable: Must be False in Stage 1 (custom_vjp lands in task 1.7).
+        strategy: ``"exact_int"`` (int32, integer arithmetic throughout) or
+            ``"float"`` (float32 bilinear form, plain autodiff, untiled).
+        differentiable: With ``strategy="exact_int"``, return float32 outputs
+            with a ``custom_vjp`` in ``weights`` (reverse mode only). Requires
+            hard codes and weights that are integer-valued and non-negative.
+            Ignored by ``strategy="float"``, whose outputs are float32 already.
         method: ``"auto"``, ``"matmul"`` or ``"scatter"``. ``auto`` follows spec
             §4.4 (the pairs layout with fewer pairs than ``Pa*Pb`` prefers
             scatter). The rule is provisional until the probe in task 1.6.
+            ``strategy="float"`` accepts only ``"auto"`` or ``"matmul"``.
         byte_budget: None for the unbudgeted defaults (the device is not
             queried), an int of bytes, or ``"device"`` for half of the device
             allocator limit. The budget is soft; see ``plan_cooccurrence``.
@@ -581,42 +759,62 @@ def cooccurrence_counts(
         mesh: Must be None in Stage 1 (sharding is Stage 1b).
 
     Returns:
-        ``CooccurrenceCounts`` with int32 fields.
+        ``CooccurrenceCounts``. int32 fields for ``strategy="exact_int"`` with
+        ``differentiable=False``; float32 fields otherwise.
 
     Raises:
-        TypeError: If ``codes_a``/``codes_b`` are not ``CategoricalCodes``, or
-            weights or pairs are not integer-valued.
+        TypeError: If ``codes_a``/``codes_b`` are not ``CategoricalCodes`` on the
+            exact route (soft assignments need ``strategy="float"``), weights are
+            not real-valued, or pairs are not integer-valued. Float weights on
+            ``exact_int`` with ``differentiable=False`` also raise, with a message
+            that says to pass integers or ``differentiable=True``.
         ValueError: If shapes disagree, the self layout gets ``shifts_b``, a
-            static index-size guard fails, pairs are out of range or a plan does
-            not match this call.
+            static index-size guard fails, pairs are out of range, a plan does
+            not match this call, or ``strategy="float"`` gets a method other than
+            ``auto``/``matmul`` or a ``byte_budget``/``plan``.
         BudgetInfeasibleError: If ``byte_budget`` cannot hold the result or any tile plan.
-        NotImplementedError: For any option outside the Stage 1 scope above.
+        NotImplementedError: If ``mesh`` is given (sharding is Stage 1b).
     """
-    if strategy != "exact_int":
-        raise NotImplementedError("strategy='float' lands in task 1.7")
-    if differentiable:
-        raise NotImplementedError("differentiable=True lands in task 1.7")
+    if strategy not in ("exact_int", "float"):
+        raise ValueError(f"strategy must be 'exact_int' or 'float', got {strategy!r}")
     if mesh is not None:
         raise NotImplementedError("mesh sharding is Stage 1b")
     if byte_budget is not None and plan is not None:
         raise ValueError("pass byte_budget or plan, not both; a plan already fixes the tiles")
 
-    if not isinstance(codes_a, CategoricalCodes):
-        raise TypeError(
-            "codes_a must be CategoricalCodes (build with encode_codes); "
-            "soft or raw arrays are not accepted on the exact_int path"
-        )
+    exact = strategy == "exact_int"
     self_layout = codes_b is None
-    if self_layout:
-        codes_b = codes_a
-    elif not isinstance(codes_b, CategoricalCodes):
-        raise TypeError("codes_b must be CategoricalCodes or None (self layout)")
+    if exact:
+        if not isinstance(codes_a, CategoricalCodes):
+            raise TypeError(
+                "codes_a must be CategoricalCodes (build with encode_codes); "
+                "soft or raw arrays are not accepted on the exact_int path"
+            )
+        if self_layout:
+            codes_b = codes_a
+        elif not isinstance(codes_b, CategoricalCodes):
+            raise TypeError("codes_b must be CategoricalCodes or None (self layout)")
+        ka = codes_a.n_categories
+        kb = codes_b.n_categories
+        xa = jnp.asarray(codes_a.codes)
+        xb = jnp.asarray(codes_b.codes)
+        hard_a = hard_b = True
+    else:
+        if method not in ("auto", "matmul"):
+            raise ValueError(
+                "strategy='float' runs only the bilinear matmul form; "
+                f"method must be 'auto' or 'matmul', got {method!r}"
+            )
+        if byte_budget is not None or plan is not None:
+            raise ValueError(
+                "strategy='float' runs untiled; byte_budget and plan apply to exact_int only"
+            )
+        if self_layout:
+            codes_b = codes_a
+        xa, ka, hard_a = _float_operand(codes_a, "codes_a")
+        xb, kb, hard_b = _float_operand(codes_b, "codes_b")
 
-    ka = codes_a.n_categories
-    kb = codes_b.n_categories
-    xa = jnp.asarray(codes_a.codes)
-    xb = jnp.asarray(codes_b.codes)
-    pa, n_frames = xa.shape
+    pa, n_frames = xa.shape[0], xa.shape[1]
     pb = xb.shape[0]
     if xb.shape[1] != n_frames:
         raise ValueError(f"codes_a and codes_b must share T; got {n_frames} and {xb.shape[1]}")
@@ -629,9 +827,24 @@ def cooccurrence_counts(
         raise ValueError("shifts_b must be None in the self layout; shifts_a applies to both sides")
     sb = sa if self_layout else _prepare_shifts(shifts_b, pb, "shifts_b")
 
-    w = _prepare_weights(weights, n_frames)
+    diff = exact and differentiable
+    if exact and not diff:
+        w = _prepare_weights(weights, n_frames)
+    else:
+        w = _prepare_float_weights(weights, n_frames)
     if check:
-        xa, xb, w = _check_preconditions(xa, ka, xb, kb, w)
+        if exact and not diff:
+            xa, xb, w = _check_preconditions(xa, ka, xb, kb, w)
+        else:
+            if hard_a:
+                xa = _check_codes(xa, ka, "C1 failed: codes_a outside [0, Ka)")
+            if hard_b:
+                xb = _check_codes(xb, kb, "C1 failed: codes_b outside [0, Kb)")
+            w = _anchor_checks(
+                _check_float_weights(
+                    w, require_integral=diff, exact_bound=diff or (hard_a and hard_b)
+                )
+            )
     n_rep = _common_replicates(
         [("weights", w.shape[0])]
         + [(name, s.shape[0]) for name, s in (("shifts_a", sa), ("shifts_b", sb)) if s is not None]
@@ -648,6 +861,28 @@ def cooccurrence_counts(
         if check:
             pair_a, pair_b = _check_pairs(pair_a, pair_b, pa, pb)
     n_pairs = pa * pb if pairs is None else int(pair_a.shape[0])
+
+    if not exact:
+        joint, ma, mb, tot = _float_counts(
+            _to_soft(xa, ka, hard_a),
+            _to_soft(xb, kb, hard_b),
+            w,
+            sa,
+            sb,
+            pair_a,
+            pair_b,
+            layout=layout,
+            n_frames=n_frames,
+        )
+        return CooccurrenceCounts(
+            joint=joint,
+            marginal_a=ma,
+            marginal_b=mb,
+            total=tot,
+            layout=layout,
+            method="matmul",
+            method_rule="explicit",
+        )
 
     platform = jax.default_backend()
     chosen, rule = select_method(method, layout, n_pairs, pa * pb, ka, kb, platform)
@@ -666,25 +901,33 @@ def cooccurrence_counts(
             layout=layout,
             byte_budget=byte_budget,
             platform=platform,
+            differentiable=diff,
         )
     else:
         _validate_plan(plan, chosen, n_rep, n_frames, pa, layout)
 
-    joint, ma, mb, tot = _execute(
-        xa,
-        xb,
-        w,
-        sa,
-        sb,
-        pair_a,
-        pair_b,
-        layout=layout,
-        method=chosen,
-        plan=plan,
-        ka=ka,
-        kb=kb,
-        n_frames=n_frames,
-    )
+    if diff:
+        # Deferred import: _vjp imports the kernel from this module.
+        from xtrax.categorical._vjp import DiffConfig, exact_counts  # noqa: PLC0415
+
+        cfg = DiffConfig(layout=layout, method=chosen, plan=plan, ka=ka, kb=kb, n_frames=n_frames)
+        joint, ma, mb, tot = exact_counts(cfg, w, xa, xb, sa, sb, pair_a, pair_b)
+    else:
+        joint, ma, mb, tot = _execute(
+            xa,
+            xb,
+            w,
+            sa,
+            sb,
+            pair_a,
+            pair_b,
+            layout=layout,
+            method=chosen,
+            plan=plan,
+            ka=ka,
+            kb=kb,
+            n_frames=n_frames,
+        )
     return CooccurrenceCounts(
         joint=joint,
         marginal_a=ma,

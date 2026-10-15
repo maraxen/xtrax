@@ -6,7 +6,7 @@ is materialized. Each failing
 case is also run with ``check=False`` to show the check is what raises.
 
 The ``jax.jit(jax.grad(...))`` variant of S1-G3 targets the differentiable
-path, which lands in task 1.7; see the report for the deviation.
+and float-strategy paths and lives in ``test_counts_grad.py``.
 """
 
 import jax
