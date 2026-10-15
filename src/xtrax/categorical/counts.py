@@ -101,27 +101,76 @@ def _onehot(codes_chunk: jax.Array, n_categories: int) -> jax.Array:
     return eq.reshape(tc, -1).astype(jnp.int8)
 
 
-@partial(jax.jit, static_argnames=("ka", "kb", "t_chunk"))
-def _matmul_dense(
-    xa: jax.Array, xb: jax.Array, w: jax.Array, *, ka: int, kb: int, t_chunk: int
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    """Matmul counts for zero-padded int32 codes ``(P, T_pad)`` and weights ``(R, T_pad)``.
+def _shifted_codes(x: jax.Array, shifts: jax.Array, t_idx: jax.Array, n_frames: int) -> jax.Array:
+    """Gather ``x[p, (t - s[p]) mod T]`` for every padded frame index ``t``.
 
-    Frames are scanned in chunks of ``t_chunk`` with an int32 carry; replicates
-    run sequentially through ``lax.map`` (``r_tile=1``).
+    Matches ``np.roll(x[p], s[p])``. Shifts are reduced with ``jnp.mod`` first
+    so ``t - s`` stays in range for any int32 shift. Padded frames (``t >= T``)
+    read index 0; their weight is zero.
+
+    Args:
+        x: int32 codes ``(P, T)``.
+        shifts: int32 shifts ``(P,)`` for one replicate.
+        t_idx: ``arange(T_pad)`` in int32.
+        n_frames: Unpadded frame count ``T``.
+
+    Returns:
+        int32 codes ``(P, T_pad)``.
     """
-    pa, t_pad = xa.shape
+    s_mod = jnp.mod(shifts, n_frames)[:, None]
+    idx = jnp.mod(t_idx[None, :] - s_mod, n_frames)
+    idx = jnp.where((t_idx < n_frames)[None, :], idx, 0)
+    return jnp.take_along_axis(x, idx, axis=1)
+
+
+@partial(jax.jit, static_argnames=("ka", "kb", "t_chunk", "n_frames"))
+def _matmul_dense(
+    xa: jax.Array,
+    xb: jax.Array,
+    w: jax.Array,
+    sa: jax.Array,
+    sb: jax.Array,
+    *,
+    ka: int,
+    kb: int,
+    t_chunk: int,
+    n_frames: int,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Matmul counts with per-replicate circular shifts.
+
+    Args:
+        xa: int32 codes ``(Pa, T)``, unpadded.
+        xb: int32 codes ``(Pb, T)``, unpadded.
+        w: Integer weights ``(R, T_pad)``, zero-padded.
+        sa: int32 shifts ``(R, Pa)``; zeros for no shift.
+        sb: int32 shifts ``(R, Pb)``; zeros for no shift.
+        ka: Categories of ``a``.
+        kb: Categories of ``b``.
+        t_chunk: Frames per scan step; divides ``T_pad``.
+        n_frames: Unpadded frame count ``T``.
+
+    Returns:
+        ``(joint, marginal_a, marginal_b, total)`` in int32, with ``joint``
+        shaped ``(R, Pa, Pb, Ka, Kb)``. Frames are scanned in chunks of
+        ``t_chunk`` with an int32 carry; replicates run sequentially through
+        ``lax.map`` (``r_tile=1``).
+    """
+    pa = xa.shape[0]
     pb = xb.shape[0]
-    r = w.shape[0]
+    r, t_pad = w.shape
     n_chunks = t_pad // t_chunk
     wdtype = w.dtype
     fa, fb = pa * ka, pb * kb
+    t_idx = jnp.arange(t_pad, dtype=jnp.int32)
 
-    xa_c = xa.reshape(pa, n_chunks, t_chunk).transpose(1, 0, 2)
-    xb_c = xb.reshape(pb, n_chunks, t_chunk).transpose(1, 0, 2)
-    w_c = w.reshape(r, n_chunks, t_chunk)
+    def one_replicate(args: tuple[jax.Array, ...]) -> tuple[jax.Array, ...]:
+        w_r, sa_r, sb_r = args
+        xa_r = _shifted_codes(xa, sa_r, t_idx, n_frames)
+        xb_r = _shifted_codes(xb, sb_r, t_idx, n_frames)
+        xa_c = xa_r.reshape(pa, n_chunks, t_chunk).transpose(1, 0, 2)
+        xb_c = xb_r.reshape(pb, n_chunks, t_chunk).transpose(1, 0, 2)
+        w_c = w_r.reshape(n_chunks, t_chunk)
 
-    def one_replicate(w_r: jax.Array) -> tuple[jax.Array, ...]:
         def step(carry: tuple[jax.Array, ...], chunk: tuple[jax.Array, ...]) -> tuple:
             joint, ma, mb, tot = carry
             xa_chunk, xb_chunk, w_chunk = chunk
@@ -146,12 +195,42 @@ def _matmul_dense(
             jnp.zeros((fb,), dtype=jnp.int32),
             jnp.zeros((), dtype=jnp.int32),
         )
-        carry, _ = lax.scan(step, init, (xa_c, xb_c, w_r))
+        carry, _ = lax.scan(step, init, (xa_c, xb_c, w_c))
         return carry
 
-    joint, ma, mb, tot = lax.map(one_replicate, w_c)
+    joint, ma, mb, tot = lax.map(one_replicate, (w, sa, sb))
     joint = joint.reshape(r, pa, ka, pb, kb).transpose(0, 1, 3, 2, 4)
     return joint, ma.reshape(r, pa, ka), mb.reshape(r, pb, kb), tot
+
+
+def _prepare_shifts(shifts: ArrayLike | None, n_vars: int, name: str) -> jax.Array | None:
+    """Return int32 shifts ``(R, P)``, or None when no shifts were given."""
+    if shifts is None:
+        return None
+    s = jnp.asarray(shifts)
+    if not jnp.issubdtype(s.dtype, jnp.integer):
+        raise TypeError(f"{name} must be integer-valued, got dtype {s.dtype}")
+    if s.ndim == 1:
+        s = s[None, :]
+    if s.ndim != 2 or s.shape[1] != n_vars:
+        raise ValueError(f"{name} must have shape (R, {n_vars}), got {s.shape}")
+    return s.astype(jnp.int32)
+
+
+def _common_replicates(sizes: list[tuple[str, int]]) -> int:
+    """Return the shared replicate count; a size of 1 broadcasts to the others."""
+    reps = max(n for _, n in sizes)
+    if any(n not in (1, reps) for _, n in sizes):
+        detail = ", ".join(f"{k}={v}" for k, v in sizes)
+        raise ValueError(f"replicate counts must agree or be 1; got {detail}")
+    return reps
+
+
+def _broadcast_shifts(s: jax.Array | None, n_rep: int, n_vars: int) -> jax.Array:
+    """Return shifts ``(n_rep, n_vars)``; zeros (no shift) when ``s`` is None."""
+    if s is None:
+        return jnp.zeros((n_rep, n_vars), dtype=jnp.int32)
+    return jnp.broadcast_to(s, (n_rep, n_vars))
 
 
 def _check_static_sizes(pa: int, ka: int, pb: int, kb: int) -> None:
@@ -180,9 +259,9 @@ def cooccurrence_counts(
     """Exact weighted co-occurrence counts between two sets of categorical codes.
 
     Stage 1 implements ``strategy="exact_int"``, ``differentiable=False``,
-    the ``matmul`` method, and the dense and self layouts with unbudgeted
-    defaults (``byte_budget=None``). Every other option named in the signature
-    raises ``NotImplementedError`` until its task lands (see the spec, §10).
+    the ``matmul`` method, circular shifts, and the dense and self layouts with
+    unbudgeted defaults (``byte_budget=None``). Every other option named in the
+    signature raises ``NotImplementedError`` until its task lands (spec §10).
 
     Args:
         codes_a: Hard codes for the ``a`` variables, ``(Pa, T)``, as
@@ -191,9 +270,11 @@ def cooccurrence_counts(
             the self layout, in which ``a`` and ``b`` are the same variables.
         weights: Non-negative integer weights, ``(R, T)`` or ``(T,)``. ``None``
             means ones with ``R = 1``.
-        shifts_a: Per-replicate circular shifts ``(R, Pa)``; task 1.3.
-        shifts_b: Per-replicate circular shifts ``(R, Pb)``; task 1.3. Must be
-            None in the self layout.
+        shifts_a: Per-replicate circular shifts ``(R, Pa)``. Variable ``a`` in
+            replicate ``r`` reads ``codes_a[a, (t - s) mod T]``, as ``np.roll``
+            does, for any integer shift. ``None`` means no shift.
+        shifts_b: Per-replicate circular shifts ``(R, Pb)``, same semantics.
+            Must be None in the self layout, where ``shifts_a`` applies to both.
         pairs: ``(n_pairs, 2)`` pair rows; pairs layout lands in task 1.4.
         strategy: ``"exact_int"`` only in Stage 1.
         differentiable: Must be False in Stage 1 (custom_vjp lands in task 1.7).
@@ -221,8 +302,6 @@ def cooccurrence_counts(
         raise NotImplementedError("differentiable=True lands in task 1.7")
     if pairs is not None:
         raise NotImplementedError("pairs layout lands in task 1.4")
-    if shifts_a is not None or shifts_b is not None:
-        raise NotImplementedError("circular shifts land in task 1.3")
     if byte_budget is not None:
         raise NotImplementedError("byte_budget lands in task 1.5")
     if plan is not None:
@@ -253,7 +332,20 @@ def cooccurrence_counts(
         raise ValueError("at least one frame is required")
     _check_static_sizes(pa, ka, pb, kb)
 
+    sa = _prepare_shifts(shifts_a, pa, "shifts_a")
+    if self_layout and shifts_b is not None:
+        raise ValueError("shifts_b must be None in the self layout; shifts_a applies to both sides")
+    sb = sa if self_layout else _prepare_shifts(shifts_b, pb, "shifts_b")
+
     w = _prepare_weights(weights, n_frames)
+    n_rep = _common_replicates(
+        [("weights", w.shape[0])]
+        + [(name, s.shape[0]) for name, s in (("shifts_a", sa), ("shifts_b", sb)) if s is not None]
+    )
+    w = jnp.broadcast_to(w, (n_rep, n_frames))
+    sa = _broadcast_shifts(sa, n_rep, pa)
+    sb = _broadcast_shifts(sb, n_rep, pb)
+
     layout: Literal["dense", "pairs"] = "dense"
     chosen, rule = _select_method(method, layout, ka, kb, jax.default_backend())
     if chosen != "matmul":
@@ -261,12 +353,11 @@ def cooccurrence_counts(
 
     t_chunk = min(_FRAME_CHUNK, n_frames)
     t_pad = -(-n_frames // t_chunk) * t_chunk
-    pad = ((0, 0), (0, t_pad - n_frames))
-    xa = jnp.pad(xa, pad)
-    xb = jnp.pad(xb, pad)
-    w = jnp.pad(w, pad)
+    w = jnp.pad(w, ((0, 0), (0, t_pad - n_frames)))
 
-    joint, ma, mb, tot = _matmul_dense(xa, xb, w, ka=ka, kb=kb, t_chunk=t_chunk)
+    joint, ma, mb, tot = _matmul_dense(
+        xa, xb, w, sa, sb, ka=ka, kb=kb, t_chunk=t_chunk, n_frames=n_frames
+    )
     return CooccurrenceCounts(
         joint=joint,
         marginal_a=ma,

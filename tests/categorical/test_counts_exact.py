@@ -164,7 +164,6 @@ def test_auto_above_crossover_needs_scatter_not_yet_landed() -> None:
         ({"strategy": "float"}, NotImplementedError, "task 1.7"),
         ({"differentiable": True}, NotImplementedError, "task 1.7"),
         ({"pairs": np.zeros((1, 2), dtype=np.int32)}, NotImplementedError, "task 1.4"),
-        ({"shifts_a": np.zeros((1, 2), dtype=np.int32)}, NotImplementedError, "task 1.3"),
         ({"byte_budget": 1 << 20}, NotImplementedError, "task 1.5"),
         ({"method": "bogus"}, ValueError, "method"),
     ],
@@ -231,3 +230,123 @@ def test_every_dot_general_accumulates_in_int32() -> None:
     for eqn in dots:
         assert eqn.params["preferred_element_type"] == jnp.int32
         assert eqn.outvars[0].aval.dtype == jnp.int32
+
+
+def _shift_regime(rng: np.random.Generator, r: int, p: int, t: int, regime: str) -> np.ndarray:
+    """Shifts for one regime: random in [-3T, 3T], zero, or wrap-around extremes."""
+    if regime == "zero":
+        return np.zeros((r, p), dtype=np.int64)
+    if regime == "wrap":
+        base = np.array([t + 3, -t - 1, 0, 2 * t, -2 * t - 5, 1])
+        return np.resize(base, (r, p)).astype(np.int64)
+    return rng.integers(-3 * t, 3 * t + 1, size=(r, p))
+
+
+@pytest.mark.parametrize("regime", ["random", "zero", "wrap"])
+@pytest.mark.parametrize("wname", ["int8", "int16", "int32"])
+@pytest.mark.parametrize("t", [50, 1500])
+def test_dense_shifts_exact_vs_roll_oracle(regime: str, wname: str, t: int) -> None:
+    """Shifts follow np.roll for any integer shift, both sides shifted, R=3."""
+    rng = np.random.default_rng(11 + t)
+    ka, kb, pa, pb, r = 4, 5, 2, 3, 3
+    xa = rng.integers(0, ka, size=(pa, t))
+    xb = rng.integers(0, kb, size=(pb, t))
+    w = rng.integers(0, _WEIGHT_CAP[wname] + 1, size=(r, t))
+    sa = _shift_regime(rng, r, pa, t, regime)
+    sb = _shift_regime(rng, r, pb, t, regime)
+    out = cooccurrence_counts(
+        encode_codes(xa, ka),
+        encode_codes(xb, kb),
+        weights=w.astype(wname),
+        shifts_a=sa.astype(np.int32),
+        shifts_b=sb.astype(np.int32),
+        method="matmul",
+    )
+    _assert_counts_equal(out, _oracle(xa, ka, xb, kb, w, shifts_a=sa, shifts_b=sb))
+
+
+def test_only_shifts_a_leaves_b_unshifted() -> None:
+    rng = np.random.default_rng(21)
+    t, ka, kb = 40, 3, 3
+    xa = rng.integers(0, ka, size=(2, t))
+    xb = rng.integers(0, kb, size=(2, t))
+    w = rng.integers(0, 50, size=(2, t))
+    sa = np.array([[5, -7], [0, 41]], dtype=np.int64)
+    out = cooccurrence_counts(
+        encode_codes(xa, ka),
+        encode_codes(xb, kb),
+        weights=w.astype(np.int16),
+        shifts_a=sa.astype(np.int32),
+        method="matmul",
+    )
+    _assert_counts_equal(out, _oracle(xa, ka, xb, kb, w, shifts_a=sa))
+
+
+def test_self_layout_shifts_apply_to_both_sides() -> None:
+    """Self layout: shifts_a applies to both sides; the diagonal equals diag(marginal_a)."""
+    rng = np.random.default_rng(31)
+    t, k, p, r = 64, 4, 3, 2
+    xa = rng.integers(0, k, size=(p, t))
+    w = rng.integers(0, 100_000, size=(r, t))
+    sa = rng.integers(-200, 200, size=(r, p))
+    out = cooccurrence_counts(
+        encode_codes(xa, k),
+        weights=w.astype(np.int32),
+        shifts_a=sa.astype(np.int32),
+        method="matmul",
+    )
+    _assert_counts_equal(out, _oracle(xa, k, xa, k, w, shifts_a=sa, shifts_b=sa))
+    joint = np.asarray(out.joint)
+    marg = np.asarray(out.marginal_a)
+    for a in range(p):
+        for rep in range(r):
+            assert np.array_equal(joint[rep, a, a], np.diag(marg[rep, a]))
+
+
+def test_single_weight_row_broadcasts_over_shift_replicates() -> None:
+    """Weights (1, T) broadcast across R=3 shift replicates."""
+    rng = np.random.default_rng(41)
+    t, k = 30, 3
+    xa = rng.integers(0, k, size=(2, t))
+    xb = rng.integers(0, k, size=(2, t))
+    w1 = rng.integers(0, 100, size=(1, t))
+    sa = rng.integers(0, t, size=(3, 2))
+    out = cooccurrence_counts(
+        encode_codes(xa, k),
+        encode_codes(xb, k),
+        weights=w1.astype(np.int8),
+        shifts_a=sa.astype(np.int32),
+        method="matmul",
+    )
+    assert out.joint.shape[0] == 3
+    _assert_counts_equal(out, _oracle(xa, k, xb, k, np.repeat(w1, 3, axis=0), shifts_a=sa))
+
+
+def test_shifts_b_rejected_in_self_layout() -> None:
+    ca = encode_codes(np.zeros((2, 8), dtype=np.int64), 3)
+    with pytest.raises(ValueError, match="self layout"):
+        cooccurrence_counts(ca, shifts_b=np.zeros((1, 2), dtype=np.int32))
+
+
+@pytest.mark.parametrize(
+    ("shifts", "match", "exc"),
+    [
+        (np.zeros((1, 3), dtype=np.int32), r"\(R, 2\)", ValueError),
+        (np.zeros((1, 2), dtype=np.float32), "integer-valued", TypeError),
+    ],
+)
+def test_shift_shape_and_dtype_errors(shifts: np.ndarray, match: str, exc: type) -> None:
+    ca = encode_codes(np.zeros((2, 8), dtype=np.int64), 3)
+    with pytest.raises(exc, match=match):
+        cooccurrence_counts(ca, ca, shifts_a=shifts)
+
+
+def test_mismatched_replicates_between_weights_and_shifts_raise() -> None:
+    ca = encode_codes(np.zeros((2, 8), dtype=np.int64), 3)
+    with pytest.raises(ValueError, match="replicate counts"):
+        cooccurrence_counts(
+            ca,
+            ca,
+            weights=np.ones((3, 8), dtype=np.int8),
+            shifts_a=np.zeros((2, 2), dtype=np.int32),
+        )
