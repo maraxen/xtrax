@@ -20,6 +20,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from jax import lax
+from jaxtyping import Array, Float, Int, Shaped
 
 from xtrax.categorical.counts import _execute, _shifted_codes
 from xtrax.categorical.plan import CooccurrencePlan
@@ -127,13 +128,13 @@ _exact_counts.defvjp(_exact_fwd, _exact_bwd)
 
 def exact_counts(
     cfg: DiffConfig,
-    w: jax.Array,
-    xa: jax.Array,
-    xb: jax.Array,
-    sa: jax.Array,
-    sb: jax.Array,
-    pair_a: jax.Array | None,
-    pair_b: jax.Array | None,
+    w: Float[Array, "R T"],  # noqa: F722 (jaxtyping shape)
+    xa: Shaped[Array, "Pa T"],  # noqa: F722
+    xb: Shaped[Array, "Pb T"],  # noqa: F722
+    sa: Int[Array, "R Pa"],  # noqa: F722
+    sb: Int[Array, "R Pb"],  # noqa: F722
+    pair_a: Int[Array, "n_pairs"] | None,  # noqa: F821 (jaxtyping shape name)
+    pair_b: Int[Array, "n_pairs"] | None,  # noqa: F821
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """Return float32 ``(joint, marginal_a, marginal_b, total)`` with a custom VJP.
 

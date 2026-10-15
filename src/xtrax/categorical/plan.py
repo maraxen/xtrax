@@ -73,7 +73,7 @@ def select_method(
     ka: int,
     kb: int,
     platform: str,
-) -> tuple[str, str]:
+) -> tuple[Literal["matmul", "scatter"], str]:
     """Resolve ``method="auto"`` to a concrete method and its provenance rule.
 
     Spec §4.4. A pairs layout with fewer pairs than the dense ``Pa*Pb`` grid

@@ -20,14 +20,15 @@ Spec: .praxia/docs/specs/261015_exact-categorical-cooccurrence.md (§3, §4.2-4.
 
 from collections.abc import Iterator
 from functools import partial
-from typing import Literal
+from typing import Any, Literal
 
 import equinox as eqx
 import jax
+import jax.core
 import jax.numpy as jnp
 import numpy as np
 from jax import lax
-from jaxtyping import ArrayLike
+from jaxtyping import Array, ArrayLike, Int, Shaped
 
 from xtrax.categorical.codes import CategoricalCodes
 from xtrax.categorical.plan import (
@@ -662,6 +663,8 @@ def _execute(
         if layout == "dense":
             blk_a, blk_b = _dense_pair_index(rb, pb)
         else:
+            if pair_a is None or pair_b is None:
+                raise ValueError("the pairs layout requires pair indices")
             blk_a, blk_b = pair_a, pair_b
         n_blk = blk_a.shape[0]
         blk_a, blk_b = _pad_to_tile(blk_a, blk_b, plan.pair_tile)
@@ -697,13 +700,13 @@ def _execute(
 
 
 def cooccurrence_counts(
-    codes_a: CategoricalCodes | jax.Array,
-    codes_b: CategoricalCodes | jax.Array | None = None,
+    codes_a: CategoricalCodes | Shaped[Array, "Pa T *Ka"],  # noqa: F722 (jaxtyping shape)
+    codes_b: CategoricalCodes | Shaped[Array, "Pb T *Kb"] | None = None,  # noqa: F722
     *,
-    weights: ArrayLike | None = None,
-    shifts_a: ArrayLike | None = None,
-    shifts_b: ArrayLike | None = None,
-    pairs: ArrayLike | None = None,
+    weights: Shaped[ArrayLike, "*R T"] | None = None,  # noqa: F722
+    shifts_a: Int[ArrayLike, "R Pa"] | None = None,  # noqa: F722
+    shifts_b: Int[ArrayLike, "R Pb"] | None = None,  # noqa: F722
+    pairs: Int[ArrayLike, "n_pairs 2"] | None = None,  # noqa: F722
     strategy: Literal["exact_int", "float"] = "exact_int",
     differentiable: bool = False,
     method: Literal["auto", "matmul", "scatter"] = "auto",
@@ -860,7 +863,7 @@ def cooccurrence_counts(
         pair_a, pair_b = _prepare_pairs(pairs, pa, pb)
         if check:
             pair_a, pair_b = _check_pairs(pair_a, pair_b, pa, pb)
-    n_pairs = pa * pb if pairs is None else int(pair_a.shape[0])
+    n_pairs = pa * pb if pair_a is None else int(pair_a.shape[0])
 
     if not exact:
         joint, ma, mb, tot = _float_counts(
@@ -896,7 +899,7 @@ def cooccurrence_counts(
             k_b=kb,
             n_pairs=n_pairs,
             weight_itemsize=w.dtype.itemsize,
-            code_itemsize=codes_a.codes.dtype.itemsize,
+            code_itemsize=xa.dtype.itemsize,
             method=method,
             layout=layout,
             byte_budget=byte_budget,
@@ -944,7 +947,7 @@ def iter_cooccurrence_row_blocks(
     codes_b: CategoricalCodes | None = None,
     *,
     row_block: int,
-    **same_kwargs: object,
+    **same_kwargs: Any,
 ) -> Iterator[tuple[slice, CooccurrenceCounts]]:
     """Yield dense counts one block of ``codes_a`` rows at a time (host generator).
 

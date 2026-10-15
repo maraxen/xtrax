@@ -1,8 +1,9 @@
 ---
 name: using-xtrax
 description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function, or when a model is sparsified for inference. The library is xtrax."
-xtrax_version: 0.4.0a12
+xtrax_version: 0.4.0a13
 triggers:
+  - exact weighted co-occurrence / contingency counts over categorical codes (xtrax.categorical)
   - padding or bucketing loop for variable-length sequences before a JIT step
   - chunked vmap or lax.map over a large batch
   - memory-budgeted batching / batch plan that must fit a device budget
@@ -282,6 +283,9 @@ Choose your task:
 11. **Compare a sampler to a reference implementation**  
    → Read `references/parity.md`
 
+12. **Exact weighted co-occurrence / contingency counts over categorical codes**  
+   → Read `references/categorical.md`
+
 ---
 
 ## TIER-2: Deep Reference
@@ -300,6 +304,7 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | Export (AOT) | `references/export.md` | — | xtrax.export: export_pipeline, Target/VerificationLevel, native + wasm32 + SPIR-V codegen, dtype envelope, load_hf_weights, materialize stripping, multi-axis composition |
 | Length bucketing | `references/length-bucketing.md` | — | AxisSpec.bucket_boundaries, Bucket, host select_bucket/bucketize, BUCKET_LADDER, one compile per rung |
 | Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives |
+| Categorical | `references/categorical.md` | — | xtrax.categorical: exact int32 co-occurrence counts, dtype contract, CPU crossover (KK_CROSSOVER_CPU=256), shifts, checks, memory planning |
 | Standalone ONNX | `references/onnx-standalone.md` | — | convert_to_onnx vs jax2onnx, find_onnx_rng_ops, verify_native_parity, rings, divergence |
 
 Use the Workflow Index above to pick which file(s) a given task needs — most tasks need one, some (e.g. tiled inference) need two. Don't load a reference file speculatively; load it when the task actually reaches that layer.
