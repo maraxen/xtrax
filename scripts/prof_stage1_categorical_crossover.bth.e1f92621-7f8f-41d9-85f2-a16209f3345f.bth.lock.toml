@@ -1,0 +1,8 @@
+# prof_stage1_categorical_crossover.bth.e1f92621-7f8f-41d9-85f2-a16209f3345f.bth.lock.toml — written at run time, never modified
+[manifest]
+written_at = "2026-10-15T20:08:56.935504+00:00"
+sidecar_sha256 = "0716c45a071ca2ee42dbcfdac9595eecaf1d9638c1cacc3d48e23f5c752fc8ea"
+sidecar_path = "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/scripts/prof_stage1_categorical_crossover.bth.toml"
+git_sha = "617b8cc41ebb5b46092943ab4f2264cb92f62ac7"
+script_sha256 = "438354cdb5bdf4760aa6283bb4f38649b1fdb178da4240ada3eea5e905437842"
+run_id = "e1f92621-7f8f-41d9-85f2-a16209f3345f"
