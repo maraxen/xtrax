@@ -224,14 +224,21 @@ def test_pairs_argument_errors(pairs: np.ndarray, exc: type, match: str) -> None
         cooccurrence_counts(ca, encode_codes(np.zeros((2, 4), dtype=np.int64), 3), pairs=pairs)
 
 
-def test_traced_pairs_wait_for_task_1_5() -> None:
-    ca = encode_codes(np.zeros((2, 4), dtype=np.int64), 3)
+def test_traced_pairs_under_jit_match_concrete_pairs() -> None:
+    """Traced pairs (task 1.5) give the same counts as the concrete array."""
+    rng = np.random.default_rng(91)
+    xa = rng.integers(0, 3, size=(2, 30))
+    w = rng.integers(0, 50, size=(1, 30))
+    pairs = np.array([[0, 1], [1, 0], [1, 1]], dtype=np.int32)
+    ca = encode_codes(xa, 3)
 
     def run(p):
-        return cooccurrence_counts(ca, ca, pairs=p)
+        return cooccurrence_counts(ca, ca, weights=w.astype(np.int32), pairs=p, method="matmul")
 
-    with pytest.raises(NotImplementedError, match="task 1.5"):
-        jax.jit(run)(jnp.zeros((1, 2), dtype=jnp.int32))
+    traced = jax.jit(run)(jnp.asarray(pairs))
+    concrete = run(pairs)
+    assert np.array_equal(np.asarray(traced.joint), np.asarray(concrete.joint))
+    _assert_counts_equal(traced, _oracle_pairs(xa, 3, xa, 3, w, pairs))
 
 
 @pytest.mark.parametrize(
@@ -239,7 +246,6 @@ def test_traced_pairs_wait_for_task_1_5() -> None:
     [
         ({"strategy": "float"}, NotImplementedError, "task 1.7"),
         ({"differentiable": True}, NotImplementedError, "task 1.7"),
-        ({"byte_budget": 1 << 20}, NotImplementedError, "task 1.5"),
         ({"method": "bogus"}, ValueError, "method"),
     ],
 )

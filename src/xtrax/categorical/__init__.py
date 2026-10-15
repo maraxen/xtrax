@@ -12,7 +12,11 @@ from xtrax.categorical.codes import (
     encode_codes,
     weight_dtype,
 )
-from xtrax.categorical.counts import CooccurrenceCounts, cooccurrence_counts
+from xtrax.categorical.counts import (
+    CooccurrenceCounts,
+    cooccurrence_counts,
+    iter_cooccurrence_row_blocks,
+)
 
 __all__ = [
     "CategoricalCodes",
@@ -20,5 +24,6 @@ __all__ = [
     "code_dtype",
     "cooccurrence_counts",
     "encode_codes",
+    "iter_cooccurrence_row_blocks",
     "weight_dtype",
 ]
