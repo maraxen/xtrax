@@ -12,10 +12,13 @@ from xtrax.categorical.codes import (
     encode_codes,
     weight_dtype,
 )
+from xtrax.categorical.counts import CooccurrenceCounts, cooccurrence_counts
 
 __all__ = [
     "CategoricalCodes",
+    "CooccurrenceCounts",
     "code_dtype",
+    "cooccurrence_counts",
     "encode_codes",
     "weight_dtype",
 ]
