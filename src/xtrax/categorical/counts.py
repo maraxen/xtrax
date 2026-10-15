@@ -1,11 +1,12 @@
 """Exact integer weighted co-occurrence counts over categorical codes.
 
-Stage 1 covers the ``exact_int`` path with the ``matmul`` method and the dense
-and self layouts. Counts are int32 throughout: one-hots and weights are
-integer, every dot product sets ``preferred_element_type=int32``, and no float
+Stage 1 covers the ``exact_int`` path with the ``matmul`` and ``scatter``
+methods, the dense, pairs and self layouts, and circular shifts. Counts are
+int32 throughout: one-hots and weights are integer, every dot product sets
+``preferred_element_type=int32``, scatter-adds accumulate in int32, and no float
 touches the counts.
 
-Spec: .praxia/docs/specs/261015_exact-categorical-cooccurrence.md (§3, §4.2, §6)
+Spec: .praxia/docs/specs/261015_exact-categorical-cooccurrence.md (§3, §4.2-4.4, §6)
 """
 
 from functools import partial
@@ -14,6 +15,7 @@ from typing import Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import lax
 from jaxtyping import ArrayLike
 
@@ -27,6 +29,8 @@ KK_CROSSOVER_GPU = 16
 
 # Unbudgeted frame-chunk cap (spec §5, `byte_budget=None` defaults).
 _FRAME_CHUNK = 1024
+# Unbudgeted pair-tile cap for scatter (spec §5 `pair_tile=256`).
+_PAIR_TILE = 256
 _INT31 = 2**31
 
 
@@ -38,7 +42,8 @@ class CooccurrenceCounts(eqx.Module):
         marginal_a: Shape ``(R, Pa, Ka)``, int32.
         marginal_b: Shape ``(R, Pb, Kb)``, int32.
         total: Shape ``(R,)``, int32; the summed weight per replicate.
-        layout: ``"dense"`` (pairs layout lands in task 1.4).
+        layout: ``"dense"`` (all ``Pa*Pb`` variable pairs) or ``"pairs"``
+            (only the requested rows).
         method: Method actually run, ``"matmul"`` or ``"scatter"``.
         method_rule: Why that method ran: ``explicit``, ``cpu_provisional``,
             ``cpu_measured``, ``gpu_provisional`` or ``gpu_measured``.
@@ -75,15 +80,41 @@ def _prepare_weights(weights: ArrayLike | None, n_frames: int) -> jax.Array:
 def _select_method(
     method: Literal["auto", "matmul", "scatter"],
     layout: Literal["dense", "pairs"],
+    n_pairs: int,
+    n_dense_pairs: int,
     ka: int,
     kb: int,
     platform: str,
 ) -> tuple[str, str]:
-    """Resolve ``method="auto"`` to a concrete method and its provenance rule."""
+    """Resolve ``method="auto"`` to a concrete method and its provenance rule.
+
+    Spec §4.4. A pairs layout with fewer pairs than the dense ``Pa*Pb`` grid
+    prefers ``scatter``, because ``matmul`` would compute the whole dense grid
+    and gather rows. The spec's "<<" is unquantified, so ``n_pairs < Pa*Pb`` is
+    the literal reading used here. Otherwise the platform crossover applies.
+
+    Args:
+        method: Caller's choice.
+        layout: ``"dense"`` or ``"pairs"``.
+        n_pairs: Number of pairs computed.
+        n_dense_pairs: ``Pa*Pb``, the size of the dense grid.
+        ka: Categories of ``a``.
+        kb: Categories of ``b``.
+        platform: ``jax.default_backend()``.
+
+    Returns:
+        ``(method, method_rule)``.
+
+    Raises:
+        ValueError: If ``method`` is not one of the three allowed values.
+    """
     if method not in ("auto", "matmul", "scatter"):
         raise ValueError(f"method must be 'auto', 'matmul' or 'scatter', got {method!r}")
     if method != "auto":
         return method, "explicit"
+    if layout == "pairs" and n_pairs < n_dense_pairs:
+        rule = "cpu_provisional" if platform == "cpu" else "gpu_provisional"
+        return "scatter", rule
     if platform == "cpu":
         chosen = "matmul" if ka * kb <= KK_CROSSOVER_CPU else "scatter"
         return chosen, "cpu_provisional"
@@ -203,6 +234,95 @@ def _matmul_dense(
     return joint, ma.reshape(r, pa, ka), mb.reshape(r, pb, kb), tot
 
 
+@partial(jax.jit, static_argnames=("ka", "kb", "t_chunk", "n_frames", "pair_tile"))
+def _scatter_counts(
+    xa: jax.Array,
+    xb: jax.Array,
+    w: jax.Array,
+    sa: jax.Array,
+    sb: jax.Array,
+    pair_a: jax.Array,
+    pair_b: jax.Array,
+    *,
+    ka: int,
+    kb: int,
+    t_chunk: int,
+    n_frames: int,
+    pair_tile: int,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Per-pair composite bincount with per-replicate circular shifts.
+
+    Each pair ``p = (a, b)`` accumulates ``hist[p, x_a*Kb + x_b] += w`` over
+    frames, in int32. Weights are cast to int32 before the add: ``bincount``
+    would accumulate in the weight dtype and wrap (spec A26). Pairs run in
+    ``pair_tile`` chunks through ``lax.map`` inside the frame scan.
+
+    Args:
+        xa: int32 codes ``(Pa, T)``, unpadded.
+        xb: int32 codes ``(Pb, T)``, unpadded.
+        w: Integer weights ``(R, T_pad)``, zero-padded.
+        sa: int32 shifts ``(R, Pa)``; zeros for no shift.
+        sb: int32 shifts ``(R, Pb)``; zeros for no shift.
+        pair_a: int32 ``a`` index per pair, length a multiple of ``pair_tile``.
+            Padding entries are 0 and their rows are sliced off by the caller.
+        pair_b: int32 ``b`` index per pair, same length as ``pair_a``.
+        ka: Categories of ``a``.
+        kb: Categories of ``b``.
+        t_chunk: Frames per scan step; divides ``T_pad``.
+        n_frames: Unpadded frame count ``T``.
+        pair_tile: Pairs per ``lax.map`` step.
+
+    Returns:
+        ``(joint, marginal_a, marginal_b, total)`` in int32, with ``joint``
+        shaped ``(R, n_pairs_padded, Ka, Kb)`` and the marginals as in
+        ``_matmul_dense``.
+    """
+    pa, pb = xa.shape[0], xb.shape[0]
+    r, t_pad = w.shape
+    n_chunks = t_pad // t_chunk
+    n_tiles = pair_a.shape[0] // pair_tile
+    kk = ka * kb
+    t_idx = jnp.arange(t_pad, dtype=jnp.int32)
+    rows = jnp.arange(pair_tile, dtype=jnp.int32)[:, None]
+    a_rows = jnp.arange(pa, dtype=jnp.int32)[:, None]
+    b_rows = jnp.arange(pb, dtype=jnp.int32)[:, None]
+
+    def one_replicate(args: tuple[jax.Array, ...]) -> tuple[jax.Array, ...]:
+        w_r, sa_r, sb_r = args
+        xa_r = _shifted_codes(xa, sa_r, t_idx, n_frames)
+        xb_r = _shifted_codes(xb, sb_r, t_idx, n_frames)
+        xa_c = xa_r.reshape(pa, n_chunks, t_chunk).transpose(1, 0, 2)
+        xb_c = xb_r.reshape(pb, n_chunks, t_chunk).transpose(1, 0, 2)
+        w_c = w_r.reshape(n_chunks, t_chunk).astype(jnp.int32)
+
+        def step(carry: tuple[jax.Array, ...], chunk: tuple[jax.Array, ...]) -> tuple:
+            hist, ma, mb, tot = carry
+            xa_k, xb_k, w_k = chunk
+            comp = xa_k[pair_a] * kb + xb_k[pair_b]
+            comp = comp.reshape(n_tiles, pair_tile, t_chunk)
+
+            def add_tile(args_t: tuple[jax.Array, jax.Array]) -> jax.Array:
+                h, c = args_t
+                return h.at[rows, c].add(w_k[None, :])
+
+            hist = lax.map(add_tile, (hist, comp))
+            ma = ma.at[a_rows, xa_k].add(w_k[None, :])
+            mb = mb.at[b_rows, xb_k].add(w_k[None, :])
+            tot = tot + jnp.sum(w_k, dtype=jnp.int32)
+            return (hist, ma, mb, tot), None
+
+        init = (
+            jnp.zeros((n_tiles, pair_tile, kk), dtype=jnp.int32),
+            jnp.zeros((pa, ka), dtype=jnp.int32),
+            jnp.zeros((pb, kb), dtype=jnp.int32),
+            jnp.zeros((), dtype=jnp.int32),
+        )
+        (hist, ma, mb, tot), _ = lax.scan(step, init, (xa_c, xb_c, w_c))
+        return hist.reshape(-1, ka, kb), ma, mb, tot
+
+    return lax.map(one_replicate, (w, sa, sb))
+
+
 def _prepare_shifts(shifts: ArrayLike | None, n_vars: int, name: str) -> jax.Array | None:
     """Return int32 shifts ``(R, P)``, or None when no shifts were given."""
     if shifts is None:
@@ -233,6 +353,64 @@ def _broadcast_shifts(s: jax.Array | None, n_rep: int, n_vars: int) -> jax.Array
     return jnp.broadcast_to(s, (n_rep, n_vars))
 
 
+def _dense_pair_index(pa: int, pb: int) -> tuple[jax.Array, jax.Array]:
+    """Return ``(a, b)`` index columns of the dense grid, row-major ``(Pa, Pb)``."""
+    ia = jnp.repeat(jnp.arange(pa, dtype=jnp.int32), pb)
+    ib = jnp.tile(jnp.arange(pb, dtype=jnp.int32), pa)
+    return ia, ib
+
+
+def _prepare_pairs(pairs: ArrayLike, pa: int, pb: int) -> tuple[jax.Array, jax.Array]:
+    """Validate ``(n_pairs, 2)`` pair rows and return int32 ``(a, b)`` columns.
+
+    Pairs must be a concrete host array in Stage 1. Traced pairs need the
+    traced range check, which lands with task 1.5.
+
+    Args:
+        pairs: Integer rows ``(a, b)`` with ``0 <= a < Pa`` and ``0 <= b < Pb``.
+        pa: Number of ``a`` variables.
+        pb: Number of ``b`` variables.
+
+    Returns:
+        ``(pair_a, pair_b)``, int32 arrays of length ``n_pairs``.
+
+    Raises:
+        NotImplementedError: If ``pairs`` is traced.
+        TypeError: If ``pairs`` is not integer-valued.
+        ValueError: If the shape is not ``(n, 2)`` with ``n >= 1``, or an index
+            is out of range.
+    """
+    if isinstance(pairs, jax.core.Tracer):
+        raise NotImplementedError(
+            "traced pairs need the traced range check, which lands in task 1.5; "
+            "pass a concrete array"
+        )
+    host = np.asarray(pairs)
+    if not np.issubdtype(host.dtype, np.integer):
+        raise TypeError(f"pairs must be integer-valued, got dtype {host.dtype}")
+    if host.ndim != 2 or host.shape[1] != 2 or host.shape[0] < 1:
+        raise ValueError(f"pairs must have shape (n_pairs, 2) with n_pairs >= 1, got {host.shape}")
+    a, b = host[:, 0], host[:, 1]
+    if a.min() < 0 or a.max() >= pa or b.min() < 0 or b.max() >= pb:
+        raise ValueError(
+            f"pairs index out of range: a must lie in [0, {pa}), b in [0, {pb}); "
+            f"found a in [{a.min()}, {a.max()}], b in [{b.min()}, {b.max()}]"
+        )
+    return jnp.asarray(a, dtype=jnp.int32), jnp.asarray(b, dtype=jnp.int32)
+
+
+def _pad_pairs(pair_a: jax.Array, pair_b: jax.Array) -> tuple[jax.Array, jax.Array, int]:
+    """Pad pair columns to a multiple of the pair tile; return the tile size.
+
+    Padding rows point at pair ``(0, 0)``; the caller slices them off.
+    """
+    n = pair_a.shape[0]
+    tile = min(_PAIR_TILE, n)
+    n_pad = -(-n // tile) * tile
+    extra = n_pad - n
+    return jnp.pad(pair_a, (0, extra)), jnp.pad(pair_b, (0, extra)), tile
+
+
 def _check_static_sizes(pa: int, ka: int, pb: int, kb: int) -> None:
     """Reject index spaces that would overflow int32 (spec §3.1, §4.1)."""
     for name, size in (("Pa*Ka", pa * ka), ("Pb*Kb", pb * kb), ("Ka*Kb", ka * kb)):
@@ -259,9 +437,10 @@ def cooccurrence_counts(
     """Exact weighted co-occurrence counts between two sets of categorical codes.
 
     Stage 1 implements ``strategy="exact_int"``, ``differentiable=False``,
-    the ``matmul`` method, circular shifts, and the dense and self layouts with
-    unbudgeted defaults (``byte_budget=None``). Every other option named in the
-    signature raises ``NotImplementedError`` until its task lands (spec §10).
+    the ``matmul`` and ``scatter`` methods, circular shifts, and the dense,
+    pairs and self layouts with unbudgeted defaults (``byte_budget=None``).
+    Every other option named in the signature raises ``NotImplementedError``
+    until its task lands (spec §10).
 
     Args:
         codes_a: Hard codes for the ``a`` variables, ``(Pa, T)``, as
@@ -275,11 +454,15 @@ def cooccurrence_counts(
             does, for any integer shift. ``None`` means no shift.
         shifts_b: Per-replicate circular shifts ``(R, Pb)``, same semantics.
             Must be None in the self layout, where ``shifts_a`` applies to both.
-        pairs: ``(n_pairs, 2)`` pair rows; pairs layout lands in task 1.4.
+        pairs: ``(n_pairs, 2)`` integer rows ``(a, b)`` selecting the pairs
+            layout: ``joint`` is then ``(R, n_pairs, Ka, Kb)``. Rows may repeat.
+            In the self layout the pair indices refer to ``codes_a``. Must be a
+            concrete array in Stage 1.
         strategy: ``"exact_int"`` only in Stage 1.
         differentiable: Must be False in Stage 1 (custom_vjp lands in task 1.7).
-        method: ``"auto"``, ``"matmul"`` or ``"scatter"``. ``scatter`` lands in
-            task 1.4, so ``auto`` resolving to it raises for now.
+        method: ``"auto"``, ``"matmul"`` or ``"scatter"``. ``auto`` follows
+            spec §4.4 (the pairs layout with fewer pairs than ``Pa*Pb`` prefers
+            scatter).
         byte_budget: Must be None in Stage 1 (planner lands in task 1.5).
         plan: Must be None in Stage 1 (planner lands in task 1.5).
         check: Traced preconditions C1-C3 (spec §3.2) are enforced in task 1.5.
@@ -300,8 +483,6 @@ def cooccurrence_counts(
         raise NotImplementedError("strategy='float' lands in task 1.7")
     if differentiable:
         raise NotImplementedError("differentiable=True lands in task 1.7")
-    if pairs is not None:
-        raise NotImplementedError("pairs layout lands in task 1.4")
     if byte_budget is not None:
         raise NotImplementedError("byte_budget lands in task 1.5")
     if plan is not None:
@@ -346,25 +527,50 @@ def cooccurrence_counts(
     sa = _broadcast_shifts(sa, n_rep, pa)
     sb = _broadcast_shifts(sb, n_rep, pb)
 
-    layout: Literal["dense", "pairs"] = "dense"
-    chosen, rule = _select_method(method, layout, ka, kb, jax.default_backend())
-    if chosen != "matmul":
-        raise NotImplementedError(f"method {chosen!r} lands in task 1.4")
+    layout: Literal["dense", "pairs"] = "dense" if pairs is None else "pairs"
+    if pairs is None:
+        pair_a, pair_b = _dense_pair_index(pa, pb)
+    else:
+        pair_a, pair_b = _prepare_pairs(pairs, pa, pb)
+    n_pairs = int(pair_a.shape[0])
+    chosen, rule = _select_method(method, layout, n_pairs, pa * pb, ka, kb, jax.default_backend())
 
     t_chunk = min(_FRAME_CHUNK, n_frames)
     t_pad = -(-n_frames // t_chunk) * t_chunk
     w = jnp.pad(w, ((0, 0), (0, t_pad - n_frames)))
 
-    joint, ma, mb, tot = _matmul_dense(
-        xa, xb, w, sa, sb, ka=ka, kb=kb, t_chunk=t_chunk, n_frames=n_frames
-    )
+    if chosen == "matmul":
+        joint, ma, mb, tot = _matmul_dense(
+            xa, xb, w, sa, sb, ka=ka, kb=kb, t_chunk=t_chunk, n_frames=n_frames
+        )
+        if layout == "pairs":
+            joint = joint[:, pair_a, pair_b]
+    else:
+        pair_a_p, pair_b_p, pair_tile = _pad_pairs(pair_a, pair_b)
+        hist, ma, mb, tot = _scatter_counts(
+            xa,
+            xb,
+            w,
+            sa,
+            sb,
+            pair_a_p,
+            pair_b_p,
+            ka=ka,
+            kb=kb,
+            t_chunk=t_chunk,
+            n_frames=n_frames,
+            pair_tile=pair_tile,
+        )
+        joint = hist[:, :n_pairs]
+        if layout == "dense":
+            joint = joint.reshape(joint.shape[0], pa, pb, ka, kb)
     return CooccurrenceCounts(
         joint=joint,
         marginal_a=ma,
         marginal_b=mb,
         total=tot,
         layout=layout,
-        method="matmul",
+        method=chosen,
         method_rule=rule,
     )
 

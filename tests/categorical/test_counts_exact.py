@@ -50,6 +50,23 @@ def _oracle(
     return {"joint": joint, "marginal_a": ma, "marginal_b": mb, "total": w.sum(axis=1)}
 
 
+def _oracle_pairs(
+    xa: np.ndarray,
+    ka: int,
+    xb: np.ndarray,
+    kb: int,
+    w: np.ndarray,
+    pairs: np.ndarray,
+    shifts_a: np.ndarray | None = None,
+    shifts_b: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
+    """Pairs-layout reference: the dense int64 oracle gathered at the pair rows."""
+    ref = _oracle(xa, ka, xb, kb, w, shifts_a=shifts_a, shifts_b=shifts_b)
+    rows = np.asarray(pairs)
+    ref["joint"] = ref["joint"][:, rows[:, 0], rows[:, 1]]
+    return ref
+
+
 def _case(seed: int, pa: int, pb: int, ka: int, kb: int, t: int, r: int, wname: str):
     rng = np.random.default_rng(seed)
     xa = rng.integers(0, ka, size=(pa, t))
@@ -150,12 +167,71 @@ def test_auto_selects_matmul_on_cpu_below_crossover() -> None:
     _assert_counts_equal(out, _oracle(xa, 3, xb, 3, w))
 
 
-def test_auto_above_crossover_needs_scatter_not_yet_landed() -> None:
+def test_auto_above_crossover_selects_scatter_and_is_exact() -> None:
+    """Ka*Kb = 81 > KK_CROSSOVER_CPU on CPU, so auto resolves to scatter."""
     if jax.default_backend() != "cpu":
         pytest.skip("CPU crossover rule")
-    xa = np.zeros((1, 4), dtype=np.int64)
-    with pytest.raises(NotImplementedError, match="task 1.4"):
-        cooccurrence_counts(encode_codes(xa, 16), encode_codes(xa, 16))
+    xa, xb, w = _case(seed=5, pa=2, pb=2, ka=9, kb=9, t=40, r=1, wname="int8")
+    assert 9 * 9 > KK_CROSSOVER_CPU
+    out = cooccurrence_counts(encode_codes(xa, 9), encode_codes(xb, 9), weights=w.astype("int8"))
+    assert out.method == "scatter"
+    assert out.method_rule == "cpu_provisional"
+    _assert_counts_equal(out, _oracle(xa, 9, xb, 9, w))
+
+
+def test_auto_pairs_fewer_than_dense_grid_selects_scatter() -> None:
+    """Pairs layout with n_pairs < Pa*Pb prefers scatter (spec §4.4), even at K=3."""
+    if jax.default_backend() != "cpu":
+        pytest.skip("CPU rule")
+    xa, xb, w = _case(seed=6, pa=2, pb=2, ka=3, kb=3, t=30, r=1, wname="int8")
+    pairs = np.array([[0, 1]], dtype=np.int32)
+    out = cooccurrence_counts(
+        encode_codes(xa, 3), encode_codes(xb, 3), weights=w.astype("int8"), pairs=pairs
+    )
+    assert out.layout == "pairs"
+    assert out.method == "scatter"
+    assert out.method_rule == "cpu_provisional"
+    _assert_counts_equal(out, _oracle_pairs(xa, 3, xb, 3, w, pairs))
+
+
+def test_auto_pairs_full_grid_follows_crossover() -> None:
+    """n_pairs == Pa*Pb is not 'fewer than the dense grid', so K=3 keeps matmul."""
+    if jax.default_backend() != "cpu":
+        pytest.skip("CPU rule")
+    xa, xb, w = _case(seed=7, pa=2, pb=2, ka=3, kb=3, t=30, r=1, wname="int8")
+    pairs = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=np.int32)
+    out = cooccurrence_counts(
+        encode_codes(xa, 3), encode_codes(xb, 3), weights=w.astype("int8"), pairs=pairs
+    )
+    assert out.method == "matmul"
+    _assert_counts_equal(out, _oracle_pairs(xa, 3, xb, 3, w, pairs))
+
+
+@pytest.mark.parametrize(
+    ("pairs", "exc", "match"),
+    [
+        (np.zeros((2, 3), dtype=np.int32), ValueError, r"shape \(n_pairs, 2\)"),
+        (np.zeros((0, 2), dtype=np.int32), ValueError, r"shape \(n_pairs, 2\)"),
+        (np.array([[2, 0]], dtype=np.int32), ValueError, "out of range"),
+        (np.array([[0, 2]], dtype=np.int32), ValueError, "out of range"),
+        (np.array([[-1, 0]], dtype=np.int32), ValueError, "out of range"),
+        (np.zeros((1, 2), dtype=np.float32), TypeError, "integer-valued"),
+    ],
+)
+def test_pairs_argument_errors(pairs: np.ndarray, exc: type, match: str) -> None:
+    ca = encode_codes(np.zeros((2, 4), dtype=np.int64), 3)
+    with pytest.raises(exc, match=match):
+        cooccurrence_counts(ca, encode_codes(np.zeros((2, 4), dtype=np.int64), 3), pairs=pairs)
+
+
+def test_traced_pairs_wait_for_task_1_5() -> None:
+    ca = encode_codes(np.zeros((2, 4), dtype=np.int64), 3)
+
+    def run(p):
+        return cooccurrence_counts(ca, ca, pairs=p)
+
+    with pytest.raises(NotImplementedError, match="task 1.5"):
+        jax.jit(run)(jnp.zeros((1, 2), dtype=jnp.int32))
 
 
 @pytest.mark.parametrize(
@@ -163,7 +239,6 @@ def test_auto_above_crossover_needs_scatter_not_yet_landed() -> None:
     [
         ({"strategy": "float"}, NotImplementedError, "task 1.7"),
         ({"differentiable": True}, NotImplementedError, "task 1.7"),
-        ({"pairs": np.zeros((1, 2), dtype=np.int32)}, NotImplementedError, "task 1.4"),
         ({"byte_budget": 1 << 20}, NotImplementedError, "task 1.5"),
         ({"method": "bogus"}, ValueError, "method"),
     ],
@@ -350,3 +425,133 @@ def test_mismatched_replicates_between_weights_and_shifts_raise() -> None:
             weights=np.ones((3, 8), dtype=np.int8),
             shifts_a=np.zeros((2, 2), dtype=np.int32),
         )
+
+
+# S1-G2 matrix (spec §8): both methods x {dense, pairs, self, self-pairs} layouts,
+# with shifts, weight dtypes, R in {1, 3}, T not a multiple of the frame chunk.
+# Each case is (ka, kb, T, weight dtype, R); the self layouts use kb = ka.
+_MATRIX_CASES = [
+    (3, 200, 200, "int8", 1),  # uint8 codes, one-byte weights
+    (300, 4, 1500, "int16", 3),  # uint16 codes (K=300), padded frames
+    (4, 4, 1500, "int32", 3),  # int32 weights, padded frames
+    (2, 3, 64, "int32", 1),
+]
+
+
+@pytest.mark.parametrize("method", ["matmul", "scatter"])
+@pytest.mark.parametrize("layout", ["dense", "pairs", "self", "self_pairs"])
+@pytest.mark.parametrize(("ka", "kb", "t", "wname", "r"), _MATRIX_CASES)
+def test_layout_method_matrix_exact_vs_int64_oracle(
+    method: str, layout: str, ka: int, kb: int, t: int, wname: str, r: int
+) -> None:
+    rng = np.random.default_rng(1000 + ka * 13 + kb + t + r)
+    pa, pb = 2, 3
+    is_self = layout.startswith("self")
+    if is_self:
+        kb, pb = ka, pa
+    xa = rng.integers(0, ka, size=(pa, t))
+    xb = xa if is_self else rng.integers(0, kb, size=(pb, t))
+    w = rng.integers(0, _WEIGHT_CAP[wname] + 1, size=(r, t))
+    sa = _shift_regime(rng, r, pa, t, "random")
+    sb = sa if is_self else _shift_regime(rng, r, pb, t, "random")
+    pairs = None
+    if layout.endswith("pairs"):
+        n_side = pa if is_self else pb
+        pairs = np.stack(
+            [rng.integers(0, pa, size=5), rng.integers(0, n_side, size=5)],
+            axis=1,
+        )
+        pairs[4] = pairs[0]  # duplicate rows are allowed and must count twice
+    out = cooccurrence_counts(
+        encode_codes(xa, ka),
+        None if is_self else encode_codes(xb, kb),
+        weights=w.astype(wname),
+        shifts_a=sa.astype(np.int32),
+        shifts_b=None if is_self else sb.astype(np.int32),
+        pairs=pairs,
+        method=method,
+    )
+    assert out.method == method
+    assert out.method_rule == "explicit"
+    assert out.layout == ("pairs" if pairs is not None else "dense")
+    if pairs is None:
+        ref = _oracle(xa, ka, xb, kb, w, shifts_a=sa, shifts_b=sb)
+    else:
+        ref = _oracle_pairs(xa, ka, xb, kb, w, pairs, shifts_a=sa, shifts_b=sb)
+    _assert_counts_equal(out, ref)
+
+
+@pytest.mark.parametrize("method", ["matmul", "scatter"])
+def test_self_layout_pairs_index_codes_a(method: str) -> None:
+    """Self-pairs: pair (a, b) indexes codes_a on both sides; diagonal pairs match marginals."""
+    rng = np.random.default_rng(55)
+    t, k = 64, 4
+    xa = rng.integers(0, k, size=(3, t))
+    w = rng.integers(0, 100_000, size=(1, t))
+    pairs = np.array([[0, 0], [1, 1], [2, 2], [0, 2]], dtype=np.int32)
+    out = cooccurrence_counts(
+        encode_codes(xa, k), weights=w.astype(np.int32), pairs=pairs, method=method
+    )
+    _assert_counts_equal(out, _oracle_pairs(xa, k, xa, k, w, pairs))
+    joint = np.asarray(out.joint)
+    marg = np.asarray(out.marginal_a)
+    for i in range(3):
+        assert np.array_equal(joint[0, i], np.diag(marg[0, i]))
+
+
+def test_scatter_uint16_k300_with_shifts_exact() -> None:
+    """uint16 codes at K=300 under scatter, with per-replicate shifts."""
+    rng = np.random.default_rng(77)
+    t, r = 300, 2
+    xa = rng.integers(0, 300, size=(2, t))
+    xb = rng.integers(0, 4, size=(2, t))
+    w = rng.integers(0, 1000, size=(r, t))
+    sa = rng.integers(-2 * t, 2 * t, size=(r, 2))
+    out = cooccurrence_counts(
+        encode_codes(xa, 300),
+        encode_codes(xb, 4),
+        weights=w.astype(np.int16),
+        shifts_a=sa.astype(np.int32),
+        method="scatter",
+    )
+    assert out.method == "scatter"
+    _assert_counts_equal(out, _oracle(xa, 300, xb, 4, w, shifts_a=sa))
+
+
+def test_scatter_int32_codes_k70000_pairs_exact() -> None:
+    """int32 codes at K=70000 under scatter, pairs layout.
+
+    Ka*Kb must stay below 2**31 (spec §3.1), so the 70000-category side is paired
+    with a 3-category side. Two frames share the top code so the bincount collides.
+    """
+    rng = np.random.default_rng(88)
+    t = 64
+    xa = rng.integers(0, 70000, size=(2, t))
+    xa[:, :2] = 69999
+    xb = rng.integers(0, 3, size=(2, t))
+    w = rng.integers(0, 100_000, size=(1, t))
+    pairs = np.array([[0, 0], [1, 1], [0, 1]], dtype=np.int32)
+    ca = encode_codes(xa, 70000)
+    assert ca.codes.dtype == jnp.int32
+    out = cooccurrence_counts(
+        ca, encode_codes(xb, 3), weights=w.astype(np.int32), pairs=pairs, method="scatter"
+    )
+    assert out.joint.shape == (1, 3, 70000, 3)
+    _assert_counts_equal(out, _oracle_pairs(xa, 70000, xb, 3, w, pairs))
+
+
+@pytest.mark.parametrize("method", ["matmul", "scatter"])
+def test_exact_path_jaxpr_has_no_float_values(method: str) -> None:
+    """AC2 (spec §1): no float value anywhere in the integer counting graph."""
+    ca = encode_codes(np.zeros((2, 1500), dtype=np.int64), 5)
+    cb = encode_codes(np.zeros((3, 1500), dtype=np.int64), 4)
+    w = jnp.ones((2, 1500), dtype=jnp.int8)
+
+    def run(a_codes, b_codes, weights):
+        return cooccurrence_counts(a_codes, b_codes, weights=weights, method=method)
+
+    jaxpr = jax.make_jaxpr(run)(ca, cb, w)
+    for eqn in _walk_eqns(jaxpr.jaxpr):
+        for var in eqn.outvars:
+            dtype = var.aval.dtype
+            assert not jnp.issubdtype(dtype, jnp.floating), f"{eqn.primitive.name} produces {dtype}"
