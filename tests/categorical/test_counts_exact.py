@@ -158,25 +158,25 @@ def test_totals_above_2_to_the_24_are_exact() -> None:
     assert int(out.total[0]) == t * 2**24 - (2**24 - 1)
 
 
-def test_auto_selects_matmul_on_cpu_below_crossover() -> None:
-    xa, xb, w = _case(seed=4, pa=2, pb=2, ka=3, kb=3, t=30, r=1, wname="int8")
-    assert 3 * 3 <= KK_CROSSOVER_CPU
-    out = cooccurrence_counts(encode_codes(xa, 3), encode_codes(xb, 3), weights=w.astype("int8"))
-    assert out.method == "matmul"
-    assert out.method_rule == "cpu_provisional"
-    _assert_counts_equal(out, _oracle(xa, 3, xb, 3, w))
-
-
-def test_auto_above_crossover_selects_scatter_and_is_exact() -> None:
-    """Ka*Kb = 81 > KK_CROSSOVER_CPU on CPU, so auto resolves to scatter."""
+@pytest.mark.parametrize(
+    ("k", "expected"),
+    [
+        (3, "matmul"),  # Ka*Kb = 9 <= 256
+        (9, "matmul"),  # Ka*Kb = 81 <= 256; the old provisional 64 would have chosen scatter
+        (16, "matmul"),  # Ka*Kb = 256 == KK_CROSSOVER_CPU, boundary is inclusive
+        (32, "scatter"),  # Ka*Kb = 1024 > 256
+    ],
+)
+def test_auto_cpu_crossover_selects_measured_method_and_is_exact(k: int, expected: str) -> None:
+    """Auto on CPU follows the measured crossover (run e1f92621): matmul iff Ka*Kb <= 256."""
     if jax.default_backend() != "cpu":
         pytest.skip("CPU crossover rule")
-    xa, xb, w = _case(seed=5, pa=2, pb=2, ka=9, kb=9, t=40, r=1, wname="int8")
-    assert 9 * 9 > KK_CROSSOVER_CPU
-    out = cooccurrence_counts(encode_codes(xa, 9), encode_codes(xb, 9), weights=w.astype("int8"))
-    assert out.method == "scatter"
-    assert out.method_rule == "cpu_provisional"
-    _assert_counts_equal(out, _oracle(xa, 9, xb, 9, w))
+    xa, xb, w = _case(seed=4 + k, pa=2, pb=2, ka=k, kb=k, t=40, r=1, wname="int8")
+    assert (k * k <= KK_CROSSOVER_CPU) == (expected == "matmul")
+    out = cooccurrence_counts(encode_codes(xa, k), encode_codes(xb, k), weights=w.astype("int8"))
+    assert out.method == expected
+    assert out.method_rule == "cpu_measured"
+    _assert_counts_equal(out, _oracle(xa, k, xb, k, w))
 
 
 def test_auto_pairs_fewer_than_dense_grid_selects_scatter() -> None:

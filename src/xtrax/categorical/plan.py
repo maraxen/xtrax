@@ -16,9 +16,13 @@ import jax
 
 from xtrax.tiling.budget import BudgetInfeasibleError
 
-# Method-selection crossovers (spec §4.4). The CPU value is provisional until the
-# bathos-registered probe (task 1.6) re-derives it.
-KK_CROSSOVER_CPU = 64
+# Method-selection crossovers (spec §4.4).
+# KK_CROSSOVER_CPU is the measured value from the pre-registered bathos CPU crossover
+# probe (task 1.6), run e1f92621-7f8f-41d9-85f2-a16209f3345f: outcome pass, c_best 256,
+# frac_correct 1.0, max_slowdown 1.0, git 617b8cc (not dirty). It replaces the earlier
+# provisional value 64, which came from an unregistered spike (S5); the registered
+# probe measured 256.
+KK_CROSSOVER_CPU = 256
 KK_CROSSOVER_GPU = 16
 
 # Unbudgeted defaults (spec §5, byte_budget=None).
@@ -101,7 +105,7 @@ def select_method(
         return "scatter", rule
     if platform == "cpu":
         chosen = "matmul" if ka * kb <= KK_CROSSOVER_CPU else "scatter"
-        return chosen, "cpu_provisional"
+        return chosen, "cpu_measured"
     dense_small = layout == "dense" and ka * kb <= KK_CROSSOVER_GPU
     return ("matmul" if dense_small else "scatter"), "gpu_provisional"
 
