@@ -1,7 +1,7 @@
 ---
 name: using-xtrax
 description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function, or when a model is sparsified for inference. The library is xtrax."
-xtrax_version: 0.4.0a12
+xtrax_version: 0.4.1b1
 triggers:
   - padding or bucketing loop for variable-length sequences before a JIT step
   - chunked vmap or lax.map over a large batch
