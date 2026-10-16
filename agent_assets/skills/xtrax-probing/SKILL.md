@@ -1,7 +1,7 @@
 ---
 name: xtrax-probing
 description: "Use when a JAX timing, dispatch count, or compile count has to stay citable, when a benchmark result is being quoted past the scale that was measured, or when a performance gate needs a dispatch-count ceiling. Covers stored probe records, claim-validity checks, and bottleneck reports."
-xtrax_version: 0.4.0a12
+xtrax_version: 0.4.1b1
 triggers:
   - a timing or dispatch count that a later claim will cite
   - benchmark result quoted beyond the scale that was measured

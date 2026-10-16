@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 dependencies = [ "jax>=0.10.2,<0.12", "jaxlib>=0.10.2,<0.12", "equinox>=0.13.1", "optax>=0.2.3", "orbax-checkpoint>=0.11.17", "numpy>=2.1",]
 license = "Apache-2.0"
 keywords = [ "jax", "equinox", "training", "sparse", "distributed",]
-classifiers = [ "Development Status :: 3 - Alpha", "Programming Language :: Python :: 3.13", "Intended Audience :: Science/Research", "License :: OSI Approved :: Apache Software License", "Typing :: Typed",]
+classifiers = [ "Development Status :: 4 - Beta", "Programming Language :: Python :: 3.13", "Intended Audience :: Science/Research", "License :: OSI Approved :: Apache Software License", "Typing :: Typed",]
 [[project.authors]]
 name = "Marielle Russo"
 email = "67157875+maraxen@users.noreply.github.com"

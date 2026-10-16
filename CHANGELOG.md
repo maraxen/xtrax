@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1b1] - 2026-10-16
+
 ### Added
 
 - **Per-axis input invariance** (#2598, #2599): `AxisSpec.varying_inputs`
@@ -109,19 +111,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`xtrax.export.rings.make_input_class(generator, ..., label=)`** (debt #2526):
   input classes are built from a caller-supplied generator callable.
 
-### Fixed
-
-- **BatchPlanner per-axis `memory_estimator`** (#2593, #2594): an estimator
-  that raises fails `plan()` with `RuntimeError` naming the axis, instead of
-  falling back to the cardinality rules and selecting Vmap. A missing device
-  `bytes_limit` is still logged once and compared against the documented 4 GiB
-  default. `memory_estimator=None` keeps those cardinality rules; when they pick
-  Vmap without an estimate, the planner logs a warning once per planner and
-  axis. When `AxisSpec.element_input_bytes` is
-  set, an estimate below that per-element input size raises `ValueError`
-  naming the axis, the estimate, and the bound. Specs that omit it have no
-  element shape or dtype, so that check is skipped.
-
 ### Changed
 
 - **`extent_scaling_report`** flags a loop only when both per-iteration work and
@@ -129,34 +118,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scan of `ceil(log2(n))` steps; a vector of queries makes each step's work
   grow, but the trip count does not, so that loop is no longer flagged. A
   `while` with no static length is run once per extent to count its iterations.
-
-### Deprecated
-
-- **`xtrax.export.rings.symmetric_geometry` and `sub_k_neighbours`** (debt #2526):
-  protein/MPNN input generators. They emit `DeprecationWarning` and will be
-  removed in the next release. Callers pass their own generator to
-  `make_input_class`. `BUCKET_LADDER` is unchanged.
-- **`xtrax.run` output contract** (debt #2523): `make_sink` accepts `format="memory"`
-  and returns a `MemorySink` with the same stage/drain/finalize protocol as
-  `ZarrStagingSink`, including read-back. `ZarrStagingSink` appends along the
-  leading axis across drains when `SinkSpec.append=True` (the default remains
-  overwrite). `finalize()` consolidates, fsyncs, and digests the store, returning
-  a `SinkReceipt` (`path`, `digest`, `digest_algo_version`, `run_id`, `seed`).
-  `derive_sink_spec` copies `RunSpec.seed` and, when `output_dir` is omitted,
-  `RunSpec.output_root`. `RunSpec` gains optional static fields `output_root`,
-  `device_count`, `precision`, and `shard_lineage`. `SinkSpec.provenance` injects
-  precomputed git state or a path to capture from; the default no longer shells
-  out from `Path.cwd()`. Exclusive store roots record `producer` and `xtrax_version`;
-  durable roots keep those fields inside the `xtrax.store` record so the root
-  attr set stays exactly that record.
-  `level_schemas` supplies a JSON schema per key depth. `DIGEST_ALGO_VERSION`
-  labels the zarr content digest. `canonical_hash`
-  (`CANONICAL_HASH_ALGO_VERSION`) is the sha256-of-canonical-JSON helper used by
-  run-layer document digests. `atomic_write_bytes` / `atomic_write_text` write
-  via temp file, fsync, replace, and directory fsync. `xtrax run` writes
-  `manifest.json` with `atomic_write_text`.
-
-### Changed
 
 - **Reserved sink attr names** (debt #2523): `producer` and `xtrax_version` are
   now reserved, alongside the existing provenance names. Staging an attr with
@@ -205,7 +166,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from both `jax.jit` and `eqx.filter_jit`. `hlo_text_for` raises `TypeError` when
   the compiled object has no HLO text, instead of returning `None`.
 
+- **`BatchPlanner` memory-limit fallback is no longer silent** (#2524): the
+  per-axis `memory_estimator` path reads the device limit via
+  `device_memory_budget(fraction=1.0)`, so a reported `bytes_limit` is still
+  compared in full. When the device does not report `bytes_limit`, the planner
+  logs once and uses the documented 4 GiB default
+  (`xtrax.tiling.estimators.DEFAULT_DEVICE_MEMORY_BYTES`) instead of
+  substituting that figure with no record. Planning decisions on devices that
+  do not report a limit are unchanged. `device_memory_budget` itself still
+  raises when the runtime cannot answer.
+- **using-xtrax skill**: end-to-end length bucketing (`AxisSpec.bucket_boundaries`,
+  host `select_bucket`/`bucketize`, `BUCKET_LADDER`, one compile per rung; #2497),
+  a local-copy replacement table and the 0.4.0a12 `SafeMap` alias removal pointing
+  at `codemods/safemap-to-chunkedmap/` (#2498), standalone `convert_to_onnx` versus
+  raw jax2onnx plus rings/divergence (#2499), limits and telemetry fail-closed
+  (`LedgerUnavailableError`; #2500), duplicated primitives including
+  `synthesize_dedup_spec` (#2501), `WhileCarry` for inference-only loops (#2103),
+  and the `ChunkedMap`/`lax.map` scan-of-while compile hazard (#2105).
+
+### Deprecated
+
+- **`xtrax.export.rings.symmetric_geometry` and `sub_k_neighbours`** (debt #2526):
+  protein/MPNN input generators. They emit `DeprecationWarning` and will be
+  removed in the next release. Callers pass their own generator to
+  `make_input_class`. `BUCKET_LADDER` is unchanged.
+- **`xtrax.run` output contract** (debt #2523): `make_sink` accepts `format="memory"`
+  and returns a `MemorySink` with the same stage/drain/finalize protocol as
+  `ZarrStagingSink`, including read-back. `ZarrStagingSink` appends along the
+  leading axis across drains when `SinkSpec.append=True` (the default remains
+  overwrite). `finalize()` consolidates, fsyncs, and digests the store, returning
+  a `SinkReceipt` (`path`, `digest`, `digest_algo_version`, `run_id`, `seed`).
+  `derive_sink_spec` copies `RunSpec.seed` and, when `output_dir` is omitted,
+  `RunSpec.output_root`. `RunSpec` gains optional static fields `output_root`,
+  `device_count`, `precision`, and `shard_lineage`. `SinkSpec.provenance` injects
+  precomputed git state or a path to capture from; the default no longer shells
+  out from `Path.cwd()`. Exclusive store roots record `producer` and `xtrax_version`;
+  durable roots keep those fields inside the `xtrax.store` record so the root
+  attr set stays exactly that record.
+  `level_schemas` supplies a JSON schema per key depth. `DIGEST_ALGO_VERSION`
+  labels the zarr content digest. `canonical_hash`
+  (`CANONICAL_HASH_ALGO_VERSION`) is the sha256-of-canonical-JSON helper used by
+  run-layer document digests. `atomic_write_bytes` / `atomic_write_text` write
+  via temp file, fsync, replace, and directory fsync. `xtrax run` writes
+  `manifest.json` with `atomic_write_text`.
+
 ### Fixed
+
+- **BatchPlanner per-axis `memory_estimator`** (#2593, #2594): an estimator
+  that raises fails `plan()` with `RuntimeError` naming the axis, instead of
+  falling back to the cardinality rules and selecting Vmap. A missing device
+  `bytes_limit` is still logged once and compared against the documented 4 GiB
+  default. `memory_estimator=None` keeps those cardinality rules; when they pick
+  Vmap without an estimate, the planner logs a warning once per planner and
+  axis. When `AxisSpec.element_input_bytes` is
+  set, an estimate below that per-element input size raises `ValueError`
+  naming the axis, the estimate, and the bound. Specs that omit it have no
+  element shape or dtype, so that check is skipped.
 
 - **CPU fusion scope attribution** (#2084): `scope_map_from_hlo_text` maps each
   fusion instruction (the `hlo_op` a CPU trace executes, e.g. `add_add_fusion.3`)
@@ -237,27 +253,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   absolute byte counts; otherwise it uses `device_memory_budget` (source
   `device`) and, when the device reports no `bytes_limit`, a logged 4 GiB
   default scaled by `headroom`.
-
-### Changed
-
-- **`BatchPlanner` memory-limit fallback is no longer silent** (#2524): the
-  per-axis `memory_estimator` path reads the device limit via
-  `device_memory_budget(fraction=1.0)`, so a reported `bytes_limit` is still
-  compared in full. When the device does not report `bytes_limit`, the planner
-  logs once and uses the documented 4 GiB default
-  (`xtrax.tiling.estimators.DEFAULT_DEVICE_MEMORY_BYTES`) instead of
-  substituting that figure with no record. Planning decisions on devices that
-  do not report a limit are unchanged. `device_memory_budget` itself still
-  raises when the runtime cannot answer.
-- **using-xtrax skill**: end-to-end length bucketing (`AxisSpec.bucket_boundaries`,
-  host `select_bucket`/`bucketize`, `BUCKET_LADDER`, one compile per rung; #2497),
-  a local-copy replacement table and the 0.4.0a12 `SafeMap` alias removal pointing
-  at `codemods/safemap-to-chunkedmap/` (#2498), standalone `convert_to_onnx` versus
-  raw jax2onnx plus rings/divergence (#2499), limits and telemetry fail-closed
-  (`LedgerUnavailableError`; #2500), duplicated primitives including
-  `synthesize_dedup_spec` (#2501), `WhileCarry` for inference-only loops (#2103),
-  and the `ChunkedMap`/`lax.map` scan-of-while compile hazard (#2105).
-### Fixed
 
 - **Skill examples match installed call signatures** (`agent_assets/skills`, #2496).
   Copy-paste blocks for `select_bucket` / `bucketize`, `SafetyTrainStep`, `Engine.fit`,
