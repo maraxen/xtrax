@@ -312,10 +312,16 @@ Plugin hooks must be registered in **both** `agent_assets/hooks/manifest.toml` a
 
 Rough total: ≈3 d jaxlint rules, 5–6 d xtrax verb, 4–5 d bathos gate, 2–3 d jaxlint plugin.
 
+## Decisions (user, 2026-10-16)
+
+- **Severity policy:** the gate blocks at validation/production and **warns** at
+  exploration/calibration.
+- **Grandfathering:** sidecars of campaigns already running are **warn-only until a cutoff
+  date**. The date is set when B2 ships; assumed ≈2 weeks after release, not yet fixed.
+- **`.fastembed_cache`** is to be gitignored and excised from the jaxlint history rebuild
+  (C0). A subagent is triaging the 20 unpushed commits.
+
 ## Open questions for the user
 
-- jaxlint: what to do with the 20 unpushed commits and the uncommitted sensor/skill edits
-  (keep and cherry-pick, or discard).
-- Severity policy: should the gate block at the exploration stage too, or only warn (the
-  proposal is warn)?
-- Grandfathering: warn-only for campaigns already running, until a cutoff date?
+- jaxlint: which of the 20 unpushed commits and uncommitted sensor/skill edits to keep;
+  pending the triage report.
