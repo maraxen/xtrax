@@ -6,15 +6,16 @@ shipped negative controls in :mod:`xtrax.profiling.controls`. This module is a
 leaf: it imports only the standard library and nothing else from xtrax.
 """
 
-# Calibration status of the threshold, shown next to every flag. The orchestrator
-# changes this one constant once the calibration result is in (spec X5).
-THRESHOLD_STATUS = "provisional, uncalibrated until X5"
+# Calibration status of the threshold, shown next to every flag.
+THRESHOLD_STATUS = "calibrated on CPU for host-loop vs batched families"
 
 # Dispatch-ratio threshold: executions per element at or above this is the
-# host-loop signature. Its calibration on real entrypoints is done by
-# scripts/prof_calibrate_dispatch_ratio.py (spec 261016 X5); the calibration
-# result decides whether the value changes. It is kept at 0.5 until then. The
-# spike gap is wide (host loops >= 3.0, batched units <= 0.14).
+# host-loop signature. Calibrated by the pre-registered
+# scripts/experiments/prof_calibrate_dispatch_ratio.py (spec 261016 X5, bth run
+# 0e68e673): on CPU, host loops at B in {8, 64, 256} measured >= 3.004 and all
+# 15 batched units (vmap, ChunkedMap, DedupGather, lax.scan, a Python loop over
+# jitted chunks of 16 or 64) measured <= 0.129, a 23x margin. Not yet measured:
+# an accelerator, the aminx sampler, and units near one execution per element.
 EXEC_PER_ELEMENT_FLAG = 0.5
 
 

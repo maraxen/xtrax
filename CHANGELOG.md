@@ -25,9 +25,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--fn module:symbol` with zero-filled `--shapes` or a `--inputs module:factory`,
   and prints a markdown report of recompiles, executions per element, the
   device/host split, compile seconds, and wall time per unit. Exit 0 pass, 1
-  flagged (steady recompiles, or executions per element at or above the
-  provisional 0.5 threshold, which is uncalibrated until spec 261016 X5), 2 could
+  flagged (steady recompiles, or executions per element at or above 0.5), 2 could
   not measure. A stage-1 `ProbeRecord` is written when a directory resolves. Spec 261016 X4.
+- `xtrax.profiling.fit.fit_precheck`: compiles a unit on shape structs and
+  compares `memory_analysis()` with the device `bytes_limit`, without
+  allocating inputs. Where the device reports no limit (CPU) it returns
+  unknown without compiling. `xtrax profile` prints the fit row, exits 2 on a
+  unit that does not fit unless `--target-extent N` names the production
+  extent, and then prints a linear wall estimate at N only when
+  `assert_claim_supported(END_TO_END)` accepts it (otherwise "wall estimate
+  withheld"). Spec 261016 X6.
+- `xtrax.profiling.controls`: shipped negative controls. `run_negative_controls`
+  probes a host loop and its vmapped twin at each batch size and reports
+  whether the probe still flags the first and passes the second on this
+  platform and JAX version. Spec 261016 X7.
+- `xtrax.profiling.rules`: the dispatch-ratio rule (`EXEC_PER_ELEMENT_FLAG =
+  0.5`, `steady_state_flags`) shared by `xtrax profile`, `--check` and the
+  controls. The threshold is calibrated on CPU by the pre-registered
+  `scripts/experiments/prof_calibrate_dispatch_ratio.py`: host loops measured
+  at least 3.0 executions per element and 15 batched units at most 0.129. The
+  performance gate gains an optional per-kernel `max_executions` ceiling.
+  Spec 261016 X5.
+- `xtrax profile --check PATH [--sha REV]`: re-checks a written `ProbeRecord`
+  for a launch gate. Exit 0 when its provenance is clean, its sha matches REV
+  and its flags pass; 1 when stale or flagged; 2 when unreadable, missing
+  metrics, or carrying an unverifiable sha. Spec 261016 X9.
+
+### Changed
+
+- The performance gate's dispatch probe measures through `probe_unit`.
+  `UnitProbeResult.dispatch_counts` carries the raw trace totals the gate
+  compares against its ceilings, so gate counts are unchanged. Spec 261016 X8.
 
 ### Fixed
 
