@@ -12,9 +12,10 @@ THRESHOLD_STATUS = "calibrated on CPU for host-loop vs batched families"
 # Dispatch-ratio threshold: executions per element at or above this is the
 # host-loop signature. Calibrated by the pre-registered
 # scripts/experiments/prof_calibrate_dispatch_ratio.py (spec 261016 X5, bth run
-# 0e68e673): on CPU, host loops at B in {8, 64, 256} measured >= 3.004 and all
-# 15 batched units (vmap, ChunkedMap, DedupGather, lax.scan, a Python loop over
-# jitted chunks of 16 or 64) measured <= 0.129, a 23x margin. Not yet measured:
+# 4d60f04e, result in outputs/profiling/calibration/). On CPU, host loops at B
+# in {8, 64, 256} measured >= 3.004 and all 15 batched units (vmap, ChunkedMap,
+# DedupGather, lax.scan, a Python loop over jitted chunks of 16 or 64) measured
+# <= 0.129, a 23x margin. Not yet measured:
 # an accelerator, the aminx sampler, and units near one execution per element.
 EXEC_PER_ELEMENT_FLAG = 0.5
 
