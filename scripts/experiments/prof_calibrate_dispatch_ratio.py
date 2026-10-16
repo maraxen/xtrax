@@ -108,9 +108,7 @@ def _build_xtrax_entries() -> list[Entry]:
         return jnp.asarray(rng.normal(size=(batch, width)), jnp.float32)
 
     chunk_step = jax.jit(jax.vmap(workload, in_axes=(0, None)))
-    scan_unit = jax.jit(
-        lambda x: lax.scan(lambda c, r: (c, workload(r, weights)), None, x)[1]
-    )
+    scan_unit = jax.jit(lambda x: lax.scan(lambda c, r: (c, workload(r, weights)), None, x)[1])
 
     def chunked_host_loop(chunk: int):
         def fn(x):
@@ -361,9 +359,7 @@ def _summarise(rows: list[dict[str, Any]], xtrax_file: str, jax_version: str) ->
     margin = min_host / max_bat if (min_host is not None and max_bat) else None
     aminx = next((r for r in rows if r["source"] == "aminx"), None)
     aminx_status = aminx["status"] if aminx else "not run"
-    aminx_eps = (
-        aminx["exec_per_element"] if aminx and aminx.get("status") == "ok" else None
-    )
+    aminx_eps = aminx["exec_per_element"] if aminx and aminx.get("status") == "ok" else None
     return {
         "n_units_xtrax": len(xt),
         "n_failed": sum(1 for r in xt if r.get("status") != "ok"),
