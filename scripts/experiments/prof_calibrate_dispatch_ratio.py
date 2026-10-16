@@ -385,7 +385,7 @@ def _summarise(rows: list[dict[str, Any]], xtrax_file: str, jax_version: str) ->
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--skip-aminx", action="store_true", help="Skip the optional aminx arm.")
     parser.add_argument("--aminx-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--worker-out", type=Path, help=argparse.SUPPRESS)
@@ -395,6 +395,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.aminx_worker:
         return _aminx_worker(args.worker_out, args.worktree)
+    if args.out_dir is None:
+        parser.error("--out-dir is required")
 
     import jax
 
