@@ -244,3 +244,27 @@ def test_optout_does_not_fire_on_falsy_values(monkeypatch, value):
 def test_optout_absent_is_not_opted_out(monkeypatch):
     monkeypatch.delenv("XTRAX_TELEMETRY_OPTOUT", raising=False)
     assert not telemetry_opted_out()
+
+
+def test_builtin_git_fallback_reads_sha_file_at_given_root(monkeypatch, tmp_path):
+    """The no-.git fallback honours ``<root>/.git_sha`` for the root it was given.
+
+    Cluster scratch checkouts have no .git, only a stamped ``.git_sha``. The
+    fallback must read it at the ledger's ``root``, not at the process cwd
+    (spec 261016 X2: capture_git_sha resolves from the caller's repository).
+    """
+    import xtrax.telemetry.record as telemetry_record
+
+    root = tmp_path / "scratch_checkout"
+    root.mkdir()
+    (root / ".git_sha").write_text("feedface0123 stamped-at-submit\n")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.delenv("XTRAX_GIT_SHA", raising=False)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    monkeypatch.setattr(telemetry_record, "_try_cisternal", lambda **_: None)
+
+    block = telemetry_record._capture_git_block(run_id=None, root=root, pin=False)
+
+    assert block["git_sha"] == "feedface0123"
