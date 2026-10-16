@@ -309,7 +309,9 @@ def _capture_git_block(*, run_id: "str | None", root: Path, pin: bool) -> "dict[
 
     sha = _git(["rev-parse", "HEAD"], root)
     if not sha:
-        stamped = _safe(capture_git_sha, "unknown")
+        # Anchor the fallback at this ledger's root: its `.git_sha` stamp, not
+        # whatever repository the process cwd happens to be in.
+        stamped = _safe(lambda: capture_git_sha(root), "unknown")
         source = PROVENANCE_BUILTIN if stamped and stamped != "unknown" else PROVENANCE_DEGRADED
         return {
             "git_sha": stamped or "unknown",

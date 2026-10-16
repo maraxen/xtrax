@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ProbeRecord.git_sha` now resolves from the caller's repository (the cwd's
+  git top-level, or an explicit `repo_root`) instead of the xtrax install, so
+  a downstream measurement carries its own commit. `emit_probe_record` gains
+  keyword-only `git_sha` and `repo_root` parameters. Spec 261016 X2.
+
 ## [0.4.1b1] - 2026-10-16
 
 ### Added
