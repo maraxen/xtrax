@@ -27,6 +27,11 @@ graph-validate = "analysis_only"
 graph-plan = "analysis_only"
 graph-author = "analysis_only"
 
+# profile runs the callable under the unit probe, so it executes user code. It
+# writes a stage-1 ProbeRecord, not a ledger row. Owner decision pending: wire a
+# ledger row (then this stays "records") or change the disposition.
+profile = "records"
+
 # Compaction and inspection of the ledger itself.
 ledger = "ledger_admin"
 

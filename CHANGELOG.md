@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per unit, and a device-versus-host+Python time split. The device time is the
   interval union of `hlo_op` events, computed by the new
   `xtrax.profiling.trace.interval_union_seconds`. Spec 261016 X1.
+- `xtrax.cli.profile_dir.resolve_profile_dir`: resolves where a profile record
+  is written and reports the layer that decided. Order: explicit argument,
+  `XTRAX_PROFILE_DIR`, `profile_dir` under `[tool.xtrax]` in the nearest
+  `pyproject.toml`, `profile_dir` in `~/.config/xtrax/config.toml`,
+  `RunSpec.output_root`, then off (print-only). An empty value or `none`
+  disables output. Relative paths and malformed files fail loudly. Spec 261016 X3.
+- `xtrax profile` verb (`xtrax.cli.profile_verb`): measures a callable given as
+  `--fn module:symbol` with zero-filled `--shapes` or a `--inputs module:factory`,
+  and prints a markdown report of recompiles, executions per element, the
+  device/host split, compile seconds, and wall time per unit. Exit 0 pass, 1
+  flagged (steady recompiles, or executions per element at or above the
+  provisional 0.5 threshold, which is uncalibrated until spec 261016 X5), 2 could
+  not measure. A stage-1 `ProbeRecord` is written when a directory resolves. Spec 261016 X4.
 
 ### Fixed
 
