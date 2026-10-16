@@ -155,3 +155,226 @@ def test_nothing_written_when_resolver_is_off(capsys, tmp_path):
     assert code == 0
     assert "off" in out
     assert list(tmp_path.rglob("*.json")) == []
+
+
+# --- X6: fit pre-check and extrapolation ------------------------------------
+
+CLEAN_SHA = "a" * 40
+
+
+def _small_device(monkeypatch, limit: int | None = 1024):
+    """Pretend the device has ``limit`` bytes; the real CPU reports none."""
+    import xtrax.profiling.fit as fit_mod
+
+    monkeypatch.setattr(fit_mod, "_device_limit_bytes", lambda: (limit, "cpu"))
+
+
+def test_fit_false_without_target_extent_exits_2(capsys, monkeypatch):
+    _small_device(monkeypatch)
+    code, out, err = _run(capsys, fn=VMAP)
+    assert code == 2
+    assert "fits: no" in out
+    assert "--target-extent" in err
+    assert "PASS" not in out
+
+
+def test_fit_false_with_target_extent_still_measures(capsys, monkeypatch, tmp_path):
+    _small_device(monkeypatch)
+    monkeypatch.setenv("XTRAX_GIT_SHA", CLEAN_SHA)
+    code, out, _ = _run(capsys, fn=VMAP, target_extent=128)
+    assert code == 0
+    assert "fits: no" in out
+
+
+def test_fit_row_is_printed_when_it_fits(capsys, monkeypatch):
+    _small_device(monkeypatch, limit=None)
+    code, out, _ = _run(capsys, fn=VMAP)
+    assert code == 0
+    assert "fits: unknown" in out
+
+
+def test_extrapolated_estimate_printed_when_claim_passes(capsys, monkeypatch):
+    monkeypatch.setenv("XTRAX_GIT_SHA", CLEAN_SHA)
+    code, out, _ = _run(capsys, fn=VMAP, target_extent=256, n_units=10)
+    assert code == 0
+    assert "extrapolated, CPU-relative" in out
+    assert "wall estimate withheld" not in out
+
+
+def test_extrapolated_target_is_recorded_as_float_metric(capsys, monkeypatch, tmp_path):
+    monkeypatch.setenv("XTRAX_GIT_SHA", CLEAN_SHA)
+    out_dir = tmp_path / "profiles"
+    code, _, _ = _run(capsys, fn=VMAP, target_extent=256, out=str(out_dir))
+    assert code == 0
+    (record_path,) = sorted(out_dir.glob("*.json"))
+    record = ProbeRecord.read(record_path)
+    assert record.metrics["target_extent"] == 256.0
+    assert isinstance(record.metrics["target_extent"], float)
+
+
+def test_wall_estimate_withheld_on_unverifiable_sha(capsys, monkeypatch):
+    # The tmp cwd is not a git repo and no override is set, so the sha is "unknown".
+    monkeypatch.delenv("XTRAX_GIT_SHA", raising=False)
+    code, out, _ = _run(capsys, fn=VMAP, target_extent=256, n_units=10)
+    assert code == 0, "withholding the wall estimate must not change the exit code"
+    assert "wall estimate withheld" in out
+    assert "extrapolated" not in out
+
+
+def test_wall_estimate_withheld_beyond_scale_limit(capsys, monkeypatch):
+    monkeypatch.setenv("XTRAX_GIT_SHA", CLEAN_SHA)
+    code, out, _ = _run(capsys, fn=VMAP, target_extent=1000)
+    assert code == 0
+    assert "wall estimate withheld" in out
+    assert "SCALE_EXTRAPOLATION_LIMIT" in out
+
+
+def test_target_not_above_measured_extent_is_not_extrapolated(capsys, monkeypatch):
+    monkeypatch.setenv("XTRAX_GIT_SHA", CLEAN_SHA)
+    code, out, _ = _run(capsys, fn=VMAP, target_extent=64)
+    assert code == 0
+    assert "no extrapolation" in out
+    assert "extrapolated" not in out
+
+
+# --- X9: --check ------------------------------------------------------------
+
+
+def _write_check_record(path, *, git_sha, exec_pe=0.01, n_compilations=0.0):
+    from xtrax.profiling.emitters import emit_probe_record
+
+    emit_probe_record(
+        path=path,
+        probe_id="xtrax-profile:test",
+        stage=1,
+        n_atoms=64,
+        platform="cpu",
+        metrics={
+            "n_executions": 1.0,
+            "n_compilations": n_compilations,
+            "n_jit_traces": 1.0,
+            "total_step_seconds": 0.001,
+            "compile_seconds": 0.1,
+            "device_seconds": 0.0005,
+            "host_seconds": 0.0005,
+            "exec_per_element": exec_pe,
+        },
+        config={"fn": "test"},
+        git_sha=git_sha,
+    )
+    return path
+
+
+def _git_head(repo):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        check=True,
+    )
+    out = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return out.stdout.strip()
+
+
+def test_check_current_passing_record_exits_0(capsys, tmp_path):
+    head = _git_head(tmp_path)
+    record = _write_check_record(tmp_path / "r.json", git_sha=head)
+    code, out, _ = _run(
+        capsys, fn=None, shapes=None, extent_axis=None, check=str(record), sha="HEAD"
+    )
+    assert code == 0
+    assert "PASS" in out
+
+
+def test_check_mismatched_sha_is_stale_exit_1(capsys, tmp_path):
+    _git_head(tmp_path)
+    record = _write_check_record(tmp_path / "r.json", git_sha="0" * 40)
+    code, out, _ = _run(
+        capsys, fn=None, shapes=None, extent_axis=None, check=str(record), sha="HEAD"
+    )
+    assert code == 1
+    assert "STALE" in out
+
+
+def test_check_flagged_metrics_exit_1(capsys, tmp_path):
+    record = _write_check_record(tmp_path / "r.json", git_sha="b" * 40, exec_pe=3.0)
+    code, out, _ = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 1
+    assert "FLAGGED" in out
+    assert "exec/element" in out
+
+
+def test_check_recompiling_record_is_flagged(capsys, tmp_path):
+    record = _write_check_record(tmp_path / "r.json", git_sha="b" * 40, n_compilations=2.0)
+    code, out, _ = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 1
+    assert "n_compilations" in out
+
+
+def test_check_record_missing_n_compilations_exits_2(capsys, tmp_path):
+    import json
+
+    record = _write_check_record(tmp_path / "r.json", git_sha="b" * 40)
+    data = json.loads(record.read_text())
+    del data["metrics"]["n_compilations"]
+    record.write_text(json.dumps(data))
+    code, _, err = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 2
+    assert "n_compilations" in err
+
+
+def test_check_garbage_file_exits_2(capsys, tmp_path):
+    garbage = tmp_path / "garbage.json"
+    garbage.write_text("this is not a record")
+    code, out, err = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(garbage))
+    assert code == 2
+    assert "could not measure" in out.lower()
+    assert "could not read" in err
+
+
+def test_check_unresolvable_sha_exits_2(capsys, tmp_path):
+    record = _write_check_record(tmp_path / "r.json", git_sha="b" * 40)
+    code, _, err = _run(
+        capsys, fn=None, shapes=None, extent_axis=None, check=str(record), sha="HEAD"
+    )
+    assert code == 2
+    assert "resolve" in err
+
+
+def test_check_unverifiable_sha_exits_2(capsys, tmp_path):
+    record = _write_check_record(tmp_path / "r.json", git_sha="unknown")
+    code, _, err = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 2
+    assert "unverifiable" in err
+
+
+def test_fn_and_check_together_exit_2(capsys, tmp_path):
+    record = _write_check_record(tmp_path / "r.json", git_sha="b" * 40)
+    code, _, err = _run(capsys, check=str(record))
+    assert code == 2
+    assert "exactly one" in err
+
+
+def test_sha_without_check_exits_2(capsys):
+    code, _, err = _run(capsys, sha="HEAD")
+    assert code == 2
+    assert "--check" in err

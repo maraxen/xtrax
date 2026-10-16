@@ -1,4 +1,4 @@
-"""``xtrax profile``: measure one unit of work at its production shape (spec 261016 X4).
+"""``xtrax profile``: measure one unit of work at its production shape (spec 261016 X4, X6, X9).
 
 The verb runs :func:`xtrax.profiling.unit_probe.probe_unit` on a callable and
 reports recompiles, dispatches per element, the device/host split, compile
@@ -9,7 +9,8 @@ seconds and wall time per unit. The steady-state flags are:
   about once per element, which is the host-loop signature. Dispatch count is
   the discriminator here; steady compiles stay at zero for a host loop.
 
-Exit codes: 0 pass, 1 flags raised, 2 could not measure. Exit 2 is never a pass.
+Exit codes: 0 pass, 1 flags raised (or, with ``--check``, a stale record),
+2 could not measure. Exit 2 is never a pass.
 
 Inputs come from one of two sources:
 
@@ -20,12 +21,29 @@ Inputs come from one of two sources:
 ``--extent-axis NAME`` names the scale axis. Its cardinality is the leading
 dimension of the input called NAME, and the per-element metrics divide by it.
 With ``--inputs`` the input must be a kwarg of the factory's result.
+
+Fit and extrapolation (X6). Before measuring, the verb lowers and compiles the
+unit on shape structs and reads the device memory limit (``fits: yes / no /
+unknown``). A unit that does not fit is refused (exit 2) unless ``--target-extent
+N`` names the production extent, in which case the measurement is taken at the
+smaller extent and the wall estimate is extrapolated linearly to N. That
+estimate is printed only if ``assert_claim_supported(END_TO_END)`` accepts it
+(scale ratio within ``SCALE_EXTRAPOLATION_LIMIT``, clean git sha); otherwise the
+line reads ``wall estimate withheld``. Withholding never changes the exit code:
+the dispatch ratio and compile count are scale-free.
+
+Record check (X9). ``--check PATH [--sha REV]`` reads a ProbeRecord instead of
+measuring. Exit 0 when the record's provenance is clean, its sha matches ``REV``
+(if given) and its flags pass; exit 1 when it is stale or flagged; exit 2 when it
+is unreadable, lacks the metrics, has an unverifiable sha, or ``REV`` does not
+resolve. ``--check`` and ``--fn`` are mutually exclusive.
 """
 
 import re
+import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -33,8 +51,16 @@ from xtrax.cli.errors import CLIError
 from xtrax.cli.loader import load_fn
 from xtrax.cli.profile_dir import resolve_profile_dir
 from xtrax.cli.shapes import parse_shapes
+from xtrax.profiling.claims import (
+    ClaimClass,
+    ClaimValidityError,
+    _reject_unverifiable_git_sha,
+    assert_claim_supported,
+)
 from xtrax.profiling.emitters import emit_probe_record
+from xtrax.profiling.fit import FitCheck, fit_precheck
 from xtrax.profiling.loop_scaling import extent_scaling_report
+from xtrax.profiling.record import ProbeRecord
 from xtrax.profiling.unit_probe import UnitProbeResult, probe_unit
 
 EXIT_PASS = 0
@@ -48,7 +74,15 @@ EXEC_PER_ELEMENT_FLAG = 0.5
 
 
 class _NotMeasured(Exception):
-    """A measurement could not be made. The message explains why; the verb exits 2."""
+    """A measurement could not be made. The message explains why; the verb exits 2.
+
+    ``fit_line`` carries the fit-check row when the fit was already decided, so the
+    report can show it even though nothing was measured.
+    """
+
+    def __init__(self, message: str, *, fit_line: str | None = None) -> None:
+        super().__init__(message)
+        self.fit_line = fit_line
 
 
 @dataclass
@@ -56,7 +90,8 @@ class ProfileArgs:
     """Arguments for the ``profile`` verb.
 
     Args:
-        fn: Import path of the unit to measure, as ``module:symbol``.
+        fn: Import path of the unit to measure, as ``module:symbol``. Exactly one of
+            ``fn`` or ``check``.
         shapes: Zero-filled inputs, ``name=(d0,...)dtype ...``. Give this or ``inputs``.
         inputs: Factory import path, ``module:factory``, called as ``factory(scale)``.
         extent_axis: Name of the scale axis input. Its leading dimension is the cardinality.
@@ -66,9 +101,15 @@ class ProfileArgs:
         n_units: Optional number of units. Gives an estimated total wall time.
         out: Directory for the stage-1 ProbeRecord. Empty or ``none`` disables it.
             When omitted, the resolver chain decides (see ``profile_dir``).
+        target_extent: Production extent of the scale axis. Lets a unit that does not
+            fit be measured at a smaller extent, and labels the wall estimate at this
+            extent (extrapolated). Flags: ``--target-extent``.
+        check: Path of a ProbeRecord to check instead of measuring. Flags: ``--check``.
+        sha: Revision the ``check`` record must match (``HEAD``, a sha, ...). Only with
+            ``check``. Flags: ``--sha``.
     """
 
-    fn: str
+    fn: str | None = None
     shapes: str | None = None
     inputs: str | None = None
     extent_axis: str | None = None
@@ -77,6 +118,9 @@ class ProfileArgs:
     n_wall: int = 5
     n_units: int | None = None
     out: str | None = None
+    target_extent: int | None = None
+    check: str | None = None
+    sha: str | None = None
 
 
 @dataclass
@@ -90,6 +134,11 @@ class _Measurement:
     flags: list[str]
     scaling_lines: list[str]
     n_units: int | None
+    metrics: dict[str, float] = field(default_factory=dict)
+    config: dict[str, str] = field(default_factory=dict)
+    fit: FitCheck | None = None
+    target_extent: int | None = None
+    extrapolation_lines: list[str] = field(default_factory=list)
 
 
 def run_profile(args: ProfileArgs) -> None:
@@ -98,6 +147,13 @@ def run_profile(args: ProfileArgs) -> None:
     Raises:
         SystemExit: Always, with code 0, 1 or 2 (see module docstring).
     """
+    if (args.fn is None) == (args.check is None):
+        _not_measured("give exactly one of --fn or --check")
+    if args.sha is not None and args.check is None:
+        _not_measured("--sha is only valid with --check")
+    if args.check is not None:
+        _check_record(args)
+
     try:
         resolved, source = resolve_profile_dir(args.out)
     except ValueError as exc:
@@ -106,6 +162,8 @@ def run_profile(args: ProfileArgs) -> None:
     try:
         measurement = _measure(args)
     except _NotMeasured as exc:
+        if exc.fit_line is not None:
+            print(exc.fit_line)
         _not_measured(str(exc))
 
     if resolved is not None:
@@ -129,6 +187,102 @@ def _not_measured(reason: str) -> NoReturn:
     raise SystemExit(EXIT_NOT_MEASURED)
 
 
+# --- --check (X9) ----------------------------------------------------------
+
+
+def _check_record(args: ProfileArgs) -> NoReturn:
+    path = args.check or ""
+    try:
+        record = ProbeRecord.read(path)
+    except Exception as exc:  # noqa: BLE001 - any unreadable record is exit 2
+        _not_measured(f"could not read ProbeRecord {path!r}: {type(exc).__name__}: {exc}")
+
+    try:
+        assert_claim_supported([record], ClaimClass.DISPATCH_COUNT)
+        _reject_unverifiable_git_sha([record], ClaimClass.DISPATCH_COUNT)
+    except ClaimValidityError as exc:
+        _not_measured(f"record cannot back a dispatch check: {exc}")
+
+    for name in ("exec_per_element", "n_compilations"):
+        value = record.metrics.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            _not_measured(f"record lacks the numeric metric {name}")
+    exec_per_element = record.metrics["exec_per_element"]
+    n_compilations = record.metrics["n_compilations"]
+
+    stale: list[str] = []
+    sha_line = "sha comparison skipped (no --sha given)"
+    if args.sha is not None:
+        try:
+            resolved = _resolve_sha(args.sha)
+        except _NotMeasured as exc:
+            _not_measured(str(exc))
+        sha_line = f"--sha {args.sha} resolves to {resolved}"
+        if record.git_sha != resolved:
+            stale.append(
+                f"STALE: record git_sha {record.git_sha} differs from {args.sha} ({resolved})"
+            )
+
+    flags: list[str] = []
+    if n_compilations > 0:
+        flags.append(f"FLAG: n_compilations {n_compilations:.3f} per unit (expected 0)")
+    if exec_per_element >= EXEC_PER_ELEMENT_FLAG:
+        flags.append(
+            f"FLAG: exec/element {exec_per_element:.3f} >= {EXEC_PER_ELEMENT_FLAG} "
+            "(provisional threshold, uncalibrated until X5; host-loop signature)"
+        )
+
+    findings = stale + flags
+    labels = []
+    if stale:
+        labels.append("STALE")
+    if flags:
+        labels.append("FLAGGED")
+    code = EXIT_FLAGGED if findings else EXIT_PASS
+    verdict = ", ".join(labels) if labels else "PASS"
+    lines = [
+        f"## xtrax profile --check: `{path}`",
+        "",
+        "| record | value |",
+        "|---|---|",
+        f"| probe_id | {record.probe_id} |",
+        f"| record git_sha | {record.git_sha} |",
+        f"| sha check | {sha_line} |",
+        f"| n_atoms | {record.n_atoms} |",
+        f"| exec/element | {float(exec_per_element):.4f} |",
+        f"| steady compiles / unit | {float(n_compilations):.4f} |",
+        "",
+        "### Findings",
+    ]
+    lines += [f"- {finding}" for finding in findings] or ["- none"]
+    lines += ["", f"verdict: {verdict} (exit {code})"]
+    print("\n".join(lines))
+    raise SystemExit(code)
+
+
+def _resolve_sha(sha: str) -> str:
+    cwd = Path.cwd()
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise _NotMeasured(f"cannot run git to resolve --sha {sha!r}: {exc}") from exc
+    resolved = out.stdout.strip()
+    if out.returncode != 0 or not resolved:
+        raise _NotMeasured(
+            f"cannot resolve --sha {sha!r} in {cwd} (not a git checkout, or no such revision)"
+        )
+    return resolved
+
+
+# --- measurement -----------------------------------------------------------
+
+
 def _measure(args: ProfileArgs) -> _Measurement:
     import jax
 
@@ -138,14 +292,25 @@ def _measure(args: ProfileArgs) -> _Measurement:
         raise _NotMeasured("--extent-axis NAME is required")
     if args.n_units is not None and args.n_units < 1:
         raise _NotMeasured(f"--n-units must be >= 1, got {args.n_units}")
+    if args.target_extent is not None and args.target_extent < 1:
+        raise _NotMeasured(f"--target-extent must be >= 1, got {args.target_extent}")
 
-    fn = _load(args.fn, "--fn")
+    fn = _load(args.fn or "", "--fn")
 
     make_args: Any = None
     if args.shapes is not None:
-        cardinality, call_args, kwargs, make_args = _from_shapes(args)
+        cardinality, specs, axis = _from_shapes(args)
+        fit = fit_precheck(fn, _shape_structs(specs, axis, cardinality), {})
+        fit_line = _fit_line(fit)
+        _refuse_if_unfit(fit, fit_line, cardinality, args)
+        call_args: tuple = _zero_args(specs, axis, cardinality)
+        kwargs: dict = {}
+        make_args = lambda extent: _zero_args(specs, axis, extent)  # noqa: E731
     else:
         call_args, kwargs, cardinality = _from_factory(args)
+        fit = fit_precheck(fn, call_args, kwargs)
+        fit_line = _fit_line(fit)
+        _refuse_if_unfit(fit, fit_line, cardinality, args)
 
     try:
         result = probe_unit(fn, call_args, kwargs, n_steady=args.n_steady, n_wall=args.n_wall)
@@ -172,9 +337,18 @@ def _measure(args: ProfileArgs) -> _Measurement:
 
     scaling_lines = _scaling_lines(fn, make_args, cardinality, args)
 
+    platform = jax.default_backend()
+    metrics: dict[str, float] = dict(result.as_metrics())
+    metrics["exec_per_element"] = float(exec_per_element)
+    if args.target_extent is not None:
+        metrics["target_extent"] = float(args.target_extent)
+    config = _config(args)
+
+    extrapolation_lines = _extrapolation_lines(args, cardinality, result, platform, metrics, config)
+
     return _Measurement(
-        fn=args.fn,
-        platform=jax.default_backend(),
+        fn=args.fn or "",
+        platform=platform,
         extent_axis=args.extent_axis,
         cardinality=cardinality,
         result=result,
@@ -182,7 +356,90 @@ def _measure(args: ProfileArgs) -> _Measurement:
         flags=flags,
         scaling_lines=scaling_lines,
         n_units=args.n_units,
+        metrics=metrics,
+        config=config,
+        fit=fit,
+        target_extent=args.target_extent,
+        extrapolation_lines=extrapolation_lines,
     )
+
+
+def _fit_line(fit: FitCheck) -> str:
+    if fit.fits is True:
+        return f"fits: yes ({fit.reason})"
+    if fit.fits is False:
+        return f"fits: no ({fit.reason})"
+    return f"fits: unknown ({fit.reason})"
+
+
+def _refuse_if_unfit(fit: FitCheck, fit_line: str, cardinality: int, args: ProfileArgs) -> None:
+    if fit.fits is False and args.target_extent is None:
+        raise _NotMeasured(
+            f"the unit does not fit device memory at extent {cardinality} ({fit.reason}); "
+            "re-run at a smaller extent with --target-extent set to the production extent",
+            fit_line=fit_line,
+        )
+
+
+def _extrapolation_lines(
+    args: ProfileArgs,
+    cardinality: int,
+    result: UnitProbeResult,
+    platform: str,
+    metrics: dict[str, float],
+    config: dict[str, str],
+) -> list[str]:
+    target = args.target_extent
+    if target is None:
+        return []
+    if target <= cardinality:
+        return [
+            f"target extent {target} <= measured extent {cardinality}: "
+            "no extrapolation; wall is reported at the measured extent"
+        ]
+    # The in-memory record is what the claim is checked against; it carries the same
+    # metrics the verb writes, so the claim and the artifact cannot diverge.
+    record = ProbeRecord(
+        probe_id=f"xtrax-profile:{args.fn}",
+        stage=1,
+        n_atoms=cardinality,
+        platform=platform,
+        metrics=metrics,
+        config=config,
+    )
+    label = "extrapolated, CPU-relative" if platform == "cpu" else "extrapolated"
+    try:
+        assert_claim_supported([record], ClaimClass.END_TO_END, target_n_atoms=target)
+    except ClaimValidityError as exc:
+        return [f"wall estimate withheld: {exc}"]
+
+    ratio = target / cardinality
+    per_unit = result.wall_seconds_per_unit * ratio
+    lines = [
+        f"est. wall per unit s at extent {target} ({label}, linear x{ratio:.2f}): {per_unit:.6f}"
+    ]
+    if args.n_units is not None:
+        lines.append(
+            f"est. total wall s ({args.n_units} units at extent {target}, {label}): "
+            f"{per_unit * args.n_units:.3f}"
+        )
+    return lines
+
+
+def _config(args: ProfileArgs) -> dict[str, str]:
+    config = {
+        "fn": args.fn or "",
+        "extent_axis": args.extent_axis or "",
+        "n_steady": str(args.n_steady),
+        "n_wall": str(args.n_wall),
+    }
+    if args.shapes is not None:
+        config["shapes"] = args.shapes
+    if args.inputs is not None:
+        config["inputs"] = args.inputs
+    if args.scale is not None:
+        config["scale"] = str(args.scale)
+    return config
 
 
 def _load(path: str, label: str) -> Any:
@@ -192,7 +449,7 @@ def _load(path: str, label: str) -> Any:
         raise _NotMeasured(f"{label} {path!r}: {exc}") from exc
 
 
-def _from_shapes(args: ProfileArgs) -> tuple[int, tuple, dict, Any]:
+def _from_shapes(args: ProfileArgs) -> tuple[int, dict, str]:
     try:
         specs = parse_shapes(args.shapes or "")
     except CLIError as exc:
@@ -208,11 +465,7 @@ def _from_shapes(args: ProfileArgs) -> tuple[int, tuple, dict, Any]:
     cardinality = int(shape[0])
     if cardinality < 1:
         raise _NotMeasured(f"extent input {axis!r} has zero leading extent")
-
-    def make_args(extent: int) -> tuple[Any, ...]:
-        return _zero_args(specs, axis, extent)
-
-    return cardinality, make_args(cardinality), {}, make_args
+    return cardinality, specs, axis
 
 
 def _from_factory(args: ProfileArgs) -> tuple[tuple, dict, int]:
@@ -252,6 +505,16 @@ def _split_factory_output(produced: Any) -> tuple[tuple, dict]:
     return (produced,), {}
 
 
+def _shape_structs(specs: dict, extent_axis: str, extent: int) -> tuple[Any, ...]:
+    import jax
+
+    out = []
+    for name, spec in specs.items():
+        shape = (extent, *spec.shape[1:]) if name == extent_axis else tuple(spec.shape)
+        out.append(jax.ShapeDtypeStruct(shape, spec.dtype))
+    return tuple(out)
+
+
 def _zero_args(specs: dict, extent_axis: str, extent: int) -> tuple[Any, ...]:
     import jax.numpy as jnp
 
@@ -284,28 +547,14 @@ def _write_record(directory: Path, m: _Measurement, args: ProfileArgs) -> Path:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", m.fn).strip("_")
     stamp = time.strftime("%Y%m%dT%H%M%S") + f"{time.time_ns() % 1_000_000:06d}"
     path = directory / f"profile_{slug}_{stamp}.json"
-    config = {
-        "fn": m.fn,
-        "extent_axis": m.extent_axis,
-        "n_steady": str(args.n_steady),
-        "n_wall": str(args.n_wall),
-    }
-    if args.shapes is not None:
-        config["shapes"] = args.shapes
-    if args.inputs is not None:
-        config["inputs"] = args.inputs
-    if args.scale is not None:
-        config["scale"] = str(args.scale)
-    metrics: dict[str, float | int | str] = dict(m.result.as_metrics())
-    metrics["exec_per_element"] = float(m.exec_per_element)
     emit_probe_record(
         path=path,
         probe_id=f"xtrax-profile:{m.fn}",
         stage=1,
         n_atoms=m.cardinality,
         platform=m.platform,
-        metrics=metrics,
-        config=config,
+        metrics=dict(m.metrics),
+        config=dict(m.config),
     )
     return path
 
@@ -345,6 +594,16 @@ def _render(
         "",
         f"Thresholds (provisional, uncalibrated until X5): exec/element < {EXEC_PER_ELEMENT_FLAG}; "
         "steady compiles = 0.",
+        "",
+        "### Fit",
+        _fit_line(m.fit) if m.fit is not None else "fits: unknown (not checked)",
+        "",
+        "### Extrapolation",
+    ]
+    lines += [f"- {line}" for line in m.extrapolation_lines] or [
+        "- none (measured at production extent)"
+    ]
+    lines += [
         "",
         "### Flags",
     ]
