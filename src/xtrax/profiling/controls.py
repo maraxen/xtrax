@@ -118,13 +118,13 @@ def _kernels() -> tuple[Any, Any, Any]:
     return row_step, batched_step, weights
 
 
-def host_loop(x):
+def host_loop(x: jax.Array) -> jax.Array:
     """Host loop over the leading axis: one jitted step per row."""
     row_step, _, w = _kernels()
     return jnp.stack([row_step(x[b], w) for b in range(x.shape[0])])
 
 
-def vmapped_twin(x):
+def vmapped_twin(x: jax.Array) -> jax.Array:
     """Batched twin of :func:`host_loop`: one jitted vmap for the batch."""
     _, batched_step, w = _kernels()
     return batched_step(x, w)
