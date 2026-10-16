@@ -708,3 +708,67 @@ def test_boolean_toml_ceiling_rejected(tmp_path: Path) -> None:
     )
     with _pytest.raises(ValueError, match="must be a positive int"):
         load_performance_targets(targets_path)
+
+
+# --- X8: dispatch probe on probe_unit keeps the pre-refactor counts -----------
+
+_SPARSE_QUALNAME = "xtrax.devtools.gates._performance_probes.sparse_filter_jit_kernel"
+_SPARSE_PROBE = "xtrax.devtools.gates._performance_probes:probe_sparse_filter_jit_kernel"
+
+
+def _legacy_dispatch_counts(qualname: str, trace_probe: str) -> dict[str, int]:
+    """Oracle: the pre-X8 measure_dispatch_counts body, reproduced inline.
+
+    One warm-up outside the window, one traced call, newest trace file parsed
+    with parse_dispatch_counts (no fn_name filter).
+    """
+    import gzip
+    import json
+    import tempfile
+
+    import jax
+
+    from xtrax.devtools.gates._trace_probe import (
+        _guard_for_trace_count,
+        import_probe,
+        import_qualname,
+    )
+    from xtrax.profiling.trace import parse_dispatch_counts
+
+    target = import_qualname(qualname)
+    probe_runner = import_probe(trace_probe)
+    guarded = _guard_for_trace_count(target, max_traces=10**6)
+    probe_runner(guarded)
+    with tempfile.TemporaryDirectory() as tmp:
+        with jax.profiler.trace(tmp, create_perfetto_trace=True):
+            probe_runner(guarded)
+        trace_files = sorted(Path(tmp).rglob("*.trace.json.gz"))
+        with gzip.open(trace_files[-1], "rt") as fh:
+            events = json.load(fh)["traceEvents"]
+    return parse_dispatch_counts(events)
+
+
+def test_dispatch_probe_counts_match_pre_refactor_oracle() -> None:
+    """X8: the probe_unit-backed gate yields the same integer counts as the old
+    direct-trace implementation on the same fixture kernel."""
+    from xtrax.devtools.gates._dispatch_probe import measure_dispatch_counts
+
+    refactored = measure_dispatch_counts(_SPARSE_QUALNAME, _SPARSE_PROBE)
+    legacy = _legacy_dispatch_counts(_SPARSE_QUALNAME, _SPARSE_PROBE)
+
+    assert refactored.skipped is False
+    assert refactored.passed is True
+    assert refactored.counts == legacy
+    assert set(refactored.counts) == {"n_executions", "n_compilations", "n_jit_traces"}
+    assert refactored.counts["n_compilations"] == 0
+    assert refactored.counts["n_executions"] >= 1
+
+
+def test_dispatch_probe_skips_without_trace_probe() -> None:
+    from xtrax.devtools.gates._dispatch_probe import measure_dispatch_counts
+
+    result = measure_dispatch_counts(_SPARSE_QUALNAME, None)
+    assert result.skipped is True
+    assert result.passed is False
+    assert result.counts == {}
+    assert result.reason == "no trace_probe configured for kernel"

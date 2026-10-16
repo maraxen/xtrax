@@ -221,3 +221,40 @@ def test_importing_unit_probe_does_not_import_jax():
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+# --- probe_unit: raw dispatch_counts field (X8) -------------------------------
+
+
+def test_dispatch_counts_field_matches_per_unit_and_defaults_empty():
+    import jax
+    import jax.numpy as jnp
+
+    n_steady = 2
+    unit = jax.jit(lambda x: jnp.sin(x) + 1.0)
+    result = probe_unit(unit, (jnp.ones(8),), n_steady=n_steady, n_wall=1)
+
+    assert set(result.dispatch_counts) == {"n_executions", "n_compilations", "n_jit_traces"}
+    assert all(isinstance(v, int) for v in result.dispatch_counts.values())
+    # Per-unit values are the window totals divided by n_steady.
+    assert result.executions_per_unit == pytest.approx(
+        result.dispatch_counts["n_executions"] / n_steady
+    )
+    assert result.jit_traces_per_unit == pytest.approx(
+        result.dispatch_counts["n_jit_traces"] / n_steady
+    )
+
+    # Backward compatible: direct construction without the field still works.
+    bare = UnitProbeResult(
+        n_steady=1,
+        warmup_compile_count=0,
+        warmup_compile_seconds=0.0,
+        steady_compile_count=0,
+        executions_per_unit=1.0,
+        jit_traces_per_unit=0.0,
+        wall_seconds_per_unit=0.0,
+        traced_seconds_per_unit=0.0,
+        device_seconds_per_unit=0.0,
+        host_seconds_per_unit=0.0,
+    )
+    assert bare.dispatch_counts == {}

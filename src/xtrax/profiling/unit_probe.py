@@ -40,7 +40,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +68,12 @@ class UnitProbeResult:
         traced_seconds_per_unit: Traced window divided by ``n_steady``.
         device_seconds_per_unit: Device interval union divided by ``n_steady``.
         host_seconds_per_unit: ``max(traced - device, 0)`` per unit.
+        dispatch_counts: Raw totals from ``parse_dispatch_counts`` over the
+            steady traced window (keys ``n_executions``, ``n_compilations``,
+            ``n_jit_traces``). These are window totals, not per unit, and
+            ``n_compilations`` here counts trace events, which is a different
+            source from ``steady_compile_count``. Empty when constructed
+            directly.
     """
 
     n_steady: int
@@ -80,6 +86,7 @@ class UnitProbeResult:
     traced_seconds_per_unit: float
     device_seconds_per_unit: float
     host_seconds_per_unit: float
+    dispatch_counts: dict[str, int] = field(default_factory=dict)
 
     def executions_per_element(self, cardinality: int) -> float:
         """Executions per unit divided by the scale-axis cardinality.
@@ -203,4 +210,5 @@ def probe_unit(
         traced_seconds_per_unit=traced_per_unit,
         device_seconds_per_unit=device_per_unit,
         host_seconds_per_unit=host_per_unit,
+        dispatch_counts=dict(counts),
     )
