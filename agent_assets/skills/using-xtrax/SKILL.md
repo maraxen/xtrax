@@ -137,6 +137,8 @@ Three distinct regions exist:
   tax, measured numbers): see the `xtrax-optimizing` skill,
   `references/tier1-host-boundary.md`.
 
+These boundary protocols are the protocol-slot pattern applied to stage boundaries; the general model-structure patterns (variant classes, layer tuples, pure functions, protocol/ABC slots) live in jaxlint's `developing-composable-jax` skill.
+
 Choose JIT decorator based on your model:
 - **`eqx.filter_jit`** (preferred): JAX arrays are traced, static fields are held constant. Ideal for models with callable static fields (like `AxisBoundary`).
 - **`jax.jit`**: All arrays traced, everything else is attempted to be traced (may fail if callables or static values change).

@@ -69,6 +69,8 @@ An autoregressive, sampling, or other inference-only loop uses the while-loop ca
 
 A 512-step autoregressive decode compiled as `lax.scan` took over 20 minutes of backend codegen on an L40S. The same loop as one `WhileOp` did not.
 
+The general JAX semantics (scan is reverse-mode differentiable, while_loop is not and can stop on a data-dependent condition, and both lower to a single `stablehlo.while` at `unroll=1`, so StableHLO size does not explain the codegen gap) are in jaxlint's `using-jax` skill.
+
 `fixed_step_count_cond(n)` treats the carry as a `(step_i, state)` tuple, or as an object with `.step_i`.
 
 ```python
