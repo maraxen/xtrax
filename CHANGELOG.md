@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `xtrax.profiling.probe_unit` and `UnitProbeResult`: a measurement core that
+  runs one unit of work at its real shape (warm-up, untraced median wall, then
+  traced steady calls) and reports recompiles per steady call, XLA executions
+  per unit, and a device-versus-host+Python time split. The device time is the
+  interval union of `hlo_op` events, computed by the new
+  `xtrax.profiling.trace.interval_union_seconds`. Spec 261016 X1.
+
 ### Fixed
 
 - `ProbeRecord.git_sha` now resolves from the caller's repository (the cwd's
