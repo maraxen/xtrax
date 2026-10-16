@@ -37,6 +37,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+from jaxtyping import Array, Float
 
 from xtrax.profiling.rules import EXEC_PER_ELEMENT_FLAG
 from xtrax.profiling.unit_probe import probe_unit
@@ -118,13 +119,13 @@ def _kernels() -> tuple[Any, Any, Any]:
     return row_step, batched_step, weights
 
 
-def host_loop(x: jax.Array) -> jax.Array:
+def host_loop(x: Float[Array, "..."]) -> Float[Array, "..."]:
     """Host loop over the leading axis: one jitted step per row."""
     row_step, _, w = _kernels()
     return jnp.stack([row_step(x[b], w) for b in range(x.shape[0])])
 
 
-def vmapped_twin(x: jax.Array) -> jax.Array:
+def vmapped_twin(x: Float[Array, "..."]) -> Float[Array, "..."]:
     """Batched twin of :func:`host_loop`: one jitted vmap for the batch."""
     _, batched_step, w = _kernels()
     return batched_step(x, w)
