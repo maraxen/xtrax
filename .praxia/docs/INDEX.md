@@ -18,6 +18,7 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [261016_jax-smoke-profiling-scope](specs/261016_jax-smoke-profiling-scope.md) — Cross-repo scope for catching low-hanging JAX bottlenecks at L2: jaxlint owns static suspects, xtrax owns measurement, bathos owns the launch gate, jaxlint ships its edit hook as a cisternal plugin
 - [260923_5035-audit-labels-memo-followups](specs/260923_5035-audit-labels-memo-followups.md) — Sprint spec for #5035 (coverage-DAG PASS label over failing tiers), #5241 (memo hot-path and duplicate-walker cleanup), #5240 (all-default wrap-time screening, NaN static keys)
 - [260922_conformance-residuals](specs/260922_conformance-residuals.md) — Two items the converged 260825 spec requires but PR #104 did not ship, the synthesizer row-identity unsoundness found while specifying them, and the verified CI-gate bug #5205
 - [260922_memo-screen-hardening](specs/260922_memo-screen-hardening.md) — Per-signature purity/donation screening with static non-array leaves and kwargs, uncapped sub-jaxpr traversal for the impurity screen, and kwarg-faithful spot-check replay (#5214, #5215, #5216)
