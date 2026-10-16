@@ -389,7 +389,7 @@ def _extrapolation_lines(
         stage=1,
         n_atoms=cardinality,
         platform=platform,
-        metrics=metrics,
+        metrics=dict(metrics),
         config=config,
     )
     label = "extrapolated, CPU-relative" if platform == "cpu" else "extrapolated"
