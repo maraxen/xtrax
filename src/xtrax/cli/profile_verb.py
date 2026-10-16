@@ -324,8 +324,8 @@ def _render(
         "",
         "| metric | value |",
         "|---|---|",
-        f"| platform | {m.platform} (timings are CPU-relative only)"
-        f"{'' if m.platform == 'cpu' else ' (accelerator)'} |",
+        f"| platform | {m.platform}"
+        f"{' (timings are CPU-relative only)' if m.platform == 'cpu' else ''} |",
         f"| extent axis | {m.extent_axis} = {m.cardinality} |",
         f"| steady compiles (window) | {r.steady_compile_count} |",
         f"| executions / unit | {r.executions_per_unit:.2f} |",
@@ -339,7 +339,8 @@ def _render(
     ]
     if m.n_units is not None:
         total = r.wall_seconds_per_unit * m.n_units
-        lines.append(f"| est. total wall s ({m.n_units} units, CPU-relative) | {total:.3f} |")
+        qualifier = ", CPU-relative" if m.platform == "cpu" else ""
+        lines.append(f"| est. total wall s ({m.n_units} units{qualifier}) | {total:.3f} |")
     lines += [
         "",
         f"Thresholds (provisional, uncalibrated until X5): exec/element < {EXEC_PER_ELEMENT_FLAG}; "
