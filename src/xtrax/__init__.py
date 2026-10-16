@@ -1,4 +1,4 @@
-__version__ = "0.4.0a12"
+__version__ = "0.4.0a13"
 
 __all__ = [
     # Core training
