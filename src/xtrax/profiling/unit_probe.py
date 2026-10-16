@@ -35,8 +35,6 @@ jax is imported lazily inside the functions, so importing this module stays
 free of jax (the ``xtrax.profiling`` leaf contract).
 """
 
-from __future__ import annotations
-
 import statistics
 import tempfile
 import time

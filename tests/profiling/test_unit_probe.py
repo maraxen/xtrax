@@ -6,8 +6,6 @@ detection, the accounting invariants of the device/host split, validation,
 and import hygiene (no jax at module scope).
 """
 
-from __future__ import annotations
-
 import math
 import subprocess
 import sys
