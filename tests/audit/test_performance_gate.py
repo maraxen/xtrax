@@ -772,3 +772,164 @@ def test_dispatch_probe_skips_without_trace_probe() -> None:
     assert result.passed is False
     assert result.counts == {}
     assert result.reason == "no trace_probe configured for kernel"
+
+
+# --- X5: per-kernel max_executions ceiling ------------------------------------
+
+
+def _write_multicall_fixture(tmp_path: Path, name: str, calls: int) -> str:
+    """A kernel plus a probe that calls it ``calls`` times in one unit.
+
+    Returns the ``module:probe`` trace_probe string.
+    """
+    import sys
+
+    module_path = tmp_path / f"{name}.py"
+    module_path.write_text(
+        textwrap.dedent(
+            f"""
+            import jax.numpy as jnp
+
+            def kernel(x):
+                return x + 1
+
+            def probe(guarded):
+                x = jnp.zeros(3)
+                for _ in range({calls}):
+                    guarded(x)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    sys.path.insert(0, str(tmp_path))
+    return f"{name}:probe"
+
+
+def _executions_targets(tmp_path: Path, qualname: str, probe: str, ceiling: str) -> Path:
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            f"""
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+            max_traces_default = 1
+
+            [[probes]]
+            qualname = "{qualname}"
+            max_traces = 1
+            trace_probe = "{probe}"
+            max_executions = {ceiling}
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return targets_path
+
+
+def _seed_dispatch_baseline(path: Path) -> None:
+    from xtrax.devtools.gates.performance import DISPATCH_METRIC_KEY
+
+    save_baseline(
+        AuditBaseline(
+            schema_version=BASELINE_SCHEMA_VERSION,
+            updated_at="2026-10-16T00:00:00+00:00",
+            metrics={
+                DISPATCH_METRIC_KEY: MetricEntry(
+                    key=DISPATCH_METRIC_KEY, value=0.0, comparator="minimize"
+                ),
+            },
+        ),
+        path=path,
+    )
+
+
+def test_load_performance_targets_parses_max_executions(tmp_path: Path) -> None:
+    targets_path = _executions_targets(tmp_path, "some.kernel", "some.mod:probe", "3")
+    spec = load_performance_targets(targets_path).probes[0]
+    assert spec.max_executions == 3
+    assert spec.max_compilations is None
+    assert spec.max_jit_traces is None
+    assert spec.has_dispatch_ceilings is True
+
+
+def test_absent_max_executions_is_not_checked(tmp_path: Path) -> None:
+    targets_path = tmp_path / "performance_targets.toml"
+    targets_path.write_text(
+        textwrap.dedent(
+            """
+            [gate]
+            schema = "performance-gate-v0"
+            version = "0.1.0"
+
+            [[probes]]
+            qualname = "some.kernel"
+            max_traces = 1
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    spec = load_performance_targets(targets_path).probes[0]
+    assert spec.max_executions is None
+    assert spec.has_dispatch_ceilings is False
+
+
+def test_boolean_toml_max_executions_rejected(tmp_path: Path) -> None:
+    """X5: TOML `max_executions = true` must not become ceiling 1."""
+    targets_path = _executions_targets(tmp_path, "some.kernel", "some.mod:probe", "true")
+    with pytest.raises(ValueError, match="max_executions"):
+        load_performance_targets(targets_path)
+
+
+def test_max_executions_ceiling_below_measured_count_fails(tmp_path: Path) -> None:
+    """Four guarded calls per unit: measured n_executions >= 2, so ceiling 1 must fail."""
+    from xtrax.devtools.gates._dispatch_probe import measure_dispatch_counts
+
+    qualname = "executions_fixture_low.kernel"
+    probe = _write_multicall_fixture(tmp_path, "executions_fixture_low", calls=4)
+    measured = measure_dispatch_counts(qualname, probe).counts["n_executions"]
+    assert measured >= 2, "fixture must execute more than once per unit"
+
+    audits_path = tmp_path / "audits.jsonl"
+    baseline_path = tmp_path / "audit_baseline.json"
+    _seed_dispatch_baseline(baseline_path)
+    targets_path = _executions_targets(tmp_path, qualname, probe, "1")
+
+    result = run_performance_gate(
+        targets_path=targets_path,
+        audits_path=audits_path,
+        baseline_path=baseline_path,
+        write_baseline=False,
+    )
+
+    assert result.passed is False
+    assert result.dispatch_violation_count == 1
+    entries = [json.loads(line) for line in audits_path.read_text(encoding="utf-8").splitlines()]
+    dispatch = [e for e in entries if e["payload"].get("violation_kind") == "dispatch_count"]
+    assert len(dispatch) == 1
+    assert dispatch[0]["payload"]["counter"] == "n_executions"
+    assert dispatch[0]["payload"]["ceiling"] == 1
+    assert dispatch[0]["payload"]["observed"] == measured
+
+
+def test_max_executions_ceiling_above_measured_count_passes(tmp_path: Path) -> None:
+    qualname = "executions_fixture_high.kernel"
+    probe = _write_multicall_fixture(tmp_path, "executions_fixture_high", calls=4)
+
+    audits_path = tmp_path / "audits.jsonl"
+    baseline_path = tmp_path / "audit_baseline.json"
+    _seed_dispatch_baseline(baseline_path)
+    targets_path = _executions_targets(tmp_path, qualname, probe, "64")
+
+    result = run_performance_gate(
+        targets_path=targets_path,
+        audits_path=audits_path,
+        baseline_path=baseline_path,
+        write_baseline=False,
+    )
+
+    assert result.passed is True
+    assert result.dispatch_violation_count == 0

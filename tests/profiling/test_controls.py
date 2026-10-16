@@ -44,3 +44,12 @@ def test_rejects_empty_or_nonpositive_batch_sizes():
         run_negative_controls(batch_sizes=())
     with pytest.raises(ValueError):
         run_negative_controls(batch_sizes=(0,))
+
+
+def test_default_threshold_comes_from_shared_rule():
+    import inspect
+
+    from xtrax.profiling.rules import EXEC_PER_ELEMENT_FLAG
+
+    default = inspect.signature(run_negative_controls).parameters["threshold"].default
+    assert default == EXEC_PER_ELEMENT_FLAG

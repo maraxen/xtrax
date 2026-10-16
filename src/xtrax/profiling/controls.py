@@ -38,6 +38,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from xtrax.profiling.rules import EXEC_PER_ELEMENT_FLAG
 from xtrax.profiling.unit_probe import probe_unit
 
 FEATURES = 128
@@ -136,7 +137,7 @@ def _inputs(batch_size: int) -> jax.Array:
 
 def run_negative_controls(
     batch_sizes: tuple[int, ...] = (8, 64),
-    threshold: float = 0.5,
+    threshold: float = EXEC_PER_ELEMENT_FLAG,
     n_steady: int = 2,
     n_wall: int = 2,
 ) -> ControlsReport:
@@ -146,8 +147,8 @@ def run_negative_controls(
         batch_sizes: Batch sizes B to measure. Each must be at least 1. The
             smallest is the sensitivity check.
         threshold: Executions-per-element threshold. Host loops must be at or
-            above it, the vmapped twin below it. The CLI layer owns the real
-            value; this default is 0.5.
+            above it, the vmapped twin below it. Defaults to
+            ``rules.EXEC_PER_ELEMENT_FLAG``, the same value the verb uses.
         n_steady: Traced steady calls per measurement (passed to ``probe_unit``).
         n_wall: Untraced wall calls per measurement (passed to ``probe_unit``).
 

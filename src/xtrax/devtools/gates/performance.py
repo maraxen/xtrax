@@ -47,11 +47,18 @@ class ProbeSpec:
     # gate behavior byte-identical to the pre-profiling configuration.
     max_compilations: int | None = None
     max_jit_traces: int | None = None
+    # Per-kernel XLA execution ceiling (spec 261016 X5). Absent = not checked;
+    # there is deliberately no global absolute count.
+    max_executions: int | None = None
     emit_probe_record: bool = False
 
     @property
     def has_dispatch_ceilings(self) -> bool:
-        return self.max_compilations is not None or self.max_jit_traces is not None
+        return (
+            self.max_compilations is not None
+            or self.max_jit_traces is not None
+            or self.max_executions is not None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +136,7 @@ def load_performance_targets(path: Path) -> PerformanceTargets:
                 trace_probe=probe_value,
                 max_compilations=_optional_ceiling("max_compilations"),
                 max_jit_traces=_optional_ceiling("max_jit_traces"),
+                max_executions=_optional_ceiling("max_executions"),
                 emit_probe_record=emit_record_raw,
             )
         )
@@ -260,6 +268,7 @@ def _run_dispatch_probes(
         for counter, ceiling in (
             ("compilations", spec.max_compilations),
             ("jit_traces", spec.max_jit_traces),
+            ("executions", spec.max_executions),
         ):
             if ceiling is None:
                 continue

@@ -61,16 +61,12 @@ from xtrax.profiling.emitters import emit_probe_record
 from xtrax.profiling.fit import FitCheck, fit_precheck
 from xtrax.profiling.loop_scaling import extent_scaling_report
 from xtrax.profiling.record import ProbeRecord
+from xtrax.profiling.rules import EXEC_PER_ELEMENT_FLAG, THRESHOLD_STATUS, steady_state_flags
 from xtrax.profiling.unit_probe import UnitProbeResult, probe_unit
 
 EXIT_PASS = 0
 EXIT_FLAGGED = 1
 EXIT_NOT_MEASURED = 2
-
-# PROVISIONAL and uncalibrated. The gap between host loops (>= 3.0) and vmapped
-# or chunked units (<= 0.14) is wide, but X5 must calibrate this on real
-# entrypoints (aminx sampler, scripts/prof_*) before it is treated as fixed.
-EXEC_PER_ELEMENT_FLAG = 0.5
 
 
 class _NotMeasured(Exception):
@@ -223,14 +219,10 @@ def _check_record(args: ProfileArgs) -> NoReturn:
                 f"STALE: record git_sha {record.git_sha} differs from {args.sha} ({resolved})"
             )
 
-    flags: list[str] = []
-    if n_compilations > 0:
-        flags.append(f"FLAG: n_compilations {n_compilations:.3f} per unit (expected 0)")
-    if exec_per_element >= EXEC_PER_ELEMENT_FLAG:
-        flags.append(
-            f"FLAG: exec/element {exec_per_element:.3f} >= {EXEC_PER_ELEMENT_FLAG} "
-            "(provisional threshold, uncalibrated until X5; host-loop signature)"
-        )
+    flags = [
+        f"FLAG: {flag}"
+        for flag in steady_state_flags(float(exec_per_element), float(n_compilations))
+    ]
 
     findings = stale + flags
     labels = []
@@ -323,17 +315,10 @@ def _measure(args: ProfileArgs) -> _Measurement:
         )
 
     exec_per_element = result.executions_per_element(cardinality)
-    flags: list[str] = []
-    if result.steady_compile_count > 0:
-        flags.append(
-            f"steady recompiles: {result.steady_compile_count} in the steady window "
-            "(expected 0; the unit rebuilds its executable on each call)"
-        )
-    if exec_per_element >= EXEC_PER_ELEMENT_FLAG:
-        flags.append(
-            f"exec/element {exec_per_element:.3f} >= {EXEC_PER_ELEMENT_FLAG} "
-            "(provisional threshold, uncalibrated until X5; host-loop signature)"
-        )
+    flags = steady_state_flags(
+        float(exec_per_element),
+        float(result.steady_compile_count) / result.n_steady,
+    )
 
     scaling_lines = _scaling_lines(fn, make_args, cardinality, args)
 
@@ -592,7 +577,7 @@ def _render(
         lines.append(f"| est. total wall s ({m.n_units} units{qualifier}) | {total:.3f} |")
     lines += [
         "",
-        f"Thresholds (provisional, uncalibrated until X5): exec/element < {EXEC_PER_ELEMENT_FLAG}; "
+        f"Thresholds ({THRESHOLD_STATUS}): exec/element < {EXEC_PER_ELEMENT_FLAG}; "
         "steady compiles = 0.",
         "",
         "### Fit",
