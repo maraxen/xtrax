@@ -21,7 +21,7 @@ XLA versions.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 from weakref import WeakKeyDictionary
@@ -304,6 +304,19 @@ def _dep_of(value: Any, deps: dict[int, frozenset[int]]) -> frozenset[int]:
     return deps.get(id(value), frozenset())
 
 
+def _scan_counts(params: Mapping[str, Any]) -> tuple[int, int]:
+    """Return ``(num_consts, num_carry)`` for a ``scan`` equation's params.
+
+    Older JAX stores the counts as ``num_consts`` / ``num_carry``. Newer JAX
+    drops them and keeps only the ``ft_in`` / ``ft_out`` flattree packs, whose
+    ``elts`` are one group per (consts, carry, xs) and (carry, ys). The counts
+    are leaf counts because scan invars are flattened.
+    """
+    if "num_consts" in params:
+        return params["num_consts"], params["num_carry"]
+    return len(params["ft_in"].elts[0].elts), len(params["ft_out"].elts[0].elts)
+
+
 def trace_input_dependence(closed: Any) -> InputDependence:
     """Map every produced value to the top-level inputs it reads.
 
@@ -314,6 +327,10 @@ def trace_input_dependence(closed: Any) -> InputDependence:
     Call-equation outputs take the callee's per-output dependence, not the
     union of every operand. ``cond`` also unions the predicate, which is not
     a branch invar.
+
+    ``scan`` and ``while`` bodies are iterated until the carry dependence
+    stops growing. A ``while`` output also reads every input its predicate
+    reads, since the predicate decides how many iterations run.
 
     Args:
         closed: A closed jaxpr from ``jax.make_jaxpr``, or a bare jaxpr.
@@ -346,9 +363,84 @@ def trace_input_dependence(closed: Any) -> InputDependence:
         _visit(sub)
         return [_dep_of(out, deps) for out in sub.outvars]
 
+    def _seed(jaxpr: Any, in_deps: Sequence[frozenset[int]]) -> list[frozenset[int]]:
+        for inner, dep in zip(jaxpr.invars, in_deps, strict=True):
+            deps[id(inner)] = dep
+        _visit(jaxpr)
+        return [_dep_of(out, deps) for out in jaxpr.outvars]
+
+    def _carry_fixpoint(
+        body: Any,
+        lead: Sequence[frozenset[int]],
+        carry: Sequence[frozenset[int]],
+        tail: Sequence[frozenset[int]],
+        mark: int,
+    ) -> tuple[list[frozenset[int]], list[frozenset[int]]]:
+        """Iterate a loop body until its carry dependence stops growing.
+
+        A carry slot can pick up an input only on a later iteration (the body
+        forwards it from another slot), so one pass is not enough. Each round
+        unions carry-in with carry-out; the sets only grow, and a chain through
+        ``n`` carry slots settles within ``n + 1`` rounds. Records from
+        superseded rounds are dropped, so the converged round is the only one
+        kept.
+
+        Returns:
+            The converged carry sets and the body's per-output sets from the
+            last round, which ran on those converged sets.
+        """
+        current = list(carry)
+        outs: list[frozenset[int]] = []
+        for _ in range(len(current) + 1):
+            del produced[mark:]
+            outs = _seed(body, [*lead, *current, *tail])
+            grown = [c | o for c, o in zip(current, outs[: len(current)], strict=True)]
+            if grown == current:
+                break
+            current = grown
+        return current, outs
+
+    def _visit_scan(eqn: Any, op_deps: tuple[frozenset[int], ...]) -> None:
+        n_consts, n_carry = _scan_counts(eqn.params)
+        body = next(sub_jaxprs(eqn.params["jaxpr"]))
+        carry, outs = _carry_fixpoint(
+            body,
+            op_deps[:n_consts],
+            op_deps[n_consts : n_consts + n_carry],
+            op_deps[n_consts + n_carry :],
+            len(produced),
+        )
+        _record(eqn, [*carry, *outs[n_carry:]])
+
+    def _visit_while(eqn: Any, op_deps: tuple[frozenset[int], ...]) -> None:
+        n_cond = eqn.params["cond_nconsts"]
+        n_body = eqn.params["body_nconsts"]
+        cond_consts = op_deps[:n_cond]
+        body = next(sub_jaxprs(eqn.params["body_jaxpr"]))
+        cond = next(sub_jaxprs(eqn.params["cond_jaxpr"]))
+        carry, _ = _carry_fixpoint(
+            body,
+            op_deps[n_cond : n_cond + n_body],
+            op_deps[n_cond + n_body :],
+            (),
+            len(produced),
+        )
+        # The trip count is decided by the predicate, so a carry the predicate
+        # reads makes every carry output depend on it. This is conservative:
+        # it does not track which iterations actually run.
+        _seed(cond, [*cond_consts, *carry])
+        trips = frozenset().union(*cond_consts, *carry)
+        _record(eqn, [dep | trips for dep in carry])
+
     def _visit(jaxpr: Any) -> None:
         for eqn in jaxpr.eqns:
             op_deps = tuple(_dep_of(v, deps) for v in eqn.invars)
+            if eqn.primitive.name == "scan":
+                _visit_scan(eqn, op_deps)
+                continue
+            if eqn.primitive.name == "while":
+                _visit_while(eqn, op_deps)
+                continue
             subs = list(sub_jaxprs(eqn.params))
             if not subs:
                 union = frozenset().union(*op_deps)
