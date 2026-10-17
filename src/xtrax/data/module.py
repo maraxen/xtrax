@@ -1,3 +1,4 @@
+import itertools
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -22,7 +23,16 @@ class DataModule(eqx.Module):
     they yield batches from :func:`xtrax.data.pipeline.build_input_pipeline`:
     train shuffles, eval does not, and ``distributed=True`` shards the source
     across JAX processes. ``pad_fn``, when set, is the caller-supplied
-    fixed-length map applied before batching.
+    fixed-length map applied before batching; ``collate_fn``, when set, is
+    passed to Grain as the batch function.
+
+    On the Grain path each ``train_iter()`` call yields exactly one epoch.
+    Call ``k`` (counting from 0 on this instance) shuffles with
+    ``seed + k``, so successive epochs see different orders and a fresh
+    instance replays the same sequence. ``Engine.fit`` calls ``train_iter``
+    once per epoch, so its ``num_epochs`` sets the number of passes;
+    ``DataModule.num_epochs`` is not consulted by the iterators. ``eval_iter``
+    is always one unshuffled pass that keeps the final partial batch.
     """
 
     dataset: Any
@@ -33,16 +43,24 @@ class DataModule(eqx.Module):
     collate_fn: Callable | None = eqx.field(static=True, default=None)
     use_grain_pipeline: bool = eqx.field(static=True, default=False)
     pad_fn: Callable | None = eqx.field(static=True, default=None)
+    # Epoch counter: each train_iter() call takes the next value. Immutable
+    # modules cannot carry a plain int, so the counter object lives here.
+    _epochs: Iterator[int] = eqx.field(static=True, init=False, default_factory=itertools.count)
 
     def train_iter(self) -> Iterator[Any]:
-        """Yield train batches. Shuffles when the Grain pipeline is enabled."""
-        yield from self._iter(shuffle=True, entry="train_iter")
+        """Yield one train epoch. Shuffles when the Grain pipeline is enabled."""
+        epoch = next(self._epochs)
+        yield from self._iter(
+            shuffle=True, entry="train_iter", seed=self.seed + epoch, drop_remainder=True
+        )
 
     def eval_iter(self) -> Iterator[Any]:
-        """Yield eval batches. Does not shuffle when the Grain pipeline is enabled."""
-        yield from self._iter(shuffle=False, entry="eval_iter")
+        """Yield one eval pass. Does not shuffle; keeps the final partial batch."""
+        yield from self._iter(
+            shuffle=False, entry="eval_iter", seed=self.seed, drop_remainder=False
+        )
 
-    def _iter(self, *, shuffle: bool, entry: str) -> Iterator[Any]:
+    def _iter(self, *, shuffle: bool, entry: str, seed: int, drop_remainder: bool) -> Iterator[Any]:
         if self.distributed and not _dist_initialized:
             raise RuntimeError(
                 f"DataModule: distributed=True requires init_dist() before {entry}()."
@@ -55,9 +73,11 @@ class DataModule(eqx.Module):
         yield from build_input_pipeline(
             self.dataset,
             batch_size=self.batch_size,
-            seed=self.seed,
-            num_epochs=self.num_epochs,
+            seed=seed,
+            num_epochs=1,
             shuffle=shuffle,
             pad_fn=self.pad_fn,
+            batch_fn=self.collate_fn,
+            drop_remainder=drop_remainder,
             shard_by_process=self.distributed,
         )

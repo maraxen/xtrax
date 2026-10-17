@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   git top-level, or an explicit `repo_root`) instead of the xtrax install, so
   a downstream measurement carries its own commit. `emit_probe_record` gains
   keyword-only `git_sha` and `repo_root` parameters. Spec 261016 X2.
+- `DataModule` on the Grain path (`use_grain_pipeline=True`) no longer
+  repeats epochs internally. **Behaviour change:** `train_iter()` now yields
+  exactly one epoch per call, and `Engine.fit`'s `num_epochs` sets the number
+  of passes. `DataModule.num_epochs` is no longer consulted by the iterators.
+  Call `k` shuffles with `seed + k`, so successive epochs differ (previously
+  every call replayed the same order). **Behaviour change:** `eval_iter()` is
+  always one unshuffled pass, so `Engine.evaluate` terminates when
+  `num_epochs=None` and no longer repeats the eval set. `eval_iter()` also
+  keeps the final partial batch instead of dropping it.
+- `DataModule.collate_fn` is passed to Grain as the batch function on the
+  Grain path. It was previously ignored.
+- `create_distributed_pipeline` batches `global_batch_size //
+  jax.process_count()` per process. It raises `ValueError` when the global
+  batch is not divisible by the process count, or the per-process batch is not
+  divisible by `num_devices`. The old per-device batch was wrong when one
+  process drove several devices.
 
 ## [0.4.1b1] - 2026-10-16
 
