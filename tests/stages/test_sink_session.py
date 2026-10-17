@@ -207,3 +207,36 @@ def test_exit_without_blocking_keeps_every_pending_callback() -> None:
 
     assert sink.count_at_finalize == _STEPS
     assert sink.values == list(range(_STEPS))
+
+
+def test_clean_exit_drains_callbacks_before_finalize(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pending ordered callbacks are drained before finalize, on every backend.
+
+    CPU dispatch is synchronous, so the race cannot be reproduced there; this
+    pins the ordering contract directly instead.
+    """
+    import xtrax.stages.session as session_mod
+
+    events: list[str] = []
+    monkeypatch.setattr(session_mod.jax, "effects_barrier", lambda: events.append("barrier"))
+
+    class _Sink:
+        def __call__(self, *args: object) -> None:
+            pass
+
+        def finalize(self) -> str:
+            events.append("finalize")
+            return "receipt"
+
+        def close(self) -> None:
+            events.append("close")
+
+    with sink_session(_Sink()) as session:
+        pass
+    assert session.receipt == "receipt"
+    assert events.index("barrier") < events.index("finalize") < events.index("close")
+
+    events.clear()
+    with pytest.raises(RuntimeError), sink_session(_Sink()):
+        raise RuntimeError("boom")
+    assert events == ["barrier", "close"]
