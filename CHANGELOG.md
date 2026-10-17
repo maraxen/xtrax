@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   git top-level, or an explicit `repo_root`) instead of the xtrax install, so
   a downstream measurement carries its own commit. `emit_probe_record` gains
   keyword-only `git_sha` and `repo_root` parameters. Spec 261016 X2.
+- Axis-invariance checker (`verify_axis_invariance`) no longer misses
+  dependence that reaches a `scan` carry only on a later iteration: the loop
+  body is iterated to a carry fixed point. `while` loops no longer crash with
+  a `zip` length error, and every carry output of a `while` depends on the
+  inputs its predicate reads. Input names now map to the flattened pytree
+  leaves of each argument, so a dict argument's other leaves no longer make
+  a varying name look like it covers the wrong output.
 
 ## [0.4.1b1] - 2026-10-16
 
