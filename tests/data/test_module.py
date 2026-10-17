@@ -1,4 +1,5 @@
 import importlib.util
+import itertools
 
 import numpy as np
 import pytest
@@ -119,8 +120,10 @@ class TestDataModuleGrainPipeline:
         assert eval_ids == list(range(8))
         assert sorted(train) == list(range(8))
         assert train != eval_ids
+        # The second call is the next epoch: it reshuffles with seed + 1.
         again = [int(x) for batch in module.train_iter() for x in np.asarray(batch).ravel()]
-        assert again == train
+        assert sorted(again) == list(range(8))
+        assert again != train
 
     @requires_grain
     def test_pad_fn_is_applied(self):
@@ -219,3 +222,93 @@ class TestDataModuleGrainPipeline:
         train = [int(x) for batch in module.train_iter() for x in np.asarray(batch).ravel()]
         assert train == order(7)
         assert train != order(0)
+
+    @requires_grain
+    def test_eval_iter_is_one_pass_regardless_of_num_epochs(self):
+        """eval_iter ignores the training num_epochs and ends after one pass."""
+        module = DataModule(
+            dataset=[np.int32(i) for i in range(8)],
+            batch_size=2,
+            num_epochs=None,
+            seed=0,
+            distributed=False,
+            use_grain_pipeline=True,
+        )
+        batches = list(itertools.islice(module.eval_iter(), 10))
+        got = [int(x) for batch in batches for x in np.asarray(batch).ravel()]
+        assert len(batches) == 4
+        assert got == list(range(8))
+
+    @requires_grain
+    def test_eval_iter_keeps_the_partial_last_batch(self):
+        """eval_iter does not drop the trailing examples that do not fill a batch."""
+        module = DataModule(
+            dataset=[np.int32(i) for i in range(5)],
+            batch_size=2,
+            num_epochs=1,
+            seed=0,
+            distributed=False,
+            use_grain_pipeline=True,
+        )
+        shapes = [np.asarray(batch).shape for batch in module.eval_iter()]
+        assert shapes == [(2,), (2,), (1,)]
+
+    @requires_grain
+    def test_train_iter_yields_one_epoch_per_call(self):
+        """train_iter yields a single epoch even when num_epochs asks for more."""
+        module = DataModule(
+            dataset=[np.int32(i) for i in range(8)],
+            batch_size=2,
+            num_epochs=5,
+            seed=0,
+            distributed=False,
+            use_grain_pipeline=True,
+        )
+        batches = list(module.train_iter())
+        assert len(batches) == 4
+        assert sorted(int(x) for batch in batches for x in np.asarray(batch).ravel()) == list(
+            range(8)
+        )
+
+    @requires_grain
+    def test_train_iter_varies_the_seed_per_call(self):
+        """Call k of train_iter shuffles with seed + k, so epochs differ."""
+        source = [np.int32(i) for i in range(16)]
+
+        def order(seed: int) -> list[int]:
+            pipeline = build_input_pipeline(
+                source, batch_size=4, seed=seed, num_epochs=1, shuffle=True
+            )
+            return [int(x) for batch in pipeline for x in np.asarray(batch).ravel()]
+
+        module = DataModule(
+            dataset=source,
+            batch_size=4,
+            num_epochs=1,
+            seed=7,
+            distributed=False,
+            use_grain_pipeline=True,
+        )
+        first = [int(x) for batch in module.train_iter() for x in np.asarray(batch).ravel()]
+        second = [int(x) for batch in module.train_iter() for x in np.asarray(batch).ravel()]
+        assert first == order(7)
+        assert second == order(8)
+
+    @requires_grain
+    def test_collate_fn_is_the_grain_batch_fn(self):
+        """A DataModule collate_fn replaces the default np.stack batching."""
+
+        def collate(examples: list[np.ndarray]) -> np.ndarray:
+            return np.stack(examples) + 100
+
+        module = DataModule(
+            dataset=[np.int32(i) for i in range(4)],
+            batch_size=2,
+            num_epochs=1,
+            seed=0,
+            distributed=False,
+            use_grain_pipeline=True,
+            collate_fn=collate,
+        )
+        batches = [np.asarray(batch) for batch in module.eval_iter()]
+        assert [int(x) for batch in batches for x in batch.ravel()] == [100, 101, 102, 103]
