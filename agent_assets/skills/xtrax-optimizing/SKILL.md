@@ -58,6 +58,28 @@ Tier-1 facts already established in code (verify-paths):
   (`src/xtrax/stages/topology.py`, `validate_plan_topology`).
 - Only set `ordered=True` when correctness depends on host-observed order.
 
+## Remediation Playbook (keyed by `xtrax profile` flags)
+
+Measure the unit with `xtrax profile` first (`xtrax-probing` covers the report).
+Each flag names a likely cause and a first change. Classify the change
+(tier table above) and preregister the re-measure before editing.
+
+| `xtrax profile` says | Likely cause | First change | Re-measure |
+|---|---|---|---|
+| `exec/element` >= 0.5 | Host loop over the leading axis: one jitted step per element | Vmap the leading axis (`jax.vmap`). If memory bounds the batch, chunk it with a jitted chunk kernel (`ChunkedMap`). Test batched == looped output before keeping it. | exec/element < 0.5 at the same shape |
+| steady compiles > 0 | `jax.jit` built inside the callable, shape or dtype drift between calls, unhashable static args | Hoist the jit to module scope or a cached factory. Hold shapes and dtypes fixed (bucket them if they vary). Make static args hashable. | steady compiles = 0 |
+| host share dominates (`host s / unit` >> `device s / unit`) | Host-side work between dispatches: Python-side preprocessing, NumPy round trips, a sync (`.item()`, `block_until_ready`) per iteration, host callbacks | Move the work into the graph, or batch it so one dispatch does many steps. Callback mechanics are Tier 1; data placement is Tier 2. | host share falls; wall per unit falls |
+| `fits: no` | The compiled program exceeds device memory at this extent | Measure smaller with `--target-extent N` (the estimate is extrapolated, or withheld). For the production run, scan with a carry instead of materializing every step, or checkpoint/remat the body (Tier 3 donate/remat tradeoff). | `fits: yes` at the production extent, or a chunked design that fits |
+
+Rule: a flag is a reason to measure again, not a verdict on the code. Keep a
+change only with a paired record that shows the flag cleared and the wall
+moved (see Non-Negotiables 2 and 3).
+
+General JAX patterns (loop placement, jit boundaries, shape polymorphism,
+scatter-gather) belong to the jaxlint skills: `jaxlint:using-jax` and
+`jaxlint:using-jaxlint`. This skill covers what xtrax implements: the tier
+mapping, the probe pairs, and the keep/revert rule.
+
 ## Quick Start (worked example: on-the-fly vs materialized one-hot)
 
 ```bash
