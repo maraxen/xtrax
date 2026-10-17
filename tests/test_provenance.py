@@ -300,3 +300,27 @@ def test_scaffold_refuses_a_waiver_without_a_reason() -> None:
         render_declaration(upstream="prolix", relationship="ported", revision="v1")
     with pytest.raises(ValueError, match="waiver_reason"):
         render_declaration(upstream="prolix", relationship="ported", waiver_reason="  ")
+
+
+def test_reader_accepts_an_annotated_provenance_declaration(tmp_path: Path) -> None:
+    path = tmp_path / "leaf.py"
+    path.write_text(
+        textwrap.dedent(
+            """\
+            __provenance__: Provenance = Provenance(
+                upstream="https://example.com/up",
+                relationship="ported",
+                revision="v1.2.3",
+                licence="Apache-2.0",
+            )
+            """
+        ),
+        encoding="utf-8",
+    )
+    assert read_provenance(path) == _complete()
+
+
+def test_reader_ignores_an_annotation_without_a_value(tmp_path: Path) -> None:
+    path = tmp_path / "leaf.py"
+    path.write_text("__provenance__: Provenance\n", encoding="utf-8")
+    assert read_provenance(path) is None

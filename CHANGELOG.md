@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   git top-level, or an explicit `repo_root`) instead of the xtrax install, so
   a downstream measurement carries its own commit. `emit_probe_record` gains
   keyword-only `git_sha` and `repo_root` parameters. Spec 261016 X2.
+- `sink_session` drains pending ordered callbacks with `jax.effects_barrier()`
+  before `finalize` on a clean exit, and before `close` on every exit, so late
+  callbacks from asynchronously dispatched computations no longer reach a
+  finalized sink.
+- `distributional_lane` rejects a `NegativeControl` issued for a different
+  `oracle_probs`. The control stores a SHA-256 digest of the oracle, and a
+  mismatch raises `ValueError`. Previously a rejecting control for one oracle
+  could unlock PASS against another.
+- The provenance reader accepts an annotated `__provenance__: Provenance = ...`
+  declaration (`ast.AnnAssign` with a value), so the audit no longer fails it.
 
 ## [0.4.1b1] - 2026-10-16
 

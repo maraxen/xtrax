@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -167,3 +169,41 @@ def test_session_callback_is_an_ordered_effect() -> None:
     eqns = list(callback_eqns(jaxpr.jaxpr))
     assert len(eqns) == 1
     assert eqns[0].params["ordered"] is True
+
+
+class _SlowSink(_LifecycleSink):
+    """Lags the device so callbacks are still pending when the block exits."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.count_at_finalize: int | None = None
+
+    def __call__(self, value: object) -> None:
+        time.sleep(0.05)
+        super().__call__(value)
+
+    def finalize(self) -> str:
+        self.count_at_finalize = len(self.values)
+        return super().finalize()
+
+
+_STEPS = 64
+
+
+def test_exit_without_blocking_keeps_every_pending_callback() -> None:
+    sink = _SlowSink()
+
+    with sink_session(sink) as session:
+
+        @jax.jit
+        def run(values: jax.Array) -> jax.Array:
+            def step(carry: jax.Array, value: jax.Array) -> tuple[jax.Array, jax.Array]:
+                session.io_callback(value)
+                return carry, value
+
+            return jax.lax.scan(step, jnp.int32(0), values)[1]
+
+        run(jnp.arange(_STEPS))
+
+    assert sink.count_at_finalize == _STEPS
+    assert sink.values == list(range(_STEPS))

@@ -53,7 +53,8 @@ def sink_session(sink: Callable[..., Any]) -> Iterator[SinkSession]:
     """Open ``sink``, yield an ordered callback, then finalize and close.
 
     Calls ``sink.open`` on entry when that method exists. On a clean exit,
-    calls ``sink.finalize`` when it exists, stores the return value on
+    drains pending ordered callbacks (``jax.effects_barrier``), calls
+    ``sink.finalize`` when it exists, stores the return value on
     :attr:`SinkSession.receipt`, then calls ``sink.close`` when it exists.
     An exception inside the block, including one raised while tracing, skips
     finalize and still calls close.
@@ -64,9 +65,15 @@ def sink_session(sink: Callable[..., Any]) -> Iterator[SinkSession]:
     session = SinkSession(sink)
     try:
         yield session
+        # Ordered callbacks from asynchronously dispatched computations may still
+        # be pending; wait for them so finalize never sees a partial sink.
+        jax.effects_barrier()
         session.receipt = _call_if_present(sink, "finalize")
     finally:
-        _call_if_present(sink, "close")
+        try:
+            jax.effects_barrier()
+        finally:
+            _call_if_present(sink, "close")
 
 
 __all__ = ["SinkSession", "sink_session"]

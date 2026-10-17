@@ -496,6 +496,21 @@ def test_require_negative_control_asserts_the_perturbed_knob_rejects() -> None:
         require_negative_control(sampler, _probs(), {"bias": 0}, "temperature", 0)
 
 
+def test_lane_refuses_a_control_issued_for_a_different_oracle() -> None:
+    fair = _fair_draws()
+    issued_for = _probs()
+
+    def sampler(knobs: dict[str, int]) -> np.ndarray:
+        if knobs["bias"] == 0:
+            return fair
+        return np.zeros(fair.shape[0], dtype=np.int64)
+
+    control = require_negative_control(sampler, issued_for, {"bias": 0}, "bias", 1)
+    other_oracle = np.array([0.6, 0.4])
+    with pytest.raises(ValueError, match="different oracle"):
+        distributional_lane(fair, other_oracle, negative_control=control)
+
+
 def test_min_detectable_tv_follows_the_power_formula() -> None:
     # Chi-square 95th percentile at df=3 (NIST / published value).
     critical = 7.814727903251179
