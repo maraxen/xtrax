@@ -1,20 +1,9 @@
 ---
 name: using-xtrax
 description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function, or when a model is sparsified for inference. The library is xtrax."
+when_to_use: 'Triggers: padding or bucketing loop for variable-length sequences before a JIT step, chunked vmap or lax.map over a large batch, memory-budgeted batching / batch plan that must fit a device budget, ONNX or StableHLO export of a JAX pipeline, resumable training loop / resume training from a checkpoint, zarr output sink / staged zarr writes, TOML file that should launch or resume a training run, infer batch axes from a typed function signature, sparsify a dense model for inference, compose batching primitives into your own CLI.'
 xtrax_version: 0.4.1b1
-triggers:
-  - padding or bucketing loop for variable-length sequences before a JIT step
-  - chunked vmap or lax.map over a large batch
-  - memory-budgeted batching / batch plan that must fit a device budget
-  - ONNX or StableHLO export of a JAX pipeline
-  - resumable training loop / resume training from a checkpoint
-  - zarr output sink / staged zarr writes
-  - TOML file that should launch or resume a training run
-  - infer batch axes from a typed function signature
-  - sparsify a dense model for inference
-  - compose batching primitives into your own CLI
 ---
-
 # using-xtrax
 
 ## TIER-1: Read First (Self-Contained)
