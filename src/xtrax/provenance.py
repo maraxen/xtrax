@@ -129,6 +129,9 @@ def _declaration_values(tree: ast.AST) -> list[ast.expr]:
             names = [target.id for target in node.targets if isinstance(target, ast.Name)]
             if _DECLARATION in names:
                 values.append(node.value)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            if isinstance(node.target, ast.Name) and node.target.id == _DECLARATION:
+                values.append(node.value)
     return values
 
 

@@ -29,6 +29,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   batch is not divisible by the process count, or the per-process batch is not
   divisible by `num_devices`. The old per-device batch was wrong when one
   process drove several devices.
+- `sink_session` drains pending ordered callbacks with `jax.effects_barrier()`
+  before `finalize` on a clean exit, and before `close` on every exit, so late
+  callbacks from asynchronously dispatched computations no longer reach a
+  finalized sink.
+- `distributional_lane` rejects a `NegativeControl` issued for a different
+  `oracle_probs`. The control stores a SHA-256 digest of the oracle, and a
+  mismatch raises `ValueError`. Previously a rejecting control for one oracle
+  could unlock PASS against another.
+- The provenance reader accepts an annotated `__provenance__: Provenance = ...`
+  declaration (`ast.AnnAssign` with a value), so the audit no longer fails it.
+- Axis-invariance checker (`verify_axis_invariance`) no longer misses
+  dependence that reaches a `scan` carry only on a later iteration: the loop
+  body is iterated to a carry fixed point. `while` loops no longer crash with
+  a `zip` length error, and every carry output of a `while` depends on the
+  inputs its predicate reads. Input names now map to the flattened pytree
+  leaves of each argument, so a dict argument's other leaves no longer make
+  a varying name look like it covers the wrong output.
 
 ## [0.4.1b1] - 2026-10-16
 
