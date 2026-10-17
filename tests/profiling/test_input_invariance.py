@@ -333,3 +333,93 @@ def test_unknown_report_axis_raises():
     )
     with pytest.raises(KeyError, match="token"):
         report.axis("token")
+
+
+def test_carry_dependence_that_arrives_on_a_later_scan_iteration_is_caught():
+    """x reaches carry slot 0 only on the second iteration, so output 0 reads x."""
+    from xtrax.inference import InputInvarianceError, verify_axis_invariance
+
+    def program(params, x):
+        def body(carry, _):
+            return (carry[1], x), None
+
+        carry, _ = jax.lax.scan(body, (params, params), None, length=3)
+        return carry[0]
+
+    with pytest.raises(InputInvarianceError, match="'x'"):
+        verify_axis_invariance(
+            program,
+            {"params": jnp.float32(0.5), "x": jnp.float32(1.5)},
+            _specs("x"),
+            claimed_invariant_outputs={"batch": [0]},
+        )
+
+
+def test_while_loop_over_a_two_tuple_carry_is_analysed():
+    """A while loop whose trip count is fixed reports its invariant carry output."""
+    from xtrax.inference import verify_axis_invariance
+
+    def program(params, x):
+        def cond(carry):
+            return carry[0] < 3
+
+        def body(carry):
+            return (carry[0] + 1, carry[1] * 2.0)
+
+        _, acc = jax.lax.while_loop(cond, body, (jnp.int32(0), params))
+        return acc, x
+
+    report = verify_axis_invariance(
+        program,
+        {"params": jnp.float32(0.5), "x": jnp.float32(1.5)},
+        _specs("x"),
+        claimed_invariant_outputs={"batch": [0]},
+    )
+    assert report.axis("batch").invariant_outputs == (0,)
+
+
+def test_while_loop_whose_trip_count_reads_the_varying_input_taints_carry():
+    """The predicate reads x, so every carry output depends on x."""
+    from xtrax.inference import InputInvarianceError, verify_axis_invariance
+
+    def program(params, x):
+        def cond(carry):
+            return carry[1] < x
+
+        def body(carry):
+            return (carry[0] * 2.0, carry[1] + 1.0)
+
+        out, _ = jax.lax.while_loop(cond, body, (params, jnp.float32(0.0)))
+        return out
+
+    with pytest.raises(InputInvarianceError, match="'x'"):
+        verify_axis_invariance(
+            program,
+            {"params": jnp.float32(0.5), "x": jnp.float32(1.5)},
+            _specs("x"),
+            claimed_invariant_outputs={"batch": [0]},
+        )
+
+
+def test_pytree_argument_leaves_map_back_to_their_argument_name():
+    """A dict argument owns several leaves; the varying name must cover only its own."""
+    from xtrax.inference import InputInvarianceError, verify_axis_invariance
+
+    spec = AxisSpec(
+        name="batch",
+        cardinality=4,
+        default_batch_size=4,
+        varying_inputs=("x",),
+    )
+
+    def program(p, x):
+        return (p["a"] * 2, x)
+
+    example = {
+        "p": {"a": jnp.float32(0.5), "b": jnp.float32(2.0)},
+        "x": jnp.float32(1.5),
+    }
+    report = verify_axis_invariance(program, example, (spec,))
+    assert report.axis("batch").invariant_outputs == (0,)
+    with pytest.raises(InputInvarianceError, match="'x'"):
+        verify_axis_invariance(program, example, (spec,), claimed_invariant_outputs={"batch": [1]})
