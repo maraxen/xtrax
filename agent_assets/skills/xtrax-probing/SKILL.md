@@ -1,15 +1,9 @@
 ---
 name: xtrax-probing
 description: "Use when a JAX timing, dispatch count, or compile count has to stay citable, when a benchmark result is being quoted past the scale that was measured, or when a performance gate needs a dispatch-count ceiling. Covers the xtrax profile smoke check, stored probe records, claim-validity checks, and bottleneck reports."
+when_to_use: 'Triggers: a timing or dispatch count that a later claim will cite, benchmark result quoted beyond the scale that was measured, performance gate needs a dispatch-count or compile-count ceiling, bottleneck report from stored measurements, persist a benchmark so the number stays attachable to a claim.'
 xtrax_version: 0.4.1b1
-triggers:
-  - a timing or dispatch count that a later claim will cite
-  - benchmark result quoted beyond the scale that was measured
-  - performance gate needs a dispatch-count or compile-count ceiling
-  - bottleneck report from stored measurements
-  - persist a benchmark so the number stays attachable to a claim
 ---
-
 # xtrax-probing
 
 ## Purpose
