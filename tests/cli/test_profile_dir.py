@@ -50,6 +50,23 @@ def test_empty_explicit_arg_disables(tmp_path):
     assert resolve_profile_dir("") == (None, "arg")
 
 
+def test_relative_explicit_arg_resolves_against_cwd(tmp_path):
+    # The autouse fixture makes tmp_path the cwd.
+    got = resolve_profile_dir("out/profiles")
+    assert got == ((Path.cwd() / "out" / "profiles").resolve(), "arg")
+    assert got[0].is_absolute()
+
+
+def test_explicit_arg_with_dot_dot_is_normalised(tmp_path):
+    got = resolve_profile_dir("a/../out")
+    assert got == ((Path.cwd() / "out").resolve(), "arg")
+
+
+def test_explicit_arg_tilde_expands_to_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert resolve_profile_dir("~/prof") == ((tmp_path / "home" / "prof").resolve(), "arg")
+
+
 def test_env_var_wins_over_pyproject_and_user_config(monkeypatch, tmp_path):
     monkeypatch.setenv(ENV_VAR, str(tmp_path / "env"))
     proj = _write_pyproject(tmp_path / "proj", f'[tool.xtrax]\n{KEY} = "{tmp_path / "pp"}"\n')
@@ -93,6 +110,14 @@ def test_user_config_layer_is_used_without_pyproject_or_env(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     assert resolve_profile_dir(start=empty) == (tmp_path / "user", "user_config")
+
+
+def test_relative_user_config_value_fails_loudly(tmp_path):
+    _write_user_config(tmp_path / "xdg", f'{KEY} = "relative/dir"\n')
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="absolute"):
+        resolve_profile_dir(start=empty)
 
 
 def test_pyproject_beats_user_config(tmp_path):

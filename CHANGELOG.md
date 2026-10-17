@@ -20,21 +20,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `XTRAX_PROFILE_DIR`, `profile_dir` under `[tool.xtrax]` in the nearest
   `pyproject.toml`, `profile_dir` in `~/.config/xtrax/config.toml`,
   `RunSpec.output_root`, then off (print-only). An empty value or `none`
-  disables output. Relative paths and malformed files fail loudly. Spec 261016 X3.
+  disables output. An explicit `--out` relative path resolves against the current
+  directory; a relative value in `XTRAX_PROFILE_DIR` or a config file, and a
+  malformed file, fail loudly. Spec 261016 X3.
 - `xtrax profile` verb (`xtrax.cli.profile_verb`): measures a callable given as
   `--fn module:symbol` with zero-filled `--shapes` or a `--inputs module:factory`,
   and prints a markdown report of recompiles, executions per element, the
   device/host split, compile seconds, and wall time per unit. Exit 0 pass, 1
   flagged (steady recompiles, or executions per element at or above 0.5), 2 could
-  not measure. A stage-1 `ProbeRecord` is written when a directory resolves. Spec 261016 X4.
+  not measure. Any failure in the measure path, including an allocation error at
+  a huge `--shapes`, exits 2 rather than 1. A stage-1 `ProbeRecord` is written
+  when a directory resolves. Spec 261016 X4.
 - `xtrax.profiling.fit.fit_precheck`: compiles a unit on shape structs and
   compares `memory_analysis()` with the device `bytes_limit`, without
   allocating inputs. Where the device reports no limit (CPU) it returns
   unknown without compiling. `xtrax profile` prints the fit row, exits 2 on a
-  unit that does not fit unless `--target-extent N` names the production
-  extent, and then prints a linear wall estimate at N only when
-  `assert_claim_supported(END_TO_END)` accepts it (otherwise "wall estimate
-  withheld"). Spec 261016 X6.
+  unit that does not fit at the measured extent, even with `--target-extent N`.
+  With `--target-extent N` it also checks the fit at N (`fits at target extent`)
+  and withholds the linear wall estimate at N when the unit does not fit there
+  ("does not fit at target extent") or when `assert_claim_supported(END_TO_END)`
+  rejects it ("wall estimate withheld"). Spec 261016 X6.
 - `xtrax.profiling.controls`: shipped negative controls. `run_negative_controls`
   probes a host loop and its vmapped twin at each batch size and reports
   whether the probe still flags the first and passes the second on this
@@ -46,10 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at least 3.0 executions per element and 15 batched units at most 0.129. The
   performance gate gains an optional per-kernel `max_executions` ceiling.
   Spec 261016 X5.
-- `xtrax profile --check PATH [--sha REV]`: re-checks a written `ProbeRecord`
-  for a launch gate. Exit 0 when its provenance is clean, its sha matches REV
-  and its flags pass; 1 when stale or flagged; 2 when unreadable, missing
-  metrics, or carrying an unverifiable sha. Spec 261016 X9.
+- `xtrax profile --check PATH --sha REV`: re-checks a written `ProbeRecord`
+  for a launch gate. Exit 0 only when its provenance is clean, its sha matches
+  REV (short shas are resolved in the repository) and its flags pass; 1 when
+  stale or flagged; 2 when unreadable, missing or negative metrics, zero
+  executions, internally inconsistent (`exec_per_element` must equal
+  `n_executions / n_atoms`), carrying an unverifiable or unresolvable sha, or
+  when `--sha` is omitted and no flag was raised ("pass --sha <rev> to check
+  freshness"). A flagged record without `--sha` still exits 1. Spec 261016 X9.
 
 ### Changed
 

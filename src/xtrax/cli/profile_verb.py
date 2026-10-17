@@ -24,21 +24,27 @@ With ``--inputs`` the input must be a kwarg of the factory's result.
 
 Fit and extrapolation (X6). Before measuring, the verb lowers and compiles the
 unit on shape structs and reads the device memory limit (``fits: yes / no /
-unknown``). A unit that does not fit is refused (exit 2) unless ``--target-extent
-N`` names the production extent, in which case the measurement is taken at the
-smaller extent and the wall estimate is extrapolated linearly to N. That
-estimate is printed only if ``assert_claim_supported(END_TO_END)`` accepts it
-(scale ratio within ``SCALE_EXTRAPOLATION_LIMIT``, clean git sha); otherwise the
-line reads ``wall estimate withheld``. Withholding never changes the exit code:
-the dispatch ratio and compile count are scale-free.
+unknown``). A unit that does not fit at the measured extent is refused (exit 2),
+even with ``--target-extent``. ``--target-extent N`` only extrapolates a unit that
+fits where it is measured: the wall estimate is linear in N, and the verb also
+runs the fit check at N (``fits at target extent``). A target that does not fit
+withholds the estimate (``does not fit at target extent``). An unknown target fit
+is reported as unknown. The estimate is printed only if
+``assert_claim_supported(END_TO_END)`` accepts it (scale ratio within
+``SCALE_EXTRAPOLATION_LIMIT``, clean git sha); otherwise the line reads
+``wall estimate withheld``. Withholding never changes the exit code: the dispatch
+ratio and compile count are scale-free.
 
-Record check (X9). ``--check PATH [--sha REV]`` reads a ProbeRecord instead of
-measuring. Exit 0 when the record's provenance is clean, its sha matches ``REV``
-(if given) and its flags pass; exit 1 when it is stale or flagged; exit 2 when it
-is unreadable, lacks the metrics, has an unverifiable sha, or ``REV`` does not
-resolve. ``--check`` and ``--fn`` are mutually exclusive.
+Record check (X9). ``--check PATH --sha REV`` reads a ProbeRecord instead of
+measuring. Exit 0 only when the record is internally consistent, its sha matches
+``REV`` and its flags pass. Exit 1 when it is stale or flagged. Exit 2 when it is
+unreadable, lacks or has invalid metrics, is internally inconsistent, has an
+unverifiable or unresolvable sha, or when ``--sha`` is omitted and no flag was
+raised (freshness is unknown, so the record cannot pass). ``--check`` and ``--fn``
+are mutually exclusive.
 """
 
+import math
 import re
 import subprocess
 import sys
@@ -97,9 +103,9 @@ class ProfileArgs:
         n_units: Optional number of units. Gives an estimated total wall time.
         out: Directory for the stage-1 ProbeRecord. Empty or ``none`` disables it.
             When omitted, the resolver chain decides (see ``profile_dir``).
-        target_extent: Production extent of the scale axis. Lets a unit that does not
-            fit be measured at a smaller extent, and labels the wall estimate at this
-            extent (extrapolated). Flags: ``--target-extent``.
+        target_extent: Production extent of the scale axis. The unit must fit at the
+            measured extent. The wall estimate is extrapolated linearly to this extent,
+            and withheld when the unit does not fit here. Flags: ``--target-extent``.
         check: Path of a ProbeRecord to check instead of measuring. Flags: ``--check``.
         sha: Revision the ``check`` record must match (``HEAD``, a sha, ...). Only with
             ``check``. Flags: ``--sha``.
@@ -161,6 +167,10 @@ def run_profile(args: ProfileArgs) -> None:
         if exc.fit_line is not None:
             print(exc.fit_line)
         _not_measured(str(exc))
+    except Exception as exc:  # noqa: BLE001 - any failure to measure is exit 2, never exit 1
+        # Exit 1 means a flag or a stale record. An uncaught exception would exit 1
+        # through the interpreter, so every failure in the measure path lands here.
+        _not_measured(f"measurement raised {type(exc).__name__}: {exc}")
 
     if resolved is not None:
         try:
@@ -199,32 +209,56 @@ def _check_record(args: ProfileArgs) -> NoReturn:
     except ClaimValidityError as exc:
         _not_measured(f"record cannot back a dispatch check: {exc}")
 
-    for name in ("exec_per_element", "n_compilations"):
+    values: dict[str, float] = {}
+    for name in ("n_executions", "exec_per_element", "n_compilations"):
         value = record.metrics.get(name)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             _not_measured(f"record lacks the numeric metric {name}")
-    exec_per_element = record.metrics["exec_per_element"]
-    n_compilations = record.metrics["n_compilations"]
+        values[name] = float(value)
+    for name, value in values.items():
+        if value < 0:
+            _not_measured(f"record metric {name} is negative ({value}); not a measurement")
+    if values["n_executions"] == 0:
+        _not_measured("record shows zero executions; not a measurement")
+    n_executions = values["n_executions"]
+    exec_per_element = values["exec_per_element"]
+    n_compilations = values["n_compilations"]
+
+    # run_profile writes exec_per_element = n_executions / n_atoms; a record that
+    # disagrees with itself was edited or corrupted, and cannot back a verdict.
+    if record.n_atoms <= 0:
+        _not_measured(f"record n_atoms must be > 0, got {record.n_atoms}")
+    expected_exec = n_executions / record.n_atoms
+    if not math.isclose(exec_per_element, expected_exec, rel_tol=1e-6, abs_tol=1e-12):
+        _not_measured(
+            "record metrics are inconsistent: exec_per_element "
+            f"{exec_per_element} != n_executions / n_atoms = {expected_exec} "
+            f"(n_executions {n_executions}, n_atoms {record.n_atoms})"
+        )
 
     stale: list[str] = []
-    sha_line = "sha comparison skipped (no --sha given)"
-    if args.sha is not None:
+    if args.sha is None:
+        sha_line = "sha check: not performed (no --sha given)"
+    else:
         try:
             resolved = _resolve_sha(args.sha)
         except _NotMeasured as exc:
             _not_measured(str(exc))
+        record_full = _full_record_sha(record.git_sha)
         sha_line = f"--sha {args.sha} resolves to {resolved}"
-        if record.git_sha != resolved:
+        if record_full != resolved:
             stale.append(
                 f"STALE: record git_sha {record.git_sha} differs from {args.sha} ({resolved})"
             )
 
-    flags = [
-        f"FLAG: {flag}"
-        for flag in steady_state_flags(float(exec_per_element), float(n_compilations))
-    ]
+    flags = [f"FLAG: {flag}" for flag in steady_state_flags(exec_per_element, n_compilations)]
 
     findings = stale + flags
+    if args.sha is None and not findings:
+        _not_measured(
+            "no --sha given, so freshness is unknown and the record cannot pass; "
+            "pass --sha <rev> to check freshness"
+        )
     labels = []
     if stale:
         labels.append("STALE")
@@ -241,8 +275,9 @@ def _check_record(args: ProfileArgs) -> NoReturn:
         f"| record git_sha | {record.git_sha} |",
         f"| sha check | {sha_line} |",
         f"| n_atoms | {record.n_atoms} |",
-        f"| exec/element | {float(exec_per_element):.4f} |",
-        f"| steady compiles / unit | {float(n_compilations):.4f} |",
+        f"| executions | {n_executions:.2f} |",
+        f"| exec/element | {exec_per_element:.4f} |",
+        f"| steady compiles / unit | {n_compilations:.4f} |",
         "",
         "### Findings",
     ]
@@ -250,6 +285,22 @@ def _check_record(args: ProfileArgs) -> NoReturn:
     lines += ["", f"verdict: {verdict} (exit {code})"]
     print("\n".join(lines))
     raise SystemExit(code)
+
+
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
+_HEX_SHA = re.compile(r"[0-9a-f]{4,40}")
+
+
+def _full_record_sha(git_sha: str) -> str:
+    """The record's commit as a full sha. A short sha is resolved in the cwd repository."""
+    if _FULL_SHA.fullmatch(git_sha):
+        return git_sha
+    if not _HEX_SHA.fullmatch(git_sha):
+        _not_measured(f"record git_sha {git_sha!r} is not a commit sha (unknown sha)")
+    try:
+        return _resolve_sha(git_sha)
+    except _NotMeasured as exc:
+        _not_measured(f"record git_sha {git_sha!r} does not resolve (unknown sha): {exc}")
 
 
 def _resolve_sha(sha: str) -> str:
@@ -294,15 +345,24 @@ def _measure(args: ProfileArgs) -> _Measurement:
         cardinality, specs, axis = _from_shapes(args)
         fit = fit_precheck(fn, _shape_structs(specs, axis, cardinality), {})
         fit_line = _fit_line(fit)
-        _refuse_if_unfit(fit, fit_line, cardinality, args)
+        _refuse_if_unfit(fit, fit_line, cardinality)
         call_args: tuple = _zero_args(specs, axis, cardinality)
         kwargs: dict = {}
         make_args = lambda extent: _zero_args(specs, axis, extent)  # noqa: E731
+        at_extent = lambda extent: (_shape_structs(specs, axis, extent), {})  # noqa: E731
     else:
         call_args, kwargs, cardinality = _from_factory(args)
         fit = fit_precheck(fn, call_args, kwargs)
         fit_line = _fit_line(fit)
-        _refuse_if_unfit(fit, fit_line, cardinality, args)
+        _refuse_if_unfit(fit, fit_line, cardinality)
+        at_extent = lambda extent: _factory_at_extent(  # noqa: E731
+            call_args, kwargs, args.extent_axis or "", extent
+        )
+
+    target_fit: FitCheck | None = None
+    if args.target_extent is not None:
+        target_args, target_kwargs = at_extent(args.target_extent)
+        target_fit = fit_precheck(fn, target_args, target_kwargs)
 
     try:
         result = probe_unit(fn, call_args, kwargs, n_steady=args.n_steady, n_wall=args.n_wall)
@@ -329,7 +389,9 @@ def _measure(args: ProfileArgs) -> _Measurement:
         metrics["target_extent"] = float(args.target_extent)
     config = _config(args)
 
-    extrapolation_lines = _extrapolation_lines(args, cardinality, result, platform, metrics, config)
+    extrapolation_lines = _extrapolation_lines(
+        args, cardinality, result, platform, metrics, config, target_fit
+    )
 
     return _Measurement(
         fn=args.fn or "",
@@ -357,13 +419,38 @@ def _fit_line(fit: FitCheck) -> str:
     return f"fits: unknown ({fit.reason})"
 
 
-def _refuse_if_unfit(fit: FitCheck, fit_line: str, cardinality: int, args: ProfileArgs) -> None:
-    if fit.fits is False and args.target_extent is None:
+def _refuse_if_unfit(fit: FitCheck, fit_line: str, cardinality: int) -> None:
+    # --target-extent never rescues a unit that does not fit where it is measured.
+    if fit.fits is False:
         raise _NotMeasured(
-            f"the unit does not fit device memory at extent {cardinality} ({fit.reason}); "
-            "re-run at a smaller extent with --target-extent set to the production extent",
+            f"the unit does not fit device memory at measured extent {cardinality} "
+            f"({fit.reason}); --target-extent only extrapolates a unit that fits, so "
+            "re-run at a smaller extent and set --target-extent to the production extent",
             fit_line=fit_line,
         )
+
+
+def _factory_at_extent(
+    call_args: tuple, kwargs: dict, extent_axis: str, extent: int
+) -> tuple[tuple, dict]:
+    """The factory's inputs with the extent kwarg's leading axis replaced, as structs."""
+    import jax
+
+    leaf = kwargs[extent_axis]
+    shape = tuple(leaf.shape)
+    out = dict(kwargs)
+    out[extent_axis] = jax.ShapeDtypeStruct((extent, *shape[1:]), leaf.dtype)
+    return call_args, out
+
+
+def _target_fit_lines(target: int, target_fit: FitCheck | None) -> list[str]:
+    if target_fit is None:
+        return []
+    if target_fit.fits is True:
+        return [f"fits at target extent: yes at {target} ({target_fit.reason})"]
+    if target_fit.fits is False:
+        return [f"does not fit at target extent {target}: {target_fit.reason}"]
+    return [f"fits at target extent: unknown at {target} ({target_fit.reason})"]
 
 
 def _extrapolation_lines(
@@ -373,14 +460,22 @@ def _extrapolation_lines(
     platform: str,
     metrics: dict[str, float],
     config: dict[str, str],
+    target_fit: FitCheck | None,
 ) -> list[str]:
     target = args.target_extent
     if target is None:
         return []
+    fit_lines = _target_fit_lines(target, target_fit)
+    if target_fit is not None and target_fit.fits is False:
+        return [
+            *fit_lines,
+            f"wall estimate withheld: the unit does not fit at extent {target}",
+        ]
     if target <= cardinality:
         return [
+            *fit_lines,
             f"target extent {target} <= measured extent {cardinality}: "
-            "no extrapolation; wall is reported at the measured extent"
+            "no extrapolation; wall is reported at the measured extent",
         ]
     # The in-memory record is what the claim is checked against; it carries the same
     # metrics the verb writes, so the claim and the artifact cannot diverge.
@@ -396,12 +491,13 @@ def _extrapolation_lines(
     try:
         assert_claim_supported([record], ClaimClass.END_TO_END, target_n_atoms=target)
     except ClaimValidityError as exc:
-        return [f"wall estimate withheld: {exc}"]
+        return [*fit_lines, f"wall estimate withheld: {exc}"]
 
     ratio = target / cardinality
     per_unit = result.wall_seconds_per_unit * ratio
     lines = [
-        f"est. wall per unit s at extent {target} ({label}, linear x{ratio:.2f}): {per_unit:.6f}"
+        *fit_lines,
+        f"est. wall per unit s at extent {target} ({label}, linear x{ratio:.2f}): {per_unit:.6f}",
     ]
     if args.n_units is not None:
         lines.append(

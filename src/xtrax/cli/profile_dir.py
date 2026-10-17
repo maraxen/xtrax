@@ -16,9 +16,10 @@ Layers, first match wins, and the winning layer is reported:
 5. ``RunSpec.output_root`` when a run spec is given (source ``"run_spec"``).
 6. Off: no directory, print-only (source ``"off"``).
 
-An empty value or ``none`` at any layer disables output. A relative path is
-rejected, since the directory must not depend on the caller's cwd. No default
-directory is ever chosen here.
+An empty value or ``none`` at any layer disables output. An explicit argument
+may be relative: it resolves against the current directory. A relative path in
+``XTRAX_PROFILE_DIR`` or in any config file is rejected, since those must not
+depend on where the verb runs. No default directory is ever chosen here.
 """
 
 import os
@@ -55,7 +56,8 @@ def resolve_profile_dir(
 
     Args:
         explicit: Directory passed by the caller (for example ``--out``). ``None``
-            means not provided; an empty string or ``none`` disables output.
+            means not provided; an empty string or ``none`` disables output. A
+            relative path resolves against the current directory.
         run_spec: Optional object with an ``output_root`` attribute (a
             ``RunSpec``). Read only when no earlier layer decides.
         start: Directory to walk upward from when looking for ``pyproject.toml``.
@@ -67,14 +69,14 @@ def resolve_profile_dir(
         ``"pyproject"``, ``"user_config"``, ``"run_spec"``, ``"off"``.
 
     Raises:
-        ValueError: A configured value is relative, the environment value is
+        ValueError: A value from ``XTRAX_PROFILE_DIR`` or a config file is
             relative, or a TOML file on the walk is malformed. The message
             names the file or variable.
     """
     if explicit is not None:
         if isinstance(explicit, str) and explicit.strip().lower() in ("", "none"):
             return None, "arg"
-        return Path(explicit).expanduser(), "arg"
+        return Path(explicit).expanduser().resolve(), "arg"
 
     if ENV_VAR in os.environ:
         try:

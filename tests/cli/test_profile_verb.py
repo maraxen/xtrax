@@ -178,12 +178,103 @@ def test_fit_false_without_target_extent_exits_2(capsys, monkeypatch):
     assert "PASS" not in out
 
 
-def test_fit_false_with_target_extent_still_measures(capsys, monkeypatch, tmp_path):
+def test_fit_false_with_target_extent_still_exits_2(capsys, monkeypatch):
+    # The unit does not fit at the MEASURED extent, so --target-extent cannot rescue it.
     _small_device(monkeypatch)
     monkeypatch.setenv("XTRAX_GIT_SHA", CLEAN_SHA)
-    code, out, _ = _run(capsys, fn=VMAP, target_extent=128)
-    assert code == 0
+    code, out, err = _run(capsys, fn=VMAP, target_extent=128)
+    assert code == 2
     assert "fits: no" in out
+    assert "PASS" not in out
+    assert "does not fit device memory" in err
+
+
+def _fake_fit(limit_extent: int):
+    """Fit stand-in: a unit fits while its leading input extent is below ``limit_extent``."""
+    from xtrax.profiling.fit import FitCheck
+
+    def fake(fn, args, kwargs=None):
+        extent = int(args[0].shape[0])
+        fits = extent < limit_extent
+        return FitCheck(
+            fits=fits,
+            required_bytes=extent,
+            limit_bytes=limit_extent,
+            reason=f"fake: extent {extent}",
+        )
+
+    return fake
+
+
+def test_target_extent_that_does_not_fit_withholds_estimate(capsys, monkeypatch):
+    from xtrax.cli import profile_verb
+
+    monkeypatch.setenv("XTRAX_GIT_SHA", CLEAN_SHA)
+    monkeypatch.setattr(profile_verb, "fit_precheck", _fake_fit(limit_extent=256))
+    code, out, _ = _run(capsys, fn=VMAP, target_extent=256, n_units=10)
+    assert code == 0, "a target that does not fit must not change the verdict"
+    assert "does not fit at target extent" in out
+    assert "wall estimate withheld" in out
+    assert "est. wall per unit" not in out
+
+
+def test_target_extent_that_fits_prints_fit_row_and_estimate(capsys, monkeypatch):
+    from xtrax.cli import profile_verb
+
+    monkeypatch.setenv("XTRAX_GIT_SHA", CLEAN_SHA)
+    monkeypatch.setattr(profile_verb, "fit_precheck", _fake_fit(limit_extent=1024))
+    code, out, _ = _run(capsys, fn=VMAP, target_extent=256)
+    assert code == 0
+    assert "fits at target extent: yes" in out
+    assert "est. wall per unit" in out
+
+
+def test_target_extent_with_unknown_fit_says_so(capsys, monkeypatch):
+    from xtrax.cli import profile_verb
+    from xtrax.profiling.fit import FitCheck
+
+    monkeypatch.setenv("XTRAX_GIT_SHA", CLEAN_SHA)
+
+    def unknown(fn, args, kwargs=None):
+        if int(args[0].shape[0]) == 256:
+            return FitCheck(None, None, None, "fake: no limit")
+        return FitCheck(True, 1, 2, "fake: measured fits")
+
+    monkeypatch.setattr(profile_verb, "fit_precheck", unknown)
+    code, out, _ = _run(capsys, fn=VMAP, target_extent=256)
+    assert code == 0
+    assert "fits at target extent: unknown" in out
+
+
+# --- measure-path exceptions map to exit 2 (never exit 1) -------------------
+
+
+def test_probe_exception_maps_to_exit_2(capsys, monkeypatch):
+    from xtrax.cli import profile_verb
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(profile_verb, "probe_unit", boom)
+    code, out, err = _run(capsys, fn=VMAP)
+    assert code == 2
+    assert "could not measure" in out.lower()
+    assert "RuntimeError" in err and "probe exploded" in err
+
+
+def test_uncaught_runtime_error_in_zero_args_maps_to_exit_2(capsys, monkeypatch):
+    # The jnp.zeros allocation at a huge --shapes raises JaxRuntimeError; it must not
+    # escape as an uncaught exception (which the process reports as exit 1).
+    from xtrax.cli import profile_verb
+
+    def oom(specs, extent_axis, extent):
+        raise RuntimeError("RESOURCE_EXHAUSTED: out of memory")
+
+    monkeypatch.setattr(profile_verb, "_zero_args", oom)
+    code, out, err = _run(capsys, fn=VMAP)
+    assert code == 2
+    assert "could not measure" in out.lower()
+    assert "RESOURCE_EXHAUSTED" in err
 
 
 def test_fit_row_is_printed_when_it_fits(capsys, monkeypatch):
@@ -240,9 +331,13 @@ def test_target_not_above_measured_extent_is_not_extrapolated(capsys, monkeypatc
 # --- X9: --check ------------------------------------------------------------
 
 
-def _write_check_record(path, *, git_sha, exec_pe=0.01, n_compilations=0.0):
+def _write_check_record(path, *, git_sha, exec_pe=0.01, n_compilations=0.0, n_executions=None):
     from xtrax.profiling.emitters import emit_probe_record
 
+    # exec_per_element is n_executions / n_atoms by construction in run_profile, so
+    # the default keeps the record internally consistent (n_atoms is 64 here).
+    if n_executions is None:
+        n_executions = exec_pe * 64
     emit_probe_record(
         path=path,
         probe_id="xtrax-profile:test",
@@ -250,7 +345,7 @@ def _write_check_record(path, *, git_sha, exec_pe=0.01, n_compilations=0.0):
         n_atoms=64,
         platform="cpu",
         metrics={
-            "n_executions": 1.0,
+            "n_executions": n_executions,
             "n_compilations": n_compilations,
             "n_jit_traces": 1.0,
             "total_step_seconds": 0.001,
@@ -378,3 +473,121 @@ def test_sha_without_check_exits_2(capsys):
     code, _, err = _run(capsys, sha="HEAD")
     assert code == 2
     assert "--check" in err
+
+
+# --- --check hardening: consistency, sha freshness --------------------------
+
+
+def test_check_without_sha_cannot_pass(capsys, tmp_path):
+    record = _write_check_record(tmp_path / "r.json", git_sha="b" * 40)
+    code, out, err = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 2
+    assert "PASS" not in out
+    assert "pass --sha <rev> to check freshness" in err
+
+
+def test_check_without_sha_still_reports_a_flag_as_exit_1(capsys, tmp_path):
+    record = _write_check_record(tmp_path / "r.json", git_sha="b" * 40, n_compilations=2.0)
+    code, out, _ = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 1
+    assert "FLAGGED" in out
+
+
+def test_check_short_sha_equal_to_head_passes(capsys, tmp_path):
+    head = _git_head(tmp_path)
+    record = _write_check_record(tmp_path / "r.json", git_sha=head[:7])
+    code, out, _ = _run(
+        capsys, fn=None, shapes=None, extent_axis=None, check=str(record), sha="HEAD"
+    )
+    assert code == 0
+    assert "PASS" in out
+
+
+def test_check_short_sha_of_another_commit_is_stale(capsys, tmp_path):
+    import subprocess
+
+    head = _git_head(tmp_path)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "second",
+        ],
+        check=True,
+    )
+    record = _write_check_record(tmp_path / "r.json", git_sha=head[:7])
+    code, out, _ = _run(
+        capsys, fn=None, shapes=None, extent_axis=None, check=str(record), sha="HEAD"
+    )
+    assert code == 1
+    assert "STALE" in out
+
+
+def test_check_unresolvable_short_sha_exits_2_not_stale(capsys, tmp_path):
+    _git_head(tmp_path)
+    record = _write_check_record(tmp_path / "r.json", git_sha="fffffff")
+    code, out, err = _run(
+        capsys, fn=None, shapes=None, extent_axis=None, check=str(record), sha="HEAD"
+    )
+    assert code == 2
+    assert "unknown sha" in err
+    assert "STALE" not in out
+
+
+def test_check_zero_executions_exits_2(capsys, tmp_path):
+    record = _write_check_record(
+        tmp_path / "r.json", git_sha="b" * 40, exec_pe=0.0, n_executions=0.0
+    )
+    code, out, err = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 2
+    assert "zero executions" in err
+    assert "PASS" not in out
+
+
+def test_check_missing_n_executions_exits_2(capsys, tmp_path):
+    import json
+
+    record = _write_check_record(tmp_path / "r.json", git_sha="b" * 40)
+    data = json.loads(record.read_text())
+    del data["metrics"]["n_executions"]
+    record.write_text(json.dumps(data))
+    code, _, err = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 2
+    assert "n_executions" in err
+
+
+def test_check_inconsistent_exec_per_element_exits_2(capsys, tmp_path):
+    # 193 executions over 64 elements is about 3.0 per element, not 0.01.
+    record = _write_check_record(
+        tmp_path / "r.json", git_sha="b" * 40, exec_pe=0.01, n_executions=193.0
+    )
+    code, out, err = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 2
+    assert "inconsistent" in err
+    assert "PASS" not in out
+
+
+def test_check_negative_n_compilations_exits_2(capsys, tmp_path):
+    record = _write_check_record(tmp_path / "r.json", git_sha="b" * 40, n_compilations=-1.0)
+    code, out, err = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 2
+    assert "n_compilations" in err
+    assert "PASS" not in out
+
+
+def test_check_negative_exec_per_element_exits_2(capsys, tmp_path):
+    record = _write_check_record(
+        tmp_path / "r.json", git_sha="b" * 40, exec_pe=-0.5, n_executions=-32.0
+    )
+    code, _, err = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
+    assert code == 2
+    assert "negative" in err
