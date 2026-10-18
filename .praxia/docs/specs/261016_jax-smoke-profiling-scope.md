@@ -321,7 +321,23 @@ Rough total: ≈3 d jaxlint rules, 5–6 d xtrax verb, 4–5 d bathos gate, 2–
 - **`.fastembed_cache`** is to be gitignored and excised from the jaxlint history rebuild
   (C0). A subagent is triaging the 20 unpushed commits.
 
+## Decisions (user, 2026-10-17)
+
+- **Cutoff:** a config value with no default, `.bth.toml [gate] requires_enforce_after`.
+  Until it is set the gate only warns. The outermost `[gate]` within the git root wins.
+- **Enforced stages:** an unmet requirement blocks at validation, production **and
+  ablation** (bathos's confirmatory class). A sidecar with no stage counts as exploration
+  and warns.
+- **No discoverable sidecar:** `bth submit` scans every `.py` token and accepts
+  `--sidecar PATH`. Under active enforcement, a submit with no sidecar found blocks.
+- **Paths:** `[requires] artifact` and `[budget] probe_record` resolve relative to the
+  project root and must stay inside it. Records go under `outputs/profiling/`.
+- **P1:** built after B2, on the same `bth preflight` code path.
+- **jaxlint version:** `pyproject.toml` is canonical; the manifest and bundle match it, and a
+  test pins this (C1).
+- **JL020:** `host-loop-jnp-ops` stays off by default.
+
 ## Open questions for the user
 
-- jaxlint: which of the 20 unpushed commits and uncommitted sensor/skill edits to keep;
-  pending the triage report.
+None. C0 is resolved: jaxlint `main` (4e40167) carries no `.fastembed_cache` blob, and the
+directory is gitignored.
