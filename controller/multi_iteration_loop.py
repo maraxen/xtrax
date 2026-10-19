@@ -71,6 +71,10 @@ two *distinct* mechanisms, not one:
    whose bathos run failed (`CandidateRunFailedError`, see "Failed candidates" below).
    `termination_reason="consecutive_failures"`. Returned, not raised, so the failed records are
    available to the caller; `loop_run.py` maps it to a `partial_failure` campaign conclusion.
+4. **All candidates failed** (#5683): `max_candidates` ran out with no candidate completing its
+   pass and fewer than `max_consecutive_failures` failures in a row, so the normal-completion
+   stopping condition was reached by failures alone.
+   `termination_reason="all_candidates_failed"`. `loop_run.py` maps it to `partial_failure` too.
 
 ## Diversity-quota Leap-Path response: what "wiring the response" concretely means, and why
 
@@ -223,7 +227,9 @@ from xtrax.loop.structure_tripwire import assert_structure_tripwire
 
 _logger = logging.getLogger(__name__)
 
-TerminationReason = Literal["normal_completion", "budget_exhausted", "consecutive_failures"]
+TerminationReason = Literal[
+    "normal_completion", "budget_exhausted", "consecutive_failures", "all_candidates_failed"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -592,6 +598,7 @@ def run_multi_iteration_loop(
                             derived_from=resolve_derived_from(parentage),
                             handoff_sha=exc.handoff_sha,
                             wall_seconds=perf_counter() - pass_started,
+                            exit_code=exc.exit_code,
                         )
                     except Exception:  # noqa: BLE001 -- contained: a failed record never aborts the run
                         _logger.warning(
@@ -621,6 +628,12 @@ def run_multi_iteration_loop(
                     leap_path_events.append(event)
                     on_leap_path_required(event)
             previous_source = candidate_source
+        else:
+            # The candidate budget ran out without any completed pass, and without reaching the
+            # consecutive-failure halt (e.g. max_candidates < max_consecutive_failures). This is
+            # a failed campaign, not a successful one with nothing in it (#5683).
+            if not iterations and failed_candidates:
+                termination_reason = "all_candidates_failed"
     finally:
         try:
             watchdog_handle.stop()

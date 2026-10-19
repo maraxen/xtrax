@@ -457,8 +457,16 @@ def _emit_candidate_pass_probe_record(
     accepted: bool,
     held: bool,
     hard_blocked: bool,
+    run_failed: bool,
+    exit_code: int,
 ) -> Path:
     """Emit a Stage-0 provenance ProbeRecord for one candidate pass (Phase C).
+
+    Every record carries `run_failed` and `exit_code` in its config (#5683): completed passes
+    record `run_failed="false"` with the bathos run's exit code (0), and a candidate whose run
+    failed records `run_failed="true"` with its non-zero exit code. A failed record is therefore
+    distinguishable from a completed rejection, which has the same accepted/held/hard_blocked
+    values.
 
     Opt-in via ``probe_record_dir``; the only bathos-adjacent site allowed to
     attach probe records to campaign context (scope doc D7). Written once ALL
@@ -494,6 +502,8 @@ def _emit_candidate_pass_probe_record(
             "accepted": str(accepted).lower(),
             "held": str(held).lower(),
             "hard_blocked": str(hard_blocked).lower(),
+            "run_failed": str(run_failed).lower(),
+            "exit_code": str(exit_code),
             "source": "controller.run_one_candidate_pass",
             "axis_note": ("provenance artifact; n_atoms placeholder by contract"),
         },
@@ -508,6 +518,7 @@ def record_failed_candidate_pass(
     derived_from: str,
     handoff_sha: str,
     wall_seconds: float,
+    exit_code: int,
 ) -> Path:
     """Write the rejected ProbeRecord for a candidate whose bathos run failed (#5683).
 
@@ -515,7 +526,9 @@ def record_failed_candidate_pass(
     failed run halts at step 2.3 before that point, so the loop writes this record itself. It is
     the same provenance artifact a rejected pass gets (`accepted=false`); no gate ran, so
     `held` and `hard_blocked` are recorded as false. Unlike the pass-level emission, this does
-    NOT contain its own failures: the caller decides how to report one.
+    NOT contain its own failures: the caller decides how to report one. The record's config
+    carries `run_failed="true"` and the bathos `exit_code` (see
+    `_emit_candidate_pass_probe_record`).
     """
     probe_record_dir.mkdir(parents=True, exist_ok=True)
     return _emit_candidate_pass_probe_record(
@@ -527,6 +540,8 @@ def record_failed_candidate_pass(
         accepted=False,
         held=False,
         hard_blocked=False,
+        run_failed=True,
+        exit_code=exit_code,
     )
 
 
@@ -1190,6 +1205,8 @@ def run_one_candidate_pass(
                 accepted=accepted,
                 held=held,
                 hard_blocked=(stats_decision.hard_blocked or seed_decision.hard_blocked),
+                run_failed=False,
+                exit_code=run_result.exit_code,
             )
         except Exception as exc:  # noqa: BLE001 -- contained by design; see comment above
             print(

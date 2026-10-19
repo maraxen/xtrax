@@ -1730,7 +1730,9 @@ class TestFailedCandidateRunsHalt:
         conclude_calls = transport.calls_for("campaign_conclude")
         assert len(conclude_calls) == 1
         assert conclude_calls[0]["outcome_label"] == "partial_failure"
-        assert "2 failed candidate run(s)" in conclude_calls[0]["conclusion"]
+        assert (
+            "halted after 2 consecutive failed candidate run(s)" in conclude_calls[0]["conclusion"]
+        )
         assert [event.kind for event in received] == ["campaign_created", "campaign_concluded"]
         assert received[1].outcome_label == "partial_failure"
         assert starter.handles[0].stop_calls == 1
@@ -1756,3 +1758,48 @@ class TestFailedCandidateRunsHalt:
         conclude_calls = transport.calls_for("campaign_conclude")
         assert len(conclude_calls) == 1
         assert conclude_calls[0]["outcome_label"] == "aborted"
+
+
+class TestFailedRunConclusionText:
+    def test_all_candidates_failed_concludes_partial_failure_not_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _every_run_fails(monkeypatch)
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        received: list[LoopEvent] = []
+
+        result = run_campaign_loop(
+            **_base_kwargs(dispatch_backend, transport),
+            max_candidates=2,
+            max_consecutive_failures=5,
+            start_watchdog_fn=_FakeWatchdogStarter(),
+            on_loop_event=received.append,
+        )
+
+        assert result.loop_result.termination_reason == "all_candidates_failed"
+        assert result.loop_result.iterations == ()
+        assert result.conclusion.outcome_label == "partial_failure"
+        conclude = transport.calls_for("campaign_conclude")
+        assert len(conclude) == 1
+        assert conclude[0]["outcome_label"] == "partial_failure"
+        assert "all 2 candidate run(s) failed, none completed" in conclude[0]["conclusion"]
+        assert received[1].outcome_label == "partial_failure"
+
+    def test_consecutive_halt_text_reports_threshold_and_totals(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _every_run_fails(monkeypatch)
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+
+        run_campaign_loop(
+            **_base_kwargs(dispatch_backend, transport),
+            max_candidates=5,
+            max_consecutive_failures=2,
+            start_watchdog_fn=_FakeWatchdogStarter(),
+        )
+
+        text = transport.calls_for("campaign_conclude")[0]["conclusion"]
+        assert "halted after 2 consecutive failed candidate run(s)" in text
+        assert "(2 failed total, 0 completed" in text

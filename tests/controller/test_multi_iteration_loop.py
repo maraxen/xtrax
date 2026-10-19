@@ -910,10 +910,12 @@ class TestFailedCandidateIsCaughtPerCandidate:
 
         records = sorted(probe_dir.glob("pass_*.json"))
         assert len(records) == 2, "one rejected record for the failed run, one for the pass"
-        verdicts = [
-            json.loads(p.read_text(encoding="utf-8"))["config"]["accepted"] for p in records
+        configs = [json.loads(p.read_text(encoding="utf-8"))["config"] for p in records]
+        # Every record now says whether its bathos run failed, and with what exit code (#5683).
+        assert sorted((c["run_failed"], c["accepted"], c["exit_code"]) for c in configs) == [
+            ("false", "true", "0"),
+            ("true", "false", "1"),
         ]
-        assert sorted(verdicts) == ["false", "true"]
 
     def test_consecutive_failures_halt_with_their_own_termination_reason(
         self,
@@ -1021,3 +1023,104 @@ class TestFailedCandidateIsCaughtPerCandidate:
         assert dispatch_backend.call_count == 2, "the loop does not continue past a real error"
         assert starter.handles[0].stop_calls == 1
         assert _reset_spy == [], "only a caught run failure resets the worktree"
+
+
+# ---------------------------------------------------------------------------
+# 10. Best-so-far advances and the termination edge cases (#5683 review follow-up).
+#     `advance_best_so_far` is the step-2.7 accept-branch ref advance; spying on it proves a
+#     failed iteration never advances the ref. `reset_worktree_to_best_so_far` is the reject-path
+#     reset. Both are recorded into one ordered event list so ordering is asserted, not inferred.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _event_log(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    events: list[str] = []
+
+    def _advance(repo: Any, ref_name: str, new_sha: str, expected_old_sha: Any) -> None:
+        events.append("advance")
+
+    def _reset(repo: Any, ref_name: str) -> str:
+        events.append("reset")
+        return "best-sha"
+
+    monkeypatch.setattr(main_loop_module, "advance_best_so_far", _advance)
+    monkeypatch.setattr(main_loop_module, "reset_worktree_to_best_so_far", _reset)
+    return events
+
+
+class TestBestSoFarIsNeverAdvancedByAFailedCandidate:
+    def test_failed_iteration_produces_no_advance_and_later_accept_advances_once(
+        self,
+        tmp_path: Path,
+        _run_failure_plan: dict[str, Any],
+        _event_log: list[str],
+    ) -> None:
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        # candidate 1 accepts, candidate 2 fails, candidate 3 accepts.
+        _run_failure_plan["fail"] = [False, True, False]
+
+        result = run_multi_iteration_loop(
+            **_base_kwargs(dispatch_backend),
+            max_candidates=3,
+            watchdog_criteria=_CRITERIA,
+            start_watchdog_fn=_FakeWatchdogStarter(),
+        )
+
+        assert result.accepted_count == 2
+        assert _event_log == ["advance", "reset", "advance"], (
+            "the failed candidate must produce a reset and no advance; only accepted "
+            "candidates advance the best-so-far ref"
+        )
+
+    def test_first_candidate_fails_with_no_best_so_far_ref_and_loop_continues(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _run_failure_plan: dict[str, Any],
+        _event_log: list[str],
+    ) -> None:
+        # Fresh campaign: no best-so-far ref exists anywhere.
+        monkeypatch.setattr(main_loop_module, "read_best_so_far", lambda repo, ref: None)
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        _run_failure_plan["fail"] = [True, False, False]
+
+        result = run_multi_iteration_loop(
+            **_base_kwargs(dispatch_backend),
+            max_candidates=3,
+            watchdog_criteria=_CRITERIA,
+            start_watchdog_fn=_FakeWatchdogStarter(),
+            bootstrap_commit_sha="bootstrap-sha",
+        )
+
+        assert result.termination_reason == "normal_completion"
+        assert [f.iteration for f in result.failed_candidates] == [1]
+        assert len(result.iterations) == 2
+        # Nothing to reset to on the first failure (no ref, no best_fitness), so no reset; the
+        # two later accepts advance from the bootstrap parent.
+        assert _event_log == ["advance", "advance"]
+
+
+class TestCandidateBudgetRunsOutBeforeConsecutiveHalt:
+    def test_all_candidates_failed_when_max_candidates_is_below_the_consecutive_threshold(
+        self,
+        tmp_path: Path,
+        _run_failure_plan: dict[str, Any],
+        _reset_spy: list[str],
+    ) -> None:
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        _run_failure_plan["fail"] = [True, True]
+        starter = _FakeWatchdogStarter()
+
+        result = run_multi_iteration_loop(
+            **_base_kwargs(dispatch_backend),
+            max_candidates=2,
+            max_consecutive_failures=5,
+            watchdog_criteria=_CRITERIA,
+            start_watchdog_fn=starter,
+        )
+
+        assert result.termination_reason == "all_candidates_failed"
+        assert result.iterations == ()
+        assert len(result.failed_candidates) == 2
+        assert starter.handles[0].stop_calls == 1
