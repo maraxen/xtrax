@@ -805,3 +805,219 @@ class TestHigherIsBetterSuppression:
         assert calls[1]["higher_is_better"] is _HIGHER_IS_BETTER
         assert calls[2]["best_fitness"] is not None
         assert calls[2]["higher_is_better"] is _HIGHER_IS_BETTER
+
+
+# ---------------------------------------------------------------------------
+# 9. A failed candidate run is a caught per-candidate failure (#5683), not a campaign abort.
+#    Failure injection wraps main_loop's real record_candidate_run: the real bathos run still
+#    happens (ok envelope), and the per-call plan flips selected runs to exit_code=1 / success=False
+#    exactly as `TestRunFailureHaltsBeforeScoring`-style tests in test_main_loop.py do.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _run_failure_plan(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Per-call run plan: plan["fail"][i] True -> the i-th bathos run (0-based) exits 1.
+
+    Calls beyond the list succeed. plan["calls"] counts every bathos run attempted.
+    """
+    import controller.main_loop as ml
+
+    plan: dict[str, Any] = {"fail": [], "calls": 0}
+    real_record_run = ml.record_candidate_run
+
+    def _planned_run(*args: Any, **kwargs: Any) -> Any:
+        index = plan["calls"]
+        plan["calls"] += 1
+        res = real_record_run(*args, **kwargs)
+        if index < len(plan["fail"]) and plan["fail"][index]:
+            return type(res)(
+                script_path=res.script_path, exit_code=1, success=False, run_id=res.run_id
+            )
+        return res
+
+    monkeypatch.setattr(ml, "record_candidate_run", _planned_run)
+    return plan
+
+
+@pytest.fixture
+def _reset_spy(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Records every reject-path worktree reset (ref names), overriding the autouse no-op stub."""
+    resets: list[str] = []
+    monkeypatch.setattr(
+        main_loop_module,
+        "reset_worktree_to_best_so_far",
+        lambda repo, ref_name: resets.append(ref_name) or "best-sha",
+    )
+    return resets
+
+
+class TestFailedCandidateIsCaughtPerCandidate:
+    def test_failed_candidate_is_skipped_recorded_and_next_candidate_runs(
+        self,
+        tmp_path: Path,
+        _run_failure_plan: dict[str, Any],
+        _reset_spy: list[str],
+    ) -> None:
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        _run_failure_plan["fail"] = [False, True, False, False]
+
+        result = run_multi_iteration_loop(
+            **_base_kwargs(dispatch_backend),
+            max_candidates=4,
+            watchdog_criteria=_CRITERIA,
+            start_watchdog_fn=_FakeWatchdogStarter(),
+        )
+
+        assert result.termination_reason == "normal_completion"
+        assert dispatch_backend.call_count == 4, "the candidate after the failure must run"
+        assert len(result.iterations) == 3, "a failed candidate is not a completed iteration"
+        assert result.accepted_count == 3
+
+        assert len(result.failed_candidates) == 1
+        failed = result.failed_candidates[0]
+        assert failed.iteration == 2
+        assert failed.handoff_path.name == "candidate_1.py"
+        assert failed.exit_code == 1
+        assert "exit_code=1" in failed.reason
+
+        # Never scored (#4584): the score_fn counter only advances on the three real passes, so
+        # the surviving candidates carry fitness 1.0, 2.0, 3.0 -- not 1.0, 2.0, 3.0 with a
+        # phantom scored failure in between.
+        assert [r.fitness_dict["metric_a"] for r in result.iterations] == [1.0, 2.0, 3.0]
+        # Worktree reset to best-so-far exactly once, via the reject-path helper.
+        assert _reset_spy == ["refs/xtrax/best-so-far"]
+
+    def test_failed_candidate_emits_rejected_probe_record(
+        self,
+        tmp_path: Path,
+        _run_failure_plan: dict[str, Any],
+        _reset_spy: list[str],
+    ) -> None:
+        import json
+
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        _run_failure_plan["fail"] = [True, False]
+        probe_dir = tmp_path / "probe_records"
+
+        run_multi_iteration_loop(
+            **_base_kwargs(dispatch_backend),
+            max_candidates=2,
+            watchdog_criteria=_CRITERIA,
+            start_watchdog_fn=_FakeWatchdogStarter(),
+            probe_record_dir=probe_dir,
+        )
+
+        records = sorted(probe_dir.glob("pass_*.json"))
+        assert len(records) == 2, "one rejected record for the failed run, one for the pass"
+        verdicts = [
+            json.loads(p.read_text(encoding="utf-8"))["config"]["accepted"] for p in records
+        ]
+        assert sorted(verdicts) == ["false", "true"]
+
+    def test_consecutive_failures_halt_with_their_own_termination_reason(
+        self,
+        tmp_path: Path,
+        _run_failure_plan: dict[str, Any],
+        _reset_spy: list[str],
+    ) -> None:
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        _run_failure_plan["fail"] = [True, True, True, True, True]
+        starter = _FakeWatchdogStarter()
+
+        result = run_multi_iteration_loop(
+            **_base_kwargs(dispatch_backend),
+            max_candidates=5,
+            max_consecutive_failures=3,
+            watchdog_criteria=_CRITERIA,
+            start_watchdog_fn=starter,
+        )
+
+        assert result.termination_reason == "consecutive_failures"
+        assert dispatch_backend.call_count == 3, "halts after the Nth consecutive failure"
+        assert len(result.iterations) == 0
+        assert [f.iteration for f in result.failed_candidates] == [1, 2, 3]
+        assert len(_reset_spy) == 3, "worktree reset to best-so-far after every failure"
+        assert starter.handles[0].stop_calls == 1
+
+    def test_success_between_failures_resets_the_consecutive_counter(
+        self,
+        tmp_path: Path,
+        _run_failure_plan: dict[str, Any],
+        _reset_spy: list[str],
+    ) -> None:
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        # Two failures, a success (resets the counter), then two more failures: never 3 in a row.
+        _run_failure_plan["fail"] = [True, True, False, True, True, False]
+
+        result = run_multi_iteration_loop(
+            **_base_kwargs(dispatch_backend),
+            max_candidates=6,
+            max_consecutive_failures=3,
+            watchdog_criteria=_CRITERIA,
+            start_watchdog_fn=_FakeWatchdogStarter(),
+        )
+
+        assert result.termination_reason == "normal_completion"
+        assert dispatch_backend.call_count == 6
+        assert len(result.failed_candidates) == 4
+        assert len(result.iterations) == 2
+
+    def test_confirmation_mode_halts_on_the_first_failure_as_before(
+        self,
+        tmp_path: Path,
+        _run_failure_plan: dict[str, Any],
+        _reset_spy: list[str],
+    ) -> None:
+        from controller.evaluate_adapter import RawArtifactsUnavailableError
+
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        _run_failure_plan["fail"] = [True]
+        starter = _FakeWatchdogStarter()
+        kwargs = _base_kwargs(dispatch_backend)
+        kwargs["campaign_mode"] = "confirmation"
+
+        with pytest.raises(RawArtifactsUnavailableError, match="exit_code=1"):
+            run_multi_iteration_loop(
+                **kwargs,
+                max_candidates=3,
+                watchdog_criteria=_CRITERIA,
+                start_watchdog_fn=starter,
+            )
+
+        assert dispatch_backend.call_count == 1
+        assert starter.handles[0].stop_calls == 1
+
+    def test_non_run_exception_still_propagates_unmodified(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _run_failure_plan: dict[str, Any],
+        _reset_spy: list[str],
+    ) -> None:
+        import controller.main_loop as ml
+
+        real_record_run = ml.record_candidate_run
+
+        def _exploding_run(*args: Any, **kwargs: Any) -> Any:
+            if _run_failure_plan["calls"] == 1:
+                _run_failure_plan["calls"] += 1
+                msg = "bathos MCP transport exploded"
+                raise RuntimeError(msg)
+            return real_record_run(*args, **kwargs)
+
+        monkeypatch.setattr(ml, "record_candidate_run", _exploding_run)
+        dispatch_backend = _SequentialDispatchBackend(tmp_path, _DIVERSE_SOURCES)
+        starter = _FakeWatchdogStarter()
+
+        with pytest.raises(RuntimeError, match="transport exploded"):
+            run_multi_iteration_loop(
+                **_base_kwargs(dispatch_backend),
+                max_candidates=3,
+                watchdog_criteria=_CRITERIA,
+                start_watchdog_fn=starter,
+            )
+
+        assert dispatch_backend.call_count == 2, "the loop does not continue past a real error"
+        assert starter.handles[0].stop_calls == 1
+        assert _reset_spy == [], "only a caught run failure resets the worktree"

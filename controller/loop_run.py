@@ -150,7 +150,8 @@ three types originate anywhere in the call chain `run_campaign_loop` -> `run_mul
   `BathosTokenMissingError`, `StatsBatteryGateInputError`, `SeedGateInputError`,
   `DiversityQuotaInputError`, `CandidateStaticGateError`, and -- #4584 -- the evaluate
   adapter's `RawArtifactsUnavailableError`, raised when a candidate's bathos run did not
-  succeed), none of which is a `ValueError`/
+  succeed; since #5683 `run_multi_iteration_loop` catches a failed candidate run itself, so this
+  class only reaches here from scoring), none of which is a `ValueError`/
   `TimeoutError`/`CandidateHandoffFailure` subclass (all grepped and confirmed direct
   `Exception` subclasses) -- so `CandidateStaticGateError` falls to the same **uncaught
   exception** / `outcome_label="aborted"` bucket as the others in this list, with zero special-
@@ -168,6 +169,16 @@ that specific `ValueError` propagates before any campaign exists, not through th
 uncaught branch at all. The same is true of a `CampaignNotApprovedError` (or either subclass) from
 the campaign-approval gate ([GW-03], see its own addendum above) -- it, too, fires before
 `campaign_create`, so it never reaches the categorized-vs-uncaught branch either.
+
+**Failed candidate runs (#5683).** A candidate whose bathos run exits non-zero is not a campaign
+failure of its own: `run_multi_iteration_loop` skips it and continues, and only halts after
+`max_consecutive_failures` (default 3) such candidates in a row. That halt is returned, not
+raised, as `termination_reason="consecutive_failures"`, and this module concludes it with
+`outcome_label="partial_failure"` (the same bucket as the dispatch-contract failures above) and a
+conclusion text naming the failed-candidate count. Its normal return path, which previously always
+concluded `"success"`, now concludes `"success"` only for `normal_completion` and
+`budget_exhausted`. In `confirmation` mode the first failed run still re-raises
+`RawArtifactsUnavailableError`, so it stays an uncaught exception concluded as `"aborted"`.
 
 **Why this is NOT literal automatic retry-and-continue.** The AC's own phrase "error/retry policy"
 could mean "catch a per-candidate failure, retry that one candidate, and keep going" -- but that
@@ -458,6 +469,8 @@ def run_campaign_loop(
     candidate_target_path: Path | None = None,
     allow_fresh_start_despite_existing_lineage: bool = False,
     bootstrap_commit_sha: str | None = None,
+    max_consecutive_failures: int = 3,
+    probe_record_dir: Path | None = None,
     completeness_fn: Callable[..., None] = assert_evaluator_completeness,
     completeness_evaluator: Callable[..., dict[str, float]] = score_raw_artifacts,
     invariant_manifest: InvariantManifest,
@@ -560,6 +573,11 @@ def run_campaign_loop(
             fresh campaign's first accepted candidate (`read_best_so_far` returns `None`);
             callers needing the two inner values to diverge must call `run_one_candidate_pass`
             directly. See `run_multi_iteration_loop`'s own docstring for the full rationale.
+        max_consecutive_failures: forwarded to `run_multi_iteration_loop` (default 3, #5683): the
+            number of failed candidate runs in a row that halts the campaign as
+            `partial_failure`. Ignored in `confirmation` mode.
+        probe_record_dir: forwarded to `run_multi_iteration_loop` unchanged (opt-in ProbeRecord
+            directory, including rejected records for failed candidates).
         completeness_fn: injection seam -- the evaluator-completeness gate (#3076, T2-08, AC-11)
             invoked after frozen_context re-lock and strictly before `campaign_create`. Defaults
             to `assert_evaluator_completeness`. Called as
@@ -692,6 +710,8 @@ def run_campaign_loop(
             callable_name=callable_name,
             concrete_inputs=concrete_inputs,
             bootstrap_commit_sha=bootstrap_commit_sha,
+            max_consecutive_failures=max_consecutive_failures,
+            probe_record_dir=probe_record_dir,
         )
     except _CAUGHT_PER_CANDIDATE_FAILURE_TYPES as exc:
         _conclude_best_effort(
@@ -714,21 +734,34 @@ def run_campaign_loop(
         )
         raise
 
-    conclusion = campaign_adapter.campaign_conclude(
-        campaign_id,
-        "success",
-        conclusion=(
-            f"completed {len(loop_result.iterations)} candidate(s) "
+    if loop_result.termination_reason == "consecutive_failures":
+        # #5683: halted by N consecutive failed candidate runs -- a caught, categorized failure.
+        outcome_label = "partial_failure"
+        summary = (
+            f"halted after {len(loop_result.failed_candidates)} failed candidate run(s) "
+            f"({max_consecutive_failures} consecutive), {len(loop_result.iterations)} completed "
             f"({loop_result.accepted_count} accepted, {loop_result.held_count} held), "
             f"termination_reason={loop_result.termination_reason}"
-        ),
+        )
+    else:
+        outcome_label = "success"
+        summary = (
+            f"completed {len(loop_result.iterations)} candidate(s) "
+            f"({loop_result.accepted_count} accepted, {loop_result.held_count} held), "
+            f"{len(loop_result.failed_candidates)} skipped as failed, "
+            f"termination_reason={loop_result.termination_reason}"
+        )
+    conclusion = campaign_adapter.campaign_conclude(
+        campaign_id,
+        outcome_label,
+        conclusion=summary,
     )
     on_loop_event(
         LoopEvent(
             task_id=resolved_task_id,
             kind="campaign_concluded",
             campaign_id=campaign_id,
-            outcome_label="success",
+            outcome_label=outcome_label,
         )
     )
     return CampaignLoopResult(

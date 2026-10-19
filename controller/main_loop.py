@@ -102,7 +102,9 @@ the pieces it sequences: `dispatch_backend.dispatch_candidate()` (`CandidateHand
 `record_candidate_run`/`resolve_derived_from` (`MultiParentLineageUnsupportedError`), or
 `campaign_adapter.run` via `record_candidate_run` (`BathosMcpToolError`, `BathosMcpTransportError`,
 `BathosTokenMissingError`), or the pre-scoring success check on the run it returns
-(`RawArtifactsUnavailableError`, #4584). Every one of these propagates to the caller unmodified.
+(`CandidateRunFailedError`, a `RawArtifactsUnavailableError`, #4584). Every one of these
+propagates to the caller unmodified, except that one: `run_multi_iteration_loop` catches it and
+treats the candidate as a rejected per-candidate failure (#5683) -- this function still raises it.
 AC-8c (LC-11) owns error/retry policy and the "conclude
 fires on every code path" guarantee; this module's job is to prove the happy-path sequence is
 wired correctly end-to-end, not to also own what happens when a step fails.
@@ -131,7 +133,7 @@ from controller.bathos_library_wrappers import (
 from controller.dispatch import CandidateHandoff, DispatchBackend
 from controller.evaluate_adapter import (
     BathosFrozenContext,
-    RawArtifactsUnavailableError,
+    CandidateRunFailedError,
     score_raw_artifacts,
 )
 from controller.lineage_interim import (
@@ -499,6 +501,52 @@ def _emit_candidate_pass_probe_record(
     return path
 
 
+def record_failed_candidate_pass(
+    *,
+    probe_record_dir: Path,
+    campaign_id: str,
+    derived_from: str,
+    handoff_sha: str,
+    wall_seconds: float,
+) -> Path:
+    """Write the rejected ProbeRecord for a candidate whose bathos run failed (#5683).
+
+    `run_one_candidate_pass` writes its probe record only once every gate has resolved, and a
+    failed run halts at step 2.3 before that point, so the loop writes this record itself. It is
+    the same provenance artifact a rejected pass gets (`accepted=false`); no gate ran, so
+    `held` and `hard_blocked` are recorded as false. Unlike the pass-level emission, this does
+    NOT contain its own failures: the caller decides how to report one.
+    """
+    probe_record_dir.mkdir(parents=True, exist_ok=True)
+    return _emit_candidate_pass_probe_record(
+        out_dir=probe_record_dir,
+        campaign_id=campaign_id,
+        derived_from=derived_from,
+        handoff_sha=handoff_sha,
+        wall_seconds=wall_seconds,
+        accepted=False,
+        held=False,
+        hard_blocked=False,
+    )
+
+
+def reset_after_failed_candidate(
+    repo: Path,
+    ratchet_ref_name: str,
+    *,
+    best_fitness: Mapping[str, float] | None,
+) -> None:
+    """Return the worktree to best-so-far after a candidate's bathos run failed (#5683).
+
+    Mirrors the reject branch of `run_one_candidate_pass`'s step 2.7 (same condition, same
+    helper), so a failed candidate leaves the worktree exactly where a rejected one would. When no
+    best-so-far ref exists and no `best_fitness` has been set, there is nothing to reset to, and
+    nothing is done -- the same case the reject branch leaves alone.
+    """
+    if best_fitness is not None or read_best_so_far(repo, ratchet_ref_name) is not None:
+        reset_worktree_to_best_so_far(repo, ratchet_ref_name)
+
+
 def run_one_candidate_pass(
     dispatch_backend: DispatchBackend,
     campaign_adapter: BathosCampaignAdapter,
@@ -784,9 +832,10 @@ def run_one_candidate_pass(
             parent run ID -- raised before any bathos call.
         BathosMcpToolError: `campaign_adapter.run` itself failed: bathos-side validation
             (`ok: False`), or an envelope claiming failure with exit_code 0 (contract drift).
-        RawArtifactsUnavailableError: the bathos run did not succeed (#4584) -- raised right
-            after the run, before sidecar-drift handling, scoring or any lineage step, so a
-            failed run is never scored and never advances the best-so-far ref.
+        CandidateRunFailedError (a RawArtifactsUnavailableError): the bathos run did not
+            succeed (#4584) -- raised right after the run, before sidecar-drift handling,
+            scoring or any lineage step, so a failed run is never scored and never advances the
+            best-so-far ref. `run_multi_iteration_loop` catches this one (#5683).
         BathosMcpTransportError: the MCP round-trip to bathos failed.
         BathosTokenMissingError: no local bathos MCP write-token is available.
         ClosureHashMismatchError, ProtectedPathMutatedError, UnlistedReadError: closure-lock
@@ -877,7 +926,12 @@ def run_one_candidate_pass(
             " -- refusing to score raw artifacts that may be partial or absent, or to let"
             " them advance the best-so-far lineage"
         )
-        raise RawArtifactsUnavailableError(msg)
+        raise CandidateRunFailedError(
+            msg,
+            handoff_path=handoff.path,
+            handoff_sha=handoff.content_sha256,
+            exit_code=run_result.exit_code,
+        )
 
     # 2.4. Sidecar-drift check (GW-01, AC-18) -- MUST fire BEFORE any best-so-far commit
     # lands, to prevent a drift-tainted candidate from becoming the new best-so-far. Skip
@@ -1169,5 +1223,7 @@ __all__ = [
     "OneCandidatePassResult",
     "PriorBestSoFarLineageConflictError",
     "compute_candidate_tree_sha",
+    "record_failed_candidate_pass",
+    "reset_after_failed_candidate",
     "run_one_candidate_pass",
 ]

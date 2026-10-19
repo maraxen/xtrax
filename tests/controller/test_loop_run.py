@@ -1684,3 +1684,75 @@ class TestEvaluatorCompleteness3076:
 
         assert transport.calls_for("campaign_create") == []
         assert transport.calls_for("run") == []
+
+
+# ---------------------------------------------------------------------------
+# 6. Failed candidate runs (#5683): N consecutive failures halt as partial_failure (returned,
+#    not raised); a confirmation-mode first failure still concludes "aborted" as before.
+# ---------------------------------------------------------------------------
+
+
+def _every_run_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flip every real bathos run (main_loop's record_candidate_run) to exit_code=1."""
+    real_record_run = main_loop_module.record_candidate_run
+
+    def _failing(*args: Any, **kwargs: Any) -> Any:
+        res = real_record_run(*args, **kwargs)
+        return type(res)(script_path=res.script_path, exit_code=1, success=False, run_id=res.run_id)
+
+    monkeypatch.setattr(main_loop_module, "record_candidate_run", _failing)
+
+
+class TestFailedCandidateRunsHalt:
+    def test_consecutive_failures_conclude_partial_failure_and_return(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _every_run_fails(monkeypatch)
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        starter = _FakeWatchdogStarter()
+        received: list[LoopEvent] = []
+
+        result = run_campaign_loop(
+            **_base_kwargs(dispatch_backend, transport),
+            max_candidates=5,
+            max_consecutive_failures=2,
+            start_watchdog_fn=starter,
+            on_loop_event=received.append,
+        )
+
+        assert isinstance(result, CampaignLoopResult)
+        assert result.loop_result.termination_reason == "consecutive_failures"
+        assert len(result.loop_result.failed_candidates) == 2
+        assert result.loop_result.failed_candidates[0].exit_code == 1
+        assert result.conclusion.outcome_label == "partial_failure"
+
+        conclude_calls = transport.calls_for("campaign_conclude")
+        assert len(conclude_calls) == 1
+        assert conclude_calls[0]["outcome_label"] == "partial_failure"
+        assert "2 failed candidate run(s)" in conclude_calls[0]["conclusion"]
+        assert [event.kind for event in received] == ["campaign_created", "campaign_concluded"]
+        assert received[1].outcome_label == "partial_failure"
+        assert starter.handles[0].stop_calls == 1
+
+    def test_confirmation_mode_first_failed_run_still_concludes_aborted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from controller.evaluate_adapter import RawArtifactsUnavailableError
+
+        _every_run_fails(monkeypatch)
+        dispatch_backend = _RealFileDispatchBackend(tmp_path)
+        transport = _MultiToolTransport()
+        kwargs = _base_kwargs(dispatch_backend, transport)
+        kwargs["campaign_mode"] = "confirmation"
+
+        with pytest.raises(RawArtifactsUnavailableError):
+            run_campaign_loop(
+                **kwargs,
+                max_candidates=3,
+                start_watchdog_fn=_FakeWatchdogStarter(),
+            )
+
+        conclude_calls = transport.calls_for("campaign_conclude")
+        assert len(conclude_calls) == 1
+        assert conclude_calls[0]["outcome_label"] == "aborted"
