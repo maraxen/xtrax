@@ -41,12 +41,22 @@ def test_every_workflow_entry_template_path_exists() -> None:
 
 
 @pytest.mark.skipif(shutil.which("praxia") is None, reason="praxia CLI not installed")
-def test_fresh_install_workflow_count_matches_manifest() -> None:
-    data = _load_manifest()
-    expected_count = len(data["plugin"]["workflows"])
+def test_fresh_install_leaves_no_workflow_copies() -> None:
+    """praxia no longer copies plugin workflows into ``~/.praxia/workflows``.
 
+    Since praxia's 260925 embedded-asset-resolution change (writer.rs: "Workflows
+    are NOT copied"), a registered plugin's templates are read in place by the
+    shared resolver, so a fresh install must succeed and leave no ``xtrax_*.yaml``
+    shadow copy and no ``.yaml`` in ``exported_files``. That every manifest
+    template exists in this checkout is covered by
+    ``test_every_workflow_entry_template_path_exists``.
+    """
     with tempfile.TemporaryDirectory() as tmp_home:
-        env = {**os.environ, "HOME": tmp_home}
+        env = {
+            **os.environ,
+            "HOME": tmp_home,
+            "PRAXIA_HOME": str(Path(tmp_home) / ".praxia"),
+        }
         result = subprocess.run(
             ["praxia", "plugin", "install", str(ROOT)],
             env=env,
@@ -57,5 +67,10 @@ def test_fresh_install_workflow_count_matches_manifest() -> None:
         assert result.returncode == 0, result.stderr
 
         workflows_dir = Path(tmp_home) / ".praxia" / "workflows"
-        exported = sorted(workflows_dir.glob("xtrax_*.yaml"))
-        assert len(exported) == expected_count, exported
+        assert sorted(workflows_dir.glob("xtrax_*.yaml")) == []
+
+        registry = tomllib.loads(
+            (Path(tmp_home) / ".praxia" / "plugins.toml").read_text(encoding="utf-8")
+        )
+        files = [f for fs in registry["plugins"]["xtrax"]["exported_files"].values() for f in fs]
+        assert not [f for f in files if f.endswith(".yaml")], files
