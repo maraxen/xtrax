@@ -70,6 +70,41 @@ replicate at production size.
   reports `steady compiles`.
 - Put the unit's wall-time estimate in the run's pre-registration sidecar.
 
+## Hoist shared work out of a mapped axis
+
+A stage that reads only shared inputs (a structure encoder, a table) should run
+once per call, not once per element. Use `xtrax.inference.hoist`
+(`src/xtrax/inference/hoist.py`):
+
+```python
+from xtrax.inference import MemoPolicy, hoisted_map, make_hoisted
+
+hm = make_hoisted(shared, per_element, batch_size=4, cache=MemoPolicy())  # hold hm across calls
+ys = hm({"coords": coords}, keys)          # shared(**args) once; per_element(s, x) mapped over keys
+ys = hoisted_map(shared, per_element, shared_args, xs)  # one-shot: builds a fresh instance
+```
+
+- `shared(**shared_args)` returns `s`; `per_element(s, x)` maps over the leading axis of `xs`.
+- False dependence is the real waste. A per-element PRNG key that feeds the encoder
+  makes the encoder read a varying input, so the jaxpr batches it over N even when
+  its value does not depend on the key (`backbone_noise == 0`). Keep per-element keys
+  in `xs`, not in `shared_args`. Passing `AxisSpec(..., varying_inputs=(...))` to
+  `make_hoisted(axis=...)` refuses a shared input with a declared varying name
+  (`HoistVaryingInputError`).
+- `check_elements=k, reference=monolithic` runs a parity probe on the first k
+  elements; a mismatch raises `HoistParityError`. Use it while moving code across.
+- `cache=MemoPolicy(...)` memoizes `shared` on the instance (content-keyed, see
+  `src/xtrax/inference/memo.py`). Its entries can hold large arrays; bound them with
+  `max_entries`. Under an enclosing `jit` the cache is bypassed (`stats()["traced_bypass"]`).
+- Probe on this machine (CPU, jax 0.11.1, throwaway script, 261020): XLA already hoists a
+  truly invariant subgraph out of `lax.map`, chunked or not, including a size-inflating
+  `(L,3)->(L,L,C)` encoder. Hand-hoisting it gave no measurable change. The gain from
+  `hoisted_map` is removing false dependence and cross-call recomputation. GPU and
+  IREE/StableHLO behaviour is unverified.
+- `hoisted_map` builds fresh jit wrappers on every call, so the mapped stage recompiles
+  each time. A caller that repeats a call should hold a `HoistedMap` from `make_hoisted`.
+- Tests: `tests/inference/test_hoist.py`, including the negative and invariant controls.
+
 ## Remediation Playbook (keyed by `xtrax profile` flags)
 
 Measure the unit with `xtrax profile` first (`xtrax-probing` covers the report).

@@ -14,6 +14,8 @@ from xtrax.inference.errors import (
     AmbiguousAxisError,
     AxisRole,
     CseTraceError,
+    HoistParityError,
+    HoistVaryingInputError,
     InputInvarianceError,
     MemoDonationError,
     MemoImpurityError,
@@ -22,6 +24,7 @@ from xtrax.inference.errors import (
     MemoStalenessError,
     StructureMismatchError,
 )
+from xtrax.inference.hoist import HoistedMap, hoisted_map, make_hoisted
 from xtrax.inference.invariance import AxisInvariance, InvarianceReport, verify_axis_invariance
 from xtrax.inference.ir_schema import emit_ir_schema
 from xtrax.inference.memo import MemoPolicy, memoize_jaxpr
@@ -36,6 +39,9 @@ __all__ = [
     "CseDuplicateClass",
     "CseReport",
     "CseTraceError",
+    "HoistParityError",
+    "HoistVaryingInputError",
+    "HoistedMap",
     "InvarianceReport",
     "InputInvarianceError",
     "MemoDonationError",
@@ -48,7 +54,9 @@ __all__ = [
     "analyze_cse",
     "axis_config",
     "emit_ir_schema",
+    "hoisted_map",
     "infer_bundle",
+    "make_hoisted",
     "memoize_jaxpr",
     "synthesize_axes",
     "verify_axis_invariance",
