@@ -141,6 +141,137 @@ class DataIterLike(Protocol):
     def eval_iter(self) -> Iterator[Any]: ...
 
 
+def _check_fit_arguments(
+    *,
+    validate_fn: Callable[[ResumableState], dict[str, Any]] | None,
+    validate_every_steps: int | None,
+    validate_every_epochs: int | None,
+    checkpoint_every_steps: int | None,
+    checkpoint_dir: str | Path | None,
+) -> int | None:
+    """Validate :meth:`Engine.fit` cadence arguments; return the resolved epoch cadence."""
+    _require_positive("validate_every_steps", validate_every_steps)
+    _require_positive("validate_every_epochs", validate_every_epochs)
+    _require_positive("checkpoint_every_steps", checkpoint_every_steps)
+    if checkpoint_every_steps is not None and checkpoint_dir is None:
+        raise ValueError("checkpoint_every_steps requires checkpoint_dir")
+    if validate_fn is None and (
+        validate_every_steps is not None or validate_every_epochs is not None
+    ):
+        raise ValueError("validate_every_steps/validate_every_epochs requires validate_fn")
+    if validate_fn is not None and validate_every_steps is None and validate_every_epochs is None:
+        return 1
+    return validate_every_epochs
+
+
+def _checkpoint_saver(
+    checkpoint_dir: str | Path | None,
+) -> Callable[[ResumableState], None] | None:
+    """Return a ``state -> None`` saver bound to a checkpoint manager, or None."""
+    if checkpoint_dir is None:
+        return None
+    from xtrax.checkpoint.orbax import get_checkpoint_manager, save_checkpoint
+
+    manager = get_checkpoint_manager(checkpoint_dir)
+    if manager is None:
+        return None
+    return lambda state: save_checkpoint(manager, state)
+
+
+async def _fire_step_end(callback: Callback, state: Any, metrics: Any) -> None:
+    callback.on_step_end(state, metrics)
+
+
+@dataclass
+class _FitLoop:
+    """Mutable per-call state of :meth:`Engine.fit`, split by loop level.
+
+    ``state`` is kept here, not in a local, so the ``finally`` block of ``fit``
+    reports the latest state even when a step raises mid-epoch.
+    """
+
+    trainer: Any
+    state: ResumableState
+    callbacks: tuple[Callback, ...]
+    telemetry: TelemetryCallback
+    handler: BoundedCallbackHandler
+    save: Callable[[ResumableState], None] | None
+    checkpoint_every_steps: int | None
+    validate_fn: Callable[[ResumableState], dict[str, Any]] | None
+    validate_every_steps: int | None
+    validate_every_epochs: int | None
+    tracker: _EarlyStopTracker | None
+    stopped: bool = False
+
+    async def run(self, data: DataModule | DataIterLike, num_epochs: int) -> None:
+        for epoch in range(num_epochs):
+            await self._run_epoch(data, epoch)
+            if self.stopped:
+                break
+
+    async def _run_epoch(self, data: DataModule | DataIterLike, epoch: int) -> None:
+        for cb in self.callbacks:
+            cb.on_epoch_start(self.state, epoch)
+        # data.train_iter() is a fresh generator each call
+        epoch_metrics: dict[str, Any] | None = None
+        for batch in data.train_iter():
+            epoch_metrics = await self._run_batch(batch)
+            if self.stopped:
+                break
+        # Wait for all pending step callbacks to complete before next epoch
+        await self.handler.wait_all()
+        for cb in self.callbacks:
+            cb.on_epoch_end(self.state, epoch)
+        self._validate_epoch(epoch, epoch_metrics)
+        # Save checkpoint after epoch if requested, including the epoch
+        # on which early stopping fired.
+        if self.save is not None:
+            self.save(self.state)
+
+    async def _run_batch(self, batch: Any) -> Any:
+        # Capture the executed IR once, on the first batch. That first step IS
+        # the compile, so this lands at the compile boundary with the workload's
+        # true shape signature; the once-only guard lives in TelemetryCallback.
+        self.telemetry.capture_ir_for(self.trainer.step, self.state, batch)
+        for cb in self.callbacks:
+            cb.on_step_start(self.state)
+        self.state, metrics = self.trainer.step(self.state, batch)
+        for cb in self.callbacks:
+            await self.handler.submit(_fire_step_end(cb, self.state, metrics))
+        step_index = int(self.state.step)
+        if (
+            self.save is not None
+            and self.checkpoint_every_steps is not None
+            and step_index % self.checkpoint_every_steps == 0
+        ):
+            self.save(self.state)
+        if (
+            self.validate_fn is not None
+            and self.validate_every_steps is not None
+            and step_index % self.validate_every_steps == 0
+        ):
+            self._observe(self.validate_fn(self.state))
+        return metrics
+
+    def _validate_epoch(self, epoch: int, epoch_metrics: dict[str, Any] | None) -> None:
+        if self.stopped:
+            return
+        if self.validate_fn is not None:
+            if (
+                self.validate_every_epochs is not None
+                and (epoch + 1) % self.validate_every_epochs == 0
+            ):
+                self._observe(self.validate_fn(self.state))
+        # No validation hook: early stopping watches the last training metrics
+        # of the epoch (host-side, after the step jit returns).
+        elif self.tracker is not None and epoch_metrics is not None:
+            self._observe(epoch_metrics)
+
+    def _observe(self, metrics: dict[str, Any]) -> None:
+        if self.tracker is not None and self.tracker.update(metrics):
+            self.stopped = True
+
+
 class Engine(eqx.Module):
     """High-performance training engine.
 
@@ -229,32 +360,18 @@ class Engine(eqx.Module):
         Returns:
             Final ResumableState after training completes (or early-stops).
         """
-        _require_positive("validate_every_steps", validate_every_steps)
-        _require_positive("validate_every_epochs", validate_every_epochs)
-        _require_positive("checkpoint_every_steps", checkpoint_every_steps)
-        if checkpoint_every_steps is not None and checkpoint_dir is None:
-            raise ValueError("checkpoint_every_steps requires checkpoint_dir")
-        if validate_fn is None and (
-            validate_every_steps is not None or validate_every_epochs is not None
-        ):
-            raise ValueError("validate_every_steps/validate_every_epochs requires validate_fn")
-        if (
-            validate_fn is not None
-            and validate_every_steps is None
-            and validate_every_epochs is None
-        ):
-            validate_every_epochs = 1
+        validate_every_epochs = _check_fit_arguments(
+            validate_fn=validate_fn,
+            validate_every_steps=validate_every_steps,
+            validate_every_epochs=validate_every_epochs,
+            checkpoint_every_steps=checkpoint_every_steps,
+            checkpoint_dir=checkpoint_dir,
+        )
 
-        # Initialize checkpoint manager if needed
-        if checkpoint_dir is not None:
-            from xtrax.checkpoint.orbax import get_checkpoint_manager, save_checkpoint
-
-            manager = get_checkpoint_manager(checkpoint_dir)
-        else:
-            manager = None
-
-        # Initialize callback handler for async callback dispatch
-        callback_handler = BoundedCallbackHandler(max_concurrent=4)
+        # Checkpoint manager and callback handler come before the ledger opens,
+        # so a bad checkpoint_dir raises without leaving a ledger row open.
+        save = _checkpoint_saver(checkpoint_dir)
+        handler = BoundedCallbackHandler(max_concurrent=4)
 
         # Open the run ledger (fail-closed) unless the caller supplied one.
         ledger, owns_ledger = _resolve_ledger(ledger, run_id, KIND_TRAIN, context)
@@ -263,8 +380,19 @@ class Engine(eqx.Module):
         # Local, not the static field: the telemetry callback is appended per
         # call so an Engine constructed with callbacks=() is still instrumented.
         callbacks = (*self.callbacks, telemetry)
-        tracker = _EarlyStopTracker(early_stop) if early_stop is not None else None
-        stopped = False
+        loop = _FitLoop(
+            trainer=self.trainer,
+            state=state,
+            callbacks=callbacks,
+            telemetry=telemetry,
+            handler=handler,
+            save=save,
+            checkpoint_every_steps=checkpoint_every_steps,
+            validate_fn=validate_fn,
+            validate_every_steps=validate_every_steps,
+            validate_every_epochs=validate_every_epochs,
+            tracker=_EarlyStopTracker(early_stop) if early_stop is not None else None,
+        )
 
         try:
             # Fire on_train_start hook
@@ -275,91 +403,7 @@ class Engine(eqx.Module):
                 for cb in callbacks:
                     cb.on_resume(state)
 
-            # Main training loop: num_epochs iterations
-            for epoch in range(num_epochs):
-                # Fire on_epoch_start hook
-                for cb in callbacks:
-                    cb.on_epoch_start(state, epoch)
-
-                # Iterate through this epoch's data
-                # Note: data.train_iter() is a fresh generator each call
-                epoch_metrics: dict[str, Any] | None = None
-                for batch in data.train_iter():
-                    # Capture the executed IR once, on the first batch. That
-                    # first step IS the compile, so this lands at the compile
-                    # boundary with the workload's true shape signature; the
-                    # once-only guard lives in TelemetryCallback.
-                    telemetry.capture_ir_for(self.trainer.step, state, batch)
-
-                    # Fire on_step_start hook
-                    for cb in callbacks:
-                        cb.on_step_start(state)
-
-                    # Execute training step
-                    state, metrics = self.trainer.step(state, batch)
-
-                    # Fire on_step_end hook asynchronously
-                    for cb in callbacks:
-                        # Convert callback call to coroutine (wrap in async function)
-                        async def fire_step_end(callback, s, m):
-                            callback.on_step_end(s, m)
-
-                        await callback_handler.submit(fire_step_end(cb, state, metrics))
-
-                    epoch_metrics = metrics
-                    step_index = int(state.step)
-                    if (
-                        manager is not None
-                        and checkpoint_every_steps is not None
-                        and step_index % checkpoint_every_steps == 0
-                    ):
-                        save_checkpoint(manager, state)
-
-                    if (
-                        validate_fn is not None
-                        and validate_every_steps is not None
-                        and step_index % validate_every_steps == 0
-                    ):
-                        val_metrics = validate_fn(state)
-                        if tracker is not None and tracker.update(val_metrics):
-                            stopped = True
-                            break
-
-                # Wait for all pending step callbacks to complete before next epoch
-                await callback_handler.wait_all()
-
-                # Fire on_epoch_end hook
-                for cb in callbacks:
-                    cb.on_epoch_end(state, epoch)
-
-                if (
-                    not stopped
-                    and validate_fn is not None
-                    and validate_every_epochs is not None
-                    and (epoch + 1) % validate_every_epochs == 0
-                ):
-                    val_metrics = validate_fn(state)
-                    if tracker is not None and tracker.update(val_metrics):
-                        stopped = True
-
-                # No validation hook: early stopping watches the last training
-                # metrics of the epoch (host-side, after the step jit returns).
-                if (
-                    not stopped
-                    and tracker is not None
-                    and validate_fn is None
-                    and epoch_metrics is not None
-                    and tracker.update(epoch_metrics)
-                ):
-                    stopped = True
-
-                # Save checkpoint after epoch if requested, including the epoch
-                # on which early stopping fired.
-                if manager is not None:
-                    save_checkpoint(manager, state)
-
-                if stopped:
-                    break
+            await loop.run(data, num_epochs)
 
         except BaseException as exc:
             # A crashed run is when the record matters most; mark it before the
@@ -371,13 +415,13 @@ class Engine(eqx.Module):
         finally:
             # Fire on_train_end hook (always, even on exception)
             for cb in callbacks:
-                cb.on_train_end(state)
+                cb.on_train_end(loop.state)
             # close_if_open, not close: a full disk while writing the row must not
             # replace the training exception that is already propagating.
             if owns_ledger:
                 ledger.close_if_open(in_flight)
 
-        return state
+        return loop.state
 
     async def eval(
         self,
