@@ -160,7 +160,9 @@ def test_traced_hoisted_call_has_encoder_once_and_no_batched_encoder(
 
     shapes = _traced_shapes(program, coords, keys)
     assert (L, L, C) in shapes
-    assert (n, L, L, C) not in shapes
+    # Any leading axis on an (L, L, C) value means the encoder output was replicated
+    # per element or per chunk: (N, ...) under vmap, (batch_size, ...) or (1, ...) otherwise.
+    assert not [s for s in shapes if len(s) == 4 and s[1:] == (L, L, C)]
 
 
 def test_counter_distinguishes_a_recomputing_mutant() -> None:
