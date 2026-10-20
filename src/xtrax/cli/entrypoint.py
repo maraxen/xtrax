@@ -15,6 +15,13 @@ from typing import Any
 from xtrax.cli.errors import CLIError
 from xtrax.cli.registry import REGISTRY
 
+# `plugin` is routed in main() before tyro, so it is not a REGISTRY subcommand and tyro
+# cannot list it; this description line is how `xtrax --help` advertises it.
+_PLUGIN_HELP_LINE = (
+    "Also: `xtrax plugin install|update|export|info` manages the agent plugin "
+    "(needs xtrax[plugin]; see `xtrax plugin --help`)."
+)
+
 
 def main() -> None:
     """CLI entrypoint: parse subcommand and dispatch to the appropriate verb.
@@ -52,7 +59,10 @@ def main() -> None:
     }
 
     try:
-        selected = tyro.extras.subcommand_cli_from_dict(subcommands)
+        selected = tyro.extras.subcommand_cli_from_dict(
+            subcommands,
+            description=_PLUGIN_HELP_LINE,
+        )
 
         # Dispatch: find the run_fn whose args_cls matches type(selected).
         selected_type = type(selected)

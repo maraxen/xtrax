@@ -14,8 +14,6 @@ This verb is not in REGISTRY: tyro parses subcommands and cannot forward raw arg
 ``--help``), so ``entrypoint.main`` routes ``xtrax plugin ...`` here before tyro runs.
 """
 
-from __future__ import annotations
-
 import sys
 
 PLUGIN_NAME = "xtrax"

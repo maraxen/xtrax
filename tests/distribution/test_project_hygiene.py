@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -182,6 +183,49 @@ def test_audit_project_hygiene_fails_on_skill_declaring_xtrax_version(tmp_path: 
 
     assert passed is False
     assert any("using-xtrax/SKILL.md declares xtrax_version" in item for item in failures)
+
+
+def _write_written_against_skill(repo_root: Path, literal: str) -> None:
+    skill_path = _write_skill(repo_root, "using-xtrax")
+    skill_path.write_text(
+        skill_path.read_text(encoding="utf-8")
+        + f'\n```python\n_WRITTEN_AGAINST = "{literal}"\n```\n',
+        encoding="utf-8",
+    )
+
+
+def test_audit_project_hygiene_fails_on_stale_written_against_literal(tmp_path: Path) -> None:
+    """A stale `_WRITTEN_AGAINST` literal in a skill's code example is a version failure."""
+    config_path = _write_config(tmp_path)
+    _write_hygiene_files(tmp_path, version="0.3.0")
+    _write_written_against_skill(tmp_path, "0.2.0")
+
+    passed, failures = audit_project_hygiene(tmp_path, config_path)
+
+    assert passed is False
+    assert any("_WRITTEN_AGAINST '0.2.0'" in item for item in failures), failures
+
+
+def test_audit_project_hygiene_accepts_current_written_against_literal(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    _write_hygiene_files(tmp_path, version="0.3.0")
+    _write_written_against_skill(tmp_path, "0.3.0")
+
+    _passed, failures = audit_project_hygiene(tmp_path, config_path)
+
+    assert not any("_WRITTEN_AGAINST" in item for item in failures), failures
+
+
+def test_repo_written_against_literal_matches_version() -> None:
+    """The shipped using-xtrax literal must equal __version__ (the hygiene check's target)."""
+    import xtrax
+
+    text = (ROOT / "agent_assets" / "skills" / "using-xtrax" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r'^_WRITTEN_AGAINST\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
+    assert match is not None
+    assert match.group(1) == xtrax.__version__
 
 
 def test_audit_project_hygiene_accepts_skill_without_version_marker(tmp_path: Path) -> None:

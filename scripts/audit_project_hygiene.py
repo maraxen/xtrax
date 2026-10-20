@@ -141,6 +141,9 @@ def _parse_citation_version(citation_path: Path) -> str | None:
     return match.group(1).strip()
 
 
+_WRITTEN_AGAINST_RE = re.compile(r'^_WRITTEN_AGAINST\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+
+
 def _declares_skill_version(skill_path: Path) -> bool:
     """True if a SKILL.md frontmatter carries an `xtrax_version:` key.
 
@@ -745,11 +748,20 @@ def audit_project_hygiene(
                     f"{config.version_attribute} {package_version!r}"
                 )
         for skill_path in sorted((root / "agent_assets" / "skills").glob("*/SKILL.md")):
+            rel = skill_path.relative_to(root)
             if _declares_skill_version(skill_path):
-                rel = skill_path.relative_to(root)
                 failures.append(
                     f"{rel} declares xtrax_version; the version pin lives in "
                     ".praxia/manifest.toml [plugin] version"
+                )
+            # A skill's code examples may pin the alpha they were written against as a
+            # module-level literal (using-xtrax's preflight). That literal is a version
+            # site too: a bump must move it or this fails, and the snapshot copies it.
+            written = _WRITTEN_AGAINST_RE.search(skill_path.read_text(encoding="utf-8"))
+            if written is not None and written.group(1) != package_version:
+                failures.append(
+                    f"{rel} _WRITTEN_AGAINST {written.group(1)!r} != "
+                    f"{config.version_attribute} {package_version!r}"
                 )
 
     pyproject_path = root / "pyproject.toml"

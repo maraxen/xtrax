@@ -350,12 +350,13 @@ def _try_cisternal(*, run_id: "str | None", root: Path, pin: bool) -> "dict[str,
     a suppression comment that is only sometimes needed.
     """
     try:
-        # An absent module here is the designed fallback path, not a configuration error.
+        # An absent module, or one that drifted and lacks these names, is the designed
+        # fallback path, not a configuration error.
         provenance = importlib.import_module("cisternal.provenance")
-    except ImportError:
+        capture_git_state = provenance.capture_git_state
+        pin_run = provenance.pin_run
+    except (ImportError, AttributeError):
         return None
-    capture_git_state = provenance.capture_git_state
-    pin_run = provenance.pin_run
 
     try:
         state = capture_git_state(root)

@@ -76,7 +76,7 @@ jobs:
         run: uv tool install rust-just
 
       - name: Install dependencies
-        run: uv sync --extra dev --extra eda --extra io --extra data --extra plugin
+        run: uv sync --extra dev --extra eda --extra io --extra data
 
       - name: Lint with ruff
         run: uv run ruff check .

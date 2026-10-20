@@ -6,6 +6,7 @@ ledger row that says something went wrong.
 """
 
 import dataclasses
+import os
 
 import pytest
 
@@ -212,17 +213,79 @@ def test_capture_records_dirty_as_none_when_unknown_not_false():
     assert RunProvenance().git_dirty is None
 
 
-def test_capture_in_a_real_repo_reports_a_sha_and_source(tmp_path):
-    prov = RunProvenance.capture(cwd=tmp_path)
-    # tmp_path is not a git repo, so this must degrade honestly rather than
-    # inventing a value or raising.
-    assert prov.git_sha is not None
-    assert prov.provenance_source in {"builtin", "degraded", "cisternal"}
+def _init_git_repo(path):
+    """A real repo with one commit, so the git fallback has a HEAD to report."""
+    import subprocess
+
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+        "PATH": os.environ.get("PATH", ""),
+    }
+    subprocess.run(["git", "init", "-q", str(path)], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-q", "--allow-empty", "-m", "init"], check=True, env=env
+    )
+    return path
+
+
+def _cisternal_importable() -> bool:
+    try:
+        import cisternal.provenance  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def test_capture_in_a_real_repo_reports_expected_source(tmp_path):
+    repo = _init_git_repo(tmp_path / "repo")
+    prov = RunProvenance.capture(cwd=repo)
+    assert prov.git_sha not in (None, "unknown")
+    expected = "cisternal" if _cisternal_importable() else "builtin"
+    assert prov.provenance_source == expected
 
 
 def test_capture_never_raises_on_a_missing_directory():
     prov = RunProvenance.capture(cwd="/nonexistent/path/for/xtrax/test")
-    assert prov.provenance_source in {"builtin", "degraded", "cisternal"}
+    # cisternal degrades internally on a missing directory and still returns a block,
+    # so the tier is cisternal when importable; without it, no HEAD is readable.
+    expected = "cisternal" if _cisternal_importable() else "degraded"
+    assert prov.provenance_source == expected
+
+
+def test_cisternal_module_lacking_the_api_falls_back_to_builtin(tmp_path, monkeypatch):
+    """A cisternal that imports but has drifted must cost a fallback, not an AttributeError."""
+    import sys
+    import types
+
+    from xtrax.telemetry import record
+
+    drifted = types.ModuleType("cisternal.provenance")  # no capture_git_state / pin_run
+    monkeypatch.setitem(sys.modules, "cisternal.provenance", drifted)
+    assert record._try_cisternal(run_id=None, root=tmp_path, pin=False) is None
+    repo = _init_git_repo(tmp_path / "repo")
+    assert RunProvenance.capture(cwd=repo).provenance_source == "builtin"
+
+
+def test_missing_directory_without_cisternal_is_degraded(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "cisternal.provenance", None)
+    prov = RunProvenance.capture(cwd="/nonexistent/path/for/xtrax/test")
+    assert prov.provenance_source == "degraded"
+
+
+def test_cisternal_absent_falls_back_to_builtin(tmp_path, monkeypatch):
+    import sys
+
+    from xtrax.telemetry import record
+
+    monkeypatch.setitem(sys.modules, "cisternal.provenance", None)
+    assert record._try_cisternal(run_id=None, root=tmp_path, pin=False) is None
+    repo = _init_git_repo(tmp_path / "repo")
+    assert RunProvenance.capture(cwd=repo).provenance_source == "builtin"
 
 
 # --- opt-out ----------------------------------------------------------------
