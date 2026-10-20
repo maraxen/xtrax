@@ -2,7 +2,6 @@
 name: using-xtrax
 description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function, or when a model is sparsified for inference. The library is xtrax."
 when_to_use: 'Triggers: padding or bucketing loop for variable-length sequences before a JIT step, chunked vmap or lax.map over a large batch, memory-budgeted batching / batch plan that must fit a device budget, ONNX or StableHLO export of a JAX pipeline, resumable training loop / resume training from a checkpoint, zarr output sink / staged zarr writes, TOML file that should launch or resume a training run, infer batch axes from a typed function signature, sparsify a dense model for inference, compose batching primitives into your own CLI.'
-xtrax_version: 0.4.1b1
 ---
 # using-xtrax
 
@@ -18,19 +17,14 @@ from pathlib import Path
 
 import xtrax
 
-# Frontmatter `xtrax_version` is the alpha these examples were written against.
-# audit-project-hygiene keeps that marker equal to __version__ in the repo.
-# Warn when the installed package disagrees, then read src/xtrax/__init__.py.
-_skill_md = Path("agent_assets/skills/using-xtrax/SKILL.md")
-_frontmatter = _skill_md.read_text(encoding="utf-8").split("---", 2)[1]
-_declared = next(
-    line.split(":", 1)[1].strip().strip("'\"")
-    for line in _frontmatter.splitlines()
-    if line.startswith("xtrax_version:")
-)
-if _declared != xtrax.__version__:
+# This skill was written against the xtrax alpha named in the plugin manifest
+# (.praxia/manifest.toml [plugin] version). Warn when the installed package
+# differs, then read src/xtrax/__init__.py.
+_WRITTEN_AGAINST = "0.4.1b1"
+if xtrax.__version__ != _WRITTEN_AGAINST:
     warnings.warn(
-        f"using-xtrax xtrax_version {_declared} != xtrax.__version__ {xtrax.__version__}. "
+        f"using-xtrax was written against xtrax {_WRITTEN_AGAINST}; "
+        f"installed xtrax is {xtrax.__version__}. "
         "Read src/xtrax/__init__.py and the sections you are about to copy.",
         stacklevel=2,
     )
@@ -299,7 +293,7 @@ Use the Workflow Index above to pick which file(s) a given task needs — most t
 
 ## Summary
 
-This skill provides a complete, self-contained reference for the xtrax alpha named in its frontmatter `xtrax_version`, plus the CHANGELOG `[Unreleased]` changes on main.
+This skill provides a complete, self-contained reference for the xtrax alpha it was written against (the plugin version in `.praxia/manifest.toml`), plus the CHANGELOG `[Unreleased]` changes on main.
 
 **Use TIER-1 to**:
 - Verify compatibility (pre-flight)

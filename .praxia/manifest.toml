@@ -7,9 +7,12 @@ requires_praxia = ">=0.1.0"
 [[plugin.workflows]]
 name          = "port_validation"
 template_path = "agent_assets/workflows/port_validation.yaml"
+# praxia reads template_path; cisternal's manifest check requires path. Keep both.
+path          = "agent_assets/workflows/port_validation.yaml"
 
 # version above tracks xtrax.__version__ (src/xtrax/__init__.py).
-# triggers mirror each skill's frontmatter; skills are pinned by xtrax_version there.
+# triggers mirror each skill's frontmatter. Skills carry no version marker; the
+# plugin version above is the single pin (scripts/audit_project_hygiene.py).
 
 [[plugin.skills]]
 name     = "using-xtrax"

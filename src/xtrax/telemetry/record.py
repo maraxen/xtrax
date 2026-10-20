@@ -37,6 +37,7 @@ fields below are part of the schema rather than an optional nicety.
 
 import dataclasses
 import hashlib
+import importlib
 import json
 import os
 import platform
@@ -343,17 +344,18 @@ def _try_cisternal(*, run_id: "str | None", root: Path, pin: bool) -> "dict[str,
     """Capture via cisternal.provenance, or None if it is unavailable.
 
     Imported lazily inside the function, the way ``run/zarr_sink.py`` treats
-    zarr: cisternal is an optional extra (``xtrax[provenance]``), so its absence
-    must cost a clean fallback, not an ImportError at module load.
+    zarr: cisternal is an optional extra (``xtrax[plugin]``), so its absence
+    must cost a clean fallback, not an ImportError at module load. The import
+    is dynamic so the type checker neither needs cisternal installed nor flags
+    a suppression comment that is only sometimes needed.
     """
     try:
-        # cisternal is an optional extra (xtrax[provenance]); an absent module
-        # here is the designed fallback path, not a configuration error.
-        from cisternal.provenance import (  # ty: ignore[unresolved-import]
-            capture_git_state,
-            pin_run,
-        )
-    except ImportError:
+        # An absent module, or one that drifted and lacks these names, is the designed
+        # fallback path, not a configuration error.
+        provenance = importlib.import_module("cisternal.provenance")
+        capture_git_state = provenance.capture_git_state
+        pin_run = provenance.pin_run
+    except (ImportError, AttributeError):
         return None
 
     try:

@@ -2,7 +2,6 @@
 name: xtrax-optimizing
 description: "Use when a JAX scan or vmap is slow, host or device round trips dominate, a table should be computed in the graph instead of materialized, batches should be prefetched, or a speed change needs a before-and-after measurement before it is kept. Covers host-boundary cost, data movement, and composition rewrites."
 when_to_use: 'Triggers: scan or vmap is slow, host sync or device round trip dominates a step, prefetch batches or overlap host-to-device transfer, compute a table in the graph instead of materializing it, donate buffers or rematerialize an activation, measure a speed change before keeping it.'
-xtrax_version: 0.4.1b1
 ---
 # xtrax-optimizing
 

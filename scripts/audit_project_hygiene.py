@@ -141,21 +141,22 @@ def _parse_citation_version(citation_path: Path) -> str | None:
     return match.group(1).strip()
 
 
-def _parse_skill_version(skill_path: Path) -> str | None:
-    """Return a SKILL.md's declared `xtrax_version:`, or None if it declares none.
+_WRITTEN_AGAINST_RE = re.compile(r'^_WRITTEN_AGAINST\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 
-    Only the frontmatter block is searched. A skill that declares no version is not a
-    failure -- the marker is optional, and a skill without one cannot go stale.
+
+def _declares_skill_version(skill_path: Path) -> bool:
+    """True if a SKILL.md frontmatter carries an `xtrax_version:` key.
+
+    The pin moved to the plugin manifest ([plugin] version in .praxia/manifest.toml).
+    A per-skill copy would be a fourth version site, so none may declare one.
+    Only the frontmatter block is searched.
     """
     text = skill_path.read_text(encoding="utf-8")
     if not text.startswith("---"):
-        return None
+        return False
     end = text.find("\n---", 3)
     frontmatter = text if end == -1 else text[:end]
-    match = re.search(r"^xtrax_version:\s*['\"]?([^'\"\n]+)", frontmatter, flags=re.MULTILINE)
-    if match is None:
-        return None
-    return match.group(1).strip()
+    return re.search(r"^xtrax_version:", frontmatter, flags=re.MULTILINE) is not None
 
 
 def _parse_citation_keys(citation_path: Path) -> set[str]:
@@ -726,18 +727,40 @@ def audit_project_hygiene(
                 f"{package_version!r}"
             )
 
-    # agent_assets/skills/*/SKILL.md is a third version site, after __init__.py and
-    # CITATION.cff. It was missed at 0.4.0a8 exactly as CITATION.cff would have been
-    # without the check above: all three markers still read 0.4.0a7 after the release,
-    # and nothing anywhere would have said so.
+    # The plugin version in .praxia/manifest.toml is a third version site, after
+    # __init__.py and CITATION.cff. It was missed at 0.4.0a8 exactly as CITATION.cff
+    # would have been without the check above: the markers went stale after the
+    # release, and nothing anywhere said so. Skills used to carry a per-SKILL.md
+    # xtrax_version copy of this pin; that was a fourth site, so it is now forbidden.
     if init_path.is_file():
         package_version = parse_init_version(init_path, attribute=config.version_attribute)
-        for skill_path in sorted((root / "agent_assets" / "skills").glob("*/SKILL.md")):
-            skill_version = _parse_skill_version(skill_path)
-            if skill_version is not None and skill_version != package_version:
-                rel = skill_path.relative_to(root)
+        manifest_path = root / ".praxia" / "manifest.toml"
+        if not manifest_path.is_file():
+            failures.append(".praxia/manifest.toml missing (plugin version pin)")
+        else:
+            manifest_plugin = tomllib.loads(manifest_path.read_text(encoding="utf-8")).get(
+                "plugin", {}
+            )
+            manifest_version = manifest_plugin.get("version")
+            if manifest_version != package_version:
                 failures.append(
-                    f"{rel} xtrax_version {skill_version!r} != "
+                    f".praxia/manifest.toml [plugin] version {manifest_version!r} != "
+                    f"{config.version_attribute} {package_version!r}"
+                )
+        for skill_path in sorted((root / "agent_assets" / "skills").glob("*/SKILL.md")):
+            rel = skill_path.relative_to(root)
+            if _declares_skill_version(skill_path):
+                failures.append(
+                    f"{rel} declares xtrax_version; the version pin lives in "
+                    ".praxia/manifest.toml [plugin] version"
+                )
+            # A skill's code examples may pin the alpha they were written against as a
+            # module-level literal (using-xtrax's preflight). That literal is a version
+            # site too: a bump must move it or this fails, and the snapshot copies it.
+            written = _WRITTEN_AGAINST_RE.search(skill_path.read_text(encoding="utf-8"))
+            if written is not None and written.group(1) != package_version:
+                failures.append(
+                    f"{rel} _WRITTEN_AGAINST {written.group(1)!r} != "
                     f"{config.version_attribute} {package_version!r}"
                 )
 

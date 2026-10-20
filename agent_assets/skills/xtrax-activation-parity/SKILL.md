@@ -2,7 +2,6 @@
 name: xtrax-activation-parity
 description: "Use when two implementations of the same model disagree numerically and the task is to find the first tensor that diverges: a published reference versus a JAX port, a wheel versus a source tree, or two checkpoints loaded by different loaders. Covers checking constants, parameters, and inputs before capturing activations, and capture that leaves the forward pass unchanged."
 when_to_use: 'Triggers: two implementations disagree numerically / which tensor diverges first, a port''s outputs do not match the reference and the parity test does not say where, capture intermediates without changing the forward pass, diff parameter inventories against a reference checkpoint, a constant or bias is present on one side and missing on the other.'
-xtrax_version: 0.4.1b1
 ---
 # xtrax-activation-parity
 
