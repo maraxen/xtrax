@@ -26,12 +26,16 @@ def test_manifest_exists_and_parses() -> None:
     workflows = data["plugin"]["workflows"]
     assert len(workflows) >= 1
     for entry in workflows:
+        # praxia's WorkflowEntry requires 'template_path' (a manifest with 'path'
+        # INSTEAD of it fails deserialization at install time -- cisterna's
+        # .praxia/manifest.toml hit exactly that). cisternal's snapshot reads 'path',
+        # and praxia ignores unknown keys (praxia-config manifest.rs, no
+        # deny_unknown_fields), so 'path' is allowed only as a copy of 'template_path'.
         assert "template_path" in entry, entry
-        assert "path" not in entry, (
-            f"{entry}: use 'template_path', not 'path' -- WorkflowEntry has no 'path' field "
-            "and a manifest using it fails TOML deserialization at install time (see cisterna's "
-            ".praxia/manifest.toml for the real-world counter-example of this exact bug)"
-        )
+        if "path" in entry:
+            assert entry["path"] == entry["template_path"], (
+                f"{entry}: 'path' (cisternal) must equal 'template_path' (praxia)"
+            )
 
 
 def test_every_workflow_entry_template_path_exists() -> None:
