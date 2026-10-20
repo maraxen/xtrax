@@ -340,5 +340,10 @@ jobs:
               for entry in controller_entries[:20]:
                   print(f"  {entry}", file=sys.stderr)
               raise SystemExit(1)
+          # The packaged plugin snapshot is what `xtrax plugin` falls back to when
+          # installed from a wheel (no source checkout); it must ship.
+          with zipfile.ZipFile(wheel) as zf:
+              if "xtrax/agent_plugin.json" not in zf.namelist():
+                  raise SystemExit("xtrax/agent_plugin.json missing from wheel")
           print(f"wheel-smoke OK: {wheel.name} has no port/ or controller/ entries")
           PY

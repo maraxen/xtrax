@@ -368,10 +368,11 @@ audit-port-provenance:
 audit-port-bridge:
     uv run python scripts/lint_port_bridge_map.py
 
-# Install all skills from agent_assets/skills/ to ~/.claude/skills/
-install-skills *args:
-    uv run python scripts/install_skills.py {{args}}
+# Install the xtrax agent plugin (skills) into Claude Code. --prune-shadowed moves
+# loose ~/.claude/skills copies that would shadow the plugin into a backup.
+install-plugin *args:
+    uv run --extra plugin xtrax plugin install --prune-shadowed {{args}}
 
-# Preview what install-skills would do without writing
-dry-run-skills:
-    uv run python scripts/install_skills.py --dry-run
+# Preview what install-plugin would do without writing
+dry-run-plugin:
+    uv run --extra plugin xtrax plugin install --dry-run

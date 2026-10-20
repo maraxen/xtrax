@@ -66,6 +66,11 @@ def _write_hygiene_files(repo_root: Path, *, version: str = "0.3.0") -> None:
         f'__version__ = "{version}"\n',
         encoding="utf-8",
     )
+    (repo_root / ".praxia").mkdir()
+    (repo_root / ".praxia" / "manifest.toml").write_text(
+        f'[plugin]\nname = "xtrax"\nversion = "{version}"\n',
+        encoding="utf-8",
+    )
     (repo_root / "pyproject.toml").write_text(
         textwrap.dedent(
             """
@@ -131,62 +136,62 @@ def test_audit_project_hygiene_fails_on_citation_version_mismatch(
     assert any("CITATION.cff version" in item for item in failures)
 
 
-def _write_skill(repo_root: Path, name: str, version: str | None) -> Path:
+def _write_skill(repo_root: Path, name: str, extra_frontmatter: str = "") -> Path:
     skill_dir = repo_root / "agent_assets" / "skills" / name
     skill_dir.mkdir(parents=True)
-    version_line = "" if version is None else f"xtrax_version: {version}\n"
     skill_path = skill_dir / "SKILL.md"
     skill_path.write_text(
-        f"---\nname: {name}\ndescription: a skill\n{version_line}---\n\nbody\n",
+        f"---\nname: {name}\ndescription: a skill\n{extra_frontmatter}---\n\nbody\n",
         encoding="utf-8",
     )
     return skill_path
 
 
-def test_audit_project_hygiene_fails_on_skill_version_mismatch(tmp_path: Path) -> None:
-    """A SKILL.md marker that lags __version__ is a failure.
-
-    agent_assets/skills/*/SKILL.md is a third version site after __init__.py and
-    CITATION.cff, and it went stale at 0.4.0a8 in exactly the way CITATION.cff would
-    have without its own check -- all three markers still read 0.4.0a7 with nothing
-    to say so.
-    """
+def test_audit_project_hygiene_fails_on_manifest_version_mismatch(tmp_path: Path) -> None:
+    """The plugin manifest version is a third version site after __init__.py and CITATION.cff."""
     config_path = _write_config(tmp_path)
     _write_hygiene_files(tmp_path, version="0.3.0")
-    _write_skill(tmp_path, "using-xtrax", "0.2.0")
+    (tmp_path / ".praxia" / "manifest.toml").write_text(
+        '[plugin]\nname = "xtrax"\nversion = "0.2.0"\n', encoding="utf-8"
+    )
 
     passed, failures = audit_project_hygiene(tmp_path, config_path)
 
     assert passed is False
-    assert any("using-xtrax/SKILL.md xtrax_version" in item for item in failures)
+    assert any(".praxia/manifest.toml [plugin] version" in item for item in failures)
 
 
-def test_audit_project_hygiene_accepts_matching_skill_version(tmp_path: Path) -> None:
+def test_audit_project_hygiene_accepts_matching_manifest_version(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
     _write_hygiene_files(tmp_path, version="0.3.0")
-    _write_skill(tmp_path, "using-xtrax", "0.3.0")
 
     _passed, failures = audit_project_hygiene(tmp_path, config_path)
 
     # Asserting the absence of THIS failure, not an overall pass: the synthetic fixture
-    # trips unrelated rules (its README is under min_readme_bytes), so `passed is True`
-    # would be testing the fixture rather than the check.
-    assert not any("SKILL.md xtrax_version" in item for item in failures), failures
+    # trips unrelated rules (its README is under min_readme_bytes).
+    assert not any("manifest.toml [plugin] version" in item for item in failures), failures
 
 
-def test_audit_project_hygiene_ignores_skill_without_a_version_marker(tmp_path: Path) -> None:
-    """The marker is optional -- a skill that declares no version cannot go stale.
-
-    Without this, adding the check would have silently required a version stamp on
-    every skill ever added, which is a different policy than the one intended.
-    """
+def test_audit_project_hygiene_fails_on_skill_declaring_xtrax_version(tmp_path: Path) -> None:
+    """A per-skill xtrax_version is a fourth version site, so it is forbidden outright."""
     config_path = _write_config(tmp_path)
     _write_hygiene_files(tmp_path, version="0.3.0")
-    _write_skill(tmp_path, "unversioned-skill", None)
+    _write_skill(tmp_path, "using-xtrax", "xtrax_version: 0.3.0\n")
+
+    passed, failures = audit_project_hygiene(tmp_path, config_path)
+
+    assert passed is False
+    assert any("using-xtrax/SKILL.md declares xtrax_version" in item for item in failures)
+
+
+def test_audit_project_hygiene_accepts_skill_without_version_marker(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    _write_hygiene_files(tmp_path, version="0.3.0")
+    _write_skill(tmp_path, "using-xtrax")
 
     _passed, failures = audit_project_hygiene(tmp_path, config_path)
 
-    assert not any("SKILL.md xtrax_version" in item for item in failures), failures
+    assert not any("xtrax_version" in item for item in failures), failures
 
 
 def test_main_cli_passes_on_repo() -> None:
