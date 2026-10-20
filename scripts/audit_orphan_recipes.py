@@ -87,6 +87,9 @@ PINNED_PATH = Path(".github") / "audit_orphans_pinned.toml"
 # minutes (`timeout-minutes: 90`), so no per-recipe budget may reach that ceiling.
 DEFAULT_RECIPE_TIMEOUT_S = 900
 JOB_TIMEOUT_S = 90 * 60
+# The recipe loop stops starting work this long after its step begins, so the job-level
+# timeout can never cancel the step before the Gate step reports (#5710 review).
+STEP_DEADLINE_S = 85 * 60
 
 
 def load_recipes(root: Path = ROOT) -> dict[str, dict]:
@@ -204,6 +207,7 @@ class PinnedCheck:
     not_orphans: list[str]  # named in the pin file but no longer an orphan (wired into CI)
     unknown: list[str]  # named in the pin file but not a Justfile recipe at all -> gate fails
     needs_arguments: list[str] = field(default_factory=list)  # pinned but unrunnable -> fails
+    bad_timeouts: list[str] = field(default_factory=list)  # [timeouts] key not runnable -> fails
 
 
 def load_pinned(path: Path) -> tuple[list[str], dict[str, str]]:
@@ -226,6 +230,8 @@ def check_pinned(
     recipes: dict[str, dict],
     results: dict[str, str],
     needs_arguments: list[str] | None = None,
+    timeouts: dict[str, int] | None = None,
+    skipped: dict[str, str] | None = None,
 ) -> PinnedCheck:
     """A pinned orphan that did not PASS is a regression; naming a non-recipe is an error.
 
@@ -247,11 +253,17 @@ def check_pinned(
         ),
         unknown=sorted(name for name in named if name not in recipes),
         needs_arguments=sorted(name for name in pinned if name in unrunnable),
+        bad_timeouts=sorted(
+            name for name in (timeouts or {}) if name not in orphan_set or name in (skipped or {})
+        ),
     )
 
 
 def load_skipped(path: Path) -> dict[str, str]:
     """Read the `[skipped]` table: orphans the scheduled run records as SKIP, not as a result.
+
+    A skipped recipe is run anyway if the runner later gains the tool it needs (the workflow
+    checks; see audit-orphans.yml), so the reason states the condition, not a permanent fact.
 
     A skip is a stated decision that the recipe cannot be meaningfully run on this runner
     (e.g. it needs a tool the runner does not have). It is never a PASS: the workflow writes
@@ -262,6 +274,10 @@ def load_skipped(path: Path) -> dict[str, str]:
     for name, reason in skipped.items():
         if not isinstance(reason, str) or not reason.strip():
             msg = f"{path}: [skipped] {name} needs a non-empty reason"
+            raise ValueError(msg)
+        if any(ch in reason for ch in "\n\r\t"):
+            # A reason is printed as one `recipe<TAB>reason` line and one summary row.
+            msg = f"{path}: [skipped] {name} reason must be a single line with no tabs"
             raise ValueError(msg)
     overlap = sorted(set(skipped) & set(load_pinned(path)[0]))
     if overlap:
@@ -309,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
         "--check-results",
         type=Path,
         default=None,
-        help="Gate mode (#5002): read `recipe<TAB>PASS|FAIL` lines and exit 1 if any "
+        help="Gate mode (#5002): read `recipe<TAB>PASS|FAIL|SKIP` lines and exit 1 if any "
         "recipe pinned in --pinned did not pass",
     )
     parser.add_argument(
@@ -334,34 +350,47 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.timeout_for is not None:
-        timeouts = load_timeouts(args.pinned or ROOT / PINNED_PATH)
-        print(timeouts.get(args.timeout_for, DEFAULT_RECIPE_TIMEOUT_S))
-        return 0
-
     root = args.root.resolve()
+    pin_file = args.pinned or root / PINNED_PATH
     recipes = load_recipes(root)
     entrypoints = discover_ci_entrypoints(root / ".github" / "workflows")
     dangling = unreferenced_workflow_recipes(recipes, entrypoints)
     covered = reachable_from(recipes, set(entrypoints))
-    runnable, needs_args = orphan_audit_recipes(recipes, covered)
+    orphans, needs_args = orphan_audit_recipes(recipes, covered)
+    skipped = load_skipped(pin_file)
+    # Skipped orphans are recorded, not run, so the runnable set excludes them.
+    runnable = [name for name in orphans if name not in skipped]
+    timeouts = load_timeouts(pin_file)
+    bad_timeouts = sorted(name for name in timeouts if name not in set(orphans) or name in skipped)
+
+    if bad_timeouts:
+        # A typo'd key would otherwise silently fall back to the 900 s default (#5710 review).
+        for name in bad_timeouts:
+            print(
+                f"FAIL: [timeouts] names {name!r}, which is not a runnable orphan recipe "
+                "(not a Justfile recipe, wired into CI, or listed in [skipped])",
+                file=sys.stderr,
+            )
+        return 1
+
+    if args.timeout_for is not None:
+        print(timeouts.get(args.timeout_for, DEFAULT_RECIPE_TIMEOUT_S))
+        return 0
 
     audit_total = sum(1 for name in recipes if name.startswith(AUDIT_PREFIX))
     audit_covered = sum(1 for name in covered if name.startswith(AUDIT_PREFIX))
-
-    pin_file = args.pinned or root / PINNED_PATH
-    skipped = load_skipped(pin_file)
-    runnable_to_run = [name for name in runnable if name not in skipped]
 
     if args.check_results is not None:
         pinned, not_pinned = load_pinned(pin_file)
         check = check_pinned(
             pinned=pinned,
             not_pinned={**not_pinned, **skipped},
-            orphans=runnable,
+            orphans=orphans,
             recipes=recipes,
             results=read_results(args.check_results),
             needs_arguments=needs_args,
+            timeouts=timeouts,
+            skipped=skipped,
         )
         for name in check.unclassified:
             print(f"UNCLASSIFIED (reported, not gated): {name} -- pin it once it passes")
@@ -375,19 +404,30 @@ def main(argv: list[str] | None = None) -> int:
                 "execute it; unpin it or give its parameters defaults",
                 file=sys.stderr,
             )
+        for name in check.bad_timeouts:
+            print(
+                f"FAIL: [timeouts] names {name!r}, which is not a runnable orphan",
+                file=sys.stderr,
+            )
         for name in check.regressions:
             print(f"FAIL: pinned recipe {name} did not pass (regression, #5002)", file=sys.stderr)
-        if check.regressions or check.unknown or check.needs_arguments or dangling:
+        if (
+            check.regressions
+            or check.unknown
+            or check.needs_arguments
+            or check.bad_timeouts
+            or dangling
+        ):
             return 1
         n_gated = sum(1 for name in pinned if name in set(runnable))
         print(f"PASS: all {n_gated} pinned orphan recipes passed")
         return 0
 
     if args.format == "lines":
-        for name in runnable_to_run:
+        for name in runnable:
             print(name)
     elif args.format == "skipped":
-        for name in runnable:
+        for name in orphans:
             if name in skipped:
                 print(f"{name}\t{skipped[name]}")
     elif args.format == "json":
@@ -398,6 +438,7 @@ def main(argv: list[str] | None = None) -> int:
                     "audit_total": audit_total,
                     "audit_covered": audit_covered,
                     "orphans": runnable,
+                    "skipped": {name: skipped[name] for name in orphans if name in skipped},
                     "orphans_needing_arguments": needs_args,
                     "dangling_workflow_recipes": {k: sorted(v) for k, v in dangling},
                 },
@@ -412,6 +453,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nUnreached and runnable ({len(runnable)}):")
         for name in runnable:
             print(f"  {name}")
+        if skipped:
+            print(f"\nUnreached, skipped (recorded as SKIP, not run) ({len(skipped)}):")
+            for name in orphans:
+                if name in skipped:
+                    print(f"  {name}: {skipped[name]}")
         if needs_args:
             print(f"\nUnreached, needs arguments ({len(needs_args)}):")
             for name in needs_args:
