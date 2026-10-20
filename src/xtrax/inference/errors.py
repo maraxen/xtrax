@@ -15,6 +15,8 @@ __all__ = [
     "AmbiguousAxisError",
     "AxisRole",
     "CseTraceError",
+    "HoistParityError",
+    "HoistVaryingInputError",
     "InputInvarianceError",
     "MemoDonationError",
     "MemoImpurityError",
@@ -112,6 +114,40 @@ class InputInvarianceError(XtraxInferenceError):
         super().__init__(
             f"output {output_index} claimed invariant along axis {axis!r} "
             f"reads varying input {input_name!r}"
+        )
+
+
+class HoistVaryingInputError(XtraxInferenceError):
+    """A shared input of a hoisted map is declared to vary along the mapped axis.
+
+    ``axis`` is the mapped axis and ``input_name`` the offending shared input.
+    Pass the input through ``xs`` instead, so the per-element stage receives it.
+    """
+
+    def __init__(self, axis: str, input_name: str) -> None:
+        self.axis = axis
+        self.input_name = input_name
+        super().__init__(
+            f"shared input {input_name!r} varies along axis {axis!r}; "
+            "pass it through xs so the per-element stage receives it"
+        )
+
+
+class HoistParityError(XtraxInferenceError):
+    """A hoisted output disagrees with its reference on a probed element.
+
+    ``index`` is the probed element, ``leaf_path`` the output leaf (or
+    ``"<tree structure>"`` when the trees differ), and ``max_abs_diff`` the
+    largest absolute difference (``inf`` when shapes or dtypes cannot be compared).
+    """
+
+    def __init__(self, index: int, leaf_path: str, max_abs_diff: float) -> None:
+        self.index = index
+        self.leaf_path = leaf_path
+        self.max_abs_diff = max_abs_diff
+        super().__init__(
+            f"element {index}, leaf {leaf_path!r}: hoisted output differs from "
+            f"reference (max abs diff {max_abs_diff:.3g})"
         )
 
 
