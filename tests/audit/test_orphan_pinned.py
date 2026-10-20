@@ -19,11 +19,14 @@ SCRIPT = ROOT / "scripts" / "audit_orphan_recipes.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from audit_orphan_recipes import (  # noqa: E402
+    JOB_TIMEOUT_S,
     PINNED_PATH,
     check_pinned,
     discover_ci_entrypoints,
     load_pinned,
     load_recipes,
+    load_skipped,
+    load_timeouts,
     orphan_audit_recipes,
     reachable_from,
     read_results,
@@ -121,8 +124,20 @@ class TestRealPinFile:
 
     def test_every_not_pinned_entry_states_a_reason(self):
         _, not_pinned = load_pinned(ROOT / PINNED_PATH)
-        assert not_pinned
-        assert all(reason.strip() for reason in not_pinned.values())
+        skipped = load_skipped(ROOT / PINNED_PATH)
+        assert not_pinned or skipped
+        assert all(reason.strip() for reason in {**not_pinned, **skipped}.values())
+
+    def test_every_skipped_recipe_is_a_live_orphan(self):
+        recipes = load_recipes(ROOT)
+        entrypoints = discover_ci_entrypoints(ROOT / ".github" / "workflows")
+        runnable, _ = orphan_audit_recipes(recipes, reachable_from(recipes, set(entrypoints)))
+        assert set(load_skipped(ROOT / PINNED_PATH)) <= set(runnable)
+
+    def test_timeout_for_release_readiness_is_above_the_default(self):
+        timeouts = load_timeouts(ROOT / PINNED_PATH)
+        assert timeouts["audit-release-readiness"] > 900
+        assert timeouts["audit-release-readiness"] < JOB_TIMEOUT_S
 
 
 def _run_check(tmp_path, lines):
@@ -150,3 +165,41 @@ class TestCheckResultsCli:
         proc = _run_check(tmp_path, lines)
         assert proc.returncode == 1
         assert f"pinned recipe {pinned[0]} did not pass" in proc.stderr
+
+
+class TestTimeoutAndSkipTables:
+    def _pin(self, tmp_path, body):
+        pin = tmp_path / "pin.toml"
+        pin.write_text(body)
+        return pin
+
+    def test_timeouts_default_is_absent_and_explicit_value_is_read(self, tmp_path):
+        assert load_timeouts(self._pin(tmp_path, "pinned = []\n")) == {}
+        assert load_timeouts(self._pin(tmp_path, "[timeouts]\naudit-a = 1200\n")) == {
+            "audit-a": 1200
+        }
+
+    @pytest.mark.parametrize("value", ['"3000"', "0", "-5", "5400", "true", "2.5"])
+    def test_malformed_timeout_fails_loudly(self, tmp_path, value):
+        with pytest.raises(ValueError, match="\\[timeouts\\]"):
+            load_timeouts(self._pin(tmp_path, f"[timeouts]\naudit-a = {value}\n"))
+
+    def test_skip_requires_a_reason(self, tmp_path):
+        with pytest.raises(ValueError, match="non-empty reason"):
+            load_skipped(self._pin(tmp_path, '[skipped]\naudit-a = "  "\n'))
+
+    def test_pinned_and_skipped_overlap_is_rejected(self, tmp_path):
+        pin = self._pin(tmp_path, 'pinned = ["audit-a"]\n[skipped]\naudit-a = "x"\n')
+        with pytest.raises(ValueError, match="both pinned and skipped"):
+            load_skipped(pin)
+
+    def test_skipped_is_not_gated_even_when_it_fails(self):
+        check = check_pinned(
+            pinned=["audit-a"],
+            not_pinned={"audit-skip": "praxia missing"},
+            orphans=["audit-a", "audit-skip"],
+            recipes=RECIPES,
+            results={"audit-a": "PASS", "audit-skip": "SKIP"},
+        )
+        assert check.regressions == []
+        assert check.unclassified == []

@@ -82,6 +82,12 @@ SELF_WORKFLOW = "audit-orphans.yml"
 
 PINNED_PATH = Path(".github") / "audit_orphans_pinned.toml"
 
+# Per-recipe wall-clock budget in seconds (`timeout N just <recipe>` in audit-orphans.yml).
+# A recipe with no `[timeouts]` entry gets the default. The job itself is capped at 90
+# minutes (`timeout-minutes: 90`), so no per-recipe budget may reach that ceiling.
+DEFAULT_RECIPE_TIMEOUT_S = 900
+JOB_TIMEOUT_S = 90 * 60
+
 
 def load_recipes(root: Path = ROOT) -> dict[str, dict]:
     """Return `just --dump` recipe records keyed by name.
@@ -244,6 +250,47 @@ def check_pinned(
     )
 
 
+def load_skipped(path: Path) -> dict[str, str]:
+    """Read the `[skipped]` table: orphans the scheduled run records as SKIP, not as a result.
+
+    A skip is a stated decision that the recipe cannot be meaningfully run on this runner
+    (e.g. it needs a tool the runner does not have). It is never a PASS: the workflow writes
+    it into the summary as SKIP, and it is not gated (only `pinned` gates).
+    """
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    skipped = dict(data.get("skipped", {}))
+    for name, reason in skipped.items():
+        if not isinstance(reason, str) or not reason.strip():
+            msg = f"{path}: [skipped] {name} needs a non-empty reason"
+            raise ValueError(msg)
+    overlap = sorted(set(skipped) & set(load_pinned(path)[0]))
+    if overlap:
+        msg = f"{path}: recipes both pinned and skipped: {overlap}"
+        raise ValueError(msg)
+    return skipped
+
+
+def load_timeouts(path: Path) -> dict[str, int]:
+    """Read the `[timeouts]` table: per-recipe budgets in seconds (#5710).
+
+    Malformed entries fail loudly: a silently ignored budget would bring back the false
+    900 s timeout this table exists to avoid.
+    """
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    timeouts = dict(data.get("timeouts", {}))
+    for name, seconds in timeouts.items():
+        if isinstance(seconds, bool) or not isinstance(seconds, int):
+            msg = f"{path}: [timeouts] {name} must be an integer number of seconds"
+            raise ValueError(msg)
+        if not 0 < seconds < JOB_TIMEOUT_S:
+            msg = (
+                f"{path}: [timeouts] {name} = {seconds} must be > 0 and below the "
+                f"{JOB_TIMEOUT_S} s job timeout"
+            )
+            raise ValueError(msg)
+    return timeouts
+
+
 def read_results(path: Path) -> dict[str, str]:
     """Parse `recipe<TAB>PASS|FAIL` lines written by audit-orphans.yml."""
     results: dict[str, str] = {}
@@ -273,12 +320,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--format",
-        choices=("lines", "json", "report"),
+        choices=("lines", "skipped", "json", "report"),
         default="report",
-        help="lines: one runnable orphan per line (for shell loops); "
+        help="lines: one orphan to run per line, skipped ones excluded (for shell loops); "
+        "skipped: `recipe<TAB>reason` for each skipped orphan; "
         "json: full detail; report: human-readable summary",
     )
+    parser.add_argument(
+        "--timeout-for",
+        metavar="RECIPE",
+        default=None,
+        help="Print the per-recipe timeout in seconds from [timeouts] (default 900) and exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.timeout_for is not None:
+        timeouts = load_timeouts(args.pinned or ROOT / PINNED_PATH)
+        print(timeouts.get(args.timeout_for, DEFAULT_RECIPE_TIMEOUT_S))
+        return 0
 
     root = args.root.resolve()
     recipes = load_recipes(root)
@@ -290,11 +349,15 @@ def main(argv: list[str] | None = None) -> int:
     audit_total = sum(1 for name in recipes if name.startswith(AUDIT_PREFIX))
     audit_covered = sum(1 for name in covered if name.startswith(AUDIT_PREFIX))
 
+    pin_file = args.pinned or root / PINNED_PATH
+    skipped = load_skipped(pin_file)
+    runnable_to_run = [name for name in runnable if name not in skipped]
+
     if args.check_results is not None:
-        pinned, not_pinned = load_pinned(args.pinned or root / PINNED_PATH)
+        pinned, not_pinned = load_pinned(pin_file)
         check = check_pinned(
             pinned=pinned,
-            not_pinned=not_pinned,
+            not_pinned={**not_pinned, **skipped},
             orphans=runnable,
             recipes=recipes,
             results=read_results(args.check_results),
@@ -321,8 +384,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.format == "lines":
-        for name in runnable:
+        for name in runnable_to_run:
             print(name)
+    elif args.format == "skipped":
+        for name in runnable:
+            if name in skipped:
+                print(f"{name}\t{skipped[name]}")
     elif args.format == "json":
         print(
             json.dumps(

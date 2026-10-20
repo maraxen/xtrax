@@ -39,5 +39,14 @@ pinned = [
   "audit-type-hardening-gate",
 ]
 
-[not_pinned]
-audit-drift-check = "CI-incapable: diffs against a real `praxia plugin install` export, and the praxia CLI is not installed in CI (see its Justfile comment)."
+# Per-recipe wall-clock budgets (seconds), replacing the 900 s default for recipes whose
+# honest runtime exceeds it. audit-release-readiness runs the FULL test suite (see its
+# Justfile recipe), so the 900 s default killed it at exit 124 on every weekly run since
+# 2026-10-01 (#5710). Must stay below the workflow's 90-minute job timeout.
+[timeouts]
+audit-release-readiness = 3000
+
+# Orphans the scheduled run records as SKIP, never as PASS and never gated (#5710).
+[skipped]
+audit-drift-check = "praxia not installed on the CI runner: the check diffs authored workflow templates against the exports `praxia plugin install` writes to ~/.praxia/workflows, which do not exist there, so every template reports missing_export. Runs locally via `just audit-drift-check`."
+

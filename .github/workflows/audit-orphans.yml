@@ -56,13 +56,16 @@ jobs:
           set -uo pipefail
 
           uv run python scripts/audit_orphan_recipes.py --format lines > /tmp/orphans.txt
+          uv run python scripts/audit_orphan_recipes.py --format skipped > /tmp/orphans-skipped.tsv
           total=$(wc -l < /tmp/orphans.txt)
+          skipped_total=$(wc -l < /tmp/orphans-skipped.tsv)
 
           {
             echo "## Unreached audit recipes"
             echo
-            echo "\`$total\` recipes that no workflow invokes. Only recipes pinned in"
+            echo "\`$total\` recipes to run that no workflow invokes. Only recipes pinned in"
             echo "\`.github/audit_orphans_pinned.toml\` gate; see the gate step (#5002)."
+            echo "Recipes in its \`[skipped]\` table are recorded as SKIP and not run (#5710)."
             echo
             echo "| recipe | result | seconds |"
             echo "|---|---|---|"
@@ -70,6 +73,16 @@ jobs:
 
           passed=0
           failed=0
+          skipped=0
+
+          # Skipped recipes are recorded, never run, and never PASS. Their reason is in the
+          # pin file; the gate reads them as not gated (only [pinned] gates).
+          while IFS=$'\t' read -r recipe reason; do
+            [ -n "$recipe" ] || continue
+            skipped=$((skipped + 1))
+            echo "| \`$recipe\` | SKIP: $reason | 0 |" >> "$GITHUB_STEP_SUMMARY"
+            printf '%s\tSKIP\n' "$recipe" >> /tmp/orphan-results.tsv
+          done < /tmp/orphans-skipped.tsv
 
           while read -r recipe; do
             [ -n "$recipe" ] || continue
@@ -82,8 +95,12 @@ jobs:
             # the whole report would be noise.
             uv sync --extra dev --extra eda --extra io --quiet
 
+            # Per-recipe budget from [timeouts] in the pin file (default 900 s). The budget
+            # is read per recipe so a malformed entry fails here, loudly, not silently.
+            budget=$(uv run python scripts/audit_orphan_recipes.py --timeout-for "$recipe") || exit 1
+
             start=$SECONDS
-            if timeout 900 just "$recipe" < /dev/null > "/tmp/${recipe}.log" 2>&1; then
+            if timeout "$budget" just "$recipe" < /dev/null > "/tmp/${recipe}.log" 2>&1; then
               result="PASS"
               passed=$((passed + 1))
             else
@@ -107,10 +124,10 @@ jobs:
 
           {
             echo
-            echo "**$passed passed, $failed failed** of $total."
+            echo "**$passed passed, $failed failed, $skipped skipped** of $((total + skipped_total))."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "$passed passed, $failed failed of $total"
+          echo "$passed passed, $failed failed, $skipped skipped of $((total + skipped_total))"
 
       - name: Gate on the pinned passing set (#5002)
         run: |
