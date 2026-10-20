@@ -77,7 +77,7 @@ once per call, not once per element. Use `xtrax.inference.hoist`
 (`src/xtrax/inference/hoist.py`):
 
 ```python
-from xtrax.inference import hoisted_map, make_hoisted
+from xtrax.inference import MemoPolicy, hoisted_map, make_hoisted
 
 hm = make_hoisted(shared, per_element, batch_size=4, cache=MemoPolicy())  # hold hm across calls
 ys = hm({"coords": coords}, keys)          # shared(**args) once; per_element(s, x) mapped over keys
@@ -101,7 +101,9 @@ ys = hoisted_map(shared, per_element, shared_args, xs)  # one-shot: builds a fre
   `(L,3)->(L,L,C)` encoder. Hand-hoisting it gave no measurable change. The gain from
   `hoisted_map` is removing false dependence and cross-call recomputation. GPU and
   IREE/StableHLO behaviour is unverified.
-- Tests: `tests/inference/test_hoist.py` (A1-A8, including the negative and invariant controls).
+- `hoisted_map` builds fresh jit wrappers on every call, so the mapped stage recompiles
+  each time. A caller that repeats a call should hold a `HoistedMap` from `make_hoisted`.
+- Tests: `tests/inference/test_hoist.py`, including the negative and invariant controls.
 
 ## Remediation Playbook (keyed by `xtrax profile` flags)
 

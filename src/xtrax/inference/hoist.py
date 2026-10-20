@@ -8,8 +8,10 @@ that reads such an input cannot be hoisted, even when its value does not matter.
 
 The cache lives on the instance that ``make_hoisted`` returns, so repeated calls
 on one ``HoistedMap`` can reuse entries. ``hoisted_map`` is the one-shot form and
-builds a fresh instance on every call. ``batch_size`` is passed to the mapped
-stage as given; it is not read from ``axis``.
+builds a fresh instance on every call, so its jit wrappers are rebuilt and the
+mapped stage recompiles on every call. Callers that repeat a call should hold a
+``HoistedMap``. ``batch_size`` is passed to the mapped stage as given; it is not
+read from ``axis``.
 
 ``axis.varying_inputs`` is checked by name only. ``shared`` never receives
 ``xs``, so a jaxpr check on it would be vacuous. ``check_elements`` runs a
@@ -42,16 +44,32 @@ def _has_tracer(tree: Any) -> bool:
 
 
 def _leading_size(xs: Any) -> int:
-    """Length N of the mapped axis, checked to be at least 1."""
+    """Length N of the mapped axis: at least 1, and the same on every leaf."""
     leaves = jax.tree.leaves(xs)
     if not leaves:
         raise ValueError("xs must contain at least one array leaf")
-    shape = jnp.shape(leaves[0])
-    if not shape:
-        raise ValueError("every leaf of xs needs a leading mapped axis; got a scalar leaf")
-    if shape[0] < 1:
-        raise ValueError(f"xs has an empty mapped axis (N={shape[0]}); need N >= 1")
-    return int(shape[0])
+    sizes = []
+    for leaf in leaves:
+        shape = jnp.shape(leaf)
+        if not shape:
+            raise ValueError("every leaf of xs needs a leading mapped axis; got a scalar leaf")
+        sizes.append(int(shape[0]))
+    if len(set(sizes)) != 1:
+        raise ValueError(f"xs leaves disagree on the leading mapped axis: sizes {sizes}")
+    if sizes[0] < 1:
+        raise ValueError(f"xs has an empty mapped axis (N={sizes[0]}); need N >= 1")
+    return sizes[0]
+
+
+# Python scalars that jit cannot trace as arrays: the uncached path marks them static.
+_STATIC_TYPES = (bool, int, float, str)
+
+
+def _static_names(shared_args: Mapping[str, Any]) -> frozenset[str]:
+    """Names of shared arguments that are Python scalars or strings (static under jit)."""
+    return frozenset(
+        name for name, value in shared_args.items() if isinstance(value, _STATIC_TYPES)
+    )
 
 
 def _check_varying(axis: AxisSpec | None, shared_args: Mapping[str, Any]) -> None:
@@ -147,20 +165,30 @@ class HoistedMap:
     ) -> None:
         """Store the stages and build the jitted and memoized shared paths once."""
         self._axis = axis
-        self._uncached = jax.jit(shared)
+        self._shared = shared
+        self._jitted_shared: dict[frozenset[str], Callable[..., Any]] = {}
         self._memo = memoize_jaxpr(shared, policy=cache) if cache is not None else None
         self._mapped = _jit_mapped(per_element, batch_size)
         self._counts = {"shared_calls": 0, "traced_bypass": 0}
 
+    def _jit_for(self, static: frozenset[str]) -> Callable[..., Any]:
+        """Jitted ``shared`` with ``static`` names marked static; one wrapper per name set."""
+        if static not in self._jitted_shared:
+            self._jitted_shared[static] = jax.jit(
+                self._shared, static_argnames=tuple(sorted(static))
+            )
+        return self._jitted_shared[static]
+
     def _run_shared(self, shared_args: Mapping[str, Any]) -> Any:
         """Run the shared stage, through the memo cache when one was requested."""
         self._counts["shared_calls"] += 1
+        static = _static_names(shared_args)
         if self._memo is None:
-            return self._uncached(**shared_args)
+            return self._jit_for(static)(**shared_args)
         if _has_tracer(shared_args):
             # The memo key needs concrete values; under an enclosing jit it cannot be built.
             self._counts["traced_bypass"] += 1
-            return self._uncached(**shared_args)
+            return self._jit_for(static)(**shared_args)
         return self._memo(**shared_args)
 
     def __call__(
