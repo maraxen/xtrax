@@ -217,12 +217,12 @@ def test_capture_in_a_real_repo_reports_a_sha_and_source(tmp_path):
     # tmp_path is not a git repo, so this must degrade honestly rather than
     # inventing a value or raising.
     assert prov.git_sha is not None
-    assert prov.provenance_source in {"builtin", "degraded"}
+    assert prov.provenance_source in {"builtin", "degraded", "cisternal"}
 
 
 def test_capture_never_raises_on_a_missing_directory():
     prov = RunProvenance.capture(cwd="/nonexistent/path/for/xtrax/test")
-    assert prov.provenance_source in {"builtin", "degraded"}
+    assert prov.provenance_source in {"builtin", "degraded", "cisternal"}
 
 
 # --- opt-out ----------------------------------------------------------------

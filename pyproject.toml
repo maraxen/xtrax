@@ -99,25 +99,22 @@ onnx = [
 # down to orbax 0.11.x. [tool.uv] override-dependencies below lifts it for this
 # repo's lock only; a `pip install xtrax[onnx]` from PyPI still gets jax2onnx's
 # own cap, which no metadata of ours can override.
-# NOTE: there is deliberately no `provenance = ["cisternal"]` extra yet.
+# `xtrax plugin install|update|export|info` -- cisternal's shared plugin sub-app,
+# the same surface as `bth plugin` and `jaxlint plugin`. Optional so the core
+# install does not pull the agent-plugin toolchain; `xtrax plugin` exits 1 with
+# an install hint when cisternal is absent (see src/xtrax/cli/plugin_verb.py).
 #
-# xtrax.telemetry uses cisternal.provenance (durable per-run git refs, dirty-tree
-# worktree snapshots) when it is importable, via a guarded import in
-# src/xtrax/telemetry/record.py, and degrades to git shellouts otherwise --
-# recording provenance_source="builtin" so the difference is never invisible.
-# That upgrade path needs no dependency declaration to work.
+# The same extra provides `cisternal.provenance`, which xtrax.telemetry uses for
+# durable per-run git refs and dirty-tree snapshots when it is importable (guarded
+# import in src/xtrax/telemetry/record.py). Without it telemetry falls back to git
+# shellouts and records provenance_source="builtin", so the difference is never
+# invisible. Users who want durable provenance install `xtrax[plugin]`.
 #
-# Declaring the extra anyway was tried and reverted (2026-08-28). cisternal pins
-# `fastmcp==4.0.0a2`, an exact PRE-RELEASE, as a hard runtime dependency. uv
-# resolves every extra when building the lock, so merely declaring an optional
-# cisternal extra makes xtrax unresolvable without `--prerelease=allow` -- for
-# all users, including those who never ask for provenance. An optional extra
-# that breaks the default install is not optional.
-#
-# Users who want durable provenance today install cisternal themselves. Add the
-# extra once cisternal moves fastmcp/cyclopts behind its own extras;
-# cisternal.provenance is pure stdlib, so nothing about that module requires
-# them.
+# History: an earlier cisternal extra was reverted on 2026-08-28 because cisternal
+# then hard-pinned the pre-release `fastmcp==4.0.0a2`, which made the lock unresolvable
+# without --prerelease=allow. cisternal 0.1.3 is stable and requires fastmcp>=4, so
+# the extra now resolves on the default index (verified by `uv lock`).
+plugin = [ "cisternal>=0.1.3",]
 authoring-smoke = [ "outlines>=1.0", "transformers>=4.40", "torch>=2.0",]
 # Capped at <0.14 when tier4_controller made CI depend on this extra. An
 # uncapped alpha means an unrelated bathos release can turn the board red, and

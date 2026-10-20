@@ -26,7 +26,16 @@ def main() -> None:
 
     tyro is imported inside this function so that importing this module
     does not pull in tyro (AC2: import isolation).
+
+    ``xtrax plugin ...`` is routed to cisternal's plugin sub-app before tyro runs:
+    tyro cannot forward raw argv (``--help`` included) to a non-tyro command.
     """
+    if len(sys.argv) > 1 and sys.argv[1] == "plugin":
+        from xtrax.cli.plugin_verb import run_plugin
+
+        run_plugin(sys.argv[2:])
+        return
+
     # Lazy tyro import — AC2: keeps this module tyro-free at import time.
     import tyro
 
