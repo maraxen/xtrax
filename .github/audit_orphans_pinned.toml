@@ -6,9 +6,15 @@
 # fail. This is a list of recipes EXPECTED TO PASS, not an exemption
 # list -- a recipe absent from it is reported but not gated.
 #
-# Every derived orphan that is not pinned is named in [not_pinned] with its reason, so
-# "not gated" is always a stated decision. A derived orphan in neither table is
-# reported as UNCLASSIFIED; pin it once it has passed.
+# Every derived orphan that is not pinned is "not gated". A derived orphan that is in
+# neither `pinned` nor `[skipped]` is reported as UNCLASSIFIED; pin it once it has passed.
+#
+# [skipped] (#5710) names orphans the scheduled run does not run unless the runner has
+# the tool they need. The workflow checks `command -v praxia` and only records SKIP when
+# that fails; if the tool appears on the runner the recipe runs (still not gated).
+#
+# [timeouts] (#5710) gives per-recipe budgets in seconds. Its keys must be runnable
+# orphans: a typo'd or wired-in key fails the run, it never silently falls back to 900 s.
 
 pinned = [
   "audit-api-ergonomics-gate",  # baseline re-seeded 2026-10-01 (#5682)
@@ -48,5 +54,5 @@ audit-release-readiness = 3000
 
 # Orphans the scheduled run records as SKIP, never as PASS and never gated (#5710).
 [skipped]
-audit-drift-check = "praxia not installed on the CI runner: the check diffs authored workflow templates against the exports `praxia plugin install` writes to ~/.praxia/workflows, which do not exist there, so every template reports missing_export. Runs locally via `just audit-drift-check`."
+audit-drift-check = "praxia not installed on the CI runner (`command -v praxia` failed): the check diffs authored workflow templates against the exports `praxia plugin install` writes to ~/.praxia/workflows, which do not exist there, so every template reports missing_export. Recorded SKIP, never PASS; runs when praxia is present. Locally: `just audit-drift-check`."
 
