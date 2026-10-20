@@ -51,6 +51,26 @@ Tier-1 facts already established in code (verify-paths):
   (`src/xtrax/stages/topology.py`, `validate_plan_topology`).
 - Only set `ordered=True` when correctness depends on host-observed order.
 
+## Vectorize-First Discipline (replicates, draws, pairs, cells, frames)
+
+A Python loop over replicates, bootstrap draws, pairs, cells or frames is a
+defect until shown otherwise. Incident (downstream coverage run, 2026-10-16):
+a host-side loop of B=200 fits per target per replicate took 30-98 s per
+replicate at production size.
+
+- Batch the leading axis in the first design: `jax.vmap`, or xtrax's
+  `Vmap` / `ChunkedMap` strategies via `axis_dispatch` (`src/xtrax/tiling/dispatch.py`).
+  Chunk with `ChunkedMap` when memory bounds the batch; a ragged final chunk is fine.
+- Test batched == looped output (same keys, same inputs) before trusting the
+  batched path; keep the looped version only as the test oracle.
+- Profile one unit at production shapes (real K, N, B, pair count), not toy
+  shapes, before any run expected to take more than a few minutes. Read
+  `exec/element` from `xtrax profile`.
+- Count recompiles: enable `jax.config.update("jax_log_compiles", True)` (or
+  `JAX_LOG_COMPILES=1`) and expect zero compiles at steady state; `xtrax profile`
+  reports `steady compiles`.
+- Put the unit's wall-time estimate in the run's pre-registration sidecar.
+
 ## Remediation Playbook (keyed by `xtrax profile` flags)
 
 Measure the unit with `xtrax profile` first (`xtrax-probing` covers the report).
