@@ -120,6 +120,117 @@ def _params_repr(params: dict) -> str:
 _TRACE_MEMO: WeakKeyDictionary = WeakKeyDictionary()
 
 
+class _UnionFind:
+    """Union-find over equation indices, with path halving."""
+
+    def __init__(self, n: int) -> None:
+        self.parent = list(range(n))
+
+    def find(self, x: int) -> int:
+        parent = self.parent
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self.parent[max(ra, rb)] = min(ra, rb)
+
+
+def _trace_once(
+    fn: Callable[..., jax.Array],
+    abstract_inputs: Sequence,
+) -> tuple[Any, bool]:
+    """Trace ``fn`` through the memo; return ``(closed_jaxpr, cache_hit)``."""
+    try:
+        closed = jax.make_jaxpr(fn)(*abstract_inputs)
+    except Exception as exc:
+        raise CseTraceError(
+            f"analyze_cse could not trace {getattr(fn, '__qualname__', fn)!r}: {exc}"
+        ) from exc
+
+    cache_hit = _TRACE_MEMO.get(fn) is closed
+    try:
+        _TRACE_MEMO[fn] = closed
+    except TypeError:
+        pass  # unhashable/unweakrefable fn: skip memo tracking
+    return closed, cache_hit
+
+
+def _op_token(value: Any, var_token: dict[int, tuple]) -> tuple:
+    if _is_literal(value):
+        return ("lit", _literal_key(value))
+    return var_token.get(id(value), ("free", id(value)))
+
+
+def _fingerprint_round(eqns: Sequence[Any], uf: _UnionFind) -> dict[tuple, list[int]]:
+    """One fixpoint round: hash eqns under current representative map."""
+    var_token: dict[int, tuple] = {}
+    for i, eq in enumerate(eqns):
+        tok = ("eq", uf.find(i))
+        for ov in eq.outvars:
+            var_token[id(ov)] = tok
+
+    fps: dict[tuple, list[int]] = {}
+    for i, eq in enumerate(eqns):
+        fp = (
+            eq.primitive.name,
+            _params_repr(eq.params),
+            tuple(_op_token(v, var_token) for v in eq.invars),
+        )
+        fps.setdefault(fp, []).append(i)
+    return fps
+
+
+def _merge_round(fps: dict[tuple, list[int]], uf: _UnionFind) -> bool:
+    """Union every fingerprint group onto its first member; True if anything merged."""
+    changed = False
+    for members in fps.values():
+        if len(members) > 1:
+            anchor = members[0]
+            for other in members[1:]:
+                if uf.find(anchor) != uf.find(other):
+                    uf.union(anchor, other)
+                    changed = True
+    return changed
+
+
+def _merge_to_fixpoint(eqns: Sequence[Any], uf: _UnionFind) -> None:
+    """Merge, rewrite representatives, repeat until stable."""
+    n = len(eqns)
+    prev_canonical = None
+    while True:
+        changed = _merge_round(_fingerprint_round(eqns, uf), uf)
+        canonical = tuple(uf.find(i) for i in range(n))
+        if not changed or canonical == prev_canonical:
+            break
+        prev_canonical = canonical
+
+
+def _aval_nbytes(aval: Any) -> int:
+    size = 1
+    for dim in getattr(aval, "shape", ()):
+        size *= int(dim)
+    dtype = getattr(aval, "dtype", np.dtype(np.float32))
+    return size * np.dtype(dtype).itemsize
+
+
+def _duplicate_class(members: list[int], eqns: Sequence[Any]) -> CseDuplicateClass:
+    eq0 = eqns[members[0]]
+    out_shapes = tuple(tuple(int(d) for d in getattr(ov.aval, "shape", ())) for ov in eq0.outvars)
+    # Wasted bytes: all-but-one member's output size (smallest member kept).
+    nbytes = sum(_aval_nbytes(ov.aval) for ov in eq0.outvars)
+    return CseDuplicateClass(
+        primitive=eq0.primitive.name,
+        eqn_count=len(members),
+        params_fingerprint=_params_repr(eq0.params)[:64],
+        invar_shapes=out_shapes,
+        est_wasted_bytes=nbytes * (len(members) - 1),
+    )
+
+
 def analyze_cse(
     fn: Callable[..., jax.Array],
     abstract_inputs: Sequence,
@@ -144,110 +255,21 @@ def analyze_cse(
         the same fn object twice returns the identical ClosedJaxpr, flagged via
         ``trace_cache_hit=True``. Mutated closures require a fresh callable.
     """
-    try:
-        closed = jax.make_jaxpr(fn)(*abstract_inputs)
-    except Exception as exc:
-        raise CseTraceError(
-            f"analyze_cse could not trace {getattr(fn, '__qualname__', fn)!r}: {exc}"
-        ) from exc
-
-    cache_hit = _TRACE_MEMO.get(fn) is closed
-    try:
-        _TRACE_MEMO[fn] = closed
-    except TypeError:
-        pass  # unhashable/unweakrefable fn: skip memo tracking
-
-    inner = closed.jaxpr
-    eqns = inner.eqns
+    closed, cache_hit = _trace_once(fn, abstract_inputs)
+    eqns = closed.jaxpr.eqns
     n = len(eqns)
 
-    # Union-find over eqn indices.
-    parent = list(range(n))
-
-    def _find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def _union(a: int, b: int) -> None:
-        ra, rb = _find(a), _find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-
-    def _fingerprint_round() -> dict[tuple, list[int]]:
-        """One fixpoint round: hash eqns under current representative map."""
-        var_token: dict[int, tuple] = {}
-        for i, eq in enumerate(eqns):
-            tok = ("eq", _find(i))
-            for ov in eq.outvars:
-                var_token[id(ov)] = tok
-
-        def _op_token(v) -> tuple:
-            if _is_literal(v):
-                return ("lit", _literal_key(v))
-            return var_token.get(id(v), ("free", id(v)))
-
-        fps: dict[tuple, list[int]] = {}
-        for i, eq in enumerate(eqns):
-            fp = (
-                eq.primitive.name,
-                _params_repr(eq.params),
-                tuple(_op_token(v) for v in eq.invars),
-            )
-            fps.setdefault(fp, []).append(i)
-        return fps
-
-    # Fixpoint loop: merge, rewrite representatives, repeat until stable.
-    prev_canonical = None
-    while True:
-        fps = _fingerprint_round()
-        changed = False
-        for members in fps.values():
-            if len(members) > 1:
-                anchor = members[0]
-                for other in members[1:]:
-                    if _find(anchor) != _find(other):
-                        _union(anchor, other)
-                        changed = True
-        canonical = tuple(_find(i) for i in range(n))
-        if not changed or canonical == prev_canonical:
-            break
-        prev_canonical = canonical
+    uf = _UnionFind(n)
+    _merge_to_fixpoint(eqns, uf)
 
     # Collect final equivalence classes.
     classes: dict[int, list[int]] = {}
     for i in range(n):
-        classes.setdefault(_find(i), []).append(i)
+        classes.setdefault(uf.find(i), []).append(i)
 
-    duplicates: list[CseDuplicateClass] = []
-    for members in classes.values():
-        if len(members) < 2:
-            continue
-        eq0 = eqns[members[0]]
-        out_shapes: list[tuple[int, ...]] = []
-        for ov in eq0.outvars:
-            shape = getattr(ov.aval, "shape", ())
-            out_shapes.append(tuple(int(d) for d in shape))
-        # Wasted bytes: all-but-one member's output size (smallest member kept).
-        nbytes = 0
-        for ov in eq0.outvars:
-            aval = ov.aval
-            size = 1
-            for dim in getattr(aval, "shape", ()):
-                size *= int(dim)
-            dtype = getattr(aval, "dtype", np.dtype(np.float32))
-            nbytes += size * np.dtype(dtype).itemsize
-        duplicates.append(
-            CseDuplicateClass(
-                primitive=eq0.primitive.name,
-                eqn_count=len(members),
-                params_fingerprint=_params_repr(eq0.params)[:64],
-                invar_shapes=tuple(out_shapes),
-                est_wasted_bytes=nbytes * (len(members) - 1),
-            )
-        )
-
+    duplicates = [
+        _duplicate_class(members, eqns) for members in classes.values() if len(members) >= 2
+    ]
     duplicates.sort(key=lambda c: c.est_wasted_bytes, reverse=True)
     total_dup = sum(c.eqn_count for c in duplicates)
     return CseReport(
