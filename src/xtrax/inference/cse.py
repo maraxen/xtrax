@@ -317,59 +317,54 @@ def _scan_counts(params: Mapping[str, Any]) -> tuple[int, int]:
     return len(params["ft_in"].elts[0].elts), len(params["ft_out"].elts[0].elts)
 
 
-def trace_input_dependence(closed: Any) -> InputDependence:
-    """Map every produced value to the top-level inputs it reads.
+class _DependenceWalk:
+    """Mutable state for one :func:`trace_input_dependence` call.
 
-    ``analyze_cse`` stays detection-only. This walk reuses its literal test
-    and the public jaxpr walker (``iter_jaxpr_eqns``, ``sub_jaxprs``) so a
-    ``sin`` inside ``remat`` / ``custom_jvp`` / ``jit`` (pjit) is visible.
-
-    Call-equation outputs take the callee's per-output dependence, not the
-    union of every operand. ``cond`` also unions the predicate, which is not
-    a branch invar.
-
-    ``scan`` and ``while`` bodies are iterated until the carry dependence
-    stops growing. A ``while`` output also reads every input its predicate
-    reads, since the predicate decides how many iterations run.
-
-    Args:
-        closed: A closed jaxpr from ``jax.make_jaxpr``, or a bare jaxpr.
-
-    Returns:
-        InputDependence for intermediates and outputs.
+    Holds the value-to-dependence map, the produced-intermediates log, and the
+    equation order. Each method handles one equation family; the walk order and
+    the record bookkeeping are the same as the former nested closures.
     """
-    deps: dict[int, frozenset[int]] = {}
-    for const in getattr(closed, "constvars", ()):
-        deps[id(const)] = frozenset()
-    for index, invar in enumerate(closed.invars):
-        deps[id(invar)] = frozenset((index,))
 
-    order = {id(eqn): index for index, eqn in enumerate(iter_jaxpr_eqns(closed))}
-    produced: list[tuple[int, str, frozenset[int]]] = []
+    def __init__(self, closed: Any) -> None:
+        self.deps: dict[int, frozenset[int]] = {}
+        for const in getattr(closed, "constvars", ()):
+            self.deps[id(const)] = frozenset()
+        for index, invar in enumerate(closed.invars):
+            self.deps[id(invar)] = frozenset((index,))
+        self.order = {id(eqn): index for index, eqn in enumerate(iter_jaxpr_eqns(closed))}
+        self.produced: list[tuple[int, str, frozenset[int]]] = []
 
-    def _record(eqn: Any, per_out: Sequence[frozenset[int]]) -> None:
-        slot = order[id(eqn)]
+    def run(self, closed: Any) -> InputDependence:
+        self._visit(closed)
+        self.produced.sort(key=lambda item: item[0])
+        outputs = tuple(_dep_of(out, self.deps) for out in closed.outvars)
+        intermediates = tuple((name, dep) for _, name, dep in self.produced)
+        return InputDependence(intermediates, outputs)
+
+    def _record(self, eqn: Any, per_out: Sequence[frozenset[int]]) -> None:
+        slot = self.order[id(eqn)]
         for out, dep in zip(eqn.outvars, per_out, strict=True):
-            deps[id(out)] = dep
-            produced.append((slot, eqn.primitive.name, dep))
+            self.deps[id(out)] = dep
+            self.produced.append((slot, eqn.primitive.name, dep))
 
-    def _bind(eqn: Any, sub: Any, paired_outer: set[int]) -> list[frozenset[int]]:
+    def _bind(self, eqn: Any, sub: Any, paired_outer: set[int]) -> list[frozenset[int]]:
         for inner, outer in align_call_invars(eqn.invars, sub.invars):
             if outer is None:
-                deps[id(inner)] = frozenset()
+                self.deps[id(inner)] = frozenset()
                 continue
             paired_outer.add(id(outer))
-            deps[id(inner)] = _dep_of(outer, deps)
-        _visit(sub)
-        return [_dep_of(out, deps) for out in sub.outvars]
+            self.deps[id(inner)] = _dep_of(outer, self.deps)
+        self._visit(sub)
+        return [_dep_of(out, self.deps) for out in sub.outvars]
 
-    def _seed(jaxpr: Any, in_deps: Sequence[frozenset[int]]) -> list[frozenset[int]]:
+    def _seed(self, jaxpr: Any, in_deps: Sequence[frozenset[int]]) -> list[frozenset[int]]:
         for inner, dep in zip(jaxpr.invars, in_deps, strict=True):
-            deps[id(inner)] = dep
-        _visit(jaxpr)
-        return [_dep_of(out, deps) for out in jaxpr.outvars]
+            self.deps[id(inner)] = dep
+        self._visit(jaxpr)
+        return [_dep_of(out, self.deps) for out in jaxpr.outvars]
 
     def _carry_fixpoint(
+        self,
         body: Any,
         lead: Sequence[frozenset[int]],
         carry: Sequence[frozenset[int]],
@@ -392,74 +387,101 @@ def trace_input_dependence(closed: Any) -> InputDependence:
         current = list(carry)
         outs: list[frozenset[int]] = []
         for _ in range(len(current) + 1):
-            del produced[mark:]
-            outs = _seed(body, [*lead, *current, *tail])
+            del self.produced[mark:]
+            outs = self._seed(body, [*lead, *current, *tail])
             grown = [c | o for c, o in zip(current, outs[: len(current)], strict=True)]
             if grown == current:
                 break
             current = grown
         return current, outs
 
-    def _visit_scan(eqn: Any, op_deps: tuple[frozenset[int], ...]) -> None:
+    def _visit_scan(self, eqn: Any, op_deps: tuple[frozenset[int], ...]) -> None:
         n_consts, n_carry = _scan_counts(eqn.params)
         body = next(sub_jaxprs(eqn.params["jaxpr"]))
-        carry, outs = _carry_fixpoint(
+        carry, outs = self._carry_fixpoint(
             body,
             op_deps[:n_consts],
             op_deps[n_consts : n_consts + n_carry],
             op_deps[n_consts + n_carry :],
-            len(produced),
+            len(self.produced),
         )
-        _record(eqn, [*carry, *outs[n_carry:]])
+        self._record(eqn, [*carry, *outs[n_carry:]])
 
-    def _visit_while(eqn: Any, op_deps: tuple[frozenset[int], ...]) -> None:
+    def _visit_while(self, eqn: Any, op_deps: tuple[frozenset[int], ...]) -> None:
         n_cond = eqn.params["cond_nconsts"]
         n_body = eqn.params["body_nconsts"]
         cond_consts = op_deps[:n_cond]
         body = next(sub_jaxprs(eqn.params["body_jaxpr"]))
         cond = next(sub_jaxprs(eqn.params["cond_jaxpr"]))
-        carry, _ = _carry_fixpoint(
+        carry, _ = self._carry_fixpoint(
             body,
             op_deps[n_cond : n_cond + n_body],
             op_deps[n_cond + n_body :],
             (),
-            len(produced),
+            len(self.produced),
         )
         # The trip count is decided by the predicate, so a carry the predicate
         # reads makes every carry output depend on it. This is conservative:
         # it does not track which iterations actually run.
-        _seed(cond, [*cond_consts, *carry])
+        self._seed(cond, [*cond_consts, *carry])
         trips = frozenset().union(*cond_consts, *carry)
-        _record(eqn, [dep | trips for dep in carry])
+        self._record(eqn, [dep | trips for dep in carry])
 
-    def _visit(jaxpr: Any) -> None:
+    def _visit_call(self, eqn: Any, subs: list[Any]) -> None:
+        """Equation with sub-jaxprs: per-output union over every callee, plus extras.
+
+        Operands that are not paired with a callee invar are unioned into every
+        output, so a non-branch input such as a ``cond`` predicate still counts.
+        """
+        paired_outer: set[int] = set()
+        first, *rest = subs
+        merged = self._bind(eqn, first, paired_outer)
+        for sub in rest:
+            nxt = self._bind(eqn, sub, paired_outer)
+            merged = [left | right for left, right in zip(merged, nxt, strict=True)]
+        extra: frozenset[int] = frozenset()
+        for value in eqn.invars:
+            if id(value) not in paired_outer:
+                extra = extra | _dep_of(value, self.deps)
+        self._record(eqn, [dep | extra for dep in merged])
+
+    def _visit(self, jaxpr: Any) -> None:
         for eqn in jaxpr.eqns:
-            op_deps = tuple(_dep_of(v, deps) for v in eqn.invars)
-            if eqn.primitive.name == "scan":
-                _visit_scan(eqn, op_deps)
+            op_deps = tuple(_dep_of(v, self.deps) for v in eqn.invars)
+            name = eqn.primitive.name
+            if name == "scan":
+                self._visit_scan(eqn, op_deps)
                 continue
-            if eqn.primitive.name == "while":
-                _visit_while(eqn, op_deps)
+            if name == "while":
+                self._visit_while(eqn, op_deps)
                 continue
             subs = list(sub_jaxprs(eqn.params))
             if not subs:
                 union = frozenset().union(*op_deps)
-                _record(eqn, (union,) * len(eqn.outvars))
+                self._record(eqn, (union,) * len(eqn.outvars))
                 continue
-            paired_outer: set[int] = set()
-            first, *rest = subs
-            merged = _bind(eqn, first, paired_outer)
-            for sub in rest:
-                nxt = _bind(eqn, sub, paired_outer)
-                merged = [left | right for left, right in zip(merged, nxt, strict=True)]
-            extra: frozenset[int] = frozenset()
-            for value in eqn.invars:
-                if id(value) not in paired_outer:
-                    extra = extra | _dep_of(value, deps)
-            _record(eqn, [dep | extra for dep in merged])
+            self._visit_call(eqn, subs)
 
-    _visit(closed)
-    produced.sort(key=lambda item: item[0])
-    outputs = tuple(_dep_of(out, deps) for out in closed.outvars)
-    intermediates = tuple((name, dep) for _, name, dep in produced)
-    return InputDependence(intermediates, outputs)
+
+def trace_input_dependence(closed: Any) -> InputDependence:
+    """Map every produced value to the top-level inputs it reads.
+
+    ``analyze_cse`` stays detection-only. This walk reuses its literal test
+    and the public jaxpr walker (``iter_jaxpr_eqns``, ``sub_jaxprs``) so a
+    ``sin`` inside ``remat`` / ``custom_jvp`` / ``jit`` (pjit) is visible.
+
+    Call-equation outputs take the callee's per-output dependence, not the
+    union of every operand. ``cond`` also unions the predicate, which is not
+    a branch invar.
+
+    ``scan`` and ``while`` bodies are iterated until the carry dependence
+    stops growing. A ``while`` output also reads every input its predicate
+    reads, since the predicate decides how many iterations run.
+
+    Args:
+        closed: A closed jaxpr from ``jax.make_jaxpr``, or a bare jaxpr.
+
+    Returns:
+        InputDependence for intermediates and outputs.
+    """
+    return _DependenceWalk(closed).run(closed)
