@@ -96,11 +96,23 @@ ys = hoisted_map(shared, per_element, shared_args, xs)  # one-shot: builds a fre
 - `cache=MemoPolicy(...)` memoizes `shared` on the instance (content-keyed, see
   `src/xtrax/inference/memo.py`). Its entries can hold large arrays; bound them with
   `max_entries`. Under an enclosing `jit` the cache is bypassed (`stats()["traced_bypass"]`).
-- Probe on this machine (CPU, jax 0.11.1, throwaway script, 261020): XLA already hoists a
-  truly invariant subgraph out of `lax.map`, chunked or not, including a size-inflating
-  `(L,3)->(L,L,C)` encoder. Hand-hoisting it gave no measurable change. The gain from
-  `hoisted_map` is removing false dependence and cross-call recomputation. GPU and
-  IREE/StableHLO behaviour is unverified.
+- Whether XLA already hoists truly invariant work depends on platform and map path
+  (bathos runs 261020, jax 0.11.1, `scripts/experiments/hoist_invariant_xla_probe.py`,
+  N=64, `(L,3)->(L,L,C)` encoder, L=256, C=64; naive / hand-hoisted median wall):
+
+  | path | CPU (`53c35140`) | CUDA TITAN RTX (`c2849876`) |
+  |---|---|---|
+  | `jax.vmap` | 1.00x | 1.00x |
+  | `chunked_map(batch_size=4)` | 1.03x | 4.51x |
+  | false-dependence control, vmap / chunked | 70.8x / 51.8x | 47.7x / 15.6x |
+
+  On CUDA the chunked path recomputes invariant work about once per `lax.map`
+  iteration. Hoist by hand (or with `make_hoisted`) whenever `batch_size` is set on
+  GPU, even without false dependence. IREE/StableHLO behaviour is unverified.
+- `cache` cannot memoize a `shared` stage whose graph draws random bits, even inside a
+  `cond` branch the inputs never take (the purity screen refuses `random_bits`). A
+  stage that splits a noise key unconditionally (a noise scale of 0 gates only the
+  value) stays uncached.
 - `hoisted_map` builds fresh jit wrappers on every call, so the mapped stage recompiles
   each time. A caller that repeats a call should hold a `HoistedMap` from `make_hoisted`.
 - Tests: `tests/inference/test_hoist.py`, including the negative and invariant controls.

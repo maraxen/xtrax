@@ -1,0 +1,18 @@
+{
+  "n_failed": 0,
+  "failed_arms": "",
+  "platform": "gpu",
+  "device_kind": "NVIDIA TITAN RTX",
+  "jax_version": "0.11.1",
+  "xtrax_file": "/home/solab/bv/xtrax-hoistprobe/src/xtrax/__init__.py",
+  "inv_wall_ratio_vmap": 1.0003482432817545,
+  "inv_wall_ratio_chunked": 4.509179784032127,
+  "fd_wall_ratio_vmap": 47.74611437760973,
+  "fd_wall_ratio_chunked": 15.569021892561231,
+  "max_inv_wall_ratio": 4.509179784032127,
+  "min_fd_wall_ratio": 15.569021892561231,
+  "inv_temp_ratio_vmap": 1.0,
+  "inv_temp_ratio_chunked": 0.5586270064494295,
+  "fd_temp_ratio_vmap": 0.6874995628995495,
+  "fd_temp_ratio_chunked": 0.0284558663206093
+}

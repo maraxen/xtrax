@@ -18,6 +18,7 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [261020_hoisted-map](specs/261020_hoisted-map.md) — Explicit shared/per-element split for debt #2600; structural varying-input check, optional parity probe, opt-in memoize_jaxpr cache across calls
 - [261016_jax-smoke-profiling-scope](specs/261016_jax-smoke-profiling-scope.md) — Cross-repo scope for catching low-hanging JAX bottlenecks at L2: jaxlint owns static suspects, xtrax owns measurement, bathos owns the launch gate, jaxlint ships its edit hook as a cisternal plugin
 - [260923_5035-audit-labels-memo-followups](specs/260923_5035-audit-labels-memo-followups.md) — Sprint spec for #5035 (coverage-DAG PASS label over failing tiers), #5241 (memo hot-path and duplicate-walker cleanup), #5240 (all-default wrap-time screening, NaN static keys)
 - [260922_conformance-residuals](specs/260922_conformance-residuals.md) — Two items the converged 260825 spec requires but PR #104 did not ship, the synthesizer row-identity unsoundness found while specifying them, and the verified CI-gate bug #5205
@@ -72,6 +73,9 @@
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [261020_hoist_invariant_cpu](research/data/261020_hoist_invariant_cpu.json)
+- [261020_hoist_invariant_cuda](research/data/261020_hoist_invariant_cuda.json)
+- [261020_xla-invariant-hoisting-probe](research/261020_xla-invariant-hoisting-probe.md) — Tracked bathos probe: XLA hoists truly invariant encoder work out of vmap on CPU and CUDA, and out of chunked lax.map on CPU, but not on CUDA (4.5x); false-dependence control 15-71x
 - [260930_onnx-route-spike](research/260930_onnx-route-spike.md) — Three pre-registered bathos runs: every tied sort/argsort/top_k/argmax/scatter case is exact on ORT CPU; jax2onnx 0.16.1 breaks nested jit on jax 0.11; threefry is replaced by ONNX RandomUniform and does not run
 - [260922_conformance-residuals-probes](research/260922_conformance-residuals-probes.md) — Measured JAX 0.11.1 / numpy 2.5.1 CPU behaviours behind spec 260922_conformance-residuals §1.1 — donation carriers in jaxprs, synthesizer row-identity unsoundness, byte bitcasts, and which host-transfer oracles work on CPU
 - [260914_browser-inference-routes-jaxjs-jax2onnx](research/260914_browser-inference-routes-jaxjs-jax2onnx.md) — Measured coverage of the non-IREE browser paths — jax-js is a reimplementation not a converter, jax2onnx takes Equinox directly and covers every primitive aminx needs, but ONNX mandates int64 TopK indices which ORT Web's WebGPU EP does not support
