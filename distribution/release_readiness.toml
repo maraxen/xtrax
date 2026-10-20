@@ -153,7 +153,7 @@ blocking = true
 
 [[automated_checks]]
 name = "ty_check"
-command = "uv run --extra eda --extra io --extra data ty check src/"
+command = "uv run --extra eda --extra io --extra data --extra plugin ty check src/"
 category = "ci_lint"
 blocking = true
 
