@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `xtrax.inference.hoisted_map`, `make_hoisted` and `HoistedMap` (debt #2600):
+  run a shared stage once per call, then map the per-element stage over an axis.
+  An optional `memoize_jaxpr` cache is owned by the instance. An axis declaration
+  refuses shared inputs that vary along the axis (`HoistVaryingInputError`), and
+  `check_elements` probes the first elements against a monolithic reference
+  (`HoistParityError`).
 - `xtrax.profiling.probe_unit` and `UnitProbeResult`: a measurement core that
   runs one unit of work at its real shape (warm-up, untraced median wall, then
   traced steady calls) and reports recompiles per steady call, XLA executions
