@@ -55,37 +55,92 @@ def _validate_and_flatten_axes(
     return flat
 
 
+def _read_sweep_axes(config_path: str) -> dict[str, Any]:
+    """Return the ``[sweep.axes]`` table of a config file (empty when absent)."""
+    with open(config_path, "rb") as f:
+        raw_toml = tomllib.load(f)
+
+    sweep_sec = raw_toml.get("sweep")
+    if sweep_sec is None:
+        return {}
+    if not isinstance(sweep_sec, dict):
+        raise ConfigError("[sweep] section must be a dictionary")
+    axes = sweep_sec.get("axes")
+    if axes is None:
+        return {}
+    if not isinstance(axes, dict):
+        raise ConfigError("sweep.axes must be a dictionary")
+    return axes
+
+
+def _sweep_grid(axes: dict[str, Any]) -> tuple[list[tuple[str, ...]], list[tuple[Any, ...]]]:
+    """Return ``(leaf paths, cartesian product of leaf values)`` for the axes."""
+    if not axes:
+        return [], [()]
+    flat = _validate_and_flatten_axes(axes)
+    paths = [item[0] for item in flat]
+    value_lists = [item[1] for item in flat]
+    return paths, list(itertools.product(*value_lists))
+
+
+def _write_sweep_manifest(sweep_dir: str, sweep_manifest: dict[str, dict[str, Any]]) -> None:
+    """Write ``sweep_manifest.json`` atomically (temp file, then replace)."""
+    temp_fd, temp_path = tempfile.mkstemp(dir=sweep_dir, prefix="manifest_", suffix=".json")
+    try:
+        with os.fdopen(temp_fd, "w") as f:
+            json.dump(sweep_manifest, f, indent=2)
+        os.replace(temp_path, os.path.join(sweep_dir, "sweep_manifest.json"))
+    except Exception:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise
+
+
+def _flush_device_queues() -> None:
+    """Run a dummy computation on every device to drain queued work after a failure."""
+    try:
+        jax.tree_util.tree_map(
+            lambda d: jax.device_put(jnp.zeros(1), d).block_until_ready(),
+            jax.devices(),
+        )
+    except Exception as dummy_err:
+        print(f"Failed to flush JAX device queues on error: {dummy_err}", file=sys.stderr)
+
+
+def _run_sweep_point(
+    cfg_obj: TrainConfig,
+    run_id: str,
+    sweep_id: str,
+    overrides: dict[str, Any],
+) -> None:
+    """Run one sweep configuration; record and survive its failure."""
+    try:
+        state = run_from_config(cfg_obj, run_id=run_id)
+        print(f"Sweep run {run_id} completed successfully with overrides {overrides}")
+
+        # Flush device execution queues
+        jax.tree_util.tree_map(lambda x: getattr(x, "block_until_ready", lambda: x)(), state)
+
+        del state
+        gc.collect()
+        jax.clear_caches()
+
+    except Exception as e:
+        print(f"Sweep run {run_id} failed with error: {e}", file=sys.stderr)
+        _record_sweep_failure(run_id, sweep_id, overrides, e)
+        traceback.clear_frames(e.__traceback__)
+        _flush_device_queues()
+        gc.collect()
+        jax.clear_caches()
+
+
 def run_sweep(args: SweepArgs) -> None:
     """Run a grid-search parameter sweep sequentially in the same process."""
     # 1. Load and validate base config
     base_cfg = load_config(args.config_path)
 
-    # 2. Parse config file to extract sweep.axes
-    with open(args.config_path, "rb") as f:
-        raw_toml = tomllib.load(f)
-
-    sweep_sec = raw_toml.get("sweep")
-    if sweep_sec is not None:
-        if not isinstance(sweep_sec, dict):
-            raise ConfigError("[sweep] section must be a dictionary")
-        axes = sweep_sec.get("axes")
-        if axes is not None:
-            if not isinstance(axes, dict):
-                raise ConfigError("sweep.axes must be a dictionary")
-        else:
-            axes = {}
-    else:
-        axes = {}
-
-    # Validate leaves are lists and flatten axes
-    if not axes:
-        paths: list[tuple[str, ...]] = []
-        combinations: list[tuple[Any, ...]] = [()]
-    else:
-        flat = _validate_and_flatten_axes(axes)
-        paths = [item[0] for item in flat]
-        value_lists = [item[1] for item in flat]
-        combinations = list(itertools.product(*value_lists))
+    # 2. Parse config file to extract sweep.axes; validate leaves and flatten
+    paths, combinations = _sweep_grid(_read_sweep_axes(args.config_path))
 
     # 3. Configure JAX compilation cache
     jax.config.update("jax_compilation_cache_dir", ".xtrax/jax_cache")
@@ -121,44 +176,9 @@ def run_sweep(args: SweepArgs) -> None:
         sweep_manifest[run_id] = overrides
 
         # Write sweep_manifest.json incrementally and atomically
-        temp_fd, temp_path = tempfile.mkstemp(dir=sweep_dir, prefix="manifest_", suffix=".json")
-        try:
-            with os.fdopen(temp_fd, "w") as f:
-                json.dump(sweep_manifest, f, indent=2)
-            os.replace(temp_path, os.path.join(sweep_dir, "sweep_manifest.json"))
-        except Exception:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            raise
+        _write_sweep_manifest(sweep_dir, sweep_manifest)
 
-        # Execute run with exception handling
-        try:
-            state = run_from_config(cfg_obj, run_id=run_id)
-            print(f"Sweep run {run_id} completed successfully with overrides {overrides}")
-
-            # Flush device execution queues
-            jax.tree_util.tree_map(lambda x: getattr(x, "block_until_ready", lambda: x)(), state)
-
-            del state
-            gc.collect()
-            jax.clear_caches()
-
-        except Exception as e:
-            print(f"Sweep run {run_id} failed with error: {e}", file=sys.stderr)
-            _record_sweep_failure(run_id, sweep_id, overrides, e)
-            traceback.clear_frames(e.__traceback__)
-
-            # Run dummy computation on all devices to flush queues
-            try:
-                jax.tree_util.tree_map(
-                    lambda d: jax.device_put(jnp.zeros(1), d).block_until_ready(),
-                    jax.devices(),
-                )
-            except Exception as dummy_err:
-                print(f"Failed to flush JAX device queues on error: {dummy_err}", file=sys.stderr)
-
-            gc.collect()
-            jax.clear_caches()
+        _run_sweep_point(cfg_obj, run_id, sweep_id, overrides)
 
 
 def _record_sweep_failure(

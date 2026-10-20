@@ -120,6 +120,117 @@ def _params_repr(params: dict) -> str:
 _TRACE_MEMO: WeakKeyDictionary = WeakKeyDictionary()
 
 
+class _UnionFind:
+    """Union-find over equation indices, with path halving."""
+
+    def __init__(self, n: int) -> None:
+        self.parent = list(range(n))
+
+    def find(self, x: int) -> int:
+        parent = self.parent
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self.parent[max(ra, rb)] = min(ra, rb)
+
+
+def _trace_once(
+    fn: Callable[..., jax.Array],
+    abstract_inputs: Sequence,
+) -> tuple[Any, bool]:
+    """Trace ``fn`` through the memo; return ``(closed_jaxpr, cache_hit)``."""
+    try:
+        closed = jax.make_jaxpr(fn)(*abstract_inputs)
+    except Exception as exc:
+        raise CseTraceError(
+            f"analyze_cse could not trace {getattr(fn, '__qualname__', fn)!r}: {exc}"
+        ) from exc
+
+    cache_hit = _TRACE_MEMO.get(fn) is closed
+    try:
+        _TRACE_MEMO[fn] = closed
+    except TypeError:
+        pass  # unhashable/unweakrefable fn: skip memo tracking
+    return closed, cache_hit
+
+
+def _op_token(value: Any, var_token: dict[int, tuple]) -> tuple:
+    if _is_literal(value):
+        return ("lit", _literal_key(value))
+    return var_token.get(id(value), ("free", id(value)))
+
+
+def _fingerprint_round(eqns: Sequence[Any], uf: _UnionFind) -> dict[tuple, list[int]]:
+    """One fixpoint round: hash eqns under current representative map."""
+    var_token: dict[int, tuple] = {}
+    for i, eq in enumerate(eqns):
+        tok = ("eq", uf.find(i))
+        for ov in eq.outvars:
+            var_token[id(ov)] = tok
+
+    fps: dict[tuple, list[int]] = {}
+    for i, eq in enumerate(eqns):
+        fp = (
+            eq.primitive.name,
+            _params_repr(eq.params),
+            tuple(_op_token(v, var_token) for v in eq.invars),
+        )
+        fps.setdefault(fp, []).append(i)
+    return fps
+
+
+def _merge_round(fps: dict[tuple, list[int]], uf: _UnionFind) -> bool:
+    """Union every fingerprint group onto its first member; True if anything merged."""
+    changed = False
+    for members in fps.values():
+        if len(members) > 1:
+            anchor = members[0]
+            for other in members[1:]:
+                if uf.find(anchor) != uf.find(other):
+                    uf.union(anchor, other)
+                    changed = True
+    return changed
+
+
+def _merge_to_fixpoint(eqns: Sequence[Any], uf: _UnionFind) -> None:
+    """Merge, rewrite representatives, repeat until stable."""
+    n = len(eqns)
+    prev_canonical = None
+    while True:
+        changed = _merge_round(_fingerprint_round(eqns, uf), uf)
+        canonical = tuple(uf.find(i) for i in range(n))
+        if not changed or canonical == prev_canonical:
+            break
+        prev_canonical = canonical
+
+
+def _aval_nbytes(aval: Any) -> int:
+    size = 1
+    for dim in getattr(aval, "shape", ()):
+        size *= int(dim)
+    dtype = getattr(aval, "dtype", np.dtype(np.float32))
+    return size * np.dtype(dtype).itemsize
+
+
+def _duplicate_class(members: list[int], eqns: Sequence[Any]) -> CseDuplicateClass:
+    eq0 = eqns[members[0]]
+    out_shapes = tuple(tuple(int(d) for d in getattr(ov.aval, "shape", ())) for ov in eq0.outvars)
+    # Wasted bytes: all-but-one member's output size (smallest member kept).
+    nbytes = sum(_aval_nbytes(ov.aval) for ov in eq0.outvars)
+    return CseDuplicateClass(
+        primitive=eq0.primitive.name,
+        eqn_count=len(members),
+        params_fingerprint=_params_repr(eq0.params)[:64],
+        invar_shapes=out_shapes,
+        est_wasted_bytes=nbytes * (len(members) - 1),
+    )
+
+
 def analyze_cse(
     fn: Callable[..., jax.Array],
     abstract_inputs: Sequence,
@@ -144,110 +255,21 @@ def analyze_cse(
         the same fn object twice returns the identical ClosedJaxpr, flagged via
         ``trace_cache_hit=True``. Mutated closures require a fresh callable.
     """
-    try:
-        closed = jax.make_jaxpr(fn)(*abstract_inputs)
-    except Exception as exc:
-        raise CseTraceError(
-            f"analyze_cse could not trace {getattr(fn, '__qualname__', fn)!r}: {exc}"
-        ) from exc
-
-    cache_hit = _TRACE_MEMO.get(fn) is closed
-    try:
-        _TRACE_MEMO[fn] = closed
-    except TypeError:
-        pass  # unhashable/unweakrefable fn: skip memo tracking
-
-    inner = closed.jaxpr
-    eqns = inner.eqns
+    closed, cache_hit = _trace_once(fn, abstract_inputs)
+    eqns = closed.jaxpr.eqns
     n = len(eqns)
 
-    # Union-find over eqn indices.
-    parent = list(range(n))
-
-    def _find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def _union(a: int, b: int) -> None:
-        ra, rb = _find(a), _find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-
-    def _fingerprint_round() -> dict[tuple, list[int]]:
-        """One fixpoint round: hash eqns under current representative map."""
-        var_token: dict[int, tuple] = {}
-        for i, eq in enumerate(eqns):
-            tok = ("eq", _find(i))
-            for ov in eq.outvars:
-                var_token[id(ov)] = tok
-
-        def _op_token(v) -> tuple:
-            if _is_literal(v):
-                return ("lit", _literal_key(v))
-            return var_token.get(id(v), ("free", id(v)))
-
-        fps: dict[tuple, list[int]] = {}
-        for i, eq in enumerate(eqns):
-            fp = (
-                eq.primitive.name,
-                _params_repr(eq.params),
-                tuple(_op_token(v) for v in eq.invars),
-            )
-            fps.setdefault(fp, []).append(i)
-        return fps
-
-    # Fixpoint loop: merge, rewrite representatives, repeat until stable.
-    prev_canonical = None
-    while True:
-        fps = _fingerprint_round()
-        changed = False
-        for members in fps.values():
-            if len(members) > 1:
-                anchor = members[0]
-                for other in members[1:]:
-                    if _find(anchor) != _find(other):
-                        _union(anchor, other)
-                        changed = True
-        canonical = tuple(_find(i) for i in range(n))
-        if not changed or canonical == prev_canonical:
-            break
-        prev_canonical = canonical
+    uf = _UnionFind(n)
+    _merge_to_fixpoint(eqns, uf)
 
     # Collect final equivalence classes.
     classes: dict[int, list[int]] = {}
     for i in range(n):
-        classes.setdefault(_find(i), []).append(i)
+        classes.setdefault(uf.find(i), []).append(i)
 
-    duplicates: list[CseDuplicateClass] = []
-    for members in classes.values():
-        if len(members) < 2:
-            continue
-        eq0 = eqns[members[0]]
-        out_shapes: list[tuple[int, ...]] = []
-        for ov in eq0.outvars:
-            shape = getattr(ov.aval, "shape", ())
-            out_shapes.append(tuple(int(d) for d in shape))
-        # Wasted bytes: all-but-one member's output size (smallest member kept).
-        nbytes = 0
-        for ov in eq0.outvars:
-            aval = ov.aval
-            size = 1
-            for dim in getattr(aval, "shape", ()):
-                size *= int(dim)
-            dtype = getattr(aval, "dtype", np.dtype(np.float32))
-            nbytes += size * np.dtype(dtype).itemsize
-        duplicates.append(
-            CseDuplicateClass(
-                primitive=eq0.primitive.name,
-                eqn_count=len(members),
-                params_fingerprint=_params_repr(eq0.params)[:64],
-                invar_shapes=tuple(out_shapes),
-                est_wasted_bytes=nbytes * (len(members) - 1),
-            )
-        )
-
+    duplicates = [
+        _duplicate_class(members, eqns) for members in classes.values() if len(members) >= 2
+    ]
     duplicates.sort(key=lambda c: c.est_wasted_bytes, reverse=True)
     total_dup = sum(c.eqn_count for c in duplicates)
     return CseReport(
@@ -317,59 +339,54 @@ def _scan_counts(params: Mapping[str, Any]) -> tuple[int, int]:
     return len(params["ft_in"].elts[0].elts), len(params["ft_out"].elts[0].elts)
 
 
-def trace_input_dependence(closed: Any) -> InputDependence:
-    """Map every produced value to the top-level inputs it reads.
+class _DependenceWalk:
+    """Mutable state for one :func:`trace_input_dependence` call.
 
-    ``analyze_cse`` stays detection-only. This walk reuses its literal test
-    and the public jaxpr walker (``iter_jaxpr_eqns``, ``sub_jaxprs``) so a
-    ``sin`` inside ``remat`` / ``custom_jvp`` / ``jit`` (pjit) is visible.
-
-    Call-equation outputs take the callee's per-output dependence, not the
-    union of every operand. ``cond`` also unions the predicate, which is not
-    a branch invar.
-
-    ``scan`` and ``while`` bodies are iterated until the carry dependence
-    stops growing. A ``while`` output also reads every input its predicate
-    reads, since the predicate decides how many iterations run.
-
-    Args:
-        closed: A closed jaxpr from ``jax.make_jaxpr``, or a bare jaxpr.
-
-    Returns:
-        InputDependence for intermediates and outputs.
+    Holds the value-to-dependence map, the produced-intermediates log, and the
+    equation order. Each method handles one equation family; the walk order and
+    the record bookkeeping are the same as the former nested closures.
     """
-    deps: dict[int, frozenset[int]] = {}
-    for const in getattr(closed, "constvars", ()):
-        deps[id(const)] = frozenset()
-    for index, invar in enumerate(closed.invars):
-        deps[id(invar)] = frozenset((index,))
 
-    order = {id(eqn): index for index, eqn in enumerate(iter_jaxpr_eqns(closed))}
-    produced: list[tuple[int, str, frozenset[int]]] = []
+    def __init__(self, closed: Any) -> None:
+        self.deps: dict[int, frozenset[int]] = {}
+        for const in getattr(closed, "constvars", ()):
+            self.deps[id(const)] = frozenset()
+        for index, invar in enumerate(closed.invars):
+            self.deps[id(invar)] = frozenset((index,))
+        self.order = {id(eqn): index for index, eqn in enumerate(iter_jaxpr_eqns(closed))}
+        self.produced: list[tuple[int, str, frozenset[int]]] = []
 
-    def _record(eqn: Any, per_out: Sequence[frozenset[int]]) -> None:
-        slot = order[id(eqn)]
+    def run(self, closed: Any) -> InputDependence:
+        self._visit(closed)
+        self.produced.sort(key=lambda item: item[0])
+        outputs = tuple(_dep_of(out, self.deps) for out in closed.outvars)
+        intermediates = tuple((name, dep) for _, name, dep in self.produced)
+        return InputDependence(intermediates, outputs)
+
+    def _record(self, eqn: Any, per_out: Sequence[frozenset[int]]) -> None:
+        slot = self.order[id(eqn)]
         for out, dep in zip(eqn.outvars, per_out, strict=True):
-            deps[id(out)] = dep
-            produced.append((slot, eqn.primitive.name, dep))
+            self.deps[id(out)] = dep
+            self.produced.append((slot, eqn.primitive.name, dep))
 
-    def _bind(eqn: Any, sub: Any, paired_outer: set[int]) -> list[frozenset[int]]:
+    def _bind(self, eqn: Any, sub: Any, paired_outer: set[int]) -> list[frozenset[int]]:
         for inner, outer in align_call_invars(eqn.invars, sub.invars):
             if outer is None:
-                deps[id(inner)] = frozenset()
+                self.deps[id(inner)] = frozenset()
                 continue
             paired_outer.add(id(outer))
-            deps[id(inner)] = _dep_of(outer, deps)
-        _visit(sub)
-        return [_dep_of(out, deps) for out in sub.outvars]
+            self.deps[id(inner)] = _dep_of(outer, self.deps)
+        self._visit(sub)
+        return [_dep_of(out, self.deps) for out in sub.outvars]
 
-    def _seed(jaxpr: Any, in_deps: Sequence[frozenset[int]]) -> list[frozenset[int]]:
+    def _seed(self, jaxpr: Any, in_deps: Sequence[frozenset[int]]) -> list[frozenset[int]]:
         for inner, dep in zip(jaxpr.invars, in_deps, strict=True):
-            deps[id(inner)] = dep
-        _visit(jaxpr)
-        return [_dep_of(out, deps) for out in jaxpr.outvars]
+            self.deps[id(inner)] = dep
+        self._visit(jaxpr)
+        return [_dep_of(out, self.deps) for out in jaxpr.outvars]
 
     def _carry_fixpoint(
+        self,
         body: Any,
         lead: Sequence[frozenset[int]],
         carry: Sequence[frozenset[int]],
@@ -392,74 +409,101 @@ def trace_input_dependence(closed: Any) -> InputDependence:
         current = list(carry)
         outs: list[frozenset[int]] = []
         for _ in range(len(current) + 1):
-            del produced[mark:]
-            outs = _seed(body, [*lead, *current, *tail])
+            del self.produced[mark:]
+            outs = self._seed(body, [*lead, *current, *tail])
             grown = [c | o for c, o in zip(current, outs[: len(current)], strict=True)]
             if grown == current:
                 break
             current = grown
         return current, outs
 
-    def _visit_scan(eqn: Any, op_deps: tuple[frozenset[int], ...]) -> None:
+    def _visit_scan(self, eqn: Any, op_deps: tuple[frozenset[int], ...]) -> None:
         n_consts, n_carry = _scan_counts(eqn.params)
         body = next(sub_jaxprs(eqn.params["jaxpr"]))
-        carry, outs = _carry_fixpoint(
+        carry, outs = self._carry_fixpoint(
             body,
             op_deps[:n_consts],
             op_deps[n_consts : n_consts + n_carry],
             op_deps[n_consts + n_carry :],
-            len(produced),
+            len(self.produced),
         )
-        _record(eqn, [*carry, *outs[n_carry:]])
+        self._record(eqn, [*carry, *outs[n_carry:]])
 
-    def _visit_while(eqn: Any, op_deps: tuple[frozenset[int], ...]) -> None:
+    def _visit_while(self, eqn: Any, op_deps: tuple[frozenset[int], ...]) -> None:
         n_cond = eqn.params["cond_nconsts"]
         n_body = eqn.params["body_nconsts"]
         cond_consts = op_deps[:n_cond]
         body = next(sub_jaxprs(eqn.params["body_jaxpr"]))
         cond = next(sub_jaxprs(eqn.params["cond_jaxpr"]))
-        carry, _ = _carry_fixpoint(
+        carry, _ = self._carry_fixpoint(
             body,
             op_deps[n_cond : n_cond + n_body],
             op_deps[n_cond + n_body :],
             (),
-            len(produced),
+            len(self.produced),
         )
         # The trip count is decided by the predicate, so a carry the predicate
         # reads makes every carry output depend on it. This is conservative:
         # it does not track which iterations actually run.
-        _seed(cond, [*cond_consts, *carry])
+        self._seed(cond, [*cond_consts, *carry])
         trips = frozenset().union(*cond_consts, *carry)
-        _record(eqn, [dep | trips for dep in carry])
+        self._record(eqn, [dep | trips for dep in carry])
 
-    def _visit(jaxpr: Any) -> None:
+    def _visit_call(self, eqn: Any, subs: list[Any]) -> None:
+        """Equation with sub-jaxprs: per-output union over every callee, plus extras.
+
+        Operands that are not paired with a callee invar are unioned into every
+        output, so a non-branch input such as a ``cond`` predicate still counts.
+        """
+        paired_outer: set[int] = set()
+        first, *rest = subs
+        merged = self._bind(eqn, first, paired_outer)
+        for sub in rest:
+            nxt = self._bind(eqn, sub, paired_outer)
+            merged = [left | right for left, right in zip(merged, nxt, strict=True)]
+        extra: frozenset[int] = frozenset()
+        for value in eqn.invars:
+            if id(value) not in paired_outer:
+                extra = extra | _dep_of(value, self.deps)
+        self._record(eqn, [dep | extra for dep in merged])
+
+    def _visit(self, jaxpr: Any) -> None:
         for eqn in jaxpr.eqns:
-            op_deps = tuple(_dep_of(v, deps) for v in eqn.invars)
-            if eqn.primitive.name == "scan":
-                _visit_scan(eqn, op_deps)
+            op_deps = tuple(_dep_of(v, self.deps) for v in eqn.invars)
+            name = eqn.primitive.name
+            if name == "scan":
+                self._visit_scan(eqn, op_deps)
                 continue
-            if eqn.primitive.name == "while":
-                _visit_while(eqn, op_deps)
+            if name == "while":
+                self._visit_while(eqn, op_deps)
                 continue
             subs = list(sub_jaxprs(eqn.params))
             if not subs:
                 union = frozenset().union(*op_deps)
-                _record(eqn, (union,) * len(eqn.outvars))
+                self._record(eqn, (union,) * len(eqn.outvars))
                 continue
-            paired_outer: set[int] = set()
-            first, *rest = subs
-            merged = _bind(eqn, first, paired_outer)
-            for sub in rest:
-                nxt = _bind(eqn, sub, paired_outer)
-                merged = [left | right for left, right in zip(merged, nxt, strict=True)]
-            extra: frozenset[int] = frozenset()
-            for value in eqn.invars:
-                if id(value) not in paired_outer:
-                    extra = extra | _dep_of(value, deps)
-            _record(eqn, [dep | extra for dep in merged])
+            self._visit_call(eqn, subs)
 
-    _visit(closed)
-    produced.sort(key=lambda item: item[0])
-    outputs = tuple(_dep_of(out, deps) for out in closed.outvars)
-    intermediates = tuple((name, dep) for _, name, dep in produced)
-    return InputDependence(intermediates, outputs)
+
+def trace_input_dependence(closed: Any) -> InputDependence:
+    """Map every produced value to the top-level inputs it reads.
+
+    ``analyze_cse`` stays detection-only. This walk reuses its literal test
+    and the public jaxpr walker (``iter_jaxpr_eqns``, ``sub_jaxprs``) so a
+    ``sin`` inside ``remat`` / ``custom_jvp`` / ``jit`` (pjit) is visible.
+
+    Call-equation outputs take the callee's per-output dependence, not the
+    union of every operand. ``cond`` also unions the predicate, which is not
+    a branch invar.
+
+    ``scan`` and ``while`` bodies are iterated until the carry dependence
+    stops growing. A ``while`` output also reads every input its predicate
+    reads, since the predicate decides how many iterations run.
+
+    Args:
+        closed: A closed jaxpr from ``jax.make_jaxpr``, or a bare jaxpr.
+
+    Returns:
+        InputDependence for intermediates and outputs.
+    """
+    return _DependenceWalk(closed).run(closed)
