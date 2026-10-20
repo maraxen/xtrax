@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1b2] - 2026-10-20
+
 ### Added
 
 - `xtrax.inference.hoisted_map`, `make_hoisted` and `HoistedMap` (debt #2600):

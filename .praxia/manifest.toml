@@ -1,6 +1,6 @@
 [plugin]
 name            = "xtrax"
-version         = "0.4.1b1"
+version         = "0.4.1b2"
 description     = "High-performance composable JAX library"
 requires_praxia = ">=0.1.0"
 
