@@ -4,7 +4,7 @@ CORE exports (stable, always available):
     AxisSpec, BatchPlanner, BatchPlan, AxisDecision, declare_varying_inputs
     Vmap, ChunkedMap, Scan, ScanTransition, Bucket, select_bucket, bucketize,
     BUCKET_LADDER, valid_span, select_rung, trim_axis, pad_axis
-    WhileCarry, WhileBodyFn, WhileCondFn, fixed_step_count_cond
+    WhileCarry, StaticWhile, WhileBodyFn, WhileCondFn, fixed_step_count_cond
     make_axis_dispatch, axis_dispatch, DispatchRejected
     CarrySpec, CarryShape
     MemoryBudget, BudgetInfeasibleError, device_memory_budget, lowered_memory_estimate,
@@ -60,6 +60,7 @@ from xtrax.tiling.strategy import (
     ChunkedMap,
     Scan,
     ScanTransition,
+    StaticWhile,
     Vmap,
     WhileBodyFn,
     WhileCarry,
@@ -86,6 +87,7 @@ __all__ = [
     "pad_axis",
     "ScanTransition",
     "WhileCarry",
+    "StaticWhile",
     "WhileBodyFn",
     "WhileCondFn",
     "fixed_step_count_cond",
