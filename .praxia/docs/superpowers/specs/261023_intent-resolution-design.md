@@ -70,10 +70,21 @@ properties nobody checks (anything inferred is verified on the jaxpr or declared
 
 ### 4.1 Intent functions
 
+**Module (orchestrator's call):** everything lives in a new module `xtrax.intent` —
+`xtrax.intent.loop`, `xtrax.intent.map`, `xtrax.intent.compile`, `Context`, `Plan`. `xtrax.loop` is
+already a subpackage (`src/xtrax/loop/`), so the top level does not re-export `loop`; below,
+`xtrax.loop`/`xtrax.map`/`xtrax.compile` mean the `xtrax.intent` names.
+
 | Intent | Call shape | Unresolved behaviour (outside `xtrax.compile`) |
 |---|---|---|
-| `xtrax.loop(body, init, *, length=None, xs=None, cond=None, name=None)` | like `lax.scan` (with `xs`/`length`), `fori_loop`, or `while_loop` (with `cond`) | plain `lax.scan` / `while_loop`, identical results |
+| `xtrax.loop(body, init, *, length=None, xs=None, cond=None, name=None)` | `lax.scan` shape: `body(carry, x) -> (carry, y)`, returns `(carry, ys)`; `fori_loop`-like when only `length`; `while_loop`-like with `cond` (carry-only, `body(carry) -> carry`) | plain `lax.scan` / `while_loop`, identical results |
 | `xtrax.map(f, xs, *, name=None)` | like `jax.vmap(f)(xs)` / `lax.map(f, xs, batch_size=…)` | plain `jax.vmap`, identical results |
+
+Collected outputs (`ys`) on the while primal: the primal preallocates `ys` from `eval_shape` of one
+step and writes with `lax.dynamic_update_index_in_dim`. Verified (spike `spike_loop_ys.py`): forward
+jaxpr while/no scan and outputs equal `lax.scan`; `grad` jaxpr scan/no while and grads match; `jvp`
+and `vmap(grad)` match; export round-trips with no `custom_call`. This is the decode shape
+(per-step token outputs).
 
 `xtrax.loop` with a static length is a `jax.custom_jvp` whose primal rule is a `while_loop` and whose
 JVP rule is the JVP of the `scan` form. Verified (spike `spike_loop_customjvp.py`): undifferentiated
@@ -140,6 +151,24 @@ overridable by site name (`xtrax.compile(fn, ctx, overrides={"decoder": Scan()})
 budgeted decision; the differentiated decision accounts for scan residuals (optionally with a
 checkpoint policy). No tracer-type inspection.
 
+**When the differentiated path is planned (orchestrator's call):** eagerly, best-effort. The plan
+pass traces `fn` and, separately, `jax.linearize` of `fn` with respect to its inexact (floating)
+leaves only; integer/bool leaves are held fixed. If linearization fails (e.g. a data-dependent
+`cond` loop), every site on that path gets "no differentiated decision" with the JAX error as its
+reason, and a later `grad` fails with JAX's own error. One Plan holds both paths, so the plan cache
+is keyed by (function, avals, ctx), not by transform stack; `jax.jit`'s own cache separates the
+transformed traces.
+
+**Budget estimator (orchestrator's call):** `MemoryBudget.estimate` is a caller-supplied function
+over the decision sequence (`tiling/budget.py:36-58`). When the user gives only a byte count,
+`xtrax.compile` builds the estimator: for each site and candidate strategy it calls
+`lowered_memory_estimate` (`tiling/estimators.py:72`) on that site's function at its recorded avals
+(for the differentiated decision, on `jax.vjp` of it, which includes residuals), and sums over sites
+that are live at the same time — siblings add, a nested site adds to its parent's per-iteration
+footprint. Sites map to `AxisSpec`s in plan-pass visit order (pre-order over the site tree); that is
+the order `BatchPlanner`'s joint-budget mode demotes in. A user-supplied estimator replaces this and
+receives decisions with site names.
+
 ### 4.4 Rules the resolver applies
 
 Context rules (lifted from where they live today, one shared table):
@@ -154,6 +183,25 @@ Hazard rules over the site tree (start with the two documented incidents; grow i
 
 One post-hoc check walks the execution jaxpr (`profiling/jaxpr.py:52`) and asserts no rule is
 violated after resolution; it does not iterate.
+
+**What each intent can resolve to (orchestrator's call).** `map` → `Vmap` or `ChunkedMap`. `loop` →
+primal: static-length while (a new strategy, `StaticWhile`, carrying `ys`; existing `WhileCarry` is
+carry-only and unbounded) or `Scan`; differentiated: `Scan`. `Bucket` (host-side) and `DedupGather`
+(dispatched outside `make_axis_dispatch`, `tiling/dispatch.py:76-78`) are not emitted by intents in
+the MVP.
+
+**Export (orchestrator's call).** The composer refuses `WhileCarry` because its trip count is
+unbounded (`export/composer.py:47,131`). A static-length loop is bounded, and StableHLO export of the
+while primal already round-trips (spikes). So: `target="export"` + StableHLO allows `StaticWhile`;
+formats that cannot express a while (to be confirmed per format, e.g. the ONNX route) resolve the
+primal to `Scan`; a `cond` (unbounded) loop under export is refused at resolve time. The composer
+learns `StaticWhile` in the same change.
+
+**Precedence (orchestrator's call).** Context rules are hard: a decision or user override that
+violates one is a resolve-time error. User overrides beat hazard rules; the Plan records the
+override and the hazard it overrode as a warning. A hazard with no satisfying alternative under the
+context is an error for the configurations documented as hangs or multi-minute codegen, and a
+warning otherwise.
 
 ### 4.5 AST/CST and jaxpr: what each is for
 
@@ -186,9 +234,10 @@ violated after resolution; it does not iterate.
    records zero recompiles at steady state (`jax_log_compiles`); the Plan prints as a table and
    round-trips through JSON.
 8. **Given** one real consumer workload, **when** ported to `xtrax.loop`/`xtrax.map`, **then** a
-   pre-registered bathos run reports the outcome stated in its sidecar. Candidate: the 512-step
-   autoregressive decode (compile time and step time, scan vs resolved), plus peak memory under
-   `grad` within the differentiated decision's budget.
+   pre-registered bathos run reports the outcome stated in its sidecar. Workload: aminx's
+   autoregressive decode (`aminx/inference/decode/autoregressive.py`,
+   `aminx/inference/sample_autoregressive.py`) — compile time and step time, scan vs resolved, on a
+   GPU — plus peak memory under `grad` within the differentiated decision's budget.
 
 ## 6. Follow-ups (outside the MVP)
 
@@ -205,9 +254,9 @@ violated after resolution; it does not iterate.
 
 ## 7. Left to the builder
 
-API spelling and module layout (`xtrax.intent`?), how the differentiated path is traced in the plan
-pass, the Plan JSON schema, the hazard thresholds, the error message wording, and which consumer
-workload is criterion 8's (the decode is the recommendation).
+The Plan JSON schema, the hazard thresholds (backend list for the scan-around-while hang, scan
+length for codegen), the error message wording, the `StaticWhile` field names, and per-format
+confirmation of which export formats express a while.
 
 ## 8. Risks carried from the pre-mortem
 
