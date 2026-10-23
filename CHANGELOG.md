@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Experimental `xtrax.intent`: frozen `Context`, plus `IntentError`,
   `SiteMismatchError`, and `UnsatisfiableContextError`. `Context` stores a
   memory budget (a `MemoryBudget`, a byte count, or none), target, export
-  format, backend, chunk size, and kernel preference.
+  format, backend, chunk size, and kernel preference. `Plan` records
+  `SiteKey` / `SiteDecision` rows (primal and diff strategies, reasons,
+  warnings) and round-trips through JSON at `PLAN_SCHEMA_VERSION`.
 - `xtrax.tiling.StaticWhile`: a frozen strategy with a static `length` for a
   bounded `while_loop` that may collect outputs.
 
