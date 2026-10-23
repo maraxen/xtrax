@@ -196,6 +196,14 @@ Two more declaration fields (from the plegadx ColabFold-family prior-art survey,
   accumulates dQ and dbias with fp32 `atomic_add`, so its results vary run to run. A
   non-deterministic kernel is never selected when `Context` asks for reproducibility, and its
   parity test compares within tolerance across repeated runs.
+- *`requires` + preflight*: a kernel taken from a dependency declares that dependency's version and
+  a JAX-signature probe (for example `inspect.signature(pl.pallas_call)` has the parameters the
+  kernel passes). The probe runs before selection and before any GPU job is submitted; a failing
+  probe is a refusal reason in `Plan.table()`, never a trace-time crash. Why: tokamax 0.0.10 calls
+  `pallas_call(backend=...)`, which jax 0.10.2 removed, so every GPU Triton call crashed at trace
+  time (plegadx bathos `028e8cfe`). tokamax's Triton path refuses CPU before it builds the
+  `pallas_call`, so neither interpret mode nor `make_jaxpr` on CPU catches it, and a CPU smoke test
+  on `implementation='xla'` says nothing about the kernel path.
 
 **Reporting where kernels did not apply.** `Plan.table()` lists, for each op site, *why* the
 reference ran: export target, `kernels=False`, no kernel for the backend, dtype not supported, or a
@@ -276,6 +284,21 @@ From the plegadx survey (`64f1a720`; upstream line citations are that session's,
 - tokamax 0.0.10's Triton attention has a VJP including dbias, has no dtype gate, and beat
   colabfold's Pallas attention for forward+backward at N=384 on A10 (7.1 vs 12.6 ms, per
   alphafold3-open's notebooks). It is the first candidate to wrap as an op rather than write.
+- tokamax swap A/B (plegadx LOOP-E1, bathos `90d66060`, stage exploration, outcome observed,
+  tentative pass; L40S, fp32, B8 L128 c_z 256 H4). The whole attention sublayer was timed with
+  the reference (R), with the same maths on the XLA core (F), and with F on the tokamax 0.0.15
+  Triton core (T). Train time is forward + vjp on an input cotangent:
+  - R/T is 1.62× on row attention and 1.55× on column attention; F/T is 1.62× and 1.56×; R/F is
+    0.995 and 0.999. The whole gain is in the attention core, which supports wrapping the
+    attention core first.
+  - Parity, as relative L2 over the output and every cotangent leaf including dbias, with padded
+    masks: T is 3.6e-4, inside the reference's own TF32 floor of 7.9e-4 (R at default vs R at
+    HIGHEST). `pallas_call` appears in T's vjp jaxpr, and a 10% bias negative control fires
+    (0.16).
+  - This is a tentative exploration result, not a confirmed claim.
+- tokamax's jax floor is not monotone: 0.0.13, 0.0.14 and 0.0.16+ need jax ≥ 0.11; 0.0.15 accepts
+  0.10.2 but imports `xprof.cli` (xprof ≥ 2.23.1). PyPI `tokamax 0.1.0` is an empty placeholder.
+  A wrapped tokamax op pins an exact version and carries the `requires` preflight above.
 
 ## 5. Non-goals
 
