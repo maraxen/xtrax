@@ -222,3 +222,10 @@ def test_from_json_missing_key_field():
 def test_from_json_invalid_text_is_json_decode_error():
     with pytest.raises(json.JSONDecodeError):
         Plan.from_json("{", context=Context())
+
+
+def test_from_json_rejects_static_while_diff():
+    payload = _plan_payload()
+    payload["decisions"][0]["diff"] = {"type": "StaticWhile", "length": 8}
+    with pytest.raises(ValueError, match="diff"):
+        Plan.from_json(json.dumps(payload), context=Context())

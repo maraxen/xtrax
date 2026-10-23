@@ -383,12 +383,18 @@ def _decision_from_json(payload: Any) -> SiteDecision:
     Raises
     ------
     ValueError
-        ``payload`` is not an object, a decision field is missing, or a
-        nested key or strategy is invalid.
+        ``payload`` is not an object, a decision field is missing, a nested
+        key or strategy is invalid, or ``diff`` is ``StaticWhile``.
     """
     body = _object(payload, "decision")
     diff_payload = _field(body, "diff")
-    diff = None if diff_payload is None else _strategy_from_json(diff_payload)
+    if diff_payload is None:
+        diff = None
+    else:
+        decoded = _strategy_from_json(diff_payload)
+        if isinstance(decoded, StaticWhile):
+            raise ValueError("'diff' cannot be StaticWhile")
+        diff = decoded
     warnings = _field(body, "warnings")
     if not isinstance(warnings, list):
         raise ValueError("'warnings' is not a list")
