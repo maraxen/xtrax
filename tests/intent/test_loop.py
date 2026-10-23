@@ -178,6 +178,7 @@ def test_loop_grad_with_int_counter():
         return jnp.sum(state) + jnp.sum(ys)
 
     assert ok(loop(body, init, length=8), jax.lax.scan(body, init, None, length=8))
+    assert ok(loop(body, init, length=7), jax.lax.scan(body, init, None, length=7))
     assert ok(f(_X), f_ref(_X))
     assert ok(jax.grad(f)(_X), jax.grad(f_ref)(_X))
 
