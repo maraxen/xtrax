@@ -56,10 +56,13 @@ from xtrax.telemetry import LedgerUnavailableError, RunLedger
 from xtrax.telemetry.record import KIND_TRAIN
 
 assert issubclass(LedgerUnavailableError, RuntimeError)
-# RunLedger.open(run_id, *, kind=KIND_TRAIN, root=None, derived_from=None, context=None)
+# RunLedger.open(run_id, *, kind=KIND_TRAIN, root=None, derived_from=None, context=None,
+#                distributions=None)
 ```
 
-Verify: `src/xtrax/telemetry/ledger.py:64-71` and `:205-214`, `src/xtrax/engine/engine.py:33-52` and `:88-109`, `src/xtrax/cli/resume_verb.py:107-118`.
+To record which installed distribution a third-party package ran from, pass `distributions=["aminx"]` to `RunLedger.open` or set `XTRAX_LEDGER_DISTRIBUTIONS=aminx,proxide`. Each name lands in `row.provenance.distributions` as an `xtrax.provenance.resolve_distribution` record: version, install kind, PEP 610 VCS commit, wheel sha256 when the installer recorded one, RECORD sha256, the module file, and `module_in_dist` (`"false"` when a source or vendored copy shadows the installed one). Values the metadata does not state are `"unknown"`.
+
+Verify: `src/xtrax/telemetry/ledger.py:67-74` and `:208-220`, `src/xtrax/provenance.py` (`resolve_distribution`), `src/xtrax/engine/engine.py:33-52` and `:88-109`, `src/xtrax/cli/resume_verb.py:107-118`.
 
 ## Inference-only loops
 

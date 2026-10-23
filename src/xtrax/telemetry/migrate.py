@@ -34,9 +34,26 @@ from xtrax.telemetry.record import (
     SchemaVersionMismatchError,
 )
 
-# Keyed by the version a migration upgrades *from*. Empty at v1: there is no
-# earlier released schema, and inventing a v0 would fabricate history.
-_MIGRATIONS: "dict[int, Callable[[dict[str, Any]], dict[str, Any]]]" = {}
+
+def _migrate_v1(row: "dict[str, Any]") -> "dict[str, Any]":
+    """v1 -> v2: ``provenance.distributions`` is new and empty for every v1 row.
+
+    v1 had no way to record a distribution, so an empty mapping is the true
+    reading, not a default standing in for a lost value.
+    """
+    provenance = row.get("provenance")
+    if not isinstance(provenance, dict):
+        raise LedgerRecordError("v1 ledger row has no provenance object to migrate")
+    if "distributions" in provenance:
+        raise LedgerRecordError(
+            "v1 ledger row already carries provenance.distributions, which v1 never wrote"
+        )
+    return {**row, "schema_version": 2, "provenance": {**provenance, "distributions": {}}}
+
+
+# Keyed by the version a migration upgrades *from*. There is no v0: inventing one
+# would fabricate history.
+_MIGRATIONS: "dict[int, Callable[[dict[str, Any]], dict[str, Any]]]" = {1: _migrate_v1}
 
 # Oldest version this code can still upgrade from.
 MIN_SUPPORTED_VERSION = 1

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `xtrax.provenance.resolve_distribution(name, *, module=None)` (debt #2947):
+  a flat `str -> str` record of the installed distribution a package runs
+  from. It gives the version, install kind (`index`, `vcs`, `archive`,
+  `editable`, `directory`, `not_installed`), the PEP 610 VCS commit, the wheel
+  sha256 when `direct_url.json` records one for a `.whl`, the sha256 of the
+  installed `RECORD`, the resolved module file, and `module_in_dist`, which
+  is `"false"` when a source or vendored copy shadows the installed one.
+  Values the metadata does not state are `"unknown"`. It reads installed
+  metadata only, with no subprocess or network.
+- `RunProvenance.distributions` and `RunLedger.open(..., distributions=...)`:
+  a run-ledger row records a configured package list. When no list is passed,
+  `XTRAX_LEDGER_DISTRIBUTIONS` (comma-separated; empty or `none` records
+  nothing) supplies it. Entries must carry exactly the resolver's fields as
+  strings, or construction and reading raise `LedgerRecordError`.
+- `xtrax ledger show` prints the recorded distributions.
+
+### Changed
+
+- Run-ledger `SCHEMA_VERSION` is 2. The v1 to v2 migration adds an empty
+  `provenance.distributions`. `iter_rows` (and so `find_run` and
+  `compact_ledger`) now upgrades older rows on read instead of skipping them,
+  and compaction rewrites them at v2. `RunLedgerRecord.from_dict` still
+  accepts only the running version. An xtrax older than this release skips v2
+  rows with a warning.
+
 ## [0.4.1b2] - 2026-10-20
 
 ### Added

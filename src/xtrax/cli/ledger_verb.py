@@ -125,6 +125,11 @@ def _print_provenance(prov: Any) -> None:
     print("provenance:")
     for field in _PROVENANCE_FIELDS:
         print(f"  {field:<18} {getattr(prov, field)}")
+    for requested, dist in prov.distributions.items():
+        print(
+            f"  dist {requested:<13} {dist['version']}  {dist['install_kind']}  "
+            f"commit={dist['vcs_commit']}  module_in_dist={dist['module_in_dist']}"
+        )
 
 
 def _print_ir(row: Any, root: Path) -> None:
