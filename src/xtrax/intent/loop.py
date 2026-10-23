@@ -7,42 +7,27 @@ loop is a plain :func:`jax.lax.while_loop`.
 
 from __future__ import annotations
 
-import dataclasses
 import functools
 from collections.abc import Callable
-from contextlib import contextmanager, nullcontext
-from contextvars import ContextVar
+from contextlib import nullcontext
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 
+from xtrax.intent._trace import (
+    _active_session,
+    _retrace,
+    _store_running_fn,
+    _suspend_registration,
+)
 from xtrax.intent.errors import IntentError
 from xtrax.intent.plan import SiteKey
-from xtrax.intent.sites import Session, activate, call_label, current_session
+from xtrax.intent.sites import Session, activate, call_label
 from xtrax.tiling.strategy import Scan, StaticWhile
-
-_REGISTER: ContextVar[bool] = ContextVar("xtrax.intent.loop.register", default=True)
 
 _Step = Callable[[tuple[Any, ...], Any, Any], Any]
 _Strategy = Scan | StaticWhile
-
-
-@contextmanager
-def _suspend_registration():
-    """Hide the active session while a closure is converted for its record."""
-    token = _REGISTER.set(False)
-    try:
-        yield
-    finally:
-        _REGISTER.reset(token)
-
-
-def _active_session() -> Session | None:
-    """Return the session that should record this call, if registration is on."""
-    if not _REGISTER.get():
-        return None
-    return current_session()
 
 
 def _example_slice(leaf: Any) -> Any:
@@ -83,15 +68,6 @@ def _convert_cond(
     """Closure-convert a conditional body ``carry -> carry``."""
     converted, consts = jax.closure_convert(body, init)
     return converted, tuple(consts)
-
-
-def _retrace(body: Callable[..., Any]) -> Callable[..., Any]:
-    """Return a new callable so a later closure conversion traces ``body`` again."""
-
-    def _body(*args: Any) -> Any:
-        return body(*args)
-
-    return _body
 
 
 def _apply_scan(fn: Callable[..., Any]) -> _Step:
@@ -145,16 +121,6 @@ def _static_length(length: int | None, xs: Any) -> int:
         rendered = ", ".join(str(size) for size in sizes)
         raise ValueError(f"scan got values with different leading axis sizes: {rendered}.")
     return sizes[0]
-
-
-def _store_running_fn(session: Session, key: SiteKey, fn: Callable[..., Any]) -> None:
-    """In plan mode, keep the conversion that ran, not the registration placeholder."""
-    if session.mode != "plan":
-        return
-    for index, record in enumerate(session.records):
-        if record.key == key:
-            session.records[index] = dataclasses.replace(record, fn=fn)
-            return
 
 
 def _allocate_ys(y_spec: Any, length: int) -> Any:
