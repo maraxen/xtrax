@@ -6,7 +6,15 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from xtrax.intent import IntentError, Session, SiteDecision, SiteKey, activate, loop
+from xtrax.intent import (
+    IntentError,
+    Session,
+    SiteDecision,
+    SiteKey,
+    activate,
+    current_session,
+    loop,
+)
 from xtrax.tiling import Vmap
 from xtrax.tiling.strategy import Scan, StaticWhile
 
@@ -111,6 +119,16 @@ def test_loop_collects_ys_like_scan():
 
     assert ok(jax.grad(f_xs)(init), jax.grad(f_xs_ref)(init))
 
+    def f_of_xs(xs_arg):
+        carry_i, ys_i = loop(body_xs, init, xs=xs_arg)
+        return carry_i.sum() + ys_i.sum()
+
+    def f_of_xs_ref(xs_arg):
+        carry_i, ys_i = jax.lax.scan(body_xs, init, xs_arg)
+        return carry_i.sum() + ys_i.sum()
+
+    assert ok(jax.grad(f_of_xs)(xs), jax.grad(f_of_xs_ref)(xs))
+
     def body_len(c, _):
         c2 = jnp.tanh(c + 0.1)
         return c2, jnp.sum(c)
@@ -143,18 +161,23 @@ def test_loop_pytree_carry_and_ys():
 
 def test_loop_grad_with_int_counter():
     def body(carry, _):
-        step, state = carry
+        step, flag, state = carry
         state2 = jnp.tanh(state + 0.1)
-        return (step + jnp.int32(1), state2), state2
+        return (step + jnp.int32(1), jnp.logical_not(flag), state2), state2
+
+    init = (jnp.int32(0), jnp.bool_(False), _X)
 
     def f(state0):
-        (_, state), ys = loop(body, (jnp.int32(0), state0), length=8)
+        (_, _, state), ys = loop(body, (jnp.int32(0), jnp.bool_(False), state0), length=8)
         return jnp.sum(state) + jnp.sum(ys)
 
     def f_ref(state0):
-        (_, state), ys = jax.lax.scan(body, (jnp.int32(0), state0), None, length=8)
+        (_, _, state), ys = jax.lax.scan(
+            body, (jnp.int32(0), jnp.bool_(False), state0), None, length=8
+        )
         return jnp.sum(state) + jnp.sum(ys)
 
+    assert ok(loop(body, init, length=8), jax.lax.scan(body, init, None, length=8))
     assert ok(f(_X), f_ref(_X))
     assert ok(jax.grad(f)(_X), jax.grad(f_ref)(_X))
 
@@ -364,3 +387,319 @@ def test_loop_primal_decision_selects_strategy():
     assert "decoder" in err.site
     assert "Vmap" in err.constraint
     assert "Vmap" in str(err)
+
+
+def _unwrap_jaxpr(jaxpr):
+    return jaxpr.jaxpr if hasattr(jaxpr, "jaxpr") else jaxpr
+
+
+def _inner_scan_in_outer_while(jaxpr) -> bool:
+    """True when the outer loop is a while and the nested loop's primal is a scan.
+
+    A static outer loop is a ``custom_jvp`` whose primal jaxpr is the while.
+    A conditional outer loop is the while itself. Either way the nested static
+    loop is the ``custom_jvp`` inside that while body.
+    """
+    custom = [eqn for eqn in jaxpr.eqns if eqn.primitive.name == "custom_jvp_call"]
+    whiles = [eqn for eqn in jaxpr.eqns if eqn.primitive.name == "while"]
+    if len(custom) == 1 and not whiles:
+        jaxpr = _unwrap_jaxpr(custom[0].params["call_jaxpr"])
+        whiles = [eqn for eqn in jaxpr.eqns if eqn.primitive.name == "while"]
+    if len(whiles) != 1:
+        return False
+    body = _unwrap_jaxpr(whiles[0].params["body_jaxpr"])
+    inner = [eqn for eqn in body.eqns if eqn.primitive.name == "custom_jvp_call"]
+    if len(inner) != 1:
+        return False
+    inner_names = [eqn.primitive.name for eqn in _unwrap_jaxpr(inner[0].params["call_jaxpr"]).eqns]
+    return "scan" in inner_names and "while" not in inner_names
+
+
+def _nested_static_pair():
+    """Fresh outer ``StaticWhile`` loop whose body calls a static ``inner`` loop."""
+
+    def f(x):
+        def body(c, _):
+            def inner(c2, _):
+                return c2 + jnp.float32(0.1), jnp.sum(c2)
+
+            c3, ys = loop(inner, c, length=2, name="inner")
+            return jnp.tanh(c3), jnp.sum(c) + jnp.sum(ys)
+
+        carry, ys = loop(body, x, length=4, name="outer")
+        return carry.sum() + ys.sum()
+
+    return f
+
+
+def _nested_static_ref(x):
+    def body(c, _):
+        def inner(c2, _):
+            return c2 + jnp.float32(0.1), jnp.sum(c2)
+
+        c3, ys = jax.lax.scan(inner, c, None, length=2)
+        return jnp.tanh(c3), jnp.sum(c) + jnp.sum(ys)
+
+    carry, ys = jax.lax.scan(body, x, None, length=4)
+    return carry.sum() + ys.sum()
+
+
+def _outer_inner_decisions(inner_primal):
+    outer = SiteKey(parent=None, path="primal", label="outer", ordinal=0)
+    inner = SiteKey(parent=outer, path="primal", label="inner", ordinal=0)
+    decisions = {
+        outer: SiteDecision(
+            key=outer,
+            kind="loop",
+            primal=StaticWhile(4),
+            diff=Scan(),
+            primal_reason="test",
+            diff_reason="test",
+        ),
+        inner: SiteDecision(
+            key=inner,
+            kind="loop",
+            primal=inner_primal,
+            diff=Scan(),
+            primal_reason="test",
+            diff_reason="test",
+        ),
+    }
+    return outer, inner, decisions
+
+
+def test_loop_nested_scan_executes_inner_decision():
+    x = jnp.linspace(-1.0, 1.0, 5)
+    outer_key, inner_key, decisions = _outer_inner_decisions(Scan())
+    plan = Session(mode="plan", decisions=decisions)
+    with activate(plan):
+        planned = _nested_static_pair()(x)
+    assert ok(planned, _nested_static_ref(x))
+    assert [record.key for record in plan.records] == [outer_key, inner_key]
+    stored = next(record for record in plan.records if record.key == outer_key)
+    stored_jx = str(jax.make_jaxpr(lambda c: stored.fn(c, None))(x))
+    assert "scan[" in stored_jx
+
+    exe = Session(mode="exec", records=plan.records, decisions=decisions)
+    with activate(exe):
+        closed = jax.make_jaxpr(_nested_static_pair())(x)
+    text = str(closed)
+    assert "scan[" in text and "while[" in text
+    assert _inner_scan_in_outer_while(closed.jaxpr)
+
+    values = Session(mode="exec", records=plan.records, decisions=decisions)
+    with activate(values):
+        got = _nested_static_pair()(x)
+    assert ok(got, _nested_static_ref(x))
+
+
+def test_loop_cond_nested_site_honors_decision():
+    state0 = jnp.linspace(-1.0, 1.0, 5)
+
+    def f():
+        def cond(carry):
+            return carry[0] < 3
+
+        def body(carry):
+            index, state = carry
+
+            def step(c, _):
+                return c + jnp.float32(0.25), jnp.sum(c)
+
+            state2, ys = loop(step, state, length=2, name="inner")
+            return index + jnp.int32(1), state2 + jnp.sum(ys)
+
+        return loop(body, (jnp.int32(0), state0), cond=cond, name="outer")
+
+    def ref():
+        def cond(carry):
+            return carry[0] < 3
+
+        def body(carry):
+            index, state = carry
+
+            def step(c, _):
+                return c + jnp.float32(0.25), jnp.sum(c)
+
+            state2, ys = jax.lax.scan(step, state, None, length=2)
+            return index + jnp.int32(1), state2 + jnp.sum(ys)
+
+        return jax.lax.while_loop(cond, body, (jnp.int32(0), state0))
+
+    plan = Session(mode="plan")
+    with activate(plan):
+        assert ok(f(), ref())
+    outer = next(record.key for record in plan.records if record.key.label == "outer")
+    inner = next(record.key for record in plan.records if record.key.label == "inner")
+    assert inner.parent == outer
+    assert inner.path == "primal"
+    assert inner.ordinal == 0
+    assert len(plan.records) == 2
+
+    decision = SiteDecision(
+        key=inner,
+        kind="loop",
+        primal=Scan(),
+        diff=Scan(),
+        primal_reason="test",
+        diff_reason="test",
+    )
+    exe = Session(mode="exec", records=plan.records, decisions={inner: decision})
+    with activate(exe):
+        closed = jax.make_jaxpr(f)()
+    text = str(closed)
+    assert "scan[" in text and "while[" in text
+    assert _inner_scan_in_outer_while(closed.jaxpr)
+    values = Session(mode="exec", records=plan.records, decisions={inner: decision})
+    with activate(values):
+        assert ok(f(), ref())
+
+
+def test_loop_session_primal_and_grad_one_conversion():
+    def run(kind: str) -> tuple[jax.Array, int]:
+        counter = {"n": 0}
+
+        def body(c, _):
+            counter["n"] += 1
+            return c + jnp.float32(counter["n"]), c
+
+        def f(c):
+            carry, _ys = loop(body, c, length=50, name="impure")
+            return carry
+
+        z = jnp.float32(0.0)
+        with activate(Session(mode="plan")):
+            if kind == "forward":
+                out = f(z)
+            elif kind == "jvp":
+                out = jax.jvp(f, (z,), (jnp.float32(1.0),))[0]
+            else:
+                out, _grad = jax.value_and_grad(f)(z)
+        return out, counter["n"]
+
+    forward, forward_traces = run("forward")
+    primal, jvp_traces = run("jvp")
+    grad_value, grad_traces = run("grad")
+    assert forward_traces == 2
+    assert jvp_traces == 2
+    assert grad_traces == 2
+    assert ok(forward, jnp.float32(100.0))
+    assert ok(primal, forward)
+    assert ok(grad_value, forward)
+
+
+def test_loop_empty_xs_matches_scan():
+    init = jnp.linspace(-1.0, 1.0, 5)
+    xs = jnp.zeros((0,) + init.shape)
+
+    def body(c, x):
+        return c + x, jnp.sum(c)
+
+    carry, ys = loop(body, init, xs=xs)
+    carry_r, ys_r = jax.lax.scan(body, init, xs)
+    assert jnp.array_equal(carry, init)
+    assert ys.shape == ys_r.shape and ys.dtype == ys_r.dtype
+    assert ys.shape == (0,)
+    assert ok((carry, ys), (carry_r, ys_r))
+
+    def f(carry0):
+        carry_i, ys_i = loop(body, carry0, xs=xs)
+        return jnp.sum(carry_i) + jnp.sum(ys_i)
+
+    def f_ref(carry0):
+        carry_i, ys_i = jax.lax.scan(body, carry0, xs)
+        return jnp.sum(carry_i) + jnp.sum(ys_i)
+
+    assert ok(jax.grad(f)(init), jax.grad(f_ref)(init))
+
+
+def test_loop_length_disagreement_raises_before_trace():
+    init = jnp.linspace(-1.0, 1.0, 5)
+    xs = jnp.zeros((3, 5), dtype=init.dtype)
+    traced = {"n": 0}
+
+    def body(c, a):
+        traced["n"] += 1
+        return c + a, jnp.sum(c)
+
+    with pytest.raises(
+        ValueError,
+        match=r"length` argument of 5 which disagrees with leading axis sizes \[3\]",
+    ):
+        loop(body, init, xs=xs, length=5)
+    assert traced["n"] == 0
+
+    xs_tree = (jnp.ones((3, 5), dtype=init.dtype), jnp.ones((4,), dtype=init.dtype))
+    with pytest.raises(
+        ValueError,
+        match=r"length` argument of 3 which disagrees with leading axis sizes \[3, 4\]",
+    ):
+        loop(body, init, xs=xs_tree, length=3)
+    assert traced["n"] == 0
+
+    carry, ys = loop(body, init, xs=xs, length=3)
+    carry_r, ys_r = jax.lax.scan(body, init, xs, length=3)
+    assert ok((carry, ys), (carry_r, ys_r))
+
+
+def test_loop_grad_after_activate_records_diff_child():
+    session = Session(mode="plan")
+    x = jnp.linspace(-1.0, 1.0, 5)
+
+    def f(x):
+        def body(c, _):
+            def inner(c2, _):
+                return c2 + jnp.float32(0.1), jnp.sum(c2)
+
+            c3, _ys = loop(inner, c, length=2, name="inner")
+            return jnp.tanh(c3), jnp.sum(c)
+
+        carry, ys = loop(body, x, length=4, name="outer")
+        return carry.sum() + ys.sum()
+
+    def f_ref(x):
+        def body(c, _):
+            def inner(c2, _):
+                return c2 + jnp.float32(0.1), jnp.sum(c2)
+
+            c3, _ys = jax.lax.scan(inner, c, None, length=2)
+            return jnp.tanh(c3), jnp.sum(c)
+
+        carry, ys = jax.lax.scan(body, x, None, length=4)
+        return carry.sum() + ys.sum()
+
+    compiled = jax.jit(f)
+    with activate(session):
+        compiled(x)
+    assert current_session() is None
+    outer = next(record.key for record in session.records if record.key.label == "outer")
+    before = len(session.records)
+    assert ok(jax.grad(compiled)(x), jax.grad(f_ref)(x))
+    assert current_session() is None
+    added = session.records[before:]
+    assert len(added) == 1
+    child = added[0]
+    assert child.key.path == "diff"
+    assert child.key.parent == outer
+    assert child.key.ordinal == 0
+    assert child.key.label == "inner"
+
+
+def test_loop_undecided_session_primal_is_while():
+    session = Session(mode="plan")
+    x = jnp.linspace(-1.0, 1.0, 4)
+
+    def f(x):
+        carry, ys = loop(
+            lambda c, _: (jnp.tanh(c + 0.1), jnp.sum(c)),
+            x,
+            length=4,
+            name="plain",
+        )
+        return carry.sum() + ys.sum()
+
+    with activate(session):
+        jx = str(jax.make_jaxpr(f)(x))
+    assert "while[" in jx and "scan[" not in jx
+    assert len(session.records) == 1
+    assert session.records[0].kind == "loop"

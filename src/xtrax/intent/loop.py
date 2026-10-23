@@ -7,6 +7,7 @@ loop is a plain :func:`jax.lax.while_loop`.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
@@ -44,11 +45,18 @@ def _active_session() -> Session | None:
     return current_session()
 
 
+def _example_slice(leaf: Any) -> Any:
+    """One row of ``leaf``, or zeros when the leading axis is empty."""
+    if leaf.shape[0] == 0:
+        return jnp.zeros(leaf.shape[1:], leaf.dtype)
+    return leaf[0]
+
+
 def _example_x(xs: Any) -> Any:
-    """First slice of ``xs`` on axis 0, or ``None`` when ``xs`` is omitted."""
+    """Slice ``xs`` at index 0, or ``None`` when ``xs`` is omitted."""
     if xs is None:
         return None
-    return jax.tree_util.tree_map(lambda leaf: leaf[0], xs)
+    return jax.tree_util.tree_map(_example_slice, xs)
 
 
 def _index_xs(xs: Any, index: Any) -> Any:
@@ -114,11 +122,39 @@ def _avals(init: Any, xs: Any) -> tuple[jax.ShapeDtypeStruct, ...]:
 
 
 def _static_length(length: int | None, xs: Any) -> int:
-    """Trip count from ``length``, or from the leading axis of ``xs``."""
-    if length is not None:
+    """Trip count from ``length``, or from the leading axis of ``xs``.
+
+    When ``xs`` is given, every leaf's leading size must equal that count.
+    The ``ValueError`` text matches :func:`jax.lax.scan`, and it is raised
+    before the body is traced.
+    """
+    if xs is None:
+        if length is None:
+            raise ValueError("loop requires length, xs, or cond")
         return length
-    leaf = jax.tree_util.tree_leaves(xs)[0]
-    return int(leaf.shape[0])
+    sizes = [int(leaf.shape[0]) for leaf in jax.tree_util.tree_leaves(xs)]
+    if length is not None:
+        if any(size != length for size in sizes):
+            raise ValueError(
+                f"scan got `length` argument of {length} which disagrees with "
+                f"leading axis sizes {sizes}."
+            )
+        return length
+    unique = set(sizes)
+    if len(unique) > 1:
+        rendered = ", ".join(str(size) for size in sizes)
+        raise ValueError(f"scan got values with different leading axis sizes: {rendered}.")
+    return sizes[0]
+
+
+def _store_running_fn(session: Session, key: SiteKey, fn: Callable[..., Any]) -> None:
+    """In plan mode, keep the conversion that ran, not the registration placeholder."""
+    if session.mode != "plan":
+        return
+    for index, record in enumerate(session.records):
+        if record.key == key:
+            session.records[index] = dataclasses.replace(record, fn=fn)
+            return
 
 
 def _allocate_ys(y_spec: Any, length: int) -> Any:
@@ -229,7 +265,13 @@ def _static_runner(
     ) -> Any:
         if session is not None and key is not None:
             with activate(session), session.scope(key, "primal"):
-                _convert_scan(_retrace(body), init, xs)
+                fn, _hoisted = _convert_scan(_retrace(body), init, xs)
+            # This retrace is the primal that runs. ``consts`` is the custom_jvp
+            # argument (closed-over tangents), matching the JVP rule; ``_hoisted``
+            # is the retrace's own copy and is not the differentiated input.
+            live = _apply_scan(fn)
+            _store_running_fn(session, key, fn)
+            return _execute(live, consts, init, xs, length, strategy)
         return _execute(step, consts, init, xs, length, strategy)
 
     @_run.defjvp
@@ -288,14 +330,14 @@ def _loop_cond(
     label: str,
 ) -> Any:
     """Conditional loop: a plain ``while_loop``, with a site when a session is active."""
-    suspend = _suspend_registration() if session is not None else nullcontext()
-    with suspend:
+    if session is None:
         fn, consts = _convert_cond(body, init)
-    if session is not None:
-        key = session.enter_site("loop", label, _avals(init, None), None, fn)
+    else:
+        key = session.enter_site("loop", label, _avals(init, None), None, None)
         _primal_strategy(session, key, 0)
         with activate(session), session.scope(key, "primal"):
-            fn, consts = _convert_cond(body, init)
+            fn, consts = _convert_cond(_retrace(body), init)
+        _store_running_fn(session, key, fn)
     step = _apply_cond(fn)
     return jax.lax.while_loop(cond, lambda carry: step(consts, carry), init)
 
@@ -352,7 +394,9 @@ def loop(
     ------
     ValueError
         ``cond`` is combined with ``length`` or ``xs``, or none of ``length``,
-        ``xs``, and ``cond`` is given.
+        ``xs``, and ``cond`` is given. An explicit ``length`` that disagrees
+        with a leading size of ``xs`` raises the same ``ValueError`` as
+        :func:`jax.lax.scan`.
     IntentError
         The session's primal strategy is neither ``StaticWhile`` nor ``Scan``.
         The error names the site, the path ``primal``, and the strategy.
