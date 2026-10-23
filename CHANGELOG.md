@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1b3] - 2026-10-23
+
 ### Added
 
 - `xtrax.provenance.resolve_distribution(name, *, module=None)` (debt #2947):
@@ -33,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and compaction rewrites them at v2. `RunLedgerRecord.from_dict` still
   accepts only the running version. An xtrax older than this release skips v2
   rows with a warning.
+- `compact_ledger` refuses to seal while any row is unreadable (corrupt, or
+  written by a newer schema). It raises `LedgerRecordError` and leaves the
+  segments in place; before, such a row was archived out of view.
+- The `RECORD` hash in `resolve_distribution` is taken over the file's raw
+  bytes, so CRLF metadata hashes as installed.
 
 ## [0.4.1b2] - 2026-10-20
 

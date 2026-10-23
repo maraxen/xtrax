@@ -20,7 +20,7 @@ import xtrax
 # This skill was written against the xtrax alpha named in the plugin manifest
 # (.praxia/manifest.toml [plugin] version). Warn when the installed package
 # differs, then read src/xtrax/__init__.py.
-_WRITTEN_AGAINST = "0.4.1b2"
+_WRITTEN_AGAINST = "0.4.1b3"
 if xtrax.__version__ != _WRITTEN_AGAINST:
     warnings.warn(
         f"using-xtrax was written against xtrax {_WRITTEN_AGAINST}; "
