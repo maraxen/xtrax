@@ -213,6 +213,10 @@ warning otherwise.
 
 ## 5. MVP acceptance criteria
 
+**Gate (user decision, 261023):** the MVP merges when criteria 1–7 pass (all testable on CPU inside
+xtrax) and ships as experimental. Criterion 8 — the pre-registered aminx decode run on a GPU —
+gates leaving experimental, codemods, and consumer adoption.
+
 1. **Given** `xtrax.loop(body, init, length=n)` inside `xtrax.compile(fn, ctx)`, **when** `fn` runs
    undifferentiated, **then** the execution jaxpr contains `while` and no `scan`, and the output equals
    the `lax.scan` reference.
