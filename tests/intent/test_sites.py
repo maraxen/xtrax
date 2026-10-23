@@ -2,9 +2,11 @@
 
 import inspect
 
+import jax
 import jax.numpy as jnp
 import pytest
 from jax import ShapeDtypeStruct
+from jax.sharding import SingleDeviceSharding
 
 from xtrax.intent import (
     Session,
@@ -94,6 +96,53 @@ def test_ordinals_are_per_parent_path_and_label():
     assert first.parent is None and first.path == "primal"
 
 
+def test_same_label_is_ordinal_zero_under_each_parent_and_path():
+    session = Session(mode="plan")
+    with activate(session):
+        left = session.enter_site("loop", "left.py:1", (sds((4,)),), 4, None)
+        right = session.enter_site("loop", "right.py:1", (sds((4,)),), 4, None)
+        with session.scope(left, "primal"):
+            left_primal = session.enter_site("map", "m.py:1", (sds((2,)),), None, None)
+        with session.scope(left, "diff"):
+            left_diff = session.enter_site("map", "m.py:1", (sds((2,)),), None, None)
+        with session.scope(right, "primal"):
+            right_primal = session.enter_site("map", "m.py:1", (sds((2,)),), None, None)
+        with session.scope(right, "diff"):
+            right_diff = session.enter_site("map", "m.py:1", (sds((2,)),), None, None)
+    entered = (left_primal, left_diff, right_primal, right_diff)
+    assert [key.ordinal for key in entered] == [0, 0, 0, 0]
+    assert [key.path for key in entered] == ["primal", "diff", "primal", "diff"]
+    assert [key.parent for key in entered] == [left, left, right, right]
+
+
+def test_captured_session_reenters_diff_at_ordinal_zero():
+    label = "body.py:2"
+    avals = (sds((4,)),)
+    session = Session(mode="plan")
+    with activate(session):
+        outer = session.enter_site("loop", "m.py:1", avals, 16, None)
+        with session.scope(outer, "primal"):
+            session.enter_site("map", label, avals, None, None)
+    assert current_session() is None
+    with activate(session):
+        with session.scope(outer, "diff"):
+            diff = session.enter_site("map", label, avals, None, None)
+        assert diff.ordinal == 0
+        assert diff.path == "diff"
+        assert diff.parent == outer
+        assert current_session() is session
+    run = Session(mode="exec", records=session.records, decisions={})
+    with activate(run):
+        exec_outer = run.enter_site("loop", "m.py:1", avals, 16, None)
+        with run.scope(exec_outer, "primal"):
+            run.enter_site("map", label, avals, None, None)
+    assert current_session() is None
+    with activate(run):
+        with run.scope(exec_outer, "diff"):
+            again = run.enter_site("map", label, avals, None, None)
+    assert again == diff
+
+
 def test_plan_mode_appends_site_record():
     seen: list[int] = []
 
@@ -135,6 +184,42 @@ def test_exec_mode_rejects_dtype_mismatch():
     with activate(run), pytest.raises(SiteMismatchError, match="planned") as exc:
         run.enter_site("map", "m.py:10", traced, None, None)
     assert "traced" in exc.value.constraint
+
+
+def test_exec_mode_accepts_concrete_weak_type_for_planned_weak_scalar():
+    plan = Session(mode="plan")
+    planned = (ShapeDtypeStruct((), jnp.float32, weak_type=True),)
+    with activate(plan):
+        key = plan.enter_site("map", "m.py:10", planned, None, None)
+    run = Session(mode="exec", records=plan.records, decisions={})
+    traced = (ShapeDtypeStruct((), jnp.float32, weak_type=False),)
+    with activate(run):
+        assert run.enter_site("map", "m.py:10", traced, None, None) == key
+
+
+def test_exec_mode_accepts_device_sharding_for_unspecified_plan():
+    plan = Session(mode="plan")
+    planned = (ShapeDtypeStruct((4,), jnp.float32, sharding=None),)
+    with activate(plan):
+        key = plan.enter_site("map", "m.py:10", planned, None, None)
+    run = Session(mode="exec", records=plan.records, decisions={})
+    sharding = SingleDeviceSharding(jax.devices()[0])
+    traced = (ShapeDtypeStruct((4,), jnp.float32, sharding=sharding),)
+    with activate(run):
+        assert run.enter_site("map", "m.py:10", traced, None, None) == key
+
+
+def test_exec_mismatch_retries_the_planned_key():
+    plan = Session(mode="plan")
+    planned = (sds((16, 4)),)
+    with activate(plan):
+        key = plan.enter_site("map", "m.py:10", planned, None, None)
+    run = Session(mode="exec", records=plan.records, decisions={})
+    with activate(run):
+        with pytest.raises(SiteMismatchError, match="planned") as exc:
+            run.enter_site("map", "m.py:10", (sds((15, 4)),), None, None)
+        assert "site not in plan" not in exc.value.constraint
+        assert run.enter_site("map", "m.py:10", planned, None, None) == key
 
 
 def test_activate_nests_and_restores():

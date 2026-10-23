@@ -61,8 +61,9 @@ class Session:
     Outside any :meth:`scope`, an entered site has ``parent is None`` and
     ``path == "primal"``. :meth:`scope` nests: the site's parent is the key
     passed to the innermost scope, and its path is that scope's path.
-    Ordinals count calls per ``(parent, path, label)`` from 0, in both modes,
-    so an exec-mode key matches the plan-mode key for the same call sequence.
+    Ordinals count returned visits per ``(parent, path, label)`` from 0, in
+    both modes, so an exec-mode key matches the plan-mode key for the same
+    call sequence. A visit that raises keeps the previous count.
 
     Attributes
     ----------
@@ -120,7 +121,7 @@ class Session:
         the next count for that parent, path, and label. Plan mode appends a
         :class:`SiteRecord`. Exec mode appends nothing: it looks the key up
         in ``records`` and checks that each abstract value has the same shape
-        and dtype.
+        and dtype. The count advances only when this method returns the key.
 
         Parameters
         ----------
@@ -153,11 +154,13 @@ class Session:
         key = self._allocate_key(label)
         if self.mode == "plan":
             self.records.append(SiteRecord(key, kind, avals, length, fn))
-            return key
-        if self.mode == "exec":
+        elif self.mode == "exec":
             self._check_planned(key, avals)
-            return key
-        raise ValueError(f"mode {self.mode!r} is not 'plan' or 'exec'")
+        else:
+            raise ValueError(f"mode {self.mode!r} is not 'plan' or 'exec'")
+        counter: _OrdinalKey = (key.parent, key.path, key.label)
+        self._ordinals[counter] = key.ordinal + 1
+        return key
 
     def decision_for(self, key: SiteKey) -> SiteDecision | None:
         """Return the decision recorded for ``key``.
@@ -239,14 +242,13 @@ class Session:
             self.pop()
 
     def _allocate_key(self, label: str) -> SiteKey:
-        """Return the next key for ``label`` and advance its ordinal."""
+        """Reserve the next key for ``label`` without storing ``ordinal + 1``."""
         if self._frames:
             parent, path = self._frames[-1]
         else:
             parent, path = None, "primal"
         counter: _OrdinalKey = (parent, path, label)
         ordinal = self._ordinals.get(counter, 0)
-        self._ordinals[counter] = ordinal + 1
         return SiteKey(parent=parent, path=path, label=label, ordinal=ordinal)
 
     def _check_planned(self, key: SiteKey, avals: tuple[jax.ShapeDtypeStruct, ...]) -> None:
