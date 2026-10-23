@@ -311,9 +311,7 @@ def test_editable_default_module_comes_from_the_dist_files(tmp_path, on_path):
     assert record["module_in_dist"] == "true"
 
 
-def test_default_module_does_not_scan_every_installed_distribution(
-    tmp_path, on_path, monkeypatch
-):
+def test_default_module_does_not_scan_every_installed_distribution(tmp_path, on_path, monkeypatch):
     site = tmp_path / "site"
     _install(site)
     on_path(site)

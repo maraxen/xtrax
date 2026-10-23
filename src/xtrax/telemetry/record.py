@@ -242,9 +242,7 @@ class RunProvenance:
     # Requested distribution name -> xtrax.provenance.resolve_distribution
     # record. Empty when no packages were configured for the run. Left out of
     # the hash so RunProvenance stays hashable; equality still compares it.
-    distributions: "dict[str, dict[str, str]]" = dataclasses.field(
-        default_factory=dict, hash=False
-    )
+    distributions: "dict[str, dict[str, str]]" = dataclasses.field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.distributions, dict):
