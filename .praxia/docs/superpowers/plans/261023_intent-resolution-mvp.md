@@ -349,3 +349,24 @@ def test_posthoc_scan_around_while_check():                 # backend set monkey
 - [ ] **Step 4: Run to verify pass** — `OMP_NUM_THREADS=4 uv run pytest tests/intent -q` → PASS (whole `tests/intent/` directory is narrow enough).
 - [ ] **Step 5: Lint and type-check** — `uv run ruff check --no-fix src/xtrax/intent tests/intent && uv run ruff format --check src/xtrax/intent tests/intent && jaxlint check src/xtrax/intent && uv run ty check src/xtrax/intent` → clean (ty: no new diagnostics vs `scripts/git-hooks/ty-baseline.txt`).
 - [ ] **Step 6: Commit** — `git commit -m "feat(intent): compile -- two-pass plan, per-path site validation"`
+---
+
+### Task 8: Skill guidance (experimental stage)
+
+*Added 261023 by user decision ("two stages"): this task documents `xtrax.intent` as experimental and leaves every existing default unchanged. The intent-first rewrite of the decision trees is a separate backlog item gated on criterion 8.*
+
+**Files:**
+- Create: `agent_assets/skills/using-xtrax/references/intent.md`
+- Modify: `agent_assets/skills/using-xtrax/SKILL.md` (Workflow Index row and TIER-2 reference-table row pointing at `references/intent.md`; one line under "Which Primitive for Which Problem" saying loop/map strategy can instead be resolved per site by experimental `xtrax.intent`)
+- Modify: `agent_assets/skills/xtrax-optimizing/SKILL.md` (tier-3 Composition row: strategy swaps can be expressed as a `Context` change or `SiteStrategyOverride` under `xtrax.intent`)
+- Test: `tests/skills/test_skill_code_blocks.py`, `tests/distribution/test_skill_frontmatter.py`, `tests/distribution/test_skill_manifest.py` (existing; must stay green)
+
+**Interfaces:**
+- Consumes: the public names Tasks 1–7 export from `xtrax.intent` (`Context`, `loop`, `map`, `compile`, `Plan`, `SiteDecision`, `SiteStrategyOverride`, errors).
+- Produces: `references/intent.md` with: (1) a banner "Experimental until criterion 8 (GPU run) passes; the BatchPlanner decision tree above remains the default"; (2) one runnable example: `compile(fn, Context(...))` over a function containing one `loop` and one `map`, printing `f.plan_for(x).table()`; (3) the `Context` field table with what each field changes; (4) the dispatch table: no differentiation → `StaticWhile`/while form, differentiated → `Scan`, unconstrained map → `Vmap`, budgeted map → `ChunkedMap` from `BatchPlanner`; (5) the errors (`UnsatisfiableContextError`, `SiteMismatchError`) and what each names; (6) the known limits from the spec's anti-goals and the parked equinox transitive import via `xtrax.tiling.__init__`.
+- Every factual line cites `src/xtrax/intent/<file>.py:<line>` in the same `verify:` style the skill already uses.
+
+- [ ] **Step 1: Write `references/intent.md`** from the code as merged in Tasks 1–7 (read the code, not this plan's interface text).
+- [ ] **Step 2: Edit the two SKILL.md files** as listed above; change no existing default or decision rule.
+- [ ] **Step 3: Verify** — `OMP_NUM_THREADS=4 uv run pytest tests/skills tests/distribution/test_skill_frontmatter.py tests/distribution/test_skill_manifest.py -q` → PASS (the code-block test runs the new example).
+- [ ] **Step 4: Commit** — `git commit -m "docs(skills): document experimental xtrax.intent in using-xtrax and xtrax-optimizing"`
