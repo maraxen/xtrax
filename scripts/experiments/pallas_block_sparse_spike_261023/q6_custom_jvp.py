@@ -44,6 +44,7 @@ def main():
     xs = x[:32, :64]
     ws = blockify(w[:64, :64])
     ms = mask[:2, :2]
+
     def close(a, b):
         atol = 1e-5 * max(1.0, float(jnp.max(jnp.abs(b))))
         return bool(jnp.allclose(a, b, atol=atol, rtol=1e-5))
