@@ -19,6 +19,7 @@
 
 ## Specs
 - [261023_equinox-decoupling](specs/261023_equinox-decoupling.md) — Make xtrax depend only on jax/optax for its pytree layer, with one implementation and Equinox models and downstream eqx.field subclasses still working (Part 1 of the equinox/Pallas plan)
+- [261023_xtrax-as-a-pure-functional-pipeline-laye](specs/261023_xtrax-as-a-pure-functional-pipeline-laye.md)
 - [261020_hoisted-map](specs/261020_hoisted-map.md) — Explicit shared/per-element split for debt #2600; structural varying-input check, optional parity probe, opt-in memoize_jaxpr cache across calls
 - [261016_jax-smoke-profiling-scope](specs/261016_jax-smoke-profiling-scope.md) — Cross-repo scope for catching low-hanging JAX bottlenecks at L2: jaxlint owns static suspects, xtrax owns measurement, bathos owns the launch gate, jaxlint ships its edit hook as a cisternal plugin
 - [260923_5035-audit-labels-memo-followups](specs/260923_5035-audit-labels-memo-followups.md) — Sprint spec for #5035 (coverage-DAG PASS label over failing tiers), #5241 (memo hot-path and duplicate-walker cleanup), #5240 (all-default wrap-time screening, NaN static keys)
