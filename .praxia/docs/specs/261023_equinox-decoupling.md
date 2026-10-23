@@ -149,6 +149,5 @@ the dataclass is **not** `isinstance(…, eqx.Module)` (which is why the default
   native only where equinox is absent). Alternative: native always, equinox only for passthrough of
   user models — cleaner single path, but breaks plegadx's subclasses and `_boundary.py` walker until
   they migrate.
-- **D2 — packaging.** Recommended: optional `equinox` extra, also pulled by `dev`.
-  Alternative: keep equinox a hard dependency for one release with the native backend opt-in via
-  `XTRAX_TREE_BACKEND=native`, then flip.
+- **D2 — packaging. DECIDED 261023 (user): optional `xtrax[equinox]` extra now**, also pulled by
+  `dev`. (Rejected: hard dependency for one release with native opt-in, then flip.)
