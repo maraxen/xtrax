@@ -31,7 +31,11 @@ from xtrax.telemetry.ledger import (
     iter_rows,
     resolve_root,
 )
-from xtrax.telemetry.record import RunLedgerRecord
+from xtrax.telemetry.record import (
+    LedgerRecordError,
+    RunLedgerRecord,
+    SchemaVersionMismatchError,
+)
 from xtrax.telemetry.store import BlobStore
 
 ARCHIVE_DIRNAME = "archive"
@@ -140,7 +144,16 @@ def compact_ledger(
     if not force and not should_compact(resolved, threshold):
         return CompactResult(dry_run=dry_run)
 
-    rows = list(iter_rows(resolved))
+    # Strict: a row this code cannot read (corrupt, or written by a newer
+    # schema) would be left out of the sealed file while its segment moves to
+    # archive/, which iter_rows never reads. Refuse instead of hiding it.
+    try:
+        rows = list(iter_rows(resolved, strict=True))
+    except (LedgerRecordError, SchemaVersionMismatchError) as exc:
+        raise LedgerRecordError(
+            f"refusing to compact {resolved}: a ledger row is unreadable ({exc}). "
+            "Sealing now would archive it out of view; upgrade xtrax or repair the row first."
+        ) from exc
     kept = _dedup(rows)
     segments = sorted((resolved / "segments").glob("*.jsonl"))
 

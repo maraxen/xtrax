@@ -22,6 +22,7 @@ from typing import Any
 
 from xtrax.telemetry.compact import compact_ledger, verify_ledger
 from xtrax.telemetry.ledger import blobs_dir, find_run, iter_rows, resolve_root
+from xtrax.telemetry.record import LedgerRecordError
 from xtrax.telemetry.store import BlobStore
 
 _ACTIONS = ("list", "show", "verify", "compact")
@@ -125,6 +126,11 @@ def _print_provenance(prov: Any) -> None:
     print("provenance:")
     for field in _PROVENANCE_FIELDS:
         print(f"  {field:<18} {getattr(prov, field)}")
+    for requested, dist in prov.distributions.items():
+        print(
+            f"  dist {requested:<13} {dist['version']}  {dist['install_kind']}  "
+            f"commit={dist['vcs_commit']}  module_in_dist={dist['module_in_dist']}"
+        )
 
 
 def _print_ir(row: Any, root: Path) -> None:
@@ -151,7 +157,11 @@ def _run_verify(root: Path) -> None:
 
 
 def _run_compact(args: LedgerArgs, root: Path) -> None:
-    result = compact_ledger(root, force=args.force, dry_run=args.dry_run)
+    try:
+        result = compact_ledger(root, force=args.force, dry_run=args.dry_run)
+    except LedgerRecordError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
     prefix = "would " if result.dry_run else ""
     print(
         f"{prefix}compact: read {result.rows_read} rows, kept {result.rows_kept} "

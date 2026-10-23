@@ -6,13 +6,24 @@ those declarations by parsing source. It does not contact the network.
 
 Profiling modules stay a leaf and cannot import this module, so they use the
 dict spelling. Every other module uses ``Provenance(...)``.
+
+:func:`resolve_distribution` covers the other direction: which installed
+distribution a third-party package runs from, and whether the imported module
+is actually part of it.
 """
 
 import ast
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
 import re
+import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 RELATIONSHIPS = frozenset({"vendored", "ported", "derived", "inspired"})
 _FIELD_NAMES = frozenset({"upstream", "relationship", "revision", "licence", "waiver_reason"})
@@ -224,9 +235,296 @@ def render_declaration(
     return "from xtrax.provenance import Provenance\n\n" + rendered
 
 
+UNKNOWN = "unknown"
+DISTRIBUTION_FIELDS = (
+    "name",
+    "version",
+    "install_kind",
+    "wheel_sha256",
+    "vcs_commit",
+    "source_url",
+    "record_sha256",
+    "module",
+    "module_file",
+    "module_in_dist",
+)
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+# scheme://userinfo@ -- the userinfo part may carry a token.
+_URL_USERINFO = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*://)[^/?#]*@")
+
+
+def canonical_name(name: str) -> str:
+    """PEP 503 normalized distribution name: ``Foo_Bar.baz`` -> ``foo-bar-baz``."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _redact_userinfo(url: str) -> str:
+    return _URL_USERINFO.sub(r"\1", url, count=1)
+
+
+def _url_path(url: str) -> str:
+    return url.split("#", 1)[0].split("?", 1)[0]
+
+
+_MALFORMED: dict[str, object] = {}
+_SITE_DIRS = frozenset({"site-packages", "dist-packages"})
+
+
+def _files(dist: metadata.Distribution) -> list[metadata.PackagePath] | None:
+    try:
+        files = dist.files
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None if files is None else list(files)
+
+
+def _read_text(dist: metadata.Distribution, filename: str) -> str | None:
+    try:
+        return dist.read_text(filename)
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _direct_url(dist: metadata.Distribution) -> dict[str, object] | None:
+    """The PEP 610 record; None when absent, ``_MALFORMED`` when unreadable."""
+    try:
+        text = dist.read_text("direct_url.json")
+    except (OSError, UnicodeDecodeError):
+        return _MALFORMED
+    if text is None:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return _MALFORMED
+    return parsed if isinstance(parsed, dict) else _MALFORMED
+
+
+def _archive_sha256(info: Mapping[Any, Any]) -> str | None:
+    hashes = info.get("hashes")
+    if isinstance(hashes, dict):
+        value = hashes.get("sha256")
+        if isinstance(value, str) and _SHA256_HEX.fullmatch(value):
+            return value
+    legacy = info.get("hash")
+    if isinstance(legacy, str) and legacy.startswith("sha256="):
+        value = legacy.removeprefix("sha256=")
+        if _SHA256_HEX.fullmatch(value):
+            return value
+    return None
+
+
+def _install_fields(direct: dict[str, object] | None) -> dict[str, str]:
+    fields = {
+        "install_kind": "index" if direct is None else UNKNOWN,
+        "wheel_sha256": UNKNOWN,
+        "vcs_commit": UNKNOWN,
+        "source_url": UNKNOWN,
+    }
+    if direct is None or direct is _MALFORMED:
+        return fields
+    url = direct.get("url")
+    if isinstance(url, str) and url:
+        fields["source_url"] = _redact_userinfo(url)
+    vcs = direct.get("vcs_info")
+    archive = direct.get("archive_info")
+    dir_info = direct.get("dir_info")
+    if isinstance(vcs, dict):
+        fields["install_kind"] = "vcs"
+        commit = vcs.get("commit_id")
+        if isinstance(commit, str) and commit:
+            fields["vcs_commit"] = commit
+    elif isinstance(archive, dict):
+        fields["install_kind"] = "archive"
+        sha = _archive_sha256(archive)
+        if sha is not None and isinstance(url, str) and _url_path(url).endswith(".whl"):
+            fields["wheel_sha256"] = sha
+    elif isinstance(dir_info, dict):
+        fields["install_kind"] = "editable" if dir_info.get("editable") is True else "directory"
+    return fields
+
+
+def _record_sha256(dist: metadata.Distribution, files: list[metadata.PackagePath] | None) -> str:
+    """sha256 of the RECORD file's bytes as installed (line endings untouched)."""
+    for entry in files or ():
+        if entry.name == "RECORD" and entry.parent.name.endswith(".dist-info"):
+            try:
+                data = Path(str(dist.locate_file(entry))).read_bytes()
+            except OSError:
+                return UNKNOWN
+            return hashlib.sha256(data).hexdigest()
+    return UNKNOWN
+
+
+def _top_level_names(
+    dist: metadata.Distribution, files: list[metadata.PackagePath] | None
+) -> set[str]:
+    """Top-level importable names the distribution installs, read from its own files."""
+    names: set[str] = set()
+    for entry in files or ():
+        parts = entry.parts
+        if not parts or parts[0] == "..":
+            continue
+        head = parts[0] if len(parts) > 1 else (entry.stem if entry.suffix == ".py" else "")
+        if head.isidentifier() and head != "__pycache__":
+            names.add(head)
+    if not names:
+        declared = _read_text(dist, "top_level.txt") or ""
+        names = {line.strip() for line in declared.splitlines() if line.strip().isidentifier()}
+    return names
+
+
+def _default_module(
+    dist: metadata.Distribution, files: list[metadata.PackagePath] | None
+) -> str | None:
+    candidates = _top_level_names(dist, files)
+    preferred = canonical_name(dist.metadata["Name"] or "").replace("-", "_")
+    if preferred in candidates:
+        return preferred
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    return None
+
+
+def _module_file(module: str) -> str | None:
+    """Where ``module`` runs from, without importing it or any parent package.
+
+    An imported module reports its ``__file__``. Otherwise the top-level name is
+    looked up through ``sys.meta_path`` and each submodule through the parent's
+    search path, which finds the file without executing any ``__init__``.
+    """
+    loaded = sys.modules.get(module)
+    if loaded is not None:
+        location = getattr(loaded, "__file__", None)
+        return location if isinstance(location, str) else None
+    head, *rest = module.split(".")
+    try:
+        spec = importlib.util.find_spec(head)
+        for part in rest:
+            if spec is None or spec.submodule_search_locations is None:
+                return None
+            spec = importlib.machinery.PathFinder.find_spec(
+                part, list(spec.submodule_search_locations)
+            )
+    except Exception:  # noqa: BLE001 - a finder may raise anything; the answer is "unknown"
+        return None
+    if spec is None or not spec.has_location or spec.origin is None:
+        return None
+    return spec.origin
+
+
+def _local_dir(url: str) -> Path | None:
+    try:
+        return Path.from_uri(url).resolve()
+    except ValueError:
+        return None
+
+
+def _module_in_dist(
+    dist: metadata.Distribution,
+    files: list[metadata.PackagePath] | None,
+    install: dict[str, str],
+    direct: dict[str, object] | None,
+) -> str:
+    """Whether the module file is one the distribution installed: "true", "false" or "unknown"."""
+    location = install["module_file"]
+    if location == UNKNOWN:
+        return UNKNOWN
+    target = Path(location).resolve()
+    if install["install_kind"] == "editable":
+        url = direct.get("url") if direct is not None else None
+        root = _local_dir(url) if isinstance(url, str) else None
+        if root is None:
+            return UNKNOWN
+        if not target.is_relative_to(root):
+            return "false"
+        # An installed copy inside the checkout's own venv is not the source tree.
+        inside_site = _SITE_DIRS.intersection(target.relative_to(root).parts)
+        return "false" if inside_site else "true"
+    if files is None:
+        return UNKNOWN
+    base = Path(str(dist.locate_file(""))).resolve()
+    if target.is_relative_to(base):
+        relative = target.relative_to(base).as_posix()
+        if any(entry.as_posix() == relative for entry in files):
+            return "true"
+    # Entries that climb out of site-packages (scripts, data) are compared resolved.
+    for entry in files:
+        if entry.parts and entry.parts[0] == ".." and target.name == entry.name:
+            if Path(str(dist.locate_file(entry))).resolve() == target:
+                return "true"
+    return "false"
+
+
+def unresolved_distribution(name: str) -> dict[str, str]:
+    """The record for a distribution nothing could be learned about: all ``"unknown"``."""
+    record = dict.fromkeys(DISTRIBUTION_FIELDS, UNKNOWN)
+    record["name"] = name
+    return record
+
+
+def resolve_distribution(name: str, *, module: str | None = None) -> dict[str, str]:
+    """Identify the installed distribution ``name`` and the module that would run from it.
+
+    Returns one string per :data:`DISTRIBUTION_FIELDS` entry. A value that the
+    installed metadata does not state is ``"unknown"``; nothing is inferred
+    from the version string or fetched.
+
+    ``install_kind`` is ``index`` (no PEP 610 record), ``vcs``, ``archive``,
+    ``editable``, ``directory``, ``not_installed`` or ``unknown``.
+    ``wheel_sha256`` and ``vcs_commit`` come from ``direct_url.json``;
+    installers record a wheel hash only for some direct installs, so an index
+    install reports ``unknown``. ``record_sha256`` is the sha256 of the
+    installed ``RECORD`` file, which identifies the installed file set.
+    ``source_url`` has any credentials removed.
+
+    ``module`` defaults to the top-level module the distribution installs.
+    ``module_file`` is taken from ``sys.modules`` when the module is imported,
+    otherwise found through the import finders without importing it or its
+    parents. ``module_in_dist`` is ``"true"`` when that file is one the
+    distribution installed (or, for an editable install, lies under its
+    source directory outside any ``site-packages``), ``"false"`` when a copy
+    elsewhere shadows it, and ``"unknown"`` when either side is missing.
+
+    Reads installed metadata only: no import of the package, no subprocess,
+    no network, no writes.
+    """
+    if _blank(name):
+        raise ValueError("distribution name is required")
+    name = name.strip()
+    record = unresolved_distribution(name)
+    try:
+        dist = metadata.distribution(name)
+    except metadata.PackageNotFoundError:
+        record["install_kind"] = "not_installed"
+        if module is not None:
+            record["module"] = module
+            record["module_file"] = _module_file(module) or UNKNOWN
+            if record["module_file"] != UNKNOWN:
+                record["module_in_dist"] = "false"
+        return record
+    record["name"] = dist.metadata["Name"] or name
+    record["version"] = dist.version or UNKNOWN
+    direct = _direct_url(dist)
+    files = _files(dist)
+    record.update(_install_fields(direct))
+    record["record_sha256"] = _record_sha256(dist, files)
+    resolved_module = module if module is not None else _default_module(dist, files)
+    if resolved_module is not None:
+        record["module"] = resolved_module
+        record["module_file"] = _module_file(resolved_module) or UNKNOWN
+    record["module_in_dist"] = _module_in_dist(dist, files, record, direct)
+    return record
+
+
 __all__ = [
+    "DISTRIBUTION_FIELDS",
+    "UNKNOWN",
     "Provenance",
+    "canonical_name",
     "collect_provenance",
     "read_provenance",
     "render_declaration",
+    "resolve_distribution",
+    "unresolved_distribution",
 ]

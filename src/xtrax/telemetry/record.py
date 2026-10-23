@@ -44,6 +44,7 @@ import platform
 import socket
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -56,8 +57,15 @@ from xtrax.profiling.record import (
     capture_x64_enabled,
     capture_xla_flags,
 )
+from xtrax.provenance import (
+    DISTRIBUTION_FIELDS,
+    canonical_name,
+    resolve_distribution,
+    unresolved_distribution,
+)
 
-SCHEMA_VERSION = 1
+# v2 added RunProvenance.distributions (debt #2947).
+SCHEMA_VERSION = 2
 
 # provenance_source values, most to least trustworthy.
 PROVENANCE_CISTERNAL = "cisternal"
@@ -231,6 +239,38 @@ class RunProvenance:
     hostname: str = "unknown"
     python_version: str = ""
     platform: str = ""
+    # Requested distribution name -> xtrax.provenance.resolve_distribution
+    # record. Empty when no packages were configured for the run. Left out of
+    # the hash so RunProvenance stays hashable; equality still compares it.
+    distributions: "dict[str, dict[str, str]]" = dataclasses.field(default_factory=dict, hash=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.distributions, dict):
+            raise LedgerRecordError(
+                f"distributions must be a dict, got {type(self.distributions).__name__}"
+            )
+        expected = set(DISTRIBUTION_FIELDS)
+        for requested, entry in self.distributions.items():
+            if not isinstance(requested, str) or not requested.strip():
+                raise LedgerRecordError(
+                    f"distributions key {requested!r} is not a non-empty string"
+                )
+            if not isinstance(entry, dict) or set(entry) != expected:
+                raise LedgerRecordError(
+                    f"distributions[{requested!r}] must carry exactly the fields "
+                    f"{list(DISTRIBUTION_FIELDS)}, got "
+                    f"{sorted(entry) if isinstance(entry, dict) else type(entry).__name__}"
+                )
+            bad = sorted(key for key, value in entry.items() if not isinstance(value, str))
+            if bad:
+                raise LedgerRecordError(
+                    f"distributions[{requested!r}] fields {bad} are not strings"
+                )
+        object.__setattr__(
+            self,
+            "distributions",
+            {requested: dict(entry) for requested, entry in self.distributions.items()},
+        )
 
     @classmethod
     def capture(
@@ -239,6 +279,7 @@ class RunProvenance:
         run_id: "str | None" = None,
         cwd: "Path | None" = None,
         pin: bool = False,
+        distributions: "Sequence[str]" = (),
     ) -> "RunProvenance":
         """Capture full provenance for the current process and working tree.
 
@@ -248,6 +289,9 @@ class RunProvenance:
         to the repository, so it is opt-in and performed once per run by
         ``RunLedger.open`` -- never on a bare record construction, and never in a
         per-step hook.
+
+        ``distributions`` names third-party packages whose executing
+        distribution is recorded via ``xtrax.provenance.resolve_distribution``.
 
         Never raises. Every failure path degrades to a recorded value plus, where
         applicable, ``unpinned_reason``.
@@ -264,10 +308,18 @@ class RunProvenance:
             "platform": _capture_platform(),
         }
         git = _capture_git_block(run_id=run_id, root=root, pin=pin)
-        return cls(**git, **env)
+        return cls(**git, **env, distributions=_capture_distributions(distributions))
 
     def to_dict(self) -> "dict[str, Any]":
         return dataclasses.asdict(self)
+
+
+def _capture_distributions(names: "Sequence[str]") -> "dict[str, dict[str, str]]":
+    """Resolve each configured distribution; a failed resolve records all-unknown."""
+    return {
+        name: _safe(lambda name=name: resolve_distribution(name), unresolved_distribution(name))
+        for name in ledger_distributions(names)
+    }
 
 
 def _capture_repo_identity(root: Path) -> "dict[str, Any]":
@@ -576,6 +628,37 @@ class RunLedgerRecord:
         except json.JSONDecodeError as exc:
             raise LedgerRecordError(f"ledger row is not valid JSON: {exc}") from exc
         return cls.from_dict(raw)
+
+
+LEDGER_DISTRIBUTIONS_ENV = "XTRAX_LEDGER_DISTRIBUTIONS"
+
+
+def ledger_distributions(explicit: "Sequence[str] | None" = None) -> "tuple[str, ...]":
+    """The distribution names a run's ledger row records.
+
+    An explicit sequence wins, including an empty one. Otherwise
+    ``XTRAX_LEDGER_DISTRIBUTIONS`` is read as a comma-separated list, where an
+    empty value or ``none`` records nothing. Unset records nothing. Names are
+    stripped, blanks dropped, and spellings of one distribution (``Foo_Bar``,
+    ``foo-bar``) collapse to the first given.
+    """
+    if explicit is not None:
+        if isinstance(explicit, str):
+            raise TypeError("distributions must be a sequence of names, not a string")
+        bad = [name for name in explicit if not isinstance(name, str)]
+        if bad:
+            raise TypeError(f"distribution names must be strings, got {bad!r}")
+        names = [name.strip() for name in explicit]
+    else:
+        raw = (os.environ.get(LEDGER_DISTRIBUTIONS_ENV) or "").strip()
+        if raw.lower() == "none":
+            return ()
+        names = [name.strip() for name in raw.split(",")]
+    first_spelling: dict[str, str] = {}
+    for name in names:
+        if name:
+            first_spelling.setdefault(canonical_name(name), name)
+    return tuple(first_spelling.values())
 
 
 def telemetry_opted_out() -> bool:
