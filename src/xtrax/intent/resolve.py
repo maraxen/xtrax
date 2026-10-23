@@ -151,8 +151,10 @@ def resolve(
     IntentError
         An override strategy is illegal for the site kind. The error names the site.
     UnsatisfiableContextError
-        The budget cannot be met, export forbids the loop, or ``scan_around_while``
-        cannot move the outer map back to :class:`~xtrax.tiling.strategy.Vmap`.
+        The budget cannot be met, a map override makes the joint estimate
+        exceed ``memory_budget``, export forbids the loop, or
+        ``scan_around_while`` cannot move the outer map back to
+        :class:`~xtrax.tiling.strategy.Vmap`.
     """
     override_map = {} if overrides is None else overrides
     _validate_overrides(records, override_map)
@@ -189,6 +191,7 @@ def resolve(
             diff_available,
             diff_unavailable_reason,
         )
+    _check_map_override_budget(records, final, ctx, budget, override_map)
     decisions = tuple(
         final[record.key]
         if _is_primal_chain(record.key)
@@ -551,6 +554,77 @@ def _chosen_decision(
         diff_available=diff_available,
         diff_unavailable_reason=diff_unavailable_reason,
     )
+
+
+def _check_map_override_budget(
+    records: Sequence[SiteRecord],
+    decisions: Mapping[SiteKey, SiteDecision],
+    ctx: Context,
+    budget: MemoryBudget | None,
+    overrides: Mapping[str, SiteStrategyOverride],
+) -> None:
+    """Reject a map override whose final joint estimate exceeds the budget.
+
+    Specs stay in record order. Each decision uses the resolved primal.
+    ``Vmap`` contributes its cardinality as ``batch_size``; ``ChunkedMap``
+    contributes that strategy's batch size.
+
+    Raises
+    ------
+    UnsatisfiableContextError
+        ``budget`` is set, at least one primal-chain map was overridden, and
+        the estimate exceeds ``budget.bytes``. ``site`` is the first such
+        map's key, ``path`` is ``"primal"``, and ``constraint`` names both
+        numbers.
+    """
+    if budget is None:
+        return
+    overridden = [
+        record
+        for record in records
+        if _is_primal_chain(record.key)
+        and record.kind == "map"
+        and overrides.get(record.key.label) is not None
+    ]
+    if not overridden:
+        return
+    axis: list[AxisDecision] = []
+    for record in records:
+        if not _planned_map(record):
+            continue
+        primal = decisions[record.key].primal
+        if isinstance(primal, Vmap):
+            batch_size = _cardinality(record)
+        elif isinstance(primal, ChunkedMap):
+            batch_size = primal.batch_size
+        else:
+            raise IntentError(
+                f"map primal strategy must be Vmap or ChunkedMap, got {type(primal).__name__}",
+                site=str(record.key),
+                path="primal",
+                constraint=repr(primal),
+            )
+        axis.append(
+            AxisDecision(
+                spec=AxisSpec(
+                    name=str(record.key),
+                    cardinality=_cardinality(record),
+                    default_batch_size=ctx.chunk_size,
+                ),
+                batch_size=batch_size,
+                reasoning=decisions[record.key].primal_reason,
+                strategy=primal,
+            )
+        )
+    estimate = budget.estimate(tuple(axis))
+    if estimate > budget.bytes:
+        constraint = f"override exceeds memory budget: estimate {estimate} > {budget.bytes}"
+        raise UnsatisfiableContextError(
+            constraint,
+            site=str(overridden[0].key),
+            path="primal",
+            constraint=constraint,
+        )
 
 
 def _check_context(record: SiteRecord, primal: object, ctx: Context) -> None:

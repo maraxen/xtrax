@@ -242,6 +242,33 @@ def test_override_beats_hazard_with_warning():
     assert "override:outer bypassed scan_around_while" in plan.decisions[0].warnings
 
 
+def test_override_exceeding_budget_raises():
+    """Forcing two maps back to Vmap after planning exceeds the joint budget.
+
+    The planner demotes until 8+64 fits in 100. Overriding both sites to Vmap
+    costs 64+64. Fails while that override is applied with no second estimate.
+    """
+    records = [_map("first", 64), _map("second", 64)]
+
+    def est(decisions):
+        return sum(64 if isinstance(d.strategy, Vmap) else 8 for d in decisions)
+
+    budget = MemoryBudget(bytes=100, estimate=est)
+    with pytest.raises(UnsatisfiableContextError) as exc_info:
+        resolve(
+            records,
+            Context(memory_budget=budget, chunk_size=32),
+            overrides={
+                "first": (Vmap(), Vmap()),
+                "second": (Vmap(), Vmap()),
+            },
+        )
+    err = exc_info.value
+    assert err.path == "primal"
+    assert err.site == str(records[0].key)
+    assert err.constraint == "override exceeds memory budget: estimate 128 > 100"
+
+
 def test_override_violating_context_raises():
     """Export other than stablehlo rejects an override that forces StaticWhile."""
     with pytest.raises(UnsatisfiableContextError) as exc_info:
@@ -344,6 +371,24 @@ def test_default_estimator_sums_lowered_memory():
     assert estimate([vmap_decision]) == vmap_bytes
     assert estimate([chunk_decision]) == chunk_bytes
     assert estimate([vmap_decision, chunk_decision]) == vmap_bytes + chunk_bytes
+
+
+def test_int_budget_uses_default_estimator():
+    """An int memory_budget is planned by default_estimator.
+
+    Printed on these two maps, both-Vmap is 192 bytes and chunking costs more,
+    so 1000 keeps Vmap and 1 is unsatisfiable. The assertions are the plan and
+    the error type.
+    """
+
+    def fn(x):
+        return jnp.add(x, jnp.float32(1))
+
+    records = [_map("first", 4, fn=fn), _map("second", 4, fn=fn)]
+    plan = resolve(records, Context(memory_budget=1000))
+    assert [decision.primal for decision in plan.decisions] == [Vmap(), Vmap()]
+    with pytest.raises(UnsatisfiableContextError):
+        resolve(records, Context(memory_budget=1))
 
 
 def test_cond_loop_primal_is_plain_while():

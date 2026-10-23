@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import pytest
 
 from xtrax.intent import (
+    Context,
     IntentError,
     Session,
     SiteDecision,
@@ -14,6 +15,7 @@ from xtrax.intent import (
     activate,
     current_session,
     loop,
+    resolve,
 )
 from xtrax.tiling import Vmap
 from xtrax.tiling.strategy import Scan, StaticWhile
@@ -230,6 +232,62 @@ def test_loop_mixed_closures():
     w = jnp.float32(0.7)
     assert ok(f(w), f_ref(w))
     assert ok(jax.grad(f)(w), jax.grad(f_ref)(w))
+
+
+def _cond_loop_run():
+    """One named cond loop and the lax.while_loop it must match."""
+    init = jnp.zeros((5,), dtype=jnp.float32)
+
+    def cond(carry):
+        return jnp.sum(carry) < 3.0
+
+    def body(carry):
+        return carry + 0.5
+
+    def run():
+        return loop(body, init, cond=cond, name="until")
+
+    return run, lambda: jax.lax.while_loop(cond, body, init)
+
+
+def test_resolved_cond_loop_executes_while_loop():
+    """An exec session using resolve's plan runs the cond loop as lax.while_loop.
+
+    Fails while resolve's WhileCarry primal is rejected before the loop runs.
+    """
+    run, reference = _cond_loop_run()
+    plan_session = Session(mode="plan")
+    with activate(plan_session):
+        run()
+    resolved = resolve(plan_session.records, Context())
+    exe = Session(mode="exec", records=plan_session.records, decisions=resolved.by_key())
+    with activate(exe):
+        got = run()
+    assert ok(got, reference())
+
+
+def test_cond_loop_scan_primal_raises():
+    """A cond loop whose decision primal is Scan is not a plain while."""
+    run, _reference = _cond_loop_run()
+    plan_session = Session(mode="plan")
+    with activate(plan_session):
+        run()
+    key = plan_session.records[0].key
+    decision = SiteDecision(
+        key=key,
+        kind="loop",
+        primal=Scan(),
+        diff=Scan(),
+        primal_reason="test",
+        diff_reason="test",
+    )
+    exe = Session(mode="exec", records=plan_session.records, decisions={key: decision})
+    with activate(exe), pytest.raises(IntentError) as exc_info:
+        run()
+    err = exc_info.value
+    assert err.path == "primal"
+    assert err.site == str(key)
+    assert err.constraint == repr(Scan())
 
 
 def test_loop_while_form_is_plain_while_loop():

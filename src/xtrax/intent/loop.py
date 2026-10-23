@@ -25,7 +25,7 @@ from xtrax.intent._trace import (
 from xtrax.intent.errors import IntentError
 from xtrax.intent.plan import SiteKey
 from xtrax.intent.sites import Session, activate, call_label
-from xtrax.tiling.strategy import Scan, StaticWhile
+from xtrax.tiling.strategy import Scan, StaticWhile, WhileCarry
 
 _Step = Callable[[tuple[Any, ...], Any, Any], Any]
 _Strategy = Scan | StaticWhile
@@ -214,6 +214,32 @@ def _primal_strategy(session: Session | None, key: SiteKey | None, length: int) 
     )
 
 
+def _cond_primal(session: Session | None, key: SiteKey | None) -> None:
+    """Accept an undecided cond loop, or a decision whose primal is ``WhileCarry``.
+
+    Raises
+    ------
+    IntentError
+        A decision exists and its primal is not ``WhileCarry``. ``site`` is
+        the key, ``path`` is ``"primal"``, and ``constraint`` is ``repr`` of
+        that primal.
+    """
+    if session is None or key is None:
+        return
+    decision = decision_for(session, key)
+    if decision is None:
+        return
+    primal = decision.primal
+    if isinstance(primal, WhileCarry):
+        return
+    raise IntentError(
+        f"loop primal strategy must be WhileCarry, got {type(primal).__name__}",
+        site=str(key),
+        path="primal",
+        constraint=repr(primal),
+    )
+
+
 def _static_runner(
     strategy: _Strategy,
     session: Session | None,
@@ -301,7 +327,7 @@ def _loop_cond(
         fn, consts = _convert_cond(body, init)
     else:
         key = session.enter_site("loop", label, _avals(init, None), None, None)
-        _primal_strategy(session, key, 0)
+        _cond_primal(session, key)
         with activate(session), session.scope(key, "primal"):
             fn, consts = _convert_cond(_retrace(body), init)
         _store_running_fn(session, key, fn)
@@ -332,7 +358,9 @@ def loop(
 
     The conditional form (``cond``, with neither ``length`` nor ``xs``) matches
     :func:`jax.lax.while_loop`: ``body(carry) -> carry`` and the result is the
-    final carry. It registers a ``loop`` site with ``length=None``.
+    final carry. It registers a ``loop`` site with ``length=None``. With no
+    decision the primal still runs :func:`jax.lax.while_loop`. A recorded
+    decision must be :class:`~xtrax.tiling.strategy.WhileCarry`.
 
     Parameters
     ----------
@@ -365,8 +393,10 @@ def loop(
         with a leading size of ``xs`` raises the same ``ValueError`` as
         :func:`jax.lax.scan`.
     IntentError
-        The session's primal strategy is neither ``StaticWhile`` nor ``Scan``.
-        The error names the site, the path ``primal``, and the strategy.
+        A static loop's primal strategy is neither ``StaticWhile`` nor
+        ``Scan``, or a conditional loop's primal strategy is not
+        ``WhileCarry``. The error names the site, the path ``primal``, and
+        the strategy.
     """
     if cond is not None and (length is not None or xs is not None):
         raise ValueError("loop cond form does not take length or xs")

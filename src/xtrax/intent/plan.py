@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from xtrax.intent.context import Context
-from xtrax.tiling.strategy import AxisStrategy, ChunkedMap, Scan, StaticWhile, Vmap
+from xtrax.tiling.strategy import AxisStrategy, ChunkedMap, Scan, StaticWhile, Vmap, WhileCarry
 
 PLAN_SCHEMA_VERSION = 1
 
@@ -22,6 +22,7 @@ _STRATEGY_FIELDS: dict[type[Any], tuple[str, ...]] = {
     ChunkedMap: ("batch_size",),
     Scan: ("ordered_sinks",),
     StaticWhile: ("length",),
+    WhileCarry: (),
 }
 
 
@@ -186,7 +187,8 @@ class Plan:
 
         ``context`` is ``repr(context)`` only. Strategies are
         ``{"type": <ClassName>, ...fields}`` for ``Vmap``, ``ChunkedMap``,
-        ``Scan`` (``ordered_sinks`` only), and ``StaticWhile``.
+        ``Scan`` (``ordered_sinks`` only), ``StaticWhile``, and ``WhileCarry``
+        (no fields; ``body``, ``cond``, and ``init`` must be unset).
 
         Parameters
         ----------
@@ -201,8 +203,9 @@ class Plan:
         Raises
         ------
         ValueError
-            A ``Scan`` has a non-``None`` ``transition`` or ``init``, or a
-            strategy type has no JSON form. The message names the type.
+            A ``Scan`` has a non-``None`` ``transition`` or ``init``, a
+            ``WhileCarry`` has a non-``None`` ``body``, ``cond``, or ``init``,
+            or a strategy type has no JSON form. The message names the type.
         """
         payload = {
             "schema_version": self.schema_version,
@@ -270,19 +273,32 @@ def _strategy_cell(strategy: AxisStrategy | StaticWhile | None) -> str:
 
 
 def _strategy_to_json(strategy: AxisStrategy | StaticWhile) -> dict[str, Any]:
-    """Serialise one supported strategy. ``Scan`` keeps ``ordered_sinks`` only.
+    """Serialise one supported strategy.
+
+    ``Scan`` keeps ``ordered_sinks`` only. ``WhileCarry`` keeps no fields.
 
     Raises
     ------
     ValueError
-        ``Scan.transition`` or ``Scan.init`` is set, or ``strategy`` is not
-        one of ``Vmap``, ``ChunkedMap``, ``Scan``, ``StaticWhile``.
+        ``Scan.transition`` or ``Scan.init`` is set, ``WhileCarry.body``,
+        ``WhileCarry.cond``, or ``WhileCarry.init`` is set, or ``strategy``
+        is not one of ``Vmap``, ``ChunkedMap``, ``Scan``, ``StaticWhile``,
+        ``WhileCarry``.
     """
     if isinstance(strategy, Scan):
         callable_set = strategy.transition is not None or strategy.init is not None
         if callable_set:
             raise ValueError(
                 "Scan cannot be serialised when transition or init is set "
+                "(callables cannot be serialised)"
+            )
+    if isinstance(strategy, WhileCarry):
+        callable_set = (
+            strategy.body is not None or strategy.cond is not None or strategy.init is not None
+        )
+        if callable_set:
+            raise ValueError(
+                "WhileCarry cannot be serialised when body, cond, or init is set "
                 "(callables cannot be serialised)"
             )
     fields = _STRATEGY_FIELDS.get(type(strategy))
@@ -299,6 +315,7 @@ _STRATEGY_TYPES: dict[str, type[Any]] = {
     "ChunkedMap": ChunkedMap,
     "Scan": Scan,
     "StaticWhile": StaticWhile,
+    "WhileCarry": WhileCarry,
 }
 
 

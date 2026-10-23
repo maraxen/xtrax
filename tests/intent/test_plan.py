@@ -5,7 +5,7 @@ import json
 import pytest
 
 from xtrax.intent import PLAN_SCHEMA_VERSION, Context, Plan, SiteDecision, SiteKey
-from xtrax.tiling import Bucket, ChunkedMap, Scan, StaticWhile, Vmap
+from xtrax.tiling import Bucket, ChunkedMap, Scan, StaticWhile, Vmap, WhileCarry
 
 dec_map = SiteDecision(
     key=SiteKey(parent=None, path="primal", label="model.py:20", ordinal=0),
@@ -112,6 +112,42 @@ def test_scan_with_callable_fields_cannot_serialise():
     for decision in (with_transition, with_init):
         plan = Plan(PLAN_SCHEMA_VERSION, Context(), (decision,))
         with pytest.raises(ValueError, match="Scan"):
+            plan.to_json()
+
+
+def test_while_carry_round_trips():
+    """A cond-loop WhileCarry with every field unset survives JSON."""
+    decision = SiteDecision(
+        key=SiteKey(parent=None, path="primal", label="cond.py:4", ordinal=0),
+        kind="loop",
+        primal=WhileCarry(),
+        diff=Scan(),
+        primal_reason="conditional loop is a plain while_loop",
+        diff_reason="diff path resolves to Scan",
+    )
+    plan = Plan(PLAN_SCHEMA_VERSION, Context(), (decision,))
+    assert Plan.from_json(plan.to_json(), context=Context()) == plan
+
+
+def test_while_carry_with_callable_cannot_serialise():
+    """body, cond, or init on WhileCarry are not JSON."""
+    key = SiteKey(parent=None, path="primal", label="cond.py:9", ordinal=0)
+    cases = (
+        WhileCarry(body=lambda carry: carry),
+        WhileCarry(cond=lambda carry: True),
+        WhileCarry(init=0),
+    )
+    for primal in cases:
+        decision = SiteDecision(
+            key,
+            "loop",
+            primal,
+            None,
+            "has a callable field",
+            "no cotangent requested",
+        )
+        plan = Plan(PLAN_SCHEMA_VERSION, Context(), (decision,))
+        with pytest.raises(ValueError, match="callable"):
             plan.to_json()
 
 
