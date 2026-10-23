@@ -186,6 +186,24 @@ re-measured here.
 
 With coverage and analytic cost declared, split-and-time is automatic.
 
+Two more declaration fields (from the plegadx ColabFold-family prior-art survey, plegadx
+`.praxia/docs/research/261023_pallas-prior-art-colabfold-af3open.md`, commit `64f1a720`):
+- *`dot_precision`*: Pallas Triton lowers `Precision.DEFAULT` and `HIGH` to TF32
+  (`_TF32_PRECISIONS`, jax `_src/pallas/triton/lowering.py:2315`, verified in plegadx/.venv, jax
+  0.10.2). An "fp32" kernel with default dots is a TF32 kernel. The declaration states the
+  precision, and the parity tolerance follows from it.
+- *`deterministic: bool`*: the only upstream Pallas attention backward (colabfold `tri_flash.py`)
+  accumulates dQ and dbias with fp32 `atomic_add`, so its results vary run to run. A
+  non-deterministic kernel is never selected when `Context` asks for reproducibility, and its
+  parity test compares within tolerance across repeated runs.
+
+**Reporting where kernels did not apply.** `Plan.table()` lists, for each op site, *why* the
+reference ran: export target, `kernels=False`, no kernel for the backend, dtype not supported, or a
+non-deterministic kernel refused. This follows alphafold3-open's `kernel_sites.py` refusal census.
+Every op test also asserts that the kernel actually ran (`pallas_call` is in the jaxpr, as q6
+checks), because a kernel whose output exactly equals the reference is often a silent fallback.
+Timings run twice, so autotuning is excluded.
+
 **Measure at the level a kernel replaces.** Sublayer timing could not pick a kernel: all five
 sublayers came in at 22-23 ms each, at about 70% of DRAM bandwidth (plegadx bathos `482c77d6`).
 Measure each fusible piece, forward and forward+backward, against a floor:
@@ -195,7 +213,30 @@ Measure each fusible piece, forward and forward+backward, against a floor:
   multiplicity;
 - controls: the doubled-work sensitivity ratio is ≥ 1.6, the sum of pieces reconciles with the
   whole sublayer within [0.7, 2], and timing CV is reported;
-- the selection rule and its tie-break order are fixed in the sidecar before the run.
+- the selection rule and its tie-break order are fixed in the sidecar before the run;
+- **backward timing uses one form**: `jax.vjp(fn, *args)[1](ct)`, with `ct` a random array passed in
+  as a jit *input*. The byte floor is: read the inputs and `ct`, write the input cotangents. Wholes
+  and the sensitivity control use the same form. `grad(sum(out**2))` lets XLA fuse a synthetic
+  cotangent the real model never has, so it is not used (plegadx commit `05ee8d4f`). This form is
+  necessary but **not sufficient**: see the next item.
+- **the sum of pieces must reconcile with the whole, as a hard gate**: a run whose piece-sum ÷ whole
+  falls outside [0.7, 2] is `invalid_measurement`, and its ranking is not used. In two plegadx runs
+  on L40S, every other control passed (copy bandwidth 651-658 GB/s, tf32 GEMM 145-149 TFLOP/s,
+  doubled-work sensitivity about 2.0×, CV < 1.2%), yet the pieces summed to well under the whole:
+  - run 1 (bathos `79c50485`, `grad(sum(out**2))`): 0.59, 0.76, 0.94;
+  - run 2 (bathos `6f5d881d`, vjp with an input cotangent): 0.53, 0.73, 0.89.
+
+  The gate caught it both times. **The cause is not established.** One untested hypothesis (plegadx,
+  261023): an isolated vjp never writes the piece's forward output to HBM, because nothing consumes
+  it, while the composed whole writes every intermediate in the forward pass and reads it back in
+  the backward. That would hit wide hidden layers hardest, which fits the transition (8c hidden)
+  reconciling worst. Two candidate instrument forms, both unvalidated:
+  - (a) the timed function returns `(out, vjp(ct))`, which forces the forward output to be
+    materialised;
+  - (b) leave-one-out: time the composed whole with one piece swapped for a cheaper stand-in,
+    instead of timing pieces in isolation.
+
+  #6109 adopts a form only after it reconciles on a known case.
 
 The xtrax tool for this is backlog #6109. Debt #2084 is not a regression. plegadx's 0-of-5 result
 came from a copied xtrax pin, `5a6ab77` (0.4.0a7, 2026-09-29), and the #2084 fix `b5afea1`
@@ -225,6 +266,16 @@ trace. Profiling hooks write an fsynced phase-heartbeat file outside the timed l
 `jax/experimental/pallas/ops/gpu/{layer_norm, rms_norm, softmax, attention}`. No Pallas
 triangle-multiplication kernel exists. The Mosaic GPU backend needs Hopper or newer, so sm89
 (L40S) and earlier mean the Triton backend.
+
+From the plegadx survey (`64f1a720`; upstream line citations are that session's, not re-read here):
+- No upstream ColabFold-family kernel runs fp32. colabfold-kernels 0.9.0 gates dispatch to
+  bf16/f16, and alphafold3-open returns `None` for non-half dtypes.
+- Only attention has a real Pallas backward upstream. Every LN, projection, GLU and transition
+  fusion is forward-only with an XLA-recompute backward, and alphafold3-open measures GLU *losing*
+  1.4-1.5× under grad. That is direct evidence for the §2 backward-kernel opt-in.
+- tokamax 0.0.10's Triton attention has a VJP including dbias, has no dtype gate, and beat
+  colabfold's Pallas attention for forward+backward at N=384 on A10 (7.1 vs 12.6 ms, per
+  alphafold3-open's notebooks). It is the first candidate to wrap as an op rather than write.
 
 ## 5. Non-goals
 
