@@ -501,7 +501,11 @@ def _apply_override(
                 path="primal",
                 constraint=repr(primal),
             )
-        return _decision(record, primal, used_diff, f"override:{label}", _SAME_STRATEGY)
+        if diff is None or diff == primal:
+            diff_reason = _SAME_STRATEGY
+        else:
+            diff_reason = f"override:{label}"
+        return _decision(record, primal, used_diff, f"override:{label}", diff_reason)
     if not isinstance(primal, (StaticWhile, Scan)):
         raise IntentError(
             f"loop override must be StaticWhile or Scan, got {type(primal).__name__}",
@@ -730,21 +734,9 @@ def _with_hazards(
     diff_available: bool,
     diff_unavailable_reason: str,
 ) -> SiteDecision:
-    """Apply hazard rules to one chosen primal-chain decision."""
+    """Apply hazard rules to the decision that will be emitted."""
     decision = chosen[record.key]
     override = overrides.get(record.key.label)
-    automatic = (
-        decision
-        if override is None
-        else _automatic_decision(
-            record,
-            ctx,
-            budget,
-            axis_decisions,
-            diff_available=diff_available,
-            diff_unavailable_reason=diff_unavailable_reason,
-        )
-    )
     views = _hazard_views(
         record,
         records,
@@ -755,8 +747,7 @@ def _with_hazards(
     )
     warnings = list(decision.warnings)
     for name, applies, severity in HAZARDS:
-        subject = automatic if override is not None else decision
-        if not applies(subject, views, ctx):
+        if not applies(decision, views, ctx):
             continue
         if override is not None:
             warnings.append(f"override:{record.key.label} bypassed {name}")
@@ -827,6 +818,13 @@ def _lowered_site(record: SiteRecord, strategy: _MapStrategy) -> int:
             site=str(record.key),
             path="primal",
             constraint="record.fn is None",
+        )
+    if len(record.avals) != 1:
+        raise IntentError(
+            "default estimator takes one positional array",
+            site=str(record.key),
+            path="primal",
+            constraint="default estimator takes one positional array",
         )
     if isinstance(strategy, Vmap):
         return lowered_memory_estimate(jax.vmap(fn), *record.avals)

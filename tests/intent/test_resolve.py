@@ -398,3 +398,120 @@ def test_cond_loop_primal_is_plain_while():
     plan = resolve([_loop("body", None)], Context())
     assert plan.decisions[0].primal == WhileCarry()
     assert plan.decisions[0].diff == Scan()
+
+
+def test_chunked_override_around_while_records_bypass():
+    """A cuda override to ChunkedMap around StaticWhile records the bypass.
+
+    No budget would have chosen Vmap. The hazard must see the emitted
+    ChunkedMap. Fails while warnings stay empty because the predicate ran
+    on that automatic Vmap.
+    """
+    outer = _map("outer", 64)
+    records = [outer, _loop("inner", 4, parent=outer.key)]
+    plan = resolve(
+        records,
+        Context(backend="cuda"),
+        overrides={"outer": (ChunkedMap(batch_size=32), ChunkedMap(batch_size=32))},
+    )
+    assert plan.decisions[0].primal == ChunkedMap(batch_size=32)
+    assert plan.decisions[0].warnings == ("override:outer bypassed scan_around_while",)
+
+
+def test_vmap_override_around_while_is_not_bypassed():
+    """Overriding the outer map to Vmap emits Vmap and no hazard warning.
+
+    Joint cost of that Vmap plus the other map's chunk is 30+10, which fits
+    in 50. The automatic plan is ChunkedMap, so a predicate that ignores the
+    override still appends the bypass string. Fails while that string is
+    present on a Vmap decision.
+    """
+    outer = _map("outer", 64)
+    other = _map("other", 64)
+    records = [outer, _loop("inner", 4, parent=outer.key), other]
+
+    def est(decisions):
+        total = 0
+        for decision in decisions:
+            vmap = isinstance(decision.strategy, Vmap)
+            if decision.spec.name == str(outer.key):
+                total += 30 if vmap else 20
+            else:
+                total += 40 if vmap else 10
+        return total
+
+    budget = MemoryBudget(bytes=50, estimate=est)
+    plan = resolve(
+        records,
+        Context(memory_budget=budget, chunk_size=32, backend="cuda"),
+        overrides={"outer": (Vmap(), Vmap())},
+    )
+    assert plan.decisions[0].primal == Vmap()
+    assert plan.decisions[0].warnings == ()
+    assert plan.decisions[2].primal == ChunkedMap(batch_size=32)
+
+
+def test_long_scan_override_records_bypass():
+    """A jit override to Scan of length 257 records the long-scan bypass.
+
+    The automatic primal is StaticWhile, so the warning stays empty until
+    the predicate reads the emitted Scan. Export onnx with no override still
+    warns long_static_scan for the same length.
+    """
+    plan = resolve(
+        [_loop("body", 257)],
+        Context(),
+        overrides={"body": (Scan(), Scan())},
+    )
+    assert plan.decisions[0].primal == Scan()
+    assert plan.decisions[0].warnings == ("override:body bypassed long_static_scan",)
+    exported = resolve([_loop("body", 257)], Context(target="export", export_format="onnx"))
+    assert exported.decisions[0].warnings == ("long_static_scan",)
+
+
+def test_map_override_diff_reason_when_strategies_differ():
+    """A map override whose diff is not the primal names the override.
+
+    (Vmap, ChunkedMap(batch_size=2)) must not say the strategies match.
+    Fails while diff_reason is the MVP same-strategy string.
+    """
+    plan = resolve(
+        [_map("batch", 4)],
+        Context(),
+        overrides={"batch": (Vmap(), ChunkedMap(batch_size=2))},
+    )
+    decision = plan.decisions[0]
+    assert decision.primal == Vmap()
+    assert decision.diff == ChunkedMap(batch_size=2)
+    assert decision.diff_reason == "override:batch"
+
+
+def test_int_budget_multi_leaf_map_raises():
+    """An int budget on a two-leaf map raises IntentError, not TypeError.
+
+    The default estimator takes one positional array. Two leaves cannot be
+    rebuilt into the element pytree. Fails while closure_convert raises
+    TypeError, or while site, path, or constraint is wrong.
+    """
+
+    def body(tree):
+        return tree["a"] + tree["b"]
+
+    element = {"a": jnp.ones((3,), jnp.float32), "b": jnp.ones((3,), jnp.float32)}
+    converted, _consts = jax.closure_convert(body, element)
+    record = SiteRecord(
+        key=_key("paired"),
+        kind="map",
+        avals=(
+            jax.ShapeDtypeStruct((4, 3), jnp.float32),
+            jax.ShapeDtypeStruct((4, 3), jnp.float32),
+        ),
+        length=None,
+        fn=converted,
+    )
+    with pytest.raises(IntentError) as exc_info:
+        resolve([record], Context(memory_budget=10**9))
+    err = exc_info.value
+    assert err.site == str(record.key)
+    assert err.path == "primal"
+    assert err.constraint == "default estimator takes one positional array"
