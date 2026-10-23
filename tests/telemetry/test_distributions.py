@@ -5,6 +5,7 @@ import json
 import pytest
 
 from xtrax.provenance import DISTRIBUTION_FIELDS, UNKNOWN
+from xtrax.telemetry.compact import compact_ledger
 from xtrax.telemetry.ledger import RunLedger, find_run, iter_rows
 from xtrax.telemetry.migrate import upgrade_row
 from xtrax.telemetry.record import (
@@ -69,6 +70,22 @@ def test_a_bare_string_is_refused_rather_than_split_into_letters():
         ledger_distributions("jax")  # type: ignore[arg-type]
 
 
+def test_non_string_names_are_refused():
+    with pytest.raises(TypeError, match="must be strings"):
+        ledger_distributions(["jax", None])  # type: ignore[list-item]
+
+
+def test_spellings_of_one_distribution_collapse_to_the_first(monkeypatch):
+    assert ledger_distributions(["Foo_Bar", "foo-bar", "foo.bar", "jax"]) == ("Foo_Bar", "jax")
+    monkeypatch.setenv(LEDGER_DISTRIBUTIONS_ENV, "Aminx,aminx")
+    assert ledger_distributions() == ("Aminx",)
+
+
+def test_capture_cleans_names_the_same_way(tmp_path):
+    prov = RunProvenance.capture(cwd=tmp_path, distributions=(" jax ", "JAX", ""))
+    assert list(prov.distributions) == ["jax"]
+
+
 # --- the field's contract --------------------------------------------------------
 
 
@@ -118,6 +135,12 @@ def test_the_field_round_trips_through_jsonl():
     restored = RunLedgerRecord.from_json_line(record.to_json_line())
     assert restored.provenance.distributions == record.provenance.distributions
     assert restored.schema_version == SCHEMA_VERSION == 2
+
+
+def test_provenance_stays_hashable_with_distributions():
+    prov = RunProvenance(distributions={"pkg": _entry()})
+    assert hash(prov) == hash(RunProvenance())
+    assert prov != RunProvenance()
 
 
 def test_the_stored_mapping_is_a_copy_of_the_caller_input():
@@ -177,3 +200,21 @@ def test_iter_rows_still_reads_rows_written_at_v1(tmp_path):
     assert [row.run_id for row in rows] == ["old-run"]
     assert rows[0].provenance.distributions == {}
     assert rows[0].schema_version == 2
+
+
+def test_compaction_refuses_while_a_row_is_unreadable(tmp_path):
+    """Sealing would archive a newer-schema row out of iter_rows' view; refuse instead."""
+    root = tmp_path / "ledger"
+    with RunLedger.open("run-now", root=root, cwd=tmp_path):
+        pass
+    future = RunLedgerRecord(run_id="run-future", kind="train").to_dict()
+    future["schema_version"] = SCHEMA_VERSION + 1
+    segment = sorted((root / "segments").glob("*.jsonl"))[0]
+    with segment.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(future) + "\n")
+
+    with pytest.raises(LedgerRecordError, match="refusing to compact"):
+        compact_ledger(root, force=True)
+
+    assert segment.exists()
+    assert not (root / "sealed").exists() or not list((root / "sealed").glob("*.jsonl"))

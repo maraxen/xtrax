@@ -14,6 +14,7 @@ is actually part of it.
 
 import ast
 import hashlib
+import importlib.machinery
 import importlib.util
 import json
 import re
@@ -252,7 +253,8 @@ _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 _URL_USERINFO = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*://)[^/?#]*@")
 
 
-def _normalize(name: str) -> str:
+def canonical_name(name: str) -> str:
+    """PEP 503 normalized distribution name: ``Foo_Bar.baz`` -> ``foo-bar-baz``."""
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
@@ -265,11 +267,30 @@ def _url_path(url: str) -> str:
 
 
 _MALFORMED: dict[str, object] = {}
+_SITE_DIRS = frozenset({"site-packages", "dist-packages"})
+
+
+def _files(dist: metadata.Distribution) -> list[metadata.PackagePath] | None:
+    try:
+        files = dist.files
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None if files is None else list(files)
+
+
+def _read_text(dist: metadata.Distribution, filename: str) -> str | None:
+    try:
+        return dist.read_text(filename)
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def _direct_url(dist: metadata.Distribution) -> dict[str, object] | None:
     """The PEP 610 record; None when absent, ``_MALFORMED`` when unreadable."""
-    text = dist.read_text("direct_url.json")
+    try:
+        text = dist.read_text("direct_url.json")
+    except (OSError, UnicodeDecodeError):
+        return _MALFORMED
     if text is None:
         return None
     try:
@@ -323,29 +344,69 @@ def _install_fields(direct: dict[str, object] | None) -> dict[str, str]:
     return fields
 
 
-def _default_module(dist: metadata.Distribution) -> str | None:
-    wanted = _normalize(dist.metadata["Name"] or "")
-    candidates = sorted(
-        module
-        for module, owners in metadata.packages_distributions().items()
-        if wanted in {_normalize(owner) for owner in owners}
-    )
-    preferred = wanted.replace("-", "_")
+def _record_sha256(dist: metadata.Distribution, files: list[metadata.PackagePath] | None) -> str:
+    """sha256 of the RECORD file's bytes as installed (line endings untouched)."""
+    for entry in files or ():
+        if entry.name == "RECORD" and entry.parent.name.endswith(".dist-info"):
+            try:
+                data = Path(str(dist.locate_file(entry))).read_bytes()
+            except OSError:
+                return UNKNOWN
+            return hashlib.sha256(data).hexdigest()
+    return UNKNOWN
+
+
+def _top_level_names(
+    dist: metadata.Distribution, files: list[metadata.PackagePath] | None
+) -> set[str]:
+    """Top-level importable names the distribution installs, read from its own files."""
+    names: set[str] = set()
+    for entry in files or ():
+        parts = entry.parts
+        if not parts or parts[0] == "..":
+            continue
+        head = parts[0] if len(parts) > 1 else (entry.stem if entry.suffix == ".py" else "")
+        if head.isidentifier() and head != "__pycache__":
+            names.add(head)
+    if not names:
+        declared = _read_text(dist, "top_level.txt") or ""
+        names = {line.strip() for line in declared.splitlines() if line.strip().isidentifier()}
+    return names
+
+
+def _default_module(
+    dist: metadata.Distribution, files: list[metadata.PackagePath] | None
+) -> str | None:
+    candidates = _top_level_names(dist, files)
+    preferred = canonical_name(dist.metadata["Name"] or "").replace("-", "_")
     if preferred in candidates:
         return preferred
     if len(candidates) == 1:
-        return candidates[0]
+        return next(iter(candidates))
     return None
 
 
 def _module_file(module: str) -> str | None:
+    """Where ``module`` runs from, without importing it or any parent package.
+
+    An imported module reports its ``__file__``. Otherwise the top-level name is
+    looked up through ``sys.meta_path`` and each submodule through the parent's
+    search path, which finds the file without executing any ``__init__``.
+    """
     loaded = sys.modules.get(module)
     if loaded is not None:
         location = getattr(loaded, "__file__", None)
         return location if isinstance(location, str) else None
+    head, *rest = module.split(".")
     try:
-        spec = importlib.util.find_spec(module)
-    except (ImportError, ValueError):
+        spec = importlib.util.find_spec(head)
+        for part in rest:
+            if spec is None or spec.submodule_search_locations is None:
+                return None
+            spec = importlib.machinery.PathFinder.find_spec(
+                part, list(spec.submodule_search_locations)
+            )
+    except Exception:  # noqa: BLE001 - a finder may raise anything; the answer is "unknown"
         return None
     if spec is None or not spec.has_location or spec.origin is None:
         return None
@@ -360,7 +421,10 @@ def _local_dir(url: str) -> Path | None:
 
 
 def _module_in_dist(
-    dist: metadata.Distribution, install: dict[str, str], direct: dict[str, object] | None
+    dist: metadata.Distribution,
+    files: list[metadata.PackagePath] | None,
+    install: dict[str, str],
+    direct: dict[str, object] | None,
 ) -> str:
     """Whether the module file is one the distribution installed: "true", "false" or "unknown"."""
     location = install["module_file"]
@@ -372,12 +436,31 @@ def _module_in_dist(
         root = _local_dir(url) if isinstance(url, str) else None
         if root is None:
             return UNKNOWN
-        return "true" if target.is_relative_to(root) else "false"
-    files = dist.files
+        if not target.is_relative_to(root):
+            return "false"
+        # An installed copy inside the checkout's own venv is not the source tree.
+        inside_site = _SITE_DIRS.intersection(target.relative_to(root).parts)
+        return "false" if inside_site else "true"
     if files is None:
         return UNKNOWN
-    installed = {Path(str(dist.locate_file(entry))).resolve() for entry in files}
-    return "true" if target in installed else "false"
+    base = Path(str(dist.locate_file(""))).resolve()
+    if target.is_relative_to(base):
+        relative = target.relative_to(base).as_posix()
+        if any(entry.as_posix() == relative for entry in files):
+            return "true"
+    # Entries that climb out of site-packages (scripts, data) are compared resolved.
+    for entry in files:
+        if entry.parts and entry.parts[0] == ".." and target.name == entry.name:
+            if Path(str(dist.locate_file(entry))).resolve() == target:
+                return "true"
+    return "false"
+
+
+def unresolved_distribution(name: str) -> dict[str, str]:
+    """The record for a distribution nothing could be learned about: all ``"unknown"``."""
+    record = dict.fromkeys(DISTRIBUTION_FIELDS, UNKNOWN)
+    record["name"] = name
+    return record
 
 
 def resolve_distribution(name: str, *, module: str | None = None) -> dict[str, str]:
@@ -395,20 +478,21 @@ def resolve_distribution(name: str, *, module: str | None = None) -> dict[str, s
     installed ``RECORD`` file, which identifies the installed file set.
     ``source_url`` has any credentials removed.
 
-    ``module`` defaults to the top-level module the distribution provides.
+    ``module`` defaults to the top-level module the distribution installs.
     ``module_file`` is taken from ``sys.modules`` when the module is imported,
-    otherwise from ``importlib.util.find_spec``. ``module_in_dist`` is
-    ``"true"`` when that file is one the distribution installed (or, for an
-    editable install, lies under its source directory), ``"false"`` when a
-    copy elsewhere shadows it, and ``"unknown"`` when either side is missing.
+    otherwise found through the import finders without importing it or its
+    parents. ``module_in_dist`` is ``"true"`` when that file is one the
+    distribution installed (or, for an editable install, lies under its
+    source directory outside any ``site-packages``), ``"false"`` when a copy
+    elsewhere shadows it, and ``"unknown"`` when either side is missing.
 
-    Reads installed metadata only: no subprocess, no network, no writes.
+    Reads installed metadata only: no import of the package, no subprocess,
+    no network, no writes.
     """
     if _blank(name):
         raise ValueError("distribution name is required")
     name = name.strip()
-    record = dict.fromkeys(DISTRIBUTION_FIELDS, UNKNOWN)
-    record["name"] = name
+    record = unresolved_distribution(name)
     try:
         dist = metadata.distribution(name)
     except metadata.PackageNotFoundError:
@@ -422,15 +506,14 @@ def resolve_distribution(name: str, *, module: str | None = None) -> dict[str, s
     record["name"] = dist.metadata["Name"] or name
     record["version"] = dist.version or UNKNOWN
     direct = _direct_url(dist)
+    files = _files(dist)
     record.update(_install_fields(direct))
-    record_text = dist.read_text("RECORD")
-    if record_text is not None:
-        record["record_sha256"] = hashlib.sha256(record_text.encode("utf-8")).hexdigest()
-    resolved_module = module if module is not None else _default_module(dist)
+    record["record_sha256"] = _record_sha256(dist, files)
+    resolved_module = module if module is not None else _default_module(dist, files)
     if resolved_module is not None:
         record["module"] = resolved_module
         record["module_file"] = _module_file(resolved_module) or UNKNOWN
-    record["module_in_dist"] = _module_in_dist(dist, record, direct)
+    record["module_in_dist"] = _module_in_dist(dist, files, record, direct)
     return record
 
 
@@ -438,8 +521,10 @@ __all__ = [
     "DISTRIBUTION_FIELDS",
     "UNKNOWN",
     "Provenance",
+    "canonical_name",
     "collect_provenance",
     "read_provenance",
     "render_declaration",
     "resolve_distribution",
+    "unresolved_distribution",
 ]

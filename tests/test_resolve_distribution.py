@@ -24,8 +24,10 @@ _SHA = "a" * 64
 def _install(
     site: Path,
     *,
-    direct_url: "dict[str, object] | str | None" = None,
+    direct_url: "dict[str, object] | str | bytes | None" = None,
     package_dir: "Path | None" = None,
+    record_eol: str = "\n",
+    top_level: "str | None" = None,
 ) -> Path:
     """Write a dist-info (and, unless ``package_dir`` is given, its package) into ``site``."""
     site.mkdir(parents=True, exist_ok=True)
@@ -40,11 +42,20 @@ def _install(
         pkg.mkdir()
         (pkg / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
         record_lines.append(f"{_MODULE}/__init__.py,,")
+    else:
+        (site / f"_editable_impl_{_MODULE}.pth").write_text(str(package_dir), encoding="utf-8")
+        record_lines.append(f"_editable_impl_{_MODULE}.pth,,")
     if direct_url is not None:
-        text = direct_url if isinstance(direct_url, str) else json.dumps(direct_url)
-        (info / "direct_url.json").write_text(text, encoding="utf-8")
+        if isinstance(direct_url, bytes):
+            (info / "direct_url.json").write_bytes(direct_url)
+        else:
+            text = direct_url if isinstance(direct_url, str) else json.dumps(direct_url)
+            (info / "direct_url.json").write_text(text, encoding="utf-8")
         record_lines.append(f"{info.name}/direct_url.json,,")
-    (info / "RECORD").write_text("\n".join(record_lines) + "\n", encoding="utf-8")
+    if top_level is not None:
+        (info / "top_level.txt").write_text(top_level, encoding="utf-8")
+        record_lines.append(f"{info.name}/top_level.txt,,")
+    (info / "RECORD").write_bytes((record_eol.join(record_lines) + record_eol).encode("utf-8"))
     return info
 
 
@@ -245,6 +256,101 @@ def test_source_url_userinfo_is_removed(tmp_path, on_path, url, expected):
     on_path(site)
 
     assert resolve_distribution(_NAME)["source_url"] == expected
+
+
+def test_record_sha256_is_over_the_file_bytes_including_crlf(tmp_path, on_path):
+    """pip writes CRLF RECORDs; a text-mode read would hash a different byte string."""
+    site = tmp_path / "site"
+    info = _install(site, record_eol="\r\n")
+    on_path(site)
+
+    raw = (info / "RECORD").read_bytes()
+    assert b"\r\n" in raw
+    assert resolve_distribution(_NAME)["record_sha256"] == hashlib.sha256(raw).hexdigest()
+
+
+def test_editable_copy_inside_the_checkouts_own_venv_is_not_the_source(tmp_path, on_path):
+    """A stale installed copy under <checkout>/.venv/.../site-packages shadows the source."""
+    checkout = tmp_path / "checkout"
+    (checkout / "src" / _MODULE).mkdir(parents=True)
+    (checkout / "src" / _MODULE / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
+    stale = checkout / ".venv" / "lib" / "python3.13" / "site-packages"
+    (stale / _MODULE).mkdir(parents=True)
+    (stale / _MODULE / "__init__.py").write_text("VALUE = 0\n", encoding="utf-8")
+    site = tmp_path / "site"
+    _install(
+        site,
+        direct_url={"url": checkout.as_uri(), "dir_info": {"editable": True}},
+        package_dir=checkout / "src",
+    )
+    on_path(site, stale)
+
+    record = resolve_distribution(_NAME, module=_MODULE)
+
+    assert Path(record["module_file"]) == stale / _MODULE / "__init__.py"
+    assert record["module_in_dist"] == "false"
+
+
+def test_editable_default_module_comes_from_the_dist_files(tmp_path, on_path):
+    """uv/hatch editable dists list only a .pth plus package data; no top_level.txt."""
+    source = tmp_path / "checkout" / "src"
+    (source / _MODULE).mkdir(parents=True)
+    (source / _MODULE / "__init__.py").write_text("", encoding="utf-8")
+    site = tmp_path / "site"
+    _install(
+        site,
+        direct_url={"url": (tmp_path / "checkout").as_uri(), "dir_info": {"editable": True}},
+        package_dir=source,
+        top_level=f"{_MODULE}\n",
+    )
+    on_path(site, source)
+
+    record = resolve_distribution(_NAME)
+
+    assert record["module"] == _MODULE
+    assert record["module_in_dist"] == "true"
+
+
+def test_default_module_does_not_scan_every_installed_distribution(
+    tmp_path, on_path, monkeypatch
+):
+    site = tmp_path / "site"
+    _install(site)
+    on_path(site)
+
+    def _refuse() -> None:
+        raise AssertionError("packages_distributions scans the whole environment")
+
+    monkeypatch.setattr(importlib.metadata, "packages_distributions", _refuse)
+
+    assert resolve_distribution(_NAME)["module"] == _MODULE
+
+
+def test_a_dotted_module_is_located_without_importing_its_parent(tmp_path, on_path):
+    site = tmp_path / "site"
+    _install(site)
+    pkg = site / _MODULE
+    (pkg / "__init__.py").write_text("raise RuntimeError('imported')\n", encoding="utf-8")
+    (pkg / "sub.py").write_text("", encoding="utf-8")
+    on_path(site)
+
+    record = resolve_distribution(_NAME, module=f"{_MODULE}.sub")
+
+    assert _MODULE not in sys.modules
+    assert Path(record["module_file"]) == pkg / "sub.py"
+    assert record["module_in_dist"] == "false"  # sub.py is not in RECORD
+
+
+def test_undecodable_direct_url_is_unknown_and_keeps_the_rest(tmp_path, on_path):
+    site = tmp_path / "site"
+    _install(site, direct_url=b"\xff\xfe{not utf-8")
+    on_path(site)
+
+    record = resolve_distribution(_NAME)
+
+    assert record["install_kind"] == UNKNOWN
+    assert record["version"] == "1.2.3"
+    assert record["record_sha256"] != UNKNOWN
 
 
 def test_blank_name_is_rejected():

@@ -57,7 +57,12 @@ from xtrax.profiling.record import (
     capture_x64_enabled,
     capture_xla_flags,
 )
-from xtrax.provenance import DISTRIBUTION_FIELDS, UNKNOWN, resolve_distribution
+from xtrax.provenance import (
+    DISTRIBUTION_FIELDS,
+    canonical_name,
+    resolve_distribution,
+    unresolved_distribution,
+)
 
 # v2 added RunProvenance.distributions (debt #2947).
 SCHEMA_VERSION = 2
@@ -235,8 +240,11 @@ class RunProvenance:
     python_version: str = ""
     platform: str = ""
     # Requested distribution name -> xtrax.provenance.resolve_distribution
-    # record. Empty when no packages were configured for the run.
-    distributions: "dict[str, dict[str, str]]" = dataclasses.field(default_factory=dict)
+    # record. Empty when no packages were configured for the run. Left out of
+    # the hash so RunProvenance stays hashable; equality still compares it.
+    distributions: "dict[str, dict[str, str]]" = dataclasses.field(
+        default_factory=dict, hash=False
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.distributions, dict):
@@ -308,23 +316,12 @@ class RunProvenance:
         return dataclasses.asdict(self)
 
 
-def _unresolved_distribution(name: str) -> "dict[str, str]":
-    record = dict.fromkeys(DISTRIBUTION_FIELDS, UNKNOWN)
-    record["name"] = name
-    return record
-
-
 def _capture_distributions(names: "Sequence[str]") -> "dict[str, dict[str, str]]":
     """Resolve each configured distribution; a failed resolve records all-unknown."""
-    captured: dict[str, dict[str, str]] = {}
-    for raw in names:
-        name = raw.strip()
-        if not name or name in captured:
-            continue
-        captured[name] = _safe(
-            lambda name=name: resolve_distribution(name), _unresolved_distribution(name)
-        )
-    return captured
+    return {
+        name: _safe(lambda name=name: resolve_distribution(name), unresolved_distribution(name))
+        for name in ledger_distributions(names)
+    }
 
 
 def _capture_repo_identity(root: Path) -> "dict[str, Any]":
@@ -643,18 +640,27 @@ def ledger_distributions(explicit: "Sequence[str] | None" = None) -> "tuple[str,
 
     An explicit sequence wins, including an empty one. Otherwise
     ``XTRAX_LEDGER_DISTRIBUTIONS`` is read as a comma-separated list, where an
-    empty value or ``none`` records nothing. Unset records nothing.
+    empty value or ``none`` records nothing. Unset records nothing. Names are
+    stripped, blanks dropped, and spellings of one distribution (``Foo_Bar``,
+    ``foo-bar``) collapse to the first given.
     """
     if explicit is not None:
         if isinstance(explicit, str):
             raise TypeError("distributions must be a sequence of names, not a string")
+        bad = [name for name in explicit if not isinstance(name, str)]
+        if bad:
+            raise TypeError(f"distribution names must be strings, got {bad!r}")
         names = [name.strip() for name in explicit]
     else:
         raw = (os.environ.get(LEDGER_DISTRIBUTIONS_ENV) or "").strip()
         if raw.lower() == "none":
             return ()
         names = [name.strip() for name in raw.split(",")]
-    return tuple(dict.fromkeys(name for name in names if name))
+    first_spelling: dict[str, str] = {}
+    for name in names:
+        if name:
+            first_spelling.setdefault(canonical_name(name), name)
+    return tuple(first_spelling.values())
 
 
 def telemetry_opted_out() -> bool:
