@@ -143,6 +143,22 @@ def test_captured_session_reenters_diff_at_ordinal_zero():
     assert again == diff
 
 
+def test_ordinals_persist_across_activate_blocks():
+    s = Session(mode="plan")
+    with activate(s):
+        k0 = s.enter_site("map", "m.py:1", (sds((4,)),), None, None)
+        outer = s.enter_site("loop", "m.py:3", (sds((4,)),), 4, None)
+        with s.scope(outer, "diff"):
+            scoped0 = s.enter_site("map", "m.py:2", (sds((4,)),), None, None)
+    assert current_session() is None
+    with activate(s):
+        k1 = s.enter_site("map", "m.py:1", (sds((4,)),), None, None)
+        with s.scope(outer, "diff"):
+            scoped1 = s.enter_site("map", "m.py:2", (sds((4,)),), None, None)
+    assert k0.ordinal == 0 and k1.ordinal == 1 and k0 != k1
+    assert scoped0.ordinal == 0 and scoped1.ordinal == 1 and scoped0 != scoped1
+
+
 def test_plan_mode_appends_site_record():
     seen: list[int] = []
 
