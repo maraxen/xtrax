@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from xtrax.intent.plan import SiteKey
+from xtrax.intent.plan import SiteDecision, SiteKey
 from xtrax.intent.sites import Session, current_session
 
 _REGISTER: ContextVar[bool] = ContextVar("xtrax.intent.register", default=True)
@@ -42,6 +42,35 @@ def _retrace(body: Callable[..., Any]) -> Callable[..., Any]:
         return body(*args)
 
     return _body
+
+
+def decision_for(session: Session, key: SiteKey) -> SiteDecision | None:
+    """Return the decision for ``key``, falling back to its primal twin.
+
+    An explicit decision on ``key`` wins. When ``key`` is on the diff path and
+    that lookup misses, the decision stored on the same parent, label, and
+    ordinal with ``path="primal"`` is returned. Any other miss is ``None``.
+
+    Parameters
+    ----------
+    session : Session
+        Session whose ``decisions`` are consulted.
+    key : SiteKey
+        Site being resolved. A diff key with no decision of its own uses the
+        primal twin.
+
+    Returns
+    -------
+    SiteDecision or None
+        ``session.decision_for(key)`` when that is not ``None``. Otherwise the
+        primal twin's decision when ``key.path == "diff"``. Otherwise ``None``.
+    """
+    decision = session.decision_for(key)
+    if decision is not None:
+        return decision
+    if key.path == "diff":
+        return session.decision_for(dataclasses.replace(key, path="primal"))
+    return None
 
 
 def _store_running_fn(session: Session, key: SiteKey, fn: Callable[..., Any]) -> None:

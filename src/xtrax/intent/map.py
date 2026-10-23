@@ -21,6 +21,7 @@ from xtrax.intent._trace import (
     _retrace,
     _store_running_fn,
     _suspend_registration,
+    decision_for,
 )
 from xtrax.intent.errors import IntentError
 from xtrax.intent.plan import SiteKey
@@ -139,7 +140,7 @@ def _strategies(session: Session | None, key: SiteKey | None) -> tuple[_Strategy
     """
     if session is None or key is None:
         return Vmap(), Vmap()
-    decision = session.decision_for(key)
+    decision = decision_for(session, key)
     if decision is None:
         return Vmap(), Vmap()
     primal = _accept(decision.primal, "primal", key)

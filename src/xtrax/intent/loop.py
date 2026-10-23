@@ -20,6 +20,7 @@ from xtrax.intent._trace import (
     _retrace,
     _store_running_fn,
     _suspend_registration,
+    decision_for,
 )
 from xtrax.intent.errors import IntentError
 from xtrax.intent.plan import SiteKey
@@ -199,7 +200,7 @@ def _primal_strategy(session: Session | None, key: SiteKey | None, length: int) 
     """
     if session is None or key is None:
         return StaticWhile(length)
-    decision = session.decision_for(key)
+    decision = decision_for(session, key)
     if decision is None:
         return StaticWhile(length)
     primal = decision.primal

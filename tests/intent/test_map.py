@@ -1,5 +1,6 @@
 """Tests for xtrax.intent.map."""
 
+import dataclasses
 import inspect
 
 import jax
@@ -16,6 +17,7 @@ from xtrax.intent import (
     loop,
 )
 from xtrax.intent import map as xmap
+from xtrax.intent._trace import decision_for
 from xtrax.tiling.strategy import ChunkedMap, Scan, Vmap
 
 _W = jnp.float32(0.7)
@@ -377,6 +379,46 @@ def test_map_nested_map_under_chunked():
     stored = next(record for record in exe.records if record.key == outer)
     stored_text = str(jax.make_jaxpr(lambda row: stored.fn(row))(xs[0]))
     assert "scan[" in stored_text
+
+    def loss(values):
+        return jnp.sum(f(values))
+
+    def loss_ref(values):
+        return jnp.sum(f_ref(values))
+
+    grad_plan = Session(mode="plan", decisions=decisions)
+    with activate(grad_plan):
+
+        def grad_loss(values):
+            return jax.grad(loss)(values)
+
+        grad_text = str(jax.make_jaxpr(grad_loss)(xs))
+    assert "scan[" in grad_text
+
+    value_plan = Session(mode="plan", decisions=decisions)
+    with activate(value_plan):
+
+        def grad_loss_values(values):
+            return jax.grad(loss)(values)
+
+        got_grad = grad_loss_values(xs)
+    same(got_grad, jax.grad(loss_ref)(xs))
+
+
+def test_decision_for_diff_key_prefers_explicit():
+    parent = SiteKey(parent=None, path="primal", label="outer", ordinal=0)
+    primal = SiteKey(parent=parent, path="primal", label="inner", ordinal=0)
+    diff = dataclasses.replace(primal, path="diff")
+    primal_decision = _decision(primal, ChunkedMap(8), ChunkedMap(8), "map")
+    diff_decision = _decision(diff, Vmap(), Vmap(), "map")
+    both = Session(
+        mode="plan",
+        decisions={primal: primal_decision, diff: diff_decision},
+    )
+    assert decision_for(both, diff) is diff_decision
+    assert decision_for(both, primal) is primal_decision
+    only_primal = Session(mode="plan", decisions={primal: primal_decision})
+    assert decision_for(only_primal, diff) is primal_decision
 
 
 def test_map_dict_output():
