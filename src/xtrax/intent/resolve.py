@@ -211,7 +211,7 @@ def _scan_around_while(
     ``ancestors`` is the subtree: decisions for records whose canonical parent
     chain includes this site, plus the current :class:`SiteRecord`.
     """
-    if ctx.backend not in SCAN_AROUND_WHILE_BACKENDS:
+    if ctx.resolved_backend() not in SCAN_AROUND_WHILE_BACKENDS:
         return False
     if not isinstance(decision.primal, (ChunkedMap, Scan)):
         return False

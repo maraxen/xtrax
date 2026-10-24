@@ -18,6 +18,8 @@ OPTIONAL (dedup/gather machinery — import from submodules):
     xtrax.tiling.dedup:    DedupSpec, get_k_bucket
 """
 
+from typing import TYPE_CHECKING, Any
+
 from xtrax.tiling._plan_wrapper import _BatchPlanWrapper
 from xtrax.tiling.bucket import (
     BUCKET_LADDER,
@@ -36,16 +38,6 @@ from xtrax.tiling.estimators import (
     device_memory_budget,
     estimate_memory_theoretical,
     lowered_memory_estimate,
-)
-from xtrax.tiling.iterator import (
-    BucketIterator,
-    ChunkedMapIterator,
-    JaxScanIterator,
-    MapIterator,
-    ScanIterator,
-    VmapIterator,
-    WhileLoopIterator,
-    WhileLoopWithYsIterator,
 )
 from xtrax.tiling.plan import (
     AxisDecision,
@@ -112,3 +104,57 @@ __all__ = [
     "ScanIterator",
     "_BatchPlanWrapper",
 ]
+
+if TYPE_CHECKING:
+    from xtrax.tiling.iterator import (
+        BucketIterator,
+        ChunkedMapIterator,
+        JaxScanIterator,
+        MapIterator,
+        ScanIterator,
+        VmapIterator,
+        WhileLoopIterator,
+        WhileLoopWithYsIterator,
+    )
+
+_LAZY_ITERATORS = frozenset(
+    {
+        "BucketIterator",
+        "ChunkedMapIterator",
+        "JaxScanIterator",
+        "MapIterator",
+        "ScanIterator",
+        "VmapIterator",
+        "WhileLoopIterator",
+        "WhileLoopWithYsIterator",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    """Load iterator classes on first access.
+
+    Eager import of :mod:`xtrax.tiling.iterator` pulls in equinox. Callers
+    that only need the rest of this package, including ``xtrax.intent``,
+    therefore do not load equinox until they touch an iterator name.
+
+    Parameters
+    ----------
+    name : str
+        Attribute being accessed.
+
+    Returns
+    -------
+    object
+        The iterator class from :mod:`xtrax.tiling.iterator`.
+
+    Raises
+    ------
+    AttributeError
+        ``name`` is not a lazy iterator export.
+    """
+    if name in _LAZY_ITERATORS:
+        import importlib
+
+        return getattr(importlib.import_module("xtrax.tiling.iterator"), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

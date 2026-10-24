@@ -1,0 +1,361 @@
+"""Tests for xtrax.intent.compile."""
+
+import logging
+import subprocess
+import sys
+
+import jax
+import jax.numpy as jnp
+import pytest
+
+from xtrax.intent import (
+    Context,
+    IntentError,
+    Plan,
+    SiteMismatchError,
+    UnsatisfiableContextError,
+    compile,
+    loop,
+    map,
+)
+from xtrax.tiling.budget import MemoryBudget
+from xtrax.tiling.strategy import ChunkedMap, Vmap
+
+
+def _same(got, expected) -> None:
+    """Assert two pytrees match leaf for leaf."""
+    got_leaves, got_def = jax.tree_util.tree_flatten(got)
+    expected_leaves, expected_def = jax.tree_util.tree_flatten(expected)
+    assert got_def == expected_def
+    for left, right in zip(got_leaves, expected_leaves, strict=True):
+        assert jnp.allclose(left, right, rtol=1e-5, atol=1e-5)
+
+
+def test_compile_unconstrained_equals_plain_jax():
+    """No budget: a loop and a map match scan and vmap."""
+
+    def fn(xs):
+        def body(carry, x):
+            return carry + x, jnp.sum(carry)
+
+        init = jnp.zeros(xs.shape[1:], dtype=xs.dtype)
+        carry, ys = loop(body, init, xs=xs, name="steps")
+        scaled = map(lambda y: y * jnp.float32(2), ys, name="rows")
+        return carry.sum() + scaled.sum()
+
+    def reference(xs):
+        def body(carry, x):
+            return carry + x, jnp.sum(carry)
+
+        init = jnp.zeros(xs.shape[1:], dtype=xs.dtype)
+        carry, ys = jax.lax.scan(body, init, xs)
+        scaled = jax.vmap(lambda y: y * jnp.float32(2))(ys)
+        return carry.sum() + scaled.sum()
+
+    xs = jnp.linspace(-1.0, 1.0, 12, dtype=jnp.float32).reshape(4, 3)
+    compiled = compile(fn)
+    _same(compiled(xs), reference(xs))
+
+
+def test_nested_sites_no_false_mismatch():
+    """Loop-in-map, map-in-loop, and both cond branches stay consistent.
+
+    Plain, grad, and checkpoint runs match the scan/vmap reference and do not
+    raise SiteMismatchError.
+    """
+
+    def fn(xs, pred):
+        def loop_in_map(values):
+            def row(x):
+                def body(carry, _):
+                    return carry + x, jnp.sum(carry)
+
+                carry, ys = loop(body, jnp.zeros_like(x), length=2, name="true_loop")
+                return carry + jnp.sum(ys)
+
+            return map(row, values, name="true_map")
+
+        def map_in_loop(values):
+            def body(carry, x):
+                y = map(lambda z: z + carry, x, name="false_map")
+                return carry + jnp.sum(y), jnp.sum(y)
+
+            init = jnp.zeros(values.shape[-1:], dtype=values.dtype)
+            carry, ys = loop(body, init, xs=values, name="false_loop")
+            return jnp.sum(carry) + jnp.sum(ys)
+
+        return jax.lax.cond(
+            pred,
+            lambda values: jnp.sum(loop_in_map(values)),
+            lambda values: map_in_loop(values),
+            xs,
+        )
+
+    def reference(xs, pred):
+        def loop_in_map(values):
+            def row(x):
+                def body(carry, _):
+                    return carry + x, jnp.sum(carry)
+
+                carry, ys = jax.lax.scan(body, jnp.zeros_like(x), None, length=2)
+                return carry + jnp.sum(ys)
+
+            return jax.vmap(row)(values)
+
+        def map_in_loop(values):
+            def body(carry, x):
+                y = jax.vmap(lambda z: z + carry)(x)
+                return carry + jnp.sum(y), jnp.sum(y)
+
+            init = jnp.zeros(values.shape[-1:], dtype=values.dtype)
+            carry, ys = jax.lax.scan(body, init, values)
+            return jnp.sum(carry) + jnp.sum(ys)
+
+        return jax.lax.cond(
+            pred,
+            lambda values: jnp.sum(loop_in_map(values)),
+            lambda values: map_in_loop(values),
+            xs,
+        )
+
+    xs = jnp.linspace(-0.5, 0.5, 12, dtype=jnp.float32).reshape(4, 3)
+    pred = jnp.bool_(True)
+    compiled = compile(fn)
+    _same(compiled(xs, pred), reference(xs, pred))
+    _same(jax.grad(compiled)(xs, pred), jax.grad(reference)(xs, pred))
+    _same(jax.checkpoint(compiled)(xs, pred), jax.checkpoint(reference)(xs, pred))
+
+
+def test_nested_site_under_grad_uses_diff_decision():
+    """A nested map's diff strategy comes from the plan, not the Vmap default."""
+
+    def fn(xs):
+        def row(values):
+            return map(lambda z: jnp.sin(z), values, name="inner")
+
+        return jnp.sum(map(row, xs, name="outer"))
+
+    def reference(xs):
+        def row(values):
+            return jax.vmap(jnp.sin)(values)
+
+        return jnp.sum(jax.vmap(row)(xs))
+
+    xs = jnp.linspace(-1.0, 1.0, 24, dtype=jnp.float32).reshape(4, 6)
+    compiled = compile(fn, overrides={"inner": (Vmap(), ChunkedMap(batch_size=2))})
+    plan = compiled.plan_for(xs)
+    inner = next(
+        decision
+        for decision in plan.decisions
+        if decision.key.label == "inner" and decision.key.path == "primal"
+    )
+    assert isinstance(inner.primal, Vmap)
+    assert isinstance(inner.diff, ChunkedMap)
+    forward = str(jax.make_jaxpr(compiled)(xs))
+    assert "scan[" not in forward
+    backward = str(jax.make_jaxpr(jax.grad(compiled))(xs))
+    assert "scan[" in backward
+    _same(jax.grad(compiled)(xs), jax.grad(reference)(xs))
+
+
+def test_nonreproducible_trace_raises_before_execution():
+    """A trace-time shape change names the site and the planned avals."""
+    state = {"n": 0}
+
+    def fn(xs):
+        state["n"] += 1
+        rows = xs if state["n"] == 1 else xs[:-1]
+        return map(lambda z: jnp.sum(z), rows, name="rows").sum()
+
+    compiled = compile(fn)
+    with pytest.raises(SiteMismatchError) as exc_info:
+        compiled(jnp.ones((6, 3), dtype=jnp.float32))
+    err = exc_info.value
+    assert "rows" in err.site
+    assert "planned" in err.constraint
+
+
+def test_unsatisfiable_context_raises_at_compile_call():
+    """An export cond-loop is refused when the compiled function is called."""
+
+    def fn(x):
+        def cond(carry):
+            return carry[0] < jnp.float32(3)
+
+        def body(carry):
+            return carry + jnp.float32(1)
+
+        return loop(body, x, cond=cond, name="stop")
+
+    compiled = compile(fn, Context(target="export", export_format="stablehlo"))
+    with pytest.raises(UnsatisfiableContextError) as exc_info:
+        compiled(jnp.zeros(2, dtype=jnp.float32))
+    err = exc_info.value
+    assert "stop" in err.site
+    assert err.path == "primal"
+    assert err.constraint == "export forbids unbounded while_loop"
+
+
+def test_plans_once_zero_recompiles(caplog):
+    """One plan and no further XLA compiles across three calls of one shape."""
+
+    def fn(xs):
+        return map(lambda z: z + jnp.float32(1), xs, name="batch").sum()
+
+    compiled = compile(fn)
+    xs = jnp.ones((4, 3), dtype=jnp.float32)
+    with jax.log_compiles(True), caplog.at_level(logging.WARNING, logger="jax"):
+        compiled(xs)
+        after_first = len(caplog.records)
+        compiled(xs)
+        compiled(xs)
+    assert compiled.plans == 1
+    later = [record.getMessage() for record in caplog.records[after_first:]]
+    compiled_again = [
+        message
+        for message in later
+        if "Finished XLA compilation" in message or "Compiling" in message
+    ]
+    assert compiled_again == []
+
+
+def test_plan_table_and_json_from_compiled():
+    """plan_for returns a Plan whose table and JSON list the site."""
+
+    def fn(xs):
+        return map(lambda z: z + jnp.float32(1), xs, name="batch").sum()
+
+    ctx = Context()
+    compiled = compile(fn, ctx)
+    xs = jnp.ones((4, 3), dtype=jnp.float32)
+    plan = compiled.plan_for(xs)
+    assert isinstance(plan, Plan)
+    assert "batch" in plan.table()
+    assert "Vmap" in plan.table()
+    restored = Plan.from_json(plan.to_json(), context=ctx)
+    assert restored.decisions == plan.decisions
+    assert compiled.plans == 1
+    compiled(xs)
+    assert compiled.plans == 1
+
+
+def test_compile_new_shape_replans():
+    """A new leading shape plans again; repeating the first shape does not."""
+
+    def fn(xs):
+        return map(lambda z: jnp.sum(z), xs, name="batch")
+
+    compiled = compile(fn)
+    compiled(jnp.ones((4, 3), dtype=jnp.float32))
+    assert compiled.plans == 1
+    compiled(jnp.ones((8, 3), dtype=jnp.float32))
+    assert compiled.plans == 2
+    compiled(jnp.ones((4, 3), dtype=jnp.float32))
+    assert compiled.plans == 2
+
+
+def test_compile_under_outer_vmap():
+    """compile plans from tracer shapes under an outer vmap."""
+
+    def fn(xs):
+        return map(lambda z: z * jnp.float32(2) + jnp.float32(1), xs, name="batch").sum()
+
+    def reference(xs):
+        return jax.vmap(lambda z: z * jnp.float32(2) + jnp.float32(1))(xs).sum()
+
+    compiled = compile(fn)
+    xs = jnp.ones((5, 4, 3), dtype=jnp.float32)
+    _same(jax.vmap(compiled)(xs), jax.vmap(reference)(xs))
+
+
+def test_no_equinox_import():
+    """import xtrax.intent and a tiny compile do not load equinox."""
+    code = """
+import sys
+
+class _BlockEquinox:
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "equinox" or fullname.startswith("equinox."):
+            raise ImportError("equinox import blocked")
+        return None
+
+sys.meta_path.insert(0, _BlockEquinox())
+import jax.numpy as jnp
+from xtrax.intent import compile, map
+
+def f(x):
+    return map(lambda z: z + 1, x, name="batch")
+
+compile(f)(jnp.ones((4, 3)))
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def _vmap_is_expensive(decisions):
+    """Count Vmap at 100 bytes and every other strategy at 10."""
+    return sum(100 if isinstance(decision.strategy, Vmap) else 10 for decision in decisions)
+
+
+def test_posthoc_scan_around_while_check(monkeypatch):
+    """ChunkedMap around a loop is rejected unless an override bypassed the hazard."""
+    resolve_module = sys.modules["xtrax.intent.resolve"]
+    compile_module = sys.modules["xtrax.intent.compile"]
+    # Only the post-hoc set includes "cpu": this simulates a resolver miss, so the
+    # compiled jaxpr check is the only line of defence.
+    monkeypatch.setattr(compile_module, "SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
+    budget = MemoryBudget(bytes=50, estimate=_vmap_is_expensive)
+
+    def fn(xs):
+        def row(x):
+            def body(carry, _):
+                return carry + x, jnp.sum(carry)
+
+            carry, ys = loop(body, jnp.zeros_like(x), length=3, name="inner")
+            return carry + jnp.sum(ys)
+
+        return map(row, xs, name="outer")
+
+    def reference(xs):
+        def row(x):
+            def body(carry, _):
+                return carry + x, jnp.sum(carry)
+
+            carry, ys = jax.lax.scan(body, jnp.zeros_like(x), None, length=3)
+            return carry + jnp.sum(ys)
+
+        return jax.vmap(row)(xs)
+
+    xs = jnp.linspace(-0.2, 0.2, 32, dtype=jnp.float32).reshape(8, 4)
+    blocked = compile(fn, Context(memory_budget=budget, chunk_size=4))
+    blocked_plan = blocked.plan_for(xs)
+    assert not any(
+        "bypassed scan_around_while" in warning
+        for decision in blocked_plan.decisions
+        for warning in decision.warnings
+    )
+    with pytest.raises(IntentError) as exc_info:
+        blocked(xs)
+    assert exc_info.value.constraint == "scan_around_while"
+    assert not isinstance(exc_info.value, UnsatisfiableContextError)
+
+    # With the resolver seeing the same backend set, the hazard is refused at plan time.
+    monkeypatch.setattr(resolve_module, "SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
+    refused = compile(fn, Context(memory_budget=budget, chunk_size=4))
+    with pytest.raises(UnsatisfiableContextError) as refused_info:
+        refused.plan_for(xs)
+    assert refused_info.value.constraint == "scan_around_while"
+    assert "outer" in refused_info.value.site
+
+    allowed = compile(
+        fn,
+        Context(backend="cpu", memory_budget=budget, chunk_size=4),
+        overrides={"outer": (ChunkedMap(batch_size=4), ChunkedMap(batch_size=4))},
+    )
+    allowed_plan = allowed.plan_for(xs)
+    assert any(
+        warning == "override:outer bypassed scan_around_while"
+        for decision in allowed_plan.decisions
+        for warning in decision.warnings
+    )
+    _same(allowed(xs), reference(xs))
