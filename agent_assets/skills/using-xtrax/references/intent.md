@@ -71,7 +71,7 @@ The map diff reason is the shared MVP string. — verify: `src/xtrax/intent/reso
 
 | Site | Resolution |
 |---|---|
-| Fixed-length `loop`, undifferentiated, `target="jit"` or `export_format="stablehlo"` | Primal `StaticWhile(length=...)`, run as one `while_loop` that collects `ys`. — verify: `src/xtrax/intent/resolve.py:346-348` — verify: `src/xtrax/intent/loop.py:187-190` |
+| Fixed-length `loop`, undifferentiated, `target="jit"` or `export_format="stablehlo"` | Primal `StaticWhile(length=...)`, run as one `while_loop` that collects `ys`. — verify: `src/xtrax/intent/resolve.py:346-348` — verify: `src/xtrax/intent/loop.py:155-176` |
 | That loop, differentiated | Diff strategy `Scan`. The JVP calls `_scan`, and `_scan` calls `jax.lax.scan`. — verify: `src/xtrax/intent/resolve.py:349-350` — verify: `src/xtrax/intent/loop.py:270-290` — verify: `src/xtrax/intent/loop.py:144-152` |
 | `loop(..., cond=)` (no `length`, no `xs`) | Primal `WhileCarry`, run as `lax.while_loop`. — verify: `src/xtrax/intent/resolve.py:340-342` — verify: `src/xtrax/intent/loop.py:325-335` — verify: `src/xtrax/intent/loop.py:401-402` |
 | Fixed-length `loop` with `target="export"` and `export_format` other than `"stablehlo"` | Primal `Scan`. — verify: `src/xtrax/intent/resolve.py:343-345` |
