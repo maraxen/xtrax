@@ -158,3 +158,8 @@ def __getattr__(name: str) -> Any:
 
         return getattr(importlib.import_module("xtrax.tiling.iterator"), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    """Return sorted list of public attributes."""
+    return sorted(__all__)

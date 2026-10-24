@@ -287,9 +287,49 @@ def f(x):
     return map(lambda z: z + 1, x, name="batch")
 
 compile(f)(jnp.ones((4, 3)))
+import xtrax.tiling as tiling
+names = dir(tiling)
+expected = (
+    "BucketIterator",
+    "ChunkedMapIterator",
+    "JaxScanIterator",
+    "MapIterator",
+    "ScanIterator",
+    "VmapIterator",
+    "WhileLoopIterator",
+    "WhileLoopWithYsIterator",
+)
+missing = [name for name in expected if name not in names]
+assert not missing, missing
+assert "TYPE_CHECKING" not in names
+assert "equinox" not in sys.modules
 """
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_compile_exact_inputs_skip_diff_pass():
+    """An all-exact map skips the diff plan pass."""
+    traces = {"n": 0}
+
+    def fn(xs):
+        traces["n"] += 1
+        return map(lambda z: z + jnp.int32(1), xs, name="batch")
+
+    def reference(xs):
+        return jax.vmap(lambda z: z + jnp.int32(1))(xs)
+
+    xs = jnp.arange(12, dtype=jnp.int32).reshape(4, 3)
+    compiled = compile(fn)
+    _same(compiled(xs), reference(xs))
+    assert traces["n"] == 2
+    assert compiled.plans == 1
+    plan = compiled.plan_for(xs)
+    assert compiled.plans == 1
+    assert plan.decisions
+    for decision in plan.decisions:
+        assert decision.diff is not None
+        assert decision.diff_reason == "same strategy as primal in the MVP"
 
 
 def _vmap_is_expensive(decisions):
