@@ -399,3 +399,131 @@ def test_posthoc_scan_around_while_check(monkeypatch):
         for warning in decision.warnings
     )
     _same(allowed(xs), reference(xs))
+
+
+def _sum_leaves(tree) -> jax.Array:
+    """Scalar reduction so ``jax.grad`` is defined on a pytree result."""
+    return sum(jnp.sum(leaf) for leaf in jax.tree_util.tree_leaves(tree))
+
+
+def test_budgeted_loop_in_map_grad_and_jvp():
+    """ChunkedMap on both paths around a loop matches vmap(scan) under grad and jvp.
+
+    ``xs`` is ``(8, 5, 3)`` and the inner loop length is 5. The budget demotes
+    the outer map to ``ChunkedMap(batch_size=2)`` on the primal and the diff
+    path. Fails while the JVP rule's primal shapes disagree with the
+    custom_jvp primal, or while a second inner-loop visit raises
+    SiteMismatchError.
+    """
+
+    def fn(xs, w):
+        def one(row):
+            def step(carry, x):
+                y = x * w + carry
+                return carry + y, y
+
+            init = jnp.zeros(row.shape[-1:], dtype=row.dtype)
+            return loop(step, init, xs=row, name="inner_loop")
+
+        return map(one, xs, name="outer_map")
+
+    def reference(xs, w):
+        def one(row):
+            def step(carry, x):
+                y = x * w + carry
+                return carry + y, y
+
+            init = jnp.zeros(row.shape[-1:], dtype=row.dtype)
+            return jax.lax.scan(step, init, row)
+
+        return jax.vmap(one)(xs)
+
+    xs = jnp.linspace(-0.4, 0.6, 8 * 5 * 3, dtype=jnp.float32).reshape(8, 5, 3)
+    w = jnp.array([0.2, 0.3, 0.4], dtype=jnp.float32)
+    compiled = compile(
+        fn,
+        Context(
+            memory_budget=MemoryBudget(bytes=50, estimate=_vmap_is_expensive),
+            chunk_size=2,
+            backend="cpu",
+        ),
+    )
+    plan = compiled.plan_for(xs, w)
+    outer = next(
+        decision
+        for decision in plan.decisions
+        if decision.key.label == "outer_map" and decision.key.path == "primal"
+    )
+    assert isinstance(outer.primal, ChunkedMap)
+    assert outer.primal.batch_size == 2
+    assert isinstance(outer.diff, ChunkedMap)
+    assert outer.diff.batch_size == 2
+
+    def loss_compiled(values, weight):
+        return _sum_leaves(compiled(values, weight))
+
+    def loss_reference(values, weight):
+        return _sum_leaves(reference(values, weight))
+
+    _same(jax.grad(loss_compiled)(xs, w), jax.grad(loss_reference)(xs, w))
+    tangents = (jnp.ones_like(xs), jnp.ones_like(w))
+    got_primal, got_tangent = jax.jvp(compiled, (xs, w), tangents)
+    exp_primal, exp_tangent = jax.jvp(reference, (xs, w), tangents)
+    _same(got_primal, exp_primal)
+    _same(got_tangent, exp_tangent)
+
+
+def test_budgeted_map_in_loop_closes_over_carry_grad():
+    """A chunked diff map that closes over the loop carry matches scan/vmap under grad.
+
+    The body is ``sin(z * w + carry)``. The primal path stays ``Vmap`` and the
+    diff path is ``ChunkedMap(batch_size=2)``. Gradients with respect to the
+    inputs and ``w`` must match. The carry update is scaled by 0.1: at scale 1
+    the carry feedback amplifies float32 rounding to about 1e-3, and vmap, lax.map
+    and the chunked path each sit that far from the float64 gradient.
+    """
+
+    def fn(xs, w):
+        def step(carry, row):
+            y = map(lambda z: jnp.sin(z * w + carry), row, name="inner_map")
+            return carry + 0.1 * jnp.sum(y), y
+
+        return loop(step, jnp.float32(0.0), xs=xs, name="outer_loop")
+
+    def reference(xs, w):
+        def step(carry, row):
+            y = jax.vmap(lambda z: jnp.sin(z * w + carry))(row)
+            return carry + 0.1 * jnp.sum(y), y
+
+        return jax.lax.scan(step, jnp.float32(0.0), xs)
+
+    xs = jnp.linspace(-0.3, 0.3, 16, dtype=jnp.float32).reshape(4, 4)
+    w = jnp.linspace(0.2, 0.5, 4, dtype=jnp.float32)
+    compiled = compile(
+        fn,
+        Context(backend="cpu"),
+        overrides={"inner_map": (Vmap(), ChunkedMap(batch_size=2))},
+    )
+    plan = compiled.plan_for(xs, w)
+    inner = next(
+        decision
+        for decision in plan.decisions
+        if decision.key.label == "inner_map" and decision.key.path == "primal"
+    )
+    assert isinstance(inner.primal, Vmap)
+    assert isinstance(inner.diff, ChunkedMap)
+    assert inner.diff.batch_size == 2
+
+    def loss_compiled(values, weight):
+        carry, _ys = compiled(values, weight)
+        return jnp.sum(carry)
+
+    def loss_reference(values, weight):
+        carry, _ys = reference(values, weight)
+        return jnp.sum(carry)
+
+    for arg in (0, 1):
+        _same(
+            jax.grad(loss_compiled, argnums=arg)(xs, w),
+            jax.grad(loss_reference, argnums=arg)(xs, w),
+        )

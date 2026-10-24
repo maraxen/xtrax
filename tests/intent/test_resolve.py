@@ -515,3 +515,58 @@ def test_int_budget_multi_leaf_map_raises():
     assert err.site == str(record.key)
     assert err.path == "primal"
     assert err.constraint == "default estimator takes one positional array"
+
+
+def test_static_while_override_length_must_match_record():
+    """A StaticWhile override whose length is not the site's length is refused.
+
+    Fails while ``StaticWhile(length=99)`` is recorded for a length-4 loop.
+    """
+    with pytest.raises(IntentError) as exc_info:
+        resolve(
+            [_loop("body", 4)],
+            Context(),
+            overrides={"body": (StaticWhile(length=99), Scan())},
+        )
+    err = exc_info.value
+    assert err.site == "body"
+    assert err.path == "primal"
+    assert "99" in err.constraint
+    assert "4" in err.constraint
+
+
+def test_loop_override_diff_none_records_scan_when_available():
+    """A loop override with no diff strategy records Scan when differentiation runs.
+
+    The JVP always scans. Fails while diff stays None or the reason is not
+    ``override:body``.
+    """
+    plan = resolve(
+        [_loop("body", 4)],
+        Context(),
+        overrides={"body": (StaticWhile(length=4), None)},
+    )
+    decision = plan.decisions[0]
+    assert decision.primal == StaticWhile(length=4)
+    assert decision.diff == Scan()
+    assert decision.diff_reason == "override:body"
+
+
+def test_loop_override_diff_none_stays_none_when_unavailable():
+    """A loop override with no diff strategy stays None when diff was not traced.
+
+    Fails while diff becomes Scan, or while the reason is not the caller-supplied
+    unavailable reason.
+    """
+    reason = "cotangent was not requested"
+    plan = resolve(
+        [_loop("body", 4)],
+        Context(),
+        overrides={"body": (StaticWhile(length=4), None)},
+        diff_available=False,
+        diff_unavailable_reason=reason,
+    )
+    decision = plan.decisions[0]
+    assert decision.primal == StaticWhile(length=4)
+    assert decision.diff is None
+    assert decision.diff_reason == reason

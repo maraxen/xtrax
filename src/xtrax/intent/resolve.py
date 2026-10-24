@@ -513,12 +513,28 @@ def _apply_override(
             path="primal",
             constraint=repr(primal),
         )
+    if isinstance(primal, StaticWhile) and primal.length != record.length:
+        raise IntentError(
+            (
+                f"StaticWhile override length {primal.length} does not match "
+                f"site length {record.length}"
+            ),
+            site=label,
+            path="primal",
+            constraint=f"override length {primal.length}, site length {record.length}",
+        )
     if diff is None:
         if diff_available:
-            diff_reason = f"override:{label} has no diff strategy"
-        else:
-            diff_reason = diff_unavailable_reason
-        return _decision(record, primal, None, f"override:{label}", diff_reason)
+            # The loop derivative always scans, including when the override
+            # leaves the diff strategy unspecified.
+            return _decision(
+                record,
+                primal,
+                Scan(),
+                f"override:{label}",
+                f"override:{label}",
+            )
+        return _decision(record, primal, None, f"override:{label}", diff_unavailable_reason)
     if not isinstance(diff, Scan):
         raise IntentError(
             f"loop override diff must be Scan or None, got {type(diff).__name__}",

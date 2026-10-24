@@ -152,14 +152,41 @@ def _scan(step: _Step, consts: tuple[Any, ...], init: Any, xs: Any, length: int)
     return jax.lax.scan(_body, init, xs, length=length)
 
 
-def _while_collect(step: _Step, consts: tuple[Any, ...], init: Any, xs: Any, length: int) -> Any:
-    """Static ``while_loop`` that stacks per-step outputs on axis 0."""
+def _ys_buffer(step: _Step, consts: tuple[Any, ...], init: Any, xs: Any, length: int) -> Any:
+    """Zeros shaped like ``length`` stacked per-step outputs of ``step``."""
     y_spec = jax.eval_shape(
         lambda carry, x: step(consts, carry, x)[1],
         init,
         _example_x(xs),
     )
-    ys0 = _allocate_ys(y_spec, length)
+    return _allocate_ys(y_spec, length)
+
+
+def _scan_collect(step: _Step, consts: tuple[Any, ...], init: Any, xs: Any, length: int) -> Any:
+    """``lax.scan`` that writes per-step outputs into a carried buffer.
+
+    The values equal :func:`_scan`. The layout matches :func:`_while_collect`:
+    under ``vmap`` the buffer is batched on axis 0, where stacked scan outputs
+    are batched on axis 1. A ``StaticWhile`` primal's JVP rule needs the same
+    layout as its primal, or ``custom_jvp`` batching under a chunked
+    ``lax.map`` returns ``ys`` with time and batch axes interleaved.
+    """
+    ys0 = _ys_buffer(step, consts, init, xs, length)
+    if length == 0:
+        return init, ys0
+
+    def _body(state: tuple[Any, Any, Any], x: Any) -> tuple[tuple[Any, Any, Any], None]:
+        index, carry, ys = state
+        carry2, y = step(consts, carry, x)
+        return (index + 1, carry2, _write_ys(ys, y, index)), None
+
+    (_index, carry, ys), _ = jax.lax.scan(_body, (jnp.int32(0), init, ys0), xs, length=length)
+    return carry, ys
+
+
+def _while_collect(step: _Step, consts: tuple[Any, ...], init: Any, xs: Any, length: int) -> Any:
+    """Static ``while_loop`` that stacks per-step outputs on axis 0."""
+    ys0 = _ys_buffer(step, consts, init, xs, length)
     if length == 0:
         return init, ys0
 
@@ -274,21 +301,25 @@ def _static_runner(
         primals: tuple[Any, ...],
         tangents: tuple[Any, ...],
     ) -> Any:
-        if session is None or key is None:
-            return jax.jvp(
-                lambda consts, init, xs: _scan(step, consts, init, xs, length),
-                primals,
-                tangents,
-            )
         _consts, init, xs = primals
-        with activate(session), session.scope(key, "diff"):
-            fn, _hoisted = _convert_scan(_retrace(body), init, xs)
+        if session is None or key is None:
+            live = step
+        else:
+            with activate(session), session.scope(key, "diff"):
+                fn, _hoisted = _convert_scan(_retrace(body), init, xs)
+            # ``_hoisted`` is this conversion's copy of the closed-over values.
+            # The differentiated inputs are ``consts``; ``fn`` is applied to those.
             live = _apply_scan(fn)
-            return jax.jvp(
-                lambda consts, init, xs: _scan(live, consts, init, xs, length),
-                primals,
-                tangents,
-            )
+        # The derivative is always a scan. A ``StaticWhile`` primal collects
+        # ``ys`` in a carried buffer, so the scan does too (``_scan_collect``);
+        # stacked scan outputs batch on a different axis and break custom_jvp
+        # batching under a chunked ``lax.map``.
+        collect = _scan if isinstance(strategy, Scan) else _scan_collect
+        return jax.jvp(
+            lambda cs, carry, inputs: collect(live, cs, carry, inputs, length),
+            primals,
+            tangents,
+        )
 
     return _run
 
