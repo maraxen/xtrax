@@ -785,3 +785,39 @@ def test_loop_empty_xs_raises_scan_value_error():
         match=r"scan got no values to scan over and `length` not provided\.",
     ):
         loop(lambda c, x: (c, x), jnp.float32(0.0), xs=())
+
+
+def test_compiled_cond_loop_matches_while_jvp_and_jax_grad_error():
+    """Forward mode matches ``lax.while_loop``; reverse mode is JAX's own error.
+
+    The plan records no diff strategy. Fails while that diff is Scan.
+    """
+
+    def body(carry):
+        return carry + jnp.float32(1)
+
+    def cond(carry):
+        return jnp.sum(carry) < jnp.float32(3)
+
+    def fn(x):
+        return loop(body, x, cond=cond, name="w")
+
+    def plain(x):
+        return jax.lax.while_loop(cond, body, x)
+
+    x = jnp.zeros((2,), jnp.float32)
+    compiled = compile(fn, Context(backend="cpu"))
+    decision = compiled.plan_for(x).decisions[0]
+    assert decision.diff is None
+    assert decision.diff_reason == "conditional loop: jax.lax.while_loop (forward-mode only)"
+    got_primal, got_tangent = jax.jvp(compiled, (x,), (jnp.ones_like(x),))
+    exp_primal, exp_tangent = jax.jvp(plain, (x,), (jnp.ones_like(x),))
+    assert ok(got_primal, exp_primal)
+    assert ok(got_tangent, exp_tangent)
+    with pytest.raises(ValueError, match="while_loop") as compiled_grad:
+        jax.grad(lambda z: jnp.sum(compiled(z)))(x)
+    with pytest.raises(ValueError, match="while_loop") as plain_grad:
+        jax.grad(lambda z: jnp.sum(plain(z)))(x)
+    assert type(compiled_grad.value) is type(plain_grad.value)
+    assert "lax.while_loop" in str(compiled_grad.value)
+    assert not isinstance(compiled_grad.value, IntentError)

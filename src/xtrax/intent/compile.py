@@ -13,6 +13,7 @@ from __future__ import annotations
 import inspect
 import re
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
 import jax
@@ -20,10 +21,11 @@ import jax.numpy as jnp
 
 from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError, SiteMismatchError
-from xtrax.intent.plan import Plan, SiteDecision, SiteKey
-from xtrax.intent.resolve import SCAN_AROUND_WHILE_BACKENDS, resolve
+from xtrax.intent.plan import Plan, SiteDecision, SiteKey, canonical
+from xtrax.intent.resolve import SCAN_AROUND_WHILE_BACKENDS, _is_scan_around_while_backend, resolve
 from xtrax.intent.sites import Session, SiteRecord, _leaf_struct, activate
 from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
+from xtrax.tiling.strategy import ChunkedMap, Scan, StaticWhile, WhileCarry
 
 _BYPASS_WARNING = re.compile(r"override:.+ bypassed scan_around_while")
 _CacheKey = tuple[
@@ -505,8 +507,12 @@ def _trace_diff(
     tuple
         ``(records, diff_available, reason)``. An argument whose linearize
         fails contributes no records. ``reason`` names each failed argument
-        and the exception type. ``diff_available`` is ``False`` when any
-        argument failed.
+        and the exception type. ``diff_available`` is ``True`` when at least
+        one inexact argument linearized, or when there were no inexact
+        arguments. It is ``False`` only when every inexact argument failed.
+        A partial failure leaves ``diff_available`` true and puts the failed
+        arguments in ``reason`` as
+        ``not differentiable w.r.t. <label> (<ExceptionName>)``.
     """
     collected: list[SiteRecord] = []
     failures: list[str] = []
@@ -524,9 +530,62 @@ def _trace_diff(
             failures.append(f"{label}: {type(exc).__name__}")
             continue
         collected = list(_merge_records(collected, records))
-    if failures:
+    if not targets or not failures:
+        return collected, True, ""
+    if len(failures) == len(targets):
         return collected, False, "; ".join(failures)
-    return collected, True, ""
+    return collected, True, _partial_diff_note(failures)
+
+
+def _partial_diff_note(failures: list[str]) -> str:
+    """Name each argument whose linearize failed while another succeeded.
+
+    Parameters
+    ----------
+    failures : list of str
+        ``label: ExceptionName`` entries from :func:`_trace_diff`.
+
+    Returns
+    -------
+    str
+        ``not differentiable w.r.t. <label> (<ExceptionName>)``, joined by
+        ``"; "`` when more than one argument failed.
+    """
+    parts: list[str] = []
+    for item in failures:
+        label, separator, exc_name = item.partition(": ")
+        if separator:
+            parts.append(f"not differentiable w.r.t. {label} ({exc_name})")
+        else:
+            parts.append(f"not differentiable w.r.t. {item}")
+    return "; ".join(parts)
+
+
+def _annotate_partial_diff(plan: Plan, note: str) -> Plan:
+    """Append ``note`` to the diff reason of every loop that has a diff strategy.
+
+    Parameters
+    ----------
+    plan : Plan
+        Plan whose loop decisions may claim a diff strategy.
+    note : str
+        Partial-failure text from :func:`_partial_diff_note`.
+
+    Returns
+    -------
+    Plan
+        The same plan when ``note`` is empty. Otherwise each loop whose
+        ``diff`` is not ``None`` names the failed arguments on ``diff_reason``.
+    """
+    if not note:
+        return plan
+    decisions = tuple(
+        replace(decision, diff_reason=f"{decision.diff_reason}; {note}")
+        if decision.kind == "loop" and decision.diff is not None
+        else decision
+        for decision in plan.decisions
+    )
+    return replace(plan, decisions=decisions)
 
 
 def _plan(
@@ -566,13 +625,16 @@ def _plan(
         diff_available = True
         reason = ""
     records = _merge_records(primal_records, diff_records)
+    unavailable = "" if diff_available else reason
     plan = resolve(
         records,
         ctx,
         overrides=overrides,
         diff_available=diff_available,
-        diff_unavailable_reason=reason,
+        diff_unavailable_reason=unavailable,
     )
+    if diff_available and reason:
+        plan = _annotate_partial_diff(plan, reason)
     return plan, records
 
 
@@ -637,24 +699,96 @@ def _execute(
     return jax.jit(wrapper)
 
 
-def _bypass_warning(plan: Plan) -> bool:
-    """Return whether the plan records an override that bypassed scan-around-while.
+def _site_bypassed(decision: SiteDecision) -> bool:
+    """Return whether this decision's warnings exempt its own scan-around-while.
 
     Parameters
     ----------
-    plan : Plan
-        Plan whose decision warnings are scanned.
+    decision : SiteDecision
+        One planned site.
 
     Returns
     -------
     bool
         ``True`` when a warning matches ``override:… bypassed scan_around_while``.
     """
-    return any(
-        _BYPASS_WARNING.search(warning)
-        for decision in plan.decisions
-        for warning in decision.warnings
-    )
+    return any(_BYPASS_WARNING.search(warning) for warning in decision.warnings)
+
+
+def _encloses_while(key: SiteKey, plan: Plan) -> bool:
+    """Return whether a descendant primal is ``StaticWhile`` or ``WhileCarry``.
+
+    Parameters
+    ----------
+    key : SiteKey
+        Candidate outer map or scan loop.
+    plan : Plan
+        Plan whose decisions are searched.
+
+    Returns
+    -------
+    bool
+        ``True`` when some decision under ``key`` runs a while loop.
+    """
+    ancestor = canonical(key)
+    for other in plan.decisions:
+        if not isinstance(other.primal, (StaticWhile, WhileCarry)):
+            continue
+        current = other.key.parent
+        while current is not None:
+            if canonical(current) == ancestor:
+                return True
+            current = current.parent
+    return False
+
+
+def _scan_while_sources(plan: Plan) -> tuple[SiteDecision, ...]:
+    """Return primal sites that can place a while loop inside a scan.
+
+    Parameters
+    ----------
+    plan : Plan
+        Plan to scan. Diff-path copies are skipped.
+
+    Returns
+    -------
+    tuple of SiteDecision
+        ``ChunkedMap`` sites, and ``Scan`` loop sites, that enclose a
+        ``StaticWhile`` or ``WhileCarry``.
+    """
+    sources: list[SiteDecision] = []
+    for decision in plan.decisions:
+        if not _is_primal_chain(decision.key):
+            continue
+        chunked = isinstance(decision.primal, ChunkedMap)
+        scan_loop = decision.kind == "loop" and isinstance(decision.primal, Scan)
+        if (chunked or scan_loop) and _encloses_while(decision.key, plan):
+            sources.append(decision)
+    return tuple(sources)
+
+
+def _pattern_is_exempt(plan: Plan) -> bool:
+    """Return whether every plan-level scan-around-while source is bypassed.
+
+    A bypass warning exempts that site only. An empty source list is not
+    an exemption: a scan around a while that the plan does not name is
+    still rejected.
+
+    Parameters
+    ----------
+    plan : Plan
+        Plan whose warnings are consulted.
+
+    Returns
+    -------
+    bool
+        ``True`` when at least one source exists and each of them carries
+        ``override:… bypassed scan_around_while``.
+    """
+    sources = _scan_while_sources(plan)
+    if not sources:
+        return False
+    return all(_site_bypassed(source) for source in sources)
 
 
 def _scan_encloses_while(closed: Any) -> bool:
@@ -700,10 +834,11 @@ def _posthoc(
     kwargs : dict
         Keyword arguments of this call.
     plan : Plan
-        Plan for this signature. An override bypass warning skips the check.
+        Plan for this signature. A bypass warning exempts only the site that
+        carries it. Any other scan around a while is still rejected.
     ctx : Context
         Context whose :meth:`~xtrax.intent.context.Context.resolved_backend`
-        selects the backend set.
+        selects the backend set. ``"gpu"`` and ``"cuda"`` both select it.
 
     Returns
     -------
@@ -712,13 +847,13 @@ def _posthoc(
     Raises
     ------
     IntentError
-        The jaxpr has a ``while`` inside a ``scan`` and the plan has no
-        ``override:… bypassed scan_around_while`` warning. ``constraint`` is
-        ``"scan_around_while"``.
+        The jaxpr has a ``while`` inside a ``scan`` and some source of that
+        pattern does not carry ``override:… bypassed scan_around_while``.
+        ``constraint`` is ``"scan_around_while"``.
     """
-    if ctx.resolved_backend() not in SCAN_AROUND_WHILE_BACKENDS:
+    if not _is_scan_around_while_backend(ctx.resolved_backend(), SCAN_AROUND_WHILE_BACKENDS):
         return
-    if _bypass_warning(plan):
+    if _pattern_is_exempt(plan):
         return
 
     def probe(*probe_args: Any, **probe_kwargs: Any) -> Any:
@@ -793,7 +928,7 @@ class Compiled:
         self._ctx = ctx
         self._overrides = overrides
         self._cache: dict[_CacheKey, _Cached] = {}
-        self._checked: set[_CacheKey] = set()
+        self._posthoc_verdict: dict[_CacheKey, IntentError | None] = {}
         self.plans = 0
 
     def plan_for(self, *args: Any, **kwargs: Any) -> Plan:
@@ -815,7 +950,11 @@ class Compiled:
         return plan
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Execute the planned function, checking scan-around-while once per key.
+        """Execute the planned function after the scan-around-while check.
+
+        The check only traces. It runs before the jitted program, and both
+        a pass and a failure are cached on the signature key. A rejected key
+        raises the cached error without tracing or executing again.
 
         Parameters
         ----------
@@ -832,8 +971,9 @@ class Compiled:
         Raises
         ------
         IntentError
-            The first call's jaxpr has a scan around a while and the plan did
-            not record an override bypass.
+            The jaxpr has a scan around a while and that pattern is not
+            exempted by a bypass warning on the site that produces it.
+            Raised before the jitted program runs.
         SiteMismatchError
             Execution visits a different primal site sequence, or a site's
             abstract values differ from the plan.
@@ -842,11 +982,17 @@ class Compiled:
             jitted wrapper runs.
         """
         key, jitted, plan = self._prepare(args, kwargs)
-        result = jitted(*args, **kwargs)
-        if key not in self._checked:
-            _posthoc(jitted, args, kwargs, plan, self._ctx)
-            self._checked.add(key)
-        return result
+        if key not in self._posthoc_verdict:
+            try:
+                _posthoc(jitted, args, kwargs, plan, self._ctx)
+            except IntentError as exc:
+                self._posthoc_verdict[key] = exc
+            else:
+                self._posthoc_verdict[key] = None
+        verdict = self._posthoc_verdict[key]
+        if verdict is not None:
+            raise verdict
+        return jitted(*args, **kwargs)
 
     def _prepare(
         self,

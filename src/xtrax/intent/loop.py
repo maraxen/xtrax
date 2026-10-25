@@ -390,7 +390,9 @@ def loop(
     :func:`jax.lax.while_loop`: ``body(carry) -> carry`` and the result is the
     final carry. It registers a ``loop`` site with ``length=None``. With no
     decision the primal still runs :func:`jax.lax.while_loop`. A recorded
-    decision must be :class:`~xtrax.tiling.strategy.WhileCarry`.
+    decision must be :class:`~xtrax.tiling.strategy.WhileCarry`. The plan
+    records ``diff=None``: forward mode is that while loop's JVP, and reverse
+    mode raises JAX's own ``while_loop`` error. No derivative strategy is added.
 
     Parameters
     ----------

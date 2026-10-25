@@ -25,7 +25,8 @@ from xtrax.transforms.map import chunked_map
 
 _MapStrategy = Vmap | ChunkedMap
 _LoopPrimal = StaticWhile | Scan
-SiteStrategyOverride = tuple[_MapStrategy | _LoopPrimal, _MapStrategy | Scan | None]
+_LoopOverride = StaticWhile | Scan | WhileCarry
+SiteStrategyOverride = tuple[_MapStrategy | _LoopOverride, _MapStrategy | Scan | None]
 _HazardView = SiteDecision | SiteRecord
 HazardRule = tuple[
     str,
@@ -33,7 +34,9 @@ HazardRule = tuple[
     Literal["error", "warning"],
 ]
 
-SCAN_AROUND_WHILE_BACKENDS = frozenset({"cuda"})
+# ``"gpu"`` is JAX's platform name for CUDA and ROCm. The hazard is accepted
+# for both until measured otherwise.
+SCAN_AROUND_WHILE_BACKENDS = frozenset({"cuda", "gpu"})
 LONG_SCAN_THRESHOLD = 256
 
 _SAME_STRATEGY = "same strategy as primal in the MVP"
@@ -185,17 +188,45 @@ def resolve(
     return Plan(PLAN_SCHEMA_VERSION, ctx, decisions)
 
 
+def _is_scan_around_while_backend(
+    name: str,
+    backends: frozenset[str] | None = None,
+) -> bool:
+    """Return whether ``name`` selects the scan-around-while hazard.
+
+    ``"gpu"`` is JAX's platform name for CUDA and ROCm. The hazard is
+    accepted for both until measured otherwise. ``"cuda"`` is the explicit
+    device name.
+
+    Parameters
+    ----------
+    name : str
+        Backend from :meth:`~xtrax.intent.context.Context.resolved_backend`.
+    backends : frozenset of str or None
+        Set to consult. ``None`` reads :data:`SCAN_AROUND_WHILE_BACKENDS`
+        at call time, so a test can replace that set.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``name`` is in the selected set.
+    """
+    chosen = SCAN_AROUND_WHILE_BACKENDS if backends is None else backends
+    return name in chosen
+
+
 def _scan_around_while(
     decision: SiteDecision,
     ancestors: Sequence[_HazardView],
     ctx: Context,
 ) -> bool:
-    """True when a chunked or scan primal encloses a StaticWhile on cuda.
+    """True when a chunked or scan primal encloses a StaticWhile on CUDA or ROCm.
 
     ``ancestors`` is the subtree: decisions for records whose canonical parent
     chain includes this site, plus the current :class:`SiteRecord`.
+    ``"gpu"`` is JAX's platform name for both devices.
     """
-    if ctx.resolved_backend() not in SCAN_AROUND_WHILE_BACKENDS:
+    if not _is_scan_around_while_backend(ctx.resolved_backend()):
         return False
     if not isinstance(decision.primal, (ChunkedMap, Scan)):
         return False
@@ -320,11 +351,23 @@ def _loop_choice(
     diff_available: bool,
     diff_unavailable_reason: str,
 ) -> tuple[WhileCarry | _LoopPrimal, Scan | None, str, str]:
-    """Primal and diff strategies for one loop, before overrides and hazards."""
+    """Primal and diff strategies for one loop, before overrides and hazards.
+
+    A conditional loop (``record.length is None``) runs
+    :func:`jax.lax.while_loop`. Its diff strategy is ``None``: forward mode
+    is that while loop's JVP, and reverse mode is JAX's own error. No
+    derivative strategy is added.
+    """
     if record.length is None:
         primal: WhileCarry | _LoopPrimal = WhileCarry()
         primal_reason = "conditional loop is a plain while_loop"
-    elif ctx.target == "export" and ctx.export_format != "stablehlo":
+        return (
+            primal,
+            None,
+            primal_reason,
+            "conditional loop: jax.lax.while_loop (forward-mode only)",
+        )
+    if ctx.target == "export" and ctx.export_format != "stablehlo":
         primal = Scan()
         primal_reason = "export format is not stablehlo; primal resolves to Scan"
     else:
@@ -448,6 +491,22 @@ def _check_override_type(record: SiteRecord, override: SiteStrategyOverride) -> 
                 constraint=repr(diff),
             )
         return
+    if record.length is None:
+        if not isinstance(primal, WhileCarry):
+            raise IntentError(
+                f"cond loop override must be WhileCarry, got {type(primal).__name__}",
+                site=site,
+                path="primal",
+                constraint=repr(primal),
+            )
+        if diff is not None:
+            raise IntentError(
+                f"cond loop override diff must be None, got {type(diff).__name__}",
+                site=site,
+                path="diff",
+                constraint=repr(diff),
+            )
+        return
     if not isinstance(primal, (StaticWhile, Scan)):
         raise IntentError(
             f"loop override must be StaticWhile or Scan, got {type(primal).__name__}",
@@ -490,6 +549,28 @@ def _apply_override(
         else:
             diff_reason = f"override:{label}"
         return _decision(record, primal, used_diff, f"override:{label}", diff_reason)
+    if record.length is None:
+        if not isinstance(primal, WhileCarry):
+            raise IntentError(
+                f"cond loop override must be WhileCarry, got {type(primal).__name__}",
+                site=label,
+                path="primal",
+                constraint=repr(primal),
+            )
+        if diff is not None:
+            raise IntentError(
+                f"cond loop override diff must be None, got {type(diff).__name__}",
+                site=label,
+                path="diff",
+                constraint=repr(diff),
+            )
+        return _decision(
+            record,
+            primal,
+            None,
+            f"override:{label}",
+            "conditional loop: jax.lax.while_loop (forward-mode only)",
+        )
     if not isinstance(primal, (StaticWhile, Scan)):
         raise IntentError(
             f"loop override must be StaticWhile or Scan, got {type(primal).__name__}",

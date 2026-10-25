@@ -57,9 +57,12 @@ def _has_diff_edge(key: SiteKey) -> bool:
 def decision_for(session: Session, key: SiteKey) -> SiteDecision | None:
     """Return the decision for ``key``, falling back to its canonical twin.
 
-    An explicit decision on ``key`` wins. When that lookup misses and ``key``
-    or any parent is on the diff path, the decision stored on
-    :func:`~xtrax.intent.plan.canonical` of ``key`` is returned. Any other
+    An explicit decision on ``key`` wins, including when that decision's
+    ``diff`` is ``None``. ``None`` means the site has no differentiated
+    strategy. It is not a missing site, and callers must not raise
+    :class:`~xtrax.intent.errors.SiteMismatchError` for it. When the lookup
+    misses and ``key`` or any parent is on the diff path, the decision stored
+    on :func:`~xtrax.intent.plan.canonical` of ``key`` is returned. Any other
     miss is ``None``.
 
     Parameters

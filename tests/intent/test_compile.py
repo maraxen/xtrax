@@ -644,7 +644,10 @@ def test_nondiff_argument_keeps_diff_sites_for_other_arguments():
         for decision in plan.decisions
         if decision.key.label == "outer_loop" and decision.key.path == "primal"
     )
-    assert outer.diff_reason == "aux: ValueError"
+    assert isinstance(outer.diff, Scan)
+    assert outer.diff_reason == (
+        "diff path resolves to Scan; not differentiable w.r.t. aux (ValueError)"
+    )
     assert "Pure callbacks" not in outer.diff_reason
     assert "custom_jvp" not in outer.diff_reason
 
@@ -804,3 +807,161 @@ def test_three_level_diff_fallback_uses_canonical_chunked_map(monkeypatch):
     assert calls["chunked"] >= 1
     backward = str(jax.make_jaxpr(jax.grad(compiled))(xs, weight))
     assert "scan[" in backward
+
+
+def test_partial_diff_names_failed_argument_and_keeps_loop_scan():
+    """One non-differentiable argument does not drop the loop's diff strategy.
+
+    ``aux`` goes through ``pure_callback``. The loop diff stays Scan and names
+    ``aux``. Gradients with respect to ``w`` match the scan reference. When
+    every inexact argument fails, the loop diff stays ``None``. Fails while
+    any failed argument sets ``diff_available`` false and the loop diff is None.
+    """
+
+    def fn(xs, w, aux):
+        scale = jnp.sum(_host_scale(aux))
+
+        def step(carry, row):
+            y = map(lambda z: jnp.sin(z * w + carry), row, name="inner_map")
+            return carry + 0.1 * jnp.sum(y), y
+
+        carry, _ys = loop(step, jnp.float32(0.0), xs=xs, name="outer_loop")
+        return carry * scale
+
+    def reference(xs, w, aux):
+        scale = jnp.sum(_host_scale(aux))
+
+        def step(carry, row):
+            y = jax.vmap(lambda z: jnp.sin(z * w + carry))(row)
+            return carry + 0.1 * jnp.sum(y), y
+
+        carry, _ys = jax.lax.scan(step, jnp.float32(0.0), xs)
+        return carry * scale
+
+    xs = jnp.linspace(-0.3, 0.3, 16, dtype=jnp.float32).reshape(4, 4)
+    w = jnp.linspace(0.2, 0.5, 4, dtype=jnp.float32)
+    aux = jnp.ones((3,), jnp.float32)
+    compiled = compile(fn, Context(backend="cpu"))
+    outer = next(
+        decision
+        for decision in compiled.plan_for(xs, w, aux).decisions
+        if decision.key.label == "outer_loop" and decision.key.path == "primal"
+    )
+    assert isinstance(outer.diff, Scan)
+    assert outer.diff_reason == (
+        "diff path resolves to Scan; not differentiable w.r.t. aux (ValueError)"
+    )
+    assert "Pure callbacks" not in outer.diff_reason
+    _same(jax.grad(compiled, argnums=1)(xs, w, aux), jax.grad(reference, argnums=1)(xs, w, aux))
+
+    def only_aux(aux):
+        scale = jnp.sum(_host_scale(aux))
+        rows = jnp.ones((4, 4), jnp.float32)
+
+        def step(carry, row):
+            return carry + scale * jnp.sum(row), row
+
+        return loop(step, jnp.float32(0.0), xs=rows, name="outer_loop")[0]
+
+    only = compile(only_aux, Context(backend="cpu"))
+    only_outer = next(
+        decision
+        for decision in only.plan_for(aux).decisions
+        if decision.key.label == "outer_loop" and decision.key.path == "primal"
+    )
+    assert only_outer.diff is None
+    assert "aux" in only_outer.diff_reason
+    assert "ValueError" in only_outer.diff_reason
+
+
+def test_posthoc_rejected_program_does_not_execute(monkeypatch):
+    """A scan around a while is refused before the jitted program runs.
+
+    The verdict is cached, so a second call raises the same error without
+    running the body. Fails while the program runs and the callback fires
+    before the check.
+    """
+    compile_module = sys.modules["xtrax.intent.compile"]
+    monkeypatch.setattr(compile_module, "SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
+    budget = MemoryBudget(bytes=50, estimate=_vmap_is_expensive)
+    calls = {"n": 0}
+
+    def fn(xs):
+        def row(x):
+            def body(carry, _):
+                jax.debug.callback(lambda: calls.__setitem__("n", calls["n"] + 1))
+                return carry + x, jnp.sum(carry)
+
+            carry, ys = loop(body, jnp.zeros_like(x), length=3, name="inner")
+            return carry + jnp.sum(ys)
+
+        return map(row, xs, name="outer")
+
+    xs = jnp.linspace(-0.2, 0.2, 32, dtype=jnp.float32).reshape(8, 4)
+    blocked = compile(fn, Context(backend="cpu", memory_budget=budget, chunk_size=4))
+    with pytest.raises(IntentError) as first:
+        blocked(xs)
+    assert first.value.constraint == "scan_around_while"
+    assert not isinstance(first.value, UnsatisfiableContextError)
+    assert calls["n"] == 0
+    with pytest.raises(IntentError) as second:
+        blocked(xs)
+    assert second.value is first.value
+    assert calls["n"] == 0
+
+
+def test_posthoc_bypass_does_not_exempt_other_maps(monkeypatch):
+    """An override bypass exempts that map only.
+
+    The other map is still a scan around a while and is rejected. Fails while
+    one bypass warning turns the check off for the whole program.
+    """
+    resolve_module = sys.modules["xtrax.intent.resolve"]
+    compile_module = sys.modules["xtrax.intent.compile"]
+    monkeypatch.setattr(compile_module, "SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
+    monkeypatch.setattr(resolve_module, "SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
+    budget = MemoryBudget(bytes=50, estimate=_vmap_is_expensive)
+
+    def fn(xs):
+        def static_row(x):
+            def body(carry, _):
+                return carry + x, jnp.sum(carry)
+
+            carry, ys = loop(body, jnp.zeros_like(x), length=3, name="static_inner")
+            return carry + jnp.sum(ys)
+
+        def cond_row(x):
+            def body(carry):
+                return carry + jnp.float32(0.5)
+
+            def cond(carry):
+                return jnp.sum(carry) < jnp.float32(1)
+
+            return loop(body, x, cond=cond, name="cond_inner")
+
+        left = map(static_row, xs, name="left")
+        right = map(cond_row, xs, name="right")
+        return left + right
+
+    xs = jnp.linspace(-0.2, 0.2, 32, dtype=jnp.float32).reshape(8, 4)
+    compiled = compile(
+        fn,
+        Context(backend="cpu", memory_budget=budget, chunk_size=4),
+        overrides={"left": (ChunkedMap(batch_size=4), ChunkedMap(batch_size=4))},
+    )
+    plan = compiled.plan_for(xs)
+    assert any(
+        warning == "override:left bypassed scan_around_while"
+        for decision in plan.decisions
+        for warning in decision.warnings
+    )
+    right = next(
+        decision
+        for decision in plan.decisions
+        if decision.key.label == "right" and decision.key.path == "primal"
+    )
+    assert not any("bypassed scan_around_while" in warning for warning in right.warnings)
+    with pytest.raises(IntentError) as exc_info:
+        compiled(xs)
+    assert exc_info.value.constraint == "scan_around_while"
+    assert not isinstance(exc_info.value, UnsatisfiableContextError)

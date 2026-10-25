@@ -1,5 +1,7 @@
 """Tests for xtrax.intent.resolve."""
 
+import sys
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -17,7 +19,7 @@ from xtrax.intent.sites import SiteRecord
 from xtrax.tiling.budget import MemoryBudget
 from xtrax.tiling.estimators import lowered_memory_estimate
 from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlanner
-from xtrax.tiling.strategy import ChunkedMap, Scan, StaticWhile, Vmap
+from xtrax.tiling.strategy import ChunkedMap, Scan, StaticWhile, Vmap, WhileCarry
 from xtrax.transforms.map import chunked_map
 
 
@@ -392,12 +394,13 @@ def test_int_budget_uses_default_estimator():
 
 
 def test_cond_loop_primal_is_plain_while():
-    """A jit cond loop is WhileCarry on the primal path and Scan on the diff path."""
-    from xtrax.tiling.strategy import WhileCarry
-
+    """A jit cond loop is WhileCarry and records no diff strategy."""
     plan = resolve([_loop("body", None)], Context())
     assert plan.decisions[0].primal == WhileCarry()
-    assert plan.decisions[0].diff == Scan()
+    assert plan.decisions[0].diff is None
+    assert plan.decisions[0].diff_reason == (
+        "conditional loop: jax.lax.while_loop (forward-mode only)"
+    )
 
 
 def test_chunked_override_around_while_records_bypass():
@@ -570,3 +573,88 @@ def test_loop_override_diff_none_stays_none_when_unavailable():
     assert decision.primal == StaticWhile(length=4)
     assert decision.diff is None
     assert decision.diff_reason == reason
+
+
+def test_scan_around_while_accepts_gpu_platform_name(monkeypatch):
+    """``jax.default_backend() == "gpu"`` rewrites ChunkedMap around StaticWhile.
+
+    ``"gpu"`` is JAX's platform name for CUDA and ROCm. The modules are reached
+    through ``sys.modules`` because the package rebinds ``compile`` and ``map``.
+    Fails while the hazard only names ``"cuda"`` and the outer map stays chunked.
+    """
+    resolve_module = sys.modules["xtrax.intent.resolve"]
+    compile_module = sys.modules["xtrax.intent.compile"]
+    context_module = sys.modules["xtrax.intent.context"]
+
+    def _gpu() -> str:
+        return "gpu"
+
+    monkeypatch.setattr(resolve_module.jax, "default_backend", _gpu)
+    monkeypatch.setattr(compile_module.jax, "default_backend", _gpu)
+    monkeypatch.setattr(context_module.jax, "default_backend", _gpu)
+    outer = _map("outer", 64)
+    inner = _loop("inner", 4, parent=outer.key)
+    other = _map("other", 64)
+    records = [outer, inner, other]
+
+    def est(decisions):
+        total = 0
+        for decision in decisions:
+            vmap = isinstance(decision.strategy, Vmap)
+            if decision.spec.name == str(outer.key):
+                total += 30 if vmap else 20
+            else:
+                total += 40 if vmap else 10
+        return total
+
+    budget = MemoryBudget(bytes=50, estimate=est)
+    plan = resolve(records, Context(memory_budget=budget, chunk_size=32))
+    assert plan.decisions[0].primal == Vmap()
+    assert plan.decisions[0].diff == Vmap()
+    assert plan.decisions[1].primal == StaticWhile(length=4)
+    assert plan.decisions[2].primal == ChunkedMap(batch_size=32)
+
+
+def test_cond_loop_override_allows_only_while_carry():
+    """A cond loop accepts WhileCarry and refuses Scan and StaticWhile at plan time.
+
+    A static-length loop still refuses WhileCarry. Fails while a Scan override
+    is stored and the refusal waits until the loop runs.
+    """
+    with pytest.raises(IntentError) as scan_info:
+        resolve([_loop("w", None)], Context(), overrides={"w": (Scan(), None)})
+    scan_err = scan_info.value
+    assert scan_err.site == "w"
+    assert scan_err.path == "primal"
+    assert scan_err.constraint == repr(Scan())
+
+    static_while = StaticWhile(length=4)
+    with pytest.raises(IntentError) as static_info:
+        resolve([_loop("w", None)], Context(), overrides={"w": (static_while, None)})
+    static_err = static_info.value
+    assert static_err.site == "w"
+    assert static_err.path == "primal"
+    assert static_err.constraint == repr(static_while)
+
+    plan = resolve([_loop("w", None)], Context(), overrides={"w": (WhileCarry(), None)})
+    assert plan.decisions[0].primal == WhileCarry()
+    assert plan.decisions[0].diff is None
+
+    with pytest.raises(IntentError) as carry_info:
+        resolve([_loop("body", 4)], Context(), overrides={"body": (WhileCarry(), None)})
+    carry_err = carry_info.value
+    assert carry_err.site == "body"
+    assert carry_err.path == "primal"
+    assert carry_err.constraint == repr(WhileCarry())
+
+
+def test_cond_loop_diff_is_forward_mode_only():
+    """A cond loop plans no diff strategy and names the plain while_loop.
+
+    Fails while the diff path is Scan and the reason says it resolves to Scan.
+    """
+    plan = resolve([_loop("body", None)], Context())
+    decision = plan.decisions[0]
+    assert decision.primal == WhileCarry()
+    assert decision.diff is None
+    assert decision.diff_reason == ("conditional loop: jax.lax.while_loop (forward-mode only)")
