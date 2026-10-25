@@ -1,4 +1,4 @@
-# onnx-spike-260930 Internal Docs
+# equinox-decouple-pallas-261023 Internal Docs
 
 ## Daily
 
@@ -18,6 +18,9 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [261023_equinox-decoupling](specs/261023_equinox-decoupling.md) — Make xtrax depend only on jax/optax for its pytree layer, with one implementation and Equinox models and downstream eqx.field subclasses still working (Part 1 of the equinox/Pallas plan)
+- [261023_kernel-seam-xtrax-op](specs/261023_kernel-seam-xtrax-op.md) — Part 2 of the equinox-decouple-pallas epic: xtrax.op(reference, kernels) as a custom_jvp whose primal is a backend kernel and whose derivative is the reference's JVP; consumers write reference+kernel pairs now; first GPU target is demistify's pairwise joint histogram
+- [261023_xtrax-as-a-pure-functional-pipeline-laye](specs/261023_xtrax-as-a-pure-functional-pipeline-laye.md)
 - [261020_hoisted-map](specs/261020_hoisted-map.md) — Explicit shared/per-element split for debt #2600; structural varying-input check, optional parity probe, opt-in memoize_jaxpr cache across calls
 - [261016_jax-smoke-profiling-scope](specs/261016_jax-smoke-profiling-scope.md) — Cross-repo scope for catching low-hanging JAX bottlenecks at L2: jaxlint owns static suspects, xtrax owns measurement, bathos owns the launch gate, jaxlint ships its edit hook as a cisternal plugin
 - [260923_5035-audit-labels-memo-followups](specs/260923_5035-audit-labels-memo-followups.md) — Sprint spec for #5035 (coverage-DAG PASS label over failing tiers), #5241 (memo hot-path and duplicate-walker cleanup), #5240 (all-default wrap-time screening, NaN static keys)
@@ -70,9 +73,12 @@
 ## Actuation Surfaces
 
 ## Audits
+- [261024_intent-mvp-code-review-fixes](audits/261024_intent-mvp-code-review-fixes.md) — /code-review xhigh on PR #228 found 15 issues; 11 fixed in three waves plus one follow-up, re-review 12/12 resolved; 5 parked as backlog.
+- [261023_intent-mvp-final-review](audits/261023_intent-mvp-final-review.md) — Final whole-branch review outcome for the intent MVP: loop-in-map JVP bug fixed, two findings ruled float32 conditioning against float64 truth, re-review 4/4 resolved.
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [261023_pallas-block-sparse-spike](research/261023_pallas-block-sparse-spike.md) — Interpret-mode Pallas kernel: parity, custom_vjp grads, jit/vmap, dataclass config, export; Mosaic GPU export blocked on jax 0.11.1
 - [261020_hoist_invariant_cpu](research/data/261020_hoist_invariant_cpu.json)
 - [261020_hoist_invariant_cuda](research/data/261020_hoist_invariant_cuda.json)
 - [261020_xla-invariant-hoisting-probe](research/261020_xla-invariant-hoisting-probe.md) — Tracked bathos probe: XLA hoists truly invariant encoder work out of vmap on CPU and CUDA, and out of chunked lax.map on CPU, but not on CUDA (4.5x); false-dependence control 15-71x

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Experimental `xtrax.intent`: frozen `Context`, plus `IntentError`,
+  `SiteMismatchError`, and `UnsatisfiableContextError`. `Context` stores a
+  memory budget (a `MemoryBudget`, a byte count, or none), target, export
+  format, backend, chunk size, and kernel preference. `Plan` records
+  `SiteKey` / `SiteDecision` rows (primal and diff strategies, reasons,
+  warnings) and round-trips through JSON at `PLAN_SCHEMA_VERSION`.
+  `loop`, `map`, `resolve`, and `compile` plan and run those sites.
+  `xtrax.tiling` iterator classes load lazily, so `import xtrax.intent` no
+  longer loads equinox.
+- `xtrax.tiling.StaticWhile`: a frozen strategy with a static `length` for a
+  bounded `while_loop` that may collect outputs.
+
 ## [0.4.1b3] - 2026-10-23
 
 ### Added

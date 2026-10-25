@@ -172,6 +172,8 @@ Is the axis variable-length (e.g., sequences of different sizes)?
 
 **Joint-budget mode** (0.4.0a1+): when `BatchPlanner(budget=MemoryBudget(...))` is set, rules 3-4 are replaced for non-bucket axes — every eligible axis starts at `Vmap`, then axes are greedily demoted to `ChunkedMap` in spec order until the whole-plan estimate fits the budget. See TIER-2: Tiling Layer → Joint-Budget Planning.
 
+A loop or map at a call site can instead be resolved per site by experimental `xtrax.intent` (`compile(fn, Context(...))`); see `references/intent.md`. The decision tree above stays the default.
+
 ---
 
 ### Minimal Working Pattern (Fully Self-Contained)
@@ -267,6 +269,9 @@ Choose your task:
 11. **Compare a sampler to a reference implementation**  
    → Read `references/parity.md`
 
+12. **Resolve a loop or map per site with experimental xtrax.intent**  
+   → Read `references/intent.md`
+
 ---
 
 ## TIER-2: Deep Reference
@@ -286,6 +291,7 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | Length bucketing | `references/length-bucketing.md` | — | AxisSpec.bucket_boundaries, Bucket, host select_bucket/bucketize, BUCKET_LADDER, one compile per rung |
 | Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives |
 | Standalone ONNX | `references/onnx-standalone.md` | — | convert_to_onnx vs jax2onnx, find_onnx_rng_ops, verify_native_parity, rings, divergence |
+| Intent | `references/intent.md` | — | Experimental xtrax.intent: Context, compile, loop, map, Plan |
 
 Use the Workflow Index above to pick which file(s) a given task needs — most tasks need one, some (e.g. tiled inference) need two. Don't load a reference file speculatively; load it when the task actually reaches that layer.
 

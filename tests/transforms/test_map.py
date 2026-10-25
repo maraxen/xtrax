@@ -170,3 +170,34 @@ class TestSafeMapErrors:
         out, ref = chunked_map(fn, xs, batch_size=2), jax.vmap(fn)(xs)
         for got, want in zip(jax.tree.leaves(out), jax.tree.leaves(ref), strict=True):
             assert jnp.array_equal(got, want)
+
+
+def test_chunked_map_remainder_inside_two_scans():
+    """A remainder of 1 under two nested scans matches vmap.
+
+    Mapped axis length 3 and ``batch_size=2`` take the peel path. The carry
+    update is scaled by 0.1: at scale 1 the carry feedback amplifies float32
+    rounding to about 7e-3, while the peel and vmap agree to 1e-11 in float64.
+    """
+    xs = jnp.linspace(-0.5, 0.5, 5 * 8 * 3, dtype=jnp.float32).reshape(5, 8, 3)
+    weight = jnp.array([0.2, 0.3, 0.4], dtype=jnp.float32)
+
+    def step_chunked(carry, row):
+        y = chunked_map(lambda z: jnp.sin(z * weight + carry), row, batch_size=2)
+        return carry + 0.1 * jnp.sum(y), y
+
+    def step_vmap(carry, row):
+        y = jax.vmap(lambda z: jnp.sin(z * weight + carry))(row)
+        return carry + 0.1 * jnp.sum(y), y
+
+    def nested(step, values):
+        def outer(carry, x):
+            carry2, ys = jax.lax.scan(step, jnp.float32(0.0), x)
+            return carry + jnp.sum(ys), ys
+
+        return jax.lax.scan(outer, jnp.float32(0.0), values)
+
+    got = nested(step_chunked, xs)
+    expected = nested(step_vmap, xs)
+    for left, right in zip(jax.tree.leaves(got), jax.tree.leaves(expected), strict=True):
+        assert float(jnp.max(jnp.abs(left - right))) <= 1e-5

@@ -139,6 +139,18 @@ class WhileCarry:
     init: Any | None = None
 
 
+@dataclass(frozen=True)
+class StaticWhile:
+    """Static-length while strategy: a bounded ``while_loop`` that may collect ys.
+
+    ``length`` is the trip count. Unlike ``WhileCarry``, which is carry-only
+    and unbounded, a ``StaticWhile`` loop runs a fixed number of steps and
+    can record a per-step output.
+    """
+
+    length: int
+
+
 def fixed_step_count_cond(n_steps: int) -> WhileCondFn:
     """cond=fixed_step_count_cond(200) for `run exactly 200 steps`.
 
