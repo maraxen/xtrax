@@ -25,7 +25,7 @@ from xtrax.intent._trace import (
 )
 from xtrax.intent.errors import IntentError
 from xtrax.intent.plan import SiteKey
-from xtrax.intent.sites import Session, activate, call_label
+from xtrax.intent.sites import Session, _leaf_struct, activate, call_label
 from xtrax.tiling.strategy import ChunkedMap, Vmap
 from xtrax.transforms.map import chunked_map
 
@@ -274,7 +274,16 @@ def map(
         fn, consts = _convert(fun, xs)
     key: SiteKey | None = None
     if session is not None:
-        key = session.enter_site("map", label, _avals(xs), None, fn)
+        const_avals = tuple(_leaf_struct(const) for const in consts)
+        key = session.enter_site(
+            "map",
+            label,
+            _avals(xs),
+            None,
+            fn,
+            const_avals,
+            jax.tree_util.tree_structure(xs),
+        )
     primal, diff = _strategies(session, key)
     step = _apply(fn)
     run = _runner(primal, diff, session, key, fun)

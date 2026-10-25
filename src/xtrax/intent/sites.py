@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 import jax
 
@@ -46,6 +46,13 @@ class SiteRecord:
         Trip count for a loop, or ``None`` when the site has no length.
     fn : Callable or None
         Closure-converted site function. Ignored by ``==`` and ``hash``.
+    const_avals : tuple of jax.ShapeDtypeStruct
+        Abstract values of constants hoisted from the site function. Empty
+        when nothing was hoisted. Passed to the estimator as closed-over
+        inputs, not as mapped arguments.
+    xs_tree : PyTreeDef or None
+        Pytree structure of a map's ``xs``. ``None`` on records that store
+        only a flat leaf list.
     """
 
     key: SiteKey
@@ -53,6 +60,8 @@ class SiteRecord:
     avals: tuple[jax.ShapeDtypeStruct, ...]
     length: int | None
     fn: Callable[..., object] | None = field(compare=False, hash=False)
+    const_avals: tuple[jax.ShapeDtypeStruct, ...] = ()
+    xs_tree: jax.tree_util.PyTreeDef | None = None
 
 
 class Session:
@@ -114,6 +123,8 @@ class Session:
         avals: tuple[jax.ShapeDtypeStruct, ...],
         length: int | None,
         fn: Callable[..., object] | None,
+        const_avals: tuple[jax.ShapeDtypeStruct, ...] = (),
+        xs_tree: jax.tree_util.PyTreeDef | None = None,
     ) -> SiteKey:
         """Enter one site and return its key.
 
@@ -135,6 +146,12 @@ class Session:
             Loop length, or ``None``.
         fn : Callable or None
             Closure-converted site function, or ``None``.
+        const_avals : tuple of jax.ShapeDtypeStruct
+            Hoisted constants. Stored on the plan record and ignored by the
+            exec-mode shape check.
+        xs_tree : PyTreeDef or None
+            Structure of a map's ``xs``. Stored on the plan record so the
+            estimator can rebuild the pytree.
 
         Returns
         -------
@@ -153,7 +170,7 @@ class Session:
         """
         key = self._allocate_key(label)
         if self.mode == "plan":
-            self.records.append(SiteRecord(key, kind, avals, length, fn))
+            self.records.append(SiteRecord(key, kind, avals, length, fn, const_avals, xs_tree))
         elif self.mode == "exec":
             self._check_planned(key, avals)
         else:
@@ -354,6 +371,28 @@ def call_label(name: str | None, stacklevel: int = 1) -> str:
             raise ValueError(f"stacklevel {stacklevel} is above the top of the stack")
         frame = parent
     return f"{os.path.basename(frame.f_code.co_filename)}:{frame.f_lineno}"
+
+
+def _leaf_struct(leaf: Any) -> jax.ShapeDtypeStruct:
+    """Abstract value of one leaf, including a Python scalar.
+
+    Parameters
+    ----------
+    leaf : array, tracer, or Python scalar
+        Value to summarise. Python scalars are accepted; their weak type is
+        kept.
+
+    Returns
+    -------
+    jax.ShapeDtypeStruct
+        Shape, dtype, and ``weak_type`` from :func:`jax.typeof`.
+    """
+    aval = jax.typeof(leaf)
+    return jax.ShapeDtypeStruct(
+        tuple(aval.shape),
+        aval.dtype,
+        weak_type=bool(aval.weak_type),
+    )
 
 
 def _record_by_key(records: list[SiteRecord]) -> dict[SiteKey, SiteRecord]:

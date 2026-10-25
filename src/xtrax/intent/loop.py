@@ -24,7 +24,7 @@ from xtrax.intent._trace import (
 )
 from xtrax.intent.errors import IntentError
 from xtrax.intent.plan import SiteKey
-from xtrax.intent.sites import Session, activate, call_label
+from xtrax.intent.sites import Session, _leaf_struct, activate, call_label
 from xtrax.tiling.strategy import Scan, StaticWhile, WhileCarry
 
 _Step = Callable[[tuple[Any, ...], Any, Any], Any]
@@ -92,10 +92,7 @@ def _apply_cond(fn: Callable[..., Any]) -> Callable[[tuple[Any, ...], Any], Any]
 def _avals(init: Any, xs: Any) -> tuple[jax.ShapeDtypeStruct, ...]:
     """Abstract values of ``init`` leaves, then ``xs`` leaves when ``xs`` is given."""
     tree = init if xs is None else (init, xs)
-    return tuple(
-        jax.ShapeDtypeStruct(tuple(leaf.shape), leaf.dtype)
-        for leaf in jax.tree_util.tree_leaves(tree)
-    )
+    return tuple(_leaf_struct(leaf) for leaf in jax.tree_util.tree_leaves(tree))
 
 
 def _static_length(length: int | None, xs: Any) -> int:
@@ -121,6 +118,8 @@ def _static_length(length: int | None, xs: Any) -> int:
     if len(unique) > 1:
         rendered = ", ".join(str(size) for size in sizes)
         raise ValueError(f"scan got values with different leading axis sizes: {rendered}.")
+    if not sizes:
+        raise ValueError("scan got no values to scan over and `length` not provided.")
     return sizes[0]
 
 

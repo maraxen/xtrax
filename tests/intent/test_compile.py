@@ -527,3 +527,61 @@ def test_budgeted_map_in_loop_closes_over_carry_grad():
             jax.grad(loss_compiled, argnums=arg)(xs, w),
             jax.grad(loss_reference, argnums=arg)(xs, w),
         )
+
+
+def test_int_budget_map_closed_over_const_matches_vmap():
+    """An int memory budget plans a map that closes over a traced value.
+
+    ``plan_for`` succeeds and the call matches ``jax.vmap``, including a
+    one-leaf pytree input.
+    """
+
+    def fn(xs, w):
+        return map(lambda z: jnp.sin(z * w), xs, name="m")
+
+    xs = jnp.ones((8, 3), jnp.float32)
+    w = jnp.ones((3,), jnp.float32)
+    compiled = compile(fn, Context(memory_budget=10**9))
+    compiled.plan_for(xs, w)
+    _same(compiled(xs, w), jax.vmap(lambda z: jnp.sin(z * w))(xs))
+
+    def fn_tree(tree, weight):
+        return map(lambda z: jnp.sin(z["pos"] * weight), tree, name="m")
+
+    tree = {"pos": xs}
+    compiled_tree = compile(fn_tree, Context(memory_budget=10**9))
+    compiled_tree.plan_for(tree, w)
+    _same(compiled_tree(tree, w), jax.vmap(lambda z: jnp.sin(z["pos"] * w))(tree))
+
+
+def test_compile_python_scalar_argument_matches_vmap():
+    """``compile(f)(xs, 2.0)`` matches ``jax.vmap``."""
+
+    def fn(xs, scale):
+        return map(lambda z: z * scale, xs, name="m")
+
+    xs = jnp.ones((4, 3), jnp.float32)
+    _same(compile(fn)(xs, 2.0), jax.vmap(lambda z: z * 2.0)(xs))
+
+
+def test_compile_weak_scalar_promotes_like_plain_jax():
+    """A weak float32 scalar promotes like JAX and does not share a strong plan."""
+
+    def fn(xs, scale):
+        ys = map(lambda z: z * scale, xs, name="scale")
+        return map(jnp.sin, ys, name="sin")
+
+    xs = jnp.ones((4, 3), jnp.bfloat16)
+    weak = jnp.asarray(2.0)
+    strong = jnp.array(2.0, dtype=jnp.float32)
+
+    def reference(scale):
+        return jax.vmap(jnp.sin)(jax.vmap(lambda z: z * scale)(xs))
+
+    compiled = compile(fn)
+    got_weak = compiled(xs, weak)
+    got_strong = compiled(xs, strong)
+    assert got_weak.dtype == reference(weak).dtype
+    assert got_strong.dtype == reference(strong).dtype
+    _same(got_weak.astype(jnp.float32), reference(weak).astype(jnp.float32))
+    _same(got_strong.astype(jnp.float32), reference(strong).astype(jnp.float32))

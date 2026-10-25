@@ -61,9 +61,10 @@ def default_estimator(records: Sequence[SiteRecord]) -> Callable[[Sequence[AxisD
     """Sum lowered memory of each planned map under its strategy.
 
     Each decision is matched to a record by ``AxisSpec.name == str(record.key)``.
-    ``Vmap`` lowers ``jax.vmap(record.fn)``. ``ChunkedMap(b)`` lowers
-    ``chunked_map(record.fn, xs, batch_size=b)``. Results are memoised per
-    ``(key, strategy)``.
+    ``Vmap`` lowers ``jax.vmap`` of ``record.fn`` over the mapped pytree.
+    Constants hoisted from that function are closed over as abstract inputs
+    and are not mapped. ``ChunkedMap(b)`` lowers ``chunked_map`` the same
+    way. Results are memoised per ``(key, strategy)``.
 
     Parameters
     ----------
@@ -826,7 +827,13 @@ def _diff_visit(
 
 
 def _lowered_site(record: SiteRecord, strategy: _MapStrategy) -> int:
-    """Lower one site under ``strategy`` and return XLA's peak-byte estimate."""
+    """Lower one site under ``strategy`` and return XLA's peak-byte estimate.
+
+    A record that carries ``xs_tree`` or hoisted constants is lowered as a
+    function of the rebuilt ``xs`` pytree plus those constants. The mapped
+    body closes over the constants, so they are not batch axes. A flat
+    one-leaf record with no constants keeps ``jax.vmap(record.fn)``.
+    """
     fn = record.fn
     if fn is None:
         raise IntentError(
@@ -835,18 +842,39 @@ def _lowered_site(record: SiteRecord, strategy: _MapStrategy) -> int:
             path="primal",
             constraint="record.fn is None",
         )
-    if len(record.avals) != 1:
-        raise IntentError(
-            "default estimator takes one positional array",
-            site=str(record.key),
-            path="primal",
-            constraint="default estimator takes one positional array",
-        )
+    if record.xs_tree is None and not record.const_avals:
+        if len(record.avals) != 1:
+            raise IntentError(
+                "default estimator takes one positional array",
+                site=str(record.key),
+                path="primal",
+                constraint="default estimator takes one positional array",
+            )
+        if isinstance(strategy, Vmap):
+            return lowered_memory_estimate(jax.vmap(fn), *record.avals)
+        batch_size = strategy.batch_size
+
+        def _chunked(xs: object) -> object:
+            return chunked_map(fn, xs, batch_size=batch_size)
+
+        return lowered_memory_estimate(_chunked, *record.avals)
+
+    xs = (
+        record.avals[0]
+        if record.xs_tree is None
+        else jax.tree_util.tree_unflatten(record.xs_tree, record.avals)
+    )
+    consts = record.const_avals
     if isinstance(strategy, Vmap):
-        return lowered_memory_estimate(jax.vmap(fn), *record.avals)
+
+        def _vmapped(values: object, *closed: object) -> object:
+            return jax.vmap(lambda x: fn(x, *closed))(values)
+
+        return lowered_memory_estimate(_vmapped, xs, *consts)
+
     batch_size = strategy.batch_size
 
-    def _chunked(xs: object) -> object:
-        return chunked_map(fn, xs, batch_size=batch_size)
+    def _chunked_closed(values: object, *closed: object) -> object:
+        return chunked_map(lambda x: fn(x, *closed), values, batch_size=batch_size)
 
-    return lowered_memory_estimate(_chunked, *record.avals)
+    return lowered_memory_estimate(_chunked_closed, xs, *consts)

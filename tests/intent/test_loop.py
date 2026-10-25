@@ -13,6 +13,7 @@ from xtrax.intent import (
     SiteDecision,
     SiteKey,
     activate,
+    compile,
     current_session,
     loop,
     resolve,
@@ -762,3 +763,25 @@ def test_loop_undecided_session_primal_is_while():
     assert "while[" in jx and "scan[" not in jx
     assert len(session.records) == 1
     assert session.records[0].kind == "loop"
+
+
+def test_compiled_loop_python_scalar_init_matches_scan():
+    """``loop(..., 0.0, xs=xs)`` inside ``compile`` matches ``jax.lax.scan``."""
+
+    def scalar_init(values):
+        return loop(lambda c, x: (c + jnp.sum(x), x), 0.0, xs=values, name="l")
+
+    xs = jnp.ones((4, 3), jnp.float32)
+    got_carry, got_ys = compile(scalar_init)(xs)
+    exp_carry, exp_ys = jax.lax.scan(lambda c, x: (c + jnp.sum(x), x), 0.0, xs)
+    assert jnp.allclose(got_carry, exp_carry, rtol=1e-5, atol=1e-5)
+    assert jnp.allclose(got_ys, exp_ys, rtol=1e-5, atol=1e-5)
+
+
+def test_loop_empty_xs_raises_scan_value_error():
+    """Empty ``xs`` with no length raises the same ``ValueError`` as ``jax.lax.scan``."""
+    with pytest.raises(
+        ValueError,
+        match=r"scan got no values to scan over and `length` not provided\.",
+    ):
+        loop(lambda c, x: (c, x), jnp.float32(0.0), xs=())

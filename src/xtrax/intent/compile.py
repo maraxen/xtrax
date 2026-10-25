@@ -20,11 +20,17 @@ from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError, SiteMismatchError
 from xtrax.intent.plan import Plan, SiteDecision, SiteKey
 from xtrax.intent.resolve import SCAN_AROUND_WHILE_BACKENDS, resolve
-from xtrax.intent.sites import Session, SiteRecord, activate
+from xtrax.intent.sites import Session, SiteRecord, _leaf_struct, activate
 from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
 
 _BYPASS_WARNING = re.compile(r"override:.+ bypassed scan_around_while")
-_CacheKey = tuple[Any, tuple[tuple[Any, Any], ...], Any, tuple[tuple[Any, Any], ...], Context]
+_CacheKey = tuple[
+    Any,
+    tuple[tuple[Any, Any, bool], ...],
+    Any,
+    tuple[tuple[Any, Any, bool], ...],
+    Context,
+]
 _Cached = tuple[Callable[..., Any], Plan, tuple[SiteRecord, ...]]
 
 
@@ -73,6 +79,8 @@ class _ExecSession(Session):
         avals: tuple[Any, ...],
         length: int | None,
         fn: Callable[..., object] | None,
+        const_avals: tuple[Any, ...] = (),
+        xs_tree: Any = None,
     ) -> SiteKey:
         """Enter a site and append its key to :attr:`seen`.
 
@@ -88,13 +96,18 @@ class _ExecSession(Session):
             Loop length, or ``None``.
         fn : callable or None
             Closure-converted site function.
+        const_avals : tuple
+            Hoisted constants forwarded to the plan record. Exec mode does
+            not compare them.
+        xs_tree : PyTreeDef or None
+            Mapped pytree structure, forwarded to the plan record.
 
         Returns
         -------
         SiteKey
             Key returned by the exec check.
         """
-        key = super().enter_site(kind, label, avals, length, fn)
+        key = super().enter_site(kind, label, avals, length, fn, const_avals, xs_tree)
         self.seen.append(key)
         return key
 
@@ -123,10 +136,13 @@ def _is_primal_chain(key: SiteKey) -> bool:
 def _abstract_tree(tree: Any) -> Any:
     """Replace every leaf with a :class:`jax.ShapeDtypeStruct` of the same shape.
 
+    Python scalars are accepted. ``weak_type`` is copied onto the struct so
+    the plan trace promotes dtypes the same way the execution trace does.
+
     Parameters
     ----------
     tree : pytree
-        Concrete arrays or tracers.
+        Concrete arrays, tracers, or Python scalars.
 
     Returns
     -------
@@ -134,24 +150,29 @@ def _abstract_tree(tree: Any) -> Any:
         Same structure, with a :class:`jax.ShapeDtypeStruct` at each leaf.
     """
     leaves, treedef = jax.tree_util.tree_flatten(tree)
-    abstracts = tuple(jax.ShapeDtypeStruct(tuple(leaf.shape), leaf.dtype) for leaf in leaves)
+    abstracts = tuple(_leaf_struct(leaf) for leaf in leaves)
     return jax.tree_util.tree_unflatten(treedef, abstracts)
 
 
-def _leaf_signature(tree: Any) -> tuple[tuple[Any, Any], ...]:
-    """Return ``(shape, dtype)`` for each leaf.
+def _leaf_signature(tree: Any) -> tuple[tuple[Any, Any, bool], ...]:
+    """Return ``(shape, dtype, weak_type)`` for each leaf.
 
     Parameters
     ----------
     tree : pytree
-        Arrays or tracers.
+        Arrays, tracers, or Python scalars.
 
     Returns
     -------
     tuple
-        One ``(shape, dtype)`` pair per leaf, in flatten order.
+        One ``(shape, dtype, weak_type)`` triple per leaf, in flatten order.
+        ``weak_type`` keeps a weak scalar from sharing a plan with a strong
+        array of the same dtype.
     """
-    return tuple((leaf.shape, leaf.dtype) for leaf in jax.tree_util.tree_leaves(tree))
+    return tuple(
+        (struct.shape, struct.dtype, struct.weak_type)
+        for struct in (_leaf_struct(leaf) for leaf in jax.tree_util.tree_leaves(tree))
+    )
 
 
 def _cache_key(args: tuple[Any, ...], kwargs: dict[str, Any], ctx: Context) -> _CacheKey:
@@ -186,9 +207,9 @@ def _any_inexact(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
     Parameters
     ----------
     args : tuple
-        Positional arguments.
+        Positional arguments. Leaves may be Python scalars.
     kwargs : dict
-        Keyword arguments.
+        Keyword arguments. Leaves may be Python scalars.
 
     Returns
     -------
@@ -196,7 +217,7 @@ def _any_inexact(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
         ``True`` when a leaf dtype is inexact.
     """
     leaves = jax.tree_util.tree_leaves((args, kwargs))
-    return any(jnp.issubdtype(leaf.dtype, jnp.inexact) for leaf in leaves)
+    return any(jnp.issubdtype(_leaf_struct(leaf).dtype, jnp.inexact) for leaf in leaves)
 
 
 def partial_over_inexact(
