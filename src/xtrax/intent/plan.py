@@ -5,8 +5,6 @@ Strategies serialise as ``{"type": <ClassName>, ...fields}``. ``Context`` is
 written only as ``repr``; :meth:`Plan.from_json` takes the live context back.
 """
 
-from __future__ import annotations
-
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -45,7 +43,7 @@ class SiteKey:
         Index among calls with the same parent, path, and label.
     """
 
-    parent: SiteKey | None
+    parent: "SiteKey | None"
     path: Literal["primal", "diff"]
     label: str
     ordinal: int
@@ -232,7 +230,7 @@ class Plan:
         return json.dumps(payload)
 
     @classmethod
-    def from_json(cls, s: str, *, context: Context) -> Plan:
+    def from_json(cls, s: str, *, context: Context) -> "Plan":
         """Rebuild a plan from :meth:`to_json`, using the supplied context.
 
         Parameters

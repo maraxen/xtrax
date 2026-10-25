@@ -5,8 +5,6 @@ Map sites go through :class:`~xtrax.tiling.plan.BatchPlanner`. Loop sites follow
 the context rules. Diff-path records copy their primal twin.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Literal

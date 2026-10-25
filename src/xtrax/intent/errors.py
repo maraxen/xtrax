@@ -4,8 +4,6 @@ Unsatisfiable contexts and site mismatches name the site, path, and
 constraint before any execution starts.
 """
 
-from __future__ import annotations
-
 
 class IntentError(Exception):
     """Base error for intent resolution failures.

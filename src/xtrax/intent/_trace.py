@@ -4,8 +4,6 @@ Registration is one flag so a loop and a map suspend the same way: the
 closure conversion that only hoists constants does not record nested sites.
 """
 
-from __future__ import annotations
-
 import dataclasses
 from collections.abc import Callable
 from contextlib import contextmanager

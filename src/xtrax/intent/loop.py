@@ -5,8 +5,6 @@ differentiation traces that loop as :func:`jax.lax.scan`. A conditional
 loop is a plain :func:`jax.lax.while_loop`.
 """
 
-from __future__ import annotations
-
 import functools
 from collections.abc import Callable
 from contextlib import nullcontext

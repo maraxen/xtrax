@@ -6,8 +6,6 @@ and the derivative are :func:`jax.vmap`. A session decision selects
 :class:`~xtrax.tiling.strategy.ChunkedMap` independently on each path.
 """
 
-from __future__ import annotations
-
 import functools
 from collections.abc import Callable
 from contextlib import nullcontext

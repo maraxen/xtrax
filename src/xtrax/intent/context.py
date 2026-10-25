@@ -4,8 +4,6 @@ A frozen record of constraints. Ambient configuration is not read here;
 ``resolved_backend`` is the one place that falls back to the JAX default.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Literal
 

@@ -8,8 +8,6 @@ cached :func:`jax.jit` that re-enters an exec session and checks the primal
 site sequence.
 """
 
-from __future__ import annotations
-
 import inspect
 import re
 from collections.abc import Callable, Mapping

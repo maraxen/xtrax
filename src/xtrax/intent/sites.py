@@ -6,8 +6,6 @@ configuration: the active session is whichever :func:`activate` installed
 in the :mod:`contextvars` context.
 """
 
-from __future__ import annotations
-
 import inspect
 import os
 from collections.abc import Callable, Iterator, Mapping
@@ -24,7 +22,7 @@ from xtrax.intent.plan import SiteDecision, SiteKey
 _Frame = tuple[SiteKey, Literal["primal", "diff"]]
 _OrdinalKey = tuple[SiteKey | None, Literal["primal", "diff"], str]
 
-_CURRENT: ContextVar[Session | None] = ContextVar("xtrax.intent.session", default=None)
+_CURRENT: "ContextVar[Session | None]" = ContextVar("xtrax.intent.session", default=None)
 
 
 @dataclass(frozen=True)
