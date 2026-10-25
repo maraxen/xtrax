@@ -24,8 +24,8 @@ def fn(xs):
     def step(carry, x):
         return carry + jnp.sum(x), carry
 
-    carry, _ys = loop(step, jnp.float32(0.0), xs=xs, name="steps")  # verify: src/xtrax/intent/loop.py:338-346
-    return map(lambda z: z + carry, xs, name="batch")  # verify: src/xtrax/intent/map.py:220-224
+    carry, _ys = loop(step, jnp.float32(0.0), xs=xs, name="steps")  # verify: src/xtrax/intent/loop.py:339-347
+    return map(lambda z: z + carry, xs, name="batch")  # verify: src/xtrax/intent/map.py:221-225
 
 xs = jnp.ones((8, 4), dtype=jnp.float32)
 planned = compile(fn, Context())  # verify: src/xtrax/intent/compile.py:739-741
@@ -42,7 +42,7 @@ primal/steps#0	loop	StaticWhile(length=8)	Scan(ordered_sinks=True)	fixed length 
 primal/batch#0	map	Vmap	Vmap	no memory budget; cardinality selects Vmap	same strategy as primal in the MVP	
 ```
 
-The loop length is the leading axis of `xs`. — verify: `src/xtrax/intent/loop.py:101-124`
+The loop length is the leading axis of `xs`. — verify: `src/xtrax/intent/loop.py:102-125`
 
 A fixed length on `target="jit"` resolves to `StaticWhile`. — verify: `src/xtrax/intent/resolve.py:346-348`
 
@@ -71,13 +71,13 @@ The map diff reason is the shared MVP string. — verify: `src/xtrax/intent/reso
 
 | Site | Resolution |
 |---|---|
-| Fixed-length `loop`, undifferentiated, `target="jit"` or `export_format="stablehlo"` | Primal `StaticWhile(length=...)`, run as one `while_loop` that collects `ys`. — verify: `src/xtrax/intent/resolve.py:346-348` — verify: `src/xtrax/intent/loop.py:155-176` |
-| That loop, differentiated | Diff strategy `Scan`. The JVP calls `_scan`, and `_scan` calls `jax.lax.scan`. — verify: `src/xtrax/intent/resolve.py:349-350` — verify: `src/xtrax/intent/loop.py:270-290` — verify: `src/xtrax/intent/loop.py:144-152` |
-| `loop(..., cond=)` (no `length`, no `xs`) | Primal `WhileCarry`, run as `lax.while_loop`. Diff is `None` (forward-mode only). — verify: `src/xtrax/intent/resolve.py:361-369` — verify: `src/xtrax/intent/loop.py:347-365` — verify: `src/xtrax/intent/loop.py:389-394` |
+| Fixed-length `loop`, undifferentiated, `target="jit"` or `export_format="stablehlo"` | Primal `StaticWhile(length=...)`, run as one `while_loop` that collects `ys`. — verify: `src/xtrax/intent/resolve.py:346-348` — verify: `src/xtrax/intent/loop.py:156-177` |
+| That loop, differentiated | Diff strategy `Scan`. The JVP calls `_scan`, and `_scan` calls `jax.lax.scan`. — verify: `src/xtrax/intent/resolve.py:349-350` — verify: `src/xtrax/intent/loop.py:271-291` — verify: `src/xtrax/intent/loop.py:145-153` |
+| `loop(..., cond=)` (no `length`, no `xs`) | Primal `WhileCarry`, run as `lax.while_loop`. Diff is `None` (forward-mode only). — verify: `src/xtrax/intent/resolve.py:361-369` — verify: `src/xtrax/intent/loop.py:348-366` — verify: `src/xtrax/intent/loop.py:390-395` |
 | Fixed-length `loop` with `target="export"` and `export_format` other than `"stablehlo"` | Primal `Scan`. — verify: `src/xtrax/intent/resolve.py:343-345` |
 | `map` with no memory budget, or leading size `<= 1` | `Vmap` on the primal and on the diff path. — verify: `src/xtrax/intent/resolve.py:391-396` — verify: `src/xtrax/intent/resolve.py:410` |
 | `map` with leading size `> 1` and a memory budget | The `Vmap` or `ChunkedMap` that `BatchPlanner` returns for that axis. — verify: `src/xtrax/intent/resolve.py:284-319` — verify: `src/xtrax/intent/resolve.py:397-409` |
-| `map` with no session decision | `Vmap` on both paths. — verify: `src/xtrax/intent/map.py:129-145` |
+| `map` with no session decision | `Vmap` on both paths. — verify: `src/xtrax/intent/map.py:130-146` |
 
 A planned map is a primal-chain map whose leading size is greater than 1. — verify: `src/xtrax/intent/resolve.py:279-281`
 
@@ -121,7 +121,7 @@ An override that trips a hazard records `override:<label> bypassed <name>` and k
 
 Pass a `MemoryBudget` whose `estimate` is your own function. An existing `MemoryBudget` is kept as given. — verify: `src/xtrax/intent/context.py:32` — verify: `src/xtrax/intent/resolve.py:269` — verify: `src/xtrax/tiling/budget.py:36-49`
 
-Cond-form `loop` (`cond=`) resolves to `WhileCarry` and runs `lax.while_loop`. The plan records `diff=None` with the reason `conditional loop: jax.lax.while_loop (forward-mode only)`. Forward mode is that while loop's JVP. Reverse mode raises JAX's own `while_loop` error. No derivative strategy is added. Export refuses the form. — verify: `src/xtrax/intent/resolve.py:361-369` — verify: `src/xtrax/intent/loop.py:347-365` — verify: `src/xtrax/intent/loop.py:389-394`
+Cond-form `loop` (`cond=`) resolves to `WhileCarry` and runs `lax.while_loop`. The plan records `diff=None` with the reason `conditional loop: jax.lax.while_loop (forward-mode only)`. Forward mode is that while loop's JVP. Reverse mode raises JAX's own `while_loop` error. No derivative strategy is added. Export refuses the form. — verify: `src/xtrax/intent/resolve.py:361-369` — verify: `src/xtrax/intent/loop.py:348-366` — verify: `src/xtrax/intent/loop.py:390-395`
 
 The post-hoc scan-around-while check names `site="compile"`, `path="primal"`, and `constraint="scan_around_while"`. The resolve-time hazard names the individual site key. — verify: `src/xtrax/intent/compile.py:599-605` — verify: `src/xtrax/intent/resolve.py:767-771`
 

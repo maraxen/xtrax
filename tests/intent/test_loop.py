@@ -821,3 +821,37 @@ def test_compiled_cond_loop_matches_while_jvp_and_jax_grad_error():
     assert type(compiled_grad.value) is type(plain_grad.value)
     assert "lax.while_loop" in str(compiled_grad.value)
     assert not isinstance(compiled_grad.value, IntentError)
+
+
+def _int_closure_loss(use_intent: bool, compiled: bool):
+    """Loss whose loop body closes over an in-trace int array, inside a traced cond."""
+
+    def f(w, pred):
+        idx = jnp.argsort(w[0])  # int tracer under jit: float0 tangent
+
+        def body(c, x):
+            return c[idx] * w[0] + x, jnp.sum(c)
+
+        def run():
+            if use_intent:
+                return loop(body, jnp.ones((3,)), xs=jnp.arange(4.0))
+            return jax.lax.scan(body, jnp.ones((3,)), jnp.arange(4.0))
+
+        _c, ys = jax.lax.cond(pred, run, run)
+        return jnp.sum(ys)
+
+    return compile(f, Context()) if compiled else f
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_loop_jit_grad_closed_over_int_tracer_in_cond(compiled):
+    """jit(grad) through a loop in a traced cond whose body reads an in-trace int array.
+
+    jax.closure_convert hoists only values that can carry a tangent, so the int array
+    stayed baked into the custom_jvp's nondiff step and leaked as a tracer constant.
+    """
+    w = jnp.array([[0.9, 0.3, 0.5]])
+    pred = jnp.bool_(True)
+    ref = jax.jit(jax.grad(_int_closure_loss(use_intent=False, compiled=False)))(w, pred)
+    got = jax.jit(jax.grad(_int_closure_loss(use_intent=True, compiled=compiled)))(w, pred)
+    assert ok(got, ref)

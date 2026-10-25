@@ -13,6 +13,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from xtrax.intent._hoist import hoist_closure
 from xtrax.intent._trace import (
     _active_session,
     _retrace,
@@ -57,7 +58,7 @@ def _convert_scan(
     body: Callable[..., Any], init: Any, xs: Any
 ) -> tuple[Callable[..., Any], tuple[Any, ...]]:
     """Closure-convert a scan body ``(carry, x) -> (carry, y)``."""
-    converted, consts = jax.closure_convert(body, init, _example_x(xs))
+    converted, consts = hoist_closure(body, init, _example_x(xs))
     return converted, tuple(consts)
 
 
@@ -65,7 +66,7 @@ def _convert_cond(
     body: Callable[..., Any], init: Any
 ) -> tuple[Callable[..., Any], tuple[Any, ...]]:
     """Closure-convert a conditional body ``carry -> carry``."""
-    converted, consts = jax.closure_convert(body, init)
+    converted, consts = hoist_closure(body, init)
     return converted, tuple(consts)
 
 
@@ -396,8 +397,8 @@ def loop(
     ----------
     body : callable
         Step function. Static form: ``body(carry, x) -> (carry, y)``.
-        Conditional form: ``body(carry) -> carry``. Closed-over values are
-        hoisted with :func:`jax.closure_convert`.
+        Conditional form: ``body(carry) -> carry``. Closed-over tracers, of
+        any dtype, are hoisted as explicit arguments.
     init : pytree of jax.Array
         Initial carry.
     length : int or None
