@@ -15,7 +15,7 @@ import jax
 
 from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError, UnsatisfiableContextError
-from xtrax.intent.plan import PLAN_SCHEMA_VERSION, Plan, SiteDecision, SiteKey
+from xtrax.intent.plan import PLAN_SCHEMA_VERSION, Plan, SiteDecision, SiteKey, canonical
 from xtrax.intent.sites import SiteRecord
 from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
 from xtrax.tiling.estimators import lowered_memory_estimate
@@ -38,23 +38,6 @@ LONG_SCAN_THRESHOLD = 256
 
 _SAME_STRATEGY = "same strategy as primal in the MVP"
 _NO_TWIN = "no primal twin"
-
-
-def canonical(key: SiteKey) -> SiteKey:
-    """Return ``key`` with ``path="primal"`` at every level of the parent chain.
-
-    Parameters
-    ----------
-    key : SiteKey
-        Key to rewrite. Parents are rewritten first.
-
-    Returns
-    -------
-    SiteKey
-        The primal-chain key for this visit.
-    """
-    parent = None if key.parent is None else canonical(key.parent)
-    return SiteKey(parent=parent, path="primal", label=key.label, ordinal=key.ordinal)
 
 
 def default_estimator(records: Sequence[SiteRecord]) -> Callable[[Sequence[AxisDecision]], int]:

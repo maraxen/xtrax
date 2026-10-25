@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from xtrax.intent.plan import SiteDecision, SiteKey
+from xtrax.intent.plan import SiteDecision, SiteKey, canonical
 from xtrax.intent.sites import Session, current_session
 
 _REGISTER: ContextVar[bool] = ContextVar("xtrax.intent.register", default=True)
@@ -44,32 +44,44 @@ def _retrace(body: Callable[..., Any]) -> Callable[..., Any]:
     return _body
 
 
-def decision_for(session: Session, key: SiteKey) -> SiteDecision | None:
-    """Return the decision for ``key``, falling back to its primal twin.
+def _has_diff_edge(key: SiteKey) -> bool:
+    """Return whether ``key`` or one of its parents is on the diff path."""
+    current: SiteKey | None = key
+    while current is not None:
+        if current.path == "diff":
+            return True
+        current = current.parent
+    return False
 
-    An explicit decision on ``key`` wins. When ``key`` is on the diff path and
-    that lookup misses, the decision stored on the same parent, label, and
-    ordinal with ``path="primal"`` is returned. Any other miss is ``None``.
+
+def decision_for(session: Session, key: SiteKey) -> SiteDecision | None:
+    """Return the decision for ``key``, falling back to its canonical twin.
+
+    An explicit decision on ``key`` wins. When that lookup misses and ``key``
+    or any parent is on the diff path, the decision stored on
+    :func:`~xtrax.intent.plan.canonical` of ``key`` is returned. Any other
+    miss is ``None``.
 
     Parameters
     ----------
     session : Session
         Session whose ``decisions`` are consulted.
     key : SiteKey
-        Site being resolved. A diff key with no decision of its own uses the
-        primal twin.
+        Site being resolved. A key with a diff edge and no decision of its
+        own uses the primal-chain twin.
 
     Returns
     -------
     SiteDecision or None
-        ``session.decision_for(key)`` when that is not ``None``. Otherwise the
-        primal twin's decision when ``key.path == "diff"``. Otherwise ``None``.
+        ``session.decision_for(key)`` when that is not ``None``. Otherwise
+        the canonical twin's decision when the chain contains a diff edge.
+        Otherwise ``None``.
     """
     decision = session.decision_for(key)
     if decision is not None:
         return decision
-    if key.path == "diff":
-        return session.decision_for(dataclasses.replace(key, path="primal"))
+    if _has_diff_edge(key):
+        return session.decision_for(canonical(key))
     return None
 
 

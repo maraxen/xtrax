@@ -70,6 +70,23 @@ class SiteKey:
         return f"{self.parent}/{own}"
 
 
+def canonical(key: SiteKey) -> SiteKey:
+    """Return ``key`` with ``path="primal"`` at every level of the parent chain.
+
+    Parameters
+    ----------
+    key : SiteKey
+        Key to rewrite. Parents are rewritten first.
+
+    Returns
+    -------
+    SiteKey
+        The primal-chain key for this visit.
+    """
+    parent = None if key.parent is None else canonical(key.parent)
+    return SiteKey(parent=parent, path="primal", label=key.label, ordinal=key.ordinal)
+
+
 @dataclass(frozen=True)
 class SiteDecision:
     """Strategy chosen for one site, on the primal and differentiated paths.

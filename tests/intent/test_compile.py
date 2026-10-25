@@ -6,20 +6,25 @@ import sys
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from xtrax.intent import (
     Context,
     IntentError,
     Plan,
+    SiteDecision,
+    SiteKey,
     SiteMismatchError,
     UnsatisfiableContextError,
     compile,
     loop,
     map,
 )
+from xtrax.intent._trace import decision_for
+from xtrax.intent.sites import Session
 from xtrax.tiling.budget import MemoryBudget
-from xtrax.tiling.strategy import ChunkedMap, Vmap
+from xtrax.tiling.strategy import ChunkedMap, Scan, Vmap
 
 
 def _same(got, expected) -> None:
@@ -585,3 +590,217 @@ def test_compile_weak_scalar_promotes_like_plain_jax():
     assert got_strong.dtype == reference(strong).dtype
     _same(got_weak.astype(jnp.float32), reference(weak).astype(jnp.float32))
     _same(got_strong.astype(jnp.float32), reference(strong).astype(jnp.float32))
+
+
+def _host_scale(value):
+    """Scale ``value`` on the host. ``pure_callback`` has no JVP rule."""
+    return jax.pure_callback(
+        lambda raw: np.asarray(raw) * 2,
+        jax.ShapeDtypeStruct(value.shape, value.dtype),
+        value,
+    )
+
+
+def test_nondiff_argument_keeps_diff_sites_for_other_arguments():
+    """One non-differentiable input does not drop diff sites for the others.
+
+    ``aux`` goes through ``pure_callback``. Gradients with respect to ``w``
+    still match plain JAX, and the plan names ``aux`` and ``ValueError``
+    instead of the callback's message.
+    """
+
+    def fn(xs, w, aux):
+        scale = jnp.sum(_host_scale(aux))
+
+        def step(carry, row):
+            y = map(lambda z: jnp.sin(z * w + carry), row, name="inner_map")
+            return carry + 0.1 * jnp.sum(y), y
+
+        carry, _ys = loop(step, jnp.float32(0.0), xs=xs, name="outer_loop")
+        return carry * scale
+
+    def reference(xs, w, aux):
+        scale = jnp.sum(_host_scale(aux))
+
+        def step(carry, row):
+            y = jax.vmap(lambda z: jnp.sin(z * w + carry))(row)
+            return carry + 0.1 * jnp.sum(y), y
+
+        carry, _ys = jax.lax.scan(step, jnp.float32(0.0), xs)
+        return carry * scale
+
+    xs = jnp.linspace(-0.3, 0.3, 16, dtype=jnp.float32).reshape(4, 4)
+    w = jnp.linspace(0.2, 0.5, 4, dtype=jnp.float32)
+    aux = jnp.ones((3,), jnp.float32)
+    compiled = compile(fn, Context(backend="cpu"))
+    _same(jax.grad(compiled, argnums=1)(xs, w, aux), jax.grad(reference, argnums=1)(xs, w, aux))
+    plan = compiled.plan_for(xs, w, aux)
+    assert any(
+        decision.key.label == "inner_map" and decision.key.path == "diff"
+        for decision in plan.decisions
+    )
+    outer = next(
+        decision
+        for decision in plan.decisions
+        if decision.key.label == "outer_loop" and decision.key.path == "primal"
+    )
+    assert outer.diff_reason == "aux: ValueError"
+    assert "Pure callbacks" not in outer.diff_reason
+    assert "custom_jvp" not in outer.diff_reason
+
+
+def test_primal_diff_sites_kept_for_integer_input():
+    """Diff sites recorded while planning an internal grad survive an integer input.
+
+    The diff pass does not run for an integer ``scale``. The primal pass still
+    records the differentiated map, and the call matches ``scan`` / ``vmap``.
+    """
+
+    def fn(scale):
+        xs = jnp.ones((4, 4), jnp.float32) * scale.astype(jnp.float32)
+
+        def energy(weight):
+            def step(carry, row):
+                y = map(lambda z: jnp.sin(z * weight + carry), row, name="m")
+                return carry + 0.1 * jnp.sum(y), y
+
+            return loop(step, jnp.float32(0.0), xs=xs, name="l")[0]
+
+        return jax.grad(energy)(jnp.float32(0.3))
+
+    def reference(scale):
+        xs = jnp.ones((4, 4), jnp.float32) * scale.astype(jnp.float32)
+
+        def energy(weight):
+            def step(carry, row):
+                y = jax.vmap(lambda z: jnp.sin(z * weight + carry))(row)
+                return carry + 0.1 * jnp.sum(y), y
+
+            return jax.lax.scan(step, jnp.float32(0.0), xs)[0]
+
+        return jax.grad(energy)(jnp.float32(0.3))
+
+    scale = jnp.int32(1)
+    compiled = compile(fn)
+    _same(compiled(scale), reference(scale))
+    assert any(decision.key.path == "diff" for decision in compiled.plan_for(scale).decisions)
+
+
+def test_three_level_diff_fallback_uses_canonical_chunked_map(monkeypatch):
+    """loop, map, loop under ``jax.grad`` keeps a budget ``ChunkedMap``.
+
+    A key whose parent is already on the diff path is not fixed by flipping
+    only that key's own path. The canonical twin holds the ``ChunkedMap``.
+    An explicit decision stored on the exec key still wins. The grad jaxpr
+    scans chunks.
+    """
+    outer = SiteKey(parent=None, path="primal", label="outer_loop", ordinal=0)
+    canonical_map = SiteKey(parent=outer, path="primal", label="inner_map", ordinal=0)
+    canonical_loop = SiteKey(parent=canonical_map, path="primal", label="inner_loop", ordinal=0)
+    diff_map = SiteKey(parent=outer, path="diff", label="inner_map", ordinal=0)
+    deep_primal = SiteKey(parent=diff_map, path="primal", label="inner_loop", ordinal=0)
+    deep_diff = SiteKey(parent=diff_map, path="diff", label="inner_loop", ordinal=0)
+    map_decision = SiteDecision(
+        key=canonical_map,
+        kind="map",
+        primal=ChunkedMap(batch_size=2),
+        diff=ChunkedMap(batch_size=2),
+        primal_reason="budget",
+        diff_reason="same strategy as primal in the MVP",
+    )
+    loop_decision = SiteDecision(
+        key=canonical_loop,
+        kind="loop",
+        primal=Scan(),
+        diff=Scan(),
+        primal_reason="fixed length resolves to StaticWhile",
+        diff_reason="diff path resolves to Scan",
+    )
+    session = Session(
+        "exec", decisions={canonical_map: map_decision, canonical_loop: loop_decision}
+    )
+    assert decision_for(session, diff_map) is map_decision
+    assert decision_for(session, deep_primal) is loop_decision
+    assert decision_for(session, deep_diff) is loop_decision
+    explicit = SiteDecision(
+        key=deep_diff,
+        kind="loop",
+        primal=Scan(),
+        diff=None,
+        primal_reason="explicit",
+        diff_reason="explicit",
+    )
+    explicit_session = Session(
+        "exec",
+        decisions={canonical_loop: loop_decision, deep_diff: explicit},
+    )
+    assert decision_for(explicit_session, deep_diff) is explicit
+
+    calls = {"chunked": 0}
+    map_module = sys.modules["xtrax.intent.map"]
+    real_chunked = map_module.chunked_map
+
+    def _spy_chunked(*args, **kwargs):
+        calls["chunked"] += 1
+        return real_chunked(*args, **kwargs)
+
+    monkeypatch.setattr(map_module, "chunked_map", _spy_chunked)
+
+    def fn(xs, weight):
+        def outer_step(carry, row):
+            def mid(z):
+                def inner_step(inner, _):
+                    y = jnp.sin(z * weight + inner)
+                    return inner + 0.1 * y, y
+
+                init = jnp.zeros_like(z)
+                carry_n, ys = loop(inner_step, init, length=3, name="inner_loop")
+                return carry_n + jnp.sum(ys)
+
+            y = map(mid, row, name="inner_map")
+            return carry + 0.1 * jnp.sum(y), y
+
+        return loop(outer_step, jnp.float32(0.0), xs=xs, name="outer_loop")[0]
+
+    def reference(xs, weight):
+        def outer_step(carry, row):
+            def mid(z):
+                def inner_step(inner, _):
+                    y = jnp.sin(z * weight + inner)
+                    return inner + 0.1 * y, y
+
+                init = jnp.zeros_like(z)
+                carry_n, ys = jax.lax.scan(inner_step, init, None, length=3)
+                return carry_n + jnp.sum(ys)
+
+            y = jax.vmap(mid)(row)
+            return carry + 0.1 * jnp.sum(y), y
+
+        return jax.lax.scan(outer_step, jnp.float32(0.0), xs)[0]
+
+    def _vmap_is_costly(decisions):
+        return sum(100 if isinstance(decision.strategy, Vmap) else 10 for decision in decisions)
+
+    xs = jnp.linspace(-0.2, 0.2, 32, dtype=jnp.float32).reshape(4, 8)
+    weight = jnp.float32(0.3)
+    compiled = compile(
+        fn,
+        Context(
+            memory_budget=MemoryBudget(bytes=50, estimate=_vmap_is_costly),
+            chunk_size=2,
+            backend="cpu",
+        ),
+    )
+    plan = compiled.plan_for(xs, weight)
+    inner = next(
+        decision
+        for decision in plan.decisions
+        if decision.key.label == "inner_map" and decision.key.path == "primal"
+    )
+    assert isinstance(inner.primal, ChunkedMap)
+    assert inner.primal.batch_size == 2
+    calls["chunked"] = 0
+    _same(jax.grad(compiled)(xs, weight), jax.grad(reference)(xs, weight))
+    assert calls["chunked"] >= 1
+    backward = str(jax.make_jaxpr(jax.grad(compiled))(xs, weight))
+    assert "scan[" in backward

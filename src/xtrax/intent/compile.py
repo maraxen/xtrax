@@ -1,14 +1,16 @@
 """Compile an intent function: plan once per signature, then jit execution.
 
 The plan pass traces with :func:`jax.make_jaxpr` under a plan session, then
-traces :func:`jax.linearize` when any leaf is inexact so diff-path sites are
-recorded. :func:`~xtrax.intent.resolve.resolve` turns those records into one
-:class:`~xtrax.intent.plan.Plan`. Execution is a cached :func:`jax.jit` that
-re-enters an exec session and checks the primal site sequence.
+traces :func:`jax.linearize` once per inexact argument when any leaf is
+inexact so diff-path sites are recorded. :func:`~xtrax.intent.resolve.resolve`
+turns those records into one :class:`~xtrax.intent.plan.Plan`. Execution is a
+cached :func:`jax.jit` that re-enters an exec session and checks the primal
+site sequence.
 """
 
 from __future__ import annotations
 
+import inspect
 import re
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -220,92 +222,68 @@ def _any_inexact(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
     return any(jnp.issubdtype(_leaf_struct(leaf).dtype, jnp.inexact) for leaf in leaves)
 
 
-def partial_over_inexact(
-    fn: Callable[..., Any],
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-) -> tuple[Callable[..., Any], tuple[Any, ...]]:
-    """Linearize only over inexact leaves.
-
-    Integer and bool leaves are closed over inside the returned function.
-    During the plan pass those closed-over values are the tracers created
-    from :class:`jax.ShapeDtypeStruct` placeholders, not primals of
-    :func:`jax.linearize`.
+def _records_agree(left: SiteRecord, right: SiteRecord) -> bool:
+    """Return whether ``left`` and ``right`` share avals and label.
 
     Parameters
     ----------
-    fn : callable
-        Function being planned.
-    args : tuple
-        Positional arguments, concrete or traced.
-    kwargs : dict
-        Keyword arguments, concrete or traced.
+    left : SiteRecord
+        Record already kept.
+    right : SiteRecord
+        Record being merged under the same key.
 
     Returns
     -------
-    tuple
-        ``(partial, inexact_leaves)``. ``partial(*inexact_leaves)`` calls
-        ``fn``. ``inexact_leaves`` is empty when every leaf is exact.
+    bool
+        ``True`` when both labels and both aval tuples match.
     """
-    flat, treedef = jax.tree_util.tree_flatten((args, kwargs))
-    inexact_flags = tuple(jnp.issubdtype(leaf.dtype, jnp.inexact) for leaf in flat)
-
-    def partial(*inexact_leaves: Any) -> Any:
-        """Rebuild the call, closing over exact leaves.
-
-        Parameters
-        ----------
-        inexact_leaves : tuple
-            Inexact arrays, in flatten order.
-
-        Returns
-        -------
-        pytree
-            ``fn(*args, **kwargs)`` with exact leaves closed over.
-        """
-        rebuilt: list[Any] = []
-        cursor = 0
-        for leaf, is_inexact in zip(flat, inexact_flags, strict=True):
-            if is_inexact:
-                rebuilt.append(inexact_leaves[cursor])
-                cursor += 1
-            else:
-                rebuilt.append(leaf)
-        call_args, call_kwargs = jax.tree_util.tree_unflatten(treedef, rebuilt)
-        return fn(*call_args, **call_kwargs)
-
-    inexact_leaves = tuple(
-        leaf for leaf, is_inexact in zip(flat, inexact_flags, strict=True) if is_inexact
-    )
-    return partial, inexact_leaves
+    return left.key.label == right.key.label and left.avals == right.avals
 
 
 def _merge_records(
     primal_records: list[SiteRecord],
     diff_records: list[SiteRecord],
 ) -> tuple[SiteRecord, ...]:
-    """Keep primal-chain records, then diff-path records without duplicate keys.
+    """Keep every primal record, then diff records that add a new key.
 
     Parameters
     ----------
     primal_records : list of SiteRecord
-        Records from the primal plan pass.
+        Records from the primal plan pass, including diff-path visits made
+        while ``fn`` itself differentiated.
     diff_records : list of SiteRecord
-        Records from the diff plan pass. Keys already carry ``path="diff"``
-        when the visit was on the differentiated path.
+        Records from the diff plan pass.
 
     Returns
     -------
     tuple of SiteRecord
-        Primal-chain records in visit order, then new diff-path records.
+        Primal records in visit order, then diff records whose keys are new.
+
+    Raises
+    ------
+    SiteMismatchError
+        Both passes recorded ``key`` and disagree on avals or label. ``site``
+        is that key and ``constraint`` names the two aval tuples.
     """
-    merged = [record for record in primal_records if _is_primal_chain(record.key)]
-    seen = {record.key for record in merged}
-    for record in diff_records:
-        if _is_primal_chain(record.key) or record.key in seen:
-            continue
-        seen.add(record.key)
+    merged: list[SiteRecord] = []
+    by_key: dict[SiteKey, SiteRecord] = {}
+    for record in primal_records:
+        by_key[record.key] = record
         merged.append(record)
+    for record in diff_records:
+        previous = by_key.get(record.key)
+        if previous is None:
+            by_key[record.key] = record
+            merged.append(record)
+            continue
+        if not _records_agree(previous, record):
+            constraint = f"planned {previous.avals}, traced {record.avals}"
+            raise SiteMismatchError(
+                constraint,
+                site=str(record.key),
+                path=record.key.path,
+                constraint=constraint,
+            )
     return tuple(merged)
 
 
@@ -355,56 +333,200 @@ def _trace_primal(
     return list(session.records)
 
 
-def _trace_diff(
-    fn: Callable[..., Any],
-    abstract_args: Any,
-    abstract_kwargs: Any,
-) -> tuple[list[SiteRecord], bool, str]:
-    """Trace :func:`jax.linearize` over inexact leaves under a fresh plan session.
+def _positional_labels(fn: Callable[..., Any], nargs: int) -> tuple[str, ...]:
+    """Name each positional argument, or ``args[i]`` when the signature has none.
 
     Parameters
     ----------
     fn : callable
         Function being planned.
-    abstract_args : pytree
-        :class:`jax.ShapeDtypeStruct` arguments.
-    abstract_kwargs : pytree
-        :class:`jax.ShapeDtypeStruct` keyword arguments.
+    nargs : int
+        Number of positional arguments in this call.
+
+    Returns
+    -------
+    tuple of str
+        One label per positional argument, in call order.
+    """
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return tuple(f"args[{index}]" for index in range(nargs))
+    names: list[str] = []
+    for param in signature.parameters.values():
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            names.append(param.name)
+        elif param.kind is inspect.Parameter.VAR_POSITIONAL:
+            break
+    labels: list[str] = []
+    for index in range(nargs):
+        if index < len(names):
+            labels.append(names[index])
+        else:
+            labels.append(f"args[{index}]")
+    return tuple(labels)
+
+
+def _tree_has_inexact(tree: Any) -> bool:
+    """Return whether any leaf of ``tree`` has an inexact dtype.
+
+    Parameters
+    ----------
+    tree : pytree
+        One argument. Leaves may be Python scalars.
+
+    Returns
+    -------
+    bool
+        ``True`` when a leaf dtype is inexact.
+    """
+    return any(
+        jnp.issubdtype(_leaf_struct(leaf).dtype, jnp.inexact)
+        for leaf in jax.tree_util.tree_leaves(tree)
+    )
+
+
+def _trace_one_argument(
+    fn: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    index: int | None,
+    keyword: str | None,
+) -> tuple[list[SiteRecord], Exception | None]:
+    """Linearize ``fn`` with respect to one argument under a fresh plan session.
+
+    Other arguments stay the concrete call values, so a non-differentiable
+    input is not part of this linearize. Exact leaves of the chosen argument
+    are closed over.
+
+    Parameters
+    ----------
+    fn : callable
+        Function being planned.
+    args : tuple
+        Concrete positional arguments.
+    kwargs : dict
+        Concrete keyword arguments.
+    index : int or None
+        Positional index to differentiate. ``None`` selects ``keyword``.
+    keyword : str or None
+        Keyword name to differentiate. ``None`` selects ``index``.
 
     Returns
     -------
     tuple
-        ``(records, diff_available, reason)``. On failure ``diff_available``
-        is ``False`` and ``reason`` is the exception text.
+        ``(records, error)``. ``error`` is the caught exception when
+        linearize fails, and ``records`` is empty in that case.
     """
+    target = args[index] if index is not None else kwargs[keyword or ""]
+    abstract = _abstract_tree(target)
 
-    def diff(args: Any, kwargs: Any) -> Any:
-        """Linearize ``fn`` over its inexact leaves.
+    def diff(traced_target: Any) -> Any:
+        """Linearize ``fn`` over the inexact leaves of this argument.
 
         Parameters
         ----------
-        args : tuple
-            Positional arguments of this trace.
-        kwargs : dict
-            Keyword arguments of this trace.
+        traced_target : pytree
+            Abstract value of the argument being differentiated.
 
         Returns
         -------
         pytree
-            Primal outputs of :func:`jax.linearize`. The tangent function is
-            dropped so the jaxpr stays on arrays.
+            Primal outputs of :func:`jax.linearize`.
         """
-        partial, inexact = partial_over_inexact(fn, args, kwargs)
+        flat, treedef = jax.tree_util.tree_flatten(traced_target)
+        flags = tuple(jnp.issubdtype(_leaf_struct(leaf).dtype, jnp.inexact) for leaf in flat)
+        inexact = tuple(leaf for leaf, flag in zip(flat, flags, strict=True) if flag)
+
+        def partial(*inexact_leaves: Any) -> Any:
+            """Rebuild the argument and call ``fn``.
+
+            Parameters
+            ----------
+            inexact_leaves : tuple
+                Inexact leaves of this argument, in flatten order.
+
+            Returns
+            -------
+            pytree
+                ``fn`` applied to the concrete call with this argument replaced.
+            """
+            rebuilt: list[Any] = []
+            cursor = 0
+            for leaf, flag in zip(flat, flags, strict=True):
+                if flag:
+                    rebuilt.append(inexact_leaves[cursor])
+                    cursor += 1
+                else:
+                    rebuilt.append(leaf)
+            rebuilt_target = jax.tree_util.tree_unflatten(treedef, rebuilt)
+            call_args = list(args)
+            call_kwargs = dict(kwargs)
+            if index is not None:
+                call_args[index] = rebuilt_target
+            elif keyword is not None:
+                call_kwargs[keyword] = rebuilt_target
+            return fn(*call_args, **call_kwargs)
+
         primals, _tangent = jax.linearize(partial, *inexact)
         return primals
 
     session = Session("plan")
     try:
         with activate(session):
-            jax.make_jaxpr(diff)(abstract_args, abstract_kwargs)
+            jax.make_jaxpr(diff)(abstract)
     except Exception as exc:
-        return [], False, str(exc)
-    return list(session.records), True, ""
+        return [], exc
+    return list(session.records), None
+
+
+def _trace_diff(
+    fn: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> tuple[list[SiteRecord], bool, str]:
+    """Record diff sites by linearizing each inexact argument on its own.
+
+    Parameters
+    ----------
+    fn : callable
+        Function being planned.
+    args : tuple
+        Concrete positional arguments.
+    kwargs : dict
+        Concrete keyword arguments.
+
+    Returns
+    -------
+    tuple
+        ``(records, diff_available, reason)``. An argument whose linearize
+        fails contributes no records. ``reason`` names each failed argument
+        and the exception type. ``diff_available`` is ``False`` when any
+        argument failed.
+    """
+    collected: list[SiteRecord] = []
+    failures: list[str] = []
+    labels = _positional_labels(fn, len(args))
+    targets: list[tuple[str, int | None, str | None]] = []
+    for index, arg in enumerate(args):
+        if _tree_has_inexact(arg):
+            targets.append((labels[index], index, None))
+    for name, value in kwargs.items():
+        if _tree_has_inexact(value):
+            targets.append((name, None, name))
+    for label, index, keyword in targets:
+        records, exc = _trace_one_argument(fn, args, kwargs, index=index, keyword=keyword)
+        if exc is not None:
+            failures.append(f"{label}: {type(exc).__name__}")
+            continue
+        collected = list(_merge_records(collected, records))
+    if failures:
+        return collected, False, "; ".join(failures)
+    return collected, True, ""
 
 
 def _plan(
@@ -438,7 +560,7 @@ def _plan(
     abstract_kwargs = _abstract_tree(kwargs)
     primal_records = _trace_primal(fn, abstract_args, abstract_kwargs)
     if _any_inexact(args, kwargs):
-        diff_records, diff_available, reason = _trace_diff(fn, abstract_args, abstract_kwargs)
+        diff_records, diff_available, reason = _trace_diff(fn, args, kwargs)
     else:
         diff_records = []
         diff_available = True
