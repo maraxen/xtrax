@@ -73,6 +73,7 @@
 ## Actuation Surfaces
 
 ## Audits
+- [261024_intent-mvp-code-review-fixes](audits/261024_intent-mvp-code-review-fixes.md) — /code-review xhigh on PR #228 found 15 issues; 11 fixed in three waves plus one follow-up, re-review 12/12 resolved; 5 parked as backlog.
 - [261023_intent-mvp-final-review](audits/261023_intent-mvp-final-review.md) — Final whole-branch review outcome for the intent MVP: loop-in-map JVP bug fixed, two findings ruled float32 conditioning against float64 truth, re-review 4/4 resolved.
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
