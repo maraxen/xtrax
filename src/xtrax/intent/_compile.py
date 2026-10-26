@@ -2,7 +2,7 @@
 
 The plan pass traces with :func:`jax.make_jaxpr` under a plan session, then
 traces :func:`jax.linearize` once per inexact argument when any leaf is
-inexact so diff-path sites are recorded. :func:`~xtrax.intent.resolve.resolve`
+inexact so diff-path sites are recorded. :func:`~xtrax.intent.resolve`
 turns those records into one :class:`~xtrax.intent.plan.Plan`. Execution is a
 cached :func:`jax.jit` that re-enters an exec session and checks the primal
 site sequence.
@@ -17,10 +17,14 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from xtrax.intent._resolve import (
+    SCAN_AROUND_WHILE_BACKENDS,
+    _is_scan_around_while_backend,
+    resolve,
+)
 from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError, SiteMismatchError
 from xtrax.intent.plan import Plan, SiteDecision, SiteKey, canonical
-from xtrax.intent.resolve import SCAN_AROUND_WHILE_BACKENDS, _is_scan_around_while_backend, resolve
 from xtrax.intent.sites import Session, SiteRecord, _leaf_struct, activate
 from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
 from xtrax.tiling.strategy import ChunkedMap, Scan, StaticWhile, WhileCarry
@@ -604,9 +608,9 @@ def _plan(
     kwargs : dict
         Call keyword arguments.
     ctx : Context
-        Constraints passed to :func:`~xtrax.intent.resolve.resolve`.
+        Constraints passed to :func:`~xtrax.intent.resolve`.
     overrides : mapping or None
-        Label overrides passed to :func:`~xtrax.intent.resolve.resolve`.
+        Label overrides passed to :func:`~xtrax.intent.resolve`.
 
     Returns
     -------
@@ -887,10 +891,10 @@ class Compiled:
     Parameters
     ----------
     fn : callable
-        Function containing :func:`~xtrax.intent.loop.loop` and
-        :func:`~xtrax.intent.map.map` sites.
+        Function containing :func:`~xtrax.intent.loop` and
+        :func:`~xtrax.intent.map` sites.
     ctx : Context
-        Constraints for :func:`~xtrax.intent.resolve.resolve`.
+        Constraints for :func:`~xtrax.intent.resolve`.
     overrides : mapping or None
         Optional per-label strategy overrides.
 

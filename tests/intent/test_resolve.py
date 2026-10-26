@@ -1,7 +1,5 @@
 """Tests for xtrax.intent.resolve."""
 
-import sys
-
 import jax
 import jax.numpy as jnp
 import pytest
@@ -14,7 +12,7 @@ from xtrax.intent import (
     UnsatisfiableContextError,
     resolve,
 )
-from xtrax.intent.resolve import default_estimator
+from xtrax.intent._resolve import default_estimator
 from xtrax.intent.sites import SiteRecord
 from xtrax.tiling.budget import MemoryBudget
 from xtrax.tiling.estimators import lowered_memory_estimate
@@ -670,20 +668,16 @@ def test_loop_override_diff_none_stays_none_when_unavailable():
 def test_scan_around_while_accepts_gpu_platform_name(monkeypatch):
     """``jax.default_backend() == "gpu"`` rewrites ChunkedMap around StaticWhile.
 
-    ``"gpu"`` is JAX's platform name for CUDA and ROCm. The modules are reached
-    through ``sys.modules`` because the package rebinds ``compile`` and ``map``.
-    Fails while the hazard only names ``"cuda"`` and the outer map stays chunked.
+    ``"gpu"`` is JAX's platform name for CUDA and ROCm. Fails while the hazard only
+    names ``"cuda"`` and the outer map stays chunked.
     """
-    resolve_module = sys.modules["xtrax.intent.resolve"]
-    compile_module = sys.modules["xtrax.intent.compile"]
-    context_module = sys.modules["xtrax.intent.context"]
 
     def _gpu() -> str:
         return "gpu"
 
-    monkeypatch.setattr(resolve_module.jax, "default_backend", _gpu)
-    monkeypatch.setattr(compile_module.jax, "default_backend", _gpu)
-    monkeypatch.setattr(context_module.jax, "default_backend", _gpu)
+    monkeypatch.setattr("xtrax.intent._resolve.jax.default_backend", _gpu)
+    monkeypatch.setattr("xtrax.intent._compile.jax.default_backend", _gpu)
+    monkeypatch.setattr("xtrax.intent.context.jax.default_backend", _gpu)
     outer = _map("outer", 64)
     inner = _loop("inner", 4, parent=outer.key)
     other = _map("other", 64)
