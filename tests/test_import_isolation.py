@@ -27,6 +27,8 @@ _PACKAGES = [
     "xtrax.config",
     "xtrax.export",
     "xtrax.testing",
+    "xtrax.kernel_seam",
+    "xtrax.testing.kernel_parity",
 ]
 
 
