@@ -75,6 +75,13 @@ Two of its gates check what a consumer sees, compared against the merge-base:
   dev-only package at module level. Everything outside the wheel's `exclude`
   (`src/xtrax/devtools`) ships.
 
+### Generated files that feature PRs must not commit
+
+- `src/xtrax/agent_plugin.json` is a generated snapshot of the agent plugin
+  (skills). Do not regenerate or commit it in a feature PR, even when you edit a
+  skill; every such PR used to conflict on it. The release PR regenerates it
+  with `just plugin-snapshot` (see the release checklist).
+
 ## Documentation
 
 Build documentation locally:
@@ -110,6 +117,9 @@ ahead of it.
 1. Bump the version in **both** `src/xtrax/__init__.py` and `CITATION.cff`, and
    close the `[Unreleased]` changelog section. `audit-project-hygiene` fails if
    the two version sites disagree
+   - Regenerate the packaged plugin snapshot with `just plugin-snapshot`. CI
+     enforces it only on `chore/release-*` branches
+     (`XTRAX_ENFORCE_PLUGIN_SNAPSHOT=1`).
 2. Ensure `just audit-deterministic`, `just audit-coverage-tier1`, and
    `just audit-publish-oidc` pass locally
 3. Run `just audit-release-readiness`. For a version that is not yet published

@@ -88,6 +88,11 @@ jobs:
         run: uv run ty check src/
 
       - name: Tier1 tests with coverage gate
+        # tests/cli/test_plugin_snapshot.py runs under tier1 (tests/). Its drift
+        # check is enforced only on release PRs; feature PRs do not commit
+        # src/xtrax/agent_plugin.json. github.head_ref is empty on push events.
+        env:
+          XTRAX_ENFORCE_PLUGIN_SNAPSHOT: ${{ startsWith(github.head_ref, 'chore/release-') && '1' || '0' }}
         run: just audit-coverage-tier1
 
       - name: Tier2 EDA tests with coverage gate

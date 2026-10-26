@@ -376,3 +376,8 @@ install-plugin *args:
 # Preview what install-plugin would do without writing
 dry-run-plugin:
     uv run --extra plugin xtrax plugin install --dry-run
+
+# Regenerate the packaged plugin snapshot. Release PR only: feature PRs do not
+# commit src/xtrax/agent_plugin.json (see CONTRIBUTING.md, release checklist).
+plugin-snapshot:
+    uv run --extra plugin cisternal assets snapshot --out src/xtrax/agent_plugin.json
