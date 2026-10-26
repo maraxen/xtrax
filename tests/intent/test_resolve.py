@@ -211,6 +211,74 @@ def test_scan_around_while_errors_when_vmap_exceeds_budget():
     assert "outer" in exc_info.value.site
 
 
+def _two_while_maps_and_a_big_map():
+    """Maps a and b each enclose a StaticWhile; map c encloses none and costs 1000 on Vmap."""
+    a = _map("a", 64)
+    b = _map("b", 64)
+    records = [a, _loop("a_inner", 4, parent=a.key), b, _loop("b_inner", 4, parent=b.key)]
+    records.append(_map("c", 64))
+    costs = {"a": (100, 90), "b": (100, 90), "c": (1000, 10)}
+
+    def est(decisions):
+        total = 0
+        for decision in decisions:
+            vmap_cost, chunk_cost = costs[decision.spec.name.split("/")[-1].split("#")[0]]
+            total += vmap_cost if isinstance(decision.strategy, Vmap) else chunk_cost
+        return total
+
+    return records, est
+
+
+def test_scan_around_while_joint_budget_names_the_site_that_does_not_fit():
+    """Switches are judged against the budget the earlier switches left, not one at a time.
+
+    Planner result: a, b, c all ChunkedMap (90+90+10 = 190 <= 200). Switching a alone
+    costs 100+90+10 = 200 and fits. Switching b as well costs 210. Judged alone each
+    switch fits, so both used to switch and the plan exceeded the budget with no error (#6157).
+    """
+    records, est = _two_while_maps_and_a_big_map()
+    budget = MemoryBudget(bytes=200, estimate=est)
+    with pytest.raises(UnsatisfiableContextError) as exc_info:
+        resolve(records, Context(memory_budget=budget, chunk_size=32, backend="cuda"))
+    err = exc_info.value
+    assert err.constraint == "scan_around_while"
+    assert err.path == "primal"
+    assert err.site == str(records[2].key)
+
+
+def test_scan_around_while_switches_every_site_that_jointly_fits():
+    """With 210 bytes both switches fit together, and the final plan stays within budget."""
+    records, est = _two_while_maps_and_a_big_map()
+    budget = MemoryBudget(bytes=210, estimate=est)
+    plan = resolve(records, Context(memory_budget=budget, chunk_size=32, backend="cuda"))
+    by_label = {d.key.label: d for d in plan.decisions}
+    assert by_label["a"].primal == Vmap()
+    assert by_label["b"].primal == Vmap()
+    assert by_label["c"].primal == ChunkedMap(batch_size=32)
+    assert 100 + 100 + 10 <= budget.bytes
+
+
+def test_scan_around_while_budget_uses_overridden_sibling_strategies():
+    """The remaining budget is computed from the strategies that will run, overrides included.
+
+    At 1189 bytes the planner keeps c on Vmap (a, b chunked: 90+90+1000 = 1180), so a
+    switch looked like 100+90+1000 > 1189. The caller overrides c to ChunkedMap, which
+    frees 990 bytes: both switches then fit (100+100+10 = 210). Judging against the planner's
+    c refused a switch that the final plan could afford.
+    """
+    records, est = _two_while_maps_and_a_big_map()
+    budget = MemoryBudget(bytes=1189, estimate=est)
+    plan = resolve(
+        records,
+        Context(memory_budget=budget, chunk_size=32, backend="cuda"),
+        overrides={"c": (ChunkedMap(batch_size=32), ChunkedMap(batch_size=32))},
+    )
+    by_label = {d.key.label: d for d in plan.decisions}
+    assert by_label["a"].primal == Vmap()
+    assert by_label["b"].primal == Vmap()
+    assert by_label["c"].primal == ChunkedMap(batch_size=32)
+
+
 def test_scan_around_while_does_not_apply_off_cuda():
     """A non-cuda backend keeps the planner's ChunkedMap around a StaticWhile."""
     outer = _map("outer", 64)
