@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1b4] - 2026-10-26
+
 ### Added
 
 - Experimental `xtrax.intent`: frozen `Context`, plus `IntentError`,
@@ -27,6 +29,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (for example `models.encoder.layers:42`), no longer `file.py:LINE` (#6160).
   An `overrides=` key written as `file.py:LINE` names no site and raises
   `ValueError`; rewrite it as `module:line`, or pass `name=` at the call site.
+  Two files that give one such label in a session raise `IntentError`.
+- `xtrax.intent` implementation modules are private (`_loop`, `_map`,
+  `_compile`, `_resolve`), so `xtrax.intent.loop` and `xtrax.intent.map` are the
+  functions (#6159). The `xtrax.intent` names are unchanged.
+- `Plan` carries plan-level `warnings`; a "not differentiable w.r.t." note is
+  recorded once there instead of on loop sites only (#6165). JSON without the
+  field still loads; `PLAN_SCHEMA_VERSION` stays 1.
+- The intent module docstrings no longer open with "Experimental." (#6171).
+
+### Fixed
+
+- `chunked_map` no longer divides by zero when an output leaf has size zero
+  (#6151).
+- `scan_around_while` switches are judged against the joint memory budget left
+  after earlier switches and overrides, not each alone (#6157).
+- A `Vmap` decision uses one `batch_size` in the planner and both re-checks
+  (#6158).
+- Unnamed sites carry their module and call-site labels no longer collide
+  across files (#6160).
 
 ## [0.4.1b3] - 2026-10-23
 
