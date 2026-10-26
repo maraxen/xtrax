@@ -21,10 +21,17 @@ from tests.op._kernels import (
     scale_reference,
 )
 from xtrax.intent import Context, IntentError
-from xtrax.kernel_seam import VjpKernel, op, op_context
+from xtrax.kernel_seam import VjpKernel, op
 from xtrax.testing.kernel_parity import assert_kernel_ran, scale_error_control
 
 CPU_KERNELS = Context(kernels=True, backend="cpu")
+
+
+def kop(*args, **kwargs):
+    """``op`` bound to a Context that selects the CPU kernels."""
+    return op(*args, context=CPU_KERNELS, **kwargs)
+
+
 NBINS = 5
 
 
@@ -59,13 +66,55 @@ def _mm_vjp(bwd_scale=None):
 def test_exported_from_xtrax():
     assert xtrax.op is op
     assert xtrax.VjpKernel is VjpKernel
-    assert xtrax.op_context is op_context
+    assert not hasattr(xtrax, "op_context")  # no ambient context: bind with Op.with_context
 
 
 def test_op_keeps_reference_metadata():
     mm = op(matmul_reference, kernels={"cpu": matmul_kernel})
     assert mm.name == "matmul_reference"
     assert op(matmul_reference, name="mm").name == "mm"
+
+
+# --- explicit context binding --------------------------------------------------------------
+
+
+def test_with_context_returns_a_new_op_and_leaves_the_original_unbound():
+    mm = op(matmul_reference, kernels={"cpu": matmul_kernel})
+    bound = mm.with_context(CPU_KERNELS)
+    assert bound is not mm and bound != mm and hash(bound) != hash(mm)
+    assert mm.context == Context() and bound.context == CPU_KERNELS
+    assert (bound.reference, bound.kernels, bound.name) == (mm.reference, mm.kernels, mm.name)
+    assert mm.select().form == "reference" and bound.select().form == "kernel"
+
+
+def test_op_is_immutable():
+    mm = op(matmul_reference, kernels={"cpu": matmul_kernel})
+    with pytest.raises(AttributeError, match="immutable"):
+        mm.context = CPU_KERNELS
+
+
+def test_context_keyword_equals_with_context():
+    mm = op(matmul_reference, kernels={"cpu": matmul_kernel}, context=CPU_KERNELS)
+    assert mm.context == CPU_KERNELS and mm.select().form == "kernel"
+
+
+def test_jit_caches_cannot_cross_contexts():
+    """Differently bound ops are different callables, so each jit traces its own selection.
+
+    The motivating failure: with a shared Op whose Context came from ambient state, one
+    ``jax.jit(my_op)`` first traced under ``kernels=True`` was reused unchanged under
+    ``kernels=False``, silently running a path the caller did not ask for.
+    """
+    x, w = _problem()
+    unbound = op(matmul_reference, kernels={"cpu": matmul_kernel})
+    bound = unbound.with_context(CPU_KERNELS)
+    jit_bound, jit_unbound = jax.jit(bound), jax.jit(unbound)
+    assert "pallas_call" in str(jax.make_jaxpr(jit_bound)(x, w))
+    assert "pallas_call" not in str(jax.make_jaxpr(jit_unbound)(x, w))
+    # the other order, same input shapes: still no cross-talk
+    assert "pallas_call" not in str(jax.make_jaxpr(jit_unbound)(x, w))
+    assert "pallas_call" in str(jax.make_jaxpr(jit_bound)(x, w))
+    assert _close(jit_bound(x, w), jit_unbound(x, w))
 
 
 # --- selection rules -----------------------------------------------------------------------
@@ -81,12 +130,11 @@ def test_default_context_runs_reference():
 
 def test_kernel_selected_for_resolved_backend_and_actually_runs():
     x, w = _problem()
-    mm = op(matmul_reference, kernels={"cpu": matmul_kernel})
-    with op_context(CPU_KERNELS):
-        sel = mm.select()
-        assert (sel.form, sel.primal) == ("kernel", "kernel:cpu")
-        assert_kernel_ran(mm, x, w)
-        assert _close(mm(x, w), matmul_reference(x, w))
+    mm = kop(matmul_reference, kernels={"cpu": matmul_kernel})
+    sel = mm.select()
+    assert (sel.form, sel.primal) == ("kernel", "kernel:cpu")
+    assert_kernel_ran(mm, x, w)
+    assert _close(mm(x, w), matmul_reference(x, w))
 
 
 def test_resolved_backend_defaults_to_jax_default_backend():
@@ -96,12 +144,11 @@ def test_resolved_backend_defaults_to_jax_default_backend():
 
 def test_export_target_forces_reference_even_when_kernel_exists():
     x, w = _problem()
-    mm = op(matmul_reference, kernels={"cpu": matmul_kernel})
     export_ctx = Context(target="export", export_format="stablehlo", kernels=True, backend="cpu")
-    with op_context(export_ctx):
-        sel = mm.select()
-        assert (sel.form, sel.reason) == ("reference", "export target")
-        assert "pallas_call" not in str(jax.make_jaxpr(mm)(x, w))
+    mm = op(matmul_reference, kernels={"cpu": matmul_kernel}, context=export_ctx)
+    sel = mm.select()
+    assert (sel.form, sel.reason) == ("reference", "export target")
+    assert "pallas_call" not in str(jax.make_jaxpr(mm)(x, w))
 
 
 def test_kernels_false_forces_reference():
@@ -112,11 +159,10 @@ def test_kernels_false_forces_reference():
 
 def test_no_kernel_for_backend_runs_reference():
     x, w = _problem()
-    mm = op(matmul_reference, kernels={"gpu": matmul_kernel})
-    with op_context(CPU_KERNELS):
-        sel = mm.select()
-        assert (sel.form, sel.reason) == ("reference", "no kernel for backend 'cpu'")
-        assert "pallas_call" not in str(jax.make_jaxpr(mm)(x, w))
+    mm = kop(matmul_reference, kernels={"gpu": matmul_kernel})
+    sel = mm.select()
+    assert (sel.form, sel.reason) == ("reference", "no kernel for backend 'cpu'")
+    assert "pallas_call" not in str(jax.make_jaxpr(mm)(x, w))
 
 
 def test_vjp_kernel_takes_precedence_for_same_backend():
@@ -129,23 +175,16 @@ def test_vjp_kernel_takes_precedence_for_same_backend():
     assert mm.select(Context(kernels=True, backend="gpu")).form == "reference"
 
 
-def test_context_restored_after_block():
-    mm = op(matmul_reference, kernels={"cpu": matmul_kernel})
-    with op_context(CPU_KERNELS):
-        pass
-    assert mm.select().form == "reference"
-
-
 def test_kernel_signature_mismatch_is_an_intent_error():
     x, w = _problem()
-    bad = op(matmul_reference, kernels={"cpu": lambda a, b: matmul_kernel(a, b)[:, :8]}, name="mm")
-    with op_context(CPU_KERNELS), pytest.raises(IntentError, match="mm") as err:
+    bad = kop(matmul_reference, kernels={"cpu": lambda a, b: matmul_kernel(a, b)[:, :8]}, name="mm")
+    with pytest.raises(IntentError, match="mm") as err:
         bad(x, w)
     assert err.value.site == "mm" and err.value.path == "primal"
-    wrong_dtype = op(
+    wrong_dtype = kop(
         matmul_reference, kernels={"cpu": lambda a, b: matmul_kernel(a, b).astype(jnp.float16)}
     )
-    with op_context(CPU_KERNELS), pytest.raises(IntentError, match="float16"):
+    with pytest.raises(IntentError, match="float16"):
         wrong_dtype(x, w)
 
 
@@ -154,7 +193,7 @@ def test_kernel_signature_mismatch_is_an_intent_error():
 
 @pytest.fixture
 def mm_pair():
-    return op(matmul_reference, kernels={"cpu": matmul_kernel}), matmul_reference
+    return kop(matmul_reference, kernels={"cpu": matmul_kernel}), matmul_reference
 
 
 def _loss(fn):
@@ -167,17 +206,15 @@ def _loss(fn):
 def test_jvp_form_forward_and_grad(mm_pair):
     mm, ref = mm_pair
     x, w = _problem()
-    with op_context(CPU_KERNELS):
-        assert _close(mm(x, w), ref(x, w))
-        assert _close(jax.grad(_loss(mm), (0, 1))(x, w), jax.grad(_loss(ref), (0, 1))(x, w))
+    assert _close(mm(x, w), ref(x, w))
+    assert _close(jax.grad(_loss(mm), (0, 1))(x, w), jax.grad(_loss(ref), (0, 1))(x, w))
 
 
 def test_jvp_form_jvp(mm_pair):
     mm, ref = mm_pair
     x, w = _problem()
     tx = jnp.ones_like(x)
-    with op_context(CPU_KERNELS):
-        got = jax.jvp(lambda a: mm(a, w), (x,), (tx,))[1]
+    got = jax.jvp(lambda a: mm(a, w), (x,), (tx,))[1]
     assert _close(got, jax.jvp(lambda a: ref(a, w), (x,), (tx,))[1])
 
 
@@ -185,8 +222,7 @@ def test_jvp_form_hessian_jacfwd_of_jacrev(mm_pair):
     mm, ref = mm_pair
     x, w = _problem()
     xs, ws = x[:8, :8], w[:8, :8]
-    with op_context(CPU_KERNELS):
-        got = jax.jacfwd(jax.jacrev(lambda a: _loss(mm)(a, ws)))(xs)
+    got = jax.jacfwd(jax.jacrev(lambda a: _loss(mm)(a, ws)))(xs)
     assert _close(got, jax.hessian(lambda a: _loss(ref)(a, ws))(xs))
 
 
@@ -194,9 +230,8 @@ def test_jvp_form_vmap_grad_and_jit_grad(mm_pair):
     mm, ref = mm_pair
     x, w = _problem()
     xb = jnp.stack([x, 2 * x])
-    with op_context(CPU_KERNELS):
-        vg = jax.vmap(jax.grad(lambda a: _loss(mm)(a, w)))(xb)
-        jg = jax.jit(jax.grad(lambda a: _loss(mm)(a, w)))(x)
+    vg = jax.vmap(jax.grad(lambda a: _loss(mm)(a, w)))(xb)
+    jg = jax.jit(jax.grad(lambda a: _loss(mm)(a, w)))(x)
     assert _close(vg, jax.vmap(jax.grad(lambda a: _loss(ref)(a, w)))(xb))
     assert _close(jg, jax.grad(lambda a: _loss(ref)(a, w))(x))
 
@@ -204,26 +239,23 @@ def test_jvp_form_vmap_grad_and_jit_grad(mm_pair):
 def test_jvp_form_forward_jaxpr_keeps_pallas_call_under_grad(mm_pair):
     mm, _ = mm_pair
     x, w = _problem()
-    with op_context(CPU_KERNELS):
-        assert_kernel_ran(mm, x, w)
-        assert_kernel_ran(jax.grad(_loss(mm)), x, w)
+    assert_kernel_ran(mm, x, w)
+    assert_kernel_ran(jax.grad(_loss(mm)), x, w)
 
 
 def test_control_derivative_comes_from_the_reference_not_the_kernel():
     """A reference that differs from the kernel changes the gradient: the checks can go red."""
     x, w = _problem()
-    doubled = op(lambda a, b: 2.0 * (a @ b), kernels={"cpu": matmul_kernel})
-    with op_context(CPU_KERNELS):
-        got = jax.grad(_loss(doubled))(x, w)
+    doubled = kop(lambda a, b: 2.0 * (a @ b), kernels={"cpu": matmul_kernel})
+    got = jax.grad(_loss(doubled))(x, w)
     assert not _close(got, jax.grad(_loss(matmul_reference))(x, w))
 
 
 def test_elementwise_kernel_scalar_derivative():
-    sc = op(scale_reference, kernels={"cpu": scale_kernel})
+    sc = kop(scale_reference, kernels={"cpu": scale_kernel})
     x = jnp.arange(8.0)
-    with op_context(CPU_KERNELS):
-        assert_kernel_ran(sc, x)
-        assert _close(jax.grad(lambda a: jnp.sum(sc(a)))(x), 3.0 * jnp.ones(8))
+    assert_kernel_ran(sc, x)
+    assert _close(jax.grad(lambda a: jnp.sum(sc(a)))(x), 3.0 * jnp.ones(8))
 
 
 # --- integer outputs: float0 (probe result in test_op_probes.py) --------------------------
@@ -231,19 +263,18 @@ def test_elementwise_kernel_scalar_derivative():
 
 def test_integer_only_output_inside_grad():
     idx = jnp.array([0, 1, 1, 4, 4, 4, 2, 0], jnp.int32)
-    hist = op(make_hist_reference(NBINS), kernels={"cpu": make_hist_kernel(NBINS)})
+    hist = kop(make_hist_reference(NBINS), kernels={"cpu": make_hist_kernel(NBINS)})
 
     def loss(x):
         counts = hist(idx)
         return jnp.sum(x * counts / jnp.sum(counts))
 
     x = jnp.arange(1.0, NBINS + 1.0)
-    with op_context(CPU_KERNELS):
-        assert_kernel_ran(hist, idx)
-        counts = hist(idx)
-        got = jax.grad(loss)(x)
-        jit_got = jax.jit(jax.grad(loss))(x)
-        _, tangent = jax.jvp(hist, (idx,), (np.zeros(idx.shape, jax.dtypes.float0),))
+    assert_kernel_ran(hist, idx)
+    counts = hist(idx)
+    got = jax.grad(loss)(x)
+    jit_got = jax.jit(jax.grad(loss))(x)
+    _, tangent = jax.jvp(hist, (idx,), (np.zeros(idx.shape, jax.dtypes.float0),))
     assert counts.dtype == jnp.int32
     np.testing.assert_array_equal(counts, [2, 2, 1, 0, 3])
     np.testing.assert_allclose(got, np.array([2, 2, 1, 0, 3]) / 8.0, rtol=1e-6)
@@ -254,7 +285,7 @@ def test_integer_only_output_inside_grad():
 def test_mixed_float_and_int_outputs_with_int_input():
     idx = jnp.array([0, 1, 1, 4, 4, 4, 2, 0], jnp.int32)
     ref = make_binned_sum_reference(NBINS)
-    bs = op(ref, kernels={"cpu": make_binned_sum_kernel(NBINS)})
+    bs = kop(ref, kernels={"cpu": make_binned_sum_kernel(NBINS)})
     x = jnp.arange(1.0, 9.0)
 
     def loss(fn):
@@ -264,9 +295,8 @@ def test_mixed_float_and_int_outputs_with_int_input():
 
         return inner
 
-    with op_context(CPU_KERNELS):
-        assert_kernel_ran(bs, x, idx)
-        got = jax.grad(loss(bs))(x)
+    assert_kernel_ran(bs, x, idx)
+    got = jax.grad(loss(bs))(x)
     assert _close(got, jax.grad(loss(ref))(x))
 
 
@@ -275,12 +305,11 @@ def test_mixed_float_and_int_outputs_with_int_input():
 
 def test_vjp_form_forward_grad_and_kernel_in_both_passes():
     x, w = _problem()
-    mm = op(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
-    with op_context(CPU_KERNELS):
-        assert _close(mm(x, w), matmul_reference(x, w))
-        got = jax.grad(_loss(mm), (0, 1))(x, w)
-        jit_got = jax.jit(jax.grad(_loss(mm), (0, 1)))(x, w)
-        n_pallas = str(jax.make_jaxpr(jax.grad(_loss(mm), (0, 1)))(x, w)).count("pallas_call")
+    mm = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
+    assert _close(mm(x, w), matmul_reference(x, w))
+    got = jax.grad(_loss(mm), (0, 1))(x, w)
+    jit_got = jax.jit(jax.grad(_loss(mm), (0, 1)))(x, w)
+    n_pallas = str(jax.make_jaxpr(jax.grad(_loss(mm), (0, 1)))(x, w)).count("pallas_call")
     want = jax.grad(_loss(matmul_reference), (0, 1))(x, w)
     assert _close(got, want) and _close(jit_got, want)
     assert n_pallas >= 3  # forward, dx, dw
@@ -288,20 +317,18 @@ def test_vjp_form_forward_grad_and_kernel_in_both_passes():
 
 def test_vjp_form_vmap_grad():
     x, w = _problem()
-    mm = op(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
+    mm = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
     xb = jnp.stack([x, 2 * x])
-    with op_context(CPU_KERNELS):
-        got = jax.vmap(jax.grad(lambda a: _loss(mm)(a, w)))(xb)
+    got = jax.vmap(jax.grad(lambda a: _loss(mm)(a, w)))(xb)
     assert _close(got, jax.vmap(jax.grad(lambda a: _loss(matmul_reference)(a, w)))(xb))
 
 
 def test_control_vjp_backward_kernel_is_what_runs_in_reverse_mode():
     """Corrupt the backward kernel by 0.1%: grad goes red, the forward value stays green."""
     x, w = _problem()
-    bad = op(matmul_reference, vjp_kernels={"cpu": _mm_vjp(bwd_scale=1.001)})
-    with op_context(CPU_KERNELS):
-        assert _close(bad(x, w), matmul_reference(x, w))
-        got = jax.grad(_loss(bad), (0, 1))(x, w)
+    bad = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp(bwd_scale=1.001)})
+    assert _close(bad(x, w), matmul_reference(x, w))
+    got = jax.grad(_loss(bad), (0, 1))(x, w)
     assert not _close(got, jax.grad(_loss(matmul_reference), (0, 1))(x, w))
 
 
@@ -328,8 +355,8 @@ def test_control_vjp_backward_kernel_is_what_runs_in_reverse_mode():
 )
 def test_vjp_form_forward_mode_raises_intent_error(transform):
     x, w = _problem()
-    mm = op(matmul_reference, vjp_kernels={"cpu": _mm_vjp()}, name="mm")
-    with op_context(CPU_KERNELS), pytest.raises(IntentError) as err:
+    mm = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()}, name="mm")
+    with pytest.raises(IntentError) as err:
         transform(mm, x, w)
     message = str(err.value)
     assert "mm" in message and "cpu" in message
@@ -340,10 +367,9 @@ def test_vjp_form_forward_mode_raises_intent_error(transform):
 def test_vjp_form_second_order_reverse_over_reverse_uses_the_reference():
     x, w = _problem()
     xs, ws = x[:8, :8], w[:8, :8]
-    mm = op(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
-    with op_context(CPU_KERNELS):
-        got = jax.jacrev(jax.jacrev(lambda a: _loss(mm)(a, ws)))(xs)
-        cross = jax.jacrev(jax.grad(_loss(mm), 0), 1)(xs, ws)
+    mm = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
+    got = jax.jacrev(jax.jacrev(lambda a: _loss(mm)(a, ws)))(xs)
+    cross = jax.jacrev(jax.grad(_loss(mm), 0), 1)(xs, ws)
     ref_loss = _loss(matmul_reference)
     assert _close(got, jax.hessian(lambda a: ref_loss(a, ws))(xs))
     want_cross = jax.jacrev(jax.grad(ref_loss, 0), 1)(xs, ws)
@@ -354,30 +380,27 @@ def test_vjp_form_second_order_reverse_over_reverse_uses_the_reference():
 def test_vjp_form_second_order_forward_over_reverse():
     x, w = _problem()
     xs, ws = x[:8, :8], w[:8, :8]
-    mm = op(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
-    with op_context(CPU_KERNELS):
-        got = jax.jacfwd(jax.jacrev(lambda a: _loss(mm)(a, ws)))(xs)
+    mm = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
+    got = jax.jacfwd(jax.jacrev(lambda a: _loss(mm)(a, ws)))(xs)
     assert _close(got, jax.hessian(lambda a: _loss(matmul_reference)(a, ws))(xs))
 
 
 def test_non_kernel_backend_keeps_forward_mode():
     """Same model: reverse-only on the vjp-kernel backend, fully differentiable elsewhere."""
     x, w = _problem()
-    mm = op(matmul_reference, vjp_kernels={"gpu": _mm_vjp()})
+    mm = kop(matmul_reference, vjp_kernels={"gpu": _mm_vjp()})
     tx = jnp.ones_like(x)
-    with op_context(CPU_KERNELS):
-        assert mm.select().form == "reference"
-        got = jax.jvp(lambda a: mm(a, w), (x,), (tx,))[1]
+    assert mm.select().form == "reference"
+    got = jax.jvp(lambda a: mm(a, w), (x,), (tx,))[1]
     assert _close(got, jax.jvp(lambda a: matmul_reference(a, w), (x,), (tx,))[1])
 
 
 def test_jvp_kernel_backend_keeps_forward_mode_when_vjp_kernel_is_on_another_backend():
     x, w = _problem()
-    mm = op(matmul_reference, kernels={"cpu": matmul_kernel}, vjp_kernels={"gpu": _mm_vjp()})
+    mm = kop(matmul_reference, kernels={"cpu": matmul_kernel}, vjp_kernels={"gpu": _mm_vjp()})
     tx = jnp.ones_like(x)
-    with op_context(CPU_KERNELS):
-        assert mm.select().form == "kernel"
-        got = jax.jvp(lambda a: mm(a, w), (x,), (tx,))[1]
+    assert mm.select().form == "kernel"
+    got = jax.jvp(lambda a: mm(a, w), (x,), (tx,))[1]
     assert _close(got, jax.jvp(lambda a: matmul_reference(a, w), (x,), (tx,))[1])
 
 
@@ -394,7 +417,7 @@ def test_vjp_form_with_integer_input_and_integer_output():
         ct_sums, _ = ct
         return ct_sums[i], None  # no cotangent for the integer input
 
-    bs = op(ref, vjp_kernels={"cpu": VjpKernel(fwd, bwd)})
+    bs = kop(ref, vjp_kernels={"cpu": VjpKernel(fwd, bwd)})
     x = jnp.arange(1.0, 9.0)
 
     def loss(fn):
@@ -404,8 +427,7 @@ def test_vjp_form_with_integer_input_and_integer_output():
 
         return inner
 
-    with op_context(CPU_KERNELS):
-        got = jax.grad(loss(bs))(x)
+    got = jax.grad(loss(bs))(x)
     assert _close(got, jax.grad(loss(ref))(x))
 
 
@@ -422,11 +444,10 @@ def test_vjp_form_without_direct_linearize_reverse_ok_and_eager_forward_still_in
 ):
     """JVPTracer is also the reverse-mode tracer here, so the pre-check must not fire on grad."""
     x, w = _problem()
-    mm = op(matmul_reference, vjp_kernels={"cpu": _mm_vjp()}, name="mm")
-    with op_context(CPU_KERNELS):
-        got = jax.grad(_loss(mm), (0, 1))(x, w)
-        with pytest.raises(IntentError, match="forward mode needs the JVP form"):
-            jax.jvp(lambda a: mm(a, w), (x,), (jnp.ones_like(x),))
+    mm = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()}, name="mm")
+    got = jax.grad(_loss(mm), (0, 1))(x, w)
+    with pytest.raises(IntentError, match="forward mode needs the JVP form"):
+        jax.jvp(lambda a: mm(a, w), (x,), (jnp.ones_like(x),))
     assert _close(got, jax.grad(_loss(matmul_reference), (0, 1))(x, w))
 
 
@@ -435,6 +456,6 @@ def test_vjp_form_without_direct_linearize_jit_jvp_gives_the_generic_jax_error(
 ):
     """Documented limitation: under jit the error comes at lowering, outside the op."""
     x, w = _problem()
-    mm = op(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
-    with op_context(CPU_KERNELS), pytest.raises(TypeError, match="forward-mode"):
+    mm = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
+    with pytest.raises(TypeError, match="forward-mode"):
         jax.jit(lambda a: jax.jvp(lambda b: mm(b, w), (a,), (jnp.ones_like(a),)))(x)

@@ -70,7 +70,6 @@ tier1_exports = [
     "op",
     "Op",
     "VjpKernel",
-    "op_context",
 ]
 
 smoke_exports = [

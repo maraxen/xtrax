@@ -74,7 +74,6 @@ __all__ = [
     "op",
     "Op",
     "VjpKernel",
-    "op_context",
 ]
 
 _LAZY = {
@@ -152,7 +151,6 @@ _LAZY = {
     "op": "xtrax.kernel_seam",
     "Op": "xtrax.kernel_seam",
     "VjpKernel": "xtrax.kernel_seam",
-    "op_context": "xtrax.kernel_seam",
 }
 
 

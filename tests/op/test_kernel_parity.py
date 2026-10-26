@@ -15,7 +15,7 @@ from tests.op._kernels import (
     matmul_reference,
 )
 from xtrax.intent import Context
-from xtrax.kernel_seam import VjpKernel, op, op_context
+from xtrax.kernel_seam import VjpKernel, op
 from xtrax.testing.kernel_parity import (
     KernelParityError,
     assert_kernel_parity,
@@ -111,11 +111,11 @@ def test_corruption_control_turns_red_and_a_noop_corruption_is_rejected():
 
 def test_assert_kernel_ran_detects_pallas_and_flags_a_silent_fallback():
     x, w = _args()
-    mm = op(matmul_reference, kernels={"cpu": matmul_kernel})
-    with op_context(Context(kernels=True, backend="cpu")):
-        assert_kernel_ran(mm, x, w)
+    unbound = op(matmul_reference, kernels={"cpu": matmul_kernel})
+    bound = unbound.with_context(Context(kernels=True, backend="cpu"))
+    assert_kernel_ran(bound, x, w)
     with pytest.raises(KernelParityError):  # kernels=False: the reference ran
-        assert_kernel_ran(mm, x, w)
+        assert_kernel_ran(unbound, x, w)
 
 
 # --- vjp parity ----------------------------------------------------------------------------

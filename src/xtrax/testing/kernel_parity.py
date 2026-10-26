@@ -215,8 +215,8 @@ def assert_kernel_ran(fn: Callable[..., Any], *args: Any) -> None:
     KernelParityError
         No ``pallas_call`` appears in the jaxpr.
     """
-    # A fresh lambda: make_jaxpr caches by callable, so an op traced earlier under another
-    # Context would otherwise return its stale jaxpr.
+    # A fresh lambda: make_jaxpr caches by callable, so a function traced earlier would
+    # otherwise return its stale jaxpr.
     if "pallas_call" not in str(jax.make_jaxpr(lambda *a: fn(*a))(*args)):
         raise KernelParityError("no pallas_call in the traced jaxpr: the kernel did not run")
 

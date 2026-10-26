@@ -3,7 +3,10 @@
 ``op(reference, kernels=...)`` pairs a plain-JAX *reference* with optional
 per-backend *kernels* that share its signature. The returned callable runs the
 kernel for the resolved backend when the :class:`~xtrax.intent.context.Context`
-allows it, and the reference otherwise.
+it is bound to allows it, and the reference otherwise. The Context is explicit:
+``Op.with_context(ctx)`` returns a new op, and an unbound op uses the default
+``Context()`` (``kernels=False``), so it runs the reference. No ambient state
+decides, and differently bound ops are different callables for ``jax.jit``.
 
 Derivatives come from the reference. The kernel form is a ``jax.custom_jvp``
 whose primal is the kernel and whose JVP is ``jax.jvp(reference)``; reverse
@@ -15,9 +18,7 @@ a ``jax.custom_vjp``: reverse mode runs the kernel, and forward mode raises
 This is the standalone form. It records nothing in a ``Plan``.
 """
 
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import update_wrapper
 from typing import Any, Literal, NamedTuple
@@ -29,15 +30,12 @@ import numpy as np
 from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError
 
-__all__ = ["Op", "OpSelection", "VjpKernel", "current_op_context", "op", "op_context"]
+__all__ = ["Op", "OpSelection", "VjpKernel", "op"]
 
 # TODO(#6098, spec section 6 step 2): once ``xtrax.compile`` has an intent site kind "op",
-# read the Context from the active session instead of ``op_context``, and record
-# ``OpSelection.primal`` and ``OpSelection.reason`` in ``SiteDecision``. Not done here: the
-# standalone seam records nothing in a Plan.
-_OP_CONTEXT: "ContextVar[Context | None]" = ContextVar("xtrax.op.context", default=None)
-
-_DEFAULT_CONTEXT = Context()
+# pass the session's Context to the op explicitly (``Op.with_context``), never through ambient
+# state, and record ``OpSelection.primal`` and ``OpSelection.reason`` in ``SiteDecision``. Not
+# done here: the standalone seam records nothing in a Plan.
 
 
 class VjpKernel(NamedTuple):
@@ -93,48 +91,6 @@ class OpSelection:
             The label a plan records for this call.
         """
         return "reference" if self.backend is None else f"kernel:{self.backend}"
-
-
-def current_op_context() -> Context:
-    """Return the Context ops select against.
-
-    Parameters
-    ----------
-    None
-
-    Returns
-    -------
-    Context
-        The Context installed by :func:`op_context`, or a default ``Context()``.
-        The default has ``kernels=False``, so ops run their reference.
-    """
-    ctx = _OP_CONTEXT.get()
-    return _DEFAULT_CONTEXT if ctx is None else ctx
-
-
-@contextmanager
-def op_context(ctx: Context) -> Iterator[Context]:
-    """Select ops against ``ctx`` for the block.
-
-    Selection happens when the op is traced. A ``jax.jit`` cache entry made under
-    one Context is reused under another, so enter the block outside the jitted
-    function and do not share a jitted function across Contexts.
-
-    Parameters
-    ----------
-    ctx : Context
-        Context to install.
-
-    Returns
-    -------
-    Context
-        Yields ``ctx``. The previous Context is restored on exit.
-    """
-    token = _OP_CONTEXT.set(ctx)
-    try:
-        yield ctx
-    finally:
-        _OP_CONTEXT.reset(token)
 
 
 def _is_float(x: Any) -> bool:
@@ -203,6 +159,16 @@ class Op:
         Backend name to kernel with the reference's signature.
     vjp_kernels : Mapping[str, VjpKernel]
         Backend name to forward and backward kernel pair.
+    context : Context
+        Context selection uses. An unbound op has the default ``Context()``
+        (``kernels=False``), so it runs the reference. Bind one with
+        :meth:`with_context`.
+
+    Notes
+    -----
+    An op is immutable and hashed by identity. :meth:`with_context` returns a new
+    op, so two differently bound ops are different callables and a ``jax.jit``
+    cache entry made for one is never reused for the other.
     """
 
     def __init__(
@@ -211,6 +177,7 @@ class Op:
         kernels: Mapping[str, Callable[..., Any]],
         vjp_kernels: Mapping[str, VjpKernel],
         name: str,
+        context: Context | None = None,
     ) -> None:
         """Store the pair and the per-backend implementations.
 
@@ -224,6 +191,8 @@ class Op:
             Backend name to forward and backward kernel pair.
         name : str
             Name used in errors.
+        context : Context or None
+            Context to select against. ``None`` is the default ``Context()``.
 
         Returns
         -------
@@ -233,8 +202,49 @@ class Op:
         self.kernels = dict(kernels)
         self.vjp_kernels = dict(vjp_kernels)
         self.name = name
+        self.context = Context() if context is None else context
         self._built: dict[tuple[str, str], Callable[..., Any]] = {}
         update_wrapper(self, reference)
+        self._frozen = True
+
+    def __setattr__(self, key: str, value: Any) -> None:
+        """Reject assignment once the op is built.
+
+        Parameters
+        ----------
+        key : str
+            Attribute name.
+        value : Any
+            Value to store.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AttributeError
+            The op is already built.
+        """
+        if self.__dict__.get("_frozen"):
+            raise AttributeError(f"Op is immutable; cannot set {key!r}")
+        object.__setattr__(self, key, value)
+
+    def with_context(self, ctx: Context) -> "Op":
+        """Return a new op that selects against ``ctx``.
+
+        Parameters
+        ----------
+        ctx : Context
+            Constraints for selection. The op itself is not modified.
+
+        Returns
+        -------
+        Op
+            An op with the same reference, kernels, vjp kernels and name,
+            bound to ``ctx``.
+        """
+        return Op(self.reference, self.kernels, self.vjp_kernels, self.name, ctx)
 
     def select(self, ctx: Context | None = None) -> OpSelection:
         """Apply the selection rules to ``ctx``.
@@ -242,7 +252,7 @@ class Op:
         Parameters
         ----------
         ctx : Context or None
-            Context to select against. ``None`` uses :func:`current_op_context`.
+            Context to select against. ``None`` uses the op's bound context.
 
         Returns
         -------
@@ -252,7 +262,7 @@ class Op:
             backend selects the ``custom_vjp`` form; a ``kernels`` entry selects
             the ``custom_jvp`` form; otherwise the reference.
         """
-        ctx = current_op_context() if ctx is None else ctx
+        ctx = self.context if ctx is None else ctx
         if ctx.target == "export":
             return OpSelection("reference", None, "export target")
         if not ctx.kernels:
@@ -422,6 +432,7 @@ def op(
     kernels: Mapping[str, Callable[..., Any]] | None = None,
     vjp_kernels: Mapping[str, VjpKernel] | None = None,
     name: str | None = None,
+    context: Context | None = None,
 ) -> Op:
     """Pair a plain-JAX reference with per-backend kernels.
 
@@ -449,6 +460,10 @@ def op(
         backend present in both mappings uses the vjp kernel.
     name : str or None
         Name used in errors. Defaults to the reference's ``__name__``.
+    context : Context or None
+        Convenience for ``op(...).with_context(context)``. ``None`` leaves the op
+        unbound, so it selects against the default ``Context()`` and runs the
+        reference.
 
     Returns
     -------
@@ -456,4 +471,4 @@ def op(
         Callable with the reference's signature.
     """
     label = name if name is not None else getattr(reference, "__name__", "op")
-    return Op(reference, kernels or {}, vjp_kernels or {}, label)
+    return Op(reference, kernels or {}, vjp_kernels or {}, label, context)
