@@ -17,7 +17,7 @@ from xtrax.intent.plan import PLAN_SCHEMA_VERSION, Plan, SiteDecision, SiteKey, 
 from xtrax.intent.sites import SiteRecord
 from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
 from xtrax.tiling.estimators import lowered_memory_estimate
-from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlanner
+from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlanner, vmap_decision_batch_size
 from xtrax.tiling.strategy import ChunkedMap, Scan, StaticWhile, Vmap, WhileCarry
 from xtrax.transforms.map import chunked_map
 
@@ -649,8 +649,9 @@ def _check_map_override_budget(
     """Reject a map override whose final joint estimate exceeds the budget.
 
     Specs stay in record order. Each decision uses the resolved primal.
-    ``Vmap`` contributes its cardinality as ``batch_size``; ``ChunkedMap``
-    contributes that strategy's batch size.
+    ``Vmap`` contributes :func:`~xtrax.tiling.plan.vmap_decision_batch_size`,
+    the value ``BatchPlanner`` records; ``ChunkedMap`` contributes that
+    strategy's batch size.
 
     Raises
     ------
@@ -676,8 +677,13 @@ def _check_map_override_budget(
         if not _planned_map(record):
             continue
         primal = decisions[record.key].primal
+        spec = AxisSpec(
+            name=str(record.key),
+            cardinality=_cardinality(record),
+            default_batch_size=ctx.chunk_size,
+        )
         if isinstance(primal, Vmap):
-            batch_size = _cardinality(record)
+            batch_size = vmap_decision_batch_size(spec)
         elif isinstance(primal, ChunkedMap):
             batch_size = primal.batch_size
         else:
@@ -689,11 +695,7 @@ def _check_map_override_budget(
             )
         axis.append(
             AxisDecision(
-                spec=AxisSpec(
-                    name=str(record.key),
-                    cardinality=_cardinality(record),
-                    default_batch_size=ctx.chunk_size,
-                ),
+                spec=spec,
                 batch_size=batch_size,
                 reasoning=decisions[record.key].primal_reason,
                 strategy=primal,
@@ -796,7 +798,13 @@ def _vmap_fits(
     rewritten: list[AxisDecision] = []
     for decision in axis_decisions:
         if decision.spec.name == name:
-            rewritten.append(replace(decision, strategy=Vmap()))
+            rewritten.append(
+                replace(
+                    decision,
+                    strategy=Vmap(),
+                    batch_size=vmap_decision_batch_size(decision.spec),
+                )
+            )
         else:
             rewritten.append(decision)
     return budget.estimate(tuple(rewritten)) <= budget.bytes

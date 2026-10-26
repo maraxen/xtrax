@@ -271,6 +271,30 @@ def test_override_exceeding_budget_raises():
     assert err.constraint == "override exceeds memory budget: estimate 128 > 100"
 
 
+def test_vmap_decision_batch_size_is_consistent_across_estimates():
+    """Every estimate sees the same batch_size on a Vmap decision: ``chunk_size``.
+
+    BatchPlanner records ``default_batch_size`` on a Vmap decision, and a Vmap runs
+    the whole axis whatever that field says. The override re-check used to pass the
+    cardinality (64), so a user estimator read two values for one strategy (#6158).
+    """
+    records = [_map("m", 64)]
+    seen: set[int] = set()
+
+    def est(decisions):
+        seen.update(d.batch_size for d in decisions if isinstance(d.strategy, Vmap))
+        return 1
+
+    budget = MemoryBudget(bytes=10_000, estimate=est)
+    plan = resolve(
+        records,
+        Context(memory_budget=budget, chunk_size=16),
+        overrides={"m": (Vmap(), Vmap())},
+    )
+    assert plan.decisions[0].primal == Vmap()
+    assert seen == {16}
+
+
 def test_override_violating_context_raises():
     """Export other than stablehlo rejects an override that forces StaticWhile."""
     with pytest.raises(UnsatisfiableContextError) as exc_info:
