@@ -2,7 +2,7 @@ import itertools
 from collections.abc import Callable, Iterator
 from typing import Any
 
-import equinox as eqx
+from xtrax._tree import Struct, field
 
 # Module-level flag for distributed init state (real integration with
 # init_dist deferred to Phase 5/6)
@@ -15,7 +15,7 @@ def _mark_dist_initialized() -> None:
     _dist_initialized = True
 
 
-class DataModule(eqx.Module):
+class DataModule(Struct):
     """Batch source for ``Engine``.
 
     With ``use_grain_pipeline=False`` (the default) ``train_iter`` and
@@ -36,16 +36,16 @@ class DataModule(eqx.Module):
     """
 
     dataset: Any
-    batch_size: int = eqx.field(static=True)
-    num_epochs: int | None = eqx.field(static=True)  # None = cycle indefinitely
-    seed: int = eqx.field(static=True)
-    distributed: bool = eqx.field(static=True)
-    collate_fn: Callable | None = eqx.field(static=True, default=None)
-    use_grain_pipeline: bool = eqx.field(static=True, default=False)
-    pad_fn: Callable | None = eqx.field(static=True, default=None)
+    batch_size: int = field(static=True)
+    num_epochs: int | None = field(static=True)  # None = cycle indefinitely
+    seed: int = field(static=True)
+    distributed: bool = field(static=True)
+    collate_fn: Callable | None = field(static=True, default=None)
+    use_grain_pipeline: bool = field(static=True, default=False)
+    pad_fn: Callable | None = field(static=True, default=None)
     # Epoch counter: each train_iter() call takes the next value. Immutable
     # modules cannot carry a plain int, so the counter object lives here.
-    _epochs: Iterator[int] = eqx.field(static=True, init=False, default_factory=itertools.count)
+    _epochs: Iterator[int] = field(static=True, init=False, default_factory=itertools.count)
 
     def train_iter(self) -> Iterator[Any]:
         """Yield one train epoch. Shuffles when the Grain pipeline is enabled."""

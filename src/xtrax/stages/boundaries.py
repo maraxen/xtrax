@@ -9,7 +9,7 @@ The Fuse/Tap/Sink distinction is the property the type checker enforces:
 whether the value continues downstream or leaves the pipeline entirely.
 
 AxisBoundary bundles optional fuse, tap, and sink for one named axis.
-All fields are eqx.field(static=True) — no JAX arrays; all are callables.
+All fields are static (``field(static=True)``) — no JAX arrays; all are callables.
 
 Note: Fuse is distinct from FuseFn in xtrax.stages.protocols. Fuse is for
 axis-level reduction after stacking; FuseFn is a more generic reduction protocol.
@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
-import equinox as eqx
+from xtrax._tree import Struct, field
 
 S = TypeVar("S")  # stacked input type (pre-fuse)
 Out_co = TypeVar("Out_co")  # output type (post-fuse)
@@ -81,10 +81,10 @@ class Sink(Protocol, Generic[T]):  # noqa: UP046
     def __call__(self, x: T) -> None: ...
 
 
-class AxisBoundary(eqx.Module):
+class AxisBoundary(Struct):
     """Per-axis pipeline boundary: optional fuse, tap, and sink.
 
-    All fields are static (eqx.field(static=True)) since they are callables,
+    All fields are static (``field(static=True)``) since they are callables,
     not JAX arrays. Default: all None (no-op — axis passes through to next axis).
 
     Topology rules enforced by xtrax.stages.topology.validate_plan_topology:
@@ -93,10 +93,10 @@ class AxisBoundary(eqx.Module):
     - fuse on a Scan axis: fuse receives the stacked ys after the full scan
     """
 
-    fuse: Fuse | BoundaryCallable | None = eqx.field(static=True, default=None)
-    tap: Tap | BoundaryCallable | None = eqx.field(static=True, default=None)
-    sink: Sink | BoundaryCallable | None = eqx.field(static=True, default=None)
-    materialize: bool = eqx.field(static=True, default=False)
+    fuse: Fuse | BoundaryCallable | None = field(static=True, default=None)
+    tap: Tap | BoundaryCallable | None = field(static=True, default=None)
+    sink: Sink | BoundaryCallable | None = field(static=True, default=None)
+    materialize: bool = field(static=True, default=False)
     """Declare `sink` as a *materializing* sink, so it can cross an export boundary.
 
     Only xtrax.export reads this. An eager run fires `sink` exactly as before,
@@ -128,7 +128,7 @@ class AxisBoundary(eqx.Module):
     field exists — one recompile, expected and harmless.
     """
 
-    sink_receives_index: bool = eqx.field(static=True, default=False)
+    sink_receives_index: bool = field(static=True, default=False)
     """Call ``sink(y, index)`` with the element's position on this axis.
 
     Default False keeps the one-argument call ``sink(y)``. Set True and the
