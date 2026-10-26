@@ -66,6 +66,11 @@ tier1_exports = [
     "element_keys",
     "iter_chunk_keys",
     "make_chunk_plan",
+    # Kernel seam: reference + per-backend kernels behind one callable.
+    "op",
+    "Op",
+    "VjpKernel",
+    "op_context",
 ]
 
 smoke_exports = [

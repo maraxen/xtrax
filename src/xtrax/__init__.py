@@ -70,6 +70,11 @@ __all__ = [
     "element_keys",
     "iter_chunk_keys",
     "make_chunk_plan",
+    # Kernel seam
+    "op",
+    "Op",
+    "VjpKernel",
+    "op_context",
 ]
 
 _LAZY = {
@@ -143,6 +148,11 @@ _LAZY = {
     "element_keys": "xtrax.random",
     "iter_chunk_keys": "xtrax.random",
     "make_chunk_plan": "xtrax.random",
+    # Kernel seam
+    "op": "xtrax.kernel_seam",
+    "Op": "xtrax.kernel_seam",
+    "VjpKernel": "xtrax.kernel_seam",
+    "op_context": "xtrax.kernel_seam",
 }
 
 
