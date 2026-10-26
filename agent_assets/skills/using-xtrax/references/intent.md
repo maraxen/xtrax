@@ -4,7 +4,9 @@
 
 `xtrax.intent` is the first answer for a loop or map whose strategy should follow the caller's context. One call site runs as a `while_loop` when undifferentiated and as a `lax.scan` under AD, and a map runs as `Vmap` or as the `ChunkedMap` a memory budget requires. `BatchPlanner` is the layer `intent.map` plans with, and stays the direct API for a `BatchPlan` you build yourself. — verify: `agent_assets/skills/using-xtrax/SKILL.md:141-166`
 
-Criterion 8, the pre-registered GPU gate for leaving experimental, was ruled met on equivalence by the user on 261025. — verify: `.praxia/docs/superpowers/specs/261023_intent-resolution-design.md:216-218`
+Criterion 8 is the pre-registered GPU gate for leaving experimental. — verify: `.praxia/docs/superpowers/specs/261023_intent-resolution-design.md:216-218`
+
+The user ruled criterion 8 met on equivalence on 261025, after the two runs below. The ruling is recorded on aminx PR #232, not in this repository.
 
 On two pre-registered Blackwell (SM120) workloads, intent matched the hand-written forms exactly. It did so at equal compile and step cost, with gradients equal to a `lax.scan` reference and zero steady-state recompiles. The workloads were an autoregressive decode (aminx bathos run `3b93937a`) and Langevin trajectories under an outer map (run `c3c745a5`). Both runs returned `no_contrast`. The hand-picked scan form compiled as fast as the while form (1.03×), and `lax.map` around a `while_loop` compiled as fast as `vmap` around it (0.94×). The compile gap the `scan_around_while` rule guards against did not reproduce on current JAX. Read intent's value as one flag-free, differentiable call site, not as a compile-time win.
 
@@ -72,7 +74,7 @@ The map diff reason is the shared MVP string. — verify: `src/xtrax/intent/reso
 | Site | Resolution |
 |---|---|
 | Fixed-length `loop`, undifferentiated, `target="jit"` or `export_format="stablehlo"` | Primal `StaticWhile(length=...)`, run as one `while_loop` that collects `ys`. — verify: `src/xtrax/intent/resolve.py:368-373` — verify: `src/xtrax/intent/loop.py:185-201` |
-| That loop, differentiated | Diff strategy `Scan`. The JVP calls `_scan`, and `_scan` calls `jax.lax.scan`. — verify: `src/xtrax/intent/resolve.py:374-375` — verify: `src/xtrax/intent/loop.py:295-320` — verify: `src/xtrax/intent/loop.py:142-150` |
+| That loop, differentiated | Diff strategy `Scan`. The JVP always runs `jax.lax.scan`. For a `StaticWhile` primal it calls `_scan_collect`, which writes per-step outputs into a carried buffer laid out like the primal's. For a `Scan` primal it calls `_scan`. — verify: `src/xtrax/intent/resolve.py:374-375` — verify: `src/xtrax/intent/loop.py:311-320` — verify: `src/xtrax/intent/loop.py:163-182` — verify: `src/xtrax/intent/loop.py:142-150` |
 | `loop(..., cond=)` (no `length`, no `xs`) | Primal `WhileCarry`, run as `lax.while_loop`. Diff is `None` (forward-mode only). — verify: `src/xtrax/intent/resolve.py:359-367` — verify: `src/xtrax/intent/loop.py:347-364` — verify: `src/xtrax/intent/loop.py:388-394` |
 | Fixed-length `loop` with `target="export"` and `export_format` other than `"stablehlo"` | Primal `Scan`. — verify: `src/xtrax/intent/resolve.py:368-370` |
 | `map` with no memory budget, or leading size `<= 1` | `Vmap` on the primal and on the diff path. — verify: `src/xtrax/intent/resolve.py:415-421` — verify: `src/xtrax/intent/resolve.py:435` |
@@ -117,7 +119,7 @@ An override that trips a hazard records `override:<label> bypassed <name>` and k
 
 `test_no_equinox_import` blocks `equinox` on `sys.meta_path` and still imports `xtrax.intent`. — verify: `tests/intent/test_compile.py:276-313`
 
-`default_estimator` lowers each planned map. The estimator lowers a map whose record has one aval. A planned map (leading size greater than 1) with more than one input aval raises `IntentError` with `constraint` `"default estimator takes one positional array"` when `memory_budget` is an `int`. — verify: `src/xtrax/intent/resolve.py:81-98` — verify: `src/xtrax/intent/resolve.py:284` — verify: `src/xtrax/intent/resolve.py:292-294` — verify: `src/xtrax/intent/resolve.py:907-913`
+`default_estimator` prices each planned map under each candidate strategy with a real ahead-of-time compile, which costs seconds per distinct shape. Under a tight budget it therefore compiles the `ChunkedMap` candidate too, before the `scan_around_while` rule applies. A map traced by `intent.map` lowers as a function of its `xs` pytree plus the hoisted constants. The `IntentError` with `constraint` `"default estimator takes one positional array"` applies only to a hand-built `SiteRecord` with no `xs_tree`, no constants, and more than one aval. — verify: `src/xtrax/intent/resolve.py:81-98` — verify: `src/xtrax/tiling/estimators.py:72-99` — verify: `src/xtrax/intent/map.py:277-285` — verify: `src/xtrax/intent/resolve.py:907-913`
 
 Pass a `MemoryBudget` whose `estimate` is your own function. An existing `MemoryBudget` is kept as given. — verify: `src/xtrax/intent/context.py:30` — verify: `src/xtrax/intent/resolve.py:282-283` — verify: `src/xtrax/tiling/budget.py:36-49`
 
