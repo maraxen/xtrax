@@ -1,4 +1,4 @@
-"""Intent resolution for loops and maps.
+"""Intent resolution for loops, maps and ``xtrax.op`` calls.
 
 ``xtrax.intent`` records caller constraints (``Context``), the errors
 raised when a context or site cannot be satisfied, the ``Plan`` of
@@ -19,13 +19,14 @@ from xtrax.intent._map import map
 from xtrax.intent._resolve import HAZARDS, SiteStrategyOverride, default_estimator, resolve
 from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError, SiteMismatchError, UnsatisfiableContextError
-from xtrax.intent.plan import PLAN_SCHEMA_VERSION, Plan, SiteDecision, SiteKey
+from xtrax.intent.plan import PLAN_SCHEMA_VERSION, OpPrimal, Plan, SiteDecision, SiteKey
 from xtrax.intent.sites import Session, SiteRecord, activate, call_label, current_session
 
 __all__ = [
     "Context",
     "HAZARDS",
     "IntentError",
+    "OpPrimal",
     "PLAN_SCHEMA_VERSION",
     "Plan",
     "Session",

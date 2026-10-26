@@ -2,7 +2,9 @@
 
 Primal-chain records (every ``path`` in the key is ``"primal"``) are planned.
 Map sites go through :class:`~xtrax.tiling.plan.BatchPlanner`. Loop sites follow
-the context rules. Diff-path records copy their primal twin.
+the context rules. Op sites carry the selection made while tracing, from the
+session's context: no tiling strategy applies to them. Diff-path records copy
+their primal twin.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -13,7 +15,7 @@ import jax
 
 from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError, UnsatisfiableContextError
-from xtrax.intent.plan import PLAN_SCHEMA_VERSION, Plan, SiteDecision, SiteKey, canonical
+from xtrax.intent.plan import PLAN_SCHEMA_VERSION, OpPrimal, Plan, SiteDecision, SiteKey, canonical
 from xtrax.intent.sites import SiteRecord
 from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
 from xtrax.tiling.estimators import lowered_memory_estimate
@@ -134,7 +136,8 @@ def resolve(
     ValueError
         An override label matches no record. The message names the label.
     IntentError
-        An override strategy is illegal for the site kind. The error names the site.
+        An override strategy is illegal for the site kind, or targets an op
+        site (which takes none). The error names the site.
     UnsatisfiableContextError
         The budget cannot be met, a map override makes the joint estimate
         exceed ``memory_budget``, export forbids the loop, or
@@ -383,6 +386,42 @@ def _loop_choice(
     return primal, None, primal_reason, diff_unavailable_reason
 
 
+def _op_diff_reason(primal: OpPrimal) -> str:
+    """Name where an op's derivative comes from."""
+    if primal.form == "custom_vjp":
+        return "reverse mode runs the backward kernel; forward mode raises IntentError"
+    if primal.form == "custom_jvp":
+        return "kernel derivative is the reference's JVP"
+    return "derivative by reference autodiff"
+
+
+def _op_decision(record: SiteRecord) -> SiteDecision:
+    """Decision for an op site: the selection recorded while tracing.
+
+    Raises
+    ------
+    IntentError
+        The record has no selection.
+    """
+    choice = record.op
+    if choice is None:
+        raise IntentError(
+            "op site has no recorded selection",
+            site=str(record.key),
+            path="primal",
+            constraint="record.op is None",
+        )
+    return SiteDecision(
+        key=record.key,
+        kind="op",
+        primal=choice.primal,
+        diff=None,
+        primal_reason=choice.reason,
+        diff_reason=_op_diff_reason(choice.primal),
+        warnings=choice.warnings,
+    )
+
+
 def _decision(
     record: SiteRecord,
     primal: Vmap | ChunkedMap | StaticWhile | Scan | WhileCarry,
@@ -411,6 +450,8 @@ def _automatic_decision(
     diff_unavailable_reason: str,
 ) -> SiteDecision:
     """Strategy for one primal-chain record before overrides and hazards."""
+    if record.kind == "op":
+        return _op_decision(record)
     if record.kind == "loop":
         primal, diff, primal_reason, diff_reason = _loop_choice(
             record,
@@ -450,6 +491,8 @@ def _no_twin_decision(
     diff_unavailable_reason: str,
 ) -> SiteDecision:
     """Per-kind default for a diff visit that has no primal twin."""
+    if record.kind == "op":
+        return _op_decision(record)
     if record.kind == "map":
         return _decision(record, Vmap(), Vmap(), _NO_TWIN, _NO_TWIN)
     primal, diff, _, _ = _loop_choice(
@@ -480,6 +523,15 @@ def _check_override_type(record: SiteRecord, override: SiteStrategyOverride) -> 
     """Raise :class:`IntentError` when ``override`` is illegal for ``record``."""
     primal, diff = override
     site = record.key.label
+    if record.kind == "op":
+        # TODO(#6098): let an override name the op's implementation ("reference" or a backend)
+        # once the override mapping carries more than tiling strategies.
+        raise IntentError(
+            "op sites take no strategy override: the selection follows the Context",
+            site=site,
+            path="primal",
+            constraint=repr(primal),
+        )
     if record.kind == "map":
         if not isinstance(primal, (Vmap, ChunkedMap)):
             raise IntentError(
