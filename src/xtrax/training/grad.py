@@ -49,22 +49,24 @@ def accumulate_grads(
     Raises:
         ValueError: If microbatch shapes are inconsistent.
 
-    When to use ``optax.MultiSteps`` instead: ``MultiSteps`` accumulates across
-    optimizer calls, so each microbatch is its own jitted step and the inner
-    optimizer runs once per ``k`` calls. Prefer it when the microbatches arrive
-    one at a time (a streaming loader, a step you already jit) or when you want
-    the optimizer state to see the accumulation. Prefer ``accumulate_grads`` when
-    all microbatches are stacked in memory and you want one fused ``lax.scan``.
-    Both average the per-microbatch gradients and agree with each other to float
-    tolerance (parity probe, bathos run 72c46a5b). Neither reproduces the
-    full-batch gradient of a batch-coupled loss (batch norm, a contrastive or
-    in-batch-negative loss, anything that is not a mean of per-example terms):
-    each microbatch's loss only sees its own examples. For a per-example mean
-    over equal-sized microbatches the accumulated gradient equals the full-batch
-    one; for a batch-centered loss on a spike (4 microbatches of 5), the maximum
-    absolute difference from the full-batch gradient was 0.12 against 1e-7. For
-    the full-batch gradient of such a loss, do not accumulate: use a larger
-    device batch or shard the batch.
+    When to use optax instead. ``optax.MultiSteps`` accumulates across optimizer
+    calls, so each microbatch is its own jitted step; prefer it when microbatches
+    arrive one at a time (a streaming loader, a step you already jit). Prefer
+    ``accumulate_grads`` when all microbatches are stacked in memory and you want
+    one fused ``lax.scan``.
+
+    ``optax.microbatching`` differs in what it differentiates. A pre-registered
+    parity probe (bathos run 72c46a5b, research note
+    261026_accumulate-grads-vs-optax-microbatching) found the mean of its
+    ``micro_grad`` output equal to ``accumulate_grads`` for a loss that is a mean
+    of per-example terms over equal-sized microbatches (gradient relative L2
+    7.4e-8 in float32, 1.7e-16 in float64). optax takes per-example gradients;
+    ``accumulate_grads`` differentiates each whole microbatch. On a batch-coupled
+    loss (one using a batch statistic: batch norm, centering, in-batch negatives)
+    they differ: relative L2 0.238 between them in that probe, with
+    ``accumulate_grads`` 0.021 from the full-batch gradient. Neither reproduces the
+    full-batch gradient of such a loss in general; for that, use a larger device
+    batch or shard the batch instead of accumulating.
     """
     if filter_spec is None:
         filter_spec = is_array
