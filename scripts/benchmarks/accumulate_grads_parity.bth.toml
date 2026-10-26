@@ -6,7 +6,8 @@ task_id = "261023_equinox-decouple-pallas"
 
 [experiment]
 hypothesis = "optax.microbatching computes the same mean gradient, loss and aux as xtrax.accumulate_grads on equivalent inputs, within float tolerance."
-stage_name = "exploration"
+stage_name = "validation"
+novel = true
 
 [observe]
 outputs = [
