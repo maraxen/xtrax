@@ -26,7 +26,7 @@ peak = lowered_memory_estimate(
 
 `device_memory_budget(fraction=0.9, device=None)` reads `device.memory_stats()["bytes_limit"]`. A device that does not report it raises `RuntimeError` (CPU does not). Pass an explicit `MemoryBudget` byte count in that case. `lowered_memory_estimate` lowers and compiles, then sums XLA's argument, output, and temp bytes. It raises `RuntimeError` when the backend returns no `memory_analysis()`.
 
-Verify: `src/xtrax/transforms/map.py:8-33`, `src/xtrax/tiling/strategy.py:66-69`, `src/xtrax/tiling/carry.py:23-55`, `src/xtrax/tiling/estimators.py:27-97`.
+Verify: `src/xtrax/transforms/map.py:9-34`, `src/xtrax/tiling/strategy.py:66-69`, `src/xtrax/tiling/carry.py:23-55`, `src/xtrax/tiling/estimators.py:27-97`.
 
 ## Alias lifetimes
 
@@ -108,9 +108,9 @@ assert isinstance(planned.decisions[0].strategy, WhileCarry)
 
 `chunked_map` uses `jax.vmap` when `batch_size` is `None` or the leading axis is no longer than `batch_size`. Otherwise it calls `jax.lax.map(fn, xs, batch_size=batch_size)`, which is a scan. `ChunkedMapIterator` calls `chunked_map`. `axis_dispatch(ChunkedMap(...), ...)` does too.
 
-A mapped function that itself calls `lax.while_loop` is a scan containing a while. On SM120 (Blackwell) that nest hung compile for an hour on a cluster job in July 2026 (aminx SLURM 18182309). Re-measured on 261025 at the same shape class on the same node type, it compiled as fast as `vmap` around the same while (20.4 s vs 21.8 s; aminx bathos run `c3c745a5`). Current xtrax has no transform that lifts the inner while out of `lax.map`. `xtrax.intent` does not emit the nest on a CUDA/ROCm backend: a `ChunkedMap` that would enclose a `StaticWhile` is moved back to `Vmap`, or refused with `UnsatisfiableContextError("scan_around_while")` (`src/xtrax/intent/resolve.py:834-852`).
+A mapped function that itself calls `lax.while_loop` is a scan containing a while. On SM120 (Blackwell) that nest hung compile for an hour on a cluster job in July 2026 (aminx SLURM 18182309). Re-measured on 261025 at the same shape class on the same node type, it compiled as fast as `vmap` around the same while (20.4 s vs 21.8 s; aminx bathos run `c3c745a5`). Current xtrax has no transform that lifts the inner while out of `lax.map`. `xtrax.intent` does not emit the nest on a CUDA/ROCm backend: a `ChunkedMap` that would enclose a `StaticWhile` is moved back to `Vmap`, or refused with `UnsatisfiableContextError("scan_around_while")` (`src/xtrax/intent/_resolve.py:869-887`).
 
-Verify: `src/xtrax/transforms/map.py:28-33`, `src/xtrax/tiling/iterator.py:145-151`, `src/xtrax/tiling/dispatch.py:146-150`.
+Verify: `src/xtrax/transforms/map.py:29-34`, `src/xtrax/tiling/iterator.py:145-151`, `src/xtrax/tiling/dispatch.py:146-150`.
 
 ## Primitives consumers reimplement
 
