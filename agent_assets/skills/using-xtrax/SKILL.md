@@ -20,7 +20,7 @@ import xtrax
 # This skill was written against the xtrax alpha named in the plugin manifest
 # (.praxia/manifest.toml [plugin] version). Warn when the installed package
 # differs, then read src/xtrax/__init__.py.
-_WRITTEN_AGAINST = "0.4.1b3"
+_WRITTEN_AGAINST = "0.4.1b4"
 if xtrax.__version__ != _WRITTEN_AGAINST:
     warnings.warn(
         f"using-xtrax was written against xtrax {_WRITTEN_AGAINST}; "
@@ -137,24 +137,24 @@ def inference_step(model: eqx.Module, x):
 
 ### Which Primitive for Which Problem
 
-**First answer: `xtrax.intent`.** Write a loop or a map inside a function you jit or differentiate as `xtrax.intent.loop` / `xtrax.intent.map`, and run the function through `xtrax.intent.compile(fn, Context(...))`. The resolver picks a strategy per site from the caller's `Context` (verify: `src/xtrax/intent/compile.py:1026`, `src/xtrax/intent/loop.py:367`, `src/xtrax/intent/map.py:219`):
+**First answer: `xtrax.intent`.** Write a loop or a map inside a function you jit or differentiate as `xtrax.intent.loop` / `xtrax.intent.map`, and run the function through `xtrax.intent.compile(fn, Context(...))`. The resolver picks a strategy per site from the caller's `Context` (verify: `src/xtrax/intent/_compile.py:1055`, `src/xtrax/intent/_loop.py:367`, `src/xtrax/intent/_map.py:219`):
 
 ```
 Is the site a loop?
 ├─ fixed length (xs= or length=) → StaticWhile primal (one while_loop); Scan under AD
 │                                   (Scan primal when target="export" and export_format != "stablehlo")
 └─ cond= (data-dependent stop)    → WhileCarry (lax.while_loop); forward-mode only; export refuses it
-                                    (verify: src/xtrax/intent/resolve.py:359-376)
+                                    (verify: src/xtrax/intent/_resolve.py:369-386)
 Is the site a map over a leading axis?
 ├─ no memory_budget, or leading size <= 1 → Vmap on both paths
 └─ memory_budget set → the Vmap or ChunkedMap that BatchPlanner returns for that axis (tree below)
-                        (verify: src/xtrax/intent/resolve.py:415-433)
+                        (verify: src/xtrax/intent/_resolve.py:463-481)
    On a CUDA/ROCm backend a ChunkedMap that would enclose a while is moved back to Vmap, or
    refused with UnsatisfiableContextError("scan_around_while") when Vmap does not fit the budget
-   (verify: src/xtrax/intent/resolve.py:834-852)
+   (verify: src/xtrax/intent/_resolve.py:921-939)
 ```
 
-Swap one site's strategy with `compile(..., overrides={label: (primal, diff)})` (`SiteStrategyOverride`, verify: `src/xtrax/intent/resolve.py:27`). `compile(...).plan_for(*args).table()` shows each site's choice and reason. Full reference: `references/intent.md`.
+Swap one site's strategy with `compile(..., overrides={label: (primal, diff)})` (`SiteStrategyOverride`, verify: `src/xtrax/intent/_resolve.py:29`). `compile(...).plan_for(*args).table()` shows each site's choice and reason. Full reference: `references/intent.md`.
 
 What intent buys is one call site that is a `while_loop` when undifferentiated and a `lax.scan` under grad, with no hand-set inference-only flag, exact against both hand-written forms. It does not buy compile time on current JAX: two pre-registered runs on Blackwell (SM120) found the scan and while forms, and `lax.map` around a `while_loop` versus `vmap` around it, compile alike (aminx bathos runs `3b93937a` and `c3c745a5`, both `no_contrast`; criterion 8 ruled met on equivalence, 261025).
 

@@ -16,13 +16,34 @@ from typing import Any, Literal
 
 import jax
 
-from xtrax.intent.errors import SiteMismatchError
-from xtrax.intent.plan import SiteDecision, SiteKey
+from xtrax.intent.context import Context
+from xtrax.intent.errors import IntentError, SiteMismatchError
+from xtrax.intent.plan import OpPrimal, SiteDecision, SiteKey
 
 _Frame = tuple[SiteKey, Literal["primal", "diff"]]
 _OrdinalKey = tuple[SiteKey | None, Literal["primal", "diff"], str]
 
 _CURRENT: "ContextVar[Session | None]" = ContextVar("xtrax.intent.session", default=None)
+
+
+@dataclass(frozen=True)
+class OpChoice:
+    """What an ``xtrax.op`` call selected under the session's context.
+
+    Attributes
+    ----------
+    primal : OpPrimal
+        Implementation selected.
+    reason : str
+        Why it was selected.
+    warnings : tuple of str
+        Notes for the decision, such as a bound context the session's context
+        overrode.
+    """
+
+    primal: OpPrimal
+    reason: str
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -36,7 +57,7 @@ class SiteRecord:
     ----------
     key : SiteKey
         Identity of this visit, including its ordinal.
-    kind : {"loop", "map"}
+    kind : {"loop", "map", "op"}
         Site kind.
     avals : tuple of jax.ShapeDtypeStruct
         Abstract values of the site arguments.
@@ -51,15 +72,18 @@ class SiteRecord:
     xs_tree : PyTreeDef or None
         Pytree structure of a map's ``xs``. ``None`` on records that store
         only a flat leaf list.
+    op : OpChoice or None
+        Selection of an ``"op"`` site. ``None`` for loops and maps.
     """
 
     key: SiteKey
-    kind: Literal["loop", "map"]
+    kind: Literal["loop", "map", "op"]
     avals: tuple[jax.ShapeDtypeStruct, ...]
     length: int | None
     fn: Callable[..., object] | None = field(compare=False, hash=False)
     const_avals: tuple[jax.ShapeDtypeStruct, ...] = ()
     xs_tree: jax.tree_util.PyTreeDef | None = None
+    op: OpChoice | None = None
 
 
 class Session:
@@ -80,17 +104,24 @@ class Session:
         Planned sites. A fresh list when constructed with ``records=None``.
     decisions : Mapping or None
         Decisions keyed by :class:`SiteKey`, or ``None`` when none were supplied.
+    context : Context or None
+        The :class:`~xtrax.intent.context.Context` the plan is resolved under.
+        An ``xtrax.op`` call selects against it, never against ambient state.
+        ``None`` for a session that belongs to no compile: an op then selects
+        against the context it is bound to.
     """
 
     mode: Literal["plan", "exec"]
     records: list[SiteRecord]
     decisions: Mapping[SiteKey, SiteDecision] | None
+    context: Context | None
 
     def __init__(
         self,
         mode: Literal["plan", "exec"],
         records: list[SiteRecord] | None = None,
         decisions: Mapping[SiteKey, SiteDecision] | None = None,
+        context: Context | None = None,
     ) -> None:
         """Start a session.
 
@@ -103,6 +134,9 @@ class Session:
             do not share a default list.
         decisions : Mapping or None
             Site decisions. ``None`` makes :meth:`decision_for` return ``None``.
+        context : Context or None
+            Context ops select against. ``None`` leaves each op to its own
+            bound context.
 
         Returns
         -------
@@ -111,18 +145,21 @@ class Session:
         self.mode = mode
         self.records = [] if records is None else records
         self.decisions = decisions
+        self.context = context
         self._frames: list[_Frame] = []
         self._ordinals: dict[_OrdinalKey, int] = {}
+        self._label_files: dict[str, str] = {}
 
     def enter_site(
         self,
-        kind: Literal["loop", "map"],
+        kind: Literal["loop", "map", "op"],
         label: str,
         avals: tuple[jax.ShapeDtypeStruct, ...],
         length: int | None,
         fn: Callable[..., object] | None,
         const_avals: tuple[jax.ShapeDtypeStruct, ...] = (),
         xs_tree: jax.tree_util.PyTreeDef | None = None,
+        op: OpChoice | None = None,
     ) -> SiteKey:
         """Enter one site and return its key.
 
@@ -134,10 +171,10 @@ class Session:
 
         Parameters
         ----------
-        kind : {"loop", "map"}
+        kind : {"loop", "map", "op"}
             Site kind stored on the plan record.
         label : str
-            User name or ``file:line`` of the call.
+            User name or ``module:line`` of the call.
         avals : tuple of jax.ShapeDtypeStruct
             Abstract values traced at this call.
         length : int or None
@@ -150,6 +187,9 @@ class Session:
         xs_tree : PyTreeDef or None
             Structure of a map's ``xs``. Stored on the plan record so the
             estimator can rebuild the pytree.
+        op : OpChoice or None
+            Selection of an op site. Stored on the plan record; exec mode
+            ignores it and follows the decision.
 
         Returns
         -------
@@ -168,7 +208,7 @@ class Session:
         """
         key = self._allocate_key(label)
         if self.mode == "plan":
-            self.records.append(SiteRecord(key, kind, avals, length, fn, const_avals, xs_tree))
+            self.records.append(SiteRecord(key, kind, avals, length, fn, const_avals, xs_tree, op))
         elif self.mode == "exec":
             self._check_planned(key, avals)
         else:
@@ -256,6 +296,27 @@ class Session:
         finally:
             self.pop()
 
+    def _claim_label(self, label: str, filename: str) -> None:
+        """Record that ``filename`` produced the call-site ``label``.
+
+        Raises
+        ------
+        IntentError
+            A different file already produced ``label`` in this session.
+        """
+        first = self._label_files.setdefault(label, filename)
+        if first != filename:
+            constraint = (
+                f"label {label!r} comes from {first} and {filename}; "
+                "pass name= to one of the call sites"
+            )
+            raise IntentError(
+                f"call-site label {label!r} is shared by two files",
+                site=label,
+                path="primal",
+                constraint=constraint,
+            )
+
     def _allocate_key(self, label: str) -> SiteKey:
         """Reserve the next key for ``label`` without storing ``ordinal + 1``."""
         if self._frames:
@@ -328,17 +389,29 @@ def activate(session: Session) -> Iterator[Session]:
 
 
 def call_label(name: str | None, stacklevel: int = 1) -> str:
-    """Return ``name``, or ``basename:lineno`` of a caller frame.
+    """Return ``name``, or ``module:lineno`` of a caller frame.
 
     ``stacklevel=1`` is the direct caller of :func:`call_label`. Each
-    greater level walks one frame further up. ``basename`` is the file
-    name only, without its directory.
+    greater level walks one frame further up. ``module`` is the caller's
+    ``__name__``, so ``models/encoder/layers.py:42`` and
+    ``models/decoder/layers.py:42`` read ``models.encoder.layers:42`` and
+    ``models.decoder.layers:42`` and a label-keyed override reaches one of
+    them. A frame with no usable ``__name__`` falls back to the file's base
+    name.
+
+    With a session active, a label built this way is also registered against
+    the caller's file. A second file that produces the same label (for
+    example two scripts that both run as ``__main__`` and call at one line)
+    raises :class:`~xtrax.intent.errors.IntentError`, because an override
+    keyed by that label would reach both sites.
 
     Parameters
     ----------
     name : str or None
         User name of the call. Returned unchanged when it is not ``None``,
-        including when it is empty.
+        including when it is empty. A user name is not checked for origin:
+        sharing one name across call sites is how one override reaches
+        several of them.
     stacklevel : int
         Frames above :func:`call_label` to read when ``name`` is ``None``.
         ``1`` selects the direct caller.
@@ -346,7 +419,7 @@ def call_label(name: str | None, stacklevel: int = 1) -> str:
     Returns
     -------
     str
-        ``name`` when it is not ``None``. Otherwise ``f"{basename}:{lineno}"``.
+        ``name`` when it is not ``None``. Otherwise ``f"{module}:{lineno}"``.
 
     Raises
     ------
@@ -355,6 +428,9 @@ def call_label(name: str | None, stacklevel: int = 1) -> str:
         passes the top of the stack.
     RuntimeError
         ``name`` is ``None`` and the interpreter has no caller frame.
+    IntentError
+        ``name`` is ``None``, a session is active, and the label was already
+        produced by a different file in that session.
     """
     if name is not None:
         return name
@@ -368,7 +444,15 @@ def call_label(name: str | None, stacklevel: int = 1) -> str:
         if parent is None:
             raise ValueError(f"stacklevel {stacklevel} is above the top of the stack")
         frame = parent
-    return f"{os.path.basename(frame.f_code.co_filename)}:{frame.f_lineno}"
+    filename = frame.f_code.co_filename
+    module = frame.f_globals.get("__name__")
+    if not isinstance(module, str) or not module:
+        module = os.path.basename(filename)
+    label = f"{module}:{frame.f_lineno}"
+    session = current_session()
+    if session is not None:
+        session._claim_label(label, filename)
+    return label
 
 
 def _leaf_struct(leaf: Any) -> jax.ShapeDtypeStruct:

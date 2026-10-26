@@ -1,7 +1,5 @@
 """Tests for xtrax.intent.resolve."""
 
-import sys
-
 import jax
 import jax.numpy as jnp
 import pytest
@@ -14,7 +12,7 @@ from xtrax.intent import (
     UnsatisfiableContextError,
     resolve,
 )
-from xtrax.intent.resolve import default_estimator
+from xtrax.intent._resolve import default_estimator
 from xtrax.intent.sites import SiteRecord
 from xtrax.tiling.budget import MemoryBudget
 from xtrax.tiling.estimators import lowered_memory_estimate
@@ -211,6 +209,74 @@ def test_scan_around_while_errors_when_vmap_exceeds_budget():
     assert "outer" in exc_info.value.site
 
 
+def _two_while_maps_and_a_big_map():
+    """Maps a and b each enclose a StaticWhile; map c encloses none and costs 1000 on Vmap."""
+    a = _map("a", 64)
+    b = _map("b", 64)
+    records = [a, _loop("a_inner", 4, parent=a.key), b, _loop("b_inner", 4, parent=b.key)]
+    records.append(_map("c", 64))
+    costs = {"a": (100, 90), "b": (100, 90), "c": (1000, 10)}
+
+    def est(decisions):
+        total = 0
+        for decision in decisions:
+            vmap_cost, chunk_cost = costs[decision.spec.name.split("/")[-1].split("#")[0]]
+            total += vmap_cost if isinstance(decision.strategy, Vmap) else chunk_cost
+        return total
+
+    return records, est
+
+
+def test_scan_around_while_joint_budget_names_the_site_that_does_not_fit():
+    """Switches are judged against the budget the earlier switches left, not one at a time.
+
+    Planner result: a, b, c all ChunkedMap (90+90+10 = 190 <= 200). Switching a alone
+    costs 100+90+10 = 200 and fits. Switching b as well costs 210. Judged alone each
+    switch fits, so both used to switch and the plan exceeded the budget with no error (#6157).
+    """
+    records, est = _two_while_maps_and_a_big_map()
+    budget = MemoryBudget(bytes=200, estimate=est)
+    with pytest.raises(UnsatisfiableContextError) as exc_info:
+        resolve(records, Context(memory_budget=budget, chunk_size=32, backend="cuda"))
+    err = exc_info.value
+    assert err.constraint == "scan_around_while"
+    assert err.path == "primal"
+    assert err.site == str(records[2].key)
+
+
+def test_scan_around_while_switches_every_site_that_jointly_fits():
+    """With 210 bytes both switches fit together, and the final plan stays within budget."""
+    records, est = _two_while_maps_and_a_big_map()
+    budget = MemoryBudget(bytes=210, estimate=est)
+    plan = resolve(records, Context(memory_budget=budget, chunk_size=32, backend="cuda"))
+    by_label = {d.key.label: d for d in plan.decisions}
+    assert by_label["a"].primal == Vmap()
+    assert by_label["b"].primal == Vmap()
+    assert by_label["c"].primal == ChunkedMap(batch_size=32)
+    assert 100 + 100 + 10 <= budget.bytes
+
+
+def test_scan_around_while_budget_uses_overridden_sibling_strategies():
+    """The remaining budget is computed from the strategies that will run, overrides included.
+
+    At 1189 bytes the planner keeps c on Vmap (a, b chunked: 90+90+1000 = 1180), so a
+    switch looked like 100+90+1000 > 1189. The caller overrides c to ChunkedMap, which
+    frees 990 bytes: both switches then fit (100+100+10 = 210). Judging against the planner's
+    c refused a switch that the final plan could afford.
+    """
+    records, est = _two_while_maps_and_a_big_map()
+    budget = MemoryBudget(bytes=1189, estimate=est)
+    plan = resolve(
+        records,
+        Context(memory_budget=budget, chunk_size=32, backend="cuda"),
+        overrides={"c": (ChunkedMap(batch_size=32), ChunkedMap(batch_size=32))},
+    )
+    by_label = {d.key.label: d for d in plan.decisions}
+    assert by_label["a"].primal == Vmap()
+    assert by_label["b"].primal == Vmap()
+    assert by_label["c"].primal == ChunkedMap(batch_size=32)
+
+
 def test_scan_around_while_does_not_apply_off_cuda():
     """A non-cuda backend keeps the planner's ChunkedMap around a StaticWhile."""
     outer = _map("outer", 64)
@@ -269,6 +335,30 @@ def test_override_exceeding_budget_raises():
     assert err.path == "primal"
     assert err.site == str(records[0].key)
     assert err.constraint == "override exceeds memory budget: estimate 128 > 100"
+
+
+def test_vmap_decision_batch_size_is_consistent_across_estimates():
+    """Every estimate sees the same batch_size on a Vmap decision: ``chunk_size``.
+
+    BatchPlanner records ``default_batch_size`` on a Vmap decision, and a Vmap runs
+    the whole axis whatever that field says. The override re-check used to pass the
+    cardinality (64), so a user estimator read two values for one strategy (#6158).
+    """
+    records = [_map("m", 64)]
+    seen: set[int] = set()
+
+    def est(decisions):
+        seen.update(d.batch_size for d in decisions if isinstance(d.strategy, Vmap))
+        return 1
+
+    budget = MemoryBudget(bytes=10_000, estimate=est)
+    plan = resolve(
+        records,
+        Context(memory_budget=budget, chunk_size=16),
+        overrides={"m": (Vmap(), Vmap())},
+    )
+    assert plan.decisions[0].primal == Vmap()
+    assert seen == {16}
 
 
 def test_override_violating_context_raises():
@@ -578,20 +668,16 @@ def test_loop_override_diff_none_stays_none_when_unavailable():
 def test_scan_around_while_accepts_gpu_platform_name(monkeypatch):
     """``jax.default_backend() == "gpu"`` rewrites ChunkedMap around StaticWhile.
 
-    ``"gpu"`` is JAX's platform name for CUDA and ROCm. The modules are reached
-    through ``sys.modules`` because the package rebinds ``compile`` and ``map``.
-    Fails while the hazard only names ``"cuda"`` and the outer map stays chunked.
+    ``"gpu"`` is JAX's platform name for CUDA and ROCm. Fails while the hazard only
+    names ``"cuda"`` and the outer map stays chunked.
     """
-    resolve_module = sys.modules["xtrax.intent.resolve"]
-    compile_module = sys.modules["xtrax.intent.compile"]
-    context_module = sys.modules["xtrax.intent.context"]
 
     def _gpu() -> str:
         return "gpu"
 
-    monkeypatch.setattr(resolve_module.jax, "default_backend", _gpu)
-    monkeypatch.setattr(compile_module.jax, "default_backend", _gpu)
-    monkeypatch.setattr(context_module.jax, "default_backend", _gpu)
+    monkeypatch.setattr("xtrax.intent._resolve.jax.default_backend", _gpu)
+    monkeypatch.setattr("xtrax.intent._compile.jax.default_backend", _gpu)
+    monkeypatch.setattr("xtrax.intent.context.jax.default_backend", _gpu)
     outer = _map("outer", 64)
     inner = _loop("inner", 4, parent=outer.key)
     other = _map("other", 64)

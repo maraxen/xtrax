@@ -31,6 +31,8 @@ _PACKAGES = [
     "xtrax.tiling.iterator",
     "xtrax.stages.boundaries",
     "xtrax.data.module",
+    "xtrax.kernel_seam",
+    "xtrax.testing.kernel_parity",
 ]
 
 

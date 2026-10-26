@@ -79,11 +79,17 @@ class Struct:
     Static field values must be hashable and comparable (they live in the treedef).
     Unflattening does not call ``__init__`` or ``__post_init__`` (see ``_register``), so
     checks and custom ``__init__`` signatures never see tracers or placeholders.
+
+    ``==`` compares trees as ``equinox.Module`` does: same structure and static values,
+    and equal leaves, giving a Python bool for concrete arrays (a traced bool under a
+    trace). ``hash`` hashes the field values, so it raises for a struct holding arrays.
     """
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        dataclasses.dataclass(frozen=True)(cls)
+        # eq=False keeps the dataclass from generating a field-wise ``==`` that returns
+        # an array for array fields; ``__eq__``/``__hash__`` below replace it.
+        dataclasses.dataclass(frozen=True, eq=False)(cls)
         data, meta = [], []
         for f in dataclasses.fields(cls):
             if "converter" in f.metadata:
@@ -99,6 +105,42 @@ class Struct:
             check = klass.__dict__.get("__check_init__")
             if check is not None:
                 check(self)
+
+    def __eq__(self, other):
+        return tree_equal(self, other)
+
+    def __hash__(self):
+        return hash(tuple((f.name, getattr(self, f.name)) for f in dataclasses.fields(self)))
+
+
+def tree_equal(a, b):
+    """True if ``a`` and ``b`` have the same structure, static values and leaves.
+
+    Array leaves must match in shape, dtype and values. Concrete arrays give a Python
+    bool; if a leaf is traced, the result is a traced scalar bool (as
+    ``equinox.tree_equal`` returns).
+    """
+    leaves_a, treedef_a = jax.tree_util.tree_flatten(a)
+    leaves_b, treedef_b = jax.tree_util.tree_flatten(b)
+    if treedef_a != treedef_b:
+        return False
+    result = True
+    for x, y in zip(leaves_a, leaves_b, strict=True):
+        x_arr, y_arr = is_array(x), is_array(y)
+        if x_arr != y_arr:
+            return False
+        if not x_arr:
+            if type(x) is not type(y) or x != y:
+                return False
+            continue
+        if x.shape != y.shape or x.dtype != y.dtype:
+            return False
+        try:
+            if not np.array_equal(np.asarray(x), np.asarray(y)):
+                return False
+        except jax.errors.TracerArrayConversionError:
+            result = jax.numpy.logical_and(result, jax.numpy.all(x == y))
+    return result
 
 
 def is_array(x):

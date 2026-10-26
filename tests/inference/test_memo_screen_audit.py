@@ -99,6 +99,75 @@ def test_a_draw_on_a_key_argument_is_still_rejected() -> None:
         memoize_jaxpr(lambda k: jax.random.normal(k, (2,)))(jax.random.PRNGKey(0))
 
 
+def _io_cb(x):  # noqa: ANN001, ANN202
+    return jax.experimental.io_callback(lambda a: a, jax.ShapeDtypeStruct(x.shape, x.dtype), x)
+
+
+def _io_cb_ordered(x):  # noqa: ANN001, ANN202
+    return jax.experimental.io_callback(
+        lambda a: a, jax.ShapeDtypeStruct(x.shape, x.dtype), x, ordered=True
+    )
+
+
+def _pure_cb(x):  # noqa: ANN001, ANN202
+    return jax.pure_callback(lambda a: a, jax.ShapeDtypeStruct(x.shape, x.dtype), x)
+
+
+# Each banned family end to end (the registry tests above pin only that a name exists).
+_REJECTED = [
+    ("io_callback", _io_cb),
+    ("io_callback", _io_cb_ordered),
+    ("pure_callback", _pure_cb),
+    # Key creation with no draw, so `random_seed` alone is what rejects it.
+    ("random_seed", lambda x: jax.random.key_data(jax.random.key(0)) + x[0]),
+    ("random_seed", lambda x: jax.random.PRNGKey(0) + x[0]),
+    ("rng_uniform", lambda x: jax.lax.rng_uniform(0.0, 1.0, x.shape) + x),
+    (
+        "rng_bit_generator",
+        lambda x: jax.lax.rng_bit_generator(jnp.zeros(4, jnp.uint32), x.shape)[1] + x,
+    ),
+    ("random_gamma", lambda x: jax.random.gamma(jax.random.key(1), x)),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "fn"),
+    _REJECTED,
+    ids=[
+        "io",
+        "io_ordered",
+        "pure_cb",
+        "key_inside",
+        "PRNGKey_inside",
+        "rng_uniform",
+        "rbg",
+        "gamma",
+    ],
+)
+def test_every_banned_family_is_rejected_end_to_end(label: str, fn) -> None:  # noqa: ANN001
+    with pytest.raises(MemoImpurityError, match=label):
+        memoize_jaxpr(fn)(jnp.ones(3))
+
+
+@pytest.mark.parametrize("fn", [_io_cb, _io_cb_ordered, lambda x: (jax.debug.print("{}", x), x)[1]])
+def test_a_program_that_carries_a_jaxpr_effect_is_rejected(fn) -> None:  # noqa: ANN001
+    """Debug and io primitives carry a jaxpr effect in 0.11.1 (`pure_callback` carries
+    none). The screen reads names, not effects, so this pins the agreement: if JAX
+    renames one of these, the effect is still there and the program must still be
+    rejected, so the test goes red instead of the screen going quiet."""
+    assert jax.make_jaxpr(fn)(jnp.ones(3)).jaxpr.effects
+    with pytest.raises(MemoImpurityError):
+        memoize_jaxpr(fn)(jnp.ones(3))
+
+
+def test_effect_free_pure_program_is_admitted() -> None:
+    """Control for the effects test: no effects, no rejection."""
+    fn = lambda x: jnp.sin(x) * 2  # noqa: E731
+    assert not jax.make_jaxpr(fn)(jnp.ones(3)).jaxpr.effects
+    m = memoize_jaxpr(fn)
+    assert m(jnp.ones(3)) is not None
+
+
 # --- #5679: typed PRNG keys (jax.random.key) ------------------------------------------
 
 # Every impl the installed JAX ships (jax.extend.random has no public registry).
