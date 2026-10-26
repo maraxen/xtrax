@@ -4374,7 +4374,7 @@ requires-dist = [
     { name = "jax2onnx", marker = "extra == 'onnx'", specifier = ">=0.17.0,<0.18" },
     { name = "jaxlib", specifier = ">=0.10.2,<0.12" },
     { name = "jaxlint", marker = "extra == 'dev'", specifier = ">=0.1.0a1" },
-    { name = "jaxtyping", specifier = ">=0.2.28" },
+    { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "libcst", marker = "extra == 'dev'", specifier = ">=1.5.0" },
     { name = "matplotlib", marker = "extra == 'eda'", specifier = ">=3.8" },
     { name = "numpy", specifier = ">=2.1" },
