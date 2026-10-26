@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- new entries: add a file under changelog.d/ -->
 
+## [0.4.1b5] - 2026-10-26
+
 ### Added
 
 - `xtrax.Struct`, `xtrax.field`, and `xtrax.model_jit`, with the pytree helpers
@@ -17,41 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `field(static=True)` marks a field as pytree metadata; `model_jit` is `jax.jit`
   for arguments that mix array leaves with Python values, tracing the arrays and
   keying the compile cache on everything else.
-
-### Deprecated
-
-Probe release for xtrax #6107. Each name below warns with `DeprecationWarning` on
-access, names its replacement, and is attributed to the calling file; behaviour and
-object identity are unchanged and nothing is removed. If a warning reaches you and
-the name is in use, report it. Names with a one-line replacement are rewritten by
-`codemods/thin-wrappers-to-jax/` (ast-grep); the rest are reported.
-
-- `init_dist` -> `jax.distributed.initialize`; `is_distributed` ->
-  `jax.distributed.is_initialized`; `get_device_mesh` and `get_hardware_mesh_profile`
-  -> `jax.make_mesh`; `ShardingPolicy` (debt #3043).
-- `SafetyManager`, `with_safety`, `SafetyTrainStep`, and
-  `create_train_step(..., safety=True)` -> `jax.jit(checkify.checkify(fn,
-  errors=checkify.float_checks))` then `err.throw()` (debt #3042).
-  `safety=False` is not deprecated. `float_checks` covers NaN and division by zero,
-  not an `Inf` from overflow.
-- `WeightedLoss`, `MultiTaskLoss` -> `xtrax.ComposedLoss`, which returns
-  `(loss, aux)` for `Trainer(has_aux=True)`.
-- `partition_labels` -> one `jax.tree.map` that feeds `optax.partition`.
-- `xtrax.io` (`BoundedCallbackHandler`, `async_indexed_stream`) -> `xtrax.engine.io`.
-
-### Removed
-
-- `xtrax.sparse` and its root re-exports (`SparseConfig`, `SparsePolicy`,
-  `SparseMaskManager`, `sparsify_model`, `make_sparse_forward_fn`,
-  `sparse_filter_jit`), with `docs/api/sparse.md`, `tests/sparse`, and the
-  `using-xtrax` skill's sparsification section. A search of consumer
-  repositories found no import of it (aminx's audit artifacts list it as unused).
-  To recover it, install `xtrax==0.4.1b4` or copy
-  `src/xtrax/sparse/` from the `v0.4.1b4` tag. `sparse_filter_jit` was
-  `eqx.filter_jit` unchanged. `xtrax.export.find_bcoo_leaves` stays; it inspects
-  any BCOO leaf.
-- The `using-xtrax` reference `sparse-distributed.md` is now
-  `distributed-checkpoint.md`.
+- `xtrax.op(reference, kernels=...)` (with `Op` and `VjpKernel`): one callable that runs a
+  per-backend kernel (for example Pallas) where its bound `Context` allows kernels, and
+  the plain-JAX reference otherwise. An unbound op runs the reference. Derivatives come
+  from the reference (`custom_jvp` with `jax.jvp(reference)`); `vjp_kernels` opts into a
+  backward kernel (`custom_vjp`, reverse mode only). Inside `xtrax.intent.compile` an op
+  call is an intent site of kind `"op"`: the compile's context decides, and the plan
+  records `kernel:<backend>` or `reference` with the reason. `xtrax.testing.kernel_parity`
+  checks a kernel against its reference.
 
 ### Changed
 
@@ -96,6 +71,52 @@ the name is in use, report it. Names with a one-line replacement are rewritten b
 - `xtrax.inference` memoization refuses the Pallas TPU hardware-PRNG primitives
   (`prng_seed`, `prng_random_bits`, `prng_split`, `prng_join`), as it refuses other draws:
   a memoized draw would return the same sample on every call.
+- Changelog entries now go in `changelog.d/<slug>.<category>.md` fragments that the release PR assembles with `scripts/assemble_changelog.py`; the public-export registries (`xtrax.__all__`, `_LAZY`, `distribution/public_api.toml`) are kept in sorted order; and `src/xtrax/agent_plugin.json` is regenerated in the release PR only (`just plugin-snapshot`), not in feature PRs. The dataclass-shape gate accepts a `changelog.d/` fragment naming the class as its acknowledgement. These remove the three lines every parallel PR conflicted on.
+
+### Deprecated
+
+Probe release for xtrax #6107. Each name below warns with `DeprecationWarning` on
+access, names its replacement, and is attributed to the calling file; behaviour and
+object identity are unchanged and nothing is removed. If a warning reaches you and
+the name is in use, report it. Names with a one-line replacement are rewritten by
+`codemods/thin-wrappers-to-jax/` (ast-grep); the rest are reported.
+
+- `init_dist` -> `jax.distributed.initialize`; `is_distributed` ->
+  `jax.distributed.is_initialized`; `get_device_mesh` and `get_hardware_mesh_profile`
+  -> `jax.make_mesh`; `ShardingPolicy` (debt #3043).
+- `SafetyManager`, `with_safety`, `SafetyTrainStep`, and
+  `create_train_step(..., safety=True)` -> `jax.jit(checkify.checkify(fn,
+  errors=checkify.float_checks))` then `err.throw()` (debt #3042).
+  `safety=False` is not deprecated. `float_checks` covers NaN and division by zero,
+  not an `Inf` from overflow.
+- `WeightedLoss`, `MultiTaskLoss` -> `xtrax.ComposedLoss`, which returns
+  `(loss, aux)` for `Trainer(has_aux=True)`.
+- `partition_labels` -> one `jax.tree.map` that feeds `optax.partition`.
+- `xtrax.io` (`BoundedCallbackHandler`, `async_indexed_stream`) -> `xtrax.engine.io`.
+
+### Removed
+
+- `xtrax.sparse` and its root re-exports (`SparseConfig`, `SparsePolicy`,
+  `SparseMaskManager`, `sparsify_model`, `make_sparse_forward_fn`,
+  `sparse_filter_jit`), with `docs/api/sparse.md`, `tests/sparse`, and the
+  `using-xtrax` skill's sparsification section. A search of consumer
+  repositories found no import of it (aminx's audit artifacts list it as unused).
+  To recover it, install `xtrax==0.4.1b4` or copy
+  `src/xtrax/sparse/` from the `v0.4.1b4` tag. `sparse_filter_jit` was
+  `eqx.filter_jit` unchanged. `xtrax.export.find_bcoo_leaves` stays; it inspects
+  any BCOO leaf.
+- The `using-xtrax` reference `sparse-distributed.md` is now
+  `distributed-checkpoint.md`.
+
+### Fixed
+
+- `xtrax.model_jit` keeps at most 256 output static parts per function (least recently
+  used first) instead of one per trace signature forever. An evicted entry is rebuilt by an
+  abstract retrace (`jax.eval_shape`, no compile) when it is needed again.
+- An `xtrax.Struct` subclass that is also decorated with `@dataclass` raises `TypeError` at
+  construction. The second decorator made the class mutable and gave it a field-wise `==`
+  that returns an array for array fields. (`@dataclass(frozen=True)` was already refused by
+  `dataclasses` at class definition.)
 
 ## [0.4.1b4] - 2026-10-26
 
