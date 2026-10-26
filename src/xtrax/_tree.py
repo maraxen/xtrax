@@ -21,8 +21,10 @@ __all__ = [
     "field",
     "inference_mode",
     "is_array",
+    "is_inexact_array",
     "model_jit",
     "partition",
+    "value_and_grad",
 ]
 
 
@@ -152,11 +154,20 @@ def _is_none(x):
     return x is None
 
 
-def partition(tree):
-    """Split ``tree`` into ``(arrays, rest)``; each holds ``None`` where the other has a leaf."""
-    arrays = jax.tree_util.tree_map(lambda x: x if is_array(x) else None, tree)
-    rest = jax.tree_util.tree_map(lambda x: None if is_array(x) else x, tree)
-    return arrays, rest
+def is_inexact_array(x):
+    """True for floating and complex arrays: the leaves ``jax.grad`` can differentiate."""
+    dtype = getattr(x, "dtype", None)
+    return is_array(x) and dtype is not None and jax.numpy.issubdtype(dtype, jax.numpy.inexact)
+
+
+def partition(tree, pred=is_array):
+    """Split ``tree`` into ``(selected, rest)``; each holds ``None`` where the other has a leaf.
+
+    ``pred`` picks the leaves that go to ``selected`` (default: arrays).
+    """
+    selected = jax.tree_util.tree_map(lambda x: x if pred(x) else None, tree)
+    rest = jax.tree_util.tree_map(lambda x: None if pred(x) else x, tree)
+    return selected, rest
 
 
 def combine(arrays, rest):
@@ -164,6 +175,25 @@ def combine(arrays, rest):
     return jax.tree_util.tree_map(
         lambda a, r: r if a is None else a, arrays, rest, is_leaf=_is_none
     )
+
+
+def value_and_grad(fn, *, has_aux=False, pred=is_inexact_array):
+    """``jax.value_and_grad`` over the ``pred`` leaves of the first argument.
+
+    The other leaves of that argument (non-array values, integer arrays, anything
+    ``pred`` rejects) are held constant by closure. Gradients come back in the
+    first argument's structure with ``None`` where a leaf was not differentiated.
+    """
+
+    def wrapped(tree, *args, **kwargs):
+        diff, rest = partition(tree, pred)
+
+        def inner(diff):
+            return fn(combine(diff, rest), *args, **kwargs)
+
+        return jax.value_and_grad(inner, has_aux=has_aux)(diff)
+
+    return wrapped
 
 
 class _Static:
@@ -233,6 +263,9 @@ def model_jit(fn):
         out_arrays = jitted(arrays, static)
         return combine(out_arrays, out_static[(static, _aval_key(arrays))])
 
+    # Tells tools that wrap callables for trace counting (the performance gate) that this
+    # is already a jit boundary, as they would for a ``jax.jit`` result.
+    wrapper._xtrax_model_jit = True
     return wrapper
 
 
