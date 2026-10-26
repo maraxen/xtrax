@@ -140,7 +140,30 @@ def inference_step(model: eqx.Module, x):
 
 ### Which Primitive for Which Problem
 
-**Decision tree** (verify each branch against `src/xtrax/tiling/plan.py:415-529`, `BatchPlanner._decide_strategy`):
+**First answer: `xtrax.intent`.** Write a loop or a map inside a function you jit or differentiate as `xtrax.intent.loop` / `xtrax.intent.map`, and run the function through `xtrax.intent.compile(fn, Context(...))`. The resolver picks a strategy per site from the caller's `Context` (verify: `src/xtrax/intent/compile.py:1026`, `src/xtrax/intent/loop.py:367`, `src/xtrax/intent/map.py:219`):
+
+```
+Is the site a loop?
+├─ fixed length (xs= or length=) → StaticWhile primal (one while_loop); Scan under AD
+│                                   (Scan primal when target="export" and export_format != "stablehlo")
+└─ cond= (data-dependent stop)    → WhileCarry (lax.while_loop); forward-mode only; export refuses it
+                                    (verify: src/xtrax/intent/resolve.py:359-376)
+Is the site a map over a leading axis?
+├─ no memory_budget, or leading size <= 1 → Vmap on both paths
+└─ memory_budget set → the Vmap or ChunkedMap that BatchPlanner returns for that axis (tree below)
+                        (verify: src/xtrax/intent/resolve.py:415-433)
+   On a CUDA/ROCm backend a ChunkedMap that would enclose a while is moved back to Vmap, or
+   refused with UnsatisfiableContextError("scan_around_while") when Vmap does not fit the budget
+   (verify: src/xtrax/intent/resolve.py:834-852)
+```
+
+Swap one site's strategy with `compile(..., overrides={label: (primal, diff)})` (`SiteStrategyOverride`, verify: `src/xtrax/intent/resolve.py:27`). `compile(...).plan_for(*args).table()` shows each site's choice and reason. Full reference: `references/intent.md`.
+
+What intent buys is one call site that is a `while_loop` when undifferentiated and a `lax.scan` under grad, with no hand-set inference-only flag, exact against both hand-written forms. It does not buy compile time on current JAX: two pre-registered runs on Blackwell (SM120) found the scan and while forms, and `lax.map` around a `while_loop` versus `vmap` around it, compile alike (aminx bathos runs `3b93937a` and `c3c745a5`, both `no_contrast`; criterion 8 ruled met on equivalence, 261025).
+
+**Lower layer: `BatchPlanner`.** Use the tree below directly when you build a `BatchPlan` yourself: bucketed variable-length axes, `DedupGather`, multi-axis plans, and the CLI and export pipelines, none of which intent resolves. `intent.map` plans with `BatchPlanner` when `Context.memory_budget` is set.
+
+**BatchPlanner decision tree** (verify each branch against `src/xtrax/tiling/plan.py:415-529`, `BatchPlanner._decide_strategy`):
 
 ```
 Is the axis variable-length (e.g., sequences of different sizes)?
@@ -172,7 +195,6 @@ Is the axis variable-length (e.g., sequences of different sizes)?
 
 **Joint-budget mode** (0.4.0a1+): when `BatchPlanner(budget=MemoryBudget(...))` is set, rules 3-4 are replaced for non-bucket axes — every eligible axis starts at `Vmap`, then axes are greedily demoted to `ChunkedMap` in spec order until the whole-plan estimate fits the budget. See TIER-2: Tiling Layer → Joint-Budget Planning.
 
-A loop or map at a call site can instead be resolved per site by experimental `xtrax.intent` (`compile(fn, Context(...))`); see `references/intent.md`. The decision tree above stays the default.
 
 ---
 
@@ -269,7 +291,7 @@ Choose your task:
 11. **Compare a sampler to a reference implementation**  
    → Read `references/parity.md`
 
-12. **Resolve a loop or map per site with experimental xtrax.intent**  
+12. **Write a loop or map that picks while_loop/scan or vmap/chunked per call site (xtrax.intent)**  
    → Read `references/intent.md`
 
 ---
@@ -291,7 +313,7 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | Length bucketing | `references/length-bucketing.md` | — | AxisSpec.bucket_boundaries, Bucket, host select_bucket/bucketize, BUCKET_LADDER, one compile per rung |
 | Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives |
 | Standalone ONNX | `references/onnx-standalone.md` | — | convert_to_onnx vs jax2onnx, find_onnx_rng_ops, verify_native_parity, rings, divergence |
-| Intent | `references/intent.md` | — | Experimental xtrax.intent: Context, compile, loop, map, Plan |
+| Intent | `references/intent.md` | — | xtrax.intent: Context, compile, loop, map, Plan, overrides, hazards, errors |
 
 Use the Workflow Index above to pick which file(s) a given task needs — most tasks need one, some (e.g. tiled inference) need two. Don't load a reference file speculatively; load it when the task actually reaches that layer.
 

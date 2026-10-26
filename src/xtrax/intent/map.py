@@ -14,6 +14,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from xtrax.intent._hoist import hoist_closure
 from xtrax.intent._trace import (
     _active_session,
     _retrace,
@@ -84,7 +85,7 @@ def _example_xs(xs: Any) -> Any:
 
 def _convert(fun: Callable[..., Any], xs: Any) -> tuple[Callable[..., Any], tuple[Any, ...]]:
     """Closure-convert ``fun`` specialized to one element of ``xs``."""
-    converted, consts = jax.closure_convert(fun, _example_xs(xs))
+    converted, consts = hoist_closure(fun, _example_xs(xs))
     return converted, tuple(consts)
 
 
@@ -223,8 +224,8 @@ def map(
 ) -> Any:
     """Map ``fun`` over the leading axis of every leaf of ``xs``.
 
-    The result matches :func:`jax.vmap` of ``fun``. Closed-over values are
-    hoisted with :func:`jax.closure_convert` and differentiated through a
+    The result matches :func:`jax.vmap` of ``fun``. Closed-over tracers, of
+    any dtype, are hoisted as explicit arguments and differentiated through a
     :func:`jax.custom_jvp`. With no session, or with a session that has no
     decision for this call, both paths are :class:`~xtrax.tiling.strategy.Vmap`.
     Otherwise the primal and the derivative each follow that path's decision:

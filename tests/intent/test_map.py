@@ -462,3 +462,24 @@ def test_map_label_and_avals():
     with activate(session):
         xmap(layer, _XS, name="decoder")
     assert session.records[-1].key.label == "decoder"
+
+
+def test_map_jit_grad_closed_over_int_tracer_in_cond():
+    """jit(grad) through a map in a traced cond whose body reads an in-trace int array."""
+
+    def f(w, pred, use_intent):
+        idx = jnp.argsort(w)  # int tracer under jit: float0 tangent
+
+        def layer(x):
+            return x[idx] * w
+
+        def run():
+            return xmap(layer, _XS) if use_intent else jax.vmap(layer)(_XS)
+
+        return jnp.sum(jax.lax.cond(pred, run, run))
+
+    w = jnp.array([0.9, 0.3, 0.5])
+    pred = jnp.bool_(True)
+    ref = jax.jit(jax.grad(f), static_argnums=2)(w, pred, False)
+    got = jax.jit(jax.grad(f), static_argnums=2)(w, pred, True)
+    assert ok(got, ref)
