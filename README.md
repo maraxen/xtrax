@@ -6,7 +6,7 @@
 [![Coverage](https://img.shields.io/badge/coverage-tier1%2095%25-brightgreen)](https://github.com/maraxen/xtrax)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/maraxen/xtrax/blob/main/LICENSE)
 
-A set of composable building blocks for JAX/Equinox training loops — engine + trainer orchestration, safety-checked steps, axis tiling strategies, inference-time sparsification, distributed/sharding helpers, streaming output callbacks, and orbax checkpointing — extracted from the author's research code.
+A set of composable building blocks for JAX/Equinox training loops — engine + trainer orchestration, axis tiling strategies, distributed/sharding helpers, streaming output callbacks, and orbax checkpointing — extracted from the author's research code.
 
 ## Status
 
@@ -21,7 +21,6 @@ xtrax packages that pre-trace layer, plus the conveniences that surround it:
 - **Axis tiling** — declare axes with `AxisSpec`; `BatchPlanner` selects `Vmap`, `ChunkedMap` (chunked via `jax.lax.map`), `Scan`, bucketing, or dedup-gather per axis, and `xtrax explain` reports why
 - **Composable training steps** — `Trainer` with your own loss functions and optimizers
 - **Safe arithmetic** — `safe_norm` and `safe_reciprocal`
-- **Inference sparsification** — structured sparsity masks with `SparseConfig` and `sparsify_model`, fixed compile shapes
 - **Distributed helpers** — `LogicalMesh` and sharding utilities over JAX's native machinery
 
 For the full rationale — why this layer has to live above the JIT boundary — see [Why xtrax exists](https://xtrax.readthedocs.io/en/latest/why-xtrax.html).

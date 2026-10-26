@@ -5,7 +5,7 @@ Practical notes for diagnosing JAX tracing issues, numeric failures, and docs dr
 ## Static shapes and recompilation
 
 xtrax treats batch and tiling thresholds as **static** wherever possible. If you change
-`AxisSpec.default_batch_size`, `DataModule.batch_size`, or sparse `nse_budget` between
+`AxisSpec.default_batch_size` or `DataModule.batch_size` between
 steps, JAX may recompile. When performance suddenly drops:
 
 1. Confirm batch shapes are stable across the training loop.

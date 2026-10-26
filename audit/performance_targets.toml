@@ -12,6 +12,6 @@ max_traces_default = 1
 # The shared dispatch-ratio rule (executions / cardinality) lives in
 # xtrax.profiling.rules; it is not a per-probe setting here.
 [[probes]]
-qualname = "xtrax.devtools.gates._performance_probes.sparse_filter_jit_kernel"
+qualname = "xtrax.devtools.gates._performance_probes.filter_jit_linear_kernel"
 max_traces = 1
-trace_probe = "xtrax.devtools.gates._performance_probes:probe_sparse_filter_jit_kernel"
+trace_probe = "xtrax.devtools.gates._performance_probes:probe_filter_jit_linear_kernel"

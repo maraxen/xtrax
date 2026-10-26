@@ -132,7 +132,7 @@ jobs:
         run: |
           .venv-floors/bin/python -m pytest -q -o addopts="" -p no:cacheprovider \
             tests/checkpoint tests/training tests/engine tests/run tests/stages \
-            tests/tiling tests/inference tests/transforms tests/sparse \
+            tests/tiling tests/inference tests/transforms \
             tests/distributed tests/telemetry tests/data tests/cli \
             tests/scripts/test_check_dependency_floors.py
 

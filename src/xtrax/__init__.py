@@ -33,13 +33,6 @@ __all__ = [
     "Bucket",
     "select_bucket",
     "bucketize",
-    # Sparse
-    "SparseConfig",
-    "SparsePolicy",
-    "SparseMaskManager",
-    "sparsify_model",
-    "make_sparse_forward_fn",
-    "sparse_filter_jit",
     # Distributed
     "init_dist",
     "is_distributed",
@@ -114,13 +107,6 @@ _LAZY = {
     "Bucket": "xtrax.tiling",
     "select_bucket": "xtrax.tiling",
     "bucketize": "xtrax.tiling",
-    # Sparse subpackage
-    "SparseConfig": "xtrax.sparse",
-    "SparsePolicy": "xtrax.sparse",
-    "SparseMaskManager": "xtrax.sparse",
-    "sparsify_model": "xtrax.sparse",
-    "make_sparse_forward_fn": "xtrax.sparse",
-    "sparse_filter_jit": "xtrax.sparse",
     # Distributed subpackage
     "init_dist": "xtrax.distributed",
     "is_distributed": "xtrax.distributed",

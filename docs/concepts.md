@@ -41,18 +41,6 @@ for decision in plan.decisions:
 
 The result is a `BatchPlan` — an executable schedule that can be dispatched via `make_axis_dispatch()`.
 
-## Sparse Inference with Fixed Sparsity
-
-xtrax provides **structured sparse matrix multiplication** for inference, inference-only domains, and memory-constrained training. The sparse module applies a learned sparsity pattern with a fixed "number of stored elements" (nse) budget — guaranteeing constant XLA compile shapes even as sparsity patterns change.
-
-Key concept: **masks are step-scheduled**. Sparse masks can be recomputed on a fixed schedule (e.g., every N steps), and xtrax handles the transition safely:
-
-- `SparsePolicy` defines which elements to keep (top-k by magnitude).
-- `SparseMaskManager` applies masks on a schedule and caches them Python-side.
-- When true nonzeros exceed the budget, fall back to dense or error out — your choice.
-
-This is transparent to the model: just wrap your weight matrix with a mask, and xtrax handles layout, padding, and recompilation safety.
-
 ## Distributed Training with Mesh Sharding
 
 xtrax builds on JAX's multi-process SPMD sharding. Start the processes with `jax.distributed.initialize()` and build the device mesh with `jax.make_mesh`:

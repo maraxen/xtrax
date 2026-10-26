@@ -19,7 +19,6 @@ XTRAX_BEARTYPE_PACKAGES = [
     "xtrax.profiling",
     "xtrax.run",
     "xtrax.safety",
-    "xtrax.sparse",
     "xtrax.stages",
     "xtrax.tiling",
     "xtrax.training",
