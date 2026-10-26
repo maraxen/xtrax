@@ -1023,9 +1023,9 @@ def plan_cells(args: argparse.Namespace) -> list[list[str]]:
                 "frame_tile": ftile,
                 "onehot_dtype": ohdt,
                 "a_batch_size": abatch,
-                "n_res": None,
-                "n_frames": None,
-                "n_pairs": None,
+                "n_res": args.n_res if shape == "custom" else None,
+                "n_frames": args.n_frames if shape == "custom" else None,
+                "n_pairs": args.n_pairs if shape == "custom" else None,
                 "n_used": args.n_used,
             }
         )
@@ -1039,8 +1039,15 @@ def plan_cells(args: argparse.Namespace) -> list[list[str]]:
             "--seed", str(args.seed), "--reps", str(args.reps), "--warmup", str(args.warmup),
             "--out-dir", str(args.out_dir),
         ]  # fmt: skip
+        argv += ["--n-sample", str(args.n_sample)]
+        if shape == "custom":
+            argv += ["--n-res", str(args.n_res), "--n-frames", str(args.n_frames)]
+            if args.n_pairs is not None:
+                argv += ["--n-pairs", str(args.n_pairs)]
         if args.n_used is not None:
             argv += ["--n-used", str(args.n_used)]
+        if args.corrupt:
+            argv += ["--corrupt", args.corrupt]
         if args.interpret:
             argv.append("--interpret")
         if form == "A":
