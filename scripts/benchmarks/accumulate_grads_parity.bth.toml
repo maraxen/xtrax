@@ -1,0 +1,72 @@
+[metadata]
+title = "Is xtrax accumulate_grads redundant with optax.microbatching? (CPU parity, f32 and f64)"
+created = "261026"
+schema_version = "0.3"
+task_id = "261023_equinox-decouple-pallas"
+
+[experiment]
+hypothesis = "optax.microbatching computes the same mean gradient, loss and aux as xtrax.accumulate_grads on equivalent inputs, within float tolerance."
+stage_name = "exploration"
+
+[observe]
+outputs = [
+  "{f32,f64}_max_grad_rel_ab / loss_abs_ab / aux_abs_ab: max over the 9 cases per dtype (n_micro in 1/4/7 x mlp_aux, mlp_noaux, eqxleaf_aux) of arm (a) xtrax accumulate_grads on stacked microbatches vs arm (b) optax micro_grad MEAN on the un-stacked batch; grad is relative L2 over all leaves against arm (a), loss and aux are absolute differences (optax loss and aux averaged over examples)",
+  "{f32,f64}_max_*_ac / *_bc: each arm against the plain full-batch jax.value_and_grad reference (c)",
+  "ctrl_{f32,f64}_*: negative controls on n_micro=4 (optax SUM instead of MEAN; one microbatch shifted by +0.5 in arm (a)); controls_ok requires every control to exceed its tolerance",
+  "probe_*: non-gating semantic probes (batch-coupled loss, uneven-batch refusals, optax on a non-array leaf without eqx.partition)",
+  "semantic_differences: count of source-read differences between the two APIs (listed in semantic_difference_list)",
+]
+looking_for = """
+Whether xtrax.accumulate_grads can be deprecated in favour of optax.microbatching.micro_grad.
+Parity here means same mean grads, loss and aux on a loss that is a mean of per-example
+terms, to the tolerances below. It does not cover batch-coupled losses, memory, or API
+ergonomics; those are listed as semantic differences with source line references and the
+batch-coupled loss is measured in a non-gating probe. The user ruled: deprecate only if
+parity holds.
+Tolerances, fixed before any run: grad relative L2 and loss/aux absolute diff <= 1e-6 in
+float32 and <= 1e-12 in float64. The two negative controls must exceed the same tolerance
+in each dtype, else the instrument is untested and nothing is concluded.
+"""
+sanity = [
+  "n_cases_ran <= n_cases_expected",
+  "n_cases_ran >= 0",
+  "n_case_errors >= 0",
+]
+planned_tests = 0
+
+[outcomes.pass]
+source = "provisional:user ruling 261026, tolerances 1e-6 (f32) and 1e-12 (f64)"
+condition = "controls_ok AND n_case_errors = 0 AND n_cases_ran = n_cases_expected AND f32_max_grad_rel_ab <= 1e-6 AND f64_max_grad_rel_ab <= 1e-12 AND f32_max_loss_abs_ab <= 1e-6 AND f64_max_loss_abs_ab <= 1e-12 AND f32_max_aux_abs_ab <= 1e-6 AND f64_max_aux_abs_ab <= 1e-12"
+decision = "Parity holds: deprecating accumulate_grads in favour of optax.microbatching is justified for mean-of-examples losses. The semantic differences still go into the migration note."
+reasoning = "Both negative controls exceeded the tolerance, every case ran, and the largest grad, loss and aux differences are within tolerance in both dtypes."
+is_residual = false
+
+[outcomes.differs]
+source = "provisional:user ruling 261026, differs = controls_ok AND NOT pass; n_case_errors = 0 added so an errored case lands in invalid as the ruling's own residual text requires"
+condition = "controls_ok AND n_case_errors = 0 AND n_cases_ran = n_cases_expected AND NOT (f32_max_grad_rel_ab <= 1e-6 AND f64_max_grad_rel_ab <= 1e-12 AND f32_max_loss_abs_ab <= 1e-6 AND f64_max_loss_abs_ab <= 1e-12 AND f32_max_aux_abs_ab <= 1e-6 AND f64_max_aux_abs_ab <= 1e-12)"
+decision = "Parity does not hold at tolerance: keep accumulate_grads and migrate it rather than deprecating it."
+reasoning = "The instrument saw the negative controls and every case ran, so the difference is real at these tolerances."
+is_residual = false
+
+[outcomes.invalid]
+condition = "TRUE"
+decision = "Controls failed or a case or worker errored. Nothing is concluded; fix the script under a new sidecar revision and re-run."
+reasoning = "A comparison whose controls cannot fail, or with a missing case, is not evidence either way."
+is_residual = true
+
+[result_schema]
+n_cases_expected = "int"
+n_cases_ran = "int"
+n_case_errors = "int"
+controls_ok = "bool"
+semantic_differences = "int"
+platform = "str"
+jax_version = "str"
+optax_version = "str"
+equinox_version = "str"
+f32_max_grad_rel_ab = "float"
+f32_max_loss_abs_ab = "float"
+f32_max_aux_abs_ab = "float"
+f64_max_grad_rel_ab = "float"
+f64_max_loss_abs_ab = "float"
+f64_max_aux_abs_ab = "float"
