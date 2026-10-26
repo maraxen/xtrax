@@ -11,7 +11,7 @@ Spec: .praxia/docs/specs/261023_equinox-decoupling.md section 3.
 import dataclasses
 import functools
 import sys
-from typing import Any, ClassVar, dataclass_transform
+from typing import dataclass_transform
 
 import jax
 import numpy as np
@@ -91,17 +91,15 @@ class Struct:
     trace). ``hash`` hashes the field values, so it raises for a struct holding arrays.
     """
 
-    # Set on each subclass by ``dataclasses.dataclass``; declared so type checkers accept
-    # a Struct wherever a dataclass instance is expected (``dataclasses.fields``).
-    __dataclass_fields__: ClassVar[dict[str, dataclasses.Field[Any]]]
-
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         # eq=False keeps the dataclass from generating a field-wise ``==`` that returns
         # an array for array fields; ``__eq__``/``__hash__`` below replace it.
         dataclasses.dataclass(frozen=True, eq=False)(cls)
         data, meta = [], []
-        for f in dataclasses.fields(cls):
+        # ty cannot see the dataclass() call above. An annotation on Struct would leak
+        # into subclass annotation walks (StageBundle's validator).
+        for f in dataclasses.fields(cls):  # ty: ignore[invalid-argument-type]
             if "converter" in f.metadata:
                 raise TypeError(
                     f"{cls.__qualname__}.{f.name}: converter= is not supported by "
@@ -120,7 +118,8 @@ class Struct:
         return tree_equal(self, other)
 
     def __hash__(self):
-        return hash(tuple((f.name, getattr(self, f.name)) for f in dataclasses.fields(self)))
+        fields = dataclasses.fields(self)  # ty: ignore[invalid-argument-type]
+        return hash(tuple((f.name, getattr(self, f.name)) for f in fields))
 
 
 def tree_equal(a, b):

@@ -41,6 +41,7 @@ from typing import Any, Literal, NamedTuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.interpreters import ad as _ad
 
 from xtrax.intent._trace import _active_session, _suspend_registration, decision_for
 from xtrax.intent.context import Context
@@ -180,7 +181,7 @@ def _forward_mode_active(args: tuple[Any, ...]) -> bool:
     """
     if not getattr(jax.config, "jax_use_direct_linearize", False):
         return False
-    tracer = getattr(jax.interpreters.ad, "JVPTracer", None)
+    tracer = getattr(_ad, "JVPTracer", None)
     return tracer is not None and any(isinstance(leaf, tracer) for leaf in jax.tree.leaves(args))
 
 
