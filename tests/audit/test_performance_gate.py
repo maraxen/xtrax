@@ -774,6 +774,56 @@ def test_dispatch_probe_skips_without_trace_probe() -> None:
     assert result.reason == "no trace_probe configured for kernel"
 
 
+# --- model_jit kernel under the trace-count gate (equinox decoupling, step 3) ----------------
+
+
+def test_model_jit_kernel_passes_and_a_retracing_probe_fails(tmp_path, monkeypatch) -> None:
+    """The kernel is a ``model_jit`` function over a dict MLP; a probe that changes a static
+    leaf on every call retraces it, and the gate must report that."""
+    (tmp_path / "retrace_probe_fixture.py").write_text(
+        textwrap.dedent(
+            """
+            import jax.numpy as jnp
+
+            def probe(guarded):
+                base = {
+                    "w1": jnp.ones((4, 4)),
+                    "b1": jnp.zeros((4,)),
+                    "w2": jnp.ones((4, 2)),
+                }
+                x = jnp.ones((4,))
+                for act in ("tanh", "relu", "gelu"):  # a new static leaf each call
+                    guarded({**base, "act": act}, x)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    stable = run_trace_probe(_KERNEL_QUALNAME, max_traces=1, trace_probe=_KERNEL_PROBE)
+    assert stable.passed is True and not stable.skipped
+
+    retracing = run_trace_probe(
+        _KERNEL_QUALNAME, max_traces=1, trace_probe="retrace_probe_fixture:probe"
+    )
+    assert retracing.passed is False
+    assert "traced > 1 times" in retracing.reason
+
+
+def test_model_jit_kernel_is_not_wrapped_in_a_second_jit() -> None:
+    """The gate leaves a ``model_jit`` target alone (a plain jax.jit would reject its str leaf)."""
+    from xtrax.devtools.gates._trace_probe import _guard_for_trace_count, import_qualname
+
+    target = import_qualname(_KERNEL_QUALNAME)
+    assert _guard_for_trace_count(target, max_traces=1) is target
+
+    def plain(x):
+        return x + 1
+
+    assert _guard_for_trace_count(plain, max_traces=1) is not plain
+
+
 # --- X5: per-kernel max_executions ceiling ------------------------------------
 
 
