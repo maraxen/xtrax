@@ -1,4 +1,4 @@
-"""Experimental. Intent resolution for loops and maps.
+"""Intent resolution for loops and maps.
 
 ``xtrax.intent`` records caller constraints (``Context``), the errors
 raised when a context or site cannot be satisfied, the ``Plan`` of

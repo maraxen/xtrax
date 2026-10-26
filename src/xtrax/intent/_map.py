@@ -1,4 +1,4 @@
-"""Experimental. Leading-axis map for intent resolution.
+"""Leading-axis map for intent resolution.
 
 With no session, or with a session that has no decision, both the primal
 and the derivative are :func:`jax.vmap`. A session decision selects

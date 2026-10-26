@@ -10,8 +10,6 @@ The user ruled criterion 8 met on equivalence on 261025, after the two runs belo
 
 On two pre-registered Blackwell (SM120) workloads, intent matched the hand-written forms exactly. It did so at equal compile and step cost, with gradients equal to a `lax.scan` reference and zero steady-state recompiles. The workloads were an autoregressive decode (aminx bathos run `3b93937a`) and Langevin trajectories under an outer map (run `c3c745a5`). Both runs returned `no_contrast`. The hand-picked scan form compiled as fast as the while form (1.03×), and `lax.map` around a `while_loop` compiled as fast as `vmap` around it (0.94×). The compile gap the `scan_around_while` rule guards against did not reproduce on current JAX. Read intent's value as one flag-free, differentiable call site, not as a compile-time win.
 
-The module docstrings still open with "Experimental." until the next release. — verify: `src/xtrax/intent/__init__.py:1`
-
 Names from `xtrax.intent` used below are in `__all__`. — verify: `src/xtrax/intent/__init__.py:20-41`
 
 ## Example

@@ -2,6 +2,7 @@
 
 import importlib
 import logging
+import pkgutil
 import subprocess
 import sys
 import types
@@ -359,6 +360,19 @@ def test_package_names_are_functions_and_submodules_are_patchable():
     with mock.patch("xtrax.intent._compile.SCAN_AROUND_WHILE_BACKENDS", replacement):
         compile_module = importlib.import_module("xtrax.intent._compile")
         assert compile_module.SCAN_AROUND_WHILE_BACKENDS is replacement
+
+
+def test_module_docstrings_do_not_open_with_experimental():
+    """No ``xtrax.intent`` module docstring opens with "Experimental." (#6171).
+
+    Fails while any module still carries the prefix that the MVP shipped with.
+    """
+    names = [info.name for info in pkgutil.iter_modules(xtrax.intent.__path__)]
+    assert {"_compile", "_loop", "_map", "_resolve", "sites"} <= set(names)
+    for name in names:
+        module = importlib.import_module(f"xtrax.intent.{name}")
+        assert not (module.__doc__ or "").lstrip().startswith("Experimental"), name
+    assert not (xtrax.intent.__doc__ or "").lstrip().startswith("Experimental")
 
 
 def _vmap_is_expensive(decisions):
