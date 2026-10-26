@@ -95,7 +95,7 @@ class _ExecSession(Session):
         kind : {"loop", "map"}
             Site kind.
         label : str
-            User name or ``file:line``.
+            User name or ``module:line``.
         avals : tuple
             Abstract values of the site arguments.
         length : int or None

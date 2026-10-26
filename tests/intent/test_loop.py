@@ -332,7 +332,7 @@ def test_loop_label_points_at_user_call():
         call_line = inspect.currentframe().f_lineno + 1
         loop(body, init, xs=xs)
     record = session.records[0]
-    assert record.key.label == f"test_loop.py:{call_line}"
+    assert record.key.label == f"{__name__}:{call_line}"
     assert record.kind == "loop"
     assert record.length == 3
     assert record.avals == (

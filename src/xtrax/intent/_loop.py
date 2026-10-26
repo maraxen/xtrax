@@ -408,7 +408,7 @@ def loop(
     cond : callable or None
         Continuation predicate ``cond(carry) -> bool`` for the conditional form.
     name : str or None
-        Site label. ``None`` records the caller as ``file:line``.
+        Site label. ``None`` records the caller as ``module:line``.
 
     Returns
     -------
