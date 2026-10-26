@@ -35,6 +35,15 @@ revision 1 could ship a kernel on a gain over the current code below the stated 
 threshold. The change is strictly harder on ship_kernel; the user approved it knowing the
 smoke numbers. It also showed form D's atomic_add writes nothing on this GPU (two probes);
 D stays in the grid and is expected to report kernel cells incorrect.
+
+Sizing (exploratory, untracked, before the tracked run; job 26934124, K=129 full+boundary
+float64): per-cell wall incl. compile A 3.6 s, B 27.9 s, C_triton 8 s (compile error:
+shared memory 1,064,960 B requested vs 101,376 available at default tiles, so C_triton is
+expected to report kernel_ok_k129 false; fixing it needs output K-tiling, a redesign not
+attempted here), D 3.2 s. K=11 cells take 2-4 s. Wall-time estimate for all 48 cells:
+about 10 min of cell time plus about 6 min of environment setup; job walltime 1:30 with
+a 1200 s per-cell timeout. Each cell is its own process with a sha256-stamped artifact, so
+a preempted run resumes by reusing verified cells (reuse_log.jsonl).
 Timing is compared on the full production shape with float64 entropy (the reference
 precision), separately at K=11 and K=129. float32 entropy is reported per form
 (accepted iff max |MI_f32 - MI_ref| <= 1e-6 nats on every full float32 cell) and does not
