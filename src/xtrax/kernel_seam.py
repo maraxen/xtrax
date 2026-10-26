@@ -23,9 +23,17 @@ records ``kernel:<backend>`` or ``reference`` (and the derivative form) with the
 reason, and says when a bound context was overridden. Execution follows the
 planned decision. Outside ``compile`` an op selects against its own bound
 context and records nothing.
+
+Ops nest. While a derivative rule differentiates a reference, any op that
+reference calls runs its own reference, so derivatives come from references all
+the way down and a nested ``vjp_kernels`` op never meets the seam's own
+``jax.jvp``. Forward passes still run kernels. ``jax.jit`` caches do not see this
+switch, so do not wrap an inner op in its own ``jax.jit`` inside a reference.
 """
 
-from collections.abc import Callable, Mapping
+import contextlib
+import contextvars
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from functools import update_wrapper
 from typing import Any, Literal, NamedTuple
@@ -145,6 +153,21 @@ def _coerce_tangents(primals: tuple[Any, ...], tangents: tuple[Any, ...]) -> tup
     )
 
 
+_IN_REFERENCE_DERIVATIVE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "xtrax_op_in_reference_derivative", default=False
+)
+
+
+@contextlib.contextmanager
+def _reference_derivative() -> Iterator[None]:
+    """Run nested ops as their references while a derivative rule traces a reference."""
+    token = _IN_REFERENCE_DERIVATIVE.set(True)
+    try:
+        yield
+    finally:
+        _IN_REFERENCE_DERIVATIVE.reset(token)
+
+
 def _forward_mode_active(args: tuple[Any, ...]) -> bool:
     """True when an argument is traced by forward-mode ``jvp`` (not by reverse mode).
 
@@ -241,7 +264,9 @@ class Op:
         self.context = Context() if context is None else context
         self.bound = context is not None
         self._built: dict[tuple[str, str], Callable[..., Any]] = {}
-        update_wrapper(self, reference)
+        # updated=(): copying reference.__dict__ would overwrite these fields when the
+        # reference is itself an Op.
+        update_wrapper(self, reference, updated=())
         self._frozen = True
 
     def __setattr__(self, key: str, value: Any) -> None:
@@ -341,6 +366,8 @@ class Op:
             Exec mode, and the call is not in the plan or its argument shapes or
             dtypes differ from the plan's.
         """
+        if _IN_REFERENCE_DERIVATIVE.get():
+            return self.reference(*args)
         session = current_session()
         if session is None:
             return self._apply(self.select(), args)
@@ -478,7 +505,7 @@ class Op:
             """Reference JVP with ``float0`` tangents for integer and bool inputs."""
             tangents = _coerce_tangents(primals, tangents)
             out = fn(*primals)
-            with _suspend_registration():
+            with _suspend_registration(), _reference_derivative():
                 _, tangent_out = jax.jvp(reference, primals, tangents)
             return out, tangent_out
 
@@ -503,13 +530,13 @@ class Op:
             """Reference JVP for ``out``; residuals are constants."""
             tangents = _coerce_tangents(primals, tangents)
             out, residuals = fwd_pair(*primals)
-            with _suspend_registration():
+            with _suspend_registration(), _reference_derivative():
                 _, tangent_out = jax.jvp(reference, primals, tangents)
             return (out, residuals), (tangent_out, jax.tree.map(_zero_tangent, residuals))
 
         def reference_bwd(args, ct):
             """Input cotangents by reference autodiff."""
-            with _suspend_registration():
+            with _suspend_registration(), _reference_derivative():
                 return _normalize_cotangents(args, jax.vjp(reference, *args)[1](ct))
 
         @jax.custom_jvp
