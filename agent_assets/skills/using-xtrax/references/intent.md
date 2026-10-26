@@ -2,13 +2,13 @@
 
 # xtrax.intent
 
-> Experimental until criterion 8 (GPU run) passes; the BatchPlanner decision tree above remains the default.
+`xtrax.intent` is the first answer for a loop or map whose strategy should follow the caller's context. One call site runs as a `while_loop` when undifferentiated and as a `lax.scan` under AD, and a map runs as `Vmap` or as the `ChunkedMap` a memory budget requires. `BatchPlanner` is the layer `intent.map` plans with, and stays the direct API for a `BatchPlan` you build yourself. — verify: `agent_assets/skills/using-xtrax/SKILL.md:141-166`
 
-`xtrax.intent` is experimental. — verify: `src/xtrax/intent/__init__.py:1`
+Criterion 8, the pre-registered GPU gate for leaving experimental, was ruled met on equivalence by the user on 261025. — verify: `.praxia/docs/superpowers/specs/261023_intent-resolution-design.md:216-218`
 
-Criterion 8 is the pre-registered GPU run that gates leaving experimental. — verify: `.praxia/docs/superpowers/specs/261023_intent-resolution-design.md:216-218`
+On two pre-registered Blackwell (SM120) workloads, intent matched the hand-written forms exactly. It did so at equal compile and step cost, with gradients equal to a `lax.scan` reference and zero steady-state recompiles. The workloads were an autoregressive decode (aminx bathos run `3b93937a`) and Langevin trajectories under an outer map (run `c3c745a5`). Both runs returned `no_contrast`. The hand-picked scan form compiled as fast as the while form (1.03×), and `lax.map` around a `while_loop` compiled as fast as `vmap` around it (0.94×). The compile gap the `scan_around_while` rule guards against did not reproduce on current JAX. Read intent's value as one flag-free, differentiable call site, not as a compile-time win.
 
-The BatchPlanner decision tree in this skill stays the default. — verify: `agent_assets/skills/using-xtrax/SKILL.md:143-164`
+The module docstrings still open with "Experimental." until the next release. — verify: `src/xtrax/intent/__init__.py:1`
 
 Names from `xtrax.intent` used below are in `__all__`. — verify: `src/xtrax/intent/__init__.py:20-40`
 
