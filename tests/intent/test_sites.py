@@ -9,6 +9,7 @@ from jax import ShapeDtypeStruct
 from jax.sharding import SingleDeviceSharding
 
 from xtrax.intent import (
+    IntentError,
     Session,
     SiteDecision,
     SiteKey,
@@ -300,10 +301,64 @@ def test_decision_for_with_and_without_decisions():
     assert with_decisions.records is not without.records
 
 
-def test_call_label_uses_name_or_caller_file_line():
+def test_call_label_uses_name_or_caller_module_line():
+    """A name wins; otherwise the label is the caller's module name and line."""
     assert call_label("step", 1) == "step"
     here = call_label(None, 1)
-    assert here == f"test_sites.py:{inspect.currentframe().f_lineno - 1}"
+    assert here == f"{__name__}:{inspect.currentframe().f_lineno - 1}"
+
+
+def _site_in(module_name: str, filename: str) -> str:
+    """Label of a call at line 2 of ``filename``, run as module ``module_name``."""
+    source = "def site(label_fn):\n    return label_fn(None, 1)\n"
+    namespace = {"__name__": module_name}
+    exec(compile(source, filename, "exec"), namespace)  # noqa: S102
+    return namespace["site"](call_label)
+
+
+def test_call_label_distinguishes_same_basename_and_line():
+    """models/encoder/layers.py:2 and models/decoder/layers.py:2 get different labels.
+
+    The label was ``os.path.basename(file):line``, so both were ``layers.py:2`` and a
+    label-keyed override meant for one rewrote both (#6160). Fails while the label
+    is built from the file's base name.
+    """
+    encoder = _site_in("models.encoder.layers", "/repo/models/encoder/layers.py")
+    decoder = _site_in("models.decoder.layers", "/repo/models/decoder/layers.py")
+    assert encoder == "models.encoder.layers:2"
+    assert decoder == "models.decoder.layers:2"
+
+
+def test_call_label_same_label_from_distinct_files_is_refused():
+    """Two files that give one label in a session raise instead of sharing an override key.
+
+    Both scripts run as ``__main__``, so module name and line match. The session sees
+    the second origin differ from the first and names both files.
+    """
+    session = Session(mode="plan")
+    with activate(session):
+        first = _site_in("__main__", "/work/a/run.py")
+        assert _site_in("__main__", "/work/a/run.py") == first
+        with pytest.raises(IntentError) as exc_info:
+            _site_in("__main__", "/work/b/run.py")
+    err = exc_info.value
+    assert err.site == first == "__main__:2"
+    assert "/work/a/run.py" in err.constraint
+    assert "/work/b/run.py" in err.constraint
+    assert "name=" in err.constraint
+
+
+def test_call_label_distinct_origins_are_fine_without_a_session():
+    """No active session means no registry: the same label from two files is just a string."""
+    assert _site_in("__main__", "/work/a/run.py") == _site_in("__main__", "/work/b/run.py")
+
+
+def test_call_label_named_site_skips_origin_check():
+    """A user-chosen name may repeat across files; only auto labels are origin-checked."""
+    session = Session(mode="plan")
+    with activate(session):
+        assert call_label("batch", 1) == "batch"
+        assert call_label("batch", 1) == "batch"
 
 
 def test_site_record_equality_ignores_fn():

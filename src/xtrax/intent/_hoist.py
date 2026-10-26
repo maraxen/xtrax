@@ -1,4 +1,4 @@
-"""Experimental. Closure conversion that hoists every closed-over tracer.
+"""Closure conversion that hoists every closed-over tracer.
 
 :func:`jax.closure_convert` hoists only closed-over values that can carry a
 tangent. A closed-over integer or boolean tracer (tangent dtype ``float0``)

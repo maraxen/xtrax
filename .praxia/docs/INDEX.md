@@ -73,6 +73,7 @@
 ## Actuation Surfaces
 
 ## Audits
+- [261026_xtrax-thin-wrapper-audit](audits/261026_xtrax-thin-wrapper-audit.md) — Every src/xtrax subpackage classified decision / domain-infra / thin-wrapper, with eqx usage, consumer call sites at origin/main, and a keep/deprecate/split call; shrinks the 19-class Equinox migration to 13 and corrects four spec assumptions.
 - [261024_intent-mvp-code-review-fixes](audits/261024_intent-mvp-code-review-fixes.md) — /code-review xhigh on PR #228 found 15 issues; 11 fixed in three waves plus one follow-up, re-review 12/12 resolved; 5 parked as backlog.
 - [261023_intent-mvp-final-review](audits/261023_intent-mvp-final-review.md) — Final whole-branch review outcome for the intent MVP: loop-in-map JVP bug fixed, two findings ruled float32 conditioning against float64 truth, re-review 4/4 resolved.
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
@@ -99,6 +100,7 @@
 - [260702_roadmap-research-synthesis](research/260702_roadmap-research-synthesis.md) — roadmap-cycle research synthesis (task 260702_research-roadmap-dags): 6 adversarially-verified themes → #2181 autoresearch ratchet-loop architecture + gate catalog + bathos capability map, #2174 minimal composition substrate child item (D1–D4, AC1–AC6), neuro-symbolic placement (grounding node in #2174, entry criterion for #2181), praxia plugin contract + rig-run dispatch gaps, cross-cutting gate-design template; brainstorm fork list + dropped-claims appendix
 
 ## Decisions
+- [261026_xtrax-scope-rubric](decisions/261026_xtrax-scope-rubric.md) — An ordered binary-cue rubric (fast-and-frugal tree shape) for judging whether an xtrax class or function earns its place: evidence completeness first, then load-bearing use, owned decisions, redundancy with JAX/optax/orbax, and scope fit; applied to the 261026 audit candidates.
 - [260930_gate-b-ruling-holds-with-controller](decisions/260930_gate-b-ruling-holds-with-controller.md) — Addendum to 260909: the gate-(b) closure is the declared evaluator/split/metric paths hashed by closure_lock; controller harness code outside it (main_loop acceptance plumbing) is not gate (b). Applied to #4584: pre-scoring halt, self-consistent CandidateRunResult and adapter docstring ship as an ordinary PR; reconciling `accepted` and moving the stats/seed gates ahead of the lineage advance goes in a separate PR for Marielle's explicit sign-off.
 - [260909_gate-b-scope-loop-evaluator-not-ci-gates](decisions/260909_gate-b-scope-loop-evaluator-not-ci-gates.md) — Marielle's ruling: gate (b)'s 'evaluator code / test splits / metric definitions' means the #2181 loop's EvaluateFn closure; repo audit gates such as test_rigor are outside it and need no per-event attestation
 - [260813_3653-gw06-remaining-gate-wiring-decisions](decisions/260813_3653-gw06-remaining-gate-wiring-decisions.md) — [GW-06] Remaining human-approval gate wiring decisions (T2-29, T2-30, T2-31)
