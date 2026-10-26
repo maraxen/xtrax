@@ -11,6 +11,7 @@ Spec: .praxia/docs/specs/261023_equinox-decoupling.md section 3.
 import dataclasses
 import functools
 import sys
+from typing import Any, ClassVar, dataclass_transform
 
 import jax
 import numpy as np
@@ -67,6 +68,9 @@ def _register(cls, data, meta):
     jax.tree_util.register_pytree_with_keys(cls, flatten_with_keys, unflatten, flatten)
 
 
+# Tells type checkers that subclasses are frozen dataclasses (PEP 681), which
+# ``__init_subclass__`` makes them at runtime.
+@dataclass_transform(frozen_default=True, field_specifiers=(field, dataclasses.field))
 class Struct:
     """Frozen-dataclass pytree base; subclasses need no decorator.
 
@@ -86,6 +90,10 @@ class Struct:
     and equal leaves, giving a Python bool for concrete arrays (a traced bool under a
     trace). ``hash`` hashes the field values, so it raises for a struct holding arrays.
     """
+
+    # Set on each subclass by ``dataclasses.dataclass``; declared so type checkers accept
+    # a Struct wherever a dataclass instance is expected (``dataclasses.fields``).
+    __dataclass_fields__: ClassVar[dict[str, dataclasses.Field[Any]]]
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -265,7 +273,7 @@ def model_jit(fn):
 
     # Tells tools that wrap callables for trace counting (the performance gate) that this
     # is already a jit boundary, as they would for a ``jax.jit`` result.
-    wrapper._xtrax_model_jit = True
+    setattr(wrapper, "_xtrax_model_jit", True)  # noqa: B010 (read with getattr)
     return wrapper
 
 
