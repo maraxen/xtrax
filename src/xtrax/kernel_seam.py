@@ -41,6 +41,7 @@ from typing import Any, Literal, NamedTuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.interpreters import ad as _ad
 
 from xtrax.intent._trace import _active_session, _suspend_registration, decision_for
 from xtrax.intent.context import Context
@@ -180,7 +181,7 @@ def _forward_mode_active(args: tuple[Any, ...]) -> bool:
     """
     if not getattr(jax.config, "jax_use_direct_linearize", False):
         return False
-    tracer = getattr(jax.interpreters.ad, "JVPTracer", None)
+    tracer = getattr(_ad, "JVPTracer", None)
     return tracer is not None and any(isinstance(leaf, tracer) for leaf in jax.tree.leaves(args))
 
 
@@ -464,22 +465,31 @@ class Op:
             "remove the vjp kernel for this backend or use reverse mode",
         )
 
+    @staticmethod
+    def _kernel_backend(sel: OpSelection) -> str:
+        """Backend of a kernel selection; only the reference selection has none."""
+        if sel.backend is None:
+            raise RuntimeError(f"{sel.form} selection has no backend: {sel!r}")
+        return sel.backend
+
     def _function(self, sel: OpSelection) -> Callable[..., Any]:
         """Build (once) the differentiable function for a selection."""
-        key = (sel.form, sel.backend)
+        backend = self._kernel_backend(sel)
+        key = (sel.form, backend)
         if key not in self._built:
             if sel.form == "kernel":
-                self._built[key] = self._build_jvp_form(self.kernels[sel.backend])
+                self._built[key] = self._build_jvp_form(self.kernels[backend])
             else:
-                self._built[key] = self._build_vjp_form(self.vjp_kernels[sel.backend])
+                self._built[key] = self._build_vjp_form(self.vjp_kernels[backend])
         return self._built[key]
 
     def _check_signature(self, sel: OpSelection, args: tuple[Any, ...]) -> None:
         """Raise when the kernel's abstract output differs from the reference's."""
+        backend = self._kernel_backend(sel)
         if sel.form == "vjp_kernel":
-            kernel_out = jax.eval_shape(lambda *a: self.vjp_kernels[sel.backend].fwd(*a)[0], *args)
+            kernel_out = jax.eval_shape(lambda *a: self.vjp_kernels[backend].fwd(*a)[0], *args)
         else:
-            kernel_out = jax.eval_shape(self.kernels[sel.backend], *args)
+            kernel_out = jax.eval_shape(self.kernels[backend], *args)
         ref_out = jax.eval_shape(self.reference, *args)
         got, want = _structs(kernel_out), _structs(ref_out)
         if got != want:
