@@ -8,6 +8,7 @@ leaves are traced, everything else rides along as a hashable static argument.
 Spec: .praxia/docs/specs/261023_equinox-decoupling.md section 3.
 """
 
+import collections
 import dataclasses
 import functools
 import sys
@@ -109,6 +110,14 @@ class Struct:
         _register(cls, tuple(data), tuple(meta))
 
     def __post_init__(self):
+        params = type(self).__dataclass_params__  # ty: ignore[unresolved-attribute]
+        if params.eq or not params.frozen:
+            # A second @dataclass on the subclass replaced Struct's frozen, eq=False one,
+            # restoring a mutable class with field-wise == (an array for array fields).
+            raise TypeError(
+                f"{type(self).__qualname__}: do not decorate xtrax.Struct subclasses with "
+                "@dataclass; Struct already makes them frozen dataclasses"
+            )
         for klass in reversed(type(self).__mro__):
             check = klass.__dict__.get("__check_init__")
             if check is not None:
@@ -234,6 +243,10 @@ class _Static:
         return isinstance(other, _Static) and self._key == other._key
 
 
+# Per model_jit function: how many output static parts to keep (one per trace signature).
+_MODEL_JIT_OUT_STATIC_MAX = 256
+
+
 def _aval_key(arrays):
     return tuple(
         (getattr(a, "shape", None), getattr(a, "dtype", None))
@@ -253,12 +266,19 @@ def model_jit(fn):
     Apply it to a module-level function and pass the model as an argument; it is not a
     method descriptor.
     """
-    out_static = {}
+    # Output static parts by trace signature, least recently used first. Bounded so a
+    # sweep over many static values does not grow it forever; an evicted entry is
+    # rebuilt by an abstract retrace (no compile) when jit's own cache still hits.
+    out_static = collections.OrderedDict()
 
     def run(arrays, static):
         args, kwargs = combine(arrays, static.value)
         out_arrays, out_rest = partition(fn(*args, **kwargs))
-        out_static[(static, _aval_key(arrays))] = out_rest
+        key = (static, _aval_key(arrays))
+        out_static[key] = out_rest
+        out_static.move_to_end(key)
+        while len(out_static) > _MODEL_JIT_OUT_STATIC_MAX:
+            out_static.popitem(last=False)
         return out_arrays
 
     jitted = jax.jit(run, static_argnums=1)
@@ -268,7 +288,13 @@ def model_jit(fn):
         arrays, rest = partition((args, kwargs))
         static = _Static(rest)
         out_arrays = jitted(arrays, static)
-        return combine(out_arrays, out_static[(static, _aval_key(arrays))])
+        key = (static, _aval_key(arrays))
+        if key not in out_static:
+            jax.eval_shape(lambda a: run(a, static), arrays)
+        out_static.move_to_end(key)
+        return combine(out_arrays, out_static[key])
+
+    setattr(wrapper, "_xtrax_out_static", out_static)  # noqa: B010 (inspected by tests)
 
     # Tells tools that wrap callables for trace counting (the performance gate) that this
     # is already a jit boundary, as they would for a ``jax.jit`` result.

@@ -769,3 +769,52 @@ def test_eq_control_dataclass_default_eq_returns_an_array():
 
     result = Plain(w=_arr(1.0, 2.0)) == Plain(w=_arr(1.0, 2.0))
     assert not isinstance(result, bool)
+
+
+# --- #232 follow-ups ------------------------------------------------------------------
+
+
+def test_redecorated_dataclass_subclass_is_refused():
+    # A second @dataclass silently restores the field-wise == (an array, see the control
+    # above) and, without frozen=True, mutability. Refuse it at construction.
+    @dataclasses.dataclass
+    class Twice(Struct):
+        w: jax.Array
+
+    with pytest.raises(TypeError, match="@dataclass"):
+        Twice(w=_arr(1.0))
+
+
+def test_redecorated_frozen_subclass_is_refused_by_dataclasses_itself():
+    # Pins the stdlib behaviour the guard relies on for frozen=True: dataclasses refuses
+    # to re-apply a frozen __setattr__ at class definition, so only the non-frozen
+    # spelling reaches construction.
+    with pytest.raises(TypeError, match="__setattr__"):
+
+        @dataclasses.dataclass(frozen=True, eq=False)
+        class Same(Struct):
+            w: jax.Array
+
+
+def test_model_jit_output_static_cache_is_bounded_and_refills(monkeypatch):
+    import xtrax._tree as tree
+
+    monkeypatch.setattr(tree, "_MODEL_JIT_OUT_STATIC_MAX", 2)
+    traces = []
+
+    @tree.model_jit
+    def step(model):
+        traces.append(model["tag"])
+        return {"w": model["w"] * 2, "tag": model["tag"]}
+
+    w = jnp.ones(3)
+    for tag in ("a", "b", "c"):
+        assert step({"w": w, "tag": tag})["tag"] == tag
+    # "a" was evicted from the 2-entry output cache while its executable stays in the
+    # jit cache; the call must still recombine the right static output.
+    out = step({"w": w, "tag": "a"})
+    assert out["tag"] == "a"
+    np.testing.assert_array_equal(out["w"], w * 2)
+    assert len(step._xtrax_out_static) <= 2
+    # three jit traces, then one abstract (eval_shape) retrace to refill "a"; no recompile
+    assert traces == ["a", "b", "c", "a"]
