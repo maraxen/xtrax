@@ -28,7 +28,7 @@ _STRATEGY_FIELDS: dict[type[Any], tuple[str, ...]] = {
 class SiteKey:
     """Identity of one intent call on one resolution path.
 
-    ``label`` is the user ``name`` or ``"file.py:LINE"`` of the call.
+    ``label`` is the user ``name`` or the caller's ``"module:line"``.
     ``ordinal`` separates repeated calls that share a parent, path, and label.
 
     Attributes
@@ -133,11 +133,16 @@ class Plan:
         from JSON; passed back into :meth:`from_json`.
     decisions : tuple of SiteDecision
         One decision per visited site.
+    warnings : tuple of str
+        Notes about the plan as a whole, such as the arguments a partial
+        differentiation could not linearize. Empty when there are none. A
+        plan written before this field existed loads with ``()``.
     """
 
     schema_version: int
     context: Context
     decisions: tuple[SiteDecision, ...]
+    warnings: tuple[str, ...] = ()
 
     def by_key(self) -> Mapping[SiteKey, SiteDecision]:
         """Index decisions by site key.
@@ -177,7 +182,8 @@ class Plan:
         -------
         str
             Header plus one tab-separated row per decision: key, kind,
-            primal, diff, primal reason, diff reason, warnings.
+            primal, diff, primal reason, diff reason, warnings. Each plan-level
+            warning follows as a ``warning: <text>`` line.
         """
         rows = ["key\tkind\tprimal\tdiff\tprimal_reason\tdiff_reason\twarnings"]
         for decision in self.decisions:
@@ -195,6 +201,7 @@ class Plan:
                     )
                 )
             )
+        rows.extend(f"warning: {warning}" for warning in self.warnings)
         return "\n".join(rows)
 
     def to_json(self) -> str:
@@ -226,6 +233,7 @@ class Plan:
             "schema_version": self.schema_version,
             "context": repr(self.context),
             "decisions": [_decision_to_json(decision) for decision in self.decisions],
+            "warnings": list(self.warnings),
         }
         return json.dumps(payload)
 
@@ -251,7 +259,8 @@ class Plan:
         ------
         ValueError
             ``schema_version`` is not :data:`PLAN_SCHEMA_VERSION`, or the
-            payload is not an object with ``decisions``, keys, and strategies.
+            payload is not an object with ``decisions``, keys, and strategies,
+            or ``warnings`` is present and not a list.
             The message names the field. An unknown strategy type is named too.
         json.JSONDecodeError
             ``s`` is not JSON text.
@@ -270,7 +279,10 @@ class Plan:
         if not isinstance(raw_decisions, list):
             raise ValueError("'decisions' is not a list")
         decisions = tuple(_decision_from_json(item) for item in raw_decisions)
-        return cls(version, context, decisions)
+        raw_warnings = payload.get("warnings", [])
+        if not isinstance(raw_warnings, list):
+            raise ValueError("'warnings' is not a list")
+        return cls(version, context, decisions, tuple(raw_warnings))
 
 
 def _strategy_cell(strategy: AxisStrategy | StaticWhile | None) -> str:

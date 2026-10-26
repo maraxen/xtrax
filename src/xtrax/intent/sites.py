@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 import jax
 
-from xtrax.intent.errors import SiteMismatchError
+from xtrax.intent.errors import IntentError, SiteMismatchError
 from xtrax.intent.plan import SiteDecision, SiteKey
 
 _Frame = tuple[SiteKey, Literal["primal", "diff"]]
@@ -113,6 +113,7 @@ class Session:
         self.decisions = decisions
         self._frames: list[_Frame] = []
         self._ordinals: dict[_OrdinalKey, int] = {}
+        self._label_files: dict[str, str] = {}
 
     def enter_site(
         self,
@@ -137,7 +138,7 @@ class Session:
         kind : {"loop", "map"}
             Site kind stored on the plan record.
         label : str
-            User name or ``file:line`` of the call.
+            User name or ``module:line`` of the call.
         avals : tuple of jax.ShapeDtypeStruct
             Abstract values traced at this call.
         length : int or None
@@ -256,6 +257,27 @@ class Session:
         finally:
             self.pop()
 
+    def _claim_label(self, label: str, filename: str) -> None:
+        """Record that ``filename`` produced the call-site ``label``.
+
+        Raises
+        ------
+        IntentError
+            A different file already produced ``label`` in this session.
+        """
+        first = self._label_files.setdefault(label, filename)
+        if first != filename:
+            constraint = (
+                f"label {label!r} comes from {first} and {filename}; "
+                "pass name= to one of the call sites"
+            )
+            raise IntentError(
+                f"call-site label {label!r} is shared by two files",
+                site=label,
+                path="primal",
+                constraint=constraint,
+            )
+
     def _allocate_key(self, label: str) -> SiteKey:
         """Reserve the next key for ``label`` without storing ``ordinal + 1``."""
         if self._frames:
@@ -328,17 +350,29 @@ def activate(session: Session) -> Iterator[Session]:
 
 
 def call_label(name: str | None, stacklevel: int = 1) -> str:
-    """Return ``name``, or ``basename:lineno`` of a caller frame.
+    """Return ``name``, or ``module:lineno`` of a caller frame.
 
     ``stacklevel=1`` is the direct caller of :func:`call_label`. Each
-    greater level walks one frame further up. ``basename`` is the file
-    name only, without its directory.
+    greater level walks one frame further up. ``module`` is the caller's
+    ``__name__``, so ``models/encoder/layers.py:42`` and
+    ``models/decoder/layers.py:42`` read ``models.encoder.layers:42`` and
+    ``models.decoder.layers:42`` and a label-keyed override reaches one of
+    them. A frame with no usable ``__name__`` falls back to the file's base
+    name.
+
+    With a session active, a label built this way is also registered against
+    the caller's file. A second file that produces the same label (for
+    example two scripts that both run as ``__main__`` and call at one line)
+    raises :class:`~xtrax.intent.errors.IntentError`, because an override
+    keyed by that label would reach both sites.
 
     Parameters
     ----------
     name : str or None
         User name of the call. Returned unchanged when it is not ``None``,
-        including when it is empty.
+        including when it is empty. A user name is not checked for origin:
+        sharing one name across call sites is how one override reaches
+        several of them.
     stacklevel : int
         Frames above :func:`call_label` to read when ``name`` is ``None``.
         ``1`` selects the direct caller.
@@ -346,7 +380,7 @@ def call_label(name: str | None, stacklevel: int = 1) -> str:
     Returns
     -------
     str
-        ``name`` when it is not ``None``. Otherwise ``f"{basename}:{lineno}"``.
+        ``name`` when it is not ``None``. Otherwise ``f"{module}:{lineno}"``.
 
     Raises
     ------
@@ -355,6 +389,9 @@ def call_label(name: str | None, stacklevel: int = 1) -> str:
         passes the top of the stack.
     RuntimeError
         ``name`` is ``None`` and the interpreter has no caller frame.
+    IntentError
+        ``name`` is ``None``, a session is active, and the label was already
+        produced by a different file in that session.
     """
     if name is not None:
         return name
@@ -368,7 +405,15 @@ def call_label(name: str | None, stacklevel: int = 1) -> str:
         if parent is None:
             raise ValueError(f"stacklevel {stacklevel} is above the top of the stack")
         frame = parent
-    return f"{os.path.basename(frame.f_code.co_filename)}:{frame.f_lineno}"
+    filename = frame.f_code.co_filename
+    module = frame.f_globals.get("__name__")
+    if not isinstance(module, str) or not module:
+        module = os.path.basename(filename)
+    label = f"{module}:{frame.f_lineno}"
+    session = current_session()
+    if session is not None:
+        session._claim_label(label, filename)
+    return label
 
 
 def _leaf_struct(leaf: Any) -> jax.ShapeDtypeStruct:

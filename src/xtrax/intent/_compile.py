@@ -2,7 +2,7 @@
 
 The plan pass traces with :func:`jax.make_jaxpr` under a plan session, then
 traces :func:`jax.linearize` once per inexact argument when any leaf is
-inexact so diff-path sites are recorded. :func:`~xtrax.intent.resolve.resolve`
+inexact so diff-path sites are recorded. :func:`~xtrax.intent.resolve`
 turns those records into one :class:`~xtrax.intent.plan.Plan`. Execution is a
 cached :func:`jax.jit` that re-enters an exec session and checks the primal
 site sequence.
@@ -17,10 +17,14 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from xtrax.intent._resolve import (
+    SCAN_AROUND_WHILE_BACKENDS,
+    _is_scan_around_while_backend,
+    resolve,
+)
 from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError, SiteMismatchError
 from xtrax.intent.plan import Plan, SiteDecision, SiteKey, canonical
-from xtrax.intent.resolve import SCAN_AROUND_WHILE_BACKENDS, _is_scan_around_while_backend, resolve
 from xtrax.intent.sites import Session, SiteRecord, _leaf_struct, activate
 from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
 from xtrax.tiling.strategy import ChunkedMap, Scan, StaticWhile, WhileCarry
@@ -91,7 +95,7 @@ class _ExecSession(Session):
         kind : {"loop", "map"}
             Site kind.
         label : str
-            User name or ``file:line``.
+            User name or ``module:line``.
         avals : tuple
             Abstract values of the site arguments.
         length : int or None
@@ -560,7 +564,13 @@ def _partial_diff_note(failures: list[str]) -> str:
 
 
 def _annotate_partial_diff(plan: Plan, note: str) -> Plan:
-    """Append ``note`` to the diff reason of every loop that has a diff strategy.
+    """Record ``note`` on the plan, and on the diff reason of loops that have a diff strategy.
+
+    The plan-level warning is the one place every plan names the failed
+    arguments: a conditional loop has no diff strategy and a map has no loop
+    row, so a plan with only those sites would otherwise never say which
+    argument failed. Loops with a diff strategy keep the note on
+    ``diff_reason`` as well, next to the strategy it qualifies.
 
     Parameters
     ----------
@@ -572,8 +582,9 @@ def _annotate_partial_diff(plan: Plan, note: str) -> Plan:
     Returns
     -------
     Plan
-        The same plan when ``note`` is empty. Otherwise each loop whose
-        ``diff`` is not ``None`` names the failed arguments on ``diff_reason``.
+        The same plan when ``note`` is empty. Otherwise ``note`` is appended
+        once to ``plan.warnings``, and each loop whose ``diff`` is not
+        ``None`` names the failed arguments on ``diff_reason``.
     """
     if not note:
         return plan
@@ -583,7 +594,7 @@ def _annotate_partial_diff(plan: Plan, note: str) -> Plan:
         else decision
         for decision in plan.decisions
     )
-    return replace(plan, decisions=decisions)
+    return replace(plan, decisions=decisions, warnings=(*plan.warnings, note))
 
 
 def _plan(
@@ -604,9 +615,9 @@ def _plan(
     kwargs : dict
         Call keyword arguments.
     ctx : Context
-        Constraints passed to :func:`~xtrax.intent.resolve.resolve`.
+        Constraints passed to :func:`~xtrax.intent.resolve`.
     overrides : mapping or None
-        Label overrides passed to :func:`~xtrax.intent.resolve.resolve`.
+        Label overrides passed to :func:`~xtrax.intent.resolve`.
 
     Returns
     -------
@@ -887,10 +898,10 @@ class Compiled:
     Parameters
     ----------
     fn : callable
-        Function containing :func:`~xtrax.intent.loop.loop` and
-        :func:`~xtrax.intent.map.map` sites.
+        Function containing :func:`~xtrax.intent.loop` and
+        :func:`~xtrax.intent.map` sites.
     ctx : Context
-        Constraints for :func:`~xtrax.intent.resolve.resolve`.
+        Constraints for :func:`~xtrax.intent.resolve`.
     overrides : mapping or None
         Optional per-label strategy overrides.
 

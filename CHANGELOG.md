@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xtrax.tiling.StaticWhile`: a frozen strategy with a static `length` for a
   bounded `while_loop` that may collect outputs.
 
+### Changed
+
+- `xtrax.intent`: an unnamed site is labelled `module:line` from its caller
+  (for example `models.encoder.layers:42`), no longer `file.py:LINE` (#6160).
+  An `overrides=` key written as `file.py:LINE` names no site and raises
+  `ValueError`; rewrite it as `module:line`, or pass `name=` at the call site.
+
 ## [0.4.1b3] - 2026-10-23
 
 ### Added
