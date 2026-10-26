@@ -201,3 +201,43 @@ def test_chunked_map_remainder_inside_two_scans():
     expected = nested(step_vmap, xs)
     for left, right in zip(jax.tree.leaves(got), jax.tree.leaves(expected), strict=True):
         assert float(jnp.max(jnp.abs(left - right))) <= 1e-5
+
+
+class TestZeroSizeOutputs:
+    """A zero-size per-element output must not reach lax.map's reshape (#6151)."""
+
+    @staticmethod
+    def _check(fn, xs, batch_size):
+        got = chunked_map(fn, xs, batch_size=batch_size)
+        expected = jax.vmap(fn)(xs)
+        assert jax.tree.structure(got) == jax.tree.structure(expected)
+        for left, right in zip(jax.tree.leaves(got), jax.tree.leaves(expected), strict=True):
+            assert left.shape == right.shape
+            assert left.dtype == right.dtype
+            assert bool(jnp.all(left == right))
+
+    def test_empty_output_divisible(self):
+        self._check(lambda x: jnp.zeros((0,), x.dtype), jnp.ones((8, 3)), 2)
+
+    def test_empty_output_ragged(self):
+        self._check(lambda x: jnp.zeros((0,), x.dtype), jnp.ones((8, 3)), 3)
+
+    def test_empty_output_remainder_of_one(self):
+        self._check(lambda x: jnp.zeros((0,), x.dtype), jnp.ones((5, 3)), 2)
+
+    def test_empty_trailing_input_axis(self):
+        self._check(lambda x: x, jnp.ones((8, 0, 3)), 2)
+
+    def test_mixed_empty_and_nonempty_leaves(self):
+        def fn(x):
+            return {"empty": jnp.zeros((0, 2), jnp.int32), "full": x * 2.0}
+
+        self._check(fn, jnp.arange(24.0).reshape(8, 3), 3)
+
+    def test_empty_output_under_jit(self):
+
+        def empty(x):
+            return jnp.zeros((0,), x.dtype)
+
+        got = jax.jit(lambda v: chunked_map(empty, v, batch_size=2))(jnp.ones((8, 3)))
+        assert got.shape == (8, 0)

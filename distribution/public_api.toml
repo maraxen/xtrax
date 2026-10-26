@@ -68,6 +68,10 @@ tier1_exports = [
     "is_array",
     "model_jit",
     "inference_mode",
+    # Kernel seam: reference + per-backend kernels behind one callable.
+    "op",
+    "Op",
+    "VjpKernel",
 ]
 
 smoke_exports = [

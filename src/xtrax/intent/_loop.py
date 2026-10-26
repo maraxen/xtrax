@@ -1,4 +1,4 @@
-"""Experimental. Static-length and conditional loops for intent resolution.
+"""Static-length and conditional loops for intent resolution.
 
 A static loop is one :func:`jax.lax.while_loop` on the primal path. JAX
 differentiation traces that loop as :func:`jax.lax.scan`. A conditional
@@ -408,7 +408,7 @@ def loop(
     cond : callable or None
         Continuation predicate ``cond(carry) -> bool`` for the conditional form.
     name : str or None
-        Site label. ``None`` records the caller as ``file:line``.
+        Site label. ``None`` records the caller as ``module:line``.
 
     Returns
     -------

@@ -1,4 +1,4 @@
-"""Experimental. Leading-axis map for intent resolution.
+"""Leading-axis map for intent resolution.
 
 With no session, or with a session that has no decision, both the primal
 and the derivative are :func:`jax.vmap`. A session decision selects
@@ -235,7 +235,7 @@ def map(
 
     When a session is active this records a site of kind ``"map"``,
     ``length=None``, and abstract values equal to the leaves of ``xs``.
-    The label is ``name`` or the caller's ``file:line``.
+    The label is ``name`` or the caller's ``module:line``.
 
     Parameters
     ----------
@@ -246,7 +246,7 @@ def map(
         Values to map. Every leaf must have rank at least 1 and the same
         leading size.
     name : str or None
-        Site label. ``None`` records the caller as ``file:line``.
+        Site label. ``None`` records the caller as ``module:line``.
 
     Returns
     -------

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `xtrax.Struct`, `xtrax.field`, and `xtrax.model_jit`, with the pytree helpers
+  `partition`, `combine`, `is_array`, and `inference_mode` (plain JAX, no Equinox).
+  `Struct` is a frozen-dataclass pytree base whose subclasses need no decorator;
+  `field(static=True)` marks a field as pytree metadata; `model_jit` is `jax.jit`
+  for arguments that mix array leaves with Python values, tracing the arrays and
+  keying the compile cache on everything else.
+
 ### Deprecated
 
 Probe release for xtrax #6107. Each name below warns with `DeprecationWarning` on
@@ -35,8 +44,8 @@ the name is in use, report it. Names with a one-line replacement are rewritten b
   `sparse_filter_jit`), with `docs/api/sparse.md`, `tests/sparse`, and the
   `using-xtrax` skill's sparsification section. A search of consumer
   repositories found no import of it (aminx's audit artifacts list it as unused).
-  To recover it, install `xtrax==0.4.1b3` or copy
-  `src/xtrax/sparse/` from the `v0.4.1b3` tag. `sparse_filter_jit` was
+  To recover it, install `xtrax==0.4.1b4` or copy
+  `src/xtrax/sparse/` from the `v0.4.1b4` tag. `sparse_filter_jit` was
   `eqx.filter_jit` unchanged. `xtrax.export.find_bcoo_leaves` stays; it inspects
   any BCOO leaf.
 - The `using-xtrax` reference `sparse-distributed.md` is now
@@ -81,6 +90,8 @@ the name is in use, report it. Names with a one-line replacement are rewritten b
   `import equinox` in your own models), declare `equinox` in your own project's
   dependencies; xtrax no longer provides it. There is no `xtrax[equinox]` extra.
 
+## [0.4.1b4] - 2026-10-26
+
 ### Added
 
 - Experimental `xtrax.intent`: frozen `Context`, plus `IntentError`,
@@ -94,12 +105,32 @@ the name is in use, report it. Names with a one-line replacement are rewritten b
   longer loads equinox.
 - `xtrax.tiling.StaticWhile`: a frozen strategy with a static `length` for a
   bounded `while_loop` that may collect outputs.
-- `xtrax.Struct`, `xtrax.field`, and `xtrax.model_jit`, with the pytree helpers
-  `partition`, `combine`, `is_array`, and `inference_mode` (plain JAX, no Equinox).
-  `Struct` is a frozen-dataclass pytree base whose subclasses need no decorator;
-  `field(static=True)` marks a field as pytree metadata; `model_jit` is `jax.jit`
-  for arguments that mix array leaves with Python values, tracing the arrays and
-  keying the compile cache on everything else.
+
+### Changed
+
+- `xtrax.intent`: an unnamed site is labelled `module:line` from its caller
+  (for example `models.encoder.layers:42`), no longer `file.py:LINE` (#6160).
+  An `overrides=` key written as `file.py:LINE` names no site and raises
+  `ValueError`; rewrite it as `module:line`, or pass `name=` at the call site.
+  Two files that give one such label in a session raise `IntentError`.
+- `xtrax.intent` implementation modules are private (`_loop`, `_map`,
+  `_compile`, `_resolve`), so `xtrax.intent.loop` and `xtrax.intent.map` are the
+  functions (#6159). The `xtrax.intent` names are unchanged.
+- `Plan` carries plan-level `warnings`; a "not differentiable w.r.t." note is
+  recorded once there instead of on loop sites only (#6165). JSON without the
+  field still loads; `PLAN_SCHEMA_VERSION` stays 1.
+- The intent module docstrings no longer open with "Experimental." (#6171).
+
+### Fixed
+
+- `chunked_map` no longer divides by zero when an output leaf has size zero
+  (#6151).
+- `scan_around_while` switches are judged against the joint memory budget left
+  after earlier switches and overrides, not each alone (#6157).
+- A `Vmap` decision uses one `batch_size` in the planner and both re-checks
+  (#6158).
+- Unnamed sites carry their module and call-site labels no longer collide
+  across files (#6160).
 
 ## [0.4.1b3] - 2026-10-23
 

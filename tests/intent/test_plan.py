@@ -67,6 +67,37 @@ def test_site_decision_without_diff_round_trips():
     assert restored.decisions[0].diff_reason == "no cotangent requested"
 
 
+def test_plan_warnings_round_trip_and_default_to_empty():
+    """Plan-level warnings survive JSON, show in ``table()``, and a payload without them loads.
+
+    Plans written before the field existed have no ``warnings`` key at the top level (#6165).
+    """
+    assert p.warnings == ()
+    warned = Plan(
+        PLAN_SCHEMA_VERSION,
+        Context(),
+        p.decisions,
+        warnings=("not differentiable w.r.t. aux (ValueError)",),
+    )
+    restored = Plan.from_json(warned.to_json(), context=Context())
+    assert restored == warned
+    assert restored.warnings == ("not differentiable w.r.t. aux (ValueError)",)
+    assert hash(restored) == hash(warned)
+    assert "not differentiable w.r.t. aux (ValueError)" in warned.table()
+    assert warned.table().splitlines()[:-1] == p.table().splitlines()
+    legacy = json.loads(p.to_json())
+    legacy.pop("warnings", None)
+    assert Plan.from_json(json.dumps(legacy), context=Context()).warnings == ()
+
+
+def test_plan_warnings_must_be_a_list():
+    """A non-list ``warnings`` field is rejected, naming the field."""
+    payload = json.loads(p.to_json())
+    payload["warnings"] = "oops"
+    with pytest.raises(ValueError, match="warnings"):
+        Plan.from_json(json.dumps(payload), context=Context())
+
+
 def test_site_key_str_renders_parent_path_label_ordinal():
     parent = SiteKey(parent=None, path="primal", label="outer.py:1", ordinal=0)
     key = SiteKey(parent=parent, path="diff", label="inner.py:4", ordinal=2)

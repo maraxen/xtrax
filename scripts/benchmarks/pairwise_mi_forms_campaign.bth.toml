@@ -1,0 +1,147 @@
+[metadata]
+title = "Pairwise joint histogram + MI on GPU: current chunked bincount vs one-hot matmul (XLA) vs Pallas Triton kernels, at demistify production shapes"
+created = "261026"
+schema_version = "0.3"
+task_id = "261023_equinox-decouple-pallas"
+
+[experiment]
+hypothesis = "On an RTX PRO 6000 Blackwell GPU, the best plain-XLA form (current chunked bincount A, or one-hot matmul B) computes demistify's all-pairs joint counts and MI exactly and within 1.5x of the fastest correct Pallas kernel, so no kernel is needed."
+stage_name = "validation"
+novel = true
+
+[observe]
+outputs = [
+  "48 cells: forms {A current denxity fused_mi port (denxity 832ad2ad), B chunked one-hot einsum in XLA, C_triton Pallas Triton one-hot matmul per tile, D Pallas Triton atomic_add histogram} x entropy {float64, float32} x shape {full 423 res = 89,253 pairs x 28,007 frames; tree 422 pairs; boundary 44,850 pairs x 55,738 frames} x K {11 (default 10 components), 129 (128 components; 23 occupied states per residue)}",
+  "per cell (own process, own timeout, stamped artifact): compile_s, step_median_s (median of 5 after 2 warm-ups), step_cv, recompiles, counts_exact and rowsums_ok on 64 sampled pairs vs host NumPy, mi_max_abs_diff vs float64 NumPy, peak_bytes",
+  "aggregate (pairwise_mi_forms_campaign.py): a_b_correct, a_b_full_ok, boundary_b_ok, max_recompiles, step_<form>_k<K> and correct_<form>_k<K> for the full float64 cells, fastest_k<K>, best_kernel_step_k<K>, ratio_b_over_kernel_k<K>, ratio_a_over_kernel_k<K>, kernel_ok_k<K>, f32_entropy_ok_<form>",
+]
+looking_for = """
+Backlog #6099, spec .praxia/docs/specs/261023_kernel-seam-xtrax-op.md section 3. Which form
+denxity's fused_mi_matrix (demistify's live MI path) should adopt on GPU.
+
+Decision rule (spec section 3, revision 2 below): adopt the fastest form that passes the
+correctness checks, but ship a kernel only if it is more than 1.5x faster than BOTH plain-XLA
+forms (A, the current code, and B); otherwise keep A, or ship B where B beats A.
+
+REVISION 2 (261026, disclosed): revision 1 (commit b988839) compared the kernel with B only
+and targeted an H200. Two changes were made AFTER exploratory, untracked smoke runs on an
+RTX PRO 6000 (K=11, full shape, float64; jobs 26930720, 26931532, 26932030), before any
+tracked campaign run: (1) environment moved to the RTX PRO 6000, because no H200 is free
+until ~Oct 29 (user decision 261026); (2) ship_kernel now also requires
+ratio_a_over_kernel > 1.5, keep_a is "no kernel clears both margins and A is the best XLA
+form at both K", and ship_b covers the remaining valid cases. The smoke run showed
+C_triton 3.8x faster than B but only 1.3x faster than A at K=11, which exposed that
+revision 1 could ship a kernel on a gain over the current code below the stated 1.5x
+threshold. The change is strictly harder on ship_kernel; the user approved it knowing the
+smoke numbers. It also showed form D's atomic_add writes nothing on this GPU (two probes);
+D stays in the grid and is expected to report kernel cells incorrect.
+
+Sizing (exploratory, untracked, before the tracked run; job 26934124, K=129 full+boundary
+float64): per-cell wall incl. compile A 3.6 s, B 27.9 s, C_triton 8 s (compile error:
+shared memory 1,064,960 B requested vs 101,376 available at default tiles, so C_triton is
+expected to report kernel_ok_k129 false; fixing it needs output K-tiling, a redesign not
+attempted here), D 3.2 s. K=11 cells take 2-4 s. Wall-time estimate for all 48 cells:
+about 10 min of cell time plus about 6 min of environment setup; job walltime 1:30 with
+a 1200 s per-cell timeout. Each cell is its own process with a sha256-stamped artifact, so
+a preempted run resumes by reusing verified cells (reuse_log.jsonl).
+Timing is compared on the full production shape with float64 entropy (the reference
+precision), separately at K=11 and K=129. float32 entropy is reported per form
+(accepted iff max |MI_f32 - MI_ref| <= 1e-6 nats on every full float32 cell) and does not
+change the outcome.
+
+Validity, also fixed now: forms A and B correct on every ok cell (exact counts, row sums ==
+n_frames, no all-zero or non-finite MI, float64 MI within 1e-9 of NumPy), all four A/B
+full float64 cells completed, B correct on the boundary shape (where flat vmap(bincount)
+returned silent zeros on jax 0.10.2), 0 steady-state recompiles, all 48 cells planned.
+Kernel cells (C_triton, D) are allowed to error or be incorrect: that is a result
+(kernel_ok false), not invalidity. C_mosaic is excluded: real Mosaic GPU lowering fails on
+jax 0.11.1 (dot_general unimplemented for Warpgroup; SMEM overflow at default tiles).
+
+Environment: Engaging pi_so3 RTX PRO 6000 Blackwell Server Edition (cc 12.0), jax 0.11.1
+CUDA 12, persistent compilation cache off, XLA_PYTHON_CLIENT_PREALLOCATE=false. The result
+holds for this GPU only; an H200 (Hopper) re-run would need its own sidecar. Not titanix: its TITAN RTX
+(cc 7.5) runs no compiled Pallas kernel on jax 0.11.1 (Mosaic GPU needs Hopper for output
+pipelines; the Triton backend's GPU registry, jax/_src/pallas/triton/gpu_info.py:31-49,
+lacks Turing). The Pallas Triton backend is deprecated in 0.11.1 (pallas_call.py:953-971),
+so a kernel win here carries a migration cost the decision must note.
+
+Synthetic integer states with fixed seed and controlled per-residue state counts stand in
+for the real trajectory; they match its shape and K, not its state distribution.
+"""
+sanity = [
+  "n_cells_ok + n_cells_error + n_cells_timeout = n_cells_planned",
+  "n_cells_ok >= 0",
+  "max_recompiles >= 0",
+]
+planned_tests = 0
+
+[outcomes.ship_kernel]
+source = "spec section 3: ship a kernel only if it is more than 1.5x faster than the best plain-XLA form (revision 2: both A and B)"
+condition = "n_cells_planned = 48 AND a_b_correct AND a_b_full_ok AND boundary_b_ok AND max_recompiles = 0 AND ((kernel_ok_k11 AND ratio_b_over_kernel_k11 > 1.5 AND ratio_a_over_kernel_k11 > 1.5) OR (kernel_ok_k129 AND ratio_b_over_kernel_k129 > 1.5 AND ratio_a_over_kernel_k129 > 1.5))"
+decision = "A correct Pallas kernel is more than 1.5x faster than both plain-XLA forms at one or both production K: adopt it in denxity #6101 as reference + kernel behind xtrax.op (or the local _op shim), noting the deprecated Triton backend."
+reasoning = "Correctness held for A and B, and at least one K shows a kernel margin above 1.5x over the current code and over B."
+is_residual = false
+
+[outcomes.keep_a]
+source = "spec 261023_kernel-seam-xtrax-op.md section 3 decision rule (revision 2)"
+condition = "n_cells_planned = 48 AND a_b_correct AND a_b_full_ok AND boundary_b_ok AND max_recompiles = 0 AND NOT ((kernel_ok_k11 AND ratio_b_over_kernel_k11 > 1.5 AND ratio_a_over_kernel_k11 > 1.5) OR (kernel_ok_k129 AND ratio_b_over_kernel_k129 > 1.5 AND ratio_a_over_kernel_k129 > 1.5)) AND correct_a_k11 AND correct_a_k129 AND (NOT correct_b_k11 OR step_a_k11 <= step_b_k11) AND (NOT correct_b_k129 OR step_a_k129 <= step_b_k129)"
+decision = "No kernel clears the 1.5x margin over the current code and B, and the current chunked bincount is the fastest plain-XLA form at both K: keep denxity's fused_mi_matrix as is and close #6101 without a kernel."
+reasoning = "Nothing beat the baseline by the pre-registered margin, and B did not beat it at either K."
+is_residual = false
+
+[outcomes.ship_b]
+source = "spec section 3: no kernel clears the margin and B beats the current code"
+condition = "n_cells_planned = 48 AND a_b_correct AND a_b_full_ok AND boundary_b_ok AND max_recompiles = 0 AND NOT ((kernel_ok_k11 AND ratio_b_over_kernel_k11 > 1.5 AND ratio_a_over_kernel_k11 > 1.5) OR (kernel_ok_k129 AND ratio_b_over_kernel_k129 > 1.5 AND ratio_a_over_kernel_k129 > 1.5)) AND correct_b_k11 AND correct_b_k129 AND ((correct_a_k11 AND step_b_k11 < step_a_k11) OR (correct_a_k129 AND step_b_k129 < step_a_k129))"
+decision = "Adopt the plain-XLA one-hot matmul (B) in denxity #6101 with no kernel."
+reasoning = "B is correct at both K, faster than the current code at one K at least, and no kernel clears the 1.5x margin over both XLA forms."
+is_residual = false
+
+[outcomes.invalid]
+condition = "TRUE"
+decision = "A baseline or B correctness check failed, an A/B production cell did not complete, a recompile was seen, or the grid was incomplete. Nothing is concluded; fix and re-run under a new sidecar revision."
+reasoning = "Without a correct, complete baseline and candidate, a timing comparison is not evidence."
+is_residual = true
+
+[result_schema]
+n_cells_planned = "int"
+n_cells_ok = "int"
+n_cells_error = "int"
+n_cells_timeout = "int"
+max_recompiles = "int"
+a_b_correct = "bool"
+a_b_full_ok = "bool"
+boundary_b_ok = "bool"
+step_a_k11 = "float"
+step_a_k129 = "float"
+step_b_k11 = "float"
+step_b_k129 = "float"
+step_c_triton_k11 = "float"
+step_c_triton_k129 = "float"
+step_d_k11 = "float"
+step_d_k129 = "float"
+correct_a_k11 = "bool"
+correct_a_k129 = "bool"
+correct_b_k11 = "bool"
+correct_b_k129 = "bool"
+correct_c_triton_k11 = "bool"
+correct_c_triton_k129 = "bool"
+correct_d_k11 = "bool"
+correct_d_k129 = "bool"
+fastest_k11 = "str"
+fastest_k129 = "str"
+best_kernel_step_k11 = "float"
+best_kernel_step_k129 = "float"
+ratio_b_over_kernel_k11 = "float"
+ratio_b_over_kernel_k129 = "float"
+ratio_a_over_kernel_k11 = "float"
+ratio_a_over_kernel_k129 = "float"
+kernel_ok_k11 = "bool"
+kernel_ok_k129 = "bool"
+f32_entropy_ok_a = "bool"
+f32_entropy_ok_b = "bool"
+f32_entropy_ok_c_triton = "bool"
+f32_entropy_ok_d = "bool"
+jax_version = "str"
+device_kind = "str"
+script_sha256 = "str"
+denxity_commit = "str"

@@ -1,4 +1,4 @@
-__version__ = "0.4.1b3"
+__version__ = "0.4.1b4"
 
 __all__ = [
     # Core training
@@ -71,6 +71,10 @@ __all__ = [
     "is_array",
     "model_jit",
     "inference_mode",
+    # Kernel seam
+    "op",
+    "Op",
+    "VjpKernel",
 ]
 
 _LAZY = {
@@ -145,6 +149,10 @@ _LAZY = {
     "is_array": "xtrax._tree",
     "model_jit": "xtrax._tree",
     "inference_mode": "xtrax._tree",
+    # Kernel seam
+    "op": "xtrax.kernel_seam",
+    "Op": "xtrax.kernel_seam",
+    "VjpKernel": "xtrax.kernel_seam",
 }
 
 

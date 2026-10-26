@@ -2,7 +2,7 @@
 
 The plan pass traces with :func:`jax.make_jaxpr` under a plan session, then
 traces :func:`jax.linearize` once per inexact argument when any leaf is
-inexact so diff-path sites are recorded. :func:`~xtrax.intent.resolve.resolve`
+inexact so diff-path sites are recorded. :func:`~xtrax.intent.resolve`
 turns those records into one :class:`~xtrax.intent.plan.Plan`. Execution is a
 cached :func:`jax.jit` that re-enters an exec session and checks the primal
 site sequence.
@@ -17,10 +17,14 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from xtrax.intent._resolve import (
+    SCAN_AROUND_WHILE_BACKENDS,
+    _is_scan_around_while_backend,
+    resolve,
+)
 from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError, SiteMismatchError
 from xtrax.intent.plan import Plan, SiteDecision, SiteKey, canonical
-from xtrax.intent.resolve import SCAN_AROUND_WHILE_BACKENDS, _is_scan_around_while_backend, resolve
 from xtrax.intent.sites import Session, SiteRecord, _leaf_struct, activate
 from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
 from xtrax.tiling.strategy import ChunkedMap, Scan, StaticWhile, WhileCarry
@@ -57,6 +61,7 @@ class _ExecSession(Session):
         self,
         records: list[SiteRecord],
         decisions: Mapping[SiteKey, SiteDecision],
+        context: Context | None = None,
     ) -> None:
         """Start an exec session with an empty visit list.
 
@@ -66,12 +71,14 @@ class _ExecSession(Session):
             Planned records. Copied so callers keep their own list.
         decisions : mapping
             Site decisions passed to :class:`~xtrax.intent.sites.Session`.
+        context : Context or None
+            Context of the compile, passed to :class:`~xtrax.intent.sites.Session`.
 
         Returns
         -------
         None
         """
-        super().__init__("exec", list(records), decisions)
+        super().__init__("exec", list(records), decisions, context)
         self.seen = []
 
     def enter_site(
@@ -83,15 +90,16 @@ class _ExecSession(Session):
         fn: Callable[..., object] | None,
         const_avals: tuple[Any, ...] = (),
         xs_tree: Any = None,
+        op: Any = None,
     ) -> SiteKey:
         """Enter a site and append its key to :attr:`seen`.
 
         Parameters
         ----------
-        kind : {"loop", "map"}
+        kind : {"loop", "map", "op"}
             Site kind.
         label : str
-            User name or ``file:line``.
+            User name or ``module:line``.
         avals : tuple
             Abstract values of the site arguments.
         length : int or None
@@ -103,13 +111,15 @@ class _ExecSession(Session):
             not compare them.
         xs_tree : PyTreeDef or None
             Mapped pytree structure, forwarded to the plan record.
+        op : OpChoice or None
+            Op selection, forwarded to the plan record.
 
         Returns
         -------
         SiteKey
             Key returned by the exec check.
         """
-        key = super().enter_site(kind, label, avals, length, fn, const_avals, xs_tree)
+        key = super().enter_site(kind, label, avals, length, fn, const_avals, xs_tree, op)
         self.seen.append(key)
         return key
 
@@ -291,6 +301,7 @@ def _trace_primal(
     fn: Callable[..., Any],
     abstract_args: Any,
     abstract_kwargs: Any,
+    ctx: Context,
 ) -> list[SiteRecord]:
     """Trace ``fn`` once under a fresh plan session.
 
@@ -302,6 +313,8 @@ def _trace_primal(
         :class:`jax.ShapeDtypeStruct` arguments.
     abstract_kwargs : pytree
         :class:`jax.ShapeDtypeStruct` keyword arguments.
+    ctx : Context
+        Context the session carries, so an op selects against it.
 
     Returns
     -------
@@ -327,7 +340,7 @@ def _trace_primal(
         """
         return fn(*args, **kwargs)
 
-    session = Session("plan")
+    session = Session("plan", context=ctx)
     with activate(session):
         jax.make_jaxpr(primal)(abstract_args, abstract_kwargs)
     return list(session.records)
@@ -393,6 +406,7 @@ def _trace_one_argument(
     fn: Callable[..., Any],
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
+    ctx: Context,
     *,
     index: int | None,
     keyword: str | None,
@@ -411,6 +425,8 @@ def _trace_one_argument(
         Concrete positional arguments.
     kwargs : dict
         Concrete keyword arguments.
+    ctx : Context
+        Context the session carries, so an op selects against it.
     index : int or None
         Positional index to differentiate. ``None`` selects ``keyword``.
     keyword : str or None
@@ -475,7 +491,7 @@ def _trace_one_argument(
         primals, _tangent = jax.linearize(partial, *inexact)
         return primals
 
-    session = Session("plan")
+    session = Session("plan", context=ctx)
     try:
         with activate(session):
             jax.make_jaxpr(diff)(abstract)
@@ -488,6 +504,7 @@ def _trace_diff(
     fn: Callable[..., Any],
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
+    ctx: Context,
 ) -> tuple[list[SiteRecord], bool, str]:
     """Record diff sites by linearizing each inexact argument on its own.
 
@@ -499,6 +516,8 @@ def _trace_diff(
         Concrete positional arguments.
     kwargs : dict
         Concrete keyword arguments.
+    ctx : Context
+        Context the sessions carry, so an op selects against it.
 
     Returns
     -------
@@ -523,7 +542,7 @@ def _trace_diff(
         if _tree_has_inexact(value):
             targets.append((name, None, name))
     for label, index, keyword in targets:
-        records, exc = _trace_one_argument(fn, args, kwargs, index=index, keyword=keyword)
+        records, exc = _trace_one_argument(fn, args, kwargs, ctx, index=index, keyword=keyword)
         if exc is not None:
             failures.append(f"{label}: {type(exc).__name__}")
             continue
@@ -560,7 +579,13 @@ def _partial_diff_note(failures: list[str]) -> str:
 
 
 def _annotate_partial_diff(plan: Plan, note: str) -> Plan:
-    """Append ``note`` to the diff reason of every loop that has a diff strategy.
+    """Record ``note`` on the plan, and on the diff reason of loops that have a diff strategy.
+
+    The plan-level warning is the one place every plan names the failed
+    arguments: a conditional loop has no diff strategy and a map has no loop
+    row, so a plan with only those sites would otherwise never say which
+    argument failed. Loops with a diff strategy keep the note on
+    ``diff_reason`` as well, next to the strategy it qualifies.
 
     Parameters
     ----------
@@ -572,8 +597,9 @@ def _annotate_partial_diff(plan: Plan, note: str) -> Plan:
     Returns
     -------
     Plan
-        The same plan when ``note`` is empty. Otherwise each loop whose
-        ``diff`` is not ``None`` names the failed arguments on ``diff_reason``.
+        The same plan when ``note`` is empty. Otherwise ``note`` is appended
+        once to ``plan.warnings``, and each loop whose ``diff`` is not
+        ``None`` names the failed arguments on ``diff_reason``.
     """
     if not note:
         return plan
@@ -583,7 +609,7 @@ def _annotate_partial_diff(plan: Plan, note: str) -> Plan:
         else decision
         for decision in plan.decisions
     )
-    return replace(plan, decisions=decisions)
+    return replace(plan, decisions=decisions, warnings=(*plan.warnings, note))
 
 
 def _plan(
@@ -604,9 +630,9 @@ def _plan(
     kwargs : dict
         Call keyword arguments.
     ctx : Context
-        Constraints passed to :func:`~xtrax.intent.resolve.resolve`.
+        Constraints passed to :func:`~xtrax.intent.resolve`.
     overrides : mapping or None
-        Label overrides passed to :func:`~xtrax.intent.resolve.resolve`.
+        Label overrides passed to :func:`~xtrax.intent.resolve`.
 
     Returns
     -------
@@ -615,9 +641,9 @@ def _plan(
     """
     abstract_args = _abstract_tree(args)
     abstract_kwargs = _abstract_tree(kwargs)
-    primal_records = _trace_primal(fn, abstract_args, abstract_kwargs)
+    primal_records = _trace_primal(fn, abstract_args, abstract_kwargs, ctx)
     if _any_inexact(args, kwargs):
-        diff_records, diff_available, reason = _trace_diff(fn, args, kwargs)
+        diff_records, diff_available, reason = _trace_diff(fn, args, kwargs, ctx)
     else:
         diff_records = []
         diff_available = True
@@ -640,6 +666,7 @@ def _execute(
     fn: Callable[..., Any],
     records: tuple[SiteRecord, ...],
     decisions: Mapping[SiteKey, SiteDecision],
+    ctx: Context,
 ) -> Callable[..., Any]:
     """Build a jitted wrapper that checks the primal site sequence.
 
@@ -651,6 +678,8 @@ def _execute(
         Merged plan records.
     decisions : mapping
         ``plan.by_key()``.
+    ctx : Context
+        Context of the compile. Every exec session carries it.
 
     Returns
     -------
@@ -681,7 +710,7 @@ def _execute(
             The primal-path keys differ from the plan. ``constraint`` is
             ``"site sequence differs"``.
         """
-        session = _ExecSession(stored, decisions)
+        session = _ExecSession(stored, decisions, ctx)
         with activate(session):
             out = fn(*args, **kwargs)
         got = tuple(key for key in session.seen if _is_primal_chain(key))
@@ -887,10 +916,10 @@ class Compiled:
     Parameters
     ----------
     fn : callable
-        Function containing :func:`~xtrax.intent.loop.loop` and
-        :func:`~xtrax.intent.map.map` sites.
+        Function containing :func:`~xtrax.intent.loop` and
+        :func:`~xtrax.intent.map` sites.
     ctx : Context
-        Constraints for :func:`~xtrax.intent.resolve.resolve`.
+        Constraints for :func:`~xtrax.intent.resolve`.
     overrides : mapping or None
         Optional per-label strategy overrides.
 
@@ -1015,7 +1044,7 @@ class Compiled:
         cached = self._cache.get(key)
         if cached is None:
             plan, records = _plan(self._fn, args, kwargs, self._ctx, self._overrides)
-            jitted = _execute(self._fn, records, plan.by_key())
+            jitted = _execute(self._fn, records, plan.by_key(), self._ctx)
             cached = (jitted, plan, records)
             self._cache[key] = cached
             self.plans += 1
