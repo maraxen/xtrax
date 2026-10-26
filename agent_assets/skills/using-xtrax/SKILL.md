@@ -304,7 +304,7 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 |---|---|---|---|
 | Tiling | `references/tiling.md` | 40% | AxisSpec, BatchPlanner, Strategies, Dispatch, Iterators, Carry, Dedup, Bucket, Multi-Axis Composition |
 | Run | `references/run.md` | 20% | RunSpec, InputResolver, RuntimeBundle, FeatureBatch, SinkSpec/make_sink, ZarrStagingSink, zarr_integrity, AxisBoundary, Fuse/Tap/Sink, topology validation, boundary executor |
-| Training | `references/training.md` | 25% | ResumableState, Trainer, SafetyTrainStep, Engine, Callbacks, Optax |
+| Training | `references/training.md` | 25% | ResumableState, Trainer, checkify safety, Engine, Callbacks, Optax |
 | CLI | `references/cli.md` | E2/E3 | Tyro-delegated verbs: plan/explain/export/run/resume/sweep + graph-validate/graph-plan/graph-author + ledger (`src/xtrax/cli/registry.py:42-53`) |
 | EDA | `references/eda.md` | 10% | Plan analysis and visualization |
 | Sparse/Distributed/Checkpoint | `references/sparse-distributed.md` | 5% | Pointer pattern for structured pruning, multi-device training, checkpointing |

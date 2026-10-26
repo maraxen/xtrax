@@ -19,10 +19,10 @@ A set of composable building blocks for JAX/Equinox training loops — engine + 
 xtrax packages that pre-trace layer, plus the conveniences that surround it:
 
 - **Axis tiling** — declare axes with `AxisSpec`; `BatchPlanner` selects `Vmap`, `ChunkedMap` (chunked via `jax.lax.map`), `Scan`, bucketing, or dedup-gather per axis, and `xtrax explain` reports why
-- **Composable training steps** — `Trainer` or `SafetyTrainStep` with your own loss functions and optimizers
-- **Safety-checked arithmetic** — opt-in checkify NaN/Inf detection and safe ops (`safe_norm`, `safe_reciprocal`)
+- **Composable training steps** — `Trainer` with your own loss functions and optimizers
+- **Safe arithmetic** — `safe_norm` and `safe_reciprocal`
 - **Inference sparsification** — structured sparsity masks with `SparseConfig` and `sparsify_model`, fixed compile shapes
-- **Distributed helpers** — `init_dist`, `LogicalMesh`, and sharding utilities over JAX's native machinery
+- **Distributed helpers** — `LogicalMesh` and sharding utilities over JAX's native machinery
 
 For the full rationale — why this layer has to live above the JIT boundary — see [Why xtrax exists](https://xtrax.readthedocs.io/en/latest/why-xtrax.html).
 
@@ -94,7 +94,7 @@ final_state = engine.fit_sync(
 Log metrics asynchronously to files or external services:
 
 ```python
-from xtrax.io import BoundedCallbackHandler, async_indexed_stream
+from xtrax.engine.io import BoundedCallbackHandler, async_indexed_stream
 
 # Create a custom async callback
 class LogCallback:

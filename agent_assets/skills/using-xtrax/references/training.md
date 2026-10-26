@@ -1,6 +1,6 @@
 > Part of the `using-xtrax` skill (`agent_assets/skills/using-xtrax/SKILL.md`) — TIER-2 deep reference.
 
-# Training Layer (25% of depth — ResumableState, Trainer, SafetyTrainStep, Engine, Callbacks, Optax)
+# Training Layer (25% of depth — ResumableState, Trainer, checkify safety, Engine, Callbacks, Optax)
 
 #### ResumableState: Training State
 
@@ -58,20 +58,23 @@ Verify: `src/xtrax/training/trainer.py:12-74`
 
 **Invariant**: `Trainer.step` is `@eqx.filter_jit` decorated (trace only JAX arrays).
 
-#### SafetyTrainStep: Gradient Safety
+#### Gradient Safety: checkify
 
-Numerical safety wrappers for gradient computation:
+NaN and division-by-zero checks come from `jax.experimental.checkify` around `trainer.step`.
+Gradient clipping is `make_optimizer(base, clip_norm=)`.
 
 ```python
-from xtrax.safety.manager import SafetyManager
-from xtrax.training.step import SafetyTrainStep
+import jax
+from jax.experimental import checkify
 
-# NaN/Inf checks. Gradient clipping is make_optimizer(base, clip_norm=).
-safety = SafetyTrainStep(
-    trainer=trainer,
-    safety_manager=SafetyManager(enabled=True, check_nans=True, check_infs=True),
-)
+checked = jax.jit(checkify.checkify(trainer.step, errors=checkify.float_checks))
+err, (state, metrics) = checked(state, batch)
+err.throw()
 ```
+
+`float_checks` does not catch an `Inf` that comes from overflow. `SafetyTrainStep`,
+`SafetyManager`, `with_safety`, and `create_train_step(..., safety=True)` are deprecated
+(xtrax #6107): they warn and wrap the same call.
 
 Verify: `src/xtrax/training/step.py`, `src/xtrax/safety/manager.py`
 

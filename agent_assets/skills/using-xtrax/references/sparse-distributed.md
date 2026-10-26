@@ -41,23 +41,16 @@ Reason: BCOO structure is non-static, must be created on host.
 Initialize distributed context:
 
 ```python
-from xtrax.distributed import (
-    get_device_mesh,
-    get_hardware_mesh_profile,
-    init_dist,
-    is_distributed,
-)
+import jax
 
-# Keyword-only. None discovers SLURM, then localhost and one process.
-init_dist(coordinator_address=None, num_processes=None, process_id=0)
-
-if is_distributed():
-    profile = get_hardware_mesh_profile()
-    mesh = get_device_mesh(
-        shape=profile["recommended_shape"],
-        axis_names=profile["recommended_axis_names"],
-    )
+# Start the processes (cluster environments are auto-detected), then build the mesh.
+jax.distributed.initialize()
+mesh = jax.make_mesh((jax.device_count(),), ("data",))
 ```
+
+`init_dist`, `is_distributed`, `get_device_mesh`, `get_hardware_mesh_profile`, and
+`ShardingPolicy` are deprecated (xtrax #6107): each warns and behaves as before.
+`DataModule(distributed=True)` needs `jax.process_count() > 1`.
 
 Verify: `src/xtrax/distributed/init.py`, `src/xtrax/distributed/sharding.py`
 

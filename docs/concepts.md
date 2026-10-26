@@ -55,63 +55,60 @@ This is transparent to the model: just wrap your weight matrix with a mask, and 
 
 ## Distributed Training with Mesh Sharding
 
-xtrax integrates JAX's multi-process SPMD sharding. After calling `init_dist()`, models are automatically partitioned across devices:
+xtrax builds on JAX's multi-process SPMD sharding. Start the processes with `jax.distributed.initialize()` and build the device mesh with `jax.make_mesh`:
 
 ```python
-from xtrax import init_dist, LogicalMesh
+import jax
 
-init_dist()  # Initialize multi-process communication
+jax.distributed.initialize()  # Initialize multi-process communication
 
 # Define a device mesh (e.g., 2×4 devices)
-mesh_shape = (2, 4)
-mesh = LogicalMesh(shape=mesh_shape, axis_names=("batch", "model"))
-
-# Apply sharding policies to your model
-from xtrax import ShardingPolicy
-policy = ShardingPolicy(
-    rules=[
-        ("encoder.weight", PartitionSpec("model", None)),
-        ("decoder.weight", PartitionSpec(None, "model")),
-    ]
-)
+mesh = jax.make_mesh((2, 4), ("batch", "model"))
 ```
 
-Sharding policies are pattern-based: the first rule matching a parameter path wins. Full replication is the default for unmatched parameters.
+:::{note}
+`init_dist`, `is_distributed`, `get_device_mesh`, `get_hardware_mesh_profile`, and `ShardingPolicy` are deprecated in the probe release (xtrax #6107): each warns on access, names its replacement, and otherwise behaves as before. `codemods/thin-wrappers-to-jax/` rewrites the call sites that have a one-line replacement and reports the rest. `DataModule(distributed=True)` now checks `jax.process_count() > 1`.
+:::
 
 ## Loss Composition and Multi-Task Learning
 
-xtrax provides utilities for composing losses:
-
-- **WeightedLoss**: Scale any loss by a fixed weight.
-- **MultiTaskLoss**: Sum multiple weighted losses. Useful for multi-task learning.
-
-Both conform to the `LossFunction` protocol, so they work anywhere a loss is expected:
+`ComposedLoss` sums named loss terms with traced weights, so changing a weight does not recompile a jitted step. It returns `(loss, aux)`, with each term's unweighted value in `aux`; pair it with `Trainer(has_aux=True)`:
 
 ```python
-from xtrax import LossFunction, MultiTaskLoss, WeightedLoss
+from xtrax import ComposedLoss
 
-task1_loss = WeightedLoss(my_loss_fn_1, weight=0.6)
-task2_loss = WeightedLoss(my_loss_fn_2, weight=0.4)
-combined = MultiTaskLoss(losses=(task1_loss, task2_loss))
+combined = ComposedLoss(
+    terms=[("task1", my_loss_fn_1), ("task2", my_loss_fn_2)],
+    weights=[0.6, 0.4],
+)
 
-trainer = Trainer(loss_fn=combined, optimizer=optimizer)
+trainer = Trainer(loss_fn=combined, optimizer=optimizer, has_aux=True)
 ```
+
+:::{note}
+`WeightedLoss` and `MultiTaskLoss` are deprecated in the probe release (xtrax #6107): each warns on access and otherwise behaves as before.
+:::
 
 ## Safety Checks: NaN/Inf Detection
 
-Training is fragile. Gradients can explode, weights can underflow, and bugs hide in the details. xtrax provides optional safety checks:
+Training is fragile. Gradients can explode, weights can underflow, and bugs hide in the details. `jax.experimental.checkify` flags NaN and division-by-zero in a jitted step and raises on the host:
 
 ```python
-from xtrax import create_train_step
+import jax
+from jax.experimental import checkify
 
-trainer = create_train_step(
-    loss_fn=loss,
-    optimizer=optimizer,
-    safety=True,  # Enable NaN/Inf detection
-)
+trainer = create_train_step(loss_fn=loss, optimizer=optimizer)
+checked = jax.jit(checkify.checkify(trainer.step, errors=checkify.float_checks))
+
+err, (state, metrics) = checked(state, batch)
+err.throw()
 ```
 
-With `safety=True`, every backward pass is guarded by `jax.experimental.checkify`, which flags NaN or Inf values in gradients and raises a Python exception on the host. Zero performance cost when disabled.
+`checkify.float_checks` covers NaN and division by zero, not an `Inf` that comes from overflow.
+
+:::{note}
+`create_train_step(..., safety=True)`, `SafetyTrainStep`, `SafetyManager`, and `with_safety` are deprecated in the probe release (xtrax #6107): each warns and otherwise behaves as before. `safety=False` is not deprecated.
+:::
 
 ## Data Pipelines with Grain
 

@@ -2,17 +2,9 @@ import itertools
 from collections.abc import Callable, Iterator
 from typing import Any
 
+import jax
+
 from xtrax._tree import Struct, field
-
-# Module-level flag for distributed init state (real integration with
-# init_dist deferred to Phase 5/6)
-_dist_initialized: bool = False
-
-
-def _mark_dist_initialized() -> None:
-    """Call after init_dist() to allow DataModule iterators to proceed."""
-    global _dist_initialized
-    _dist_initialized = True
 
 
 class DataModule(Struct):
@@ -24,7 +16,8 @@ class DataModule(Struct):
     train shuffles, eval does not, and ``distributed=True`` shards the source
     across JAX processes. ``pad_fn``, when set, is the caller-supplied
     fixed-length map applied before batching; ``collate_fn``, when set, is
-    passed to Grain as the batch function.
+    passed to Grain as the batch function. ``distributed=True`` raises
+    ``RuntimeError`` from the iterators unless ``jax.process_count() > 1``.
 
     On the Grain path each ``train_iter()`` call yields exactly one epoch.
     Call ``k`` (counting from 0 on this instance) shuffles with
@@ -61,9 +54,13 @@ class DataModule(Struct):
         )
 
     def _iter(self, *, shuffle: bool, entry: str, seed: int, drop_remainder: bool) -> Iterator[Any]:
-        if self.distributed and not _dist_initialized:
+        # The guard protects against sharding by a process index that was never set up:
+        # every host would see jax.process_count() == 1 and read the whole source, silently
+        # duplicating the data. Ask JAX itself, not an xtrax flag (#6107).
+        if self.distributed and jax.process_count() <= 1:
             raise RuntimeError(
-                f"DataModule: distributed=True requires init_dist() before {entry}()."
+                "DataModule: distributed=True requires a multi-process JAX runtime "
+                f"(jax.process_count() > 1; call jax.distributed.initialize()) before {entry}()."
             )
         if not self.use_grain_pipeline:
             yield from self.dataset

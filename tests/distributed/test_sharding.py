@@ -4,11 +4,14 @@ import jax.sharding
 import jax.tree_util
 import pytest
 
-from xtrax.distributed.sharding import (
-    ShardingPolicy,
-    get_device_mesh,
-    get_hardware_mesh_profile,
-)
+# #6107 probe release: importing a deprecated name warns; these tests exercise the
+# unchanged behaviour, so the access is asserted once here.
+with pytest.deprecated_call(match="xtrax #6107"):
+    from xtrax.distributed.sharding import (
+        ShardingPolicy,
+        get_device_mesh,
+        get_hardware_mesh_profile,
+    )
 
 
 class TestShardingPolicy:

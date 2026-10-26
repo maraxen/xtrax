@@ -10,9 +10,14 @@ import optax
 import pytest
 
 from xtrax.engine.engine import Engine
-from xtrax.training.step import SafetyTrainStep
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import Callback, ResumableState
+
+# #6107 probe release: importing a deprecated name warns; these tests exercise the
+# unchanged behaviour, so the access is asserted once here.
+with pytest.deprecated_call(match="xtrax #6107"):
+    from xtrax.safety.manager import SafetyManager
+    from xtrax.training.step import SafetyTrainStep
 
 # ============================================================================
 # Test Helpers
@@ -203,8 +208,6 @@ class TestEngineStructure:
 
     def test_engine_accepts_safetytrainstep(self):
         """Engine must accept SafetyTrainStep as trainer field."""
-        from xtrax.safety.manager import SafetyManager
-
         loss_fn = DummyLoss()
         optimizer = optax.adam(0.001)
         trainer = Trainer(loss_fn=loss_fn, optimizer=optimizer)
@@ -604,8 +607,6 @@ class TestEnginePolymorphism:
     @pytest.mark.asyncio
     async def test_fit_with_safetytrainstep(self):
         """Engine.fit should work with SafetyTrainStep trainer."""
-        from xtrax.safety.manager import SafetyManager
-
         loss_fn = DummyLoss()
         optimizer = optax.adam(0.001)
         trainer = Trainer(loss_fn=loss_fn, optimizer=optimizer)

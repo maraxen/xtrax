@@ -1,12 +1,12 @@
 """Async IO utilities — thin re-export from canonical engine.io implementation.
 
 This module re-exports the canonical async I/O implementations from xtrax.engine.io.
-Use this as the public import surface.
+The `xtrax.io` package is deprecated (#6107 probe release): import from `xtrax.engine.io`.
 
 Example:
     Import and use the canonical callback handler:
 
-    >>> from xtrax.io import BoundedCallbackHandler
+    >>> from xtrax.engine.io import BoundedCallbackHandler
     >>> import asyncio
     >>> async def test():
     ...     handler = BoundedCallbackHandler(max_concurrent=1)
@@ -21,7 +21,7 @@ Example:
 
     Stream blocking iterables without blocking the event loop:
 
-    >>> from xtrax.io import async_indexed_stream
+    >>> from xtrax.engine.io import async_indexed_stream
     >>> async def collect():
     ...     return [item async for item in async_indexed_stream(["a", "b"])]
     >>> asyncio.run(collect())

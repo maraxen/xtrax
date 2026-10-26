@@ -4,6 +4,8 @@ from typing import Any
 import jax
 import optax
 
+from xtrax._renamed import Deprecated, deprecated_getattr
+
 PyTree = Any
 
 
@@ -125,3 +127,15 @@ def partition_labels(
         lambda leaf: frozen_label if frozen_filter(leaf) else train_label,
         model,
     )
+
+
+# Deprecated in the #6107 probe release: warns on access, otherwise unchanged.
+_DEPRECATED = {
+    "partition_labels": Deprecated(
+        partition_labels,
+        "jax.tree.map(lambda leaf: frozen if f(leaf) else train, model), "
+        "the label tree for optax.partition",
+    ),
+}
+del partition_labels
+__getattr__ = deprecated_getattr(__name__, _DEPRECATED)

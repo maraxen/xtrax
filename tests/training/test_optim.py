@@ -2,13 +2,18 @@ import inspect
 
 import jax.numpy as jnp
 import optax
+import pytest
 
 from xtrax.training.optim import (
     adamw_with_schedule,
     make_optimizer,
     no_bias_wd_mask,
-    partition_labels,
 )
+
+# #6107 probe release: importing a deprecated name warns; these tests exercise the
+# unchanged behaviour, so the access is asserted once here.
+with pytest.deprecated_call(match="xtrax #6107"):
+    from xtrax.training.optim import partition_labels
 
 
 class TestNoBiasWdMask:

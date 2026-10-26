@@ -26,7 +26,6 @@ from xtrax.engine.io import BoundedCallbackHandler
 from xtrax.telemetry.callback import TelemetryCallback
 from xtrax.telemetry.ledger import RunLedger
 from xtrax.telemetry.record import KIND_EVAL, KIND_TRAIN, STATUS_FAILED
-from xtrax.training.step import SafetyTrainStep
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import Callback, LossFunction, ResumableState
 
@@ -276,16 +275,16 @@ class Engine(eqx.Module):
     """High-performance training engine.
 
     Manages training loops with callback hooks, checkpoint saving, and async
-    callback execution. Accepts both Trainer and SafetyTrainStep for flexible
-    safety configurations.
+    callback execution. Accepts a Trainer or any duck-typed step object (TrainStepLike)
+    with a ``step(state, batch)`` method.
 
     Fields (all static — hold non-array Python objects):
-        trainer: Trainer | SafetyTrainStep instance for step execution
+        trainer: Trainer (or any TrainStepLike) instance for step execution
         callbacks: Tuple of training callbacks (fired during fit)
         validation_callbacks: Tuple of validation callbacks (fired during eval)
     """
 
-    trainer: Trainer | SafetyTrainStep | TrainStepLike = eqx.field(static=True)
+    trainer: Trainer | TrainStepLike = eqx.field(static=True)
     callbacks: tuple[Callback, ...] = eqx.field(static=True)
     validation_callbacks: tuple[Callback, ...] = eqx.field(default=(), static=True)
 

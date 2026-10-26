@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+Probe release for xtrax #6107. Each name below warns with `DeprecationWarning` on
+access, names its replacement, and is attributed to the calling file; behaviour and
+object identity are unchanged and nothing is removed. If a warning reaches you and
+the name is in use, report it. Names with a one-line replacement are rewritten by
+`codemods/thin-wrappers-to-jax/` (ast-grep); the rest are reported.
+
+- `init_dist` -> `jax.distributed.initialize`; `is_distributed` ->
+  `jax.distributed.is_initialized`; `get_device_mesh` and `get_hardware_mesh_profile`
+  -> `jax.make_mesh`; `ShardingPolicy` (debt #3043).
+- `SafetyManager`, `with_safety`, `SafetyTrainStep`, and
+  `create_train_step(..., safety=True)` -> `jax.jit(checkify.checkify(fn,
+  errors=checkify.float_checks))` then `err.throw()` (debt #3042).
+  `safety=False` is not deprecated. `float_checks` covers NaN and division by zero,
+  not an `Inf` from overflow.
+- `WeightedLoss`, `MultiTaskLoss` -> `xtrax.ComposedLoss`, which returns
+  `(loss, aux)` for `Trainer(has_aux=True)`.
+- `partition_labels` -> one `jax.tree.map` that feeds `optax.partition`.
+- `xtrax.io` (`BoundedCallbackHandler`, `async_indexed_stream`) -> `xtrax.engine.io`.
+
+### Changed
+
+- `DataModule(distributed=True)` requires `jax.process_count() > 1` and raises
+  `RuntimeError` otherwise. A one-process `init_dist()` no longer satisfies it.
+- `xtrax.loop.checkified_execution` calls `checkify` directly instead of going
+  through `SafetyManager`.
+
 ### Added
 
 - Experimental `xtrax.intent`: frozen `Context`, plus `IntentError`,
