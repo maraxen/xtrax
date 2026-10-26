@@ -66,6 +66,14 @@ tier1_exports = [
     "element_keys",
     "iter_chunk_keys",
     "make_chunk_plan",
+    # Plain-JAX pytree base and helpers (no Equinox dependency).
+    "Struct",
+    "field",
+    "partition",
+    "combine",
+    "is_array",
+    "model_jit",
+    "inference_mode",
     # Kernel seam: reference + per-backend kernels behind one callable.
     "op",
     "Op",

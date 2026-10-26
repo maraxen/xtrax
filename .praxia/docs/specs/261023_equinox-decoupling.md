@@ -147,12 +147,25 @@ models as fixtures.
 | partition/combine + `jax.jit` (static `_Static`) + `jax.value_and_grad` + optax trains `eqx.nn.MLP`; grads equal `eqx.filter_grad`; 1 trace over 50 steps; result is `eqx.Module` again | verified (probe 3: loss 2.92 → 0.040) |
 | A class cannot inherit both a native frozen base and `eqx.Module` | verified (probe 2: `TypeError`) — so no consumer may mix them; none does today |
 | Downstream breakage limited to plegadx `_boundary.py` walk | verified for plegadx/aminx call sites in §2; other consumers not swept for `isinstance(<xtrax obj>, eqx.Module)` — sweep before step 5 |
-| orbax restore of pre-migration checkpoints | unverified — step 1 probe |
-| `_Static` hashing is stable for every non-array leaf type users hold (functions, strings, ints, enums) | unverified for unhashable leaves (lists, dicts in a model) — decide: convert to tuples, or error with the field path |
+| orbax restore of pre-migration checkpoints | verified 261026 (step 1 probe, `tests/test_tree.py::test_eqx_resumable_state_checkpoint_restores_into_struct`): a checkpoint written from today's eqx `ResumableState` restores into a same-layout `Struct` template, all leaves equal. Caveat: orbax cannot serialise callable leaves (`eqx.nn.MLP.activation`), same as before |
+| `_Static` hashing is stable for every non-array leaf type users hold (functions, strings, ints, enums) | verified for functions, str, int, float; unhashable leaves (set, custom unhashable) raise `TypeError` naming the leaf path (decided: error, not silent conversion). Lists/dicts are pytree nodes, so their elements are the leaves |
+| `register_dataclass` rebuilds nodes without running `__init__`/`__post_init__` | **false** (261026): jax 0.11.1 `unflatten_func` calls `nodetype(**fields)` (`jax/_src/tree_util.py` ~l.1158), so every tree_map/jit/vmap boundary reran `__check_init__` on tracers and `None` placeholders. `Struct` registers with `register_pytree_with_keys` and an `object.__new__` unflatten instead (like Equinox) |
+| A class-defined `__init__` on a dataclass skips `__post_init__` | verified 261026: dataclass keeps the user `__init__`, `__post_init__`/`__check_init__` do not run; ComposedLoss must end its `__init__` with `self.__post_init__()`. Unflatten bypasses `__init__`, so its signature never matters to jax |
+| A subclass defining `__post_init__` without `super().__post_init__()` | verified 261026: inherited `__check_init__` silently does not run; documented on `Struct` |
+| `eqx.field(converter=...)` on a `Struct` subclass | verified 261026: metadata carries `converter` but nothing applies it; `Struct` raises `TypeError` at class creation instead of ignoring it |
 | Consumers keep equinox after the flip | verified 261023: aminx, plegadx, prolix, demistify, denxity declare `equinox` in `pyproject.toml`; asr does not (uses xtrax only, already unbootstrappable, #5008) |
 
 Probes 1–3 were throwaway scripts run 261023 on jax 0.11.1 / equinox 0.13.8 (CPU); the shipped
 tests in §6 supersede them.
+
+Step 1 note (261026, `src/xtrax/_tree.py`, `tests/test_tree.py`): the probes above did not exercise
+unflatten of a class with a validating `__check_init__`; the shipped test
+`test_check_init_is_not_run_on_unflatten` failed against `register_dataclass` and drove the
+custom registration (§3 `Struct` no longer uses `register_dataclass`). Also differs from §3:
+`model_jit` partitions every positional/keyword argument (as `eqx.filter_jit` did), not only the
+model, and recombines a non-array part of the return value (an updated model keeps its static
+leaves), keyed by (static input, input shapes/dtypes). `Struct` is a plain `dataclass(frozen=True)`
+(default `eq=True`), so a `Struct` holding arrays must not be compared with `==`.
 
 ## 8. Decisions
 
