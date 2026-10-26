@@ -28,7 +28,7 @@ _STRATEGY_FIELDS: dict[type[Any], tuple[str, ...]] = {
 class SiteKey:
     """Identity of one intent call on one resolution path.
 
-    ``label`` is the user ``name`` or ``"file.py:LINE"`` of the call.
+    ``label`` is the user ``name`` or the caller's ``"module:line"``.
     ``ordinal`` separates repeated calls that share a parent, path, and label.
 
     Attributes
