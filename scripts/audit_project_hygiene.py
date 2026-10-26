@@ -625,8 +625,9 @@ def check_shipped_imports_reach_consumers(
     `pip install xtrax` would then fail on import. Here, for every module the wheel
     ships (read from pyproject's hatch wheel target, not hand-listed), each unguarded
     module-level third-party import must resolve to a distribution in the dependency
-    closure of `[project].dependencies` or of a non-dev extra. The closure matters:
-    `jaxtyping` is not declared, but `equinox` (a runtime dependency) requires it.
+    closure of `[project].dependencies` or of a non-dev extra. The closure matters: a
+    package that no extra names but a declared dependency requires (the way `equinox`
+    once pulled in `jaxtyping`) is still reachable from a plain install.
 
     An import the environment cannot map to any distribution is left to direction 2.
     """

@@ -57,4 +57,7 @@ def test_repo_floors_parse() -> None:
     """The real pyproject's core + io + cli floors parse and include the pinned core."""
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     floors = declared_floors(data, ["io", "cli"])
-    assert {"jax", "jaxlib", "equinox", "optax", "orbax-checkpoint", "numpy", "zarr"} <= set(floors)
+    assert {"jax", "jaxlib", "jaxtyping", "optax", "orbax-checkpoint", "numpy", "zarr"} <= set(
+        floors
+    )
+    assert "equinox" not in floors  # dev-only since the equinox decoupling (step 5)

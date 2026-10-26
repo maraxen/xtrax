@@ -4,9 +4,9 @@ dynamic = [ "version",]
 description = "High-performance composable JAX library"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = [ "jax>=0.10.2,<0.12", "jaxlib>=0.10.2,<0.12", "equinox>=0.13.1", "optax>=0.2.3", "orbax-checkpoint>=0.11.17", "numpy>=2.1",]
+dependencies = [ "jax>=0.10.2,<0.12", "jaxlib>=0.10.2,<0.12", "jaxtyping>=0.2.28", "optax>=0.2.3", "orbax-checkpoint>=0.11.17", "numpy>=2.1",]
 license = "Apache-2.0"
-keywords = [ "jax", "equinox", "training", "distributed",]
+keywords = [ "jax", "pytree", "training", "distributed",]
 classifiers = [ "Development Status :: 4 - Beta", "Programming Language :: Python :: 3.13", "Intended Audience :: Science/Research", "License :: OSI Approved :: Apache Software License", "Typing :: Typed",]
 [[project.authors]]
 name = "Marielle Russo"
@@ -46,7 +46,9 @@ dev = [
  "pytest-benchmark>=5.2.3",
  "ruff>=0.15.22",
  "ty>=0.0.60",
- "jaxtyping>=0.2.28",
+ # Tests use equinox models as fixtures (xtrax accepts them as plain pytrees). It is not a
+ # runtime dependency: no module under src/ imports it (tests/test_no_equinox_training.py).
+ "equinox>=0.13.1",
  "beartype>=0.18.0",
  "libcst>=1.5.0",
  "import-linter>=2.1",
