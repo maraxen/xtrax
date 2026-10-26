@@ -117,6 +117,16 @@ def test_fragments_in_one_category_are_ordered_by_file_name(tmp_path: Path) -> N
     assert "- first\n- second\n" in cl.read_text()
 
 
+def test_wrapped_bullets_from_two_fragments_stay_one_tight_list(tmp_path: Path) -> None:
+    # A wrapped bullet ends on an indented continuation line; the 0.4.1b5 cut put a
+    # blank line between two such fragments (a loose list).
+    cl, frag = _setup(tmp_path, "# Changelog\n\n## [Unreleased]\n")
+    (frag / "a.fixed.md").write_text("- first bullet\n  wraps here.\n")
+    (frag / "b.fixed.md").write_text("- second bullet\n  wraps too.\n")
+    assert _run(tmp_path, "--version", "1.0", "--date", "2026-02-03") == 0
+    assert "  wraps here.\n- second bullet\n" in cl.read_text()
+
+
 @pytest.mark.parametrize(
     ("name", "content", "needle"),
     [

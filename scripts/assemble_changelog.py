@@ -161,7 +161,10 @@ def _join_blocks(blocks: list[str]) -> str:
         if not out:
             out = block
             continue
-        both_bullets = out.splitlines()[-1].lstrip().startswith(
+        # Look at the last paragraph, not the last line: a wrapped bullet ends on an
+        # indented continuation line.
+        last_paragraph = out.rsplit("\n\n", 1)[-1]
+        both_bullets = last_paragraph.lstrip().startswith(
             ("- ", "* ")
         ) and block.lstrip().startswith(("- ", "* "))
         out += ("\n" if both_bullets else "\n\n") + block
