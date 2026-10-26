@@ -715,3 +715,57 @@ def test_eqx_resumable_state_checkpoint_restores_into_struct(tmp_path):
         np.testing.assert_array_equal(a, b)
     # control: the template's own values were not what came back
     assert int(template.step) == 0 and int(restored.step) == 7
+
+
+# --- equality and hashing (match equinox.Module) -------------------------------------
+
+
+def test_eq_on_array_fields_is_a_python_bool():
+    a, b = Cfg(w=_arr(1.0, 2.0)), Cfg(w=_arr(1.0, 2.0))
+    result = a == b
+    assert result is True
+    assert (a == Cfg(w=_arr(1.0, 3.0))) is False
+    # same arrays, different static value: structure differs
+    assert (a == Cfg(w=_arr(1.0, 2.0), scale=2.0)) is False
+    # shape or dtype mismatch is unequal, not an error
+    assert (a == Cfg(w=_arr(1.0, 2.0, 3.0))) is False
+    assert (a == Cfg(w=jnp.asarray([1, 2], jnp.int32))) is False
+    assert (a == "not a struct") is False
+
+
+def test_eq_matches_equinox_on_the_same_values():
+    class EqxCfg(eqx.Module):
+        w: jax.Array
+        scale: float = eqx.field(static=True, default=1.0)
+
+    for w1, w2 in [((1.0, 2.0), (1.0, 2.0)), ((1.0, 2.0), (1.0, 9.0))]:
+        ours = Cfg(w=_arr(*w1)) == Cfg(w=_arr(*w2))
+        theirs = EqxCfg(w=_arr(*w1)) == EqxCfg(w=_arr(*w2))
+        assert bool(ours) == bool(theirs)
+
+
+def test_eq_under_jit_is_a_traced_bool():
+    @jax.jit
+    def same(x, y):
+        return Cfg(w=x) == Cfg(w=y)
+
+    assert bool(same(_arr(1.0, 2.0), _arr(1.0, 2.0))) is True
+    assert bool(same(_arr(1.0, 2.0), _arr(1.0, 3.0))) is False
+
+
+def test_hash_raises_for_array_fields_and_works_for_static_only():
+    with pytest.raises(TypeError):
+        hash(Cfg(w=_arr(1.0)))
+    assert hash(Base(n=2)) == hash(Base(n=2))
+    assert Base(n=2) == Base(n=2) and Base(n=2) != Base(n=3)
+
+
+def test_eq_control_dataclass_default_eq_returns_an_array():
+    """Control: what the default dataclass ``==`` does, which Struct must not."""
+
+    @dataclasses.dataclass(frozen=True)
+    class Plain:
+        w: jax.Array
+
+    result = Plain(w=_arr(1.0, 2.0)) == Plain(w=_arr(1.0, 2.0))
+    assert not isinstance(result, bool)
