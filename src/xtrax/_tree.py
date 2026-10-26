@@ -11,6 +11,7 @@ Spec: .praxia/docs/specs/261023_equinox-decoupling.md section 3.
 import dataclasses
 import functools
 import sys
+from typing import dataclass_transform
 
 import jax
 import numpy as np
@@ -67,6 +68,9 @@ def _register(cls, data, meta):
     jax.tree_util.register_pytree_with_keys(cls, flatten_with_keys, unflatten, flatten)
 
 
+# Tells type checkers that subclasses are frozen dataclasses (PEP 681), which
+# ``__init_subclass__`` makes them at runtime.
+@dataclass_transform(frozen_default=True, field_specifiers=(field, dataclasses.field))
 class Struct:
     """Frozen-dataclass pytree base; subclasses need no decorator.
 
@@ -93,7 +97,9 @@ class Struct:
         # an array for array fields; ``__eq__``/``__hash__`` below replace it.
         dataclasses.dataclass(frozen=True, eq=False)(cls)
         data, meta = [], []
-        for f in dataclasses.fields(cls):
+        # ty cannot see the dataclass() call above. An annotation on Struct would leak
+        # into subclass annotation walks (StageBundle's validator).
+        for f in dataclasses.fields(cls):  # ty: ignore[invalid-argument-type]
             if "converter" in f.metadata:
                 raise TypeError(
                     f"{cls.__qualname__}.{f.name}: converter= is not supported by "
@@ -112,7 +118,8 @@ class Struct:
         return tree_equal(self, other)
 
     def __hash__(self):
-        return hash(tuple((f.name, getattr(self, f.name)) for f in dataclasses.fields(self)))
+        fields = dataclasses.fields(self)  # ty: ignore[invalid-argument-type]
+        return hash(tuple((f.name, getattr(self, f.name)) for f in fields))
 
 
 def tree_equal(a, b):
@@ -265,7 +272,7 @@ def model_jit(fn):
 
     # Tells tools that wrap callables for trace counting (the performance gate) that this
     # is already a jit boundary, as they would for a ``jax.jit`` result.
-    wrapper._xtrax_model_jit = True
+    setattr(wrapper, "_xtrax_model_jit", True)  # noqa: B010 (read with getattr)
     return wrapper
 
 

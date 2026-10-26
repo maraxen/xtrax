@@ -48,32 +48,36 @@ pip install xtrax[export]
 
 Dependency floor: read the `jax`/`jaxlib` specifiers in `pyproject.toml`'s `dependencies` rather than trusting a number quoted here -- this line said `<0.11` for the whole period the pin was already `<0.12`. The io_callback shim (`xtrax.stages._callback`, shipped 0.4.0a6) pins this same range (`PINNED_JAX_RANGE`, `src/xtrax/stages/_callback.py:33`) and fails loud at import time if the resolved jax drifts outside it.
 
+xtrax does not depend on Equinox: no module under `src/xtrax` imports it, and it is a dev-only requirement of xtrax's own tests. Equinox models still work as plain pytrees (`Trainer`, `Engine`, tiling and export accept them and return the same `eqx.Module` type); install `equinox` yourself if you use it.
+
 ---
 
 ### JAX Discipline for Domain Library Authors
 
 When building domain libraries on xtrax (custom `RunSpec`, `InputResolver`, `StageBundle`, `AxisBoundary`), three cross-cutting invariants must be preserved:
 
-#### 1. Static vs. Dynamic Fields in `eqx.Module`
+#### 1. Static vs. Dynamic Fields in `xtrax.Struct`
 
-`AxisBoundary` (and any custom `eqx.Module` you create) separates fields into:
-- **Static fields** (`eqx.field(static=True)`): callables, Python values, never traced
+xtrax's own pytree classes subclass `xtrax.Struct`, a frozen-dataclass pytree base (verify: `src/xtrax/_tree.py:70`; subclasses need no decorator). `AxisBoundary` (and any custom `Struct` you create) separates fields into:
+- **Static fields** (`xtrax.field(static=True)`): callables, Python values, never traced
 - **Dynamic fields**: JAX arrays, traced at jit time
 
-Example (verify: `src/xtrax/stages/boundaries.py:84-98` — this skill is a map, not the territory):
+Equinox is not required for any of this. Equinox models are plain pytrees to xtrax, and a downstream subclass may declare its static fields with `eqx.field(static=True)` or `xtrax.field(static=True)` (verify: `src/xtrax/_tree.py:31`).
+
+Example (verify: `src/xtrax/stages/boundaries.py:84-99` — this skill is a map, not the territory):
 ```python
-class AxisBoundary(eqx.Module):
-    fuse: Fuse | BoundaryCallable | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:96
-    tap: Tap | BoundaryCallable | None = eqx.field(static=True, default=None)    # verify: src/xtrax/stages/boundaries.py:97
-    sink: Sink | BoundaryCallable | None = eqx.field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:98
-    materialize: bool = eqx.field(static=True, default=False)  # verify: boundaries.py:99 -- export-only: declared-materializing sink is stripped
-    sink_receives_index: bool = eqx.field(static=True, default=False)  # verify: boundaries.py -- opt-in (y, index)
+class AxisBoundary(Struct):
+    fuse: Fuse | BoundaryCallable | None = field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:96
+    tap: Tap | BoundaryCallable | None = field(static=True, default=None)    # verify: src/xtrax/stages/boundaries.py:97
+    sink: Sink | BoundaryCallable | None = field(static=True, default=None)  # verify: src/xtrax/stages/boundaries.py:98
+    materialize: bool = field(static=True, default=False)  # verify: boundaries.py:99 -- export-only: declared-materializing sink is stripped
+    sink_receives_index: bool = field(static=True, default=False)  # verify: boundaries.py:131 -- opt-in (y, index)
     # No dynamic leaves; tree_flatten returns empty leaves
 ```
 
 Check your custom modules with:
 ```python
-import jax.tree_util  # verify: src/xtrax/stages/boundaries.py:84-98 (AxisBoundary implementation)
+import jax.tree_util  # verify: src/xtrax/stages/boundaries.py:84-99 (AxisBoundary implementation)
 leaves = jax.tree_util.tree_leaves(my_boundary)
 assert len(leaves) == 0, "AxisBoundary must have no dynamic leaves"
 ```
@@ -88,7 +92,7 @@ leaves = jax.tree_util.tree_flatten(boundary)[0]
 assert leaves == [], "Expected no dynamic leaves in AxisBoundary"
 ```
 
-This invariant ensures JIT does not retrace when `AxisBoundary` instances change — the structure is cached by Equinox.
+This invariant ensures JIT does not retrace when `AxisBoundary` instances change — the static values live in the treedef, which is the compile cache key.
 
 #### 3. JIT Boundary Rules
 
@@ -120,17 +124,17 @@ Three distinct regions exist:
 These boundary protocols are the protocol-slot pattern applied to stage boundaries; the general model-structure patterns (variant classes, layer tuples, pure functions, protocol/ABC slots) live in jaxlint's `developing-composable-jax` skill.
 
 Choose JIT decorator based on your model:
-- **`eqx.filter_jit`** (preferred): JAX arrays are traced, static fields are held constant. Ideal for models with callable static fields (like `AxisBoundary`).
+- **`xtrax.model_jit`** (preferred): array leaves are traced, every other leaf (callables, Python values, static fields) is a static compile key. Ideal for models with callable static fields (like `AxisBoundary`). It wraps a module-level function and takes the model as an argument (verify: `src/xtrax/_tree.py:237`).
 - **`jax.jit`**: All arrays traced, everything else is attempted to be traced (may fail if callables or static values change).
 
 ```python
-# Preferred: filter_jit with static-only callables
-@eqx.filter_jit
-def inference_step(model: eqx.Module, x):
-    # model may have static fields (callables); filter_jit handles correctly
+# Preferred: model_jit with static-only callables
+@model_jit
+def inference_step(model, x):
+    # model may have static fields (callables); model_jit keeps them out of the trace
     return model(x)
 
-# Safe for Trainer: Trainer.step is @eqx.filter_jit (verify: src/xtrax/training/trainer.py:31)
+# Safe for Trainer: Trainer.step runs through xtrax.model_jit (verify: src/xtrax/training/trainer.py:84)
 ```
 
 ---

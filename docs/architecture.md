@@ -61,7 +61,7 @@ This enables safe checkpointing, reproducibility, and distributed training witho
 
 xtrax doesn't reimplement solved problems:
 
-- **Equinox** handles JAX modules and AD filters.
+- **`xtrax.Struct`** (a frozen-dataclass pytree base) and `xtrax.model_jit` handle xtrax's own pytree classes and jit-over-mixed-pytrees; Equinox models are accepted as plain pytrees.
 - **Optax** handles optimizers, schedules, and gradient transforms.
 - **Orbax** handles checkpointing and async saves.
 - **Grain** handles data loading and sharding.
@@ -184,7 +184,7 @@ Multi-process training via JAX's SPMD APIs (`jax.distributed.initialize()`, `jax
 
 - `LogicalMesh`: Describes device topology.
 
-Delegation: xtrax just wraps JAX's distributed primitives. The actual sharding is done by Equinox and JAX's `device_put_sharded()`.
+Delegation: xtrax just wraps JAX's distributed primitives. The actual sharding is done by JAX.
 
 ## Layer 8: Checkpointing
 

@@ -3,7 +3,9 @@
 Spec ``.praxia/docs/specs/261023_equinox-decoupling.md`` section 6. The classes moved here are
 ``Trainer``, ``SafetyTrainStep``, ``ResumableState``, ``ComposedLoss`` (plus the deprecated
 ``WeightedLoss``, ``MultiTaskLoss``, ``SafetyManager``, ``ShardingPolicy``) and ``Engine``.
-Equinox appears only as a fixture: the models a user hands to xtrax.
+Equinox appears only as a fixture: the models a user hands to xtrax. It is a dev-only
+dependency, so every test that needs it starts with ``pytest.importorskip("equinox")`` and the
+dict-model tests run in the CI ``no-equinox`` job.
 """
 
 import asyncio
@@ -11,12 +13,16 @@ import dataclasses
 import json
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
+
+try:
+    import equinox as eqx
+except ImportError:  # the no-equinox CI job; equinox-fixture tests skip via importorskip
+    eqx = None
 
 import xtrax.engine.engine as engine_module
 from xtrax._tree import Struct, combine, is_inexact_array, partition, value_and_grad
@@ -35,6 +41,10 @@ with pytest.deprecated_call(match="xtrax #6107"):
     from xtrax.training.step import SafetyTrainStep
 
 LR = 0.1
+
+
+def _is_eqx_module(obj):
+    return eqx is not None and isinstance(obj, eqx.Module)
 
 
 def _tree_structure(obj):
@@ -85,7 +95,7 @@ def _mlp_loss(model, batch, key):
 def test_resumable_state_leaves_and_treedef():
     model = _dict_model()
     state = init_state(model, optax.sgd(LR), seed=0)
-    assert isinstance(state, Struct) and not isinstance(state, eqx.Module)
+    assert isinstance(state, Struct) and not _is_eqx_module(state)
     fields = {f.name: f.metadata.get("static", False) for f in dataclasses.fields(ResumableState)}
     assert fields == {
         "step": False,
@@ -189,7 +199,7 @@ def test_deprecated_losses_manager_and_policy_are_structs():
     policy = ShardingPolicy(rules=(("w", jax.sharding.PartitionSpec("data")),))
     assert jax.tree_util.tree_leaves(policy) == []
     for obj in (weighted, multi, policy, SafetyManager(True, True, True)):
-        assert isinstance(obj, Struct) and not isinstance(obj, eqx.Module)
+        assert isinstance(obj, Struct) and not _is_eqx_module(obj)
 
 
 class _NoopCallback:
@@ -205,7 +215,7 @@ class _NoopCallback:
 def test_engine_is_static_only():
     trainer = _dict_trainer()
     engine = Engine(trainer=trainer, callbacks=())
-    assert isinstance(engine, Struct) and not isinstance(engine, eqx.Module)
+    assert isinstance(engine, Struct) and not _is_eqx_module(engine)
     assert jax.tree_util.tree_leaves(engine) == []
     assert all(f.metadata.get("static") for f in dataclasses.fields(Engine))
     assert engine.validation_callbacks == ()
@@ -378,6 +388,7 @@ def test_trainer_loss_decreases_on_a_dict_model():
 
 def test_trainer_step_matches_eqx_filter_grad_on_an_mlp_once():
     """Compat check against equinox (not a parity suite): one sgd(1.0) step == model - grad."""
+    pytest.importorskip("equinox")
     model = _mlp()
     batch = _batch(0)
     trainer = Trainer(loss_fn=_mlp_loss, optimizer=optax.sgd(1.0), takes_key=True)
@@ -421,6 +432,7 @@ def test_is_inexact_array_and_partition_with_a_predicate():
 
 
 def test_trained_eqx_mlp_comes_back_as_an_equinox_module():
+    pytest.importorskip("equinox")
     model = _mlp()
     trainer = Trainer(loss_fn=_mlp_loss, optimizer=optax.adam(1e-2), takes_key=True)
     state = init_state(model, optax.adam(1e-2), seed=0)
@@ -438,6 +450,7 @@ def test_trained_eqx_mlp_comes_back_as_an_equinox_module():
 
 
 def test_eqx_tree_at_works_on_resumable_state():
+    pytest.importorskip("equinox")
     state = init_state(_mlp(), optax.sgd(LR), seed=0)
     other = _mlp(seed=9)
     swapped = eqx.tree_at(lambda s: s.model, state, other)
@@ -456,12 +469,14 @@ def test_eqx_tree_at_works_on_resumable_state():
 # --- Engine.eval keeps switching equinox models to inference mode -----------------------------
 
 
-class _DropoutModel(eqx.Module):
-    linear: eqx.nn.Linear
-    drop: eqx.nn.Dropout
+if eqx is not None:
 
-    def __call__(self, x):
-        return self.drop(self.linear(x))  # no key: only valid in inference mode
+    class _DropoutModel(eqx.Module):
+        linear: eqx.nn.Linear
+        drop: eqx.nn.Dropout
+
+        def __call__(self, x):
+            return self.drop(self.linear(x))  # no key: only valid in inference mode
 
 
 class _Data:
@@ -483,6 +498,7 @@ def _eval_engine():
 
 
 def test_engine_eval_puts_an_equinox_model_in_inference_mode(tmp_path, monkeypatch):
+    pytest.importorskip("equinox")
     monkeypatch.setenv("XTRAX_LEDGER_ROOT", str(tmp_path / "ledger"))
     engine, state = _eval_engine()
     metrics = asyncio.run(engine.eval(state, _Data()))
@@ -491,6 +507,7 @@ def test_engine_eval_puts_an_equinox_model_in_inference_mode(tmp_path, monkeypat
 
 
 def test_engine_eval_control_without_inference_mode_the_dropout_model_fails(tmp_path, monkeypatch):
+    pytest.importorskip("equinox")
     monkeypatch.setenv("XTRAX_LEDGER_ROOT", str(tmp_path / "ledger"))
     monkeypatch.setattr(engine_module, "inference_mode", lambda model: model)
     engine, state = _eval_engine()
@@ -501,14 +518,16 @@ def test_engine_eval_control_without_inference_mode_the_dropout_model_fails(tmp_
 # --- checkpoints: a state saved by the pre-migration class restores into the new one --------------
 
 
-class _LegacyResumableState(eqx.Module):
-    """The pre-migration ``ResumableState``: same fields, an ``eqx.Module``."""
+if eqx is not None:
 
-    step: jax.Array
-    key: jax.Array
-    model: Any
-    opt_state: Any
-    extras: dict = eqx.field(default_factory=dict)
+    class _LegacyResumableState(eqx.Module):
+        """The pre-migration ``ResumableState``: same fields, an ``eqx.Module``."""
+
+        step: jax.Array
+        key: jax.Array
+        model: Any
+        opt_state: Any
+        extras: dict = eqx.field(default_factory=dict)
 
 
 def _build(cls, seed):
@@ -529,6 +548,7 @@ def _saved_leaf_paths(directory):
 
 
 def test_checkpoint_saved_from_the_equinox_class_restores_into_resumable_state(tmp_path):
+    pytest.importorskip("equinox")
     old = _build(_LegacyResumableState, 7)
     save_checkpoint(get_checkpoint_manager(tmp_path / "old"), old)
     manager = get_checkpoint_manager(tmp_path / "old")
@@ -543,6 +563,7 @@ def test_checkpoint_saved_from_the_equinox_class_restores_into_resumable_state(t
 
 
 def test_checkpoint_layout_is_identical_for_the_old_and_new_class(tmp_path):
+    pytest.importorskip("equinox")
     save_checkpoint(get_checkpoint_manager(tmp_path / "old"), _build(_LegacyResumableState, 7))
     save_checkpoint(get_checkpoint_manager(tmp_path / "new"), _build(ResumableState, 7))
     old_paths = _saved_leaf_paths(tmp_path / "old")
@@ -555,6 +576,7 @@ def test_checkpoint_layout_is_identical_for_the_old_and_new_class(tmp_path):
 
 
 def test_engine_restore_reads_a_checkpoint_written_by_the_equinox_class(tmp_path):
+    pytest.importorskip("equinox")
     save_checkpoint(get_checkpoint_manager(tmp_path / "ckpt"), _build(_LegacyResumableState, 7))
     engine = Engine(trainer=_dict_trainer(), callbacks=())
     restored = engine.restore(tmp_path / "ckpt", _build(ResumableState, 0))

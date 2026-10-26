@@ -12,27 +12,25 @@ from xtrax.training.types import ResumableState  # verify: src/xtrax/training/ty
 state = ResumableState(
     step=jnp.int32(0),         # jnp.int32 scalar — dynamic leaf; plain 0 (Python int) also accepted
     key=jax.random.key(0),     # PRNG key
-    model=my_model,            # eqx.Module (trainable parameters)
+    model=my_model,            # any pytree of arrays (a dict, an eqx.Module, ...)
     opt_state=None,            # Optimizer state (optax format)
 )
 ```
 
 Verify: `src/xtrax/training/types.py`
 
-**Mutation pattern** (using `eqx.tree_at`):
+**Mutation pattern** (`ResumableState` is a frozen `xtrax.Struct`; use `dataclasses.replace`):
 
 ```python
-import equinox as eqx
+import dataclasses
 
 # Update model and step in state
-new_state = eqx.tree_at(
-    lambda s: (s.model, s.step),
-    state,
-    (new_model, state.step + 1),
-)
+new_state = dataclasses.replace(state, model=new_model, step=state.step + 1)
 ```
 
-Verify: `src/xtrax/training/trainer.py:67-70`
+`eqx.tree_at` also works on a `ResumableState`, so existing Equinox code keeps working.
+
+Verify: `src/xtrax/training/types.py:42-56`
 
 #### Trainer: Single-Model Training Step
 
@@ -40,7 +38,7 @@ Execute one supervised training step:
 
 ```python
 from xtrax.training.types import LossFunction  # verify: src/xtrax/training/types.py
-from xtrax.training.trainer import Trainer  # verify: src/xtrax/training/trainer.py:12-74
+from xtrax.training.trainer import Trainer  # verify: src/xtrax/training/trainer.py:14-81
 import optax
 
 loss_fn: LossFunction = lambda pred, target: jnp.mean((pred - target) ** 2)
@@ -49,14 +47,14 @@ optimizer = optax.adam(learning_rate=1e-4)
 trainer = Trainer(loss_fn=loss_fn, optimizer=optimizer)
 
 # Execute step
-new_state, metrics = trainer.step(state, batch)  # verify: src/xtrax/training/trainer.py:31-74
+new_state, metrics = trainer.step(state, batch)  # verify: src/xtrax/training/trainer.py:62-81
 # metrics = {"loss": scalar}
 # new_state.step incremented by 1
 ```
 
-Verify: `src/xtrax/training/trainer.py:12-74`
+Verify: `src/xtrax/training/trainer.py:14-81`
 
-**Invariant**: `Trainer.step` is `@eqx.filter_jit` decorated (trace only JAX arrays).
+**Invariant**: `Trainer.step` runs through `xtrax.model_jit` (array leaves traced, every other leaf a static compile key; verify: `src/xtrax/training/trainer.py:84`).
 
 #### Gradient Safety: checkify
 
@@ -126,7 +124,7 @@ engine = Engine(trainer=trainer, callbacks=(LoggingCallback(),))
 
 Verify: `src/xtrax/training/types.py`
 
-**Callback hooks** (7 total, verify: `src/xtrax/training/types.py:32-40`):
+**Callback hooks** (7 total, verify: `src/xtrax/training/types.py:33-39`):
 - `on_train_start(state)` — Before training begins
 - `on_train_end(state)` — After all training
 - `on_resume(state)` — When resuming from a checkpoint
@@ -165,4 +163,4 @@ opt = make_optimizer(base, clip_norm=1.0)
 opt = adamw_with_schedule(peak_lr=1e-4, warmup_steps=1000, total_steps=10000)
 ```
 
-Verify: `src/xtrax/training/optim.py` (definitions); re-exported at `src/xtrax/training/__init__.py:4`
+Verify: `src/xtrax/training/optim.py` (definitions); re-exported at `src/xtrax/training/__init__.py:5`

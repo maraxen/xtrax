@@ -226,7 +226,7 @@ audit-public-api:
 # `uv sync --group=docs --extra=eda`. `uv sync` REPLACES the environment rather than adding
 # to it, so it silently dropped beartype -- the one package that lives only in
 # [project.optional-dependencies].dev and that nothing else requires. (jaxtyping SURVIVES:
-# equinox, a core dependency, requires it.) Every later gate in audit-deterministic then
+# it is a core dependency.) Every later gate in audit-deterministic then
 # died on an unrelated ModuleNotFoundError while this recipe itself still exited 0.
 #
 # #131 moved the groups and extras onto `uv run`, which resolves additively and leaves the

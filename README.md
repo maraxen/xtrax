@@ -6,7 +6,7 @@
 [![Coverage](https://img.shields.io/badge/coverage-tier1%2095%25-brightgreen)](https://github.com/maraxen/xtrax)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/maraxen/xtrax/blob/main/LICENSE)
 
-A set of composable building blocks for JAX/Equinox training loops — engine + trainer orchestration, axis tiling strategies, distributed/sharding helpers, streaming output callbacks, and orbax checkpointing — extracted from the author's research code.
+A set of composable building blocks for JAX training loops — engine + trainer orchestration, axis tiling strategies, distributed/sharding helpers, streaming output callbacks, and orbax checkpointing — extracted from the author's research code.
 
 ## Status
 
@@ -33,6 +33,9 @@ pip install xtrax
 pip install "xtrax[io]"
 ```
 
+xtrax depends on JAX, optax and orbax, not on Equinox. Equinox models still work: they are
+plain pytrees to xtrax. Install `equinox` yourself if you train one.
+
 Requires Python 3.13 or later. The `xtrax run` CLI persists a provenance
 store (`.xtrax/runs/<run_id>/metrics.zarr`) for every invocation by default
 and fails loud before training if the `[io]` extra is missing. Add `.xtrax/`
@@ -57,7 +60,7 @@ optimizer = optax.adam(1e-3)
 trainer = Trainer(loss_fn=loss_fn, optimizer=optimizer)
 
 # 3. Initialize training state
-model = ...  # Your equinox model
+model = ...  # Any pytree of arrays: a dict of arrays, an Equinox module, ...
 opt_state = optimizer.init(...)
 state = ResumableState(model=model, opt_state=opt_state, step=0)
 

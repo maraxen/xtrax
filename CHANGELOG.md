@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `xtrax.Struct`, `xtrax.field`, and `xtrax.model_jit`, with the pytree helpers
+  `partition`, `combine`, `is_array`, and `inference_mode` (plain JAX, no Equinox).
+  `Struct` is a frozen-dataclass pytree base whose subclasses need no decorator;
+  `field(static=True)` marks a field as pytree metadata; `model_jit` is `jax.jit`
+  for arguments that mix array leaves with Python values, tracing the arrays and
+  keying the compile cache on everything else.
+
 ### Deprecated
 
 Probe release for xtrax #6107. Each name below warns with `DeprecationWarning` on
@@ -54,6 +63,38 @@ the name is in use, report it. Names with a one-line replacement are rewritten b
   `RuntimeError` otherwise. A one-process `init_dist()` no longer satisfies it.
 - `xtrax.loop.checkified_execution` calls `checkify` directly instead of going
   through `SafetyManager`.
+- **Equinox is no longer a runtime dependency.** It moved to the `dev` extra, where
+  xtrax's own tests use it as a fixture; no module under `src/xtrax` imports it. A
+  static AST sweep (`tests/test_no_equinox_sweep.py`) and a subprocess gate that blocks
+  the import (`tests/test_no_equinox_training.py`) enforce this, and a `no-equinox` CI
+  job runs both in an environment without it. `jaxtyping`, which `equinox` used to
+  bring in, is now a declared dependency (`>=0.3.3`: older releases fail to import
+  equinox 0.13.8, evaluate `hashlib._Hash`, or resolve string annotations under beartype
+  on Python 3.13).
+- Training classes (`Trainer`, `SafetyTrainStep`, `ResumableState`, `ComposedLoss`,
+  `Engine`, `DataModule`), `RunSpec`, the tiling iterators and the `stages` classes
+  (`AxisBoundary`, `StageBundle`, ...) are `xtrax.Struct` pytrees instead of
+  `eqx.Module`s. Field names, defaults and static/array splits are unchanged.
+  Equinox models still work as plain pytrees: you pass one in and get the same
+  `eqx.Module` type back, `eqx.tree_at` works on a `ResumableState`, and a downstream
+  subclass may declare static fields with `eqx.field(static=True)` or
+  `xtrax.field(static=True)`. Checkpoints saved from the `eqx.Module` classes restore
+  into the `Struct` ones. `isinstance(x, eqx.Module)` is now `False` for these xtrax
+  classes.
+- `xtrax.model_jit` replaces `eqx.filter_jit` inside xtrax (`Trainer.step`, the
+  performance gate's probe kernels). `Engine.eval` still switches an Equinox model to
+  inference mode when `equinox` is loaded, without importing it.
+- `xtrax.telemetry.ir` StableHLO capture text no longer carries source locations (it is
+  printed without debug info, as `Lowered.as_text()` is), so the text is a function of
+  the computation alone. Digests of captures made by earlier releases will not match
+  captures of the same function made now.
+- **Migration.** If your code relied on `pip install xtrax` installing Equinox (for
+  `import equinox` in your own models), declare `equinox` in your own project's
+  dependencies; xtrax no longer provides it. There is no `xtrax[equinox]` extra.
+- `xtrax.inference` memoization refuses the Pallas TPU hardware-PRNG primitives
+  (`prng_seed`, `prng_random_bits`, `prng_split`, `prng_join`), as it refuses other draws:
+  a memoized draw would return the same sample on every call.
+
 ## [0.4.1b4] - 2026-10-26
 
 ### Added

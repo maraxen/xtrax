@@ -20,6 +20,12 @@ def _registered_primitive_names() -> set[str]:
     # every lazily created one exists before the scan.
     jax.make_jaxpr(lambda k: jax.random.normal(k, (2,)))(jax.random.key(0))
     jax.make_jaxpr(lambda k: jax.random.gamma(k, 1.0))(jax.random.key(0))
+    # Pallas backends register their own primitives (xtrax.op kernels import them), so
+    # import both here; otherwise the scan depends on which tests ran first.
+    import importlib
+
+    for backend in ("jax.experimental.pallas.tpu", "jax.experimental.pallas.triton"):
+        importlib.import_module(backend)
     from jax._src.core import Primitive
 
     return {o.name for o in gc.get_objects() if isinstance(o, Primitive)}
@@ -51,7 +57,13 @@ def test_every_registered_draw_or_callback_primitive_is_classified() -> None:
     import re
 
     family = re.compile(r"random|rng|threefry|philox|callback|debug")
-    registered = {n for n in _registered_primitive_names() if family.search(n)}
+    # Names the family pattern matches that are neither draws nor host callbacks.
+    # debug_barrier_p: Pallas Triton thread barrier inside a kernel, registered once any
+    # test imports Pallas (xtrax.op kernels); it has no host effect and draws nothing.
+    not_draw_or_callback = {"debug_barrier_p"}
+    registered = {
+        n for n in _registered_primitive_names() if family.search(n)
+    } - not_draw_or_callback
     unclassified = sorted(registered - memo._BANNED_PRIMITIVES - memo._ADMITTED_KEY_PRIMITIVES)
     assert unclassified == [], f"classify these (jax {jax.__version__}): {unclassified}"
 
