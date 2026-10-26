@@ -1,0 +1,114 @@
+# ast-grep rewrite rules for the function-shaped replacements in the xtrax #6107 probe
+# release (thin wrappers deprecated in favour of JAX / xtrax.engine.io). Structural, not
+# regex-over-text: see README.md in this directory for usage, scope and what needs prose.
+#
+#   ast-grep scan --rule codemods/thin-wrappers-to-jax/rules.yml --update-all <paths>
+#
+# Each rewrite is idempotent. The rules cannot add `import jax`; the report-only rules at
+# the end flag the imports to clean up by hand.
+id: init-dist-to-jax-distributed-initialize
+language: python
+message: 'init_dist(...) is jax.distributed.initialize(...) (xtrax #6107); see README for the 1-process case'
+rule:
+  pattern: init_dist($$$ARGS)
+fix: jax.distributed.initialize($$$ARGS)
+---
+id: get-device-mesh-positional-to-make-mesh
+language: python
+message: 'get_device_mesh(shape, names) is jax.make_mesh(shape, names) (xtrax #6107)'
+rule:
+  pattern: get_device_mesh($SHAPE, $NAMES)
+constraints:
+  SHAPE: { not: { kind: keyword_argument } }
+  NAMES: { not: { kind: keyword_argument } }
+fix: jax.make_mesh($SHAPE, $NAMES)
+---
+id: get-device-mesh-keyword-to-make-mesh
+language: python
+message: 'get_device_mesh(shape=, axis_names=) is jax.make_mesh(shape, names) (xtrax #6107)'
+rule:
+  pattern: get_device_mesh(shape=$SHAPE, axis_names=$NAMES)
+fix: jax.make_mesh($SHAPE, $NAMES)
+---
+# A bare function name as the predicate: no parentheses needed.
+id: partition-labels-named-predicate
+language: python
+message: 'partition_labels(model, f) is one jax.tree.map for optax.partition (xtrax #6107)'
+rule:
+  pattern: partition_labels($MODEL, $F)
+constraints:
+  F: { kind: identifier }
+fix: 'jax.tree.map(lambda leaf: "frozen" if $F(leaf) else "train", $MODEL)'
+---
+# Any other predicate expression (a lambda, a partial): parenthesise it before calling.
+id: partition-labels-expression-predicate
+language: python
+message: 'partition_labels(model, f) is one jax.tree.map for optax.partition (xtrax #6107)'
+rule:
+  pattern: partition_labels($MODEL, $F)
+constraints:
+  F: { not: { kind: identifier } }
+fix: 'jax.tree.map(lambda leaf: "frozen" if ($F)(leaf) else "train", $MODEL)'
+---
+# xtrax.io is a second import path for xtrax.engine.io (same objects).
+id: xtrax-io-from-import
+language: python
+message: 'xtrax.io is deprecated; import from xtrax.engine.io (xtrax #6107)'
+rule:
+  pattern: from xtrax.io import $$$NAMES
+fix: from xtrax.engine.io import $$$NAMES
+---
+id: xtrax-io-callbacks-from-import
+language: python
+message: 'xtrax.io.callbacks is deprecated; import from xtrax.engine.io (xtrax #6107)'
+rule:
+  pattern: from xtrax.io.callbacks import $$$NAMES
+fix: from xtrax.engine.io import $$$NAMES
+---
+id: xtrax-io-plain-import
+language: python
+message: 'xtrax.io is deprecated; import xtrax.engine.io (xtrax #6107)'
+rule:
+  pattern: import xtrax.io
+fix: import xtrax.engine.io
+---
+id: xtrax-io-attribute
+language: python
+message: 'xtrax.io.X is deprecated; use xtrax.engine.io.X (xtrax #6107)'
+rule:
+  pattern: xtrax.io.$NAME
+  not: { inside: { kind: import_statement } }
+fix: xtrax.engine.io.$NAME
+---
+# REPORT ONLY (no fix): imports of deprecated names whose replacement is prose, not a
+# one-liner (classes, and names that move to a JAX call you must write yourself). Each hit
+# is a place to read the README table by hand.
+id: deprecated-class-import
+language: python
+severity: warning
+message: >-
+  imports a thin wrapper deprecated in xtrax #6107 (SafetyManager, with_safety,
+  SafetyTrainStep, WeightedLoss, MultiTaskLoss, ShardingPolicy, is_distributed,
+  get_hardware_mesh_profile); see codemods/thin-wrappers-to-jax/README.md for the replacement
+rule:
+  pattern: from $M import $$$NAMES
+  has:
+    kind: identifier
+    regex: ^(SafetyManager|with_safety|SafetyTrainStep|WeightedLoss|MultiTaskLoss|ShardingPolicy|is_distributed|get_hardware_mesh_profile)$
+    stopBy: end
+constraints:
+  M: { regex: "^xtrax(\\.|$)" }
+---
+# REPORT ONLY (no fix): create_train_step(..., safety=True) is deprecated; safety=False is not.
+id: create-train-step-safety-true
+language: python
+severity: warning
+message: >-
+  create_train_step(..., safety=True) is deprecated in xtrax #6107; build the checkified
+  step yourself (see codemods/thin-wrappers-to-jax/README.md)
+rule:
+  pattern: create_train_step($$$ARGS)
+  has:
+    kind: keyword_argument
+    regex: ^safety\s*=\s*True$
+    stopBy: end

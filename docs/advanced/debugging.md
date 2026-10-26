@@ -5,7 +5,7 @@ Practical notes for diagnosing JAX tracing issues, numeric failures, and docs dr
 ## Static shapes and recompilation
 
 xtrax treats batch and tiling thresholds as **static** wherever possible. If you change
-`AxisSpec.default_batch_size`, `DataModule.batch_size`, or sparse `nse_budget` between
+`AxisSpec.default_batch_size` or `DataModule.batch_size` between
 steps, JAX may recompile. When performance suddenly drops:
 
 1. Confirm batch shapes are stable across the training loop.
@@ -19,13 +19,19 @@ See {doc}`../architecture` for the static-shape rationale.
 For gradient explosions or silent NaNs:
 
 ```python
+import jax
+from jax.experimental import checkify
+
 from xtrax import create_train_step
 
-trainer = create_train_step(loss_fn=loss, optimizer=optimizer, safety=True)
+trainer = create_train_step(loss_fn=loss, optimizer=optimizer)
+checked = jax.jit(checkify.checkify(trainer.step, errors=checkify.float_checks))
+err, (state, metrics) = checked(state, batch)
+err.throw()
 ```
 
-With `safety=True`, backward passes run under `jax.experimental.checkify` and raise on
-the host when non-finite values appear in gradients.
+`checkify.float_checks` raises on the host when NaN or division by zero appears in the step.
+`create_train_step(..., safety=True)` does the same through a deprecated wrapper (xtrax #6107).
 
 Utility helpers in `xtrax.safety` (`safe_norm`, `safe_reciprocal`) avoid divide-by-zero
 artifacts in custom losses.
@@ -44,7 +50,7 @@ artifacts in custom losses.
 | Symptom | Likely cause | What to check |
 |---------|--------------|---------------|
 | `DispatchRejected` from tiling | Calling dispatch on a `DedupGather` strategy directly | Let `BatchPlanner` own dedup axes |
-| `distributed=True` data error | `init_dist()` not called | Call `xtrax.distributed.init_dist()` before iterators |
+| `distributed=True` data error | `jax.process_count()` is 1 | Start the processes with `jax.distributed.initialize()` before iterators |
 | Docs example import fails | Optional extra missing | Install `pip install xtrax[eda]` for EDA pages |
 | Coverage gate red on PR | New public API without annotations | Run `just audit-added-types-diff` |
 

@@ -127,7 +127,7 @@ def dtype_name(dtype: Any) -> str:
 def find_bcoo_leaves(tree: Any) -> list[str]:
     """Return the keypaths of any BCOO leaves in ``tree``.
 
-    Sparsified models substitute BCOO at leaf positions, and BCOO is a pytree
+    A model with sparse weights holds BCOO at leaf positions, and BCOO is a pytree
     *node* rather than a leaf, so the tree structure changes. Under
     ``jax.export`` a closure-held BCOO is baked in as constants, which is what a
     self-contained artifact wants; this exists so a caller knows that is

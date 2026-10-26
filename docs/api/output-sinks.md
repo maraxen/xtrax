@@ -3,7 +3,7 @@
 Output sinks are how training results leave the system. xtrax groups two complementary
 surfaces under one mental model:
 
-1. **Streaming callbacks** (`xtrax.io`) — bounded async I/O for metrics, logging, and
+1. **Streaming callbacks** (`xtrax.engine.io`) — bounded async I/O for metrics, logging, and
    other observability without blocking the training loop.
 2. **Checkpoint persistence** (`xtrax.checkpoint`) — durable Orbax-backed state for
    resume and fault tolerance.
@@ -13,24 +13,25 @@ between epochs or steps.
 
 ## Streaming Callbacks
 
-The `xtrax.io` module provides async utilities for bounded concurrent execution of
+The `xtrax.engine.io` module provides async utilities for bounded concurrent execution of
 streaming operations.
 
 :::{important}
-**Canonical import path** — import from `xtrax.io`, not `xtrax.engine.io`:
+**Canonical import path** — import from `xtrax.engine.io`:
 
 ```python
-from xtrax.io import BoundedCallbackHandler, async_indexed_stream
+from xtrax.engine.io import BoundedCallbackHandler, async_indexed_stream
 ```
 
-`xtrax.io` is a thin re-export of the implementation in `xtrax.engine.io`.
+`xtrax.io` is deprecated (xtrax #6107, probe release). It returns the same objects as
+`xtrax.engine.io` and warns on access, naming the caller; nothing has been removed yet.
 :::
 
 ### Overview
 
 ```{autosummary}
-xtrax.io.BoundedCallbackHandler
-xtrax.io.async_indexed_stream
+xtrax.engine.io.BoundedCallbackHandler
+xtrax.engine.io.async_indexed_stream
 ```
 
 ### BoundedCallbackHandler
@@ -44,7 +45,7 @@ checkpoint triggers) without blocking the training loop, while limiting concurre
 to avoid resource exhaustion.
 
 ```python
-from xtrax.io import BoundedCallbackHandler
+from xtrax.engine.io import BoundedCallbackHandler
 import asyncio
 
 async def main():
@@ -71,7 +72,7 @@ Async iterator that prefetches items from a blocking iterable into a queue, yiel
 the event loop.
 
 ```python
-from xtrax.io import async_indexed_stream
+from xtrax.engine.io import async_indexed_stream
 import asyncio
 
 async def main():
@@ -83,7 +84,7 @@ asyncio.run(main())
 
 ### Full API Reference
 
-```{automodule} xtrax.io
+```{automodule} xtrax.engine.io
 :members:
 :undoc-members:
 :show-inheritance:

@@ -1,8 +1,8 @@
 # xtrax
 
 Composable building blocks for JAX/Equinox training and batched inference — axis
-tiling strategies, trainer/engine orchestration, safety-checked steps, structured
-sparsification, sharding helpers, and orbax checkpointing.
+tiling strategies, trainer/engine orchestration, sharding helpers, and orbax
+checkpointing.
 
 ```{note}
 **xtrax is alpha, experimental software.** Built primarily for the author's personal research use, APIs may change without notice between releases. No backward-compatibility guarantees pre-1.0. Issues and PRs welcome; support is best-effort.
@@ -29,7 +29,6 @@ api/training
 api/data
 api/tiling
 api/inference
-api/sparse
 api/distributed
 api/transforms
 api/safety
@@ -54,9 +53,7 @@ advanced/eda-guide
   For the rationale, see [Why xtrax exists](why-xtrax.md).
 - **Training conveniences** — `Trainer` / `Engine` / `ResumableState` for Equinox
   models, with lifecycle callbacks and orbax checkpointing.
-- **Safety checks** — opt-in checkify NaN/Inf detection, plus numerically safe ops
-  (`safe_norm`, `safe_reciprocal`).
-- **Structured sparsity** — fixed-nse sparse inference with stable compile shapes.
+- **Safe arithmetic** — `safe_norm` and `safe_reciprocal`.
 - **Sharding and data helpers** — thin wrappers over `jit` auto-sharding /
   `shard_map` and grain.
 

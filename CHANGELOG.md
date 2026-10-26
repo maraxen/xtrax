@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+Probe release for xtrax #6107. Each name below warns with `DeprecationWarning` on
+access, names its replacement, and is attributed to the calling file; behaviour and
+object identity are unchanged and nothing is removed. If a warning reaches you and
+the name is in use, report it. Names with a one-line replacement are rewritten by
+`codemods/thin-wrappers-to-jax/` (ast-grep); the rest are reported.
+
+- `init_dist` -> `jax.distributed.initialize`; `is_distributed` ->
+  `jax.distributed.is_initialized`; `get_device_mesh` and `get_hardware_mesh_profile`
+  -> `jax.make_mesh`; `ShardingPolicy` (debt #3043).
+- `SafetyManager`, `with_safety`, `SafetyTrainStep`, and
+  `create_train_step(..., safety=True)` -> `jax.jit(checkify.checkify(fn,
+  errors=checkify.float_checks))` then `err.throw()` (debt #3042).
+  `safety=False` is not deprecated. `float_checks` covers NaN and division by zero,
+  not an `Inf` from overflow.
+- `WeightedLoss`, `MultiTaskLoss` -> `xtrax.ComposedLoss`, which returns
+  `(loss, aux)` for `Trainer(has_aux=True)`.
+- `partition_labels` -> one `jax.tree.map` that feeds `optax.partition`.
+- `xtrax.io` (`BoundedCallbackHandler`, `async_indexed_stream`) -> `xtrax.engine.io`.
+
+### Removed
+
+- `xtrax.sparse` and its root re-exports (`SparseConfig`, `SparsePolicy`,
+  `SparseMaskManager`, `sparsify_model`, `make_sparse_forward_fn`,
+  `sparse_filter_jit`), with `docs/api/sparse.md`, `tests/sparse`, and the
+  `using-xtrax` skill's sparsification section. A search of consumer
+  repositories found no import of it (aminx's audit artifacts list it as unused).
+  To recover it, install `xtrax==0.4.1b4` or copy
+  `src/xtrax/sparse/` from the `v0.4.1b4` tag. `sparse_filter_jit` was
+  `eqx.filter_jit` unchanged. `xtrax.export.find_bcoo_leaves` stays; it inspects
+  any BCOO leaf.
+- The `using-xtrax` reference `sparse-distributed.md` is now
+  `distributed-checkpoint.md`.
+
+### Changed
+
+- The performance gate's trace probe moved off `xtrax.sparse`: the kernel
+  `sparse_filter_jit_kernel` is now `filter_jit_linear_kernel`, an
+  `eqx.filter_jit` kernel over an `eqx.nn.Linear` that must trace once across
+  two stable calls (`audit/performance_targets.toml`). The transform under the
+  gate and the thresholds (`max_traces = 1`, zero steady-state compiles) are
+  unchanged; the probe no longer passes a BCOO-sparsified model.
+- `DataModule(distributed=True)` requires `jax.process_count() > 1` and raises
+  `RuntimeError` otherwise. A one-process `init_dist()` no longer satisfies it.
+- `xtrax.loop.checkified_execution` calls `checkify` directly instead of going
+  through `SafetyManager`.
 ## [0.4.1b4] - 2026-10-26
 
 ### Added

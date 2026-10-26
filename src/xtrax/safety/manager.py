@@ -7,6 +7,8 @@ import equinox as eqx
 import jax
 import jax.experimental.checkify as checkify
 
+from xtrax._renamed import Deprecated, deprecated_getattr
+
 
 class SafetyManager(eqx.Module):
     """Manages safety checks (NaN/Inf detection) for JAX computations.
@@ -40,7 +42,8 @@ class SafetyManager(eqx.Module):
             return fn
 
         # Build jit-compiled checkified fn ONCE (not per call)
-        # float_checks covers NaN + Inf + overflow
+        # float_checks is NaN checks + division-by-zero checks; it does not catch an Inf
+        # that comes from overflow (jax/_src/checkify.py: float_checks = nan_checks | div_checks)
         _checked_jit = jax.jit(checkify.checkify(fn, errors=checkify.float_checks))
 
         def wrapped_fn(*args: Any, **kwargs: Any) -> Any:
@@ -62,3 +65,22 @@ def with_safety(fn: Callable, manager: SafetyManager) -> Callable:
         The wrapped function.
     """
     return manager.wrap(fn)
+
+
+# Deprecated in the #6107 probe release: both names warn on access and are otherwise unchanged.
+# `_SafetyManager` is the name xtrax's own code imports, so internal use never warns.
+_REPLACEMENT = (
+    "jax.jit(jax.experimental.checkify.checkify(fn, errors=checkify.float_checks)), "
+    "then err.throw() on the host"
+)
+_NOTE = (
+    "Note float_checks is NaN + division-by-zero, not Inf/overflow. "
+    "xtrax debt #3042 tracks a Context-driven rebuild."
+)
+_DEPRECATED = {
+    "SafetyManager": Deprecated(SafetyManager, _REPLACEMENT, _NOTE),
+    "with_safety": Deprecated(with_safety, _REPLACEMENT, _NOTE),
+}
+_SafetyManager = SafetyManager
+del SafetyManager, with_safety
+__getattr__ = deprecated_getattr(__name__, _DEPRECATED)

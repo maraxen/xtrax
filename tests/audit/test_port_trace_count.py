@@ -36,7 +36,7 @@ def test_max_traces_defaults_to_one() -> None:
 
 def test_placeholder_qualname_detection() -> None:
     assert is_placeholder_qualname("xtrax.<module>.<fn>")
-    assert not is_placeholder_qualname("xtrax.sparse.inference.sparse_filter_jit")
+    assert not is_placeholder_qualname("xtrax.transforms.chunked_map")
 
 
 def test_iter_kernels_prefers_manifest_order() -> None:

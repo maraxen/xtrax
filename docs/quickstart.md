@@ -83,4 +83,4 @@ print(f"Loss: {metrics['loss']:.4f}")
 - **Distributed training**: Use `Engine` for multi-epoch training with callbacks and checkpointing.
 - **Composable batching**: Use `AxisSpec` and `BatchPlanner` to apply vmap, batch-wise loops, or structured sparsity.
 - **Data pipelines**: Load data with `DataModule` and `create_distributed_pipeline`.
-- **Safety checks**: Enable NaN/Inf detection with `create_train_step(safety=True)`.
+- **Safety checks**: Wrap `trainer.step` in `jax.jit(checkify.checkify(...))`; see {doc}`concepts`. `create_train_step(safety=True)` is deprecated (xtrax #6107).

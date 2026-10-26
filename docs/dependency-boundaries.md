@@ -46,9 +46,8 @@ policy per tier:
 - **`jax.*`** (public) — free use, no restrictions.
 - **`jax.experimental.*`** — used directly today for `checkify` (training
   safety checks, in `training/step.py`, `safety/manager.py`, and
-  `loop/checkified_execution.py`) and `sparse.BCOO` (in `sparse/policy.py`,
-  `sparse/inference.py`, and `export/safety.py`). These are long-stable
-  experimental APIs, imported directly.
+  `loop/checkified_execution.py`) and `sparse.BCOO` (in `export/safety.py`). These
+  are long-stable experimental APIs, imported directly.
 
   `io_callback` is handled differently: it has a history of namespace and
   signature changes, so it's wrapped in a single internal shim

@@ -2,7 +2,10 @@ import equinox as eqx
 import jax.numpy as jnp
 import pytest
 
-from xtrax.safety.manager import SafetyManager, with_safety
+# #6107 probe release: importing a deprecated name warns; these tests exercise the
+# unchanged behaviour, so the access is asserted once here.
+with pytest.deprecated_call(match="xtrax #6107"):
+    from xtrax.safety.manager import SafetyManager, with_safety
 
 
 def test_safety_manager_disabled_returns_identity():

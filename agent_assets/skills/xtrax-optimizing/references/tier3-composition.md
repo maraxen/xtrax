@@ -58,8 +58,8 @@ metric launders a numerics regression violates Non-Negotiable 5.
 
 ## donate / remat
 
-- Donation plumbing exists today only in `xtrax.sparse.inference.sparse_filter_jit`
-  (donate= passthrough). Generalizing donation = new library surface; per the
+- xtrax has no donation plumbing of its own (`eqx.filter_jit(fn, donate=...)` is
+  the passthrough). Generalizing donation = new library surface; per the
   scope doc, build utilities only when probes justify them (>=2 drivers sharing
   scaffolding).
 - Compile-vs-runtime split is already measured by

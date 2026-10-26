@@ -1,7 +1,7 @@
 ---
 name: using-xtrax
-description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function, or when a model is sparsified for inference. The library is xtrax."
-when_to_use: 'Triggers: padding or bucketing loop for variable-length sequences before a JIT step, chunked vmap or lax.map over a large batch, memory-budgeted batching / batch plan that must fit a device budget, ONNX or StableHLO export of a JAX pipeline, resumable training loop / resume training from a checkpoint, zarr output sink / staged zarr writes, TOML file that should launch or resume a training run, infer batch axes from a typed function signature, sparsify a dense model for inference, compose batching primitives into your own CLI.'
+description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function. The library is xtrax."
+when_to_use: 'Triggers: padding or bucketing loop for variable-length sequences before a JIT step, chunked vmap or lax.map over a large batch, memory-budgeted batching / batch plan that must fit a device budget, ONNX or StableHLO export of a JAX pipeline, resumable training loop / resume training from a checkpoint, zarr output sink / staged zarr writes, TOML file that should launch or resume a training run, infer batch axes from a typed function signature, compose batching primitives into your own CLI.'
 ---
 # using-xtrax
 
@@ -94,11 +94,8 @@ This invariant ensures JIT does not retrace when `AxisBoundary` instances change
 
 Three distinct regions exist:
 
-- **Outside jit**: `sparsify_model(model, policy)` MUST run here. (verify: `src/xtrax/sparse/inference.py:44`)
-  ```text
-  🚫 HALTS RuntimeError if sparsify_model is called inside jax.jit
-  # Enforcement at src/xtrax/sparse/inference.py:44-55 (assert_not_tracing)
-  ```
+- **Outside jit**: host-side bucketing (`select_bucket`, `bucketize`) runs here, before the
+  jitted step. (verify: `src/xtrax/tiling/bucket.py`)
 
 - **Inside jit**: `Fuse` functions (pure JAX axis reducers) run inside the trace.
   ```python
@@ -270,8 +267,8 @@ Choose your task:
 4. **Analyze a batching plan before committing**  
    → Read `references/eda.md`
 
-5. **Apply sparsification (structured pruning at inference)**  
-   → Read `references/sparse-distributed.md`
+5. **Set up multi-device training or checkpointing**  
+   → Read `references/distributed-checkpoint.md`
 
 6. **Run training from TOML or inspect tiling via CLI**  
    → Read `references/cli.md`
@@ -304,10 +301,10 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 |---|---|---|---|
 | Tiling | `references/tiling.md` | 40% | AxisSpec, BatchPlanner, Strategies, Dispatch, Iterators, Carry, Dedup, Bucket, Multi-Axis Composition |
 | Run | `references/run.md` | 20% | RunSpec, InputResolver, RuntimeBundle, FeatureBatch, SinkSpec/make_sink, ZarrStagingSink, zarr_integrity, AxisBoundary, Fuse/Tap/Sink, topology validation, boundary executor |
-| Training | `references/training.md` | 25% | ResumableState, Trainer, SafetyTrainStep, Engine, Callbacks, Optax |
+| Training | `references/training.md` | 25% | ResumableState, Trainer, checkify safety, Engine, Callbacks, Optax |
 | CLI | `references/cli.md` | E2/E3 | Tyro-delegated verbs: plan/explain/export/run/resume/sweep + graph-validate/graph-plan/graph-author + ledger (`src/xtrax/cli/registry.py:42-53`) |
 | EDA | `references/eda.md` | 10% | Plan analysis and visualization |
-| Sparse/Distributed/Checkpoint | `references/sparse-distributed.md` | 5% | Pointer pattern for structured pruning, multi-device training, checkpointing |
+| Distributed/Checkpoint | `references/distributed-checkpoint.md` | 5% | Pointer pattern for multi-device training, checkpointing |
 | Signature Inference | `references/inference.md` | — | xtrax.inference: derive AxisSpecs + BundleSchema from a typed function |
 | Export (AOT) | `references/export.md` | — | xtrax.export: export_pipeline, Target/VerificationLevel, native + wasm32 + SPIR-V codegen, dtype envelope, load_hf_weights, materialize stripping, multi-axis composition |
 | Length bucketing | `references/length-bucketing.md` | — | AxisSpec.bucket_boundaries, Bucket, host select_bucket/bucketize, BUCKET_LADDER, one compile per rung |

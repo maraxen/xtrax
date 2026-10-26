@@ -7,6 +7,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from xtrax._renamed import Deprecated, deprecated_getattr
 from xtrax.training.types import LossFunction
 
 PyTree = Any
@@ -15,6 +16,8 @@ Array = jax.Array
 
 class WeightedLoss(eqx.Module):
     """Combines a loss function with a static weight multiplier.
+
+    Deprecated (#6107 probe release): use :class:`ComposedLoss`. Accessing the name warns.
 
     The weight field is marked as static to ensure it does not appear
     in JAX array filtering — it is a Python float, not a JAX Array.
@@ -46,6 +49,8 @@ class WeightedLoss(eqx.Module):
 
 class MultiTaskLoss(eqx.Module):
     """Combines multiple weighted losses for multi-task learning.
+
+    Deprecated (#6107 probe release): use :class:`ComposedLoss`. Accessing the name warns.
 
     Each task has its own WeightedLoss. The __call__ method sums
     the contributions from all tasks. Length validation ensures
@@ -220,3 +225,22 @@ class ComposedLoss(eqx.Module):
         loss = jnp.sum(self.weights * values)
         aux = {name: values[i] for i, name in enumerate(self.names)}
         return loss, aux
+
+
+# Deprecated in the #6107 probe release: both names warn on access and are otherwise unchanged.
+_DEPRECATED = {
+    "WeightedLoss": Deprecated(
+        WeightedLoss,
+        "xtrax.ComposedLoss(terms=[(name, loss_fn)], weights=[w])",
+        "ComposedLoss returns (loss, aux), so pair it with Trainer(has_aux=True), and its "
+        "weights are traced rather than static.",
+    ),
+    "MultiTaskLoss": Deprecated(
+        MultiTaskLoss,
+        "xtrax.ComposedLoss(terms=[(name, loss_fn), ...], weights=[...])",
+        "ComposedLoss passes the same predictions and targets to every term and returns "
+        "(loss, aux); it has no weight_schedule, so scale the total by your schedule yourself.",
+    ),
+}
+del WeightedLoss, MultiTaskLoss
+__getattr__ = deprecated_getattr(__name__, _DEPRECATED)

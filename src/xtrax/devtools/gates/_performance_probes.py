@@ -10,36 +10,24 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from xtrax.sparse.config import SparseConfig
-from xtrax.sparse.inference import sparse_filter_jit, sparsify_model
-from xtrax.sparse.policy import SparsePolicy
 
-
-def _make_policy(budget: int) -> SparsePolicy:
-    return SparsePolicy(
-        config=SparseConfig(
-            nse_budget=budget,
-            update_schedule=lambda _step: True,
-            fallback_mode="dense_mask",
-        )
-    )
-
-
-@sparse_filter_jit
+# `filter_jit_linear_kernel` replaced `sparse_filter_jit_kernel` when xtrax.sparse was removed
+# (#6107). `sparse_filter_jit` was `eqx.filter_jit` unchanged, so the transform under the gate
+# is the same; the model passed in is a dense `eqx.nn.Linear` instead of a BCOO-sparsified one.
+@eqx.filter_jit
 @chex.assert_max_traces(n=1)
-def sparse_filter_jit_kernel(m: eqx.nn.Linear, x: jnp.ndarray) -> tuple[int, ...]:
-    """Representative sparse_filter_jit kernel for trace-count gate."""
+def filter_jit_linear_kernel(m: eqx.nn.Linear, x: jnp.ndarray) -> tuple[int, ...]:
+    """Representative `eqx.filter_jit` kernel over an Equinox module for the trace-count gate."""
     return m.weight.shape
 
 
-def probe_sparse_filter_jit_kernel(guarded: Callable[..., Any]) -> None:
-    """Exercise sparse_filter_jit kernel with stable inputs."""
+def probe_filter_jit_linear_kernel(guarded: Callable[..., Any]) -> None:
+    """Exercise the `eqx.filter_jit` kernel twice with stable inputs."""
     key = jax.random.PRNGKey(0)
     model = eqx.nn.Linear(4, 4, key=key)
-    sparse_model = sparsify_model(model, _make_policy(budget=8))
     x = jnp.ones((4,))
-    guarded(sparse_model, x)
-    guarded(sparse_model, x)
+    guarded(model, x)
+    guarded(model, x)
 
 
 def probe_stable_jnp_kernel(guarded: Callable[..., Any]) -> None:

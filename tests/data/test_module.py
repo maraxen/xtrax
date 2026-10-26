@@ -4,8 +4,7 @@ import itertools
 import numpy as np
 import pytest
 
-import xtrax.data.module as _mod
-from xtrax.data.module import DataModule, _mark_dist_initialized
+from xtrax.data.module import DataModule
 from xtrax.data.pipeline import build_input_pipeline
 
 requires_grain = pytest.mark.skipif(
@@ -16,13 +15,6 @@ requires_grain = pytest.mark.skipif(
 
 class TestDataModule:
     """Tests for DataModule iterator behavior and distributed guards."""
-
-    @pytest.fixture(autouse=True)
-    def reset_dist_flag(self):
-        """Reset the _dist_initialized flag before each test."""
-        _mod._dist_initialized = False
-        yield
-        _mod._dist_initialized = False
 
     def test_train_iter_yields_from_dataset(self):
         """train_iter yields items from the dataset."""
@@ -50,8 +42,8 @@ class TestDataModule:
         result = list(module.eval_iter())
         assert result == [4, 5, 6]
 
-    def test_train_iter_distributed_without_init_raises(self):
-        """train_iter raises RuntimeError when distributed=True without init_dist()."""
+    def test_train_iter_distributed_single_process_raises(self):
+        """train_iter raises RuntimeError when distributed=True in a one-process runtime."""
         dataset = [1, 2, 3]
         module = DataModule(
             dataset=dataset,
@@ -60,11 +52,11 @@ class TestDataModule:
             seed=42,
             distributed=True,
         )
-        with pytest.raises(RuntimeError, match="distributed=True requires init_dist"):
+        with pytest.raises(RuntimeError, match="requires a multi-process JAX runtime"):
             list(module.train_iter())
 
-    def test_eval_iter_distributed_without_init_raises(self):
-        """eval_iter raises RuntimeError when distributed=True without init_dist()."""
+    def test_eval_iter_distributed_single_process_raises(self):
+        """eval_iter raises RuntimeError when distributed=True in a one-process runtime."""
         dataset = [1, 2, 3]
         module = DataModule(
             dataset=dataset,
@@ -73,11 +65,18 @@ class TestDataModule:
             seed=42,
             distributed=True,
         )
-        with pytest.raises(RuntimeError, match="distributed=True requires init_dist"):
+        with pytest.raises(RuntimeError, match="requires a multi-process JAX runtime"):
             list(module.eval_iter())
 
-    def test_mark_dist_initialized_clears_guard(self):
-        """_mark_dist_initialized() allows subsequent train_iter and eval_iter calls."""
+    def test_distributed_multi_process_clears_guard(self, monkeypatch):
+        """jax.process_count() > 1 allows train_iter and eval_iter (#6107).
+
+        Paired with the single-process tests above, this is the negative control: the same
+        module raises at process_count() == 1 and proceeds at 2.
+        """
+        import jax
+
+        monkeypatch.setattr(jax, "process_count", lambda: 2)
         dataset = [1, 2, 3]
         module = DataModule(
             dataset=dataset,
@@ -86,22 +85,32 @@ class TestDataModule:
             seed=42,
             distributed=True,
         )
-        _mark_dist_initialized()
-        result_train = list(module.train_iter())
-        result_eval = list(module.eval_iter())
-        assert result_train == [1, 2, 3]
-        assert result_eval == [1, 2, 3]
+        assert list(module.train_iter()) == [1, 2, 3]
+        assert list(module.eval_iter()) == [1, 2, 3]
+
+    def test_distributed_false_never_consults_process_count(self, monkeypatch):
+        """distributed=False must not raise whatever the process count is."""
+        import jax
+
+        monkeypatch.setattr(jax, "process_count", lambda: 1)
+        module = DataModule(dataset=[1, 2], batch_size=2, num_epochs=1, seed=0, distributed=False)
+        assert list(module.train_iter()) == [1, 2]
+
+    def test_data_module_does_not_depend_on_xtrax_distributed(self):
+        """The deprecated package is not imported by DataModule or its guard (#6107)."""
+        import subprocess
+        import sys
+
+        code = (
+            "import sys; import xtrax.data.module, xtrax.engine; "
+            "sys.exit(1 if 'xtrax.distributed' in sys.modules else 0)"
+        )
+        result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True)
+        assert result.returncode == 0, result.stderr.decode()
 
 
 class TestDataModuleGrainPipeline:
     """DataModule yields Grain batches when use_grain_pipeline is set."""
-
-    @pytest.fixture(autouse=True)
-    def reset_dist_flag(self):
-        """Reset the _dist_initialized flag before each test."""
-        _mod._dist_initialized = False
-        yield
-        _mod._dist_initialized = False
 
     @requires_grain
     def test_train_iter_batches_and_eval_iter_does_not_shuffle(self):
@@ -146,8 +155,8 @@ class TestDataModuleGrainPipeline:
         batches = list(module.eval_iter())
         assert [batch.shape for batch in batches] == [(2, 4), (2, 4)]
 
-    def test_distributed_grain_still_requires_init(self):
-        """The init_dist guard runs before the pipeline is built."""
+    def test_distributed_grain_still_requires_multi_process(self):
+        """The process-count guard runs before the pipeline is built."""
         module = DataModule(
             dataset=[np.int32(i) for i in range(4)],
             batch_size=2,
@@ -156,7 +165,7 @@ class TestDataModuleGrainPipeline:
             distributed=True,
             use_grain_pipeline=True,
         )
-        with pytest.raises(RuntimeError, match="distributed=True requires init_dist"):
+        with pytest.raises(RuntimeError, match="requires a multi-process JAX runtime"):
             list(module.train_iter())
 
     @requires_grain
@@ -166,7 +175,6 @@ class TestDataModuleGrainPipeline:
 
         monkeypatch.setattr(jax, "process_index", lambda: 0)
         monkeypatch.setattr(jax, "process_count", lambda: 2)
-        _mark_dist_initialized()
         module = DataModule(
             dataset=[np.int32(i) for i in range(8)],
             batch_size=2,
