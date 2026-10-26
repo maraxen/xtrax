@@ -9,7 +9,7 @@ class IntentError(Exception):
     """Base error for intent resolution failures.
 
     Attributes:
-        site: User name or ``file:line`` of the failing site.
+        site: User name or ``module:line`` of the failing site.
         path: Resolution path (for example ``primal`` or ``diff``).
         constraint: The constraint that could not be met.
     """
@@ -22,7 +22,7 @@ class IntentError(Exception):
         message : str
             What failed.
         site : str
-            User name or ``file:line`` of the failing site.
+            User name or ``module:line`` of the failing site.
         path : str
             Resolution path (for example ``primal`` or ``diff``).
         constraint : str

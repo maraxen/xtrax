@@ -28,6 +28,8 @@ _PACKAGES = [
     "xtrax.export",
     "xtrax.testing",
     "xtrax._tree",
+    "xtrax.kernel_seam",
+    "xtrax.testing.kernel_parity",
 ]
 
 

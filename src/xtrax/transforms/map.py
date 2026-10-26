@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -69,6 +70,54 @@ def _apply_size1(fn: Callable[..., Any], xs: Any, in_axes: Any = 0) -> Any:
     return jax.tree.map(lambda leaf: jnp.expand_dims(leaf, axis=0), fn(squeezed))
 
 
+def _split_zero_size_outputs(fn: Callable[..., Any], xs: Any) -> tuple[Any, list[int]] | None:
+    """Per-element output structure and the flat indices of its zero-size leaves.
+
+    Returns None when no leaf of ``fn``'s per-element output is empty. Output
+    shapes come from ``jax.eval_shape`` on one element, so ``fn`` is traced but
+    not executed. A leaf with an extended dtype (typed PRNG keys) cannot be
+    rebuilt with ``jnp.zeros``, so it also returns None and takes the normal path.
+    """
+    element = jax.tree.map(lambda leaf: jax.ShapeDtypeStruct(leaf.shape[1:], leaf.dtype), xs)
+    out_struct = jax.eval_shape(fn, element)
+    flat, _ = jax.tree.flatten(out_struct)
+    empty = [i for i, s in enumerate(flat) if math.prod(s.shape) == 0]
+    if not empty or any(jax.dtypes.issubdtype(flat[i].dtype, jax.dtypes.extended) for i in empty):
+        return None
+    return out_struct, empty
+
+
+def _chunked_map_without_zero_size(
+    fn: Callable[..., Any],
+    xs: Any,
+    batch_size: int,
+    out_struct: Any,
+    empty: list[int],
+) -> Any:
+    """Chunk only the non-empty output leaves of ``fn``; rebuild the empty ones.
+
+    The empty leaves are ``jnp.zeros`` of shape ``(n, *leaf.shape)``. They hold no
+    values, so any batching strategy gives the same result as ``jax.vmap``.
+    """
+    n = jax.tree.leaves(xs)[0].shape[0]
+    flat_struct, treedef = jax.tree.flatten(out_struct)
+    empty_set = set(empty)
+    kept = [i for i in range(len(flat_struct)) if i not in empty_set]
+
+    def keep_nonempty(x: Any) -> list[Any]:
+        """``fn`` restricted to its non-empty output leaves."""
+        flat, _ = jax.tree.flatten(fn(x))
+        return [flat[i] for i in kept]
+
+    kept_ys = chunked_map(keep_nonempty, xs, batch_size=batch_size) if kept else []
+    leaves: list[Any] = [None] * len(flat_struct)
+    for i, y in zip(kept, kept_ys, strict=True):
+        leaves[i] = y
+    for i in empty:
+        leaves[i] = jnp.zeros((n, *flat_struct[i].shape), flat_struct[i].dtype)
+    return jax.tree.unflatten(treedef, leaves)
+
+
 def chunked_map[T](fn: Callable[[T], T], xs: T, batch_size: int | None = None) -> T:
     """Apply a function to a pytree using vmap or lax.map depending on size.
 
@@ -102,6 +151,11 @@ def chunked_map[T](fn: Callable[[T], T], xs: T, batch_size: int | None = None) -
     # Use vmap if batch_size is None or n <= batch_size
     if batch_size is None or n <= batch_size:
         return jax.vmap(fn)(xs)
+
+    # lax.map reshapes each output leaf with a -1 axis, which divides by a zero-size
+    # trailing extent (#6151). Zero-size leaves carry no data, so chunk only the rest.
+    if (split := _split_zero_size_outputs(fn, xs)) is not None:
+        return _chunked_map_without_zero_size(fn, xs, batch_size, *split)
 
     # lax.map(batch_size=1) vmaps every element. Sequential map does not.
     if batch_size == 1:

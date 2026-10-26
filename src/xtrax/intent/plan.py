@@ -3,6 +3,10 @@
 A :class:`Plan` is a frozen, hashable tuple of :class:`SiteDecision` values.
 Strategies serialise as ``{"type": <ClassName>, ...fields}``. ``Context`` is
 written only as ``repr``; :meth:`Plan.from_json` takes the live context back.
+
+An ``xtrax.op`` site has no tiling strategy. Its primal is an :class:`OpPrimal`:
+the implementation that runs (``kernel:<backend>`` or ``reference``) and the
+derivative form of the kernel.
 """
 
 import json
@@ -15,12 +19,76 @@ from xtrax.tiling.strategy import AxisStrategy, ChunkedMap, Scan, StaticWhile, V
 
 PLAN_SCHEMA_VERSION = 1
 
+_OP_FORMS = ("reference", "custom_jvp", "custom_vjp")
+
+
+@dataclass(frozen=True)
+class OpPrimal:
+    """Implementation an ``xtrax.op`` call runs on its primal path.
+
+    Attributes
+    ----------
+    backend : str or None
+        Backend whose kernel runs. ``None`` when the reference runs.
+    form : {"reference", "custom_jvp", "custom_vjp"}
+        ``"reference"`` runs the plain-JAX reference. ``"custom_jvp"`` runs a
+        kernel whose derivative is the reference's JVP. ``"custom_vjp"`` runs a
+        kernel with a backward kernel: reverse mode only.
+    """
+
+    backend: str | None
+    form: Literal["reference", "custom_jvp", "custom_vjp"]
+
+    def __post_init__(self) -> None:
+        """Reject an unknown form, or a backend that does not match the form.
+
+        Parameters
+        ----------
+        self : OpPrimal
+            Instance under construction.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            ``form`` is not one of the three forms, ``form`` is ``"reference"``
+            with a backend, or a kernel form has no backend.
+        """
+        if self.form not in _OP_FORMS:
+            raise ValueError(f"OpPrimal form {self.form!r} is not one of {_OP_FORMS}")
+        if (self.form == "reference") != (self.backend is None):
+            raise ValueError(
+                f"OpPrimal form {self.form!r} does not match backend {self.backend!r}: "
+                "the reference has no backend and a kernel form needs one"
+            )
+
+    @property
+    def label(self) -> str:
+        """Primal label: ``kernel:<backend>`` or ``reference``.
+
+        Parameters
+        ----------
+        self : OpPrimal
+            Primal whose backend is read.
+
+        Returns
+        -------
+        str
+            The label a plan table shows for this call.
+        """
+        return "reference" if self.backend is None else f"kernel:{self.backend}"
+
+
 _STRATEGY_FIELDS: dict[type[Any], tuple[str, ...]] = {
     Vmap: (),
     ChunkedMap: ("batch_size",),
     Scan: ("ordered_sinks",),
     StaticWhile: ("length",),
     WhileCarry: (),
+    OpPrimal: ("backend", "form"),
 }
 
 
@@ -28,7 +96,7 @@ _STRATEGY_FIELDS: dict[type[Any], tuple[str, ...]] = {
 class SiteKey:
     """Identity of one intent call on one resolution path.
 
-    ``label`` is the user ``name`` or ``"file.py:LINE"`` of the call.
+    ``label`` is the user ``name`` or the caller's ``"module:line"``.
     ``ordinal`` separates repeated calls that share a parent, path, and label.
 
     Attributes
@@ -97,12 +165,14 @@ class SiteDecision:
     key : SiteKey
         Site this decision belongs to.
     kind : str
-        Site kind, such as ``"loop"`` or ``"map"``.
-    primal : AxisStrategy or StaticWhile
-        Strategy for the primal path.
+        Site kind: ``"loop"``, ``"map"`` or ``"op"``.
+    primal : AxisStrategy, StaticWhile or OpPrimal
+        Strategy for the primal path. An ``"op"`` site holds an
+        :class:`OpPrimal`.
     diff : AxisStrategy or None
         Strategy for the differentiated path, or ``None`` when that path
-        has no decision.
+        has no decision. Always ``None`` for an ``"op"`` site: its derivative
+        comes from the reference or the backward kernel, named in ``diff_reason``.
     primal_reason : str
         Why ``primal`` was chosen.
     diff_reason : str
@@ -113,7 +183,7 @@ class SiteDecision:
 
     key: SiteKey
     kind: str
-    primal: AxisStrategy | StaticWhile
+    primal: AxisStrategy | StaticWhile | OpPrimal
     diff: AxisStrategy | None
     primal_reason: str
     diff_reason: str
@@ -133,11 +203,16 @@ class Plan:
         from JSON; passed back into :meth:`from_json`.
     decisions : tuple of SiteDecision
         One decision per visited site.
+    warnings : tuple of str
+        Notes about the plan as a whole, such as the arguments a partial
+        differentiation could not linearize. Empty when there are none. A
+        plan written before this field existed loads with ``()``.
     """
 
     schema_version: int
     context: Context
     decisions: tuple[SiteDecision, ...]
+    warnings: tuple[str, ...] = ()
 
     def by_key(self) -> Mapping[SiteKey, SiteDecision]:
         """Index decisions by site key.
@@ -177,7 +252,8 @@ class Plan:
         -------
         str
             Header plus one tab-separated row per decision: key, kind,
-            primal, diff, primal reason, diff reason, warnings.
+            primal, diff, primal reason, diff reason, warnings. Each plan-level
+            warning follows as a ``warning: <text>`` line.
         """
         rows = ["key\tkind\tprimal\tdiff\tprimal_reason\tdiff_reason\twarnings"]
         for decision in self.decisions:
@@ -195,6 +271,7 @@ class Plan:
                     )
                 )
             )
+        rows.extend(f"warning: {warning}" for warning in self.warnings)
         return "\n".join(rows)
 
     def to_json(self) -> str:
@@ -202,8 +279,12 @@ class Plan:
 
         ``context`` is ``repr(context)`` only. Strategies are
         ``{"type": <ClassName>, ...fields}`` for ``Vmap``, ``ChunkedMap``,
-        ``Scan`` (``ordered_sinks`` only), ``StaticWhile``, and ``WhileCarry``
-        (no fields; ``body``, ``cond``, and ``init`` must be unset).
+        ``Scan`` (``ordered_sinks`` only), ``StaticWhile``, ``WhileCarry``
+        (no fields; ``body``, ``cond``, and ``init`` must be unset), and
+        ``OpPrimal`` (``backend`` and ``form``). The schema version stays 1: an
+        ``OpPrimal`` is a new strategy type, so a reader that predates op sites
+        names it as an unknown strategy type, and a plan with no op site is
+        byte for byte what it was.
 
         Parameters
         ----------
@@ -226,6 +307,7 @@ class Plan:
             "schema_version": self.schema_version,
             "context": repr(self.context),
             "decisions": [_decision_to_json(decision) for decision in self.decisions],
+            "warnings": list(self.warnings),
         }
         return json.dumps(payload)
 
@@ -251,7 +333,8 @@ class Plan:
         ------
         ValueError
             ``schema_version`` is not :data:`PLAN_SCHEMA_VERSION`, or the
-            payload is not an object with ``decisions``, keys, and strategies.
+            payload is not an object with ``decisions``, keys, and strategies,
+            or ``warnings`` is present and not a list.
             The message names the field. An unknown strategy type is named too.
         json.JSONDecodeError
             ``s`` is not JSON text.
@@ -270,13 +353,20 @@ class Plan:
         if not isinstance(raw_decisions, list):
             raise ValueError("'decisions' is not a list")
         decisions = tuple(_decision_from_json(item) for item in raw_decisions)
-        return cls(version, context, decisions)
+        raw_warnings = payload.get("warnings", [])
+        if not isinstance(raw_warnings, list):
+            raise ValueError("'warnings' is not a list")
+        return cls(version, context, decisions, tuple(raw_warnings))
 
 
-def _strategy_cell(strategy: AxisStrategy | StaticWhile | None) -> str:
+def _strategy_cell(strategy: AxisStrategy | StaticWhile | OpPrimal | None) -> str:
     """Short table cell for a strategy, or ``"None"``."""
     if strategy is None:
         return "None"
+    if isinstance(strategy, OpPrimal):
+        if strategy.form == "reference":
+            return strategy.label
+        return f"{strategy.label} ({strategy.form})"
     name = type(strategy).__name__
     if isinstance(strategy, ChunkedMap):
         return f"{name}(batch_size={strategy.batch_size})"
@@ -287,7 +377,7 @@ def _strategy_cell(strategy: AxisStrategy | StaticWhile | None) -> str:
     return name
 
 
-def _strategy_to_json(strategy: AxisStrategy | StaticWhile) -> dict[str, Any]:
+def _strategy_to_json(strategy: AxisStrategy | StaticWhile | OpPrimal) -> dict[str, Any]:
     """Serialise one supported strategy.
 
     ``Scan`` keeps ``ordered_sinks`` only. ``WhileCarry`` keeps no fields.
@@ -298,7 +388,7 @@ def _strategy_to_json(strategy: AxisStrategy | StaticWhile) -> dict[str, Any]:
         ``Scan.transition`` or ``Scan.init`` is set, ``WhileCarry.body``,
         ``WhileCarry.cond``, or ``WhileCarry.init`` is set, or ``strategy``
         is not one of ``Vmap``, ``ChunkedMap``, ``Scan``, ``StaticWhile``,
-        ``WhileCarry``.
+        ``WhileCarry``, ``OpPrimal``.
     """
     if isinstance(strategy, Scan):
         callable_set = strategy.transition is not None or strategy.init is not None
@@ -331,6 +421,7 @@ _STRATEGY_TYPES: dict[str, type[Any]] = {
     "Scan": Scan,
     "StaticWhile": StaticWhile,
     "WhileCarry": WhileCarry,
+    "OpPrimal": OpPrimal,
 }
 
 
@@ -348,7 +439,7 @@ def _field(payload: Mapping[str, Any], name: str) -> Any:
     return payload[name]
 
 
-def _strategy_from_json(payload: Any) -> AxisStrategy | StaticWhile:
+def _strategy_from_json(payload: Any) -> AxisStrategy | StaticWhile | OpPrimal:
     """Inverse of :func:`_strategy_to_json`.
 
     Raises
@@ -416,7 +507,7 @@ def _decision_from_json(payload: Any) -> SiteDecision:
     ------
     ValueError
         ``payload`` is not an object, a decision field is missing, a nested
-        key or strategy is invalid, or ``diff`` is ``StaticWhile``.
+        key or strategy is invalid, or ``diff`` is ``StaticWhile`` or ``OpPrimal``.
     """
     body = _object(payload, "decision")
     diff_payload = _field(body, "diff")
@@ -424,8 +515,8 @@ def _decision_from_json(payload: Any) -> SiteDecision:
         diff = None
     else:
         decoded = _strategy_from_json(diff_payload)
-        if isinstance(decoded, StaticWhile):
-            raise ValueError("'diff' cannot be StaticWhile")
+        if isinstance(decoded, (StaticWhile, OpPrimal)):
+            raise ValueError(f"'diff' cannot be {type(decoded).__name__}")
         diff = decoded
     warnings = _field(body, "warnings")
     if not isinstance(warnings, list):

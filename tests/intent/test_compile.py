@@ -1,14 +1,20 @@
 """Tests for xtrax.intent.compile."""
 
+import importlib
 import logging
+import pkgutil
 import subprocess
 import sys
+import types
+from unittest import mock
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import xtrax.intent
+import xtrax.intent._map as intent_map_module
 from xtrax.intent import (
     Context,
     IntentError,
@@ -337,6 +343,38 @@ def test_compile_exact_inputs_skip_diff_pass():
         assert decision.diff_reason == "same strategy as primal in the MVP"
 
 
+def test_package_names_are_functions_and_submodules_are_patchable():
+    """``compile``, ``map``, ``loop`` and ``resolve`` are functions on the package.
+
+    Their implementation modules carry a leading underscore, so a string target for
+    ``mock.patch`` reaches the module. Fails while the submodule has the function's name,
+    because the package attribute is then the function and ``mock.patch`` cannot resolve
+    ``xtrax.intent.compile.SCAN_AROUND_WHILE_BACKENDS`` (#6159).
+    """
+    for name in ("compile", "map", "loop", "resolve"):
+        assert not isinstance(getattr(xtrax.intent, name), types.ModuleType)
+        module = importlib.import_module(f"xtrax.intent._{name}")
+        assert isinstance(module, types.ModuleType)
+        assert getattr(xtrax.intent, name) is getattr(module, name)
+    replacement = frozenset({"cpu"})
+    with mock.patch("xtrax.intent._compile.SCAN_AROUND_WHILE_BACKENDS", replacement):
+        compile_module = importlib.import_module("xtrax.intent._compile")
+        assert compile_module.SCAN_AROUND_WHILE_BACKENDS is replacement
+
+
+def test_module_docstrings_do_not_open_with_experimental():
+    """No ``xtrax.intent`` module docstring opens with "Experimental." (#6171).
+
+    Fails while any module still carries the prefix that the MVP shipped with.
+    """
+    names = [info.name for info in pkgutil.iter_modules(xtrax.intent.__path__)]
+    assert {"_compile", "_loop", "_map", "_resolve", "sites"} <= set(names)
+    for name in names:
+        module = importlib.import_module(f"xtrax.intent.{name}")
+        assert not (module.__doc__ or "").lstrip().startswith("Experimental"), name
+    assert not (xtrax.intent.__doc__ or "").lstrip().startswith("Experimental")
+
+
 def _vmap_is_expensive(decisions):
     """Count Vmap at 100 bytes and every other strategy at 10."""
     return sum(100 if isinstance(decision.strategy, Vmap) else 10 for decision in decisions)
@@ -344,11 +382,9 @@ def _vmap_is_expensive(decisions):
 
 def test_posthoc_scan_around_while_check(monkeypatch):
     """ChunkedMap around a loop is rejected unless an override bypassed the hazard."""
-    resolve_module = sys.modules["xtrax.intent.resolve"]
-    compile_module = sys.modules["xtrax.intent.compile"]
     # Only the post-hoc set includes "cpu": this simulates a resolver miss, so the
     # compiled jaxpr check is the only line of defence.
-    monkeypatch.setattr(compile_module, "SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
+    monkeypatch.setattr("xtrax.intent._compile.SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
     budget = MemoryBudget(bytes=50, estimate=_vmap_is_expensive)
 
     def fn(xs):
@@ -385,7 +421,7 @@ def test_posthoc_scan_around_while_check(monkeypatch):
     assert not isinstance(exc_info.value, UnsatisfiableContextError)
 
     # With the resolver seeing the same backend set, the hazard is refused at plan time.
-    monkeypatch.setattr(resolve_module, "SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
+    monkeypatch.setattr("xtrax.intent._resolve.SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
     refused = compile(fn, Context(memory_budget=budget, chunk_size=4))
     with pytest.raises(UnsatisfiableContextError) as refused_info:
         refused.plan_for(xs)
@@ -740,14 +776,13 @@ def test_three_level_diff_fallback_uses_canonical_chunked_map(monkeypatch):
     assert decision_for(explicit_session, deep_diff) is explicit
 
     calls = {"chunked": 0}
-    map_module = sys.modules["xtrax.intent.map"]
-    real_chunked = map_module.chunked_map
+    real_chunked = intent_map_module.chunked_map
 
     def _spy_chunked(*args, **kwargs):
         calls["chunked"] += 1
         return real_chunked(*args, **kwargs)
 
-    monkeypatch.setattr(map_module, "chunked_map", _spy_chunked)
+    monkeypatch.setattr("xtrax.intent._map.chunked_map", _spy_chunked)
 
     def fn(xs, weight):
         def outer_step(carry, row):
@@ -874,6 +909,79 @@ def test_partial_diff_names_failed_argument_and_keeps_loop_scan():
     assert "ValueError" in only_outer.diff_reason
 
 
+_AUX_NOTE = "not differentiable w.r.t. aux (ValueError)"
+
+
+def test_partial_diff_note_is_on_the_plan_for_a_cond_loop_only_function():
+    """A cond loop has no diff strategy, yet the plan still names the failed argument.
+
+    ``x`` linearizes; ``aux`` goes through ``pure_callback`` and fails. The note used to be
+    appended only to loop sites with a diff strategy, so this plan never named ``aux`` (#6165).
+    """
+
+    def fn(x, aux):
+        scale = jnp.sum(_host_scale(aux))
+
+        def cond(carry):
+            return carry[0] < jnp.float32(3)
+
+        def body(carry):
+            return carry + jnp.float32(1)
+
+        return loop(body, x, cond=cond, name="stop") * scale
+
+    compiled = compile(fn, Context(backend="cpu"))
+    plan = compiled.plan_for(jnp.zeros(2, jnp.float32), jnp.ones((3,), jnp.float32))
+    assert plan.warnings == (_AUX_NOTE,)
+    stop = next(d for d in plan.decisions if d.key.label == "stop" and d.key.path == "primal")
+    assert stop.diff is None
+    assert _AUX_NOTE in plan.table()
+
+
+def test_partial_diff_note_is_on_the_plan_for_a_map_only_function():
+    """A map-only plan names the failed argument too, once."""
+
+    def fn(xs, w, aux):
+        scale = jnp.sum(_host_scale(aux))
+        return map(lambda z: jnp.sin(z * w), xs, name="m").sum() * scale
+
+    compiled = compile(fn, Context(backend="cpu"))
+    xs = jnp.ones((4, 4), jnp.float32)
+    plan = compiled.plan_for(xs, jnp.ones((4,), jnp.float32), jnp.ones((3,), jnp.float32))
+    assert plan.warnings == (_AUX_NOTE,)
+    assert plan.table().count(_AUX_NOTE) == 1
+
+
+def test_partial_diff_note_is_on_the_plan_once_for_a_scan_loop():
+    """A static loop keeps its per-site diff_reason, and the plan carries the note once."""
+
+    def fn(xs, w, aux):
+        scale = jnp.sum(_host_scale(aux))
+
+        def step(carry, row):
+            return carry + jnp.sum(row * w), row
+
+        return loop(step, jnp.float32(0.0), xs=xs, name="outer")[0] * scale
+
+    compiled = compile(fn, Context(backend="cpu"))
+    xs = jnp.ones((4, 4), jnp.float32)
+    plan = compiled.plan_for(xs, jnp.ones((4,), jnp.float32), jnp.ones((3,), jnp.float32))
+    assert plan.warnings == (_AUX_NOTE,)
+    outer = next(d for d in plan.decisions if d.key.label == "outer" and d.key.path == "primal")
+    assert outer.diff_reason.endswith(_AUX_NOTE)
+
+
+def test_fully_differentiable_function_has_no_plan_warnings():
+    """Negative control: no failed argument, no plan warning."""
+
+    def fn(xs, w):
+        return map(lambda z: jnp.sin(z * w), xs, name="m").sum()
+
+    compiled = compile(fn, Context(backend="cpu"))
+    plan = compiled.plan_for(jnp.ones((4, 4), jnp.float32), jnp.ones((4,), jnp.float32))
+    assert plan.warnings == ()
+
+
 def test_posthoc_rejected_program_does_not_execute(monkeypatch):
     """A scan around a while is refused before the jitted program runs.
 
@@ -881,8 +989,7 @@ def test_posthoc_rejected_program_does_not_execute(monkeypatch):
     running the body. Fails while the program runs and the callback fires
     before the check.
     """
-    compile_module = sys.modules["xtrax.intent.compile"]
-    monkeypatch.setattr(compile_module, "SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
+    monkeypatch.setattr("xtrax.intent._compile.SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
     budget = MemoryBudget(bytes=50, estimate=_vmap_is_expensive)
     calls = {"n": 0}
 
@@ -916,10 +1023,8 @@ def test_posthoc_bypass_does_not_exempt_other_maps(monkeypatch):
     The other map is still a scan around a while and is rejected. Fails while
     one bypass warning turns the check off for the whole program.
     """
-    resolve_module = sys.modules["xtrax.intent.resolve"]
-    compile_module = sys.modules["xtrax.intent.compile"]
-    monkeypatch.setattr(compile_module, "SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
-    monkeypatch.setattr(resolve_module, "SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
+    monkeypatch.setattr("xtrax.intent._compile.SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
+    monkeypatch.setattr("xtrax.intent._resolve.SCAN_AROUND_WHILE_BACKENDS", frozenset({"cpu"}))
     budget = MemoryBudget(bytes=50, estimate=_vmap_is_expensive)
 
     def fn(xs):

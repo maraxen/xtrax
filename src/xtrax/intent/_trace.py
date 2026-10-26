@@ -1,4 +1,4 @@
-"""Experimental. Shared tracing helpers for intent sites.
+"""Shared tracing helpers for intent sites.
 
 Registration is one flag so a loop and a map suspend the same way: the
 closure conversion that only hoists constants does not record nested sites.

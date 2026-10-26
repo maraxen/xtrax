@@ -2,7 +2,9 @@
 
 Primal-chain records (every ``path`` in the key is ``"primal"``) are planned.
 Map sites go through :class:`~xtrax.tiling.plan.BatchPlanner`. Loop sites follow
-the context rules. Diff-path records copy their primal twin.
+the context rules. Op sites carry the selection made while tracing, from the
+session's context: no tiling strategy applies to them. Diff-path records copy
+their primal twin.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -13,11 +15,11 @@ import jax
 
 from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError, UnsatisfiableContextError
-from xtrax.intent.plan import PLAN_SCHEMA_VERSION, Plan, SiteDecision, SiteKey, canonical
+from xtrax.intent.plan import PLAN_SCHEMA_VERSION, OpPrimal, Plan, SiteDecision, SiteKey, canonical
 from xtrax.intent.sites import SiteRecord
 from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
 from xtrax.tiling.estimators import lowered_memory_estimate
-from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlanner
+from xtrax.tiling.plan import AxisDecision, AxisSpec, BatchPlanner, vmap_decision_batch_size
 from xtrax.tiling.strategy import ChunkedMap, Scan, StaticWhile, Vmap, WhileCarry
 from xtrax.transforms.map import chunked_map
 
@@ -134,12 +136,14 @@ def resolve(
     ValueError
         An override label matches no record. The message names the label.
     IntentError
-        An override strategy is illegal for the site kind. The error names the site.
+        An override strategy is illegal for the site kind, or targets an op
+        site (which takes none). The error names the site.
     UnsatisfiableContextError
         The budget cannot be met, a map override makes the joint estimate
         exceed ``memory_budget``, export forbids the loop, or
         ``scan_around_while`` cannot move the outer map back to
-        :class:`~xtrax.tiling.strategy.Vmap`.
+        :class:`~xtrax.tiling.strategy.Vmap` within the joint budget the
+        switches of earlier sites left.
     """
     override_map = {} if overrides is None else overrides
     _validate_overrides(records, override_map)
@@ -161,7 +165,12 @@ def resolve(
     for record in records:
         if _is_primal_chain(record.key):
             _check_context(record, chosen[record.key].primal, ctx)
+    # Overrides alone may already exceed the budget; report that before any hazard
+    # switch is judged against a budget that is gone.
+    _check_map_override_budget(records, chosen, ctx, budget, override_map)
     final: dict[SiteKey, SiteDecision] = {}
+    # Each hazard switch is judged against the plan as the earlier sites left it.
+    working = dict(chosen)
     for record in records:
         if not _is_primal_chain(record.key):
             continue
@@ -170,12 +179,13 @@ def resolve(
             chosen,
             ctx,
             budget,
-            axis_decisions,
+            working,
             override_map,
             records,
             diff_available,
             diff_unavailable_reason,
         )
+        working[record.key] = final[record.key]
     _check_map_override_budget(records, final, ctx, budget, override_map)
     decisions = tuple(
         final[record.key]
@@ -376,6 +386,42 @@ def _loop_choice(
     return primal, None, primal_reason, diff_unavailable_reason
 
 
+def _op_diff_reason(primal: OpPrimal) -> str:
+    """Name where an op's derivative comes from."""
+    if primal.form == "custom_vjp":
+        return "reverse mode runs the backward kernel; forward mode raises IntentError"
+    if primal.form == "custom_jvp":
+        return "kernel derivative is the reference's JVP"
+    return "derivative by reference autodiff"
+
+
+def _op_decision(record: SiteRecord) -> SiteDecision:
+    """Decision for an op site: the selection recorded while tracing.
+
+    Raises
+    ------
+    IntentError
+        The record has no selection.
+    """
+    choice = record.op
+    if choice is None:
+        raise IntentError(
+            "op site has no recorded selection",
+            site=str(record.key),
+            path="primal",
+            constraint="record.op is None",
+        )
+    return SiteDecision(
+        key=record.key,
+        kind="op",
+        primal=choice.primal,
+        diff=None,
+        primal_reason=choice.reason,
+        diff_reason=_op_diff_reason(choice.primal),
+        warnings=choice.warnings,
+    )
+
+
 def _decision(
     record: SiteRecord,
     primal: Vmap | ChunkedMap | StaticWhile | Scan | WhileCarry,
@@ -404,6 +450,8 @@ def _automatic_decision(
     diff_unavailable_reason: str,
 ) -> SiteDecision:
     """Strategy for one primal-chain record before overrides and hazards."""
+    if record.kind == "op":
+        return _op_decision(record)
     if record.kind == "loop":
         primal, diff, primal_reason, diff_reason = _loop_choice(
             record,
@@ -443,6 +491,8 @@ def _no_twin_decision(
     diff_unavailable_reason: str,
 ) -> SiteDecision:
     """Per-kind default for a diff visit that has no primal twin."""
+    if record.kind == "op":
+        return _op_decision(record)
     if record.kind == "map":
         return _decision(record, Vmap(), Vmap(), _NO_TWIN, _NO_TWIN)
     primal, diff, _, _ = _loop_choice(
@@ -473,6 +523,15 @@ def _check_override_type(record: SiteRecord, override: SiteStrategyOverride) -> 
     """Raise :class:`IntentError` when ``override`` is illegal for ``record``."""
     primal, diff = override
     site = record.key.label
+    if record.kind == "op":
+        # TODO(#6098): let an override name the op's implementation ("reference" or a backend)
+        # once the override mapping carries more than tiling strategies.
+        raise IntentError(
+            "op sites take no strategy override: the selection follows the Context",
+            site=site,
+            path="primal",
+            constraint=repr(primal),
+        )
     if record.kind == "map":
         if not isinstance(primal, (Vmap, ChunkedMap)):
             raise IntentError(
@@ -639,6 +698,54 @@ def _chosen_decision(
     )
 
 
+def _joint_axes(
+    records: Sequence[SiteRecord],
+    decisions: Mapping[SiteKey, SiteDecision],
+    ctx: Context,
+) -> tuple[AxisDecision, ...]:
+    """One :class:`AxisDecision` per planned map, in record order, from resolved primals.
+
+    ``Vmap`` contributes :func:`~xtrax.tiling.plan.vmap_decision_batch_size`, the
+    value ``BatchPlanner`` records; ``ChunkedMap`` contributes that strategy's
+    batch size.
+
+    Raises
+    ------
+    IntentError
+        A planned map's primal is neither ``Vmap`` nor ``ChunkedMap``.
+    """
+    axis: list[AxisDecision] = []
+    for record in records:
+        if not _planned_map(record):
+            continue
+        primal = decisions[record.key].primal
+        spec = AxisSpec(
+            name=str(record.key),
+            cardinality=_cardinality(record),
+            default_batch_size=ctx.chunk_size,
+        )
+        if isinstance(primal, Vmap):
+            batch_size = vmap_decision_batch_size(spec)
+        elif isinstance(primal, ChunkedMap):
+            batch_size = primal.batch_size
+        else:
+            raise IntentError(
+                f"map primal strategy must be Vmap or ChunkedMap, got {type(primal).__name__}",
+                site=str(record.key),
+                path="primal",
+                constraint=repr(primal),
+            )
+        axis.append(
+            AxisDecision(
+                spec=spec,
+                batch_size=batch_size,
+                reasoning=decisions[record.key].primal_reason,
+                strategy=primal,
+            )
+        )
+    return tuple(axis)
+
+
 def _check_map_override_budget(
     records: Sequence[SiteRecord],
     decisions: Mapping[SiteKey, SiteDecision],
@@ -648,9 +755,8 @@ def _check_map_override_budget(
 ) -> None:
     """Reject a map override whose final joint estimate exceeds the budget.
 
-    Specs stay in record order. Each decision uses the resolved primal.
-    ``Vmap`` contributes its cardinality as ``batch_size``; ``ChunkedMap``
-    contributes that strategy's batch size.
+    Specs stay in record order. Each decision uses the resolved primal
+    (see :func:`_joint_axes`).
 
     Raises
     ------
@@ -671,35 +777,7 @@ def _check_map_override_budget(
     ]
     if not overridden:
         return
-    axis: list[AxisDecision] = []
-    for record in records:
-        if not _planned_map(record):
-            continue
-        primal = decisions[record.key].primal
-        if isinstance(primal, Vmap):
-            batch_size = _cardinality(record)
-        elif isinstance(primal, ChunkedMap):
-            batch_size = primal.batch_size
-        else:
-            raise IntentError(
-                f"map primal strategy must be Vmap or ChunkedMap, got {type(primal).__name__}",
-                site=str(record.key),
-                path="primal",
-                constraint=repr(primal),
-            )
-        axis.append(
-            AxisDecision(
-                spec=AxisSpec(
-                    name=str(record.key),
-                    cardinality=_cardinality(record),
-                    default_batch_size=ctx.chunk_size,
-                ),
-                batch_size=batch_size,
-                reasoning=decisions[record.key].primal_reason,
-                strategy=primal,
-            )
-        )
-    estimate = budget.estimate(tuple(axis))
+    estimate = budget.estimate(_joint_axes(records, decisions, ctx))
     if estimate > budget.bytes:
         constraint = f"override exceeds memory budget: estimate {estimate} > {budget.bytes}"
         raise UnsatisfiableContextError(
@@ -786,20 +864,23 @@ def _hazard_views(
 
 def _vmap_fits(
     record: SiteRecord,
+    records: Sequence[SiteRecord],
+    working: Mapping[SiteKey, SiteDecision],
+    ctx: Context,
     budget: MemoryBudget | None,
-    axis_decisions: Sequence[AxisDecision],
 ) -> bool:
-    """Return whether setting this map's axis to Vmap stays within the budget."""
+    """Return whether the whole plan stays within the budget with this map on Vmap.
+
+    ``working`` holds the primal-chain decisions as they stand now: overrides
+    applied and the hazard switches of earlier sites already made. The estimate
+    is joint, so a switch only fits in the budget the earlier switches left.
+    """
     if budget is None:
         return True
-    name = str(record.key)
-    rewritten: list[AxisDecision] = []
-    for decision in axis_decisions:
-        if decision.spec.name == name:
-            rewritten.append(replace(decision, strategy=Vmap()))
-        else:
-            rewritten.append(decision)
-    return budget.estimate(tuple(rewritten)) <= budget.bytes
+    trial = dict(working)
+    if _planned_map(record):
+        trial[record.key] = replace(working[record.key], primal=Vmap(), diff=Vmap())
+    return budget.estimate(_joint_axes(records, trial, ctx)) <= budget.bytes
 
 
 def _with_hazards(
@@ -807,13 +888,19 @@ def _with_hazards(
     chosen: Mapping[SiteKey, SiteDecision],
     ctx: Context,
     budget: MemoryBudget | None,
-    axis_decisions: Sequence[AxisDecision],
+    working: Mapping[SiteKey, SiteDecision],
     overrides: Mapping[str, SiteStrategyOverride],
     records: Sequence[SiteRecord],
     diff_available: bool,
     diff_unavailable_reason: str,
 ) -> SiteDecision:
-    """Apply hazard rules to the decision that will be emitted."""
+    """Apply hazard rules to the decision that will be emitted.
+
+    ``scan_around_while`` switches a ``ChunkedMap`` to ``Vmap`` only when the
+    joint estimate of ``working`` with that switch stays within the budget.
+    Sites are visited in record order, so the switches are greedy: a site that
+    no longer fits after earlier switches raises ``scan_around_while`` naming it.
+    """
     decision = chosen[record.key]
     override = overrides.get(record.key.label)
     views = _hazard_views(
@@ -832,7 +919,7 @@ def _with_hazards(
             warnings.append(f"override:{record.key.label} bypassed {name}")
             continue
         if name == "scan_around_while":
-            fits = _vmap_fits(record, budget, axis_decisions)
+            fits = _vmap_fits(record, records, working, ctx, budget)
             if fits and isinstance(decision.primal, ChunkedMap):
                 decision = replace(
                     decision,

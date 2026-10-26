@@ -451,7 +451,7 @@ def test_map_label_and_avals():
         call_line = inspect.currentframe().f_lineno + 1
         xmap(lambda tree: tree, xs)
     record = session.records[0]
-    assert record.key.label == f"test_map.py:{call_line}"
+    assert record.key.label == f"{__name__}:{call_line}"
     assert record.kind == "map"
     assert record.length is None
     assert record.avals == (
