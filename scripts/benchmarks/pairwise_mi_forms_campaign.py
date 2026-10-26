@@ -25,7 +25,9 @@ Definitions used by the aggregate (the script decides nothing beyond these boole
   rowsums_ok, not mi_all_zero, mi_nonfinite == 0 and, for float64 cells, diff <= 1e-9;
 - ``a_b_full_ok`` and ``boundary_b_ok`` are False when no such cell is planned (not
   available), so a subset run reports them False rather than vacuously True;
-- ``fastest_k<k>`` is "" when no correct full-shape float64 cell exists.
+- ``fastest_k<k>`` is "" when no correct full-shape float64 cell exists;
+- ``ratio_{a,b}_over_kernel_k<k>`` is that form's step over the best correct kernel step,
+  -1.0 when either is missing.
 
 Usage:
     uv run --no-sync python scripts/benchmarks/pairwise_mi_forms_campaign.py \\
@@ -79,7 +81,8 @@ FIELDS = (
     + [f"step_{f}_k{k}" for f in FORM_KEYS for k in KS]
     + [f"correct_{f}_k{k}" for f in FORM_KEYS for k in KS]
     + [f"{name}_k{k}" for k in KS for name in
-       ("fastest", "best_kernel_step", "ratio_b_over_kernel", "kernel_ok")]
+       ("fastest", "best_kernel_step", "ratio_b_over_kernel", "ratio_a_over_kernel",
+        "kernel_ok")]
     + [f"f32_entropy_ok_{f}" for f in FORM_KEYS]
     + ["jax_version", "device_kind", "script_sha256", "denxity_commit"]
 )  # fmt: skip
@@ -288,6 +291,8 @@ def aggregate(recs: list[CellRec]) -> dict[str, Any]:
         out[f"best_kernel_step_k{k}"] = best
         step_b = steps[("B", k)]
         out[f"ratio_b_over_kernel_k{k}"] = step_b / best if best > 0 and step_b > 0 else -1.0
+        step_a = steps[("A", k)]
+        out[f"ratio_a_over_kernel_k{k}"] = step_a / best if best > 0 and step_a > 0 else -1.0
         out[f"kernel_ok_k{k}"] = best > 0
     for key, form in FORM_KEYS.items():
         f32 = [r for r in recs if r.form == form and r.shape == "full"

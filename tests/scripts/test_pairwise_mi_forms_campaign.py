@@ -106,6 +106,7 @@ def test_aggregate_all_good() -> None:
     assert out["step_b_k11"] == 2.0 and out["step_b_k129"] == pytest.approx(2.2)
     assert out["fastest_k11"] == "C_triton" and out["kernel_ok_k11"] is True
     assert out["best_kernel_step_k11"] == 0.5 and out["ratio_b_over_kernel_k11"] == 4.0
+    assert out["ratio_a_over_kernel_k11"] == 8.0
     assert all(out[f"f32_entropy_ok_{f}"] for f in camp.FORM_KEYS)
     assert out["max_recompiles"] == 0 and list(out)[: len(camp.FIELDS)] == camp.FIELDS
 
@@ -129,7 +130,7 @@ def test_aggregate_incorrect_and_failed_cells_are_excluded() -> None:
     assert out["step_c_triton_k11"] == -1.0 and out["correct_c_triton_k11"] is False
     assert out["fastest_k11"] == "B"  # wrong C_triton and timed-out D are excluded
     assert out["best_kernel_step_k11"] == -1.0 and out["kernel_ok_k11"] is False
-    assert out["ratio_b_over_kernel_k11"] == -1.0
+    assert out["ratio_b_over_kernel_k11"] == -1.0 and out["ratio_a_over_kernel_k11"] == -1.0
     assert out["step_d_k129"] == -1.0 and out["correct_d_k129"] is False
     assert out["step_c_triton_k129"] == -1.0 and out["best_kernel_step_k129"] == -1.0
     assert out["boundary_b_ok"] is False and out["a_b_correct"] is False
@@ -163,3 +164,48 @@ def test_dry_run_lists_the_requested_cells(
     k129 = [ln for ln in lines if "--K 129" in ln]
     assert len(k129) == 24 and all("--n-used 23" in ln for ln in k129)
     assert all("--pair-chunk 2048" in ln for ln in lines if "--form B" in ln)
+
+
+SIDECAR = Path(camp.__file__).with_suffix(".bth.toml")
+D_BROKEN = {f"D/{k}/full/{e}": {"counts_exact": False, "rowsums_ok": False}
+            for k in camp.KS for e in ("float64", "float32")}  # fmt: skip
+
+
+def _matching_outcomes(out: dict[str, Any], tmp_path: Path) -> list[str]:
+    """Evaluate every non-residual sidecar condition on ``out`` as bathos does (DuckDB)."""
+    duckdb = pytest.importorskip("duckdb")
+    import tomllib
+
+    outcomes = tomllib.loads(SIDECAR.read_text())["outcomes"]
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps(out))
+    con = duckdb.connect()
+    hits = []
+    for name, spec in outcomes.items():
+        if spec.get("is_residual"):
+            continue
+        sql = f"SELECT ({spec['condition']}) FROM read_json_auto('{path}')"
+        if con.execute(sql).fetchone()[0]:
+            hits.append(name)
+    return hits
+
+
+@pytest.mark.parametrize(
+    ("steps", "over", "want"),
+    [
+        # Smoke-run shape (RTX PRO 6000, K=11): kernel 3.8x over B but only 1.3x over A.
+        ({"A": 0.069, "B": 0.199, "C_triton": 0.052, "D": 0.039}, D_BROKEN, ["keep_a"]),
+        ({"A": 4.0, "B": 2.0, "C_triton": 0.5, "D": 1.0}, {}, ["ship_kernel"]),
+        ({"A": 4.0, "B": 2.0, "C_triton": 1.6, "D": 1.0}, D_BROKEN, ["ship_b"]),
+        ({"A": 1.0, "B": 2.0, "C_triton": 0.5, "D": 1.0}, D_BROKEN, ["ship_kernel"]),
+        ({"A": 1.0, "B": 2.0, "C_triton": 0.9, "D": 1.0}, D_BROKEN, ["keep_a"]),
+        # Invalid: a recompile anywhere leaves only the residual.
+        ({"A": 4.0, "B": 2.0, "C_triton": 0.5, "D": 1.0},
+         {"A/11/tree/float64": {"recompiles": 1}}, []),
+    ],
+)  # fmt: skip
+def test_sidecar_outcomes_are_exclusive_and_route_as_designed(
+    steps: dict[str, float], over: dict[str, Any], want: list[str], tmp_path: Path
+) -> None:
+    out = camp.aggregate(_grid(steps, **over))
+    assert _matching_outcomes(out, tmp_path) == want
