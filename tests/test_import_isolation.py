@@ -28,6 +28,9 @@ _PACKAGES = [
     "xtrax.export",
     "xtrax.testing",
     "xtrax._tree",
+    "xtrax.tiling.iterator",
+    "xtrax.stages.boundaries",
+    "xtrax.data.module",
 ]
 
 

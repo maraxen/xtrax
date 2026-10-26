@@ -134,9 +134,10 @@ _LAZY_ITERATORS = frozenset(
 def __getattr__(name: str) -> Any:
     """Load iterator classes on first access.
 
-    Eager import of :mod:`xtrax.tiling.iterator` pulls in equinox. Callers
-    that only need the rest of this package, including ``xtrax.intent``,
-    therefore do not load equinox until they touch an iterator name.
+    Eager import of :mod:`xtrax.tiling.iterator` also imports
+    :mod:`xtrax.transforms.map`. Callers that only need the rest of this
+    package, including ``xtrax.intent``, therefore do not load it until they
+    touch an iterator name.
 
     Parameters
     ----------

@@ -7,6 +7,7 @@ import equinox as eqx
 import jax.tree_util as jtu
 import pytest
 
+from xtrax._tree import Struct
 from xtrax.stages.bundle import StageBundle
 
 
@@ -200,10 +201,11 @@ class TestHasStage:
 class TestStageBundlePytree:
     """Tests for pytree compliance."""
 
-    def test_stage_bundle_is_eqx_module(self):
-        """StageBundle subclass should be an eqx.Module."""
+    def test_stage_bundle_is_struct(self):
+        """StageBundle subclass is an xtrax.Struct pytree, not an eqx.Module."""
         bundle = ConcreteStageBundle()
-        assert isinstance(bundle, eqx.Module)
+        assert isinstance(bundle, Struct)
+        assert not isinstance(bundle, eqx.Module)
 
     def test_stage_bundle_jax_tree_leaves(self):
         """jax.tree_util.tree_leaves should work on StageBundle."""
