@@ -15,10 +15,18 @@ backward kernel is an opt-in (``vjp_kernels``) that turns the selected call into
 a ``jax.custom_vjp``: reverse mode runs the kernel, and forward mode raises
 :class:`~xtrax.intent.errors.IntentError`.
 
+Ops nest. While a derivative rule differentiates a reference, any op that
+reference calls runs its own reference, so derivatives come from references all
+the way down and a nested ``vjp_kernels`` op never meets the seam's own
+``jax.jvp``. Forward passes still run kernels. ``jax.jit`` caches do not see this
+switch, so do not wrap an inner op in its own ``jax.jit`` inside a reference.
+
 This is the standalone form. It records nothing in a ``Plan``.
 """
 
-from collections.abc import Callable, Mapping
+import contextlib
+import contextvars
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from functools import update_wrapper
 from typing import Any, Literal, NamedTuple
@@ -113,6 +121,21 @@ def _coerce_tangents(primals: tuple[Any, ...], tangents: tuple[Any, ...]) -> tup
     )
 
 
+_IN_REFERENCE_DERIVATIVE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "xtrax_op_in_reference_derivative", default=False
+)
+
+
+@contextlib.contextmanager
+def _reference_derivative() -> Iterator[None]:
+    """Run nested ops as their references while a derivative rule traces a reference."""
+    token = _IN_REFERENCE_DERIVATIVE.set(True)
+    try:
+        yield
+    finally:
+        _IN_REFERENCE_DERIVATIVE.reset(token)
+
+
 def _forward_mode_active(args: tuple[Any, ...]) -> bool:
     """True when an argument is traced by forward-mode ``jvp`` (not by reverse mode).
 
@@ -204,7 +227,9 @@ class Op:
         self.name = name
         self.context = Context() if context is None else context
         self._built: dict[tuple[str, str], Callable[..., Any]] = {}
-        update_wrapper(self, reference)
+        # updated=(): copying reference.__dict__ would overwrite these fields when the
+        # reference is itself an Op.
+        update_wrapper(self, reference, updated=())
         self._frozen = True
 
     def __setattr__(self, key: str, value: Any) -> None:
@@ -295,7 +320,7 @@ class Op:
             kernel.
         """
         sel = self.select()
-        if sel.form == "reference":
+        if sel.form == "reference" or _IN_REFERENCE_DERIVATIVE.get():
             return self.reference(*args)
         self._check_signature(sel, args)
         fn = self._function(sel)
@@ -362,7 +387,8 @@ class Op:
             """Reference JVP with ``float0`` tangents for integer and bool inputs."""
             tangents = _coerce_tangents(primals, tangents)
             out = fn(*primals)
-            _, tangent_out = jax.jvp(reference, primals, tangents)
+            with _reference_derivative():
+                _, tangent_out = jax.jvp(reference, primals, tangents)
             return out, tangent_out
 
         return fn
@@ -386,12 +412,14 @@ class Op:
             """Reference JVP for ``out``; residuals are constants."""
             tangents = _coerce_tangents(primals, tangents)
             out, residuals = fwd_pair(*primals)
-            _, tangent_out = jax.jvp(reference, primals, tangents)
+            with _reference_derivative():
+                _, tangent_out = jax.jvp(reference, primals, tangents)
             return (out, residuals), (tangent_out, jax.tree.map(_zero_tangent, residuals))
 
         def reference_bwd(args, ct):
             """Input cotangents by reference autodiff."""
-            return _normalize_cotangents(args, jax.vjp(reference, *args)[1](ct))
+            with _reference_derivative():
+                return _normalize_cotangents(args, jax.vjp(reference, *args)[1](ct))
 
         @jax.custom_jvp
         def bwd_apply(args, residuals, ct):

@@ -87,6 +87,14 @@ def test_with_context_returns_a_new_op_and_leaves_the_original_unbound():
     assert mm.select().form == "reference" and bound.select().form == "kernel"
 
 
+def test_op_wrapping_an_op_keeps_its_own_fields():
+    inner = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()}, name="inner")
+    outer = op(inner, kernels={"cpu": matmul_kernel}, name="outer")
+    assert outer.name == "outer" and outer.context == Context()
+    assert set(outer.kernels) == {"cpu"} and outer.vjp_kernels == {}
+    assert outer.__wrapped__ is inner
+
+
 def test_op_is_immutable():
     mm = op(matmul_reference, kernels={"cpu": matmul_kernel})
     with pytest.raises(AttributeError, match="immutable"):
@@ -321,6 +329,7 @@ def test_vjp_form_vmap_grad():
     xb = jnp.stack([x, 2 * x])
     got = jax.vmap(jax.grad(lambda a: _loss(mm)(a, w)))(xb)
     assert _close(got, jax.vmap(jax.grad(lambda a: _loss(matmul_reference)(a, w)))(xb))
+    assert_kernel_ran(jax.vmap(jax.grad(lambda a: _loss(mm)(a, w))), xb)
 
 
 def test_control_vjp_backward_kernel_is_what_runs_in_reverse_mode():
@@ -383,6 +392,7 @@ def test_vjp_form_second_order_forward_over_reverse():
     mm = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()})
     got = jax.jacfwd(jax.jacrev(lambda a: _loss(mm)(a, ws)))(xs)
     assert _close(got, jax.hessian(lambda a: _loss(matmul_reference)(a, ws))(xs))
+    assert_kernel_ran(jax.jacfwd(jax.jacrev(lambda a: _loss(mm)(a, ws))), xs)
 
 
 def test_non_kernel_backend_keeps_forward_mode():
@@ -429,6 +439,63 @@ def test_vjp_form_with_integer_input_and_integer_output():
 
     got = jax.grad(loss(bs))(x)
     assert _close(got, jax.grad(loss(ref))(x))
+    assert_kernel_ran(bs, x, idx)
+
+
+# --- nested ops ----------------------------------------------------------------------------
+
+
+def _tanh_mm_reference(inner):
+    def reference(x, w):
+        return jnp.tanh(inner(x, w))
+
+    return reference
+
+
+def _tanh_mm_kernel(x, w):
+    return jnp.tanh(matmul_kernel(x, w))
+
+
+def _tanh_mm_plain(x, w):
+    return jnp.tanh(matmul_reference(x, w))
+
+
+def test_nested_vjp_op_inside_a_jvp_form_reference_differentiates_under_grad():
+    """The outer JVP rule differentiates its reference; the inner op runs its reference there."""
+    x, w = _problem()
+    inner = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()}, name="inner")
+    outer = kop(_tanh_mm_reference(inner), kernels={"cpu": _tanh_mm_kernel}, name="outer")
+    got = jax.grad(_loss(outer), (0, 1))(x, w)
+    assert _close(got, jax.grad(_loss(_tanh_mm_plain), (0, 1))(x, w))
+    assert _close(jax.jit(jax.grad(_loss(outer), (0, 1)))(x, w), got)
+    assert_kernel_ran(outer, x, w)
+
+
+def test_nested_vjp_op_inside_a_vjp_form_reference_differentiates_second_order():
+    x, w = _problem()
+    xs, ws = x[:8, :8], w[:8, :8]
+    inner = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()}, name="inner")
+
+    def fwd(a, b):
+        out = _tanh_mm_kernel(a, b)
+        return out, (a, b, out)
+
+    def bwd(res, ct):
+        a, b, out = res
+        g = ct * (1 - out**2)
+        return matmul_kernel(g, b.T), matmul_kernel(a.T, g)
+
+    outer = kop(_tanh_mm_reference(inner), vjp_kernels={"cpu": VjpKernel(fwd, bwd)})
+    got = jax.jacfwd(jax.jacrev(lambda a: _loss(outer)(a, ws)))(xs)
+    assert _close(got, jax.hessian(lambda a: _loss(_tanh_mm_plain)(a, ws))(xs))
+
+
+def test_user_forward_mode_through_a_nested_vjp_op_still_raises():
+    """Only the seam's own reference derivatives switch inner ops to their reference."""
+    x, w = _problem()
+    inner = kop(matmul_reference, vjp_kernels={"cpu": _mm_vjp()}, name="inner")
+    with pytest.raises(IntentError, match="forward mode needs the JVP form"):
+        jax.jvp(lambda a: jnp.tanh(inner(a, w)), (x,), (jnp.ones_like(x),))
 
 
 @pytest.fixture
