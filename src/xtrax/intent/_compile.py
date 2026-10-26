@@ -564,7 +564,13 @@ def _partial_diff_note(failures: list[str]) -> str:
 
 
 def _annotate_partial_diff(plan: Plan, note: str) -> Plan:
-    """Append ``note`` to the diff reason of every loop that has a diff strategy.
+    """Record ``note`` on the plan, and on the diff reason of loops that have a diff strategy.
+
+    The plan-level warning is the one place every plan names the failed
+    arguments: a conditional loop has no diff strategy and a map has no loop
+    row, so a plan with only those sites would otherwise never say which
+    argument failed. Loops with a diff strategy keep the note on
+    ``diff_reason`` as well, next to the strategy it qualifies.
 
     Parameters
     ----------
@@ -576,8 +582,9 @@ def _annotate_partial_diff(plan: Plan, note: str) -> Plan:
     Returns
     -------
     Plan
-        The same plan when ``note`` is empty. Otherwise each loop whose
-        ``diff`` is not ``None`` names the failed arguments on ``diff_reason``.
+        The same plan when ``note`` is empty. Otherwise ``note`` is appended
+        once to ``plan.warnings``, and each loop whose ``diff`` is not
+        ``None`` names the failed arguments on ``diff_reason``.
     """
     if not note:
         return plan
@@ -587,7 +594,7 @@ def _annotate_partial_diff(plan: Plan, note: str) -> Plan:
         else decision
         for decision in plan.decisions
     )
-    return replace(plan, decisions=decisions)
+    return replace(plan, decisions=decisions, warnings=(*plan.warnings, note))
 
 
 def _plan(

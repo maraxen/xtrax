@@ -895,6 +895,79 @@ def test_partial_diff_names_failed_argument_and_keeps_loop_scan():
     assert "ValueError" in only_outer.diff_reason
 
 
+_AUX_NOTE = "not differentiable w.r.t. aux (ValueError)"
+
+
+def test_partial_diff_note_is_on_the_plan_for_a_cond_loop_only_function():
+    """A cond loop has no diff strategy, yet the plan still names the failed argument.
+
+    ``x`` linearizes; ``aux`` goes through ``pure_callback`` and fails. The note used to be
+    appended only to loop sites with a diff strategy, so this plan never named ``aux`` (#6165).
+    """
+
+    def fn(x, aux):
+        scale = jnp.sum(_host_scale(aux))
+
+        def cond(carry):
+            return carry[0] < jnp.float32(3)
+
+        def body(carry):
+            return carry + jnp.float32(1)
+
+        return loop(body, x, cond=cond, name="stop") * scale
+
+    compiled = compile(fn, Context(backend="cpu"))
+    plan = compiled.plan_for(jnp.zeros(2, jnp.float32), jnp.ones((3,), jnp.float32))
+    assert plan.warnings == (_AUX_NOTE,)
+    stop = next(d for d in plan.decisions if d.key.label == "stop" and d.key.path == "primal")
+    assert stop.diff is None
+    assert _AUX_NOTE in plan.table()
+
+
+def test_partial_diff_note_is_on_the_plan_for_a_map_only_function():
+    """A map-only plan names the failed argument too, once."""
+
+    def fn(xs, w, aux):
+        scale = jnp.sum(_host_scale(aux))
+        return map(lambda z: jnp.sin(z * w), xs, name="m").sum() * scale
+
+    compiled = compile(fn, Context(backend="cpu"))
+    xs = jnp.ones((4, 4), jnp.float32)
+    plan = compiled.plan_for(xs, jnp.ones((4,), jnp.float32), jnp.ones((3,), jnp.float32))
+    assert plan.warnings == (_AUX_NOTE,)
+    assert plan.table().count(_AUX_NOTE) == 1
+
+
+def test_partial_diff_note_is_on_the_plan_once_for_a_scan_loop():
+    """A static loop keeps its per-site diff_reason, and the plan carries the note once."""
+
+    def fn(xs, w, aux):
+        scale = jnp.sum(_host_scale(aux))
+
+        def step(carry, row):
+            return carry + jnp.sum(row * w), row
+
+        return loop(step, jnp.float32(0.0), xs=xs, name="outer")[0] * scale
+
+    compiled = compile(fn, Context(backend="cpu"))
+    xs = jnp.ones((4, 4), jnp.float32)
+    plan = compiled.plan_for(xs, jnp.ones((4,), jnp.float32), jnp.ones((3,), jnp.float32))
+    assert plan.warnings == (_AUX_NOTE,)
+    outer = next(d for d in plan.decisions if d.key.label == "outer" and d.key.path == "primal")
+    assert outer.diff_reason.endswith(_AUX_NOTE)
+
+
+def test_fully_differentiable_function_has_no_plan_warnings():
+    """Negative control: no failed argument, no plan warning."""
+
+    def fn(xs, w):
+        return map(lambda z: jnp.sin(z * w), xs, name="m").sum()
+
+    compiled = compile(fn, Context(backend="cpu"))
+    plan = compiled.plan_for(jnp.ones((4, 4), jnp.float32), jnp.ones((4,), jnp.float32))
+    assert plan.warnings == ()
+
+
 def test_posthoc_rejected_program_does_not_execute(monkeypatch):
     """A scan around a while is refused before the jitted program runs.
 
