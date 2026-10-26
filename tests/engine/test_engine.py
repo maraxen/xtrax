@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import optax
 import pytest
 
+from xtrax._tree import Struct
 from xtrax.engine.engine import Engine
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import Callback, ResumableState
@@ -180,12 +181,14 @@ def create_test_engine_with_multi_metrics(
 
 
 class TestEngineStructure:
-    """Tests for Engine as eqx.Module."""
+    """Tests for Engine as an xtrax.Struct."""
 
-    def test_engine_is_eqx_module(self):
-        """Engine must be an eqx.Module."""
+    def test_engine_is_a_struct_with_no_leaves(self):
+        """Engine is an xtrax.Struct (not an eqx.Module); every field is static."""
         engine = create_test_engine()
-        assert isinstance(engine, eqx.Module)
+        assert isinstance(engine, Struct)
+        assert not isinstance(engine, eqx.Module)
+        assert jax.tree_util.tree_leaves(engine) == []
 
     def test_engine_fields_static(self):
         """trainer, callbacks, validation_callbacks must be static fields."""

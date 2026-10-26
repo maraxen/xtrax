@@ -3,18 +3,18 @@
 from collections.abc import Callable, Sequence
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 
 from xtrax._renamed import Deprecated, deprecated_getattr
+from xtrax._tree import Struct, field
 from xtrax.training.types import LossFunction
 
 PyTree = Any
 Array = jax.Array
 
 
-class WeightedLoss(eqx.Module):
+class WeightedLoss(Struct):
     """Combines a loss function with a static weight multiplier.
 
     Deprecated (#6107 probe release): use :class:`ComposedLoss`. Accessing the name warns.
@@ -32,7 +32,7 @@ class WeightedLoss(eqx.Module):
     """
 
     loss_fn: LossFunction
-    weight: float = eqx.field(static=True)
+    weight: float = field(static=True)
 
     def __call__(self, predictions: PyTree, targets: PyTree) -> Array:
         """Apply the loss function and scale by weight.
@@ -47,7 +47,7 @@ class WeightedLoss(eqx.Module):
         return self.weight * self.loss_fn(predictions, targets)
 
 
-class MultiTaskLoss(eqx.Module):
+class MultiTaskLoss(Struct):
     """Combines multiple weighted losses for multi-task learning.
 
     Deprecated (#6107 probe release): use :class:`ComposedLoss`. Accessing the name warns.
@@ -63,11 +63,11 @@ class MultiTaskLoss(eqx.Module):
         losses: Tuple of WeightedLoss instances, one per task.
         weight_schedule: Optional callable that takes step and returns a scalar
             multiplier for the total loss. If None, no schedule is applied.
-            Must be eqx.field(static=True) as it holds a Python callable.
+            Must be a static field as it holds a Python callable.
     """
 
     losses: tuple[WeightedLoss, ...]
-    weight_schedule: Callable[[int], Array] | None = eqx.field(default=None, static=True)
+    weight_schedule: Callable[[int], Array] | None = field(default=None, static=True)
 
     def __call__(
         self,
@@ -114,7 +114,7 @@ class MultiTaskLoss(eqx.Module):
         return total
 
 
-class ComposedLoss(eqx.Module):
+class ComposedLoss(Struct):
     """Sum of loss terms with traced weights and unweighted per-term aux.
 
     ``WeightedLoss`` holds a static Python float, so changing that float
@@ -146,8 +146,8 @@ class ComposedLoss(eqx.Module):
             entries are arrays or ``None``.
     """
 
-    terms: tuple[Callable[..., Array], ...] = eqx.field(static=True)
-    names: tuple[str, ...] = eqx.field(static=True)
+    terms: tuple[Callable[..., Array], ...] = field(static=True)
+    names: tuple[str, ...] = field(static=True)
     weights: Array
     placement_weights: tuple[Array | None, ...] | None = None
 
@@ -159,13 +159,18 @@ class ComposedLoss(eqx.Module):
     ):
         names = tuple(name for name, _fn in terms)
         fns = tuple(fn for _name, fn in terms)
-        self.terms = fns
-        self.names = names
-        self.weights = jnp.asarray(weights)
-        if placement_weights is None:
-            self.placement_weights = None
-        else:
-            self.placement_weights = tuple(placement_weights)
+        # Frozen dataclass: assign through object.__setattr__. A class-defined __init__ is
+        # kept by dataclass and does not call __post_init__ itself, so call it last (it runs
+        # __check_init__).
+        object.__setattr__(self, "terms", fns)
+        object.__setattr__(self, "names", names)
+        object.__setattr__(self, "weights", jnp.asarray(weights))
+        object.__setattr__(
+            self,
+            "placement_weights",
+            None if placement_weights is None else tuple(placement_weights),
+        )
+        self.__post_init__()
 
     def __check_init__(self):
         n = len(self.terms)

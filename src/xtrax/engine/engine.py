@@ -5,22 +5,23 @@ manages callbacks, and handles checkpointing.
 
 Key invariants:
   - fit() is async; iterate fresh via data.train_iter() each epoch
-  - eval() wraps model in eqx.nn.inference_mode before evaluation
+  - eval() wraps the model in xtrax.inference_mode before evaluation
   - Callback hooks fire in: train_start, epoch_start, step_start, step_end (async),
     epoch_end, train_end (skipping on_resume per DEVIATION NOTE)
   - fit_sync() delegates to asyncio.run(fit(...))
 """
 
 import asyncio
+import dataclasses
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from xtrax._tree import Struct, field, inference_mode
 from xtrax.data.module import DataModule
 from xtrax.engine.io import BoundedCallbackHandler
 from xtrax.telemetry.callback import TelemetryCallback
@@ -271,7 +272,7 @@ class _FitLoop:
             self.stopped = True
 
 
-class Engine(eqx.Module):
+class Engine(Struct):
     """High-performance training engine.
 
     Manages training loops with callback hooks, checkpoint saving, and async
@@ -284,9 +285,9 @@ class Engine(eqx.Module):
         validation_callbacks: Tuple of validation callbacks (fired during eval)
     """
 
-    trainer: Trainer | TrainStepLike = eqx.field(static=True)
-    callbacks: tuple[Callback, ...] = eqx.field(static=True)
-    validation_callbacks: tuple[Callback, ...] = eqx.field(default=(), static=True)
+    trainer: Trainer | TrainStepLike = field(static=True)
+    callbacks: tuple[Callback, ...] = field(static=True)
+    validation_callbacks: tuple[Callback, ...] = field(default=(), static=True)
 
     async def fit(
         self,
@@ -440,7 +441,7 @@ class Engine(eqx.Module):
         Before this, eval persisted nothing at all -- metrics were returned in
         memory and the run left no trace.
 
-        Wraps state.model in eqx.nn.inference_mode before iteration.
+        Wraps state.model in xtrax.inference_mode before iteration.
         Collects metrics per batch, then aggregates via jax.tree.map(jnp.mean).
 
         Fires validation_callbacks only (not self.callbacks).
@@ -468,8 +469,8 @@ class Engine(eqx.Module):
 
         try:
             # Wrap model in inference mode (disables dropout, stochastic layers, etc.)
-            inference_model = eqx.nn.inference_mode(state.model)
-            eval_state = eqx.tree_at(lambda s: s.model, state, inference_model)
+            inference_model = inference_mode(state.model)
+            eval_state = dataclasses.replace(state, model=inference_model)
 
             # Collect metrics from each batch
             all_metrics = []

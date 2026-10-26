@@ -1,16 +1,17 @@
 """Trainer implementation for xtrax (spec §3.13)."""
 
+import dataclasses
 from collections.abc import Callable
 from typing import Any
 
-import equinox as eqx
 import jax
 import optax
 
+from xtrax._tree import Struct, combine, field, model_jit, partition, value_and_grad
 from xtrax.training.types import ResumableState
 
 
-class Trainer(eqx.Module):
+class Trainer(Struct):
     """Single-model trainer for supervised learning.
 
     Attributes:
@@ -39,9 +40,13 @@ class Trainer(eqx.Module):
     compiled structure; their array values are traced.
 
     Invariants:
-        - step() is eqx.filter_jit-decorated.
-        - Gradients computed via eqx.filter_value_and_grad (has_aux when requested).
-        - Optimizer.update() receives eqx.filter(state.model, eqx.is_array)
+        - step() runs through ``xtrax.model_jit``: array leaves of the trainer,
+          state and batch are traced, every other leaf is a static compile key.
+          The model may be any pytree, including an ``equinox.Module``; xtrax does
+          not import equinox to handle it.
+        - Gradients are ``jax.value_and_grad`` over the inexact-array leaves of the
+          model (has_aux when requested).
+        - Optimizer.update() receives the array leaves of state.model
           as third argument (required for weight-decay compatibility).
         - Returns new ResumableState with incremented step and updated model/opt_state.
         - When takes_key is True, state.key is replaced with the unused half of
@@ -51,10 +56,9 @@ class Trainer(eqx.Module):
 
     loss_fn: Callable[..., Any]
     optimizer: optax.GradientTransformation
-    has_aux: bool = eqx.field(static=True, default=False)
-    takes_key: bool = eqx.field(static=True, default=False)
+    has_aux: bool = field(static=True, default=False)
+    takes_key: bool = field(static=True, default=False)
 
-    @eqx.filter_jit
     def step(
         self,
         state: ResumableState,
@@ -74,50 +78,60 @@ class Trainer(eqx.Module):
               - metrics: dict[str, Array] with at minimum {"loss": scalar}.
                 When ``has_aux`` is True, the aux dict's entries are included.
         """
-        # takes_key / has_aux are static fields, so these branches are
-        # resolved at trace time and do not depend on traced values.
-        if self.takes_key:
-            step_key, new_key = jax.random.split(state.key)
-        else:
-            new_key = state.key
+        return _trainer_step(self, state, batch)
 
-        def loss_fn_inner(model):
-            if self.takes_key:
-                return self.loss_fn(model, batch, step_key)
-            predictions = model(batch["inputs"])
-            return self.loss_fn(predictions, batch["targets"])
 
-        if self.has_aux:
-            (loss, aux), grads = eqx.filter_value_and_grad(loss_fn_inner, has_aux=True)(state.model)
-        else:
-            loss, grads = eqx.filter_value_and_grad(loss_fn_inner)(state.model)
-            aux = None
+@model_jit
+def _trainer_step(
+    trainer: Trainer,
+    state: ResumableState,
+    batch: Any,
+) -> tuple[ResumableState, dict[str, jax.Array]]:
+    """The jitted body of :meth:`Trainer.step`, a module-level function so ``model_jit`` applies."""
+    # takes_key / has_aux are static fields, so these branches are
+    # resolved at trace time and do not depend on traced values.
+    if trainer.takes_key:
+        step_key, new_key = jax.random.split(state.key)
+    else:
+        new_key = state.key
 
-        # Update: CRITICAL — pass eqx.filter(state.model, eqx.is_array) as 3rd arg
-        # This ensures weight decay and other weight-aware optimizers work correctly
-        filtered_params = eqx.filter(state.model, eqx.is_array)
-        updates, new_opt_state = self.optimizer.update(grads, state.opt_state, filtered_params)
+    def loss_fn_inner(model):
+        if trainer.takes_key:
+            return trainer.loss_fn(model, batch, step_key)
+        predictions = model(batch["inputs"])
+        return trainer.loss_fn(predictions, batch["targets"])
 
-        # Apply updates to model
-        new_model = eqx.apply_updates(state.model, updates)
+    if trainer.has_aux:
+        (loss, aux), grads = value_and_grad(loss_fn_inner, has_aux=True)(state.model)
+    else:
+        loss, grads = value_and_grad(loss_fn_inner)(state.model)
+        aux = None
 
-        # Create new state with incremented step counter (and the carried key).
-        new_state = eqx.tree_at(
-            lambda s: (s.model, s.opt_state, s.step, s.key),
-            state,
-            (new_model, new_opt_state, state.step + 1, new_key),
+    # Update: CRITICAL — pass the array leaves of state.model as the 3rd arg
+    # This ensures weight decay and other weight-aware optimizers work correctly
+    arrays, rest = partition(state.model)
+    updates, new_opt_state = trainer.optimizer.update(grads, state.opt_state, arrays)
+
+    # Apply updates to the array leaves, then put the non-array leaves back
+    new_model = combine(optax.apply_updates(arrays, updates), rest)
+
+    # Create new state with incremented step counter (and the carried key).
+    new_state = dataclasses.replace(
+        state,
+        model=new_model,
+        opt_state=new_opt_state,
+        step=state.step + 1,
+        key=new_key,
+    )
+
+    if not trainer.has_aux:
+        return new_state, {"loss": loss}
+
+    if not isinstance(aux, dict):
+        raise TypeError(
+            "has_aux=True requires loss_fn to return (loss, dict[str, Array]), "
+            f"got aux of type {type(aux).__name__}"
         )
-
-        if not self.has_aux:
-            return new_state, {"loss": loss}
-
-        if not isinstance(aux, dict):
-            raise TypeError(
-                "has_aux=True requires loss_fn to return (loss, dict[str, Array]), "
-                f"got aux of type {type(aux).__name__}"
-            )
-        if "loss" in aux:
-            raise ValueError(
-                "aux dict must not include 'loss'; Trainer stores the scalar loss there"
-            )
-        return new_state, {"loss": loss, **aux}
+    if "loss" in aux:
+        raise ValueError("aux dict must not include 'loss'; Trainer stores the scalar loss there")
+    return new_state, {"loss": loss, **aux}
