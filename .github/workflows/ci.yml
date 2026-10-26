@@ -124,7 +124,7 @@ jobs:
         run: |
           uv pip freeze --python .venv-floors/bin/python | grep -E '^[A-Za-z0-9_.-]+==' > floors-constraints.txt
           uv pip install --python .venv-floors/bin/python -c floors-constraints.txt \
-            pytest pytest-asyncio jaxtyping beartype chex pyyaml
+            pytest pytest-asyncio equinox beartype chex pyyaml
 
       - name: Dependency-sensitive tests at the floors
         env:
@@ -135,6 +135,41 @@ jobs:
             tests/tiling tests/inference tests/transforms \
             tests/distributed tests/telemetry tests/data tests/cli \
             tests/scripts/test_check_dependency_floors.py
+
+  no-equinox:
+    # equinox is a dev-only dependency (equinox decoupling, step 5). Every other job
+    # syncs the dev extra and so has it installed, which would hide a stray
+    # `import equinox` under src/. This job installs the package without the dev extra
+    # (pytest and beartype only; tests/conftest.py installs a beartype import hook),
+    # asserts equinox is absent, and runs the gate files plus the dict-model training
+    # tests; the equinox-fixture tests in the latter skip through pytest.importorskip.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      - name: Install the package without the dev extra
+        run: |
+          uv venv .venv-noeqx
+          uv pip install --python .venv-noeqx/bin/python -e . pytest pytest-asyncio beartype
+
+      - name: Equinox is absent from the environment
+        run: |
+          if .venv-noeqx/bin/python -c "import equinox" 2>/dev/null; then
+            echo "::error::equinox is importable in the no-equinox environment"
+            exit 1
+          fi
+
+      - name: No-equinox gates and dict-model tests
+        env:
+          OMP_NUM_THREADS: "4"
+        run: |
+          .venv-noeqx/bin/python -m pytest -q -o addopts="" -p no:cacheprovider -rs \
+            tests/test_no_equinox_training.py tests/test_no_equinox_sweep.py \
+            tests/training/test_struct_step3.py
 
   controller-tests:
     # Deliberately NOT gated on the controller-changes path filter above, unlike
