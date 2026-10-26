@@ -1,55 +1,17 @@
-"""No-equinox gate for the training path (equinox decoupling, step 3).
+"""No-equinox gate (equinox decoupling, step 5).
 
 Spec ``.praxia/docs/specs/261023_equinox-decoupling.md`` section 6. A subprocess puts a
 meta-path finder in front of ``sys.meta_path`` that raises on ``import equinox``, imports
 every ``xtrax`` module, and trains a dict model through ``Trainer``, ``SafetyTrainStep``,
-``accumulate_grads``, ``Engine`` and an orbax checkpoint. ``equinox`` stays a declared
-dependency until step 5; this test is about whether xtrax's code reaches for it.
-
-Modules that still import equinox are listed in ``_PENDING`` (``RunSpec`` moves in step 4).
-The list may only shrink: a module listed there that no longer touches equinox fails
-``test_pending_list_is_not_stale``, so step 4 has to delete its entries.
+``accumulate_grads``, ``Engine`` and an orbax checkpoint. equinox is a dev-only dependency
+since step 5, so no module may reach for it: ``touched`` must be empty. (Steps 3 and 4 kept a
+shrinking ``_PENDING`` allow-list of modules still importing it; it is gone because nothing
+is left to list.) ``tests/test_no_equinox_sweep.py`` is the static counterpart.
 """
 
-import ast
 import json
-import pathlib
 import subprocess
 import sys
-
-import pytest
-
-import xtrax
-
-_SRC = pathlib.Path(xtrax.__file__).parent
-
-# ``xtrax.run.spec`` and ``xtrax.run.resolver`` import equinox until step 4, and importing any
-# ``xtrax.run.*`` module runs the package ``__init__`` that imports them. The cli verbs and loop
-# gates import ``xtrax.run`` in turn. None of these is on the training path.
-_PENDING = {
-    "xtrax.cli.entrypoint",
-    "xtrax.cli.registry",
-    "xtrax.cli.run",
-    "xtrax.cli.run_verb",
-    "xtrax.cli.sweep_verb",
-    "xtrax.loop.campaign_approval_gate",
-    "xtrax.loop.evaluator_change_gate",
-    "xtrax.loop.evaluator_completeness",
-    "xtrax.loop.info_barrier_lint",
-    "xtrax.loop.metrics_provenance",
-    "xtrax.loop.promotion_gate",
-    "xtrax.loop.scope_expansion_gate",
-    "xtrax.run",
-    "xtrax.run.freshness",
-    "xtrax.run.memory_sink",
-    "xtrax.run.repro_floor",
-    "xtrax.run.resolver",
-    "xtrax.run.seed_emission",
-    "xtrax.run.sink",
-    "xtrax.run.spec",
-    "xtrax.run.zarr_commit",
-    "xtrax.run.zarr_sink",
-}
 
 _GATE = """
 import asyncio
@@ -205,26 +167,17 @@ def _run_gate(inject=None):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def _unexpected(report):
-    return sorted(set(report["touched"]) - _PENDING)
-
-
 def test_xtrax_and_the_training_path_never_import_equinox():
     report = _run_gate()
     assert report["n_modules"] > 150  # the walk really covered the package
-    assert _unexpected(report) == []
+    assert report["touched"] == []
     assert report["exercise_error"] is None
-
-
-def test_pending_list_is_not_stale():
-    report = _run_gate()
-    assert _PENDING - set(report["touched"]) == set(), "delete the migrated entries from _PENDING"
 
 
 def test_gate_control_an_injected_import_equinox_goes_red():
     # prove red: one real training module gains `import equinox`; the same gate must flag it
     leaked = _run_gate(inject="xtrax.training.trainer")
-    unexpected = _unexpected(leaked)
+    unexpected = leaked["touched"]
     assert "xtrax.training.trainer" in unexpected
     # and everything that imports the trainer is flagged with it (engine, step, cli verbs...)
     assert "xtrax.engine.engine" in unexpected and "xtrax.training.step" in unexpected
@@ -240,56 +193,3 @@ def test_gate_control_the_blocker_itself_raises():
         [sys.executable, "-I", "-c", code], capture_output=True, text=True, check=False
     )
     assert result.returncode != 0 and "equinox import blocked" in result.stderr
-
-
-# --- AST sweep over the modules this step migrated -----------------------------------------
-
-_MIGRATED = [
-    "training/__init__.py",
-    "training/grad.py",
-    "training/loss.py",
-    "training/state.py",
-    "training/step.py",
-    "training/trainer.py",
-    "training/types.py",
-    "engine/engine.py",
-    "safety/manager.py",
-    "distributed/sharding.py",
-    "telemetry/ir.py",
-    "devtools/gates/_performance_probes.py",
-    "devtools/gates/_trace_probe.py",
-]
-
-
-def _equinox_references(source):
-    names = []
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            names += [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            names.append(node.module or "")
-        elif isinstance(node, ast.Name) and node.id == "eqx":
-            names.append("eqx")
-        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            if node.value.id == "equinox":
-                names.append("equinox")
-    return [n for n in names if n.split(".")[0] in {"equinox", "eqx"}]
-
-
-@pytest.mark.parametrize("rel", _MIGRATED)
-def test_migrated_module_has_no_equinox_import_or_eqx_reference(rel):
-    assert _equinox_references((_SRC / rel).read_text()) == []
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        "import equinox",
-        "import equinox as eqx",
-        "from equinox import nn",
-        "import jax\n\ndef f():\n    import equinox as eqx\n    return eqx.is_array",
-        "x = eqx.filter_jit",
-    ],
-)
-def test_ast_sweep_control_flags_an_equinox_reference(bad):
-    assert _equinox_references(bad) != []
