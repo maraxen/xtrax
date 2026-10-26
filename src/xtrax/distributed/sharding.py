@@ -4,15 +4,15 @@ import math
 import re
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.sharding
 import jax.tree_util
 
 from xtrax._renamed import Deprecated, deprecated_getattr
+from xtrax._tree import Struct, field
 
 
-class ShardingPolicy(eqx.Module):
+class ShardingPolicy(Struct):
     """Policy for assigning PartitionSpec to pytree leaves.
 
     Uses regex pattern matching where first match wins. Matching is done via re.search,
@@ -22,7 +22,7 @@ class ShardingPolicy(eqx.Module):
         rules: Ordered tuple of (regex_pattern, PartitionSpec) pairs.
     """
 
-    rules: tuple[tuple[str, jax.sharding.PartitionSpec], ...] = eqx.field(static=True)
+    rules: tuple[tuple[str, jax.sharding.PartitionSpec], ...] = field(static=True)
 
     def get_partition_spec(self, path: str) -> jax.sharding.PartitionSpec:
         """Get the PartitionSpec for a given path by matching against rules in order.

@@ -3,14 +3,14 @@
 from collections.abc import Callable
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.experimental.checkify as checkify
 
 from xtrax._renamed import Deprecated, deprecated_getattr
+from xtrax._tree import Struct, field
 
 
-class SafetyManager(eqx.Module):
+class SafetyManager(Struct):
     """Manages safety checks (NaN/Inf detection) for JAX computations.
 
     Attributes:
@@ -19,9 +19,9 @@ class SafetyManager(eqx.Module):
         check_infs: Include Inf checks in float_checks.
     """
 
-    enabled: bool = eqx.field(static=True)
-    check_nans: bool = eqx.field(static=True)
-    check_infs: bool = eqx.field(static=True)
+    enabled: bool = field(static=True)
+    check_nans: bool = field(static=True)
+    check_infs: bool = field(static=True)
 
     def wrap(self, fn: Callable) -> Callable:
         """Wrap a function with optional checkify-based safety checks.

@@ -4,6 +4,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from xtrax._tree import Struct
 from xtrax.training.types import (
     Callback,
     LossFunction,
@@ -240,8 +241,8 @@ class TestResumableState:
         )
         assert state.extras == extras
 
-    def test_resumable_state_is_equinox_module(self):
-        """ResumableState is an eqx.Module."""
+    def test_resumable_state_is_a_struct_holding_an_equinox_model(self):
+        """ResumableState is an xtrax.Struct (not an eqx.Module) and still holds eqx models."""
         model = eqx.nn.MLP(2, 1, 2, 2, key=jax.random.key(0))
         state = ResumableState(
             step=jnp.array(0, dtype=jnp.int32),
@@ -249,4 +250,6 @@ class TestResumableState:
             model=model,
             opt_state={},
         )
-        assert isinstance(state, eqx.Module)
+        assert isinstance(state, Struct)
+        assert not isinstance(state, eqx.Module)
+        assert isinstance(state.model, eqx.nn.MLP)

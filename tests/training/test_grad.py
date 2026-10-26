@@ -258,3 +258,69 @@ class TestAccumulateGrads:
             strict=True,
         ):
             assert jnp.allclose(left, right)
+
+    def test_filter_spec_chooses_which_leaves_are_differentiated(self):
+        """A leaf the predicate rejects is held constant and gets a None gradient."""
+        model = eqx.nn.Linear(in_features=3, out_features=1, key=jax.random.PRNGKey(0))
+        x = jax.random.normal(jax.random.PRNGKey(1), (2, 4, 3))
+        y = jax.random.normal(jax.random.PRNGKey(2), (2, 4, 1))
+
+        def loss_fn(params, batch):
+            x_batch, y_batch = batch
+            pred = jax.vmap(lambda xi: params(xi))(x_batch)
+            return jnp.mean((pred - y_batch) ** 2)
+
+        full, _ = accumulate_grads(loss_fn, model, (x, y))
+        only_weight, loss = accumulate_grads(
+            loss_fn, model, (x, y), filter_spec=lambda leaf: leaf.ndim == 2
+        )
+        assert only_weight.bias is None
+        assert jnp.allclose(only_weight.weight, full.weight)
+        assert full.bias is not None  # control: with no spec both leaves are differentiated
+        assert loss.shape == ()
+
+    def test_non_float_array_leaves_are_not_differentiated(self):
+        """An integer array in params is held constant (jax.grad would raise on it)."""
+        params = {"w": jnp.ones(3), "idx": jnp.asarray([0, 2])}
+        x = jnp.ones((2, 4))
+
+        def loss_fn(p, batch):
+            return jnp.sum(p["w"][p["idx"]]) * jnp.mean(batch)
+
+        grads, loss = accumulate_grads(loss_fn, params, x)
+        assert grads["idx"] is None
+        assert jnp.allclose(grads["w"], jnp.asarray([1.0, 0.0, 1.0]))
+        assert jnp.allclose(loss, 2.0)
+
+    def test_agrees_with_optax_multisteps_and_both_differ_from_full_batch_when_coupled(self):
+        """The docstring's guidance on optax.MultiSteps, checked on a batch-coupled loss."""
+        import optax
+
+        params = {"w": jnp.asarray([0.3, -0.2, 0.5])}
+        x = jax.random.normal(jax.random.PRNGKey(0), (4, 5, 3))
+        y = jax.random.normal(jax.random.PRNGKey(1), (4, 5))
+
+        def per_example_mean(p, batch):
+            xb, yb = batch
+            return jnp.mean((xb @ p["w"] - yb) ** 2)
+
+        def batch_centered(p, batch):
+            xb, yb = batch
+            pred = xb @ p["w"]
+            return jnp.mean(((pred - pred.mean()) - (yb - yb.mean())) ** 2) + pred.mean() ** 2
+
+        def multisteps_grad(loss_fn):
+            opt = optax.MultiSteps(optax.sgd(1.0), 4)
+            opt_state = opt.init(params)
+            updates = None
+            for i in range(4):
+                g = jax.grad(loss_fn)(params, (x[i], y[i]))
+                updates, opt_state = opt.update(g, opt_state, params)
+            return -updates["w"]
+
+        flat = (x.reshape(-1, 3), y.reshape(-1))
+        for loss_fn, equals_full in [(per_example_mean, True), (batch_centered, False)]:
+            acc, _ = accumulate_grads(loss_fn, params, (x, y))
+            assert jnp.allclose(acc["w"], multisteps_grad(loss_fn), atol=1e-6)
+            full = jax.grad(loss_fn)(params, flat)["w"]
+            assert bool(jnp.allclose(acc["w"], full, atol=1e-6)) is equals_full

@@ -91,20 +91,51 @@ def _require_text(text: "str | None", what: str) -> str:
     return str(text)
 
 
+def _split_args(args: "tuple[Any, ...]") -> "tuple[Any, Any]":
+    """Split call args into traceable array (or abstract) leaves and everything else.
+
+    A callable field or a bool that must stay static cannot be an argument to plain
+    ``jax.make_jaxpr`` or ``jax.jit(...).lower``. Tracing the array part and closing
+    over the rest is what ``xtrax.model_jit`` does, and needs nothing but JAX.
+    """
+    import jax
+
+    from xtrax._tree import is_array, partition
+
+    return partition(args, lambda x: is_array(x) or isinstance(x, jax.ShapeDtypeStruct))
+
+
 def _render_jaxpr(fn: Any, args: "tuple[Any, ...]") -> str:  # noqa: ANN401
     import jax
 
     try:
         return str(jax.make_jaxpr(fn)(*args))
-    except Exception:  # noqa: BLE001 - fall through to the equinox-aware path
-        import equinox as eqx
+    except Exception:  # noqa: BLE001 - fall through to the partitioned path
+        from xtrax._tree import combine
 
-        # An eqx.Module whose fields are all traceable flattens fine under plain
-        # make_jaxpr (static fields ride along as pytree aux data). This path is
-        # for the modules where that is not true -- a callable field, or a bool
-        # that must stay static for control flow -- which is precisely what
-        # eqx.filter_* exists to handle.
-        return str(eqx.filter_make_jaxpr(fn)(*args)[0])
+        # A pytree whose fields are all traceable flattens fine under plain make_jaxpr
+        # (static fields ride along as pytree aux data). This path is for the models
+        # where that is not true -- a callable field, or a bool that must stay static
+        # for control flow: trace the array leaves and close over the rest.
+        arrays, rest = _split_args(args)
+        return str(jax.make_jaxpr(lambda arrays: fn(*combine(arrays, rest)))(arrays))
+
+
+def _export_text(exported: Any) -> str:  # noqa: ANN401
+    """``Exported`` StableHLO as text without source locations.
+
+    ``Exported.mlir_module()`` prints the Python call sites that built each op, so the
+    same code reached from a different line would hash differently and defeat the blob
+    store's deduplication. Dropping the debug info keeps the text a function of the
+    computation alone, as ``Lowered.as_text()`` is.
+    """
+    from jaxlib.mlir import ir
+    from jaxlib.mlir.dialects import stablehlo
+
+    with ir.Context() as ctx:
+        stablehlo.register_dialect(ctx)
+        module = exported.mlir_module(serialized=False)
+        return module.operation.get_asm(enable_debug_info=False)
 
 
 def _render_stablehlo(fn: Any, args: "tuple[Any, ...]") -> str:  # noqa: ANN401
@@ -113,15 +144,16 @@ def _render_stablehlo(fn: Any, args: "tuple[Any, ...]") -> str:  # noqa: ANN401
     try:
         # Same call shape as xtrax.cli.export.run_export, deliberately: one way
         # to lower to StableHLO in this codebase, not two that can drift.
-        return _require_text(jax.export.export(jax.jit(fn))(*args).mlir_module(), "jax.export")
+        return _require_text(_export_text(jax.export.export(jax.jit(fn))(*args)), "jax.export")
     except Exception:  # noqa: BLE001 - fall through to lowering directly
-        import equinox as eqx
+        from xtrax._tree import combine
 
-        # jax.export refuses some functions it can still lower, and it cannot
-        # take an eqx.filter_jit wrapper at all. .lower().as_text() yields the
-        # same pre-optimization StableHLO for both.
-        lowered = eqx.filter_jit(fn).lower(*args)
-        return _require_text(lowered.as_text(), "filter_jit lowering")
+        # jax.export refuses some functions it can still lower, and it cannot take
+        # non-array leaves as arguments. Lowering the array part with the rest closed
+        # over yields the same pre-optimization StableHLO.
+        arrays, rest = _split_args(args)
+        lowered = jax.jit(lambda arrays: fn(*combine(arrays, rest))).lower(arrays)
+        return _require_text(lowered.as_text(), "partitioned lowering")
 
 
 def _render_optimized_hlo(fn: Any, args: "tuple[Any, ...]") -> str:  # noqa: ANN401
@@ -129,9 +161,9 @@ def _render_optimized_hlo(fn: Any, args: "tuple[Any, ...]") -> str:  # noqa: ANN
 
     # .compile() genuinely invokes XLA, so this is the expensive renderer and the
     # reason optimized HLO is opt-in. The idiom matches tiling/estimators.py and
-    # profiling/trace.py. Note there is no equinox fallback: equinox's Compiled
-    # wrapper exposes no as_text(), so a function that only lowers under
-    # filter_jit degrades to a skipped artifact with that reason recorded.
+    # profiling/trace.py. There is no partitioned fallback here: a function that only
+    # lowers with non-array leaves split off degrades to a skipped artifact with
+    # that reason recorded.
     return _require_text(jax.jit(fn).lower(*args).compile().as_text(), "XLA compilation")
 
 

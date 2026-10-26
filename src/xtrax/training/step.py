@@ -1,9 +1,9 @@
 """SafetyTrainStep and create_train_step implementation (spec §3.14).
 
-DEVIATION NOTE: Spec §3.14 shows @eqx.filter_jit on step() directly, but
+DEVIATION NOTE: Spec §3.14 shows a jitted step() directly, but
 err.throw() must run on the host (outside jit). The _step_jit pattern
 supersedes that literal reading:
-  - _step_jit is filter_jit'd and returns (err, (state, metrics))
+  - _step_jit runs a ``model_jit`` function and returns (err, (state, metrics))
   - step() is a plain Python wrapper calling _step_jit then err.throw()
 
 This is the correct C1 resolution for checkify + JIT integration.
@@ -11,18 +11,18 @@ This is the correct C1 resolution for checkify + JIT integration.
 
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.experimental.checkify as checkify
 import optax
 
 from xtrax._renamed import Deprecated, deprecated_getattr, warn_deprecated
+from xtrax._tree import Struct, model_jit
 from xtrax.safety.manager import _SafetyManager
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import LossFunction, ResumableState
 
 
-class SafetyTrainStep(eqx.Module):
+class SafetyTrainStep(Struct):
     """Safe training step wrapper with NaN/Inf detection via checkify.
 
     PUBLIC FIELDS (spec §3.14 requirement):
@@ -30,7 +30,8 @@ class SafetyTrainStep(eqx.Module):
         safety_manager: SafetyManager for configuring checks.
 
     Architecture:
-        - _step_jit: filter_jit'd method returning (err, (new_state, metrics))
+        - _step_jit: method calling a ``model_jit`` function that returns
+          (err, (new_state, metrics))
         - step: Plain Python wrapper calling _step_jit then err.throw() on host
 
     This design ensures err.throw() (which raises Python exceptions) runs outside
@@ -40,7 +41,6 @@ class SafetyTrainStep(eqx.Module):
     trainer: Trainer  # PUBLIC field (spec §3.14)
     safety_manager: _SafetyManager  # PUBLIC field (spec §3.14)
 
-    @eqx.filter_jit
     def _step_jit(self, state: ResumableState, batch: Any):
         """JIT-compiled checkified step.
 
@@ -50,11 +50,7 @@ class SafetyTrainStep(eqx.Module):
             - new_state: ResumableState with incremented step
             - metrics: dict[str, Array] with at minimum {"loss": scalar}
         """
-        # Wrap trainer.step with checkify to detect NaN/Inf
-        # In a jit-in-jit context, the inner trainer.step's filter_jit is
-        # stripped by JAX, and checkify instruments the computation correctly.
-        checked_step = checkify.checkify(self.trainer.step, errors=checkify.float_checks)
-        return checked_step(state, batch)  # returns (err, (new_state, metrics))
+        return _checkified_step(self, state, batch)
 
     def step(
         self,
@@ -88,6 +84,16 @@ class SafetyTrainStep(eqx.Module):
         # This allows proper Python exception handling
         err.throw()
         return new_state, metrics
+
+
+@model_jit
+def _checkified_step(step: SafetyTrainStep, state: ResumableState, batch: Any):
+    """The jitted body of :meth:`SafetyTrainStep._step_jit`."""
+    # Wrap trainer.step with checkify to detect NaN/Inf
+    # In a jit-in-jit context, the inner trainer.step's jit is
+    # inlined by JAX, and checkify instruments the computation correctly.
+    checked_step = checkify.checkify(step.trainer.step, errors=checkify.float_checks)
+    return checked_step(state, batch)  # returns (err, (new_state, metrics))
 
 
 def create_train_step(

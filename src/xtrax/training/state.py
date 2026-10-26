@@ -1,13 +1,13 @@
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
 
-from xtrax.training.types import ResumableState
+from xtrax._tree import partition
+from xtrax.training.types import PyTree, ResumableState
 
 
 def init_state(
-    model: eqx.Module,
+    model: PyTree,
     optimizer: optax.GradientTransformation,
     seed: int,
 ) -> ResumableState:
@@ -15,6 +15,6 @@ def init_state(
         step=jnp.asarray(0, jnp.int32),
         key=jax.random.PRNGKey(seed),
         model=model,
-        opt_state=optimizer.init(eqx.filter(model, eqx.is_array)),
+        opt_state=optimizer.init(partition(model)[0]),
         extras={},
     )
