@@ -68,8 +68,9 @@ the name is in use, report it. Names with a one-line replacement are rewritten b
   static AST sweep (`tests/test_no_equinox_sweep.py`) and a subprocess gate that blocks
   the import (`tests/test_no_equinox_training.py`) enforce this, and a `no-equinox` CI
   job runs both in an environment without it. `jaxtyping`, which `equinox` used to
-  bring in, is now a declared dependency (`>=0.3.2`: 0.3.1 and older fail to import
-  equinox 0.13.8 and to evaluate `hashlib._Hash` annotations on Python 3.13).
+  bring in, is now a declared dependency (`>=0.3.3`: older releases fail to import
+  equinox 0.13.8, evaluate `hashlib._Hash`, or resolve string annotations under beartype
+  on Python 3.13).
 - Training classes (`Trainer`, `SafetyTrainStep`, `ResumableState`, `ComposedLoss`,
   `Engine`, `DataModule`), `RunSpec`, the tiling iterators and the `stages` classes
   (`AxisBoundary`, `StageBundle`, ...) are `xtrax.Struct` pytrees instead of
