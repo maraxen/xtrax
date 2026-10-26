@@ -1,6 +1,6 @@
 # xtrax
 
-Composable building blocks for JAX/Equinox training and batched inference — axis
+Composable building blocks for JAX training and batched inference — axis
 tiling strategies, trainer/engine orchestration, sharding helpers, and orbax
 checkpointing.
 
@@ -51,8 +51,8 @@ advanced/eda-guide
 - **Axis tiling** — declare axes with `AxisSpec`; `BatchPlanner` picks vmap, chunked
   map, scan, bucketing, or dedup-gather per axis, and `xtrax explain` reports why.
   For the rationale, see [Why xtrax exists](why-xtrax.md).
-- **Training conveniences** — `Trainer` / `Engine` / `ResumableState` for Equinox
-  models, with lifecycle callbacks and orbax checkpointing.
+- **Training conveniences** — `Trainer` / `Engine` / `ResumableState` for any
+  pytree model (Equinox modules included), with lifecycle callbacks and orbax checkpointing.
 - **Safe arithmetic** — `safe_norm` and `safe_reciprocal`.
 - **Sharding and data helpers** — thin wrappers over `jit` auto-sharding /
   `shard_map` and grain.

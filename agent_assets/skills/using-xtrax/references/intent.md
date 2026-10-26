@@ -115,7 +115,7 @@ An override that trips a hazard records `override:<label> bypassed <name>` and k
 
 ## Limits
 
-`import xtrax.intent` does not import equinox. Iterator names on `xtrax.tiling` load through `__getattr__`, so equinox stays unloaded until a caller touches an iterator name. — verify: `src/xtrax/tiling/__init__.py:134-160`
+`import xtrax.intent` does not import equinox, and no other xtrax module does (equinox is a dev-only dependency). Iterator names on `xtrax.tiling` load through `__getattr__`, so `xtrax.tiling.iterator` and `xtrax.transforms.map` stay unloaded until a caller touches an iterator name. — verify: `src/xtrax/tiling/__init__.py:134-161`
 
 `test_no_equinox_import` blocks `equinox` on `sys.meta_path` and still imports `xtrax.intent`. — verify: `tests/intent/test_compile.py:276-313`
 

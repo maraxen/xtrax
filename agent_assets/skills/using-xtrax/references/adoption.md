@@ -180,7 +180,7 @@ grads, mean_loss = accumulate_grads(
 )
 ```
 
-Verify: `src/xtrax/training/grad.py:11-16`.
+Verify: `src/xtrax/training/grad.py:12-17`.
 
 ### `adamw_with_schedule` defaults
 
@@ -198,7 +198,7 @@ opt = adamw_with_schedule(1e-3, warmup_steps=10, total_steps=1000)
 
 Both defaults move a step relative to `optax.adamw(lr, weight_decay=wd)` with a constant learning rate and no mask. Measured on CPU, one step at peak lr `1e-2`, `weight_decay=0.1`, `warmup_steps=0`, constant grad `10`: the 1-D bias moved by `-0.00999993` under the default mask and by `-0.01099993` when every leaf was decayed. With `weight_decay=0`, a uniform grad scale left the Adam step unchanged (the scale cancels), and a second step at a different global norm moved the weights to `-0.00975518` with `clip_norm=1.0` versus `-0.00732416` with `clip_norm=None`.
 
-Verify: `src/xtrax/training/optim.py:10-22` and `:46-96`.
+Verify: `src/xtrax/training/optim.py:12-24` and `:46-96`.
 
 ### Inference CSE and memo
 

@@ -5,10 +5,11 @@ Get up and running with xtrax in 30 seconds.
 ## Installation
 
 ```bash
-pip install xtrax
+pip install xtrax equinox
 ```
 
-Requires Python 3.13+ and JAX.
+Requires Python 3.13+ and JAX. This example trains an Equinox model, so it installs
+`equinox` too; xtrax itself does not depend on it, and any pytree of arrays works as a model.
 
 ## Your First Training Loop
 
@@ -69,7 +70,7 @@ print(f"Loss: {metrics['loss']:.4f}")
 
 ## What's Happening
 
-1. **Model definition**: We use Equinox to define a JAX model.
+1. **Model definition**: We use Equinox to define a JAX model; xtrax treats it as a plain pytree.
 2. **Loss function**: Any callable that returns a scalar loss.
 3. **Optimizer**: xtrax provides helpers like `adamw_with_schedule` that wrap Optax.
 4. **Trainer**: Wraps the model, loss, and optimizer. The `.step()` method is JIT-compiled.

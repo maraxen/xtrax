@@ -22,9 +22,9 @@ type.
 
 ## Substrate vs. Adapters
 
-xtrax depends on JAX and Equinox everywhere — they're the substrate, used
-throughout the codebase without confinement. Everything else is an adapter,
-each confined to a single subpackage:
+xtrax depends on JAX everywhere — it's the substrate, used throughout the
+codebase without confinement. Everything else is an adapter, each confined to
+a single subpackage:
 
 - **optax** — training. Imported only from `xtrax.training` (`optim.py`,
   `state.py`, `step.py`, `trainer.py`).
@@ -33,6 +33,14 @@ each confined to a single subpackage:
 - **grain** — data. Declared as a dependency for `xtrax.data`; the
   distributed-pipeline integration (`create_distributed_pipeline`) is
   currently a stub and does not yet import grain directly.
+
+**Equinox is not a dependency.** No module under `src/xtrax` imports it, and it
+is a dev-only requirement used by xtrax's own tests (a static sweep and a
+subprocess gate enforce both). Equinox models still work as plain pytrees:
+`Trainer`, `Engine`, `ResumableState` and the tiling and export layers accept
+them and hand back the same `eqx.Module` type. xtrax's own pytree classes are
+`xtrax.Struct` subclasses, and `xtrax.model_jit` replaces `eqx.filter_jit`
+inside xtrax. Install `equinox` yourself if your models use it.
 
 An adapter's confinement is a promise about surface area: swapping optax for
 another optimizer library, or orbax for another checkpoint format, is a

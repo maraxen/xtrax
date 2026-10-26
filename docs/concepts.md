@@ -5,7 +5,7 @@ tiling layer exists at all, see [Why xtrax exists](why-xtrax.md).
 
 ## Composable Training Infrastructure
 
-xtrax builds a modular training stack on top of JAX and Equinox. Rather than a rigid training loop, we provide composable primitives:
+xtrax builds a modular training stack on top of JAX and optax. Rather than a rigid training loop, we provide composable primitives:
 
 - **Trainer**: A lightweight wrapper around your model and loss. Computes gradients, applies updates, and returns the new state. 100% pure JAX — JIT-compiled every time.
 - **ResumableState**: Bundles model, optimizer state, training step counter, and arbitrary metadata. Designed for checkpointing and resumption.
