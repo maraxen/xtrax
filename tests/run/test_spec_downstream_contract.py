@@ -649,15 +649,9 @@ def test_aminx_equality_with_array_bearing_submodules():
     assert other != _make_aminx()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Struct is a dataclass with eq=True, so == on a top-level array field returns an "
-        "array where eqx.Module returned a bool. No downstream shape has one (aminx keeps "
-        "arrays inside eqx sub-modules, whose == is unchanged); fix belongs in xtrax._tree."
-    ),
-)
 def test_top_level_array_field_equality_is_a_bool():
+    """Struct's tree-aware == (eq=False + tree_equal) gives a bool, as eqx.Module did."""
+
     class WithArray(RunSpec):
         """Subclass holding an array directly (neither aminx nor plegadx does)."""
 
@@ -665,7 +659,8 @@ def test_top_level_array_field_equality_is_a_bool():
 
     a = WithArray(seed=0, axes=[], weights=np.arange(3.0))
     b = WithArray(seed=0, axes=[], weights=np.arange(3.0))
-    assert isinstance(a == b, bool)
+    assert (a == b) is True
+    assert (a == WithArray(seed=0, axes=[], weights=np.arange(1.0, 4.0))) is False
 
 
 def test_eqx_tree_at_replaces_leaves(shape):
