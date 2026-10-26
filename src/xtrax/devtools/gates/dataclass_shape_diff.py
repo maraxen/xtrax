@@ -20,7 +20,8 @@ file against the merge-base. A consumer-breaking change is:
   consumer's import path breaks).
 
 Each one must be acknowledged: the class name, as a whole word, has to appear on a
-line added to `CHANGELOG.md` relative to the merge-base (working tree included).
+line added to `CHANGELOG.md` or to a fragment under `changelog.d/` (`*.md`, README
+excluded; untracked files count) relative to the merge-base (working tree included).
 Appending a defaulted field is not breaking and is not reported. A field declared
 with `init=False` is an attribute but not a constructor parameter.
 
@@ -52,6 +53,7 @@ from xtrax.devtools.wheel_contents import load_wheel_contents
 
 GateStatus = Literal["pass", "fail", "skip"]
 CHANGELOG = "CHANGELOG.md"
+CHANGELOG_FRAGMENTS = "changelog.d"
 
 _DATACLASS_DECORATORS = frozenset({"dataclass", "dataclasses.dataclass"})
 _DATACLASS_BASES = frozenset(
@@ -248,16 +250,35 @@ def changed_python_files(repo_root: Path, merge_base: str, target: Path) -> list
 
 
 def changelog_added_text(repo_root: Path, merge_base: str) -> str:
-    """Lines added to CHANGELOG.md relative to the merge-base, working tree included --
-    the same view the .py sources are read with."""
-    result = _git_run(repo_root, "diff", "--unified=0", merge_base, "--", CHANGELOG)
-    if result.returncode != 0:
-        return ""
-    return "\n".join(
-        line[1:]
-        for line in result.stdout.splitlines()
-        if line.startswith("+") and not line.startswith("+++")
+    """Lines added to CHANGELOG.md or to `changelog.d/*.md` fragments relative to the
+    merge-base, working tree included -- the same view the .py sources are read with.
+    Fragments not yet tracked by git count too, so the gate passes before `git add`."""
+    added: list[str] = []
+    result = _git_run(
+        repo_root,
+        "diff",
+        "--unified=0",
+        merge_base,
+        "--",
+        CHANGELOG,
+        f"{CHANGELOG_FRAGMENTS}/*.md",
+        f":(exclude){CHANGELOG_FRAGMENTS}/README.md",
     )
+    if result.returncode == 0:
+        added.extend(
+            line[1:]
+            for line in result.stdout.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+    untracked = _git_run(
+        repo_root, "ls-files", "--others", "--exclude-standard", "--", CHANGELOG_FRAGMENTS
+    )
+    if untracked.returncode == 0:
+        for rel in sorted(untracked.stdout.splitlines()):
+            path = repo_root / rel
+            if path.suffix == ".md" and path.name != "README.md" and path.is_file():
+                added.extend(path.read_text(encoding="utf-8").splitlines())
+    return "\n".join(added)
 
 
 def acknowledged(change: ShapeChange, changelog_added: str) -> bool:

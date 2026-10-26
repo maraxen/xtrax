@@ -69,11 +69,22 @@ Two of its gates check what a consumer sees, compared against the merge-base:
 - `audit-dataclass-shape-diff`: removing, renaming, retyping or reordering a
   field of a shipped public dataclass (also a `NamedTuple`, an `xtrax.Struct` or an
   `eqx.Module`), dropping a field's default, adding a required field, or deleting or moving
-  its module breaks consumers. Name the class in a `CHANGELOG.md` line in the
-  same change, or the gate fails.
+  its module breaks consumers. Name the class in a `changelog.d/` fragment (or a
+  `CHANGELOG.md` line) in the same change, or the gate fails.
 - `audit-project-hygiene`: a module that ships in the wheel must not import a
   dev-only package at module level. Everything outside the wheel's `exclude`
   (`src/xtrax/devtools`) ships.
+
+### Changelog fragments and generated files in feature PRs
+
+- Do not edit `## [Unreleased]` in `CHANGELOG.md`. Add one file per change,
+  `changelog.d/<slug>.<category>.md` (see `changelog.d/README.md`); the release PR
+  assembles them. Naming a public dataclass in a fragment satisfies
+  `audit-dataclass-shape-diff`.
+- `src/xtrax/agent_plugin.json` is a generated snapshot of the agent plugin
+  (skills). Do not regenerate or commit it in a feature PR, even when you edit a
+  skill; every such PR used to conflict on it. The release PR regenerates it
+  with `just plugin-snapshot` (see the release checklist).
 
 ## Documentation
 
@@ -110,6 +121,12 @@ ahead of it.
 1. Bump the version in **both** `src/xtrax/__init__.py` and `CITATION.cff`, and
    close the `[Unreleased]` changelog section. `audit-project-hygiene` fails if
    the two version sites disagree
+   - Assemble the changelog fragments: `uv run python scripts/assemble_changelog.py
+     --version X.Y.Z --date YYYY-MM-DD` (merges `changelog.d/` and any existing
+     `[Unreleased]` bullets into a `## [X.Y.Z]` section and deletes the fragments).
+   - Regenerate the packaged plugin snapshot with `just plugin-snapshot`. CI
+     enforces it only on `chore/release-*` branches
+     (`XTRAX_ENFORCE_PLUGIN_SNAPSHOT=1`).
 2. Ensure `just audit-deterministic`, `just audit-coverage-tier1`, and
    `just audit-publish-oidc` pass locally
 3. Run `just audit-release-readiness`. For a version that is not yet published

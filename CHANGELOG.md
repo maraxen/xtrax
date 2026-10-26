@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!-- new entries: add a file under changelog.d/ -->
+
 ### Added
 
 - `xtrax.Struct`, `xtrax.field`, and `xtrax.model_jit`, with the pytree helpers
