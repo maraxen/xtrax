@@ -27,6 +27,7 @@ _PACKAGES = [
     "xtrax.config",
     "xtrax.export",
     "xtrax.testing",
+    "xtrax._tree",
 ]
 
 

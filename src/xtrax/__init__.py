@@ -70,6 +70,14 @@ __all__ = [
     "element_keys",
     "iter_chunk_keys",
     "make_chunk_plan",
+    # Plain-JAX pytree base and helpers (no Equinox dependency)
+    "Struct",
+    "field",
+    "partition",
+    "combine",
+    "is_array",
+    "model_jit",
+    "inference_mode",
 ]
 
 _LAZY = {
@@ -143,6 +151,14 @@ _LAZY = {
     "element_keys": "xtrax.random",
     "iter_chunk_keys": "xtrax.random",
     "make_chunk_plan": "xtrax.random",
+    # Plain-JAX pytree base and helpers
+    "Struct": "xtrax._tree",
+    "field": "xtrax._tree",
+    "partition": "xtrax._tree",
+    "combine": "xtrax._tree",
+    "is_array": "xtrax._tree",
+    "model_jit": "xtrax._tree",
+    "inference_mode": "xtrax._tree",
 }
 
 
