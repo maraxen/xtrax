@@ -15,13 +15,20 @@ backward kernel is an opt-in (``vjp_kernels``) that turns the selected call into
 a ``jax.custom_vjp``: reverse mode runs the kernel, and forward mode raises
 :class:`~xtrax.intent.errors.IntentError`.
 
+Inside :func:`xtrax.intent.compile` an op call is one more intent site, of kind
+``"op"``. The compile's ``Context`` reaches the op through the active
+:class:`~xtrax.intent.sites.Session`, not through ambient state, and it wins over
+the context the op is bound to: the plan is a function of one context. The plan
+records ``kernel:<backend>`` or ``reference`` (and the derivative form) with the
+reason, and says when a bound context was overridden. Execution follows the
+planned decision. Outside ``compile`` an op selects against its own bound
+context and records nothing.
+
 Ops nest. While a derivative rule differentiates a reference, any op that
 reference calls runs its own reference, so derivatives come from references all
 the way down and a nested ``vjp_kernels`` op never meets the seam's own
 ``jax.jvp``. Forward passes still run kernels. ``jax.jit`` caches do not see this
 switch, so do not wrap an inner op in its own ``jax.jit`` inside a reference.
-
-This is the standalone form. It records nothing in a ``Plan``.
 """
 
 import contextlib
@@ -35,15 +42,24 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from xtrax.intent._trace import _active_session, _suspend_registration, decision_for
 from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError
+from xtrax.intent.plan import OpPrimal, SiteDecision
+from xtrax.intent.sites import OpChoice, Session, _leaf_struct, current_session
 
 __all__ = ["Op", "OpSelection", "VjpKernel", "op"]
 
-# TODO(#6098, spec section 6 step 2): once ``xtrax.compile`` has an intent site kind "op",
-# pass the session's Context to the op explicitly (``Op.with_context``), never through ambient
-# state, and record ``OpSelection.primal`` and ``OpSelection.reason`` in ``SiteDecision``. Not
-# done here: the standalone seam records nothing in a Plan.
+_PRIMAL_FORMS: dict[str, Literal["reference", "custom_jvp", "custom_vjp"]] = {
+    "reference": "reference",
+    "kernel": "custom_jvp",
+    "vjp_kernel": "custom_vjp",
+}
+
+# TODO(#6098, spec section 4b): the reasons a plan row can give for a reference run are export
+# target, ``kernels=False`` and no kernel for the backend. Add "dtype not supported" and
+# "non-deterministic kernel refused" once an op can declare supported dtypes and determinism;
+# until then no refusal of either kind exists to report.
 
 
 class VjpKernel(NamedTuple):
@@ -99,6 +115,22 @@ class OpSelection:
             The label a plan records for this call.
         """
         return "reference" if self.backend is None else f"kernel:{self.backend}"
+
+    def to_primal(self) -> OpPrimal:
+        """Plan form of this selection.
+
+        Parameters
+        ----------
+        self : OpSelection
+            Selection to record.
+
+        Returns
+        -------
+        OpPrimal
+            The backend and the derivative form (``reference``, ``custom_jvp`` or
+            ``custom_vjp``) a plan stores.
+        """
+        return OpPrimal(self.backend, _PRIMAL_FORMS[self.form])
 
 
 def _is_float(x: Any) -> bool:
@@ -183,9 +215,13 @@ class Op:
     vjp_kernels : Mapping[str, VjpKernel]
         Backend name to forward and backward kernel pair.
     context : Context
-        Context selection uses. An unbound op has the default ``Context()``
-        (``kernels=False``), so it runs the reference. Bind one with
-        :meth:`with_context`.
+        Context selection uses outside ``xtrax.compile``. An unbound op has the
+        default ``Context()`` (``kernels=False``), so it runs the reference. Bind
+        one with :meth:`with_context`.
+    bound : bool
+        Whether a context was bound. Inside ``xtrax.compile`` the compile's
+        context is used instead, and a bound op whose selection differs from the
+        compile's gets a warning on its plan row.
 
     Notes
     -----
@@ -226,6 +262,7 @@ class Op:
         self.vjp_kernels = dict(vjp_kernels)
         self.name = name
         self.context = Context() if context is None else context
+        self.bound = context is not None
         self._built: dict[tuple[str, str], Callable[..., Any]] = {}
         # updated=(): copying reference.__dict__ would overwrite these fields when the
         # reference is itself an Op.
@@ -302,6 +339,13 @@ class Op:
     def __call__(self, *args: Any) -> Any:
         """Run the selected implementation.
 
+        With no active session this selects against the op's bound context. Inside
+        ``xtrax.compile`` the call is an intent site of kind ``"op"``: it selects
+        against the session's context, which wins over a bound one, and in exec
+        mode it runs what the plan decided. Registration is suspended while a
+        closure is converted for its record. The call is then neither recorded nor
+        checked, and still selects against the session's context.
+
         Parameters
         ----------
         args : Any
@@ -316,13 +360,87 @@ class Op:
         ------
         IntentError
             A kernel's output structure, shape or dtype differs from the
-            reference's, or forward mode was applied through a selected vjp
-            kernel.
+            reference's, forward mode was applied through a selected vjp kernel,
+            or the plan decided on a kernel this op does not have.
+        SiteMismatchError
+            Exec mode, and the call is not in the plan or its argument shapes or
+            dtypes differ from the plan's.
         """
-        sel = self.select()
-        if sel.form == "reference" or _IN_REFERENCE_DERIVATIVE.get():
+        if _IN_REFERENCE_DERIVATIVE.get():
             return self.reference(*args)
-        self._check_signature(sel, args)
+        session = current_session()
+        if session is None:
+            return self._apply(self.select(), args)
+        ctx = self.context if session.context is None else session.context
+        if _active_session() is None:
+            return self._apply(self.select(ctx), args)
+        return self._call_site(session, ctx, args)
+
+    def _call_site(self, session: Session, ctx: Context, args: tuple[Any, ...]) -> Any:
+        """Enter this call as a site of ``session``, then run what it decided."""
+        sel = self.select(ctx)
+        note = self._override_note(sel, session)
+        choice = OpChoice(sel.to_primal(), sel.reason, note)
+        avals = tuple(_leaf_struct(leaf) for leaf in jax.tree.leaves(args))
+        key = session.enter_site("op", self.name, avals, None, None, op=choice)
+        decision = decision_for(session, key)
+        if decision is not None:
+            sel = self._selection_from(decision)
+        with session.scope(key, "primal"):
+            return self._apply(sel, args)
+
+    def _override_note(self, sel: OpSelection, session: Session) -> tuple[str, ...]:
+        """Warning for a bound context that selects differently from the session's."""
+        if not self.bound or session.context is None:
+            return ()
+        bound = self.select()
+        if (bound.form, bound.backend) == (sel.form, sel.backend):
+            return ()
+        return (
+            f"op bound with_context() selects {bound.primal} ({bound.reason}); "
+            f"the compile context selects {sel.primal} ({sel.reason}); "
+            "the compile context wins",
+        )
+
+    def _selection_from(self, decision: SiteDecision) -> OpSelection:
+        """Selection a planned decision names.
+
+        Raises
+        ------
+        IntentError
+            The decision's primal is not an ``OpPrimal``, or it names a kernel this
+            op does not have.
+        """
+        primal = decision.primal
+        site = str(decision.key)
+        if not isinstance(primal, OpPrimal):
+            raise IntentError(
+                f"op {self.name!r}: site {site} has a {type(primal).__name__} decision, "
+                "not an OpPrimal",
+                site=site,
+                path="primal",
+                constraint=repr(primal),
+            )
+        if primal.form == "reference":
+            return OpSelection("reference", None, decision.primal_reason)
+        kernels = self.vjp_kernels if primal.form == "custom_vjp" else self.kernels
+        if primal.backend not in kernels:
+            raise IntentError(
+                f"op {self.name!r}: the plan names {primal.label} ({primal.form}) but the op "
+                f"has no {primal.form} kernel for backend {primal.backend!r}",
+                site=site,
+                path="primal",
+                constraint=f"planned {primal.label} ({primal.form})",
+            )
+        form = "vjp_kernel" if primal.form == "custom_vjp" else "kernel"
+        return OpSelection(form, primal.backend, decision.primal_reason)
+
+    def _apply(self, sel: OpSelection, args: tuple[Any, ...]) -> Any:
+        """Run the implementation ``sel`` names."""
+        if sel.form == "reference":
+            return self.reference(*args)
+        with _suspend_registration():
+            self._check_signature(sel, args)
         fn = self._function(sel)
         if sel.form == "kernel":
             return fn(*args)
@@ -387,7 +505,7 @@ class Op:
             """Reference JVP with ``float0`` tangents for integer and bool inputs."""
             tangents = _coerce_tangents(primals, tangents)
             out = fn(*primals)
-            with _reference_derivative():
+            with _suspend_registration(), _reference_derivative():
                 _, tangent_out = jax.jvp(reference, primals, tangents)
             return out, tangent_out
 
@@ -412,13 +530,13 @@ class Op:
             """Reference JVP for ``out``; residuals are constants."""
             tangents = _coerce_tangents(primals, tangents)
             out, residuals = fwd_pair(*primals)
-            with _reference_derivative():
+            with _suspend_registration(), _reference_derivative():
                 _, tangent_out = jax.jvp(reference, primals, tangents)
             return (out, residuals), (tangent_out, jax.tree.map(_zero_tangent, residuals))
 
         def reference_bwd(args, ct):
             """Input cotangents by reference autodiff."""
-            with _reference_derivative():
+            with _suspend_registration(), _reference_derivative():
                 return _normalize_cotangents(args, jax.vjp(reference, *args)[1](ct))
 
         @jax.custom_jvp

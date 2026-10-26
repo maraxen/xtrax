@@ -16,13 +16,34 @@ from typing import Any, Literal
 
 import jax
 
+from xtrax.intent.context import Context
 from xtrax.intent.errors import IntentError, SiteMismatchError
-from xtrax.intent.plan import SiteDecision, SiteKey
+from xtrax.intent.plan import OpPrimal, SiteDecision, SiteKey
 
 _Frame = tuple[SiteKey, Literal["primal", "diff"]]
 _OrdinalKey = tuple[SiteKey | None, Literal["primal", "diff"], str]
 
 _CURRENT: "ContextVar[Session | None]" = ContextVar("xtrax.intent.session", default=None)
+
+
+@dataclass(frozen=True)
+class OpChoice:
+    """What an ``xtrax.op`` call selected under the session's context.
+
+    Attributes
+    ----------
+    primal : OpPrimal
+        Implementation selected.
+    reason : str
+        Why it was selected.
+    warnings : tuple of str
+        Notes for the decision, such as a bound context the session's context
+        overrode.
+    """
+
+    primal: OpPrimal
+    reason: str
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -36,7 +57,7 @@ class SiteRecord:
     ----------
     key : SiteKey
         Identity of this visit, including its ordinal.
-    kind : {"loop", "map"}
+    kind : {"loop", "map", "op"}
         Site kind.
     avals : tuple of jax.ShapeDtypeStruct
         Abstract values of the site arguments.
@@ -51,15 +72,18 @@ class SiteRecord:
     xs_tree : PyTreeDef or None
         Pytree structure of a map's ``xs``. ``None`` on records that store
         only a flat leaf list.
+    op : OpChoice or None
+        Selection of an ``"op"`` site. ``None`` for loops and maps.
     """
 
     key: SiteKey
-    kind: Literal["loop", "map"]
+    kind: Literal["loop", "map", "op"]
     avals: tuple[jax.ShapeDtypeStruct, ...]
     length: int | None
     fn: Callable[..., object] | None = field(compare=False, hash=False)
     const_avals: tuple[jax.ShapeDtypeStruct, ...] = ()
     xs_tree: jax.tree_util.PyTreeDef | None = None
+    op: OpChoice | None = None
 
 
 class Session:
@@ -80,17 +104,24 @@ class Session:
         Planned sites. A fresh list when constructed with ``records=None``.
     decisions : Mapping or None
         Decisions keyed by :class:`SiteKey`, or ``None`` when none were supplied.
+    context : Context or None
+        The :class:`~xtrax.intent.context.Context` the plan is resolved under.
+        An ``xtrax.op`` call selects against it, never against ambient state.
+        ``None`` for a session that belongs to no compile: an op then selects
+        against the context it is bound to.
     """
 
     mode: Literal["plan", "exec"]
     records: list[SiteRecord]
     decisions: Mapping[SiteKey, SiteDecision] | None
+    context: Context | None
 
     def __init__(
         self,
         mode: Literal["plan", "exec"],
         records: list[SiteRecord] | None = None,
         decisions: Mapping[SiteKey, SiteDecision] | None = None,
+        context: Context | None = None,
     ) -> None:
         """Start a session.
 
@@ -103,6 +134,9 @@ class Session:
             do not share a default list.
         decisions : Mapping or None
             Site decisions. ``None`` makes :meth:`decision_for` return ``None``.
+        context : Context or None
+            Context ops select against. ``None`` leaves each op to its own
+            bound context.
 
         Returns
         -------
@@ -111,19 +145,21 @@ class Session:
         self.mode = mode
         self.records = [] if records is None else records
         self.decisions = decisions
+        self.context = context
         self._frames: list[_Frame] = []
         self._ordinals: dict[_OrdinalKey, int] = {}
         self._label_files: dict[str, str] = {}
 
     def enter_site(
         self,
-        kind: Literal["loop", "map"],
+        kind: Literal["loop", "map", "op"],
         label: str,
         avals: tuple[jax.ShapeDtypeStruct, ...],
         length: int | None,
         fn: Callable[..., object] | None,
         const_avals: tuple[jax.ShapeDtypeStruct, ...] = (),
         xs_tree: jax.tree_util.PyTreeDef | None = None,
+        op: OpChoice | None = None,
     ) -> SiteKey:
         """Enter one site and return its key.
 
@@ -135,7 +171,7 @@ class Session:
 
         Parameters
         ----------
-        kind : {"loop", "map"}
+        kind : {"loop", "map", "op"}
             Site kind stored on the plan record.
         label : str
             User name or ``module:line`` of the call.
@@ -151,6 +187,9 @@ class Session:
         xs_tree : PyTreeDef or None
             Structure of a map's ``xs``. Stored on the plan record so the
             estimator can rebuild the pytree.
+        op : OpChoice or None
+            Selection of an op site. Stored on the plan record; exec mode
+            ignores it and follows the decision.
 
         Returns
         -------
@@ -169,7 +208,7 @@ class Session:
         """
         key = self._allocate_key(label)
         if self.mode == "plan":
-            self.records.append(SiteRecord(key, kind, avals, length, fn, const_avals, xs_tree))
+            self.records.append(SiteRecord(key, kind, avals, length, fn, const_avals, xs_tree, op))
         elif self.mode == "exec":
             self._check_planned(key, avals)
         else:
