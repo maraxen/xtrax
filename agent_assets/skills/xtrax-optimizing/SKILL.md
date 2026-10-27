@@ -50,6 +50,14 @@ Tier-1 facts already established in code (verify-paths):
   (`src/xtrax/stages/topology.py`, `validate_plan_topology`).
 - Only set `ordered=True` when correctness depends on host-observed order.
 
+A hand-written kernel (Pallas) is a Tier-3 candidate. Put it behind `xtrax.op`
+beside its plain-JAX reference, so `Context(kernels=False)` gives the baseline
+from the same call site and export keeps the reference
+(`src/xtrax/kernel_seam.py:312-338`). The parity metric comes from
+`xtrax.testing.kernel_parity`, with a corruption control that turns it red.
+Interpret-mode parity on CPU is not GPU evidence. Read
+`agent_assets/skills/using-xtrax/references/op.md`.
+
 ## Vectorize-First Discipline (replicates, draws, pairs, cells, frames)
 
 A Python loop over replicates, bootstrap draws, pairs, cells or frames is a
