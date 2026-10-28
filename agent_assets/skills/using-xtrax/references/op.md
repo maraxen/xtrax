@@ -45,6 +45,8 @@ y = jax.jit(scale)(jnp.ones((8,), jnp.float32))
 g = jax.grad(lambda x: scale(x).sum())(jnp.ones((8,), jnp.float32))  # derivative from the reference
 ```
 
+The example was run on CPU, where the `"cpu"` entry runs in interpret mode. The `"gpu"` entry has not been run on a GPU; whether it lowers depends on the device (see "Interpret mode is not GPU evidence" below).
+
 ## Selection
 
 `Op.select(ctx)` applies these rules in order. — verify: `src/xtrax/kernel_seam.py:312-338`
@@ -67,11 +69,13 @@ Inside `xtrax.intent.compile`, the compile's context wins over a bound one, and 
 
 An op is called with positional arguments only, and every one of them is traced: the kernel form is a `jax.custom_jvp` over all of them. Grid sizes, spline orders, tile shapes and the `interpret` flag go into the reference and the kernels by closure (`functools.partial`, or a factory such as `make_scale_op` above), never as call arguments. — verify: `src/xtrax/kernel_seam.py:340-342` — verify: `src/xtrax/kernel_seam.py:504-511`
 
-Passing a Python `int` as an op argument fails in eager, `jit` and `grad` alike. The int arrives as a traced `i32[]`, and Pallas rejects it with `The kernel function in the pallas_call body ... captures constants [i32[]]. You should pass them as inputs.` The same op with the int closed over by `functools.partial` runs, differentiates, and shows `pallas_call` in its jaxpr. (Observed 261027, jax 0.11.1, CPU interpret mode.)
+A Python `int` passed as an op argument arrives as a traced `i32[]`. A kernel body that closes over it fails in eager, `jit` and `grad` alike: Pallas rejects it with `The kernel function in the pallas_call body ... captures constants [i32[]]. You should pass them as inputs.` The same op with the int closed over by `functools.partial` runs, differentiates, and shows `pallas_call` in its jaxpr. Passing the traced value to `pallas_call` as an input also works, but it is then a runtime value, not a shape or grid size. (Observed 261027, jax 0.11.1, CPU interpret mode.)
 
 ## Output check
 
-At call time a selected kernel's output structure, shapes and dtypes are compared with the reference's via `jax.eval_shape`, and a mismatch raises `IntentError`. The check runs at trace time only. — verify: `src/xtrax/kernel_seam.py:486-502`
+At call time a selected kernel's output structure, shapes and dtypes are compared with the reference's via `jax.eval_shape`, and a mismatch raises `IntentError`. Under `jax.jit` it runs once per trace; called eagerly, the op repeats it on every call. — verify: `src/xtrax/kernel_seam.py:486-502` — verify: `src/xtrax/kernel_seam.py:439-445`
+
+A selected kernel that fails to lower or run raises; the op does not fall back to the reference. — verify: `src/xtrax/kernel_seam.py:439-455`
 
 ## Derivatives
 
@@ -81,7 +85,7 @@ At call time a selected kernel's output structure, shapes and dtypes are compare
 
 ## Parity tests
 
-`xtrax.testing.kernel_parity` holds the helpers. Float leaves use the scale-relative tolerance `rel * max(1, max|ref|)`; integer and bool leaves need exact equality. An elementwise `1e-5` fails at `|ref| ~ 150` from float32 accumulation order. — verify: `src/xtrax/testing/kernel_parity.py:1-13`
+`xtrax.testing.kernel_parity` holds the helpers; import them from that module (`from xtrax.testing.kernel_parity import assert_kernel_parity, assert_kernel_ran, require_corruption_red`), since `xtrax.testing` does not re-export them. Float leaves use the scale-relative tolerance `rel * max(1, max|ref|)`; integer and bool leaves need exact equality. An elementwise `1e-5` fails at `|ref| ~ 150` from float32 accumulation order. — verify: `src/xtrax/testing/kernel_parity.py:1-13`
 
 A parity test has three parts:
 
@@ -98,7 +102,7 @@ The xtrax tests themselves follow this pattern, with Pallas in interpret mode. �
 CPU parity in interpret mode tests the kernel's math, not its GPU lowering. Two hazards were measured on jax 0.11.1 on 261026:
 
 - **Pallas Triton `atomic_add` writes nothing on sm120.** On an RTX PRO 6000 Blackwell, every `atomic_add` variant into an output block left the output all zero, while plain stores worked. Interpret mode is exact, so CPU tests pass. Before trusting an atomic kernel (a scatter, a histogram, charge spreading), run a GPU totals check, such as row sums equal to the count. The mechanism is unverified, and Hopper (H200) has not been checked.
-- **Pre-Hopper GPUs run no compiled Pallas.** `pallas_call` lowers to Mosaic GPU by default, and on pre-Hopper hardware it supports only input-only pipelines. Triton (`compiler_params=pallas.triton.CompilerParams()`) is deprecated in 0.11.1 and accepts a fixed list of device kinds that excludes Turing. Run compiled kernels on H200-class GPUs.
+- **Turing GPUs (TITAN RTX) run no compiled Pallas.** `pallas_call` lowers to Mosaic GPU by default, and on pre-Hopper hardware Mosaic GPU supports only input-only pipelines, so a kernel with an output fails there. Triton (`compiler_params=pallas.triton.CompilerParams()`) is deprecated in 0.11.1 and accepts a fixed list of device kinds: it includes pre-Hopper parts such as A100, L4 and L40, and excludes Turing. Only Turing was probed; on another pre-Hopper GPU, use Triton params and check the kernel ran.
 
 ## Not built
 

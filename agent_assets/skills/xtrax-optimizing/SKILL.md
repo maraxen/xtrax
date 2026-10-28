@@ -52,7 +52,7 @@ Tier-1 facts already established in code (verify-paths):
 
 A hand-written kernel (Pallas) is a Tier-3 candidate. Put it behind `xtrax.op`
 beside its plain-JAX reference, so `Context(kernels=False)` gives the baseline
-from the same call site and export keeps the reference
+from the same call site and `Context(target="export")` selects the reference
 (`src/xtrax/kernel_seam.py:312-338`). The parity metric comes from
 `xtrax.testing.kernel_parity`, with a corruption control that turns it red.
 Interpret-mode parity on CPU is not GPU evidence. Read
