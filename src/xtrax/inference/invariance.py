@@ -97,6 +97,14 @@ def verify_axis_invariance(
     """
     names = tuple(example_inputs)
     name_index = {name: index for index, name in enumerate(names)}
+    # make_jaxpr invars are the flattened pytree leaves of each argument, so a
+    # name owns a contiguous range of leaf indices rather than one position.
+    leaf_owner: list[str] = []
+    leaves_of: dict[str, frozenset[int]] = {}
+    for name, value in example_inputs.items():
+        count = len(jax.tree_util.tree_leaves(value))
+        leaves_of[name] = frozenset(range(len(leaf_owner), len(leaf_owner) + count))
+        leaf_owner.extend([name] * count)
     for spec in specs:
         for name in spec.varying_inputs:
             if name not in name_index:
@@ -117,7 +125,7 @@ def verify_axis_invariance(
     reports: list[AxisInvariance] = []
     for spec in specs:
         varying_names = tuple(spec.varying_inputs)
-        varying_idx = frozenset(name_index[name] for name in varying_names)
+        varying_idx = frozenset().union(*(leaves_of[name] for name in varying_names))
         for output_index in claims.get(spec.name, ()):
             if not 0 <= output_index < n_outputs:
                 raise ValueError(
@@ -126,7 +134,7 @@ def verify_axis_invariance(
                 )
             reads = traced.outputs[output_index] & varying_idx
             if reads:
-                raise InputInvarianceError(spec.name, output_index, names[min(reads)])
+                raise InputInvarianceError(spec.name, output_index, leaf_owner[min(reads)])
         intermediates = tuple(
             dict.fromkeys(
                 primitive for primitive, dep in traced.intermediates if not (dep & varying_idx)

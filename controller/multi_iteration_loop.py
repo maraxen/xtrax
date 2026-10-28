@@ -42,7 +42,7 @@ scope; see below). `WatchdogAlreadyStoppedError` (raised by `WatchdogHandle.stop
 watchdog process already exited on its own) is caught and ignored here for exactly that reason:
 by the time this function's own cleanup runs, there is nothing further to signal.
 
-## Two distinct termination paths, per the AC's own literal text
+## Termination paths: AC-8b's two distinct paths, plus the #5683 consecutive-failure halt
 
 AC-8b's AC requires "correctly on both a budget-exhaustion path and a normal-completion path" --
 two *distinct* mechanisms, not one:
@@ -67,8 +67,14 @@ two *distinct* mechanisms, not one:
    supplied `wall_clock_budget_seconds` after several real candidate passes have already
    completed -- never by invoking the real watchdog.
 
-A caught per-candidate failure / uncaught-exception path is explicitly NOT a third termination
-reason implemented here -- that is LC-11's scope (AC-8c), described below.
+3. **Consecutive candidate-run failures** (#5683): `max_consecutive_failures` candidates in a row
+   whose bathos run failed (`CandidateRunFailedError`, see "Failed candidates" below).
+   `termination_reason="consecutive_failures"`. Returned, not raised, so the failed records are
+   available to the caller; `loop_run.py` maps it to a `partial_failure` campaign conclusion.
+4. **All candidates failed** (#5683): `max_candidates` ran out with no candidate completing its
+   pass and fewer than `max_consecutive_failures` failures in a row, so the normal-completion
+   stopping condition was reached by failures alone.
+   `termination_reason="all_candidates_failed"`. `loop_run.py` maps it to `partial_failure` too.
 
 ## Diversity-quota Leap-Path response: what "wiring the response" concretely means, and why
 
@@ -140,20 +146,44 @@ regardless of that candidate's own gate/run outcome (`OneCandidatePassResult.acc
 AC-12's own framing is about whether the *search itself* is exploring structurally, not about
 gate outcomes, so a rejected candidate's source still counts toward (or against) the quota.
 
-## What this module explicitly does NOT do (deferred to LC-11, AC-8c)
+## Failed candidates: caught per candidate, not a campaign abort (#5683)
 
-Per this item's own dispatch brief and `main_loop.py`'s identical precedent: zero error/retry
-policy, and no guarantee that `campaign_conclude` (or an equivalent close-out call) fires on
-every code path that exits the loop. `run_multi_iteration_loop` performs zero retries and does
-not catch any exception raised by `run_one_candidate_pass` or by reading/diffing candidate
-source (`FileNotFoundError`, `UnicodeDecodeError`, `DiversityQuotaInputError` on malformed
-candidate source, or any of `run_one_candidate_pass`'s own documented exceptions) -- every one
-propagates to the caller unmodified, after this function's own `finally` block stops the watchdog
-it started (ordinary resource cleanup, not retry policy or a bathos-side close-out guarantee).
-AC-8c (LC-11) owns error/retry policy and the "conclude fires on every code path" property; this
-module's job is to prove the multi-iteration "keep going" sequence -- watchdog, diversity-quota
-response, and both termination paths -- is wired correctly, not to also own what happens when a
-step fails.
+A candidate whose own bathos run exits non-zero is a **caught per-candidate failure** in every
+mode except `confirmation`. `run_one_candidate_pass` raises `CandidateRunFailedError` at step 2.3
+(#4584: a failed run is never scored, never advances the best-so-far ref); this loop catches
+exactly that type, and nothing else. Per failed candidate the loop:
+
+- records a `FailedCandidateRecord` (iteration, staged source path, bathos `exit_code`, reason)
+  in `MultiIterationLoopResult.failed_candidates`. It is NOT a `OneCandidatePassResult`: a failed
+  run has no fitness, ratchet decision or gate verdict to fake.
+- writes a rejected ProbeRecord (`accepted=false`) when `probe_record_dir` is set. Emission is
+  contained: a failure to write it is logged, not raised.
+- resets the worktree to best-so-far through the same reject-path helper `run_one_candidate_pass`
+  uses (`reset_after_failed_candidate`), so a failed candidate leaves the tree where a rejected one
+  would.
+- leaves the diversity-quota window untouched. The failed candidate's source is not read, not
+  diffed and not appended, so `previous_source` stays the last candidate that completed a pass.
+  Reason: the window measures structural exploration of the candidates the search actually
+  evaluated, and a run that never executed says nothing about that.
+- increments a consecutive-failure counter. A candidate that completes its pass (accepted or
+  rejected) resets the counter to zero.
+
+When the counter reaches `max_consecutive_failures` (default 3) the loop stops with
+`termination_reason="consecutive_failures"`. In `confirmation` mode the first failure re-raises
+`CandidateRunFailedError` unchanged, as it did before #5683.
+
+Every other exception propagates to the caller unmodified, after this function's own `finally`
+block stops the watchdog it started. That includes the other `RawArtifactsUnavailableError` raises
+in `evaluate_adapter.py` (scoring-side, after a successful run), `run_one_candidate_pass`'s other
+documented exceptions, `FileNotFoundError`, `UnicodeDecodeError` and `DiversityQuotaInputError`.
+
+## What this module explicitly does NOT do
+
+No retries: a failed candidate is skipped, never re-dispatched. No guarantee that
+`campaign_conclude` (or an equivalent close-out call) fires on every code path that exits the
+loop -- that is `loop_run.py`'s job (LC-11, AC-8c). This module's job is to prove the
+multi-iteration "keep going" sequence -- watchdog, diversity-quota response, termination paths and
+the failed-candidate policy above -- is wired correctly.
 """
 
 import logging
@@ -162,14 +192,21 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal
 
 from controller.bathos_campaign_adapter import BathosCampaignAdapter
 from controller.bathos_library_wrappers import call_stats_battery_gate, get_seed_trial_counts
 from controller.dispatch import DispatchBackend
-from controller.evaluate_adapter import BathosFrozenContext
-from controller.lineage_interim import CandidateParentage
-from controller.main_loop import CampaignMode, OneCandidatePassResult, run_one_candidate_pass
+from controller.evaluate_adapter import BathosFrozenContext, CandidateRunFailedError
+from controller.lineage_interim import CandidateParentage, resolve_derived_from
+from controller.main_loop import (
+    CampaignMode,
+    OneCandidatePassResult,
+    record_failed_candidate_pass,
+    reset_after_failed_candidate,
+    run_one_candidate_pass,
+)
 from xtrax.loop.candidate_smoke import assert_candidate_smoke
 from xtrax.loop.candidate_static import assert_candidate_static
 from xtrax.loop.checkified_execution import assert_checkified_execution
@@ -190,7 +227,9 @@ from xtrax.loop.structure_tripwire import assert_structure_tripwire
 
 _logger = logging.getLogger(__name__)
 
-TerminationReason = Literal["normal_completion", "budget_exhausted"]
+TerminationReason = Literal[
+    "normal_completion", "budget_exhausted", "consecutive_failures", "all_candidates_failed"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +268,24 @@ def _default_leap_path_handler(event: LeapPathEvent) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class FailedCandidateRecord:
+    """One candidate whose bathos run failed and was skipped (#5683).
+
+    Attributes:
+        iteration: the 1-based candidate index within this run (the same numbering
+            `run_one_candidate_pass` receives as `iteration`).
+        handoff_path: the staged candidate source whose run failed.
+        exit_code: the bathos run's non-zero exit code.
+        reason: the full refusal message (includes `exit_code=`).
+    """
+
+    iteration: int
+    handoff_path: Path
+    exit_code: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class MultiIterationLoopResult:
     """The composed outcome of one `run_multi_iteration_loop` call.
 
@@ -247,12 +304,15 @@ class MultiIterationLoopResult:
         leap_path_events: every `LeapPathEvent` fired during this run, in order.
         watchdog_handle: the (already-`stop()`-ped, in the normal/budget-exhaustion paths)
             handle to the watchdog this run started, for caller introspection.
+        failed_candidates: every candidate whose bathos run failed and was skipped (#5683), in
+            order. Not part of `iterations`, which keeps its meaning: completed passes only.
     """
 
     iterations: tuple[OneCandidatePassResult, ...]
     termination_reason: TerminationReason
     leap_path_events: tuple[LeapPathEvent, ...]
     watchdog_handle: WatchdogHandle
+    failed_candidates: tuple[FailedCandidateRecord, ...] = ()
 
     @property
     def accepted_count(self) -> int:
@@ -319,13 +379,16 @@ def run_multi_iteration_loop(
     candidate_target_path: Path | None = None,
     allow_fresh_start_despite_existing_lineage: bool = False,
     bootstrap_commit_sha: str | None = None,
+    max_consecutive_failures: int = 3,
+    probe_record_dir: Path | None = None,
 ) -> MultiIterationLoopResult:
     """Run the actual multi-iteration "keep going" loop across candidates (AC-8b).
 
     Starts a supervising watchdog once, then repeatedly calls `run_one_candidate_pass` (LC-09)
     while maintaining a rolling structural-mutation-flag window for `assert_diversity_quota`
-    (T2-18) and wiring its `leap_path_required` decision to `on_leap_path_required`. See the
-    module docstring for the full grounding of every design choice below.
+    (T2-18) and wiring its `leap_path_required` decision to `on_leap_path_required`. A candidate
+    whose bathos run fails is skipped and recorded until `max_consecutive_failures` failures occur
+    in a row (#5683). See the module docstring for the grounding of every design choice below.
 
     Args:
         dispatch_backend: forwarded to `run_one_candidate_pass` on every iteration.
@@ -402,6 +465,13 @@ def run_multi_iteration_loop(
         allow_fresh_start_despite_existing_lineage: forwarded to `run_one_candidate_pass`
             unchanged on every iteration. `False` (default) -- see that function's own
             lineage-conflict guard.
+        max_consecutive_failures: the number of candidate-run failures in a row that halts the
+            loop with `termination_reason="consecutive_failures"` (default 3, #5683). A completed
+            pass resets the count. Must be `>= 1`. Ignored in `confirmation` mode, where the first
+            failure re-raises.
+        probe_record_dir: opt-in ProbeRecord directory, forwarded to `run_one_candidate_pass` on
+            every iteration; a rejected record is also written for each failed candidate
+            (`record_failed_candidate_pass`). `None` (default) writes none.
         bootstrap_commit_sha: forwarded to BOTH `run_one_candidate_pass`'s `commit_parent_sha`
             and `bootstrap_base_tree_sha` unconditionally on every call; inert except on a
             genuinely fresh campaign's first accepted candidate (`read_best_so_far` returns
@@ -414,10 +484,13 @@ def run_multi_iteration_loop(
         reason, every `LeapPathEvent` fired, and the (already-stopped) watchdog handle.
 
     Raises:
-        ValueError: `max_candidates < 1`.
-        Any exception `run_one_candidate_pass` itself raises (see that function's own `Raises`
-            section) -- propagates unmodified after this function's own watchdog-cleanup
-            `finally` block runs. Zero retry logic, matching LC-09's own precedent.
+        ValueError: `max_candidates < 1` or `max_consecutive_failures < 1`.
+        CandidateRunFailedError: `campaign_mode="confirmation"` and a candidate's bathos run
+            failed -- the first failure halts, as before #5683.
+        Any other exception `run_one_candidate_pass` itself raises (see that function's own
+            `Raises` section) -- propagates unmodified after this function's own watchdog-cleanup
+            `finally` block runs. A failed candidate run in any other mode is caught and skipped
+            (#5683), never retried.
         FileNotFoundError, UnicodeDecodeError: reading a candidate's staged source file (for the
             diversity-quota window) failed.
         DiversityQuotaInputError: a candidate's staged source failed to parse as Python.
@@ -425,10 +498,15 @@ def run_multi_iteration_loop(
     if max_candidates < 1:
         msg = f"max_candidates must be >= 1, got {max_candidates}"
         raise ValueError(msg)
+    if max_consecutive_failures < 1:
+        msg = f"max_consecutive_failures must be >= 1, got {max_consecutive_failures}"
+        raise ValueError(msg)
 
     watchdog_handle = start_watchdog_fn(os.getpid(), watchdog_criteria)
 
     iterations: list[OneCandidatePassResult] = []
+    failed_candidates: list[FailedCandidateRecord] = []
+    consecutive_failures = 0
     leap_path_events: list[LeapPathEvent] = []
     structural_flags: list[bool] = []
     previous_source: str | None = None
@@ -445,47 +523,96 @@ def run_multi_iteration_loop(
                 termination_reason = "budget_exhausted"
                 break
 
-            result = run_one_candidate_pass(
-                dispatch_backend,
-                campaign_adapter,
-                campaign_id=campaign_id,
-                campaign_mode=campaign_mode,
-                parentage=parentage,
-                run_args=run_args,
-                output_paths=output_paths,
-                tags=tags,
-                agent_mode=agent_mode,
-                no_sidecar=no_sidecar,
-                stats_battery_kwargs=stats_battery_kwargs,
-                seed_trial_db=seed_trial_db,
-                hypothesis_clause_id=hypothesis_clause_id,
-                stats_battery_fn=stats_battery_fn,
-                seed_trial_counts_fn=seed_trial_counts_fn,
-                candidate_static_fn=candidate_static_fn,
-                candidate_static_root=candidate_static_root,
-                abstract_inputs=abstract_inputs,
-                structure_tripwire_fn=structure_tripwire_fn,
-                candidate_smoke_fn=candidate_smoke_fn,
-                candidate_smoke_root=candidate_smoke_root,
-                checkified_execution_fn=checkified_execution_fn,
-                frozen_context=frozen_context,
-                current_config=current_config,
-                metrics_provenance_dir=metrics_provenance_dir,
-                best_fitness=best_fitness,
-                higher_is_better=None if best_fitness is None else higher_is_better,
-                repo=repo,
-                ratchet_ref_name=ratchet_ref_name,
-                commit_tree_sha=commit_tree_sha,
-                candidate_target_path=candidate_target_path,
-                allow_fresh_start_despite_existing_lineage=(
-                    allow_fresh_start_despite_existing_lineage
-                ),
-                callable_name=callable_name,
-                concrete_inputs=concrete_inputs,
-                commit_parent_sha=bootstrap_commit_sha,
-                bootstrap_base_tree_sha=bootstrap_commit_sha,
-                iteration=candidate_index + 1,
-            )
+            pass_started = perf_counter()
+            try:
+                result = run_one_candidate_pass(
+                    dispatch_backend,
+                    campaign_adapter,
+                    campaign_id=campaign_id,
+                    campaign_mode=campaign_mode,
+                    parentage=parentage,
+                    run_args=run_args,
+                    output_paths=output_paths,
+                    tags=tags,
+                    agent_mode=agent_mode,
+                    no_sidecar=no_sidecar,
+                    stats_battery_kwargs=stats_battery_kwargs,
+                    seed_trial_db=seed_trial_db,
+                    hypothesis_clause_id=hypothesis_clause_id,
+                    stats_battery_fn=stats_battery_fn,
+                    seed_trial_counts_fn=seed_trial_counts_fn,
+                    candidate_static_fn=candidate_static_fn,
+                    candidate_static_root=candidate_static_root,
+                    abstract_inputs=abstract_inputs,
+                    structure_tripwire_fn=structure_tripwire_fn,
+                    candidate_smoke_fn=candidate_smoke_fn,
+                    candidate_smoke_root=candidate_smoke_root,
+                    checkified_execution_fn=checkified_execution_fn,
+                    frozen_context=frozen_context,
+                    current_config=current_config,
+                    metrics_provenance_dir=metrics_provenance_dir,
+                    best_fitness=best_fitness,
+                    higher_is_better=None if best_fitness is None else higher_is_better,
+                    repo=repo,
+                    ratchet_ref_name=ratchet_ref_name,
+                    commit_tree_sha=commit_tree_sha,
+                    candidate_target_path=candidate_target_path,
+                    allow_fresh_start_despite_existing_lineage=(
+                        allow_fresh_start_despite_existing_lineage
+                    ),
+                    callable_name=callable_name,
+                    concrete_inputs=concrete_inputs,
+                    commit_parent_sha=bootstrap_commit_sha,
+                    bootstrap_base_tree_sha=bootstrap_commit_sha,
+                    iteration=candidate_index + 1,
+                    probe_record_dir=probe_record_dir,
+                )
+            except CandidateRunFailedError as exc:
+                if campaign_mode == "confirmation":
+                    raise
+                # #5683: a failed run is a caught per-candidate rejection. Never scored (the
+                # step-2.3 refusal guarantees that), never promoted, and it does not touch
+                # best_fitness or the diversity window. Then continue to the next candidate.
+                consecutive_failures += 1
+                failed = FailedCandidateRecord(
+                    iteration=candidate_index + 1,
+                    handoff_path=exc.handoff_path,
+                    exit_code=exc.exit_code,
+                    reason=str(exc),
+                )
+                failed_candidates.append(failed)
+                _logger.warning(
+                    "candidate %d failed its bathos run (exit_code=%d, %s); skipped, "
+                    "%d consecutive failure(s) of %d allowed",
+                    failed.iteration,
+                    failed.exit_code,
+                    failed.handoff_path,
+                    consecutive_failures,
+                    max_consecutive_failures,
+                )
+                if probe_record_dir is not None:
+                    try:
+                        record_failed_candidate_pass(
+                            probe_record_dir=probe_record_dir,
+                            campaign_id=campaign_id,
+                            derived_from=resolve_derived_from(parentage),
+                            handoff_sha=exc.handoff_sha,
+                            wall_seconds=perf_counter() - pass_started,
+                            exit_code=exc.exit_code,
+                        )
+                    except Exception:  # noqa: BLE001 -- contained: a failed record never aborts the run
+                        _logger.warning(
+                            "rejected ProbeRecord for failed candidate %d could not be written",
+                            failed.iteration,
+                            exc_info=True,
+                        )
+                reset_after_failed_candidate(repo, ratchet_ref_name, best_fitness=best_fitness)
+                if consecutive_failures >= max_consecutive_failures:
+                    termination_reason = "consecutive_failures"
+                    break
+                continue
+
+            consecutive_failures = 0
             iterations.append(result)
             if result.accepted:
                 best_fitness = result.fitness_dict
@@ -501,6 +628,12 @@ def run_multi_iteration_loop(
                     leap_path_events.append(event)
                     on_leap_path_required(event)
             previous_source = candidate_source
+        else:
+            # The candidate budget ran out without any completed pass, and without reaching the
+            # consecutive-failure halt (e.g. max_candidates < max_consecutive_failures). This is
+            # a failed campaign, not a successful one with nothing in it (#5683).
+            if not iterations and failed_candidates:
+                termination_reason = "all_candidates_failed"
     finally:
         try:
             watchdog_handle.stop()
@@ -512,10 +645,12 @@ def run_multi_iteration_loop(
         termination_reason=termination_reason,
         leap_path_events=tuple(leap_path_events),
         watchdog_handle=watchdog_handle,
+        failed_candidates=tuple(failed_candidates),
     )
 
 
 __all__ = [
+    "FailedCandidateRecord",
     "LeapPathEvent",
     "MultiIterationLoopResult",
     "TerminationReason",

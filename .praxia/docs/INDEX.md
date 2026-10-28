@@ -1,4 +1,4 @@
-# onnx-spike-260930 Internal Docs
+# eda-merge-251 Internal Docs
 
 ## Daily
 
@@ -18,7 +18,12 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
-- [261028_xtrax-eda-redesign](specs/261028_xtrax-eda-redesign.md) — Plan-inspection EDA redesign: Vega-Lite canonical interchange, entry-point panel/backend registry, deterministic hashed export artifacts, and disambiguation from scientific-eda
+- [261028_xtrax-eda-redesign](specs/261028_xtrax-eda-redesign.md) — Specification for redesigning xtrax.eda into a compiler-plan inspection engine using Vega-Lite canonical interchange, entry-point panel plugins, bitwise-deterministic JSON exports, progressive offline HTML dashboards, and strict isolation from maraxiom.eda
+- [261023_equinox-decoupling](specs/261023_equinox-decoupling.md) — Make xtrax depend only on jax/optax for its pytree layer, with one implementation and Equinox models and downstream eqx.field subclasses still working (Part 1 of the equinox/Pallas plan)
+- [261023_kernel-seam-xtrax-op](specs/261023_kernel-seam-xtrax-op.md) — Part 2 of the equinox-decouple-pallas epic: xtrax.op(reference, kernels) as a custom_jvp whose primal is a backend kernel and whose derivative is the reference's JVP; consumers write reference+kernel pairs now; first GPU target is demistify's pairwise joint histogram
+- [261023_xtrax-as-a-pure-functional-pipeline-laye](specs/261023_xtrax-as-a-pure-functional-pipeline-laye.md)
+- [261020_hoisted-map](specs/261020_hoisted-map.md) — Explicit shared/per-element split for debt #2600; structural varying-input check, optional parity probe, opt-in memoize_jaxpr cache across calls
+- [261016_jax-smoke-profiling-scope](specs/261016_jax-smoke-profiling-scope.md) — Cross-repo scope for catching low-hanging JAX bottlenecks at L2: jaxlint owns static suspects, xtrax owns measurement, bathos owns the launch gate, jaxlint ships its edit hook as a cisternal plugin
 - [260923_5035-audit-labels-memo-followups](specs/260923_5035-audit-labels-memo-followups.md) — Sprint spec for #5035 (coverage-DAG PASS label over failing tiers), #5241 (memo hot-path and duplicate-walker cleanup), #5240 (all-default wrap-time screening, NaN static keys)
 - [260922_conformance-residuals](specs/260922_conformance-residuals.md) — Two items the converged 260825 spec requires but PR #104 did not ship, the synthesizer row-identity unsoundness found while specifying them, and the verified CI-gate bug #5205
 - [260922_memo-screen-hardening](specs/260922_memo-screen-hardening.md) — Per-signature purity/donation screening with static non-array leaves and kwargs, uncapped sub-jaxpr traversal for the impurity screen, and kwarg-faithful spot-check replay (#5214, #5215, #5216)
@@ -69,9 +74,17 @@
 ## Actuation Surfaces
 
 ## Audits
+- [261026_xtrax-thin-wrapper-audit](audits/261026_xtrax-thin-wrapper-audit.md) — Every src/xtrax subpackage classified decision / domain-infra / thin-wrapper, with eqx usage, consumer call sites at origin/main, and a keep/deprecate/split call; shrinks the 19-class Equinox migration to 13 and corrects four spec assumptions.
+- [261024_intent-mvp-code-review-fixes](audits/261024_intent-mvp-code-review-fixes.md) — /code-review xhigh on PR #228 found 15 issues; 11 fixed in three waves plus one follow-up, re-review 12/12 resolved; 5 parked as backlog.
+- [261023_intent-mvp-final-review](audits/261023_intent-mvp-final-review.md) — Final whole-branch review outcome for the intent MVP: loop-in-map JVP bug fixed, two findings ruled float32 conditioning against float64 truth, re-review 4/4 resolved.
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [261026_accumulate-grads-vs-optax-microbatching](research/261026_accumulate-grads-vs-optax-microbatching.md) — Pre-registered CPU parity probe: optax micro_grad MEAN matches xtrax accumulate_grads (f32 grad rel L2 7.4e-8, f64 1.7e-16) on mean-of-examples losses; 11 semantic differences listed, batch-coupled losses differ by 24%
+- [261023_pallas-block-sparse-spike](research/261023_pallas-block-sparse-spike.md) — Interpret-mode Pallas kernel: parity, custom_vjp grads, jit/vmap, dataclass config, export; Mosaic GPU export blocked on jax 0.11.1
+- [261020_hoist_invariant_cpu](research/data/261020_hoist_invariant_cpu.json)
+- [261020_hoist_invariant_cuda](research/data/261020_hoist_invariant_cuda.json)
+- [261020_xla-invariant-hoisting-probe](research/261020_xla-invariant-hoisting-probe.md) — Tracked bathos probe: XLA hoists truly invariant encoder work out of vmap on CPU and CUDA, and out of chunked lax.map on CPU, but not on CUDA (4.5x); false-dependence control 15-71x
 - [260930_onnx-route-spike](research/260930_onnx-route-spike.md) — Three pre-registered bathos runs: every tied sort/argsort/top_k/argmax/scatter case is exact on ORT CPU; jax2onnx 0.16.1 breaks nested jit on jax 0.11; threefry is replaced by ONNX RandomUniform and does not run
 - [260922_conformance-residuals-probes](research/260922_conformance-residuals-probes.md) — Measured JAX 0.11.1 / numpy 2.5.1 CPU behaviours behind spec 260922_conformance-residuals §1.1 — donation carriers in jaxprs, synthesizer row-identity unsoundness, byte bitcasts, and which host-transfer oracles work on CPU
 - [260914_browser-inference-routes-jaxjs-jax2onnx](research/260914_browser-inference-routes-jaxjs-jax2onnx.md) — Measured coverage of the non-IREE browser paths — jax-js is a reimplementation not a converter, jax2onnx takes Equinox directly and covers every primitive aminx needs, but ONNX mandates int64 TopK indices which ORT Web's WebGPU EP does not support
@@ -89,6 +102,7 @@
 - [260702_roadmap-research-synthesis](research/260702_roadmap-research-synthesis.md) — roadmap-cycle research synthesis (task 260702_research-roadmap-dags): 6 adversarially-verified themes → #2181 autoresearch ratchet-loop architecture + gate catalog + bathos capability map, #2174 minimal composition substrate child item (D1–D4, AC1–AC6), neuro-symbolic placement (grounding node in #2174, entry criterion for #2181), praxia plugin contract + rig-run dispatch gaps, cross-cutting gate-design template; brainstorm fork list + dropped-claims appendix
 
 ## Decisions
+- [261026_xtrax-scope-rubric](decisions/261026_xtrax-scope-rubric.md) — An ordered binary-cue rubric (fast-and-frugal tree shape) for judging whether an xtrax class or function earns its place: evidence completeness first, then load-bearing use, owned decisions, redundancy with JAX/optax/orbax, and scope fit; applied to the 261026 audit candidates.
 - [260930_gate-b-ruling-holds-with-controller](decisions/260930_gate-b-ruling-holds-with-controller.md) — Addendum to 260909: the gate-(b) closure is the declared evaluator/split/metric paths hashed by closure_lock; controller harness code outside it (main_loop acceptance plumbing) is not gate (b). Applied to #4584: pre-scoring halt, self-consistent CandidateRunResult and adapter docstring ship as an ordinary PR; reconciling `accepted` and moving the stats/seed gates ahead of the lineage advance goes in a separate PR for Marielle's explicit sign-off.
 - [260909_gate-b-scope-loop-evaluator-not-ci-gates](decisions/260909_gate-b-scope-loop-evaluator-not-ci-gates.md) — Marielle's ruling: gate (b)'s 'evaluator code / test splits / metric definitions' means the #2181 loop's EvaluateFn closure; repo audit gates such as test_rigor are outside it and need no per-event attestation
 - [260813_3653-gw06-remaining-gate-wiring-decisions](decisions/260813_3653-gw06-remaining-gate-wiring-decisions.md) — [GW-06] Remaining human-approval gate wiring decisions (T2-29, T2-30, T2-31)

@@ -5,8 +5,13 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from xtrax.training.loss import ComposedLoss, MultiTaskLoss, WeightedLoss
+from xtrax.training.loss import ComposedLoss
 from xtrax.training.types import LossFunction
+
+# #6107 probe release: importing a deprecated name warns; these tests exercise the
+# unchanged behaviour, so the access is asserted once here.
+with pytest.deprecated_call(match="xtrax #6107"):
+    from xtrax.training.loss import MultiTaskLoss, WeightedLoss
 
 
 # Simple test loss functions

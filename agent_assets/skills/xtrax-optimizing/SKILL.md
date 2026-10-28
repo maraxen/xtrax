@@ -1,16 +1,8 @@
 ---
 name: xtrax-optimizing
 description: "Use when a JAX scan or vmap is slow, host or device round trips dominate, a table should be computed in the graph instead of materialized, batches should be prefetched, or a speed change needs a before-and-after measurement before it is kept. Covers host-boundary cost, data movement, and composition rewrites."
-xtrax_version: 0.4.0a12
-triggers:
-  - scan or vmap is slow
-  - host sync or device round trip dominates a step
-  - prefetch batches or overlap host-to-device transfer
-  - compute a table in the graph instead of materializing it
-  - donate buffers or rematerialize an activation
-  - measure a speed change before keeping it
+when_to_use: 'Triggers: scan or vmap is slow, host sync or device round trip dominates a step, prefetch batches or overlap host-to-device transfer, compute a table in the graph instead of materializing it, donate buffers or rematerialize an activation, measure a speed change before keeping it.'
 ---
-
 # xtrax-optimizing
 
 ## Purpose
@@ -49,7 +41,7 @@ Scope doc: `.praxia/docs/specs/260825_jax-optimizing-skill-scope.md`.
 |---|---|---|---|---|
 | 1 -- Host boundary mechanics | How host callbacks fire; never the math | ordered vs unordered Tap/Sink, per-step sink batching via ZarrStagingSink, io_callback round-trip accounting | Stage-1 micro probe isolating callback cost; DISPATCH_COUNT must not regress | DISPATCH_COUNT |
 | 2 -- Data movement | When/how arrays reach the device; still not the math | async_indexed_stream buffer sizing, double-buffering input iteration, dtype coercion at load vs in-graph, bucket selection to bound recompiles | paired Stage-1 wall probes (feed-starved vs fed); show overlap hides latency, not shifts it | TERM_RANKING (same platform); END_TO_END only via scale guard |
-| 3 -- Composition | The program itself | Vmap/ChunkedMap/DedupGather/Bucket swaps, on-the-fly one-hot/categorical encode, fusion-friendly refactors, donate/remat tradeoffs | Stage-0 cost probe FIRST, then paired Stage-1/2; ranking claims need TERM_RANKING floors; parity metric when numerics could shift | TERM_RANKING / END_TO_END |
+| 3 -- Composition | The program itself | Vmap/ChunkedMap/DedupGather/Bucket swaps, on-the-fly one-hot/categorical encode, fusion-friendly refactors, donate/remat tradeoffs. For sites written with `xtrax.intent.loop`/`map`, a strategy swap is a `Context` change (`memory_budget`, `chunk_size`, `target`) or a per-site `SiteStrategyOverride` passed as `compile(..., overrides={label: (primal, diff)})`; diff `compile(...).plan_for(*args).table()` before and after (`agent_assets/skills/using-xtrax/references/intent.md`) | Stage-0 cost probe FIRST, then paired Stage-1/2; ranking claims need TERM_RANKING floors; parity metric when numerics could shift | TERM_RANKING / END_TO_END |
 
 Tier-1 facts already established in code (verify-paths):
 - An ordered Tap/Sink inside a Scan of N steps costs N serialized host round
@@ -57,6 +49,103 @@ Tier-1 facts already established in code (verify-paths):
 - Vmap cannot lower an ordered io_callback; topology rejects the plan
   (`src/xtrax/stages/topology.py`, `validate_plan_topology`).
 - Only set `ordered=True` when correctness depends on host-observed order.
+
+A hand-written kernel (Pallas) is a Tier-3 candidate. Put it behind `xtrax.op`
+beside its plain-JAX reference, so `Context(kernels=False)` gives the baseline
+from the same call site and `Context(target="export")` selects the reference
+(`src/xtrax/kernel_seam.py:312-338`). The parity metric comes from
+`xtrax.testing.kernel_parity`, with a corruption control that turns it red.
+Interpret-mode parity on CPU is not GPU evidence. Read
+`agent_assets/skills/using-xtrax/references/op.md`.
+
+## Vectorize-First Discipline (replicates, draws, pairs, cells, frames)
+
+A Python loop over replicates, bootstrap draws, pairs, cells or frames is a
+defect until shown otherwise. Incident (downstream coverage run, 2026-10-16):
+a host-side loop of B=200 fits per target per replicate took 30-98 s per
+replicate at production size.
+
+- Batch the leading axis in the first design: `jax.vmap`, or xtrax's
+  `Vmap` / `ChunkedMap` strategies via `axis_dispatch` (`src/xtrax/tiling/dispatch.py`).
+  Chunk with `ChunkedMap` when memory bounds the batch; a ragged final chunk is fine.
+- Test batched == looped output (same keys, same inputs) before trusting the
+  batched path; keep the looped version only as the test oracle.
+- Profile one unit at production shapes (real K, N, B, pair count), not toy
+  shapes, before any run expected to take more than a few minutes. Read
+  `exec/element` from `xtrax profile`.
+- Count recompiles: enable `jax.config.update("jax_log_compiles", True)` (or
+  `JAX_LOG_COMPILES=1`) and expect zero compiles at steady state; `xtrax profile`
+  reports `steady compiles`.
+- Put the unit's wall-time estimate in the run's pre-registration sidecar.
+
+## Hoist shared work out of a mapped axis
+
+A stage that reads only shared inputs (a structure encoder, a table) should run
+once per call, not once per element. Use `xtrax.inference.hoist`
+(`src/xtrax/inference/hoist.py`):
+
+```python
+from xtrax.inference import MemoPolicy, hoisted_map, make_hoisted
+
+hm = make_hoisted(shared, per_element, batch_size=4, cache=MemoPolicy())  # hold hm across calls
+ys = hm({"coords": coords}, keys)          # shared(**args) once; per_element(s, x) mapped over keys
+ys = hoisted_map(shared, per_element, shared_args, xs)  # one-shot: builds a fresh instance
+```
+
+- `shared(**shared_args)` returns `s`; `per_element(s, x)` maps over the leading axis of `xs`.
+- False dependence is the real waste. A per-element PRNG key that feeds the encoder
+  makes the encoder read a varying input, so the jaxpr batches it over N even when
+  its value does not depend on the key (`backbone_noise == 0`). Keep per-element keys
+  in `xs`, not in `shared_args`. Passing `AxisSpec(..., varying_inputs=(...))` to
+  `make_hoisted(axis=...)` refuses a shared input with a declared varying name
+  (`HoistVaryingInputError`).
+- `check_elements=k, reference=monolithic` runs a parity probe on the first k
+  elements; a mismatch raises `HoistParityError`. Use it while moving code across.
+- `cache=MemoPolicy(...)` memoizes `shared` on the instance (content-keyed, see
+  `src/xtrax/inference/memo.py`). Its entries can hold large arrays; bound them with
+  `max_entries`. Under an enclosing `jit` the cache is bypassed (`stats()["traced_bypass"]`).
+- Whether XLA already hoists truly invariant work depends on platform and map path
+  (bathos runs 261020, jax 0.11.1, `scripts/experiments/hoist_invariant_xla_probe.py`,
+  N=64, `(L,3)->(L,L,C)` encoder, L=256, C=64; naive / hand-hoisted median wall):
+
+  | path | CPU (`53c35140`) | CUDA TITAN RTX (`c2849876`) |
+  |---|---|---|
+  | `jax.vmap` | 1.00x | 1.00x |
+  | `chunked_map(batch_size=4)` | 1.03x | 4.51x |
+  | false-dependence control, vmap / chunked | 70.8x / 51.8x | 47.7x / 15.6x |
+
+  On CUDA the chunked path recomputes invariant work about once per `lax.map`
+  iteration. Hoist by hand (or with `make_hoisted`) whenever `batch_size` is set on
+  GPU, even without false dependence. IREE/StableHLO behaviour is unverified.
+- `cache` cannot memoize a `shared` stage whose graph draws random bits, even inside a
+  `cond` branch the inputs never take (the purity screen refuses `random_bits`). A
+  stage that splits a noise key unconditionally (a noise scale of 0 gates only the
+  value) stays uncached.
+- `hoisted_map` builds fresh jit wrappers on every call, so the mapped stage recompiles
+  each time. A caller that repeats a call should hold a `HoistedMap` from `make_hoisted`.
+- Tests: `tests/inference/test_hoist.py`, including the negative and invariant controls.
+
+## Remediation Playbook (keyed by `xtrax profile` flags)
+
+Measure the unit with `xtrax profile` first (`xtrax-probing` covers the report).
+Each flag names a likely cause and a first change. Classify the change
+(tier table above) and preregister the re-measure before editing.
+
+| `xtrax profile` says | Likely cause | First change | Re-measure |
+|---|---|---|---|
+| `exec/element` >= 0.5 | Host loop over the leading axis: one jitted step per element | Vmap the leading axis (`jax.vmap`). If memory bounds the batch, chunk it with a jitted chunk kernel (`ChunkedMap`). Test batched == looped output before keeping it. | exec/element < 0.5 at the same shape |
+| steady compiles > 0 | `jax.jit` built inside the callable, shape or dtype drift between calls, unhashable static args | Hoist the jit to module scope or a cached factory. Hold shapes and dtypes fixed (bucket them if they vary). Make static args hashable. | steady compiles = 0 |
+| host share dominates (`host s / unit` >> `device s / unit`) | Host-side work between dispatches: Python-side preprocessing, NumPy round trips, a sync (`.item()`, `block_until_ready`) per iteration, host callbacks | Move the work into the graph, or batch it so one dispatch does many steps. Callback mechanics are Tier 1; data placement is Tier 2. | host share falls; wall per unit falls |
+| `fits: no` | The compiled program exceeds device memory at this extent | Measure smaller with `--target-extent N` (the estimate is extrapolated, or withheld). For the production run, scan with a carry instead of materializing every step, or checkpoint/remat the body (Tier 3 donate/remat tradeoff). | `fits: yes` at the production extent, or a chunked design that fits |
+
+Rule: a flag is a reason to measure again, not a verdict on the code. Keep a
+change only with a paired record that shows the flag cleared and the wall
+moved (see Non-Negotiables 2 and 3).
+
+General JAX patterns (loop placement, jit boundaries, shape polymorphism,
+scatter-gather) belong to the jaxlint skills: `jaxlint:using-jax` and
+`jaxlint:using-jaxlint`. This skill covers what xtrax implements: the tier
+mapping, the probe pairs, and the keep/revert rule.
 
 ## Quick Start (worked example: on-the-fly vs materialized one-hot)
 

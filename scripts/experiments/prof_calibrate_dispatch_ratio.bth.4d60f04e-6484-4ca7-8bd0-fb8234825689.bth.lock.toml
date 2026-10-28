@@ -1,0 +1,8 @@
+# prof_calibrate_dispatch_ratio.bth.4d60f04e-6484-4ca7-8bd0-fb8234825689.bth.lock.toml — written at run time, never modified
+[manifest]
+written_at = "2026-10-16T20:04:29.671966+00:00"
+sidecar_sha256 = "787a17b39489d81d85521a2ac071ba35670b7ad3c9d0d93a6a2821203eeb82c2"
+sidecar_path = "/home/marielle/projects/xtrax/.claude/worktrees/agent-a82fbbc0807440a12/.claude/worktrees/agent-a9e3a26a67c0a465f/scripts/experiments/prof_calibrate_dispatch_ratio.bth.toml"
+git_sha = "9cedefed9448b8c73a869b6869f40b607445b62f"
+script_sha256 = "3d821204fad798732aee641c08b50f6063ee09f824e2ce0184d44bc426f9ebe5"
+run_id = "4d60f04e-6484-4ca7-8bd0-fb8234825689"

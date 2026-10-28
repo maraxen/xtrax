@@ -48,7 +48,7 @@ bucket boundaries); `BatchPlanner` selects a strategy per axis and returns a
 | Explain the batching topology it was given | `xtrax plan` / `xtrax explain` — per-axis decisions, with reasons |
 
 The rest of the library is conveniences around the same workflows: `Trainer`/`Engine`
-for Equinox training loops, checkify-based NaN/Inf guards, structured sparsity with
+for pytree-model training loops (Equinox modules included), checkify-based NaN/Inf guards, structured sparsity with
 fixed compile shapes, sharding helpers, and orbax-backed checkpointing.
 
 ## What xtrax is not

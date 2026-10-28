@@ -5,6 +5,8 @@ from typing import Any
 
 import jax.distributed
 
+from xtrax._renamed import Deprecated, deprecated_getattr
+
 # Module-level state: stores initialization args
 _init_state: dict[str, Any] = {
     "initialized": False,
@@ -51,16 +53,16 @@ def init_dist(
         - SLURM discovery: uses SLURM_PROCID, SLURM_NTASKS, SLURM_JOB_NODELIST.
         - Single-process fallback: skips jax.distributed.initialize for
           num_processes==1 (spec deviation: see below).
-        - After successful init, calls _mark_dist_initialized() to enable
-          DataModule(distributed=True).
+        - DataModule(distributed=True) no longer reads any flag set here; it checks
+          jax.process_count() > 1 (#6107).
 
     Spec Deviation (§3.22):
         The spec states that localhost fallback should call jax.distributed.initialize
         with single-process config. However, calling jax.distributed.initialize with
         num_processes=1 can be unstable in some environments. This implementation skips
-        the call for num_processes==1, instead calling _mark_dist_initialized() and
-        returning. If future requirements demand the single-process initialize call,
-        this can be made a parameter.
+        the call for num_processes==1 and only records the arguments. If future
+        requirements demand the single-process initialize call, this can be made a
+        parameter.
     """
     global _init_state
 
@@ -123,11 +125,6 @@ def init_dist(
             process_id=process_id,
         )
 
-    # Mark distributed initialization complete (enables DataModule(distributed=True))
-    from xtrax.data.module import _mark_dist_initialized
-
-    _mark_dist_initialized()
-
     _init_state["initialized"] = True
 
 
@@ -145,7 +142,20 @@ def _reset_for_testing() -> None:
         "num_processes": None,
         "process_id": None,
     }
-    # Also reset DataModule's distributed flag
-    import xtrax.data.module as dm
 
-    dm._dist_initialized = False
+
+# Deprecated in the #6107 probe release: both names warn on access and are otherwise unchanged.
+_DEPRECATED = {
+    "init_dist": Deprecated(
+        init_dist,
+        "jax.distributed.initialize()",
+        "With no arguments it auto-detects Slurm, Open MPI and TPU; otherwise pass "
+        "coordinator_address, num_processes and process_id.",
+    ),
+    "is_distributed": Deprecated(
+        is_distributed,
+        "jax.distributed.is_initialized() or jax.process_count() > 1",
+    ),
+}
+del init_dist, is_distributed
+__getattr__ = deprecated_getattr(__name__, _DEPRECATED)

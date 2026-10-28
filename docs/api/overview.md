@@ -6,7 +6,6 @@ xtrax provides a composable set of subpackages organized by functionality:
 - **Training**: Training loops and loss functions
 - **Data**: Data pipeline management
 - **Tiling**: Distributed batch management and remapping
-- **Sparse**: Sparse tensor operations and filtering
 - **Checkpoint**: Model checkpointing and serialization
 - **IO**: Input/output operations
 - **Distributed**: Multi-device and multi-node coordination

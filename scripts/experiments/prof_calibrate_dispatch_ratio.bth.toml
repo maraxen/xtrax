@@ -1,0 +1,49 @@
+[metadata]
+title = "xtrax profile dispatch-ratio threshold calibration (executions/element < 0.5 = batched)"
+created = "261016"
+schema_version = "0.3"
+task_id = "261016_jax-smoke-profiling-scope"
+spec = ".praxia/docs/specs/261016_jax-smoke-profiling-scope.md"
+
+[experiment]
+hypothesis = "On CPU, under xtrax.profiling.unit_probe.probe_unit at production-shaped inputs, every pre-registered host-loop entrypoint (controls.host_loop at B in {8,64,256}) has executions_per_unit / cardinality >= 0.5, and every pre-registered batched entrypoint (controls.vmapped_twin at B in {8,64,256}; the tiling Vmap, ChunkedMap bs 8 and 32, and DedupGather strategies at rows in {64,256}; a lax.scan over the batch in one jit at B in {64,256}; a Python loop over chunks of 16 or 64 calling a jitted chunk kernel at B=256; and optionally one aminx make_sample_sequences call at L=32) has executions_per_unit / cardinality < 0.5, with zero steady-state compiles for every unit. The labels, the threshold 0.5 and the outcomes are fixed here before any run; the margin min(host_loop) / max(batched) is reported, not gated."
+stage_name = "calibration"
+
+[calibrate]
+quantity = "min_host_loop_exec_per_element"
+
+[outcomes.measurement_failed]
+condition = "n_failed > 0"
+decision = "At least one xtrax-side entrypoint raised during measurement. No label can be checked for that unit; the table names it. Fix the entrypoint or the probe and re-run under a new sidecar revision. Do not drop the unit from the table."
+reasoning = "A unit that cannot be measured is not evidence for or against the threshold; silently dropping it would bias the calibration toward whatever survived."
+is_residual = false
+
+[outcomes.pass]
+condition = "n_failed = 0 AND n_mislabelled = 0 AND n_steady_nonzero = 0 AND n_host_loop = 3 AND n_batched_xtrax = 15"
+decision = "All 3 pre-registered host-loop units sit at or above 0.5 executions/element, all batched units (15 xtrax-side, plus the aminx arm if it ran) sit below 0.5, and no unit recompiles in steady state. The 0.5 threshold is supported for the entrypoint families measured here. Report the margin min(host_loop)/max(batched) as the calibration evidence, and cite the table, not the threshold alone."
+reasoning = "The rule discriminates the labelled families on this platform with every label pre-registered; the margin shows how far the boundary sits from 0.5 on each side."
+is_residual = false
+
+[outcomes.threshold_contradicted]
+condition = "n_failed = 0 AND (n_mislabelled > 0 OR n_steady_nonzero > 0 OR n_host_loop <> 3 OR n_batched_xtrax <> 15)"
+decision = "The pre-registered labels do not all hold at 0.5 (a host-loop unit below 0.5, a batched unit at or above 0.5, or a steady recompile). This is a finding, not a reason to move the threshold or relabel: report the mislabelled rows and the margin, and treat the provisional 0.5 as NOT supported for the failing family until the table explains it."
+reasoning = "A calibration that fails its own pre-registered labels must be recorded as such; moving the threshold after seeing the numbers would make the gate pass by construction."
+is_residual = true
+
+[result_schema]
+n_units_xtrax = "int"
+n_failed = "int"
+n_host_loop = "int"
+n_batched_xtrax = "int"
+n_batched = "int"
+n_mislabelled = "int"
+n_steady_nonzero = "int"
+min_host_loop_exec_per_element = "float"
+max_batched_xtrax_exec_per_element = "float"
+max_batched_exec_per_element = "float"
+margin = "float"
+aminx_status = "str"
+aminx_exec_per_element = "float"
+threshold = "float"
+xtrax_file = "str"
+jax_version = "str"

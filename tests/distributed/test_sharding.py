@@ -1,23 +1,28 @@
-import equinox as eqx
 import jax
 import jax.sharding
 import jax.tree_util
 import pytest
 
-from xtrax.distributed.sharding import (
-    ShardingPolicy,
-    get_device_mesh,
-    get_hardware_mesh_profile,
-)
+from xtrax._tree import Struct
+
+# #6107 probe release: importing a deprecated name warns; these tests exercise the
+# unchanged behaviour, so the access is asserted once here.
+with pytest.deprecated_call(match="xtrax #6107"):
+    from xtrax.distributed.sharding import (
+        ShardingPolicy,
+        get_device_mesh,
+        get_hardware_mesh_profile,
+    )
 
 
 class TestShardingPolicy:
     """Test ShardingPolicy: regex matching, partition spec, pytree application."""
 
-    def test_sharding_policy_is_eqx_module(self):
-        """ShardingPolicy must be an eqx.Module subclass."""
+    def test_sharding_policy_is_a_static_only_struct(self):
+        """ShardingPolicy is an xtrax.Struct whose rules live in the treedef."""
         policy = ShardingPolicy(rules=())
-        assert isinstance(policy, eqx.Module)
+        assert isinstance(policy, Struct)
+        assert jax.tree_util.tree_leaves(policy) == []
 
     def test_get_partition_spec_first_match_wins(self):
         """First matching pattern wins; ordering matters."""

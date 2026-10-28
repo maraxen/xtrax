@@ -45,6 +45,7 @@ from xtrax.profiling.compile_count import (
 from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
 from xtrax.profiling.record import ProbeRecord
 from xtrax.profiling.trace import hlo_text_for, load_trace_events
+from xtrax.profiling.unit_probe import UnitProbeResult, probe_unit
 
 __all__ = [
     "CONTRACT_VERSION",
@@ -52,6 +53,7 @@ __all__ = [
     "ClaimClass",
     "ClaimValidityError",
     "ProbeRecord",
+    "UnitProbeResult",
     "assert_claim_supported",
     "assert_no_recompile_after",
     "count_backend_compiles",
@@ -60,6 +62,7 @@ __all__ = [
     "load_trace_events",
     "paired_configs",
     "permitted_claims",
+    "probe_unit",
     "select_sources",
     "sub_jaxprs",
 ]

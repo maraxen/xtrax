@@ -14,19 +14,26 @@ import sys
 
 import pytest
 
-# Packages to verify — extend this list as the codebase grows.
+# Packages to verify — extend this list as the codebase grows. Keep it in sorted()
+# order (enforced by tests/distribution/test_sorted_registries.py).
 _PACKAGES = [
-    "xtrax.tiling.plan",
-    "xtrax.tiling.roles",
+    "xtrax._tree",
+    "xtrax.config",
+    "xtrax.data.module",
+    "xtrax.export",
     "xtrax.inference",
     "xtrax.inference.errors",
-    "xtrax.run.spec",
-    "xtrax.stages.bundle",
+    "xtrax.kernel_seam",
     "xtrax.loop",
     "xtrax.loop.admission",
-    "xtrax.config",
-    "xtrax.export",
+    "xtrax.run.spec",
+    "xtrax.stages.boundaries",
+    "xtrax.stages.bundle",
     "xtrax.testing",
+    "xtrax.testing.kernel_parity",
+    "xtrax.tiling.iterator",
+    "xtrax.tiling.plan",
+    "xtrax.tiling.roles",
 ]
 
 

@@ -47,7 +47,7 @@ effects, no `io_callback` (`boundaries.py`, `Fuse` docstring).
 
 ## `AxisBoundary` must flatten to zero dynamic leaves
 
-All three fields are `eqx.field(static=True)` (`boundaries.py`). Assert it on
+All three fields are `xtrax.field(static=True)` (`boundaries.py`). Assert it on
 any boundary you build, because a capture object holding a JAX array as
 instance state would silently become a traced leaf:
 

@@ -305,3 +305,51 @@ def test_gate_ignores_files_the_wheel_excludes(repo):
     result = run_dataclass_shape_gate(root, target=Path("src/pkg"), merge_base=base)
     assert result.status == "pass"
     assert result.changes == ()
+
+
+# --- changelog.d fragments acknowledge a change like a CHANGELOG.md line ----------
+
+
+def _rename_field(root: Path) -> None:
+    (root / "src" / "pkg" / "api.py").write_text(
+        BASE.replace("adapter_type: str", "validator: str")
+    )
+
+
+def test_untracked_fragment_naming_the_class_acknowledges_the_change(repo):
+    root, base = repo
+    _rename_field(root)
+    _commit(root, "rename")
+    assert run_dataclass_shape_gate(root, target=Path("src/pkg"), merge_base=base).status == "fail"
+
+    (root / "changelog.d").mkdir()
+    (root / "changelog.d" / "rename.changed.md").write_text(
+        "- `SpirvValidationResult.adapter_type` renamed to `validator`.\n"
+    )  # deliberately left untracked
+    result = run_dataclass_shape_gate(root, target=Path("src/pkg"), merge_base=base)
+    assert result.status == "pass"
+    assert len(result.changes) == 2 and not result.unacknowledged
+
+
+def test_committed_fragment_naming_the_class_acknowledges_the_change(repo):
+    root, base = repo
+    _rename_field(root)
+    (root / "changelog.d").mkdir()
+    (root / "changelog.d" / "rename.changed.md").write_text(
+        "- `SpirvValidationResult` field `adapter_type` renamed to `validator`.\n"
+    )
+    _commit(root, "rename with fragment")
+    assert run_dataclass_shape_gate(root, target=Path("src/pkg"), merge_base=base).status == "pass"
+
+
+def test_unrelated_fragment_does_not_acknowledge_the_change(repo):
+    root, base = repo
+    _rename_field(root)
+    _commit(root, "rename")
+    (root / "changelog.d").mkdir()
+    (root / "changelog.d" / "other.added.md").write_text("- `OtherThing` gained a method.\n")
+    (root / "changelog.d" / "README.md").write_text("Mentions SpirvValidationResult in prose.\n")
+    (root / "changelog.d" / "notes.txt").write_text("- `SpirvValidationResult` renamed.\n")
+    result = run_dataclass_shape_gate(root, target=Path("src/pkg"), merge_base=base)
+    assert result.status == "fail"
+    assert {c.kind for c in result.unacknowledged} == {"removed-field", "required-field"}

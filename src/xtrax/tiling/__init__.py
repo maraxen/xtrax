@@ -4,7 +4,7 @@ CORE exports (stable, always available):
     AxisSpec, BatchPlanner, BatchPlan, AxisDecision, declare_varying_inputs
     Vmap, ChunkedMap, Scan, ScanTransition, Bucket, select_bucket, bucketize,
     BUCKET_LADDER, valid_span, select_rung, trim_axis, pad_axis
-    WhileCarry, WhileBodyFn, WhileCondFn, fixed_step_count_cond
+    WhileCarry, StaticWhile, WhileBodyFn, WhileCondFn, fixed_step_count_cond
     make_axis_dispatch, axis_dispatch, DispatchRejected
     CarrySpec, CarryShape
     MemoryBudget, BudgetInfeasibleError, device_memory_budget, lowered_memory_estimate,
@@ -17,6 +17,8 @@ OPTIONAL (dedup/gather machinery — import from submodules):
     xtrax.tiling.strategy: DedupGather, DedupFn, GatherFn
     xtrax.tiling.dedup:    DedupSpec, get_k_bucket
 """
+
+from typing import TYPE_CHECKING, Any
 
 from xtrax.tiling._plan_wrapper import _BatchPlanWrapper
 from xtrax.tiling.bucket import (
@@ -37,16 +39,6 @@ from xtrax.tiling.estimators import (
     estimate_memory_theoretical,
     lowered_memory_estimate,
 )
-from xtrax.tiling.iterator import (
-    BucketIterator,
-    ChunkedMapIterator,
-    JaxScanIterator,
-    MapIterator,
-    ScanIterator,
-    VmapIterator,
-    WhileLoopIterator,
-    WhileLoopWithYsIterator,
-)
 from xtrax.tiling.plan import (
     AxisDecision,
     AxisSpec,
@@ -60,6 +52,7 @@ from xtrax.tiling.strategy import (
     ChunkedMap,
     Scan,
     ScanTransition,
+    StaticWhile,
     Vmap,
     WhileBodyFn,
     WhileCarry,
@@ -86,6 +79,7 @@ __all__ = [
     "pad_axis",
     "ScanTransition",
     "WhileCarry",
+    "StaticWhile",
     "WhileBodyFn",
     "WhileCondFn",
     "fixed_step_count_cond",
@@ -110,3 +104,63 @@ __all__ = [
     "ScanIterator",
     "_BatchPlanWrapper",
 ]
+
+if TYPE_CHECKING:
+    from xtrax.tiling.iterator import (
+        BucketIterator,
+        ChunkedMapIterator,
+        JaxScanIterator,
+        MapIterator,
+        ScanIterator,
+        VmapIterator,
+        WhileLoopIterator,
+        WhileLoopWithYsIterator,
+    )
+
+_LAZY_ITERATORS = frozenset(
+    {
+        "BucketIterator",
+        "ChunkedMapIterator",
+        "JaxScanIterator",
+        "MapIterator",
+        "ScanIterator",
+        "VmapIterator",
+        "WhileLoopIterator",
+        "WhileLoopWithYsIterator",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    """Load iterator classes on first access.
+
+    Eager import of :mod:`xtrax.tiling.iterator` also imports
+    :mod:`xtrax.transforms.map`. Callers that only need the rest of this
+    package, including ``xtrax.intent``, therefore do not load it until they
+    touch an iterator name.
+
+    Parameters
+    ----------
+    name : str
+        Attribute being accessed.
+
+    Returns
+    -------
+    object
+        The iterator class from :mod:`xtrax.tiling.iterator`.
+
+    Raises
+    ------
+    AttributeError
+        ``name`` is not a lazy iterator export.
+    """
+    if name in _LAZY_ITERATORS:
+        import importlib
+
+        return getattr(importlib.import_module("xtrax.tiling.iterator"), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    """Return sorted list of public attributes."""
+    return sorted(__all__)

@@ -36,7 +36,7 @@ ENGINE_PATH = ROOT / "src" / "xtrax" / "engine" / "engine.py"
 REGISTRY_PATH = ROOT / "src" / "xtrax" / "cli" / "registry.py"
 
 LEDGER_RESOLVER = "_resolve_ledger"
-VALID_DISPOSITIONS = frozenset({"records", "analysis_only", "ledger_admin"})
+VALID_DISPOSITIONS = frozenset({"records", "probes", "analysis_only", "ledger_admin"})
 
 
 def _rel(path: Path) -> str:
@@ -142,7 +142,8 @@ def check_verbs_declared(contract: dict, registry_path: Path = REGISTRY_PATH) ->
             problems.append(
                 f"CLI verb {verb!r} has no telemetry disposition. Add it to "
                 "audit/telemetry_coverage.toml [verbs]: 'records' if it executes or "
-                "lowers user code, 'analysis_only' if it does neither, "
+                "lowers user code, 'probes' if it executes user code only to measure "
+                "it, 'analysis_only' if it does neither, "
                 "'ledger_admin' if it operates on the ledger itself."
             )
     return problems

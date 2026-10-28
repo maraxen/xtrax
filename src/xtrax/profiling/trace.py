@@ -53,9 +53,10 @@ __provenance__ = {
 
 import gzip
 import json
+import math
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 # Return types may be tuples with spaces, e.g. `(s32[], f32[8])`. `\S+`
 # dropped those ENTRY computations, so the fusion instruction a CPU trace
@@ -434,6 +435,59 @@ def parse_hlo_op_times(
         bucket[0] += dur_seconds
         bucket[1] = bucket[1] + 1
     return {op: (float(seconds), int(count)) for op, (seconds, count) in totals.items()}
+
+
+def interval_union_seconds(trace_events: list[dict[str, Any]]) -> float:
+    """Length, in seconds, of the union of ``hlo_op`` device intervals.
+
+    Takes the complete (``ph == "X"``) events whose ``args`` carry ``hlo_op``
+    (the per-thunk device events) and merges their ``[ts, ts + dur]`` spans
+    (microseconds in the trace). Overlapping and nested spans are counted once.
+    Events with a non-numeric ``ts``/``dur`` and events with a non-positive
+    duration are ignored.
+
+    Why union rather than ``parse_hlo_op_times``' sum: on multithreaded CPU
+    several thunks execute concurrently, so summed durations exceed the wall
+    window they ran in (17.2 ms summed inside a 9.0 ms window). The union is
+    the time during which at least one device op was running, which is the
+    quantity a device-vs-host split needs.
+
+    Returns:
+        Union length in seconds; ``0.0`` when there are no qualifying events.
+    """
+    spans: list[tuple[float, float]] = []
+    for event in trace_events:
+        if event.get("ph") != "X":
+            continue
+        args = event.get("args")
+        if not isinstance(args, dict) or "hlo_op" not in args:
+            continue
+        ts: object = event.get("ts")
+        dur: object = event.get("dur")
+        if not _is_finite_number(ts) or not _is_finite_number(dur):
+            continue
+        if dur <= 0:
+            continue
+        spans.append((float(ts), float(ts) + float(dur)))
+    if not spans:
+        return 0.0
+    spans.sort()
+    total_us = 0.0
+    cur_start, cur_end = spans[0]
+    for start, end in spans[1:]:
+        if start > cur_end:
+            total_us += cur_end - cur_start
+            cur_start, cur_end = start, end
+        elif end > cur_end:
+            cur_end = end
+    total_us += cur_end - cur_start
+    return total_us / 1e6
+
+
+def _is_finite_number(value: object) -> TypeGuard[int | float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
 
 
 def parse_dispatch_counts(

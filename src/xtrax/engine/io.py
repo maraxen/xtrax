@@ -123,7 +123,7 @@ class BoundedCallbackHandler:
     Example:
         Import from the public surface and use with asyncio:
 
-        >>> from xtrax.io import BoundedCallbackHandler
+        >>> from xtrax.engine.io import BoundedCallbackHandler
         >>> import asyncio
         >>> async def example():
         ...     handler = BoundedCallbackHandler(max_concurrent=2)

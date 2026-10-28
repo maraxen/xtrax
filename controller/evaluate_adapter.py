@@ -38,6 +38,29 @@ class RawArtifactsUnavailableError(Exception):
     """
 
 
+class CandidateRunFailedError(RawArtifactsUnavailableError):
+    """A candidate's own bathos run exited non-zero (`run_one_candidate_pass` step 2.3, #4584).
+
+    A subclass so the step-2.3 refusal stays a `RawArtifactsUnavailableError` for every existing
+    catcher, while `run_multi_iteration_loop` (#5683) can tell "this candidate's run failed" apart
+    from the other `RawArtifactsUnavailableError` raises in this module (empty `output_paths`,
+    dispatch failure inside scoring), which must still propagate.
+
+    Attributes:
+        handoff_path: the staged candidate source whose run failed.
+        handoff_sha: that candidate's `content_sha256` from the dispatch handoff.
+        exit_code: the bathos run's exit code (non-zero by construction).
+    """
+
+    def __init__(
+        self, message: str, *, handoff_path: Path, handoff_sha: str, exit_code: int
+    ) -> None:
+        super().__init__(message)
+        self.handoff_path = handoff_path
+        self.handoff_sha = handoff_sha
+        self.exit_code = exit_code
+
+
 @dataclass(frozen=True, slots=True)
 class BathosFrozenContext:
     """The FrozenContext type parameter for controller/'s EvaluateFn: fixed across every
@@ -207,6 +230,7 @@ __all__ = [
     "BathosCandidate",
     "BathosFrozenContext",
     "BathosSplitComputeEvaluator",
+    "CandidateRunFailedError",
     "RawArtifactsUnavailableError",
     "closure_declaration_lists",
     "lock_bathos_frozen_context",

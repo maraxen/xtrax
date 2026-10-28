@@ -15,6 +15,13 @@ from typing import Any
 from xtrax.cli.errors import CLIError
 from xtrax.cli.registry import REGISTRY
 
+# `plugin` is routed in main() before tyro, so it is not a REGISTRY subcommand and tyro
+# cannot list it; this description line is how `xtrax --help` advertises it.
+_PLUGIN_HELP_LINE = (
+    "Also: `xtrax plugin install|update|export|info` manages the agent plugin "
+    "(needs xtrax[plugin]; see `xtrax plugin --help`)."
+)
+
 
 def main() -> None:
     """CLI entrypoint: parse subcommand and dispatch to the appropriate verb.
@@ -26,7 +33,16 @@ def main() -> None:
 
     tyro is imported inside this function so that importing this module
     does not pull in tyro (AC2: import isolation).
+
+    ``xtrax plugin ...`` is routed to cisternal's plugin sub-app before tyro runs:
+    tyro cannot forward raw argv (``--help`` included) to a non-tyro command.
     """
+    if len(sys.argv) > 1 and sys.argv[1] == "plugin":
+        from xtrax.cli.plugin_verb import run_plugin
+
+        run_plugin(sys.argv[2:])
+        return
+
     # Lazy tyro import — AC2: keeps this module tyro-free at import time.
     import tyro
 
@@ -43,7 +59,10 @@ def main() -> None:
     }
 
     try:
-        selected = tyro.extras.subcommand_cli_from_dict(subcommands)
+        selected = tyro.extras.subcommand_cli_from_dict(
+            subcommands,
+            description=_PLUGIN_HELP_LINE,
+        )
 
         # Dispatch: find the run_fn whose args_cls matches type(selected).
         selected_type = type(selected)

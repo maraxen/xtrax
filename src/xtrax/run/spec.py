@@ -5,14 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import equinox as eqx
-
+from xtrax._tree import Struct, field
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.tiling import AxisSpec, CarrySpec
 
 
-class RunSpec(eqx.Module):
-    """Base execution config. aminx.run.RunSpec (eqx.Module) extends this.
+class RunSpec(Struct):
+    """Base execution config. aminx.run.RunSpec and the plegadx run specs extend this.
 
     ``output_root``, ``device_count``, ``precision`` and ``shard_lineage`` are
     optional execution settings (debt #2523). Together with :class:`~xtrax.run.sink.SinkSpec`
@@ -25,15 +24,15 @@ class RunSpec(eqx.Module):
 
     seed: int
     axes: list[AxisSpec]
-    carry_specs: list[CarrySpec] = eqx.field(default_factory=list)
+    carry_specs: list[CarrySpec] = field(default_factory=list)
     boundaries: list[AxisBoundary] | None = None
     # Static aux data (not a pytree leaf): jitted code receiving a RunSpec-bearing
     # pytree re-traces per distinct run_id; see spec 260824 caveat.
-    run_id: str | None = eqx.field(default=None, static=True)
-    output_root: Path | None = eqx.field(default=None, static=True)
-    device_count: int | None = eqx.field(default=None, static=True)
-    precision: str | None = eqx.field(default=None, static=True)
-    shard_lineage: tuple[str, ...] | None = eqx.field(default=None, static=True)
+    run_id: str | None = field(default=None, static=True)
+    output_root: Path | None = field(default=None, static=True)
+    device_count: int | None = field(default=None, static=True)
+    precision: str | None = field(default=None, static=True)
+    shard_lineage: tuple[str, ...] | None = field(default=None, static=True)
 
     def __check_init__(self) -> None:
         if self.device_count is not None and (

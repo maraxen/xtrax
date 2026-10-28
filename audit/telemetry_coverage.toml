@@ -7,6 +7,9 @@
 #
 # Dispositions:
 #   records        Executes or lowers user code and MUST produce a ledger row.
+#   probes         Executes user code only to measure it (dispatches, compiles,
+#                  timing). Writes a ProbeRecord, not a ledger row: the output
+#                  describes the code, not a result to attest to.
 #   analysis_only  Reads or plans without executing user code; no row expected.
 #   ledger_admin   Operates on the ledger itself; recording its own run would be
 #                  circular.
@@ -26,6 +29,10 @@ explain = "analysis_only"
 graph-validate = "analysis_only"
 graph-plan = "analysis_only"
 graph-author = "analysis_only"
+
+# profile runs the callable under the unit probe to measure it and writes a
+# stage-1 ProbeRecord.
+profile = "probes"
 
 # Compaction and inspection of the ledger itself.
 ledger = "ledger_admin"

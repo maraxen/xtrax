@@ -3,7 +3,10 @@
 
 # Sentinel wrapper to make BatchPlan hashable by identity
 class _BatchPlanWrapper:
-    """Wrapper to make BatchPlan hashable by identity (id-based) for use with eqx.filter_jit."""
+    """Wrapper to make BatchPlan hashable by identity (id-based).
+
+    Lets a plan ride as a static jit argument; prolix passes it through its own jit wrapper.
+    """
 
     __slots__ = ("_id", "_plan")
 

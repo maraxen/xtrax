@@ -6,9 +6,12 @@ import jax.numpy as jnp
 import optax
 import pytest
 
-from xtrax.training.step import SafetyTrainStep, create_train_step
+from xtrax.training.step import create_train_step
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import ResumableState
+
+with pytest.deprecated_call(match="xtrax #6107"):  # probe release: the wrapper warns on access
+    from xtrax.training.step import SafetyTrainStep
 
 
 class SimpleLinearModel(eqx.Module):
@@ -383,7 +386,8 @@ def test_create_train_step_forwards_has_aux_and_takes_key():
     assert trainer.has_aux is True
     assert trainer.takes_key is True
 
-    wrapped = create_train_step(keyed_aux, opt, safety=True, has_aux=True, takes_key=True)
+    with pytest.deprecated_call(match="xtrax #6107"):
+        wrapped = create_train_step(keyed_aux, opt, safety=True, has_aux=True, takes_key=True)
     assert isinstance(wrapped, SafetyTrainStep)
     assert wrapped.trainer.has_aux is True
     assert wrapped.trainer.takes_key is True

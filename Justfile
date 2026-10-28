@@ -226,7 +226,7 @@ audit-public-api:
 # `uv sync --group=docs --extra=eda`. `uv sync` REPLACES the environment rather than adding
 # to it, so it silently dropped beartype -- the one package that lives only in
 # [project.optional-dependencies].dev and that nothing else requires. (jaxtyping SURVIVES:
-# equinox, a core dependency, requires it.) Every later gate in audit-deterministic then
+# it is a core dependency.) Every later gate in audit-deterministic then
 # died on an unrelated ModuleNotFoundError while this recipe itself still exited 0.
 #
 # #131 moved the groups and extras onto `uv run`, which resolves additively and leaves the
@@ -368,10 +368,16 @@ audit-port-provenance:
 audit-port-bridge:
     uv run python scripts/lint_port_bridge_map.py
 
-# Install all skills from agent_assets/skills/ to ~/.claude/skills/
-install-skills *args:
-    uv run python scripts/install_skills.py {{args}}
+# Install the xtrax agent plugin (skills) into Claude Code. --prune-shadowed moves
+# loose ~/.claude/skills copies that would shadow the plugin into a backup.
+install-plugin *args:
+    uv run --extra plugin xtrax plugin install --prune-shadowed {{args}}
 
-# Preview what install-skills would do without writing
-dry-run-skills:
-    uv run python scripts/install_skills.py --dry-run
+# Preview what install-plugin would do without writing
+dry-run-plugin:
+    uv run --extra plugin xtrax plugin install --dry-run
+
+# Regenerate the packaged plugin snapshot. Release PR only: feature PRs do not
+# commit src/xtrax/agent_plugin.json (see CONTRIBUTING.md, release checklist).
+plugin-snapshot:
+    uv run --extra plugin cisternal assets snapshot --out src/xtrax/agent_plugin.json

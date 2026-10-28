@@ -12,11 +12,10 @@ xtrax/
   training/      — Training loop: Trainer, ResumableState, losses, optimizers, callbacks
   engine/        — High-level orchestrator: Engine, async iteration, checkpoint coordination
   data/          — Data pipelines: DataModule, Grain integration, distributed sharding
-  distributed/   — Multi-process coordination: init_dist, mesh helpers, sharding policies
+  distributed/   — Multi-process coordination: LogicalMesh and sharding helpers
   checkpoint/    — Checkpoint management: Orbax wrappers, save/load
   safety/        — Numerics and debugging: safe_norm, NaN/Inf detection, preemption handling
-  sparse/        — Sparse matrix management: SparsePolicy, SparseMaskManager
-  io/            — I/O utilities: async callbacks, bounded concurrency
+  io/            — Deprecated re-exports of xtrax.engine.io (async callbacks, bounded concurrency)
 ```
 
 ## Design Philosophy
@@ -44,10 +43,9 @@ substrate/adapter and JAX-namespace-stability policies, are scoped.
 JAX's JIT compiler traces and compiles based on shape. xtrax is aggressive about static shapes:
 
 - `AxisSpec.default_batch_size` is static (passed to `@jax.vmap` or `@jax.lax.map`).
-- `SparsePolicy.nse_budget` is static (determines BCOO format).
 - `DataModule.batch_size` is static.
 
-This prevents "shape explosion" — silent recompilations every time batch size changes or sparsity patterns shift.
+This prevents "shape explosion" — silent recompilations every time batch size changes.
 
 ### 3. Immutable State, Pure Functions
 
@@ -63,7 +61,7 @@ This enables safe checkpointing, reproducibility, and distributed training witho
 
 xtrax doesn't reimplement solved problems:
 
-- **Equinox** handles JAX modules and AD filters.
+- **`xtrax.Struct`** (a frozen-dataclass pytree base) and `xtrax.model_jit` handle xtrax's own pytree classes and jit-over-mixed-pytrees; Equinox models are accepted as plain pytrees.
 - **Optax** handles optimizers, schedules, and gradient transforms.
 - **Orbax** handles checkpointing and async saves.
 - **Grain** handles data loading and sharding.
@@ -139,8 +137,7 @@ The heart of xtrax. Provides:
 
 - `ResumableState`: Immutable bundle of model, optimizer state, step counter, and metadata.
 - `Trainer`: Wraps loss + optimizer. The `.step()` method is JIT-compiled.
-- `SafetyTrainStep`: Wraps `Trainer` with NaN/Inf detection (optional).
-- Loss combinators: `WeightedLoss`, `MultiTaskLoss`.
+- Loss combinator: `ComposedLoss` (`WeightedLoss` and `MultiTaskLoss` are deprecated, #6107).
 - Optimizer helpers: `adamw_with_schedule`, `no_bias_wd_mask`, `partition_labels`.
 - Gradient accumulation: `accumulate_grads` for microbatch training.
 
@@ -183,14 +180,11 @@ All iterators yield PyTrees of batches, compatible with `Trainer.step()`.
 
 **Module**: `xtrax.distributed`
 
-Multi-process training via JAX's SPMD APIs:
+Multi-process training via JAX's SPMD APIs (`jax.distributed.initialize()`, `jax.make_mesh`; `init_dist`, `get_device_mesh`, and `ShardingPolicy` are deprecated, #6107):
 
-- `init_dist()`: Initialize distributed communication (idempotent).
 - `LogicalMesh`: Describes device topology.
-- `ShardingPolicy`: Pattern-based rules for partitioning parameters across the mesh.
-- `get_device_mesh()`: Helpers for constructing mesh shapes.
 
-Delegation: xtrax just wraps JAX's distributed primitives. The actual sharding is done by Equinox and JAX's `device_put_sharded()`.
+Delegation: xtrax just wraps JAX's distributed primitives. The actual sharding is done by JAX.
 
 ## Layer 8: Checkpointing
 
@@ -207,30 +201,17 @@ Orbax handles all the heavy lifting (async I/O, cloud storage, versioning). xtra
 
 **Module**: `xtrax.safety`
 
-Optional guards and numeric utilities:
+Optional guards and numeric utilities (NaN checks come from `jax.experimental.checkify`; `SafetyManager`, `with_safety`, and `SafetyTrainStep` are deprecated, #6107):
 
 - `safe_norm(x)`: Compute norm with epsilon to prevent NaN at zero.
 - `safe_reciprocal(x)`: Compute `1/x` safely.
-- `SafetyManager` + `with_safety()`: Wrap JIT functions with NaN/Inf detection via `jax.experimental.checkify`.
 - `PreemptionHandler`: Catch SIGUSR1/SIGTERM and trigger checkpointing.
 
 All optional, zero overhead when disabled.
 
-## Layer 10: Sparse Matrix Management
+## Layer 10: I/O and Callbacks
 
-**Module**: `xtrax.sparse`
-
-Structured sparsification for inference and constrained training:
-
-- `SparseConfig`: Specifies `nse_budget`, update schedule, and fallback mode.
-- `SparsePolicy`: Computes and applies sparse masks.
-- `SparseMaskManager`: Python-side coordinator that recomputes masks on schedule.
-
-Masks are step-scheduled and step-cached to prevent XLA retrace. When true nonzeros exceed the budget, either fall back to dense or error — your choice.
-
-## Layer 11: I/O and Callbacks
-
-**Module**: `xtrax.io`
+**Module**: `xtrax.engine.io` (`xtrax.io` re-exports it and is deprecated, #6107)
 
 Utilities for non-blocking I/O:
 
@@ -264,7 +245,7 @@ All computation inside `filter_jit` is pure JAX. All I/O, callbacks, and state c
 - Callbacks run sequentially in their own async tasks, bounded by a semaphore.
 - Checkpointing is async in Orbax but synchronously awaited in xtrax (trade-off: simpler semantics).
 
-For true parallelism, use multiple processes (via `init_dist()`) or distribute batches to multiple threads (outside xtrax's scope).
+For true parallelism, use multiple processes (via `jax.distributed.initialize()`) or distribute batches to multiple threads (outside xtrax's scope).
 
 ## Type Safety
 
@@ -281,6 +262,5 @@ All public APIs are fully typed. Use `ty` or `mypy` to catch bugs before runtime
 - **Trainer.step()**: One JIT-compiled loop per model per batch-shape. Negligible Python overhead.
 - **Engine.fit()**: Callback overhead is bounded by the semaphore; typical overhead <1%.
 - **Distributed data**: Grain handles sharding efficiently; xtrax adds <1% overhead.
-- **Sparse masks**: Zero overhead when sparsity is constant (cached masks). Retrace only on schedule.
 
 xtrax is a thin, composable layer — performance is dominated by JAX and your model, not by xtrax.

@@ -789,10 +789,21 @@ class BatchPlanner:
             )
         return AxisDecision(
             spec=spec,
-            batch_size=spec.default_batch_size,
+            batch_size=vmap_decision_batch_size(spec),
             reasoning="joint-budget: Vmap (pending final estimate)",
             strategy=Vmap(),
         )
+
+
+def vmap_decision_batch_size(spec: AxisSpec) -> int:
+    """``batch_size`` recorded on a ``Vmap`` decision for ``spec``.
+
+    A ``Vmap`` runs the whole axis at once, so the field never changes how it
+    executes; ``_live_extent`` reads the cardinality instead. It is
+    ``spec.default_batch_size``, which is what the joint-budget planner stores,
+    so an estimator that reads ``batch_size`` sees one value per strategy.
+    """
+    return spec.default_batch_size
 
 
 def _live_extent(decision: AxisDecision) -> int:

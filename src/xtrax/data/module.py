@@ -1,20 +1,13 @@
+import itertools
 from collections.abc import Callable, Iterator
 from typing import Any
 
-import equinox as eqx
+import jax
 
-# Module-level flag for distributed init state (real integration with
-# init_dist deferred to Phase 5/6)
-_dist_initialized: bool = False
+from xtrax._tree import Struct, field
 
 
-def _mark_dist_initialized() -> None:
-    """Call after init_dist() to allow DataModule iterators to proceed."""
-    global _dist_initialized
-    _dist_initialized = True
-
-
-class DataModule(eqx.Module):
+class DataModule(Struct):
     """Batch source for ``Engine``.
 
     With ``use_grain_pipeline=False`` (the default) ``train_iter`` and
@@ -22,30 +15,52 @@ class DataModule(eqx.Module):
     they yield batches from :func:`xtrax.data.pipeline.build_input_pipeline`:
     train shuffles, eval does not, and ``distributed=True`` shards the source
     across JAX processes. ``pad_fn``, when set, is the caller-supplied
-    fixed-length map applied before batching.
+    fixed-length map applied before batching; ``collate_fn``, when set, is
+    passed to Grain as the batch function. ``distributed=True`` raises
+    ``RuntimeError`` from the iterators unless ``jax.process_count() > 1``.
+
+    On the Grain path each ``train_iter()`` call yields exactly one epoch.
+    Call ``k`` (counting from 0 on this instance) shuffles with
+    ``seed + k``, so successive epochs see different orders and a fresh
+    instance replays the same sequence. ``Engine.fit`` calls ``train_iter``
+    once per epoch, so its ``num_epochs`` sets the number of passes;
+    ``DataModule.num_epochs`` is not consulted by the iterators. ``eval_iter``
+    is always one unshuffled pass that keeps the final partial batch.
     """
 
     dataset: Any
-    batch_size: int = eqx.field(static=True)
-    num_epochs: int | None = eqx.field(static=True)  # None = cycle indefinitely
-    seed: int = eqx.field(static=True)
-    distributed: bool = eqx.field(static=True)
-    collate_fn: Callable | None = eqx.field(static=True, default=None)
-    use_grain_pipeline: bool = eqx.field(static=True, default=False)
-    pad_fn: Callable | None = eqx.field(static=True, default=None)
+    batch_size: int = field(static=True)
+    num_epochs: int | None = field(static=True)  # None = cycle indefinitely
+    seed: int = field(static=True)
+    distributed: bool = field(static=True)
+    collate_fn: Callable | None = field(static=True, default=None)
+    use_grain_pipeline: bool = field(static=True, default=False)
+    pad_fn: Callable | None = field(static=True, default=None)
+    # Epoch counter: each train_iter() call takes the next value. Immutable
+    # modules cannot carry a plain int, so the counter object lives here.
+    _epochs: Iterator[int] = field(static=True, init=False, default_factory=itertools.count)
 
     def train_iter(self) -> Iterator[Any]:
-        """Yield train batches. Shuffles when the Grain pipeline is enabled."""
-        yield from self._iter(shuffle=True, entry="train_iter")
+        """Yield one train epoch. Shuffles when the Grain pipeline is enabled."""
+        epoch = next(self._epochs)
+        yield from self._iter(
+            shuffle=True, entry="train_iter", seed=self.seed + epoch, drop_remainder=True
+        )
 
     def eval_iter(self) -> Iterator[Any]:
-        """Yield eval batches. Does not shuffle when the Grain pipeline is enabled."""
-        yield from self._iter(shuffle=False, entry="eval_iter")
+        """Yield one eval pass. Does not shuffle; keeps the final partial batch."""
+        yield from self._iter(
+            shuffle=False, entry="eval_iter", seed=self.seed, drop_remainder=False
+        )
 
-    def _iter(self, *, shuffle: bool, entry: str) -> Iterator[Any]:
-        if self.distributed and not _dist_initialized:
+    def _iter(self, *, shuffle: bool, entry: str, seed: int, drop_remainder: bool) -> Iterator[Any]:
+        # The guard protects against sharding by a process index that was never set up:
+        # every host would see jax.process_count() == 1 and read the whole source, silently
+        # duplicating the data. Ask JAX itself, not an xtrax flag (#6107).
+        if self.distributed and jax.process_count() <= 1:
             raise RuntimeError(
-                f"DataModule: distributed=True requires init_dist() before {entry}()."
+                "DataModule: distributed=True requires a multi-process JAX runtime "
+                f"(jax.process_count() > 1; call jax.distributed.initialize()) before {entry}()."
             )
         if not self.use_grain_pipeline:
             yield from self.dataset
@@ -55,9 +70,11 @@ class DataModule(eqx.Module):
         yield from build_input_pipeline(
             self.dataset,
             batch_size=self.batch_size,
-            seed=self.seed,
-            num_epochs=self.num_epochs,
+            seed=seed,
+            num_epochs=1,
             shuffle=shuffle,
             pad_fn=self.pad_fn,
+            batch_fn=self.collate_fn,
+            drop_remainder=drop_remainder,
             shard_by_process=self.distributed,
         )

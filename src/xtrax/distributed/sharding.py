@@ -4,13 +4,15 @@ import math
 import re
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.sharding
 import jax.tree_util
 
+from xtrax._renamed import Deprecated, deprecated_getattr
+from xtrax._tree import Struct, field
 
-class ShardingPolicy(eqx.Module):
+
+class ShardingPolicy(Struct):
     """Policy for assigning PartitionSpec to pytree leaves.
 
     Uses regex pattern matching where first match wins. Matching is done via re.search,
@@ -20,7 +22,7 @@ class ShardingPolicy(eqx.Module):
         rules: Ordered tuple of (regex_pattern, PartitionSpec) pairs.
     """
 
-    rules: tuple[tuple[str, jax.sharding.PartitionSpec], ...] = eqx.field(static=True)
+    rules: tuple[tuple[str, jax.sharding.PartitionSpec], ...] = field(static=True)
 
     def get_partition_spec(self, path: str) -> jax.sharding.PartitionSpec:
         """Get the PartitionSpec for a given path by matching against rules in order.
@@ -172,3 +174,25 @@ def get_hardware_mesh_profile() -> dict[str, Any]:
             "recommended_shape": (1,),
             "recommended_axis_names": ("batch",),
         }
+
+
+# Deprecated in the #6107 probe release: all three names warn on access and are otherwise
+# unchanged.
+_DEPRECATED = {
+    "ShardingPolicy": Deprecated(
+        ShardingPolicy,
+        "jax.tree_util.tree_map_with_path with your own path-to-PartitionSpec rules",
+        "xtrax debt #3043 tracks a planner-based rebuild.",
+    ),
+    "get_device_mesh": Deprecated(
+        get_device_mesh,
+        "jax.make_mesh(shape, axis_names)",
+    ),
+    "get_hardware_mesh_profile": Deprecated(
+        get_hardware_mesh_profile,
+        "jax.make_mesh((jax.device_count(),), ('data',)); the profile only ever suggested "
+        "one data-parallel axis over all devices",
+    ),
+}
+del ShardingPolicy, get_device_mesh, get_hardware_mesh_profile
+__getattr__ = deprecated_getattr(__name__, _DEPRECATED)

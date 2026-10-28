@@ -11,8 +11,8 @@ wt-20260807-132628) on 2026-08-24; see
 .praxia/docs/specs/260824_upstream-profiling-probe-tooling-from-prolix.md.
 Deltas from the prolix original:
   - env var PROLIX_GIT_SHA -> XTRAX_GIT_SHA;
-  - _REPO_ROOT is parents[3] (src/xtrax/profiling layout vs prolix's
-    scripts/profiling two-deep layout);
+  - git_sha is resolved from the caller's repository (cwd git top-level or an
+    explicit repo_root), not from xtrax's own checkout (spec 261016 X2);
   - frozen slots dataclass per xtrax house style (prolix used plain frozen);
   - no future-annotations import (banned for new xtrax modules,
     tests/audit/test_no_future_annotations.py N0.2) -- forward references are
@@ -44,11 +44,45 @@ from typing import Any
 
 from xtrax.profiling.claims import CONTRACT_VERSION, ClaimValidityError
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+def _resolve_caller_root(repo_root: Path | None) -> Path:
+    """The repository a measurement belongs to: explicit, else the cwd's git top-level.
+
+    Falls back to the cwd itself when it is not inside a git repository, so a
+    `.git_sha` file placed there can still be honored.
+    """
+    if repo_root is not None:
+        return repo_root
+    cwd = Path.cwd()
+    try:
+        top = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return cwd
+    return Path(top) if top else cwd
 
 
-def _capture_git_sha() -> str:
+def _capture_git_sha(repo_root: Path | None = None) -> str:
     """HEAD sha, suffixed "-dirty"/"-unverified" per working-tree state.
+
+    Resolution order:
+      1. XTRAX_GIT_SHA env (non-empty, stripped) -- explicit override.
+      2. The root: `repo_root` if given, else the git top-level of the current
+         working directory, else the cwd itself when that is not a repo.
+      3. `<root>/.git_sha` -- first whitespace token; an empty file falls
+         through to git.
+      4. `git rev-parse HEAD` and `git status --porcelain`, both run in `root`.
+
+    WHY the root is the caller's, not xtrax's: a ProbeRecord is a measurement
+    of the *consumer's* code, so it must carry the consumer's commit. The
+    earlier behaviour anchored at xtrax's own checkout (parents[3] of this
+    file), which stamped every downstream project's records with xtrax's sha.
+    xtrax's own drivers run from the xtrax checkout, so for them the cwd root
+    is the same repository and their records are unchanged.
 
     Returns "unknown" on any failure to resolve HEAD (e.g. no .git present,
     as on some cluster checkouts). If HEAD resolves but the dirty check
@@ -59,22 +93,24 @@ def _capture_git_sha() -> str:
     "unknown" and both suffixes outright for TERM_RANKING/END_TO_END
     sources.
 
-    Cluster scratch dirs have no .git. Honor XTRAX_GIT_SHA, then a repo-root
-    `.git_sha` file (written at submit/push), then `git rev-parse`. An empty
-    `.git_sha` file reads as "unknown", not as an empty provenance string.
+    Cluster scratch dirs have no .git, hence the env and `.git_sha` layers.
+    An empty `.git_sha` file reads as "unknown", not as an empty provenance
+    string.
     """
     env = (os.environ.get("XTRAX_GIT_SHA") or "").strip()
     if env:
         return env
-    sha_file = _REPO_ROOT / ".git_sha"
+    root = _resolve_caller_root(repo_root)
+    sha_file = root / ".git_sha"
     if sha_file.is_file():
-        stamped = sha_file.read_text().strip().split()[0] if sha_file.read_text().strip() else ""
+        text = sha_file.read_text().strip()
+        stamped = text.split()[0] if text else ""
         if stamped:
             return stamped
     try:
         sha = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],
-            cwd=_REPO_ROOT,
+            cwd=root,
             text=True,
             stderr=subprocess.DEVNULL,
         ).strip()
@@ -84,7 +120,7 @@ def _capture_git_sha() -> str:
         dirty = bool(
             subprocess.check_output(
                 ["git", "status", "--porcelain"],
-                cwd=_REPO_ROOT,
+                cwd=root,
                 text=True,
                 stderr=subprocess.DEVNULL,
             ).strip()

@@ -35,6 +35,7 @@ from xtrax.cli.graph_plan_verb import GraphPlanArgs, run_graph_plan
 from xtrax.cli.graph_verb import GraphValidateArgs, run_graph_validate
 from xtrax.cli.ledger_verb import LedgerArgs, run_ledger
 from xtrax.cli.plan import PlanArgs, run_plan
+from xtrax.cli.profile_verb import ProfileArgs, run_profile
 from xtrax.cli.resume_verb import ResumeArgs, run_resume
 from xtrax.cli.run_verb import RunArgs, run_run
 from xtrax.cli.sweep_verb import SweepArgs, run_sweep
@@ -50,6 +51,7 @@ REGISTRY: dict[str, tuple[type[Any], Callable[..., None]]] = {
     "graph-plan": (GraphPlanArgs, run_graph_plan),
     "graph-author": (GraphAuthorArgs, run_graph_author),
     "ledger": (LedgerArgs, run_ledger),
+    "profile": (ProfileArgs, run_profile),
 }
 
 __all__ = ["REGISTRY"]
