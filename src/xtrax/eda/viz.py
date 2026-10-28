@@ -51,6 +51,11 @@ def render(
     logger: PlanLogger | None = None,
     step: int | None = None,
     panels: set[str] | None = None,
+    backend: Literal["auto", "vega", "matplotlib"] = "auto",
+    max_axes: int = 100,
+    overflow: Literal["aggregate", "truncate"] = "aggregate",
+    offline: bool = False,
+    bundle_js: bool = False,
 ) -> bytes | str | None:
     """Render a BatchPlan to PNG, SVG, or HTML format.
 
@@ -114,10 +119,28 @@ def render(
                 f"missing: {missing!r}"
             )
 
-    active_panels = panels if panels is not None else set(_VALID_PANELS)
-    panel_names = _draw_figure(stats, active_panels)
-    result = _encode_figure(fmt, panel_names)
-    plt.close("all")
+    if backend == "vega":
+        from xtrax.eda.backends.vega import VegaBackend
+        from xtrax.eda.spec import generate_vega_spec
+
+        vl_spec = generate_vega_spec(
+            stats,
+            panels=panels,
+            max_axes=max_axes,
+            overflow=overflow,
+        )
+        backend_inst = VegaBackend()
+        result = backend_inst.render_spec(
+            vl_spec,
+            fmt=fmt,
+            stats=stats,
+            options={"offline": offline, "bundle_js": bundle_js},
+        )
+    else:
+        active_panels = panels if panels is not None else set(_VALID_PANELS)
+        panel_names = _draw_figure(stats, active_panels)
+        result = _encode_figure(fmt, panel_names)
+        plt.close("all")
 
     if path is not None:
         _write_output(Path(path), result, fmt, stats if metadata else None)
@@ -165,7 +188,7 @@ def _draw_dedup(ax, stats: PlanStatsDict) -> None:  # noqa: ANN001
     axis_names = [d["axis_name"] for d in dedup_data]
     ratios = [d["dedup_ratio"] for d in dedup_data]
     sns.barplot(x=axis_names, y=ratios, ax=ax, hue=axis_names, legend=False, palette="muted")
-    ax.set_ylabel("Dedup Ratio (unique / total)")
+    ax.set_ylabel("Dedup Reduction Ratio (1 - unique/total)")
     ax.set_xlabel("Axis Name")
     ax.set_title("Deduplication Efficiency")
     ax.set_ylim([0, 1])
