@@ -69,25 +69,38 @@ def _build_strategy_panel(stats: PlanStatsDict) -> dict[str, Any]:
 
 def _build_cardinality_panel(
     axes_data: list[dict[str, Any]],
-    overflow_count: int,
+    dropped_axes: list[Any],
     overflow_mode: str = "aggregate",
 ) -> dict[str, Any]:
-    """Bar chart of axis cardinalities."""
+    """Bar chart of axis cardinalities.
+
+    With overflow_mode="aggregate", the dropped axes become one extra bar whose
+    cardinality is their sum. With "truncate", they are only counted in the title.
+    """
     title = "Cardinality by Axis"
-    if overflow_count > 0:
+    values = list(axes_data)
+    if dropped_axes:
+        n_dropped = len(dropped_axes)
         if overflow_mode == "aggregate":
+            values.append(
+                {
+                    "name": f"+{n_dropped} more",
+                    "cardinality": sum(a.get("cardinality", 0) for a in dropped_axes),
+                    "strategy": "aggregated",
+                }
+            )
             title += (
-                f" (Top {len(axes_data)}, +{overflow_count} remaining axes aggregated"
+                f" (Top {len(axes_data)}; +{n_dropped} remaining axes summed into one bar"
                 " (see axes.csv for full streaming tabular record))"
             )
         else:
-            title += f" (Top {len(axes_data)}, +{overflow_count} remaining truncated)"
+            title += f" (Top {len(axes_data)}, +{n_dropped} remaining truncated)"
 
     return {
         "title": title,
         "width": 500,
         "height": 200,
-        "data": {"values": axes_data},
+        "data": {"values": values},
         "mark": {"type": "bar", "tooltip": True},
         "encoding": {
             "x": {"field": "name", "type": "nominal", "title": "Axis Name", "sort": None},
@@ -256,10 +269,11 @@ def generate_vega_spec(
         raise ValueError(f"Invalid panel names: {invalid_panels}. Valid panels: {set(all_valid)}")
 
     raw_axes = stats.get("axes", [])
-    overflow_count = max(0, len(raw_axes) - max_axes)
-    if overflow_count > 0:
+    dropped_axes: list[Any] = []
+    if len(raw_axes) > max_axes:
         sorted_axes = sorted(raw_axes, key=lambda a: a.get("cardinality", 0), reverse=True)
         display_axes = sorted_axes[:max_axes]
+        dropped_axes = sorted_axes[max_axes:]
     else:
         display_axes = raw_axes
 
@@ -276,7 +290,7 @@ def generate_vega_spec(
     if "strategy" in active_panels:
         vconcat_specs.append(_build_strategy_panel(stats))
     if "cardinality" in active_panels:
-        vconcat_specs.append(_build_cardinality_panel(sanitized_axes, overflow_count, overflow))
+        vconcat_specs.append(_build_cardinality_panel(sanitized_axes, dropped_axes, overflow))
     if "dedup" in active_panels:
         vconcat_specs.append(_build_dedup_panel(stats))
     if "bucket" in active_panels:

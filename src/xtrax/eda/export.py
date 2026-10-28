@@ -6,14 +6,12 @@ generation with SHA-256 manifests, and backward-compatible DataFrame conversion.
 """
 
 import csv
-import datetime
 import hashlib
 import io
 import json
 import math
 import os
 import pathlib
-import sys
 import unicodedata
 from typing import Any
 
@@ -21,11 +19,6 @@ import numpy as np
 
 from xtrax.eda.spec import generate_vega_spec
 from xtrax.eda.types import PlanStatsDict
-
-if sys.modules.get("pandas") is None and "pandas" in sys.modules:
-    raise ImportError(
-        "xtrax.eda.export requires visualization extras. Install with: pip install xtrax[eda]"
-    )
 
 PathLike = str | os.PathLike[str]
 
@@ -41,6 +34,9 @@ def _normalize_floats(obj: Any) -> Any:
         if rounded == 0.0:
             return 0.0
         return rounded
+    if isinstance(obj, (bool, np.bool_)):
+        # Checked before int: bool is an int subclass and would serialize as 1/0.
+        return bool(obj)
     if isinstance(obj, (int, np.integer)):
         return int(obj)
     if isinstance(obj, dict):
@@ -153,7 +149,9 @@ def export_axes_csv(stats: PlanStatsDict, path: PathLike | None = None) -> str:
             "cardinality": axis["cardinality"],
             "batch_size": axis["batch_size"],
             "reasoning": axis["reasoning"],
-            "memory_estimate_bytes": axis.get("memory_estimate_bytes") or "",
+            "memory_estimate_bytes": (
+                "" if axis.get("memory_estimate_bytes") is None else axis["memory_estimate_bytes"]
+            ),
             "varying_inputs": varying,
             "dedup_ratio": dedup_ratio,
             "unique_count": unique_count,
@@ -227,7 +225,8 @@ def export_plan_artifacts(
     - <prefix>_axes.csv: Tidy tabular long-format data
     - <prefix>_axes.parquet: Parquet format with embedded schema metadata (if pyarrow available)
     - <prefix>.vl.json: Declarative Vega-Lite v5 specification
-    - <prefix>_manifest.json: Cryptographic manifest with SHA-256 digests
+    - <prefix>_manifest.json: Cryptographic manifest with SHA-256 digests. It has no
+      timestamp, and any artifact that was skipped is listed under "skipped" with its reason.
 
     Args:
         stats: Plan statistics dictionary.
@@ -242,6 +241,7 @@ def export_plan_artifacts(
     os.makedirs(out_dir, exist_ok=True)
 
     artifacts: dict[str, dict[str, Any]] = {}
+    skipped: dict[str, str] = {}
 
     def _record_file(filename: str, content: bytes) -> None:
         filepath = os.path.join(out_dir, filename)
@@ -260,26 +260,27 @@ def export_plan_artifacts(
     csv_bytes = export_axes_csv(stats).encode("utf-8")
     _record_file(f"{prefix}_axes.csv", csv_bytes)
 
-    # 3. Parquet (optional, only if pyarrow is installed)
+    # 3. Parquet (optional). A skip is recorded in the manifest, so bundles built
+    # on machines with different extras show why their file sets differ.
     try:
         parquet_bytes = export_axes_parquet(stats)
         _record_file(f"{prefix}_axes.parquet", parquet_bytes)
-    except ImportError:
-        pass
+    except ImportError as exc:
+        skipped[f"{prefix}_axes.parquet"] = str(exc)
 
     # 4. Vega-Lite Spec
     vl_spec = generate_vega_spec(stats)
     vl_bytes = json.dumps(vl_spec, indent=2).encode("utf-8")
     _record_file(f"{prefix}.vl.json", vl_bytes)
 
-    # 5. Manifest
+    # 5. Manifest. No wall-clock timestamp: identical stats must yield identical bytes.
     manifest = {
         "schema_version": "2.0",
-        "created_at_utc": datetime.datetime.now(datetime.UTC).isoformat(),
         "generator": "xtrax.eda.export",
         "context": context,
         "total_axes": stats.get("total_axes", 0),
         "artifacts": artifacts,
+        "skipped": skipped,
     }
     manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
     manifest_path = os.path.join(out_dir, f"{prefix}_manifest.json")
