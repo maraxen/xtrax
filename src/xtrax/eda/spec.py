@@ -4,8 +4,6 @@ Compiles PlanStatsDict into valid, portable Vega-Lite v5 JSON specifications
 without requiring any graphics libraries (zero-dependency on matplotlib/seaborn).
 """
 
-from __future__ import annotations
-
 import math
 from typing import Any, Literal
 
@@ -179,9 +177,7 @@ def _build_bucket_panel(stats: PlanStatsDict) -> dict[str, Any]:
     }
 
 
-def _build_memory_panel(
-    axes_data: list[dict[str, Any]], stats: PlanStatsDict
-) -> dict[str, Any]:
+def _build_memory_panel(axes_data: list[dict[str, Any]], stats: PlanStatsDict) -> dict[str, Any]:
     """Memory consumption estimates and warnings."""
     warnings = stats.get("memory_warnings", [])
     mem_values = []
@@ -257,16 +253,12 @@ def generate_vega_spec(
     active_panels = _STANDARD_PANELS if panels is None else set(panels)
     invalid_panels = active_panels - all_valid
     if invalid_panels:
-        raise ValueError(
-            f"Invalid panel names: {invalid_panels}. Valid panels: {set(all_valid)}"
-        )
+        raise ValueError(f"Invalid panel names: {invalid_panels}. Valid panels: {set(all_valid)}")
 
     raw_axes = stats.get("axes", [])
     overflow_count = max(0, len(raw_axes) - max_axes)
     if overflow_count > 0:
-        sorted_axes = sorted(
-            raw_axes, key=lambda a: a.get("cardinality", 0), reverse=True
-        )
+        sorted_axes = sorted(raw_axes, key=lambda a: a.get("cardinality", 0), reverse=True)
         display_axes = sorted_axes[:max_axes]
     else:
         display_axes = raw_axes
@@ -284,9 +276,7 @@ def generate_vega_spec(
     if "strategy" in active_panels:
         vconcat_specs.append(_build_strategy_panel(stats))
     if "cardinality" in active_panels:
-        vconcat_specs.append(
-            _build_cardinality_panel(sanitized_axes, overflow_count, overflow)
-        )
+        vconcat_specs.append(_build_cardinality_panel(sanitized_axes, overflow_count, overflow))
     if "dedup" in active_panels:
         vconcat_specs.append(_build_dedup_panel(stats))
     if "bucket" in active_panels:

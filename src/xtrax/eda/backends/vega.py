@@ -4,8 +4,6 @@ Provides headless SVG/PNG rasterization via vl-convert-python and
 self-contained, airgap-safe progressive HTML dashboards.
 """
 
-from __future__ import annotations
-
 import json
 from typing import Any, Literal
 

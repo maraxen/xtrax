@@ -4,8 +4,6 @@ Provides backward-compatible raster, vector, and SVG-in-HTML rendering.
 Requires the optional xtrax[eda] or xtrax[eda-matplotlib] extra.
 """
 
-from __future__ import annotations
-
 from typing import Any, Literal
 
 from xtrax.eda.backends.base import BaseBackend
@@ -38,7 +36,7 @@ class MatplotlibBackend(BaseBackend):
 
         opts = options or {}
         panels = opts.get("panels")
-        active_panels = _VALID_PANELS if panels is None else set(panels)
+        active_panels: set[str] = set(_VALID_PANELS) if panels is None else {str(p) for p in panels}
 
         plt.close("all")
         panel_names = _draw_figure(stats, active_panels)

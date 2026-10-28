@@ -226,9 +226,7 @@ class PanelPlugin(Protocol):
 
     name: str
 
-    def generate_spec(
-        self, stats: PlanStatsDict, config: dict[str, Any]
-    ) -> dict[str, Any]:
+    def generate_spec(self, stats: PlanStatsDict, config: dict[str, Any]) -> dict[str, Any]:
         """Generate a Vega-Lite v5 specification dictionary for this panel."""
         ...
 

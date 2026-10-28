@@ -1,7 +1,5 @@
 """Base protocol and abstract interface for xtrax EDA visualization backends."""
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from typing import Any, Literal
 

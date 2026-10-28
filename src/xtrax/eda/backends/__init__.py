@@ -1,7 +1,5 @@
 """Pluggable visualization backends for xtrax EDA."""
 
-from __future__ import annotations
-
 from xtrax.eda.backends.base import BaseBackend
 from xtrax.eda.backends.matplotlib import MatplotlibBackend
 from xtrax.eda.backends.vega import VegaBackend

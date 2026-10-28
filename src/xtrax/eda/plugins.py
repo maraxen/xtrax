@@ -4,8 +4,6 @@ Manages panel and backend entry points with deepcopy isolation, in-memory cachin
 snippet validation, and testable quarantine tracking.
 """
 
-from __future__ import annotations
-
 import copy
 import importlib.metadata
 import logging

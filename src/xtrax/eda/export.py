@@ -5,8 +5,6 @@ tidy long-format CSV and Parquet tabular export, neutral artifact bundle
 generation with SHA-256 manifests, and backward-compatible DataFrame conversion.
 """
 
-from __future__ import annotations
-
 import csv
 import datetime
 import hashlib
@@ -26,8 +24,7 @@ from xtrax.eda.types import PlanStatsDict
 
 if sys.modules.get("pandas") is None and "pandas" in sys.modules:
     raise ImportError(
-        "xtrax.eda.export requires visualization extras. "
-        "Install with: pip install xtrax[eda]"
+        "xtrax.eda.export requires visualization extras. Install with: pip install xtrax[eda]"
     )
 
 PathLike = str | os.PathLike[str]
@@ -185,8 +182,8 @@ def export_axes_parquet(stats: PlanStatsDict, path: PathLike | None = None) -> b
     Requires pyarrow. Raises ImportError if pyarrow is unavailable.
     """
     try:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
+        import pyarrow as pa  # ty: ignore[unresolved-import]
+        import pyarrow.parquet as pq  # ty: ignore[unresolved-import]
     except (ImportError, ModuleNotFoundError) as exc:
         raise ImportError(
             "export_axes_parquet requires pyarrow. Install with: pip install pyarrow"
@@ -300,8 +297,7 @@ def plan_to_dataframe(stats: PlanStatsDict) -> Any:
         import pandas as pd
     except ImportError as exc:
         raise ImportError(
-            "xtrax.eda.export requires visualization extras. "
-            "Install with: pip install xtrax[eda]"
+            "xtrax.eda.export requires visualization extras. Install with: pip install xtrax[eda]"
         ) from exc
 
     rows = []
