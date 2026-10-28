@@ -7,7 +7,7 @@ self-contained, airgap-safe progressive HTML dashboards.
 import json
 from typing import Any, Literal
 
-from xtrax.eda.backends.base import BaseBackend
+from xtrax.eda.backends.base import BaseBackend, reject_bundle_js
 from xtrax.eda.types import PlanStatsDict
 
 
@@ -20,25 +20,29 @@ class VegaBackend(BaseBackend):
         """Generate static vector SVG snapshot for progressive airgapped fallback."""
         try:
             import vl_convert as vlc
+        except ImportError:
+            # Zero-dependency SVG fallback for airgapped clusters without vl-convert.
+            # Only a missing vl-convert takes this path; a conversion error propagates.
+            return self._placeholder_svg(stats)
+        return vlc.vegalite_to_svg(spec)
 
-            return vlc.vegalite_to_svg(spec)
-        except Exception:
-            # Zero-dependency SVG fallback for airgapped clusters without vl-convert
-            total = stats.get("total_axes", 0)
-            text = (
-                "No active execution axes in compilation plan"
-                if total == 0
-                else f"xtrax Execution Plan Dashboard ({total} active axes)"
-            )
-            return (
-                '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="180" '
-                'viewBox="0 0 600 180">'
-                '<rect width="600" height="180" fill="#f7fafc" stroke="#e2e8f0" rx="8"/>'
-                '<text x="300" y="90" text-anchor="middle" dominant-baseline="middle" '
-                'fill="#718096" font-family="system-ui, sans-serif" font-size="15" '
-                'font-style="italic">'
-                f"{text}</text></svg>"
-            )
+    def _placeholder_svg(self, stats: PlanStatsDict) -> str:
+        """Static placeholder SVG used when vl-convert is not installed."""
+        total = stats.get("total_axes", 0)
+        text = (
+            "No active execution axes in compilation plan"
+            if total == 0
+            else f"xtrax Execution Plan Dashboard ({total} active axes)"
+        )
+        return (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="180" '
+            'viewBox="0 0 600 180">'
+            '<rect width="600" height="180" fill="#f7fafc" stroke="#e2e8f0" rx="8"/>'
+            '<text x="300" y="90" text-anchor="middle" dominant-baseline="middle" '
+            'fill="#718096" font-family="system-ui, sans-serif" font-size="15" '
+            'font-style="italic">'
+            f"{text}</text></svg>"
+        )
 
     def render_spec(
         self,
@@ -49,6 +53,7 @@ class VegaBackend(BaseBackend):
     ) -> bytes | str:
         """Render Vega-Lite specification to PNG, SVG, or progressive HTML."""
         opts = options or {}
+        reject_bundle_js(opts.get("bundle_js", False))
 
         if fmt == "png":
             try:
