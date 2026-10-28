@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from typing import Any, Literal
 
+from xtrax.eda.plugins import execute_panel_plugin, get_registered_panels
 from xtrax.eda.types import PlanStatsDict
 
 _STANDARD_PANELS: frozenset[str] = frozenset(
@@ -20,9 +21,13 @@ def _sanitize_float(val: float | None) -> float | None:
     """Sanitize float to RFC 8259 compliance (NaN and Inf to None)."""
     if val is None:
         return None
-    if math.isnan(val) or math.isinf(val):
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except (ValueError, TypeError, OverflowError):
         return None
-    return val
 
 
 def _build_zero_axis_spec() -> dict[str, Any]:
@@ -47,30 +52,38 @@ def _build_zero_axis_spec() -> dict[str, Any]:
 
 
 def _build_strategy_panel(stats: PlanStatsDict) -> dict[str, Any]:
-    """Bar chart of strategy frequencies."""
+    """Donut chart showing proportion of execution strategies."""
     counts = stats.get("strategy_counts", {})
     values = [{"strategy": k, "count": v} for k, v in counts.items()]
+
     return {
         "title": "Strategy Distribution",
         "width": 500,
         "height": 200,
         "data": {"values": values},
-        "mark": {"type": "bar", "tooltip": True},
+        "mark": {"type": "arc", "innerRadius": 50, "tooltip": True},
         "encoding": {
-            "x": {"field": "strategy", "type": "nominal", "title": "Strategy"},
-            "y": {"field": "count", "type": "quantitative", "title": "Axis Count"},
-            "color": {"field": "strategy", "type": "nominal", "legend": None},
+            "theta": {"field": "count", "type": "quantitative"},
+            "color": {"field": "strategy", "type": "nominal", "title": "Strategy"},
         },
     }
 
 
 def _build_cardinality_panel(
-    axes_data: list[dict[str, Any]], overflow_count: int
+    axes_data: list[dict[str, Any]],
+    overflow_count: int,
+    overflow_mode: str = "aggregate",
 ) -> dict[str, Any]:
     """Bar chart of axis cardinalities."""
     title = "Cardinality by Axis"
     if overflow_count > 0:
-        title += f" (Top {len(axes_data)}, +{overflow_count} remaining)"
+        if overflow_mode == "aggregate":
+            title += (
+                f" (Top {len(axes_data)}, +{overflow_count} remaining axes aggregated"
+                " (see axes.csv for full streaming tabular record))"
+            )
+        else:
+            title += f" (Top {len(axes_data)}, +{overflow_count} remaining truncated)"
 
     return {
         "title": title,
@@ -104,7 +117,7 @@ def _build_dedup_panel(stats: PlanStatsDict) -> dict[str, Any]:
         values.append(
             {
                 "axis_name": d["axis_name"],
-                "dedup_ratio": ratio if ratio is not None else 0.0,
+                "dedup_ratio": ratio,
                 "unique_count": d.get("unique_count", 0),
                 "total_count": d.get("total_count", 0),
                 "padding_waste": d.get("padding_waste", 0),
@@ -131,35 +144,36 @@ def _build_dedup_panel(stats: PlanStatsDict) -> dict[str, Any]:
 
 
 def _build_bucket_panel(stats: PlanStatsDict) -> dict[str, Any]:
-    """Bar chart of bucket configurations."""
+    """Overview of bucket distributions and boundaries."""
     bucket_list = stats.get("bucket_stats", [])
     if not bucket_list:
         return {
-            "title": "Bucket Configuration",
+            "title": "Bucket Strategy Overview",
             "width": 500,
             "height": 100,
             "data": {"values": [{}]},
             "mark": {"type": "text", "text": "No bucket data", "color": "#a0aec0"},
         }
 
-    values = [
-        {
-            "axis_name": b["axis_name"],
-            "bucket_count": b.get("bucket_count", 0),
-            "boundaries": str(b.get("bucket_boundaries", [])),
-        }
-        for b in bucket_list
-    ]
+    values = []
+    for b in bucket_list:
+        values.append(
+            {
+                "axis_name": b["axis_name"],
+                "bucket_count": b.get("bucket_count", 0),
+                "boundaries": ", ".join(str(x) for x in b.get("bucket_boundaries", [])),
+            }
+        )
 
     return {
-        "title": "Bucket Configuration",
+        "title": "Bucket Strategy Overview",
         "width": 500,
         "height": 200,
         "data": {"values": values},
         "mark": {"type": "bar", "tooltip": True},
         "encoding": {
             "x": {"field": "axis_name", "type": "nominal", "title": "Axis Name"},
-            "y": {"field": "bucket_count", "type": "quantitative", "title": "Number of Buckets"},
+            "y": {"field": "bucket_count", "type": "quantitative", "title": "Bucket Count"},
             "color": {"field": "axis_name", "type": "nominal", "legend": None},
         },
     }
@@ -177,7 +191,7 @@ def _build_memory_panel(
         mem_values.append(
             {
                 "name": a["name"],
-                "memory_bytes": sanitized if sanitized is not None else 0,
+                "memory_bytes": sanitized,
                 "status": "Estimated" if sanitized is not None else "Unbounded / Dynamic",
             }
         )
@@ -237,16 +251,25 @@ def generate_vega_spec(
     if total_axes == 0:
         return _build_zero_axis_spec()
 
+    registered = get_registered_panels()
+    all_valid = _STANDARD_PANELS | set(registered.keys())
+
     active_panels = _STANDARD_PANELS if panels is None else set(panels)
-    invalid_panels = active_panels - _STANDARD_PANELS
+    invalid_panels = active_panels - all_valid
     if invalid_panels:
         raise ValueError(
-            f"Invalid panel names: {invalid_panels}. Valid panels: {set(_STANDARD_PANELS)}"
+            f"Invalid panel names: {invalid_panels}. Valid panels: {set(all_valid)}"
         )
 
     raw_axes = stats.get("axes", [])
     overflow_count = max(0, len(raw_axes) - max_axes)
-    display_axes = raw_axes[:max_axes] if overflow_count > 0 else raw_axes
+    if overflow_count > 0:
+        sorted_axes = sorted(
+            raw_axes, key=lambda a: a.get("cardinality", 0), reverse=True
+        )
+        display_axes = sorted_axes[:max_axes]
+    else:
+        display_axes = raw_axes
 
     # Prepare sanitized axis records
     sanitized_axes: list[dict[str, Any]] = []
@@ -261,7 +284,9 @@ def generate_vega_spec(
     if "strategy" in active_panels:
         vconcat_specs.append(_build_strategy_panel(stats))
     if "cardinality" in active_panels:
-        vconcat_specs.append(_build_cardinality_panel(sanitized_axes, overflow_count))
+        vconcat_specs.append(
+            _build_cardinality_panel(sanitized_axes, overflow_count, overflow)
+        )
     if "dedup" in active_panels:
         vconcat_specs.append(_build_dedup_panel(stats))
     if "bucket" in active_panels:
@@ -270,6 +295,12 @@ def generate_vega_spec(
         vconcat_specs.append(_build_memory_panel(sanitized_axes, stats))
     if "reasoning" in active_panels:
         vconcat_specs.append(_build_reasoning_panel(sanitized_axes))
+
+    # Append custom registered plugin panels
+    for custom_name in sorted(active_panels - _STANDARD_PANELS):
+        plugin = registered[custom_name]
+        snippet = execute_panel_plugin(plugin, stats)
+        vconcat_specs.append(snippet)
 
     if not vconcat_specs:
         return _build_zero_axis_spec()

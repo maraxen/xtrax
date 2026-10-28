@@ -15,7 +15,6 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-# Now safe to import pyplot and seaborn
 try:
     import matplotlib.pyplot as plt
     import seaborn as sns
@@ -24,6 +23,7 @@ except ImportError as exc:
         "xtrax.eda.viz requires visualization extras. Install with: pip install xtrax[eda]"
     ) from exc
 
+from xtrax.eda.plugins import get_registered_backends
 from xtrax.eda.stats import extract_plan_stats
 from xtrax.eda.types import _VALID_PANELS, PlanLogger, PlanStatsDict
 from xtrax.tiling.plan import BatchPlan
@@ -119,7 +119,16 @@ def render(
                 f"missing: {missing!r}"
             )
 
-    if backend == "vega":
+    valid_backends = {"auto", "vega", "matplotlib"}
+    registered_backends = get_registered_backends()
+    valid_backends.update(registered_backends.keys())
+
+    if backend not in valid_backends:
+        raise ValueError(f"Invalid backend: {backend!r}. Supported: {sorted(valid_backends)}")
+
+    selected_backend = "matplotlib" if backend == "auto" else backend
+
+    if selected_backend == "vega":
         from xtrax.eda.backends.vega import VegaBackend
         from xtrax.eda.spec import generate_vega_spec
 
@@ -136,11 +145,27 @@ def render(
             stats=stats,
             options={"offline": offline, "bundle_js": bundle_js},
         )
-    else:
+    elif selected_backend == "matplotlib":
         active_panels = panels if panels is not None else set(_VALID_PANELS)
         panel_names = _draw_figure(stats, active_panels)
         result = _encode_figure(fmt, panel_names)
         plt.close("all")
+    elif selected_backend in registered_backends:
+        adapter = registered_backends[selected_backend]
+        from xtrax.eda.spec import generate_vega_spec
+
+        vl_spec = generate_vega_spec(
+            stats,
+            panels=panels,
+            max_axes=max_axes,
+            overflow=overflow,
+        )
+        result = adapter.render_spec(
+            vl_spec,
+            fmt=fmt,
+            stats=stats,
+            options={"offline": offline, "bundle_js": bundle_js},
+        )
 
     if path is not None:
         _write_output(Path(path), result, fmt, stats if metadata else None)

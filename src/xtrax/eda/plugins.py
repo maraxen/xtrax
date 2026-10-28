@@ -43,7 +43,8 @@ def _validate_panel_snippet(snippet: Any) -> bool:
     """Verify that a plugin-emitted snippet is a valid Vega-Lite specification dict."""
     if not isinstance(snippet, dict):
         return False
-    if "mark" not in snippet and "layer" not in snippet and "concat" not in snippet:
+    valid_keys = {"mark", "layer", "concat", "vconcat", "hconcat"}
+    if not any(k in snippet for k in valid_keys):
         return False
     return True
 
@@ -78,11 +79,11 @@ def execute_panel_plugin(
     Returns:
         Vega-Lite specification snippet, or an error placeholder if quarantined.
     """
-    plugin_name = getattr(plugin, "name", type(plugin).__name__)
-    isolated_stats = copy.deepcopy(stats)
-    cfg = config or {}
-
+    plugin_name = "unknown_plugin"
     try:
+        plugin_name = getattr(plugin, "name", type(plugin).__name__)
+        isolated_stats = copy.deepcopy(stats)
+        cfg = copy.deepcopy(config) if config is not None else {}
         snippet = plugin.generate_spec(isolated_stats, cfg)
         if not _validate_panel_snippet(snippet):
             msg = "Emitted snippet is not a valid Vega-Lite panel dict"

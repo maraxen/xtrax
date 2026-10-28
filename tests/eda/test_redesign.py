@@ -1,8 +1,11 @@
 """Tests for xtrax EDA redesign: Vega-Lite spec, plugins quarantine, deterministic exports."""
 
+import hashlib
 import json
 import os
 import tempfile
+
+import numpy as np
 
 from xtrax.eda.backends.vega import VegaBackend
 from xtrax.eda.export import (
@@ -39,7 +42,6 @@ def test_standard_plan_vega_spec():
     spec1 = AxisSpec(name="batch", cardinality=64, default_batch_size=32)
     dec1 = AxisDecision(spec=spec1, batch_size=32, reasoning="Fits in memory", strategy=Vmap())
     spec2 = AxisSpec(name="seq", cardinality=128, default_batch_size=64)
-    import numpy as np
 
     strategy2 = DedupGather(
         unique_indices=np.array([0, 1, 2, 3], dtype=np.int32),
@@ -100,6 +102,64 @@ def test_canonical_json_determinism():
     assert data["total_axes"] == 1
 
 
+def test_canonical_json_negative_zero_and_numpy_scalars():
+    """Small negative float does not leak -0.0, and numpy scalars are serialized."""
+    stats: PlanStatsDict = {
+        "axes": [
+            {
+                "name": "a",
+                "strategy": "Vmap",
+                "cardinality": np.int64(10),
+                "batch_size": np.int32(5),
+                "reasoning": "ok",
+                "memory_estimate_bytes": None,
+            }
+        ],
+        "strategy_counts": {"Vmap": np.int32(1)},
+        "total_axes": 1,
+        "memory_warnings": [],
+        "dedup_stats": [
+            {
+                "axis_name": "a",
+                "dedup_ratio": -1e-9,  # Small negative rounds to 0.0, MUST NOT be -0.0
+                "unique_count": 5,
+                "padded_count": 8,
+                "total_count": 10,
+                "padding_waste": 3,
+            }
+        ],
+        "bucket_stats": [],
+    }
+
+    raw = export_canonical_json(stats)
+    json_str = raw.decode("utf-8")
+    assert "-0.0" not in json_str
+    assert '"dedup_ratio":0.0' in json_str
+
+
+def test_float32_inf_memory_no_overflow_error():
+    """NumPy float32 inf does not crash extract_plan_stats with OverflowError."""
+    spec = AxisSpec(name="big_axis", cardinality=1024, default_batch_size=512)
+
+    class MockDecision:
+        def __init__(self):
+            self.spec = spec
+            self.batch_size = 512
+            self.reasoning = "Unbounded memory test"
+            self.strategy = Vmap()
+            self.memory_estimate_bytes = np.float32(np.inf)
+
+    class MockPlan:
+        def __init__(self):
+            self.decisions = (MockDecision(),)
+
+    stats = extract_plan_stats(MockPlan())
+
+    assert stats["axes"][0]["memory_estimate_bytes"] is None
+    assert len(stats["memory_warnings"]) == 1
+    assert "unbounded (+Infinity)" in stats["memory_warnings"][0]
+
+
 def test_export_plan_artifacts_and_manifest():
     """export_plan_artifacts emits all required files with verifiable SHA-256."""
     plan = BatchPlan(decisions=())
@@ -118,6 +178,10 @@ def test_export_plan_artifacts_and_manifest():
             filepath = os.path.join(tmpdir, filename)
             assert os.path.exists(filepath)
             assert os.path.getsize(filepath) == meta["bytes"]
+            # Explicit SHA-256 digest validation
+            with open(filepath, "rb") as f:
+                content = f.read()
+            assert hashlib.sha256(content).hexdigest() == meta["sha256"]
 
 
 def test_plugin_quarantine_and_deepcopy_isolation():
@@ -166,3 +230,21 @@ def test_vega_backend_progressive_html_dom_contract():
     assert '<div id="vega-vis" style="display: none;">' in html_out
     assert "setTimeout" in html_out
     assert "2000" in html_out
+
+
+def test_vega_backend_xss_script_breakout_sanitization():
+    """Inlined Vega-Lite JSON escapes '</' to prevent </script> tag breakout."""
+    plan = BatchPlan(decisions=())
+    stats = extract_plan_stats(plan)
+    # Malicious reasoning string in spec
+    spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "description": "</script><script>alert('xss')</script>",
+        "mark": {"type": "text", "text": "test"},
+    }
+
+    backend = VegaBackend()
+    html_out = backend.render_spec(spec, fmt="html", stats=stats)
+
+    assert "</script><script>" not in html_out
+    assert "<\\/script><script>" in html_out

@@ -65,18 +65,22 @@ def extract_plan_stats(plan: BatchPlanLike) -> PlanStatsDict:
         raw_mem = getattr(decision, "memory_estimate_bytes", None)
         sanitized_mem: int | None = None
         if raw_mem is not None:
-            if isinstance(raw_mem, float) and (math.isnan(raw_mem) or math.isinf(raw_mem)):
-                if math.isinf(raw_mem):
-                    sign = "+Infinity" if raw_mem > 0 else "-Infinity"
+            try:
+                val = float(raw_mem)
+                if math.isinf(val) or math.isnan(val):
+                    sign = (
+                        "+Infinity"
+                        if (math.isinf(val) and val > 0)
+                        else ("-Infinity" if math.isinf(val) else "NaN")
+                    )
                     memory_warnings.append(
                         f"Axis '{decision.spec.name}' memory estimate is unbounded ({sign})"
                     )
-                sanitized_mem = None
-            else:
-                try:
-                    sanitized_mem = int(raw_mem)
-                except (ValueError, TypeError):
                     sanitized_mem = None
+                else:
+                    sanitized_mem = int(val)
+            except (ValueError, TypeError, OverflowError):
+                sanitized_mem = None
 
         axis_entry: AxisStatsEntry = {
             "name": decision.spec.name,

@@ -1,7 +1,8 @@
-"""Export utilities for xtrax EDA compiler plan statistics.
+"""Export functions for PlanStatsDict.
 
-Provides bitwise-deterministic canonical JSON serialization, streaming CSV/Parquet
-export, and neutral self-verifying artifact bundles with SHA-256 manifests.
+Provides bitwise-reproducible RFC 8259 canonical JSON serialization,
+tidy long-format CSV and Parquet tabular export, neutral artifact bundle
+generation with SHA-256 manifests, and backward-compatible DataFrame conversion.
 """
 
 from __future__ import annotations
@@ -13,31 +14,38 @@ import io
 import json
 import math
 import os
+import pathlib
+import sys
 import unicodedata
 from typing import Any
+
+import numpy as np
 
 from xtrax.eda.spec import generate_vega_spec
 from xtrax.eda.types import PlanStatsDict
 
-try:
-    import pandas as pd  # noqa: F401
-except ImportError as exc:
+if sys.modules.get("pandas") is None and "pandas" in sys.modules:
     raise ImportError(
-        "xtrax.eda.export requires visualization extras. Install with: pip install xtrax[eda]"
-    ) from exc
+        "xtrax.eda.export requires visualization extras. "
+        "Install with: pip install xtrax[eda]"
+    )
 
 PathLike = str | os.PathLike[str]
 
 
 def _normalize_floats(obj: Any) -> Any:
     """Normalize floats recursively: -0.0 -> 0.0, NaN/Inf -> None, format float."""
-    if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
+    if isinstance(obj, (float, np.floating)):
+        val = float(obj)
+        if math.isnan(val) or math.isinf(val):
             return None
-        if obj == 0.0:
-            return 0.0
         # Round / format to fixed 8 decimal places for cross-platform IEEE-754 consistency
-        return float(f"{obj:.8f}")
+        rounded = round(val, 8)
+        if rounded == 0.0:
+            return 0.0
+        return rounded
+    if isinstance(obj, (int, np.integer)):
+        return int(obj)
     if isinstance(obj, dict):
         return {k: _normalize_floats(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -58,57 +66,68 @@ def export_canonical_json(stats: PlanStatsDict, path: PathLike | None = None) ->
 
     Args:
         stats: Intermediate plan statistics.
-        path: Optional file path to write.
+        path: Optional file path to write to (uses atomic write).
 
     Returns:
-        Canonical JSON encoded as UTF-8 bytes.
+        UTF-8 encoded JSON bytes.
     """
     normalized = _normalize_floats(stats)
-    raw_json = json.dumps(
+
+    # Serialize with sorted keys and minimal separators per RFC 8259
+    raw_str = json.dumps(
         normalized,
         sort_keys=True,
         separators=(",", ":"),
-        allow_nan=False,
         ensure_ascii=False,
     )
-    nfc_str = unicodedata.normalize("NFC", raw_json)
-    json_bytes = nfc_str.encode("utf-8")
+
+    # Normalize to Unicode NFC form
+    nfc_str = unicodedata.normalize("NFC", raw_str)
+    normalized_bytes = nfc_str.encode("utf-8")
 
     if path is not None:
-        with open(path, "wb") as f:
-            f.write(json_bytes)
+        p = pathlib.Path(path)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        with open(tmp, "wb") as f:
+            f.write(normalized_bytes)
+        tmp.replace(p)
 
-    return json_bytes
+    return normalized_bytes
 
 
 def export_axes_csv(stats: PlanStatsDict, path: PathLike | None = None) -> str:
-    """Export 100% of plan axes into tidy long-format CSV.
+    """Export plan axes to a tidy tabular CSV string with schema columns.
+
+    Format: long-format tidy table where each row is an axis decision.
+    Includes unit metadata column ("elements") and semicolon-delimited lists.
 
     Args:
         stats: Intermediate plan statistics.
-        path: Optional file path to write.
+        path: Optional file path to write to (uses atomic write).
 
     Returns:
-        CSV content string.
+        CSV formatted string.
     """
     output = io.StringIO()
-    fieldnames = [
-        "name",
-        "strategy",
-        "cardinality",
-        "batch_size",
-        "reasoning",
-        "memory_estimate_bytes",
-        "varying_inputs",
-        "dedup_ratio",
-        "unique_count",
-        "padded_count",
-        "padding_waste",
-        "bucket_count",
-        "bucket_boundaries",
-        "unit",
-    ]
-    writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "name",
+            "strategy",
+            "cardinality",
+            "batch_size",
+            "reasoning",
+            "memory_estimate_bytes",
+            "varying_inputs",
+            "dedup_ratio",
+            "unique_count",
+            "padded_count",
+            "padding_waste",
+            "bucket_count",
+            "bucket_boundaries",
+            "unit",
+        ],
+    )
     writer.writeheader()
 
     dedup_map = {d["axis_name"]: d for d in stats.get("dedup_stats", [])}
@@ -151,8 +170,11 @@ def export_axes_csv(stats: PlanStatsDict, path: PathLike | None = None) -> str:
 
     csv_str = output.getvalue()
     if path is not None:
-        with open(path, "w", encoding="utf-8") as f:
+        p = pathlib.Path(path)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
             f.write(csv_str)
+        tmp.replace(p)
 
     return csv_str
 
@@ -160,32 +182,37 @@ def export_axes_csv(stats: PlanStatsDict, path: PathLike | None = None) -> str:
 def export_axes_parquet(stats: PlanStatsDict, path: PathLike | None = None) -> bytes:
     """Export axes to Parquet bytes with schema metadata.
 
-    Falls back to CSV bytes if pyarrow is unavailable.
+    Requires pyarrow. Raises ImportError if pyarrow is unavailable.
     """
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise ImportError(
+            "export_axes_parquet requires pyarrow. Install with: pip install pyarrow"
+        ) from exc
 
-        df = plan_to_dataframe(stats)
-        table = pa.Table.from_pandas(df)
-        metadata = {
-            b"xtrax_schema_version": b"2.0",
-            b"generator": b"xtrax.eda.export",
-            b"total_axes": str(stats.get("total_axes", 0)).encode("utf-8"),
-        }
-        existing_meta = table.schema.metadata or {}
-        existing_meta.update(metadata)
-        table = table.replace_schema_metadata(existing_meta)
+    df = plan_to_dataframe(stats)
+    table = pa.Table.from_pandas(df)
+    metadata = {
+        b"xtrax_schema_version": b"2.0",
+        b"generator": b"xtrax.eda.export",
+        b"total_axes": str(stats.get("total_axes", 0)).encode("utf-8"),
+    }
+    existing_meta = table.schema.metadata or {}
+    existing_meta.update(metadata)
+    table = table.replace_schema_metadata(existing_meta)
 
-        buf = io.BytesIO()
-        pq.write_table(table, buf)
-        parquet_bytes = buf.getvalue()
-    except Exception:
-        parquet_bytes = export_axes_csv(stats).encode("utf-8")
+    buf = io.BytesIO()
+    pq.write_table(table, buf)
+    parquet_bytes = buf.getvalue()
 
     if path is not None:
-        with open(path, "wb") as f:
+        p = pathlib.Path(path)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        with open(tmp, "wb") as f:
             f.write(parquet_bytes)
+        tmp.replace(p)
 
     return parquet_bytes
 
@@ -201,7 +228,7 @@ def export_plan_artifacts(
     Emits:
     - <prefix>.canonical.json: Bitwise reproducible PlanStatsDict
     - <prefix>_axes.csv: Tidy tabular long-format data
-    - <prefix>_axes.parquet: Parquet format with embedded schema metadata
+    - <prefix>_axes.parquet: Parquet format with embedded schema metadata (if pyarrow available)
     - <prefix>.vl.json: Declarative Vega-Lite v5 specification
     - <prefix>_manifest.json: Cryptographic manifest with SHA-256 digests
 
@@ -221,8 +248,10 @@ def export_plan_artifacts(
 
     def _record_file(filename: str, content: bytes) -> None:
         filepath = os.path.join(out_dir, filename)
-        with open(filepath, "wb") as f:
+        tmp_path = filepath + ".tmp"
+        with open(tmp_path, "wb") as f:
             f.write(content)
+        os.replace(tmp_path, filepath)
         sha256 = hashlib.sha256(content).hexdigest()
         artifacts[filename] = {"bytes": len(content), "sha256": sha256}
 
@@ -234,9 +263,12 @@ def export_plan_artifacts(
     csv_bytes = export_axes_csv(stats).encode("utf-8")
     _record_file(f"{prefix}_axes.csv", csv_bytes)
 
-    # 3. Parquet
-    parquet_bytes = export_axes_parquet(stats)
-    _record_file(f"{prefix}_axes.parquet", parquet_bytes)
+    # 3. Parquet (optional, only if pyarrow is installed)
+    try:
+        parquet_bytes = export_axes_parquet(stats)
+        _record_file(f"{prefix}_axes.parquet", parquet_bytes)
+    except ImportError:
+        pass
 
     # 4. Vega-Lite Spec
     vl_spec = generate_vega_spec(stats)
@@ -254,8 +286,10 @@ def export_plan_artifacts(
     }
     manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
     manifest_path = os.path.join(out_dir, f"{prefix}_manifest.json")
-    with open(manifest_path, "wb") as f:
+    tmp_manifest = manifest_path + ".tmp"
+    with open(tmp_manifest, "wb") as f:
         f.write(manifest_bytes)
+    os.replace(tmp_manifest, manifest_path)
 
     return manifest
 
@@ -266,7 +300,8 @@ def plan_to_dataframe(stats: PlanStatsDict) -> Any:
         import pandas as pd
     except ImportError as exc:
         raise ImportError(
-            "plan_to_dataframe requires pandas. Install with: pip install xtrax[eda]"
+            "xtrax.eda.export requires visualization extras. "
+            "Install with: pip install xtrax[eda]"
         ) from exc
 
     rows = []

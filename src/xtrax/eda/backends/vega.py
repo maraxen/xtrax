@@ -78,7 +78,7 @@ class VegaBackend(BaseBackend):
 
         if fmt == "html":
             fallback_svg = self._render_fallback_svg(spec, stats)
-            spec_json = json.dumps(spec)
+            spec_json = json.dumps(spec).replace("</", "<\\/")
             offline = opts.get("offline", False)
             status_text = (
                 "Static vector mode (offline)."
@@ -127,7 +127,13 @@ class VegaBackend(BaseBackend):
                 "        var s = document.createElement('script');\n"
                 "        s.src = src;\n"
                 "        s.onload = cb;\n"
-                "        s.onerror = function() { clearTimeout(timeout); };\n"
+                "        s.onerror = function() {\n"
+                "          clearTimeout(timeout);\n"
+                "          var status = document.getElementById('loader-status');\n"
+                "          if (status) {\n"
+                "            status.innerText = 'Airgap / offline fallback: static SVG.';\n"
+                "          }\n"
+                "        };\n"
                 "        document.head.appendChild(s);\n"
                 "      }\n"
                 "\n"
