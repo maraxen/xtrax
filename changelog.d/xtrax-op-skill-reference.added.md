@@ -1,0 +1,1 @@
+- `using-xtrax` skill: new `references/op.md` for `xtrax.op`, covering selection rules, static configuration by closure, derivative forms, `xtrax.testing.kernel_parity` tests, and the interpret-mode GPU hazards. `using-xtrax` and `xtrax-optimizing` route kernel work to it.

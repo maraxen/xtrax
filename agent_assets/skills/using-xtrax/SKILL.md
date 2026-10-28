@@ -1,7 +1,7 @@
 ---
 name: using-xtrax
-description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function. The library is xtrax."
-when_to_use: 'Triggers: padding or bucketing loop for variable-length sequences before a JIT step, chunked vmap or lax.map over a large batch, memory-budgeted batching / batch plan that must fit a device budget, ONNX or StableHLO export of a JAX pipeline, resumable training loop / resume training from a checkpoint, zarr output sink / staged zarr writes, TOML file that should launch or resume a training run, infer batch axes from a typed function signature, compose batching primitives into your own CLI.'
+description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function, or when a hand-written Pallas kernel should sit beside a plain-JAX reference. The library is xtrax."
+when_to_use: 'Triggers: padding or bucketing loop for variable-length sequences before a JIT step, chunked vmap or lax.map over a large batch, memory-budgeted batching / batch plan that must fit a device budget, ONNX or StableHLO export of a JAX pipeline, resumable training loop / resume training from a checkpoint, zarr output sink / staged zarr writes, TOML file that should launch or resume a training run, infer batch axes from a typed function signature, compose batching primitives into your own CLI, hand-written Pallas kernel beside a plain-JAX reference / replace a use_pallas flag or interpret= switch with xtrax.op.'
 ---
 # using-xtrax
 
@@ -160,6 +160,8 @@ Is the site a map over a leading axis?
 
 Swap one site's strategy with `compile(..., overrides={label: (primal, diff)})` (`SiteStrategyOverride`, verify: `src/xtrax/intent/_resolve.py:29`). `compile(...).plan_for(*args).table()` shows each site's choice and reason. Full reference: `references/intent.md`.
 
+**A hand-written kernel (Pallas) beside a reference: `xtrax.op`.** `xtrax.op(reference, kernels={"gpu": ..., "cpu": interpret_kernel})` runs the kernel only under `Context(kernels=True)` on a backend it has an entry for, the reference otherwise and under `Context(target="export")` (xtrax's export helpers do not set that target for you); derivatives come from the reference unless a `vjp_kernels` pair is given (verify: `src/xtrax/kernel_seam.py:312-338`). Full reference: `references/op.md`.
+
 What intent buys is one call site that is a `while_loop` when undifferentiated and a `lax.scan` under grad, with no hand-set inference-only flag, exact against both hand-written forms. It does not buy compile time on current JAX: two pre-registered runs on Blackwell (SM120) found the scan and while forms, and `lax.map` around a `while_loop` versus `vmap` around it, compile alike (aminx bathos runs `3b93937a` and `c3c745a5`, both `no_contrast`; criterion 8 ruled met on equivalence, 261025).
 
 **Lower layer: `BatchPlanner`.** Use the tree below directly when you build a `BatchPlan` yourself: bucketed variable-length axes, `DedupGather`, multi-axis plans, and the CLI and export pipelines, none of which intent resolves. `intent.map` plans with `BatchPlanner` when `Context.memory_budget` is set.
@@ -295,6 +297,9 @@ Choose your task:
 12. **Write a loop or map that picks while_loop/scan or vmap/chunked per call site (xtrax.intent)**  
    → Read `references/intent.md`
 
+13. **Put a Pallas (or other backend) kernel beside a plain-JAX reference, selected by Context instead of a `use_pallas` flag or env var (xtrax.op)**  
+   → Read `references/op.md`
+
 ---
 
 ## TIER-2: Deep Reference
@@ -315,6 +320,7 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives |
 | Standalone ONNX | `references/onnx-standalone.md` | — | convert_to_onnx vs jax2onnx, find_onnx_rng_ops, verify_native_parity, rings, divergence |
 | Intent | `references/intent.md` | — | xtrax.intent: Context, compile, loop, map, Plan, overrides, hazards, errors |
+| Kernel seam | `references/op.md` | — | xtrax.op: reference + per-backend kernels, selection rules, static args by closure, custom_jvp/custom_vjp derivatives, kernel_parity tests, interpret-mode GPU hazards |
 
 Use the Workflow Index above to pick which file(s) a given task needs — most tasks need one, some (e.g. tiled inference) need two. Don't load a reference file speculatively; load it when the task actually reaches that layer.
 
