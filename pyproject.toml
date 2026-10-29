@@ -64,7 +64,10 @@ dev = [
 ]
 eda-matplotlib = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
 eda-vega = [ "vl-convert-python>=1.0.0",]
-eda = [ "xtrax[eda-matplotlib]", "xtrax[eda-vega]",]
+# Parquet axis export (export_axes_parquet) imports pyarrow lazily; declared here so
+# the project hygiene gate can resolve the import.
+eda-parquet = [ "pyarrow>=14.0",]
+eda = [ "xtrax[eda-matplotlib]", "xtrax[eda-vega]", "xtrax[eda-parquet]",]
 cli = [ "tyro>=0.9.1,<2", "flatbuffers>=2",]
 io = [ "zarr>=3.0.8",]
 # grain is a data-pipeline dependency, not a core one: it was in runtime

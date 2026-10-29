@@ -117,3 +117,52 @@ def test_real_src_tree_is_clean() -> None:
     passed, hits = audit_ir_schema_single_source(real_src_dir, allowed)
 
     assert passed, f"unexpected '\"$schema\"' hits outside {allowed}: {hits}"
+
+
+def test_vega_lite_identifier_is_exempt_in_its_external_file(tmp_path: Path) -> None:
+    src_dir = tmp_path / "xtrax"
+    (src_dir / "eda").mkdir(parents=True)
+    allowed = src_dir / "inference" / "ir_schema.py"
+    spec = src_dir / "eda" / "spec.py"
+    spec.write_text(
+        'SPEC = {"$schema": "https://vega.github.io/schema/vega-lite/v5.json"}\n',
+        encoding="utf-8",
+    )
+
+    passed, hits = audit_ir_schema_single_source(src_dir, allowed, external_files=(spec,))
+
+    assert passed
+    assert hits == []
+
+
+def test_non_vega_schema_in_external_file_still_fails(tmp_path: Path) -> None:
+    src_dir = tmp_path / "xtrax"
+    (src_dir / "eda").mkdir(parents=True)
+    allowed = src_dir / "inference" / "ir_schema.py"
+    spec = src_dir / "eda" / "spec.py"
+    spec.write_text(
+        'SCHEMA = {"$schema": "https://json-schema.org/draft/2020-12/schema"}\n',
+        encoding="utf-8",
+    )
+
+    passed, hits = audit_ir_schema_single_source(src_dir, allowed, external_files=(spec,))
+
+    assert not passed
+    assert hits == [f"{spec}:1"]
+
+
+def test_vega_lite_identifier_outside_external_file_still_fails(tmp_path: Path) -> None:
+    src_dir = tmp_path / "xtrax"
+    (src_dir / "cli").mkdir(parents=True)
+    allowed = src_dir / "inference" / "ir_schema.py"
+    rogue = src_dir / "cli" / "plot.py"
+    rogue.write_text(
+        'SPEC = {"$schema": "https://vega.github.io/schema/vega-lite/v5.json"}\n',
+        encoding="utf-8",
+    )
+    spec = src_dir / "eda" / "spec.py"
+
+    passed, hits = audit_ir_schema_single_source(src_dir, allowed, external_files=(spec,))
+
+    assert not passed
+    assert hits == [f"{rogue}:1"]
