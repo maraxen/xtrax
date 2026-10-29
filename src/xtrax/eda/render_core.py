@@ -53,7 +53,7 @@ def render(
     logger: PlanLogger | None = None,
     step: int | None = None,
     panels: set[str] | None = None,
-    backend: Literal["auto", "vega", "matplotlib"] = "auto",
+    backend: str = "auto",
     max_axes: int = 100,
     overflow: Literal["aggregate", "truncate"] = "aggregate",
     offline: bool = False,
