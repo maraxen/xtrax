@@ -62,7 +62,9 @@ dev = [
  # duplication-then-divergence this consolidation (#4969) exists to remove.
  "xtrax[cli]",
 ]
-eda = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
+eda-matplotlib = [ "pandas>=2.0", "matplotlib>=3.8", "seaborn>=0.13",]
+eda-vega = [ "vl-convert-python>=1.0.0",]
+eda = [ "xtrax[eda-matplotlib]", "xtrax[eda-vega]",]
 cli = [ "tyro>=0.9.1,<2", "flatbuffers>=2",]
 io = [ "zarr>=3.0.8",]
 # grain is a data-pipeline dependency, not a core one: it was in runtime
@@ -281,3 +283,9 @@ python-version = "3.13"
 
 [tool.ty.src]
 include = ["src/**/*.py"]
+
+[project.entry-points."xtrax.eda.panels"]
+
+[project.entry-points."xtrax.eda.backends"]
+vega = "xtrax.eda.backends.vega:VegaBackend"
+matplotlib = "xtrax.eda.backends.matplotlib:MatplotlibBackend"

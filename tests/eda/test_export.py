@@ -11,36 +11,28 @@ from xtrax.tiling.strategy import Bucket, ChunkedMap, DedupGather, Vmap
 class TestPlanToDataframe:
     """Tests for plan_to_dataframe."""
 
-    def test_requires_pandas_extras(self):
-        """plan_to_dataframe import requires eda extras."""
-        # Test that the ImportError is raised when pandas is missing.
-        # Use sys.modules patching to simulate absent pandas in the current interpreter.
+    def test_requires_pandas_extras(self, monkeypatch):
+        """plan_to_dataframe raises the extras hint when pandas is absent."""
         import sys
 
-        # Save original pandas module (if it exists)
-        original_pandas = sys.modules.get("pandas")
+        from xtrax.eda.export import plan_to_dataframe
 
-        try:
-            # Patch sys.modules to hide pandas
-            sys.modules["pandas"] = None
+        monkeypatch.setitem(sys.modules, "pandas", None)
+        with pytest.raises(ImportError, match=r"xtrax\[eda\]"):
+            plan_to_dataframe({"axes": []})
 
-            # Force reimport of export module to trigger the ImportError
-            if "xtrax.eda.export" in sys.modules:
-                del sys.modules["xtrax.eda.export"]
+    def test_pandas_free_exports_import_without_pandas(self, monkeypatch):
+        """The export module must import and run without pandas; only the DataFrame needs it."""
+        import importlib
+        import sys
 
-            # This should raise ImportError
-            with pytest.raises(ImportError, match=r"xtrax\[eda\]"):
-                from xtrax.eda.export import plan_to_dataframe  # noqa: F401
-        finally:
-            # Restore original pandas module
-            if original_pandas is not None:
-                sys.modules["pandas"] = original_pandas
-            elif "pandas" in sys.modules:
-                del sys.modules["pandas"]
+        monkeypatch.setitem(sys.modules, "pandas", None)
+        for name in [m for m in sys.modules if m == "xtrax.eda" or m.startswith("xtrax.eda.")]:
+            monkeypatch.delitem(sys.modules, name)
 
-            # Clean up the export module so other tests get a fresh import
-            if "xtrax.eda.export" in sys.modules:
-                del sys.modules["xtrax.eda.export"]
+        export = importlib.import_module("xtrax.eda.export")
+
+        assert export.export_canonical_json({"total_axes": 0, "axes": []})
 
     def test_empty_plan_dataframe(self):
         """plan_to_dataframe with empty plan returns DataFrame with no rows."""

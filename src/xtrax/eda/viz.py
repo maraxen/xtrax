@@ -1,21 +1,17 @@
-"""Visualization rendering for BatchPlan — PNG/SVG/HTML output.
+"""Matplotlib drawing for BatchPlan visualizations (PNG/SVG/HTML).
 
 MUST IMPORT matplotlib.use("Agg") FIRST, before any other matplotlib imports.
 This module requires optional eda extras: pip install xtrax[eda]
 """
 
 import io
-import json
 from collections.abc import Callable
-from pathlib import Path
-from typing import Literal
 
 # CRITICAL: matplotlib backend must be set BEFORE importing pyplot
 import matplotlib
 
 matplotlib.use("Agg")
 
-# Now safe to import pyplot and seaborn
 try:
     import matplotlib.pyplot as plt
     import seaborn as sns
@@ -24,106 +20,8 @@ except ImportError as exc:
         "xtrax.eda.viz requires visualization extras. Install with: pip install xtrax[eda]"
     ) from exc
 
-from xtrax.eda.stats import extract_plan_stats
-from xtrax.eda.types import _VALID_PANELS, PlanLogger, PlanStatsDict
-from xtrax.tiling.plan import BatchPlan
-
-# Required keys for a valid PlanStatsDict after transformation
-_REQUIRED_STATS_KEYS = frozenset(
-    {
-        "axes",
-        "strategy_counts",
-        "total_axes",
-        "memory_warnings",
-        "dedup_stats",
-        "bucket_stats",
-    }
-)
-
-
-def render(
-    plan: BatchPlan,
-    view: str = "dashboard",
-    fmt: Literal["png", "svg", "html"] = "png",
-    path: str | Path | None = None,
-    stats_transform: Callable[[PlanStatsDict], PlanStatsDict] | None = None,
-    metadata: bool = False,
-    logger: PlanLogger | None = None,
-    step: int | None = None,
-    panels: set[str] | None = None,
-) -> bytes | str | None:
-    """Render a BatchPlan to PNG, SVG, or HTML format.
-
-    Extracts statistics from the plan, applies optional transformations, and
-    renders a fixed-layout dashboard with strategy distribution, cardinality
-    scatter, and other metrics.
-
-    Args:
-        plan: The BatchPlan to visualize.
-        view: The view type (currently only "dashboard" is implemented).
-               Default "dashboard".
-        fmt: Output format — "png" (bytes), "svg" (bytes), or "html"
-               (str). Default "png".
-        path: Optional file path to write output. If None, returns bytes/str in-memory.
-               Must be set if metadata=True.
-        stats_transform: Optional function to transform the stats dict before rendering.
-                        Receives and returns PlanStatsDict. If provided, result must
-                        contain all required keys. Default None (no transformation).
-        metadata: If True, writes a .json sidecar with the stats dict alongside the
-                 output file. Requires path to be set. Default False.
-        logger: Optional PlanLogger implementation for remote logging
-               (tensorboard, wandb, etc.).
-               Called with figure data after rendering. Default None.
-        step: Optional iteration/epoch number passed to logger. Default None.
-        panels: Optional set of panel names to render. Valid names are
-               "strategy", "cardinality", "dedup", "bucket", "memory", "reasoning".
-               If None, all available panels are rendered. Default None.
-
-    Returns:
-        bytes for PNG/SVG format with no path, str for HTML with no path, or None if
-        output was written to path.
-
-    Raises:
-        ValueError: If fmt is not "png", "svg" or "html", if metadata=True but
-            path is None, or if panels contains unknown names.
-        TypeError: If stats_transform returns a dict missing required keys.
-    """
-    # Validation
-    if fmt not in ("png", "svg", "html"):
-        raise ValueError(f"Unknown fmt {fmt!r}; expected 'png', 'svg' or 'html'")
-    if metadata and path is None:
-        raise ValueError("metadata=True requires path to be set")
-
-    if panels is not None:
-        unknown = panels - _VALID_PANELS
-        if unknown:
-            raise ValueError(
-                f"Unknown panel(s): {unknown!r}. Valid panels: {sorted(_VALID_PANELS)}"
-            )
-
-    # Extract stats
-    stats = extract_plan_stats(plan)
-
-    # Apply transform
-    if stats_transform is not None:
-        stats = stats_transform(stats)
-        missing = _REQUIRED_STATS_KEYS - stats.keys()
-        if missing:
-            raise TypeError(
-                f"stats_transform must return PlanStatsDict with all required keys; "
-                f"missing: {missing!r}"
-            )
-
-    active_panels = panels if panels is not None else set(_VALID_PANELS)
-    panel_names = _draw_figure(stats, active_panels)
-    result = _encode_figure(fmt, panel_names)
-    plt.close("all")
-
-    if path is not None:
-        _write_output(Path(path), result, fmt, stats if metadata else None)
-    if logger is not None:
-        logger.log_figure(figure=result, fmt=fmt, step=step)
-    return None if path is not None else result
+from xtrax.eda.render_core import render  # re-exported: viz.render is the shared pipeline
+from xtrax.eda.types import _VALID_PANELS, PlanStatsDict
 
 
 def _placeholder(ax, text: str, **text_kwargs) -> None:  # noqa: ANN001
@@ -165,7 +63,7 @@ def _draw_dedup(ax, stats: PlanStatsDict) -> None:  # noqa: ANN001
     axis_names = [d["axis_name"] for d in dedup_data]
     ratios = [d["dedup_ratio"] for d in dedup_data]
     sns.barplot(x=axis_names, y=ratios, ax=ax, hue=axis_names, legend=False, palette="muted")
-    ax.set_ylabel("Dedup Ratio (unique / total)")
+    ax.set_ylabel("Dedup Reduction Ratio (1 - unique/total)")
     ax.set_xlabel("Axis Name")
     ax.set_title("Deduplication Efficiency")
     ax.set_ylim([0, 1])
@@ -262,16 +160,13 @@ def _encode_figure(fmt: str, panel_names: list[str]) -> bytes | str:
     )
 
 
-def _write_output(
-    p: Path, result: bytes | str, fmt: str, metadata_stats: PlanStatsDict | None
-) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    if fmt == "html":
-        p.write_text(result if isinstance(result, str) else result.decode())
-    else:
-        p.write_bytes(result if isinstance(result, bytes) else result.encode())
-    if metadata_stats is not None:
-        p.with_suffix(".json").write_text(json.dumps(metadata_stats, default=str))
+def _render_matplotlib(stats: PlanStatsDict, panels: set[str] | None, fmt: str) -> bytes | str:
+    """Draw the dashboard with matplotlib and encode it; always closes the figures."""
+    active_panels = panels if panels is not None else set(_VALID_PANELS)
+    panel_names = _draw_figure(stats, active_panels)
+    result = _encode_figure(fmt, panel_names)
+    plt.close("all")
+    return result
 
 
 def _inject_panel_attributes(svg_str: str, panel_names: list[str]) -> str:

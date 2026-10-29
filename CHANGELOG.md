@@ -305,6 +305,15 @@ the name is in use, report it. Names with a one-line replacement are rewritten b
 
 ### Added
 
+- **EDA Redesign: Vega-Lite canonical interchange, pluggable visualization backends, and deterministic artifacts**:
+  Redesigned `xtrax.eda` into a decoupled, declarative plan inspection engine:
+  - `xtrax.eda.spec.generate_vega_spec`: compiles `PlanStatsDict` into valid Vega-Lite v5 specifications without graphics libraries.
+  - Pluggable visualization backends (`xtrax.eda.backends`): headless Vega-Lite renderer via `vl-convert-python` (`xtrax[eda-vega]`) alongside legacy Matplotlib/Seaborn (`xtrax[eda-matplotlib]`).
+  - Extensible panel registry (`xtrax.eda.panels`) with `copy.deepcopy` immutability quarantine and error placeholders.
+  - Deterministic hashed exports (`xtrax.eda.export`): `export_canonical_json` with IEEE-754 float stabilization and sort keys, `export_axes_csv`, and `export_plan_artifacts` producing SHA-256 manifests with opaque context passthrough.
+  - Fixed deduplication efficiency y-axis label to `"Dedup Reduction Ratio (1 - unique/total)"`.
+  - Added `memory_warnings` and `memory_estimate_bytes` float sanitization per RFC 8259.
+  - Maintained full backward compatibility for `render()` and `plan_to_dataframe()`.
 - **Per-axis input invariance** (#2598, #2599): `AxisSpec.varying_inputs`
   names the inputs that vary along a mapped axis; every other named input is
   invariant along it. `declare_varying_inputs` rejects an unknown axis or

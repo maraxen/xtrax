@@ -5,7 +5,7 @@ This module is importable from xtrax core without eda extras.
 """
 
 from collections.abc import Sequence
-from typing import Literal, NotRequired, Protocol, TypedDict, runtime_checkable
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, runtime_checkable
 
 
 class AxisStatsEntry(TypedDict):
@@ -220,13 +220,47 @@ class PlanLogger(Protocol):
         ...
 
 
+@runtime_checkable
+class PanelPlugin(Protocol):
+    """Protocol for pluggable EDA visualization panels."""
+
+    name: str
+
+    def generate_spec(self, stats: PlanStatsDict, config: dict[str, Any]) -> dict[str, Any]:
+        """Generate a Vega-Lite v5 specification dictionary for this panel."""
+        ...
+
+
+@runtime_checkable
+class BackendAdapter(Protocol):
+    """Protocol for pluggable EDA visualization backends."""
+
+    name: str
+
+    def render_spec(
+        self,
+        spec: dict[str, Any],
+        fmt: Literal["png", "svg", "html"],
+        stats: PlanStatsDict,
+        options: dict[str, Any] | None = None,
+    ) -> bytes | str:
+        """Render a compiled Vega-Lite specification or stats dictionary."""
+        ...
+
+
+BackendName = Literal["auto", "vega", "matplotlib"]
+
+
 __all__ = [
     "AxisStatsEntry",
     "DedupStatsEntry",
     "BucketStatsEntry",
     "PlanStatsDict",
     "PanelName",
+    "BackendName",
     "PlanLogger",
+    "PanelPlugin",
+    "BackendAdapter",
     "AxisSpecLike",
     "AxisDecisionLike",
     "BatchPlanLike",

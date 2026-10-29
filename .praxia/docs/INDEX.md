@@ -1,4 +1,4 @@
-# equinox-decouple-pallas-261023 Internal Docs
+# eda-merge-251 Internal Docs
 
 ## Daily
 
@@ -18,6 +18,7 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [261028_xtrax-eda-redesign](specs/261028_xtrax-eda-redesign.md) — Specification for redesigning xtrax.eda into a compiler-plan inspection engine using Vega-Lite canonical interchange, entry-point panel plugins, bitwise-deterministic JSON exports, progressive offline HTML dashboards, and strict isolation from maraxiom.eda
 - [261023_equinox-decoupling](specs/261023_equinox-decoupling.md) — Make xtrax depend only on jax/optax for its pytree layer, with one implementation and Equinox models and downstream eqx.field subclasses still working (Part 1 of the equinox/Pallas plan)
 - [261023_kernel-seam-xtrax-op](specs/261023_kernel-seam-xtrax-op.md) — Part 2 of the equinox-decouple-pallas epic: xtrax.op(reference, kernels) as a custom_jvp whose primal is a backend kernel and whose derivative is the reference's JVP; consumers write reference+kernel pairs now; first GPU target is demistify's pairwise joint histogram
 - [261023_xtrax-as-a-pure-functional-pipeline-laye](specs/261023_xtrax-as-a-pure-functional-pipeline-laye.md)
@@ -79,6 +80,7 @@
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [261026_accumulate-grads-vs-optax-microbatching](research/261026_accumulate-grads-vs-optax-microbatching.md) — Pre-registered CPU parity probe: optax micro_grad MEAN matches xtrax accumulate_grads (f32 grad rel L2 7.4e-8, f64 1.7e-16) on mean-of-examples losses; 11 semantic differences listed, batch-coupled losses differ by 24%
 - [261023_pallas-block-sparse-spike](research/261023_pallas-block-sparse-spike.md) — Interpret-mode Pallas kernel: parity, custom_vjp grads, jit/vmap, dataclass config, export; Mosaic GPU export blocked on jax 0.11.1
 - [261020_hoist_invariant_cpu](research/data/261020_hoist_invariant_cpu.json)
 - [261020_hoist_invariant_cuda](research/data/261020_hoist_invariant_cuda.json)
