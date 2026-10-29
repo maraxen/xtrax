@@ -25,6 +25,12 @@ SCANNED_GLOBS = ("*.py", "*.json", "*.toml", "*.yaml", "*.yml")
 # SCHEMA_MARKERS spelling matches -- this is a separate, anchored check for that one shape.
 _YAML_BARE_KEY_RE = re.compile(r"^\$schema\s*:")
 
+# Vega-Lite specs emitted by xtrax.eda carry their own "$schema" naming the Vega-Lite grammar.
+# That is an external visualization format, not a second xtrax IR schema, so it is exempt --
+# but only in these files, and only on a line that names the Vega-Lite URL.
+VEGA_LITE_SCHEMA_URL = "https://vega.github.io/schema/vega-lite/"
+EXTERNAL_SCHEMA_FILES = (DEFAULT_SRC_DIR / "eda" / "spec.py",)
+
 
 def _line_has_schema_marker(line: str) -> bool:
     if any(marker in line for marker in SCHEMA_MARKERS):
@@ -52,9 +58,27 @@ def find_schema_definitions(src_dir: Path) -> list[str]:
     return hits
 
 
-def audit_ir_schema_single_source(src_dir: Path, allowed_path: Path) -> tuple[bool, list[str]]:
+def _is_external_vega_lite_hit(hit: str, external_files: tuple[Path, ...]) -> bool:
+    path_str, _, lineno = hit.rpartition(":")
+    path = Path(path_str)
+    if path not in external_files:
+        return False
+    line = path.read_text(encoding="utf-8").splitlines()[int(lineno) - 1]
+    return VEGA_LITE_SCHEMA_URL in line
+
+
+def audit_ir_schema_single_source(
+    src_dir: Path,
+    allowed_path: Path,
+    external_files: tuple[Path, ...] = EXTERNAL_SCHEMA_FILES,
+) -> tuple[bool, list[str]]:
     hits = find_schema_definitions(src_dir)
-    disallowed = [hit for hit in hits if not hit.startswith(f"{allowed_path}:")]
+    disallowed = [
+        hit
+        for hit in hits
+        if not hit.startswith(f"{allowed_path}:")
+        and not _is_external_vega_lite_hit(hit, external_files)
+    ]
     return len(disallowed) == 0, disallowed
 
 
