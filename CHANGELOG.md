@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- new entries: add a file under changelog.d/ -->
 
+## [0.4.1b6] - 2026-10-29
+
+### Added
+
+- `using-xtrax` skill: new `references/op.md` for `xtrax.op`, covering selection rules, static configuration by closure, derivative forms, `xtrax.testing.kernel_parity` tests, and the interpret-mode GPU hazards. `using-xtrax` and `xtrax-optimizing` route kernel work to it.
+
 ## [0.4.1b5] - 2026-10-26
 
 ### Added
