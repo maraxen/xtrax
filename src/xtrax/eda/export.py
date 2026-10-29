@@ -180,8 +180,8 @@ def export_axes_parquet(stats: PlanStatsDict, path: PathLike | None = None) -> b
     Requires pyarrow. Raises ImportError if pyarrow is unavailable.
     """
     try:
-        import pyarrow as pa  # ty: ignore[unresolved-import]
-        import pyarrow.parquet as pq  # ty: ignore[unresolved-import]
+        import pyarrow as pa
+        import pyarrow.parquet as pq
     except (ImportError, ModuleNotFoundError) as exc:
         raise ImportError(
             "export_axes_parquet requires pyarrow. Install with: pip install pyarrow"
