@@ -4325,6 +4325,7 @@ dev = [
 eda = [
     { name = "matplotlib" },
     { name = "pandas" },
+    { name = "pyarrow" },
     { name = "seaborn" },
     { name = "vl-convert-python" },
 ]
@@ -4332,6 +4333,9 @@ eda-matplotlib = [
     { name = "matplotlib" },
     { name = "pandas" },
     { name = "seaborn" },
+]
+eda-parquet = [
+    { name = "pyarrow" },
 ]
 eda-vega = [
     { name = "vl-convert-python" },
@@ -4408,6 +4412,8 @@ requires-dist = [
     { name = "outlines", marker = "extra == 'authoring-smoke'", specifier = ">=1.0" },
     { name = "pandas", marker = "extra == 'eda'", specifier = ">=2.0" },
     { name = "pandas", marker = "extra == 'eda-matplotlib'", specifier = ">=2.0" },
+    { name = "pyarrow", marker = "extra == 'eda'", specifier = ">=14.0" },
+    { name = "pyarrow", marker = "extra == 'eda-parquet'", specifier = ">=14.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pytest-benchmark", marker = "extra == 'dev'", specifier = ">=5.2.3" },
@@ -4427,7 +4433,7 @@ requires-dist = [
     { name = "vl-convert-python", marker = "extra == 'eda-vega'", specifier = ">=1.0.0" },
     { name = "zarr", marker = "extra == 'io'", specifier = ">=3.0.8" },
 ]
-provides-extras = ["authoring-smoke", "cli", "controller", "data", "dev", "eda", "eda-matplotlib", "eda-vega", "export", "export-runtime", "io", "onnx", "plugin"]
+provides-extras = ["authoring-smoke", "cli", "controller", "data", "dev", "eda", "eda-matplotlib", "eda-parquet", "eda-vega", "export", "export-runtime", "io", "onnx", "plugin"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "xtrax", extras = ["dev"] }]
