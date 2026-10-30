@@ -132,6 +132,7 @@ def _plain_dir(tmp_path: Path) -> Path:
 
 
 def _guard(tmp_path, runner, emitted=None, **kw):
+    kw.setdefault("cap_fraction", 0.80)  # the ported alynxr cases were written against 0.80
     return FileCapGuard(
         _plain_dir(tmp_path),
         runner=runner,
@@ -692,3 +693,19 @@ def test_orcd_disabled_with_none(tmp_path):
         roots["scratch"], _runner("nfs", df=(0, DF_I_SCRATCH)), user="u", orcd_dir=None
     )
     assert all(r.source != "orcd_report" for r in rs)
+
+
+def test_default_cap_is_095_and_admits_scratch_at_81_percent(tmp_path):
+    assert fileguard.DEFAULT_CAP_FRACTION == 0.95
+    home, orcd, roots = _orcd_tree(tmp_path)
+    g = FileCapGuard(
+        roots["scratch"],
+        runner=_runner("nfs", df=(0, DF_I_SCRATCH)),
+        user="u",
+        orcd_dir=orcd,
+        check_setgid_group=False,
+    )
+    assert g.cap_fraction == 0.95
+    g.check(1)  # SCRATCH at 81.53% is under the default cap
+    with pytest.raises(QuotaRefused):
+        g.check(200_000)  # ...and a burst that would cross 95% is refused

@@ -69,8 +69,9 @@ LFS = (
 def run(argv):
     return (0, "lustre\n") if argv[0] == "stat" else (0, LFS)
 seen = []
-g = ns["FileCapGuard"](sys.argv[2], runner=run, user="u",
-                        emit=lambda n, f: seen.append(n), check_setgid_group=False)
+g = ns["FileCapGuard"](sys.argv[2], runner=run, user="u", cap_fraction=0.8,
+                        emit=lambda n, f: seen.append(n), check_setgid_group=False,
+                        orcd_dir=None)
 try:
     g.check(100)
 except ns["QuotaRefused"] as e:

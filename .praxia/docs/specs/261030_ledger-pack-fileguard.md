@@ -212,7 +212,7 @@ This lifts alynxr's `FileCapGuard` (`storage.py`) **with its semantics intact**:
   the `plugin` extra is installed. `storage.py` hard-imports cisternal, and xtrax must not, because
   cisternal is only an optional extra here (`pyproject.toml:124`).
 - Concurrent jobs (v3): the guard is per process, so N jobs each interpolating `reread_every` files
-  can overshoot the cap by up to N × `reread_every`. `cap_fraction` (default 0.80) is the slack. The
+  can overshoot the cap by up to N × `reread_every`. `cap_fraction` (default 0.95 since 2026-10-30, owner: 0.80 was too low) is the slack. The
   planner states N and checks `N × reread_every < (1 - cap_fraction) × files_limit`, and refuses at
   plan time when it does not hold.
 - Quarantine directories (3.5) and `archive/` are counted. They are never deleted, so they are a

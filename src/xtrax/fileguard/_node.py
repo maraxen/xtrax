@@ -48,6 +48,10 @@ PathLike = Union[str, Path]
 
 #: ``stat -f -c %T`` name of a Lustre mount.
 LUSTRE = "lustre"
+#: Default refusal threshold as a fraction of the real limit. 0.95 leaves a 5% slack: with the
+#: default ``reread_every`` of 1000, up to 49 concurrent guards fit a 1M-file cap
+#: (:func:`check_concurrency_slack`). Lower it for many concurrent writers.
+DEFAULT_CAP_FRACTION = 0.95
 REFUSAL_EVENT = "xtrax.fileguard.refusal"
 READING_EVENT = "xtrax.fileguard.quota_reading"
 LIMIT_UNKNOWN_EVENT = "xtrax.fileguard.quota_limit_unknown"
@@ -633,7 +637,7 @@ class FileCapGuard:
         self,
         path: PathLike,
         *,
-        cap_fraction: float = 0.80,
+        cap_fraction: float = DEFAULT_CAP_FRACTION,
         reread_every: int = 1000,
         runner: Optional[Runner] = None,
         user: Optional[str] = None,

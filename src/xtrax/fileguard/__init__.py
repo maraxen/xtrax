@@ -27,6 +27,7 @@ Typical use::
 from pathlib import Path
 
 from xtrax.fileguard._node import (
+    DEFAULT_CAP_FRACTION,
     LIMIT_UNKNOWN_EVENT,
     LUSTRE,
     ORCD_MAX_AGE_S,
@@ -55,6 +56,7 @@ from xtrax.fileguard._node import (
 )
 
 __all__ = [
+    "DEFAULT_CAP_FRACTION",
     "LIMIT_UNKNOWN_EVENT",
     "LUSTRE",
     "ORCD_MAX_AGE_S",
