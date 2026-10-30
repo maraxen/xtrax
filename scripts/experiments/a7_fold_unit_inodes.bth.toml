@@ -1,0 +1,90 @@
+[experiment]
+hypothesis = """
+A7 (task 261030_xtrax-ledger-pack; spec .praxia/docs/specs/261030_ledger-pack-fileguard.md §4):
+packing alynxr fold units is
+worth building. A packed unit costs about 4 inodes (unit dir, pack, index, record), so packing pays
+when the median loose unit is at least 12 inodes (saves at least two-thirds). Below 8 inodes the
+saving is under half and the pack is not worth its code.
+
+Input: a file listing of Engaging ~/orcd/scratch/alynxr_runs/g_m1_261016/folds (owner-chosen,
+2026-10-30), captured with find -printf and committed at
+outputs/probes/a7/g_m1_261016_folds.listing.tsv; its sha256 is in the result. Representativeness limit: this batch is three openfold3 arms run through alynxr's
+ColabFold runner (g_m1 test campaigns), not a production ColabFold-AF2 batch.
+
+Disclosure: before the first version of this sidecar was written, the layout of ONE unit was
+inspected (to define the unit rule). Thresholds come from the packed-unit cost above, not from
+that unit.
+
+AMENDMENT 1 (2026-10-30, after run ed1939bb-e32a-464c-a54f-1aeef2de2250, outcome 'observed'):
+that run counted every unit DIRECTORY; most were empty (unrun units in a test campaign), so its
+median measured the campaign layout, not finished units. The unit rule is changed to COMPLETED
+units (a *.done.txt below the unit dir); the thresholds are unchanged. NOT BLIND: after run 1 an
+ad-hoc inspection of the listing showed every non-empty unit holding at least 10 files. Treat this
+run's verdict as post-hoc-informed and provisional; a production ColabFold batch is the proper test.
+"""
+stage_name = "exploration"
+
+[observe]
+outputs = [
+  "median / min / max inodes per unit: the unit directory plus every entry below it",
+  "median_models_per_unit: *_rank_*.cif files per unit (R = models x seeds)",
+  "unassigned_entries: entries outside any fold_campaigns/<c>/<arm>/<unit> directory",
+  "control_ok: synthetic positive control exact, negative control detected",
+]
+looking_for = """
+Whether a fold unit's loose footprint is large enough that a 4-inode packed form is worth
+building. The controls check the counting rule on a synthetic listing with a known answer
+(positive) and that moving a file out of a unit changes the answer (negative).
+"""
+sanity = [
+  "n_units >= 0",
+  "median_inodes_per_unit >= 0",
+]
+
+[outcomes.pass]
+condition = "control_ok AND n_units >= 10 AND median_inodes_per_unit >= 12"
+decision = "build xtrax.pack for alynxr fold units (spec §3.3)"
+reasoning = "packing saves at least two-thirds of a unit's inodes"
+source = "sesoi:12:a packed unit costs ~4 inodes, so 12 loose inodes is a two-thirds saving"
+is_residual = false
+
+[outcomes.marginal]
+condition = "control_ok AND n_units >= 10 AND median_inodes_per_unit >= 8 AND median_inodes_per_unit < 12"
+decision = "owner decision: saving between one-half and two-thirds"
+reasoning = "packing helps, but less than the threshold that justifies it outright"
+source = "sesoi:8:a packed unit costs ~4 inodes, so 8 loose inodes is a one-half saving"
+is_residual = false
+
+[outcomes.fail_not_worth]
+condition = "control_ok AND n_units >= 10 AND median_inodes_per_unit < 8"
+decision = "do not build the pack for fold units; look elsewhere for the inode cost"
+reasoning = "a packed unit would save less than half"
+source = "sesoi:8:below a one-half saving the pack does not pay for its code"
+is_residual = false
+
+[outcomes.instrument_invalid]
+condition = "true"
+decision = "fix the instrument or the listing before reading any count"
+reasoning = "a control failed or the listing held fewer than 10 units"
+is_residual = true
+
+[result_schema]
+control_ok = "bool"
+positive_control_ok = "bool"
+negative_control_detected = "bool"
+n_units = "int"
+n_unit_dirs_total = "int"
+n_unit_dirs_empty = "int"
+n_arms = "int"
+median_inodes_per_unit = "float"
+min_inodes_per_unit = "int"
+max_inodes_per_unit = "int"
+median_models_per_unit = "float"
+total_unit_inodes = "int"
+unassigned_entries = "int"
+packed_inodes_per_unit = "int"
+inode_saving_fraction_at_median = "float"
+listing_sha256 = "str"
+
+[outputs]
+roots = ["outputs/probes/a7/g_m1_261016_folds.result.json"]

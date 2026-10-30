@@ -100,6 +100,21 @@ class StoreIdentityMismatch(DurableStoreError):
         super().__init__(msg)
 
 
+class QuarantineRaceError(DurableStoreError):
+    """Raised when a key judged damaged turns out to hold a valid committed group.
+
+    A racing writer replaced the damaged group between the caller's judgement and the move.
+    Nothing is lost: the valid group is put back, or, if a newer one already took its place,
+    both are kept (the displaced one stays in the quarantine).
+    """
+
+    def __init__(self, key: tuple[str, ...], moved_to: Path | None, reason: str) -> None:
+        self.key = key
+        self.moved_to = moved_to
+        self.reason = reason
+        super().__init__(f"QuarantineRaceError: key={key}: {reason}")
+
+
 class NotADurableStoreError(DurableStoreError):
     """Raised when a directory is not a durable store."""
 
@@ -293,6 +308,7 @@ def commit_key(
     meta: Mapping[str, Any] | None = None,
     run_id: str,
     env: Mapping[str, Any],
+    verify_duplicate: bool = False,
 ) -> Committed | Duplicate:
     """Atomically commit a staged group into the store under the given key.
 
@@ -312,6 +328,12 @@ def commit_key(
         meta: Optional metadata dict (stored as-is).
         run_id: The run ID (included in the record).
         env: Environment dict (included in the record).
+        verify_duplicate: When True, a target already committed with the same
+            ``input_digest`` is a ``Duplicate`` only if its recorded content digest also
+            equals this staged group's; otherwise ``CommitConflictError`` is raised. When
+            False (the default this minor) ``Duplicate`` is decided on ``input_digest``
+            alone, so a nondeterministic producer or a damaged-but-recorded key passes as a
+            duplicate. The default becomes True in the next minor.
 
     Returns:
         Committed if the key was newly committed.
@@ -326,7 +348,8 @@ def commit_key(
         UnknownPrefixError: If the target prefix does not exist as a zarr group, or
             the prefix is itself a committed key or lies inside one (committed keys
             are immutable; nothing is renamed and the staged dir is removed).
-        CommitConflictError: If the target exists with a different input_digest.
+        CommitConflictError: If the target exists with a different input_digest, or (with
+            ``verify_duplicate``) with the same input_digest and different content.
     """
     try:
         import zarr
@@ -397,6 +420,16 @@ def commit_key(
                     key, existing, input_digest, "uncommitted or tampered group already at target"
                 ) from e
             if existing.input_digest == input_digest:
+                if verify_duplicate and existing.content_digest != content_digest:
+                    raise CommitConflictError(
+                        key,
+                        existing,
+                        input_digest,
+                        "same input_digest, different content "
+                        f"(committed {existing.content_digest[:12]}, "
+                        f"staged {content_digest[:12]}): a nondeterministic producer, "
+                        "tampering, or a damaged committed key",
+                    ) from e
                 return Duplicate(existing)
             raise CommitConflictError(
                 key, existing, input_digest, "different input_digest already committed"
@@ -548,6 +581,83 @@ def committed_keys(store: Path, prefix: tuple[str, ...] = ()) -> list[tuple[str,
 
     walk(search_root, list(prefix))
     return sorted(committed)
+
+
+def quarantine_root(store: Path) -> Path:
+    """Return the quarantine directory root (sibling of store with .quarantine suffix)."""
+    return store.with_name(store.name + ".quarantine")
+
+
+def _group_is_valid(group_dir: Path) -> bool:
+    """True iff ``group_dir`` holds a committed group whose content matches its own record.
+
+    Environmental I/O errors propagate (they say nothing about the group), as in ``lookup``.
+    """
+    record = read_record(group_dir)
+    if record is None:
+        return False
+    from zarr.errors import BaseZarrError
+
+    try:
+        return zarr_content_digest(group_dir) == record.content_digest
+    except MemoryError:
+        raise
+    except BaseZarrError:
+        return False
+    except OSError:
+        raise
+    except Exception:
+        return False
+
+
+def quarantine(store: Path, key: tuple[str, ...]) -> Path | None:
+    """Move a damaged or uncommitted key out of the store; never deletes it.
+
+    The key moves to ``<store>.quarantine/<prefix>/<last>-<uuid8>`` (outside the store, so
+    ``committed_keys`` and ``lookup`` no longer see it, and the key can be committed again).
+    The moved directory is then checked against its own record. If it verifies, a racing
+    writer had replaced the damaged group with a good one before the move: it is renamed
+    back and :class:`QuarantineRaceError` is raised. If a newer group has meanwhile taken
+    the key, both are kept and :class:`QuarantineRaceError` is raised.
+
+    Lifted from alynxr ``fold_stats/array_commit.py`` (spec 261030_ledger-pack-fileguard §3.5).
+
+    Returns:
+        The quarantined path, or ``None`` when the key was already gone (another writer
+        moved it).
+    """
+    target = store / key_path(key)
+    dest_parent = quarantine_root(store).joinpath(*key[:-1])
+    dest = dest_parent / f"{key[-1]}-{uuid.uuid4().hex[:8]}"
+    if not target.exists():
+        return None
+    dest_parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.rename(str(target), str(dest))
+    except FileNotFoundError:
+        return None
+    fsync_directory(target.parent)
+    fsync_directory(dest_parent)
+    if not _group_is_valid(dest):
+        return dest
+    try:
+        os.rename(str(dest), str(target))
+    except OSError as e:
+        if e.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+            raise
+        raise QuarantineRaceError(
+            key,
+            dest,
+            f"{target} held a valid group that a racing writer made after it was judged "
+            f"damaged; it was moved to {dest} and a newer one is now in place",
+        ) from e
+    fsync_directory(target.parent)
+    raise QuarantineRaceError(
+        key,
+        None,
+        f"{target} held a valid group when it was about to be quarantined (a racing writer "
+        "replaced the damaged one); it was put back untouched",
+    )
 
 
 _GC_SUFFIX_RE = re.compile(r"\.gc-[0-9a-f]{8}$")
