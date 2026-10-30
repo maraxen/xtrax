@@ -2,7 +2,6 @@
 
 - **task_id**: `261030_xtrax-ledger-pack`
 - **status**: DRAFT v3. Two adversarial passes on 2026-10-30: v1 against the code (§8), and v2 by an independent challenger (§9). Owner decisions D1 and D2 are taken (§7). No code has been written.
-  objection with its evidence and resolution. Two owner decisions are open (§7). No code has been written.
 - **consumers**: alynxr, aminx, aminx-ensemble, demistify, prolix
 - **origin**: owner request 2026-10-30 (upstream the alynxr provenance/consolidation design into xtrax).
   Owner decisions already taken: (1) recon the five consumers first; (2) the index is **lock-free
