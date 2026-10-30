@@ -80,6 +80,7 @@
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [261030_xtrax-0-4-1b6-dependent-scope](research/261030_xtrax-0-4-1b6-dependent-scope.md) — Verified list of xtrax consumers across ~/projects, with pin ranges, removed-API hits and vendored copies, for the dependent-update debt items 3142 and 3143.
 - [261026_accumulate-grads-vs-optax-microbatching](research/261026_accumulate-grads-vs-optax-microbatching.md) — Pre-registered CPU parity probe: optax micro_grad MEAN matches xtrax accumulate_grads (f32 grad rel L2 7.4e-8, f64 1.7e-16) on mean-of-examples losses; 11 semantic differences listed, batch-coupled losses differ by 24%
 - [261023_pallas-block-sparse-spike](research/261023_pallas-block-sparse-spike.md) — Interpret-mode Pallas kernel: parity, custom_vjp grads, jit/vmap, dataclass config, export; Mosaic GPU export blocked on jax 0.11.1
 - [261020_hoist_invariant_cpu](research/data/261020_hoist_invariant_cpu.json)
