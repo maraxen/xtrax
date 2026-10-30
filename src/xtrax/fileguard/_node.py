@@ -31,9 +31,11 @@ import grp
 import json
 import logging
 import os
+import re
 import shlex
 import stat as _stat
 import subprocess
+import time
 import uuid
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
@@ -396,12 +398,139 @@ def _read_quota_cmd(
     )
 
 
+#: Name of the per-user report MIT ORCD (Engaging) writes as root into ``$HOME/orcd/``
+#: (``/etc/profile.d/orcd-quota.sh`` prints it at login; refreshed about every 10 minutes).
+ORCD_REPORT_NAME = ".quota"
+#: A report older than this is refused as unreadable: a stale count is not a reading.
+ORCD_MAX_AGE_S = 3600.0
+_ORCD_NUM = re.compile(r"^([0-9]+(?:\.([0-9]+))?)([KMGT]?)$")
+_ORCD_MULT = {"": 1, "K": 10**3, "M": 10**6, "G": 10**9, "T": 10**12}
+
+
+def _orcd_count(token: str) -> Tuple[float, float]:
+    """``(value, half_rounding_unit)`` of a rounded count such as ``815.3K`` or ``1.0M``."""
+    m = _ORCD_NUM.match(token)
+    if m is None:
+        raise ValueError(f"unparseable ORCD count {token!r}")
+    mult = _ORCD_MULT[m.group(3)]
+    decimals = len(m.group(2) or "")
+    return float(m.group(1)) * mult, 0.5 * mult / (10**decimals)
+
+
+def parse_orcd_report(text: str) -> Dict[str, Tuple[int, int]]:
+    """``{SPACE: (files_used, files_limit)}`` from an ORCD ``QUOTA REPORT``.
+
+    Rows are ``SPACE | Usage (GB) | Limit (GB) | % Used | Files | Limit | % Used``. The file
+    counts are rounded (``815.3K``, ``1.1M``) but the files ``% Used`` has two decimals, so the
+    reading is made conservative and fraction-exact: ``files_limit`` is the rounded limit minus
+    half its rounding unit (a lower bound on the real limit), and ``files_used`` is the precise
+    percentage of that limit. The guard's ``used / limit`` comparison therefore keeps the
+    report's own precision while the absolute headroom is never overstated.
+    """
+    rows: Dict[str, Tuple[int, int]] = {}
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.split("|")]
+        if len(cells) != 7 or not cells[0] or cells[0] == "Space" or cells[0].startswith("-"):
+            continue
+        limit, half = _orcd_count(cells[5])
+        try:
+            pct = float(cells[6])
+        except ValueError:
+            raise ValueError(f"unparseable ORCD files % Used {cells[6]!r}") from None
+        files_limit = int(limit - half)
+        rows[cells[0].upper()] = (int(round(pct / 100.0 * files_limit)), files_limit)
+    if not rows:
+        raise ValueError("ORCD report has no quota rows")
+    return rows
+
+
+def orcd_space_roots(orcd_dir: PathLike, home: Optional[PathLike] = None) -> Dict[str, Path]:
+    """``{SPACE: resolved root}``: HOME is the home directory; the others are the symlinks in
+    the ORCD directory (``scratch -> /orcd/scratch/...``, ``pool -> /orcd/pool/...``)."""
+    d = Path(orcd_dir)
+    roots = {"HOME": Path(home if home is not None else Path.home()).resolve()}
+    for child in sorted(d.iterdir()):
+        if child.is_symlink():
+            roots.setdefault(child.name.upper(), child.resolve())
+    return roots
+
+
+def default_orcd_dir() -> Optional[Path]:
+    """``~/orcd`` when it holds an ORCD report, else None (not an ORCD cluster)."""
+    d = Path.home() / "orcd"
+    return d if (d / ORCD_REPORT_NAME).is_file() else None
+
+
+def _read_orcd(
+    emit: Emitter,
+    path: PathLike,
+    kind: str,
+    orcd_dir: Path,
+    who: str,
+    max_age_s: float,
+    home: Optional[PathLike],
+) -> Optional[QuotaReading]:
+    """The ORCD report row for the space ``path`` lies in; None (with an event) if none does."""
+    report = orcd_dir / ORCD_REPORT_NAME
+    command = f"read {report}"
+    try:
+        raw = report.read_text(encoding="utf-8")
+        age = time.time() - report.stat().st_mtime
+        rows = parse_orcd_report(raw)
+    except (OSError, ValueError) as e:
+        _refuse(emit, path, kind, command, f"cannot read the ORCD quota report {report}: {e}")
+    if age > max_age_s:
+        _refuse(
+            emit,
+            path,
+            kind,
+            command,
+            f"the ORCD quota report {report} is {age:.0f} s old (max {max_age_s:.0f} s); "
+            "refusing a stale count",
+        )
+    target = existing_ancestor(path).resolve()
+    best: Optional[Tuple[str, Path]] = None
+    for space, root in orcd_space_roots(orcd_dir, home).items():
+        if space in rows and (target == root or root in target.parents):
+            if best is None or len(root.parts) > len(best[1].parts):
+                best = (space, root)
+    if best is None:
+        emit(
+            LIMIT_UNKNOWN_EVENT,
+            {
+                "refusal_id": "R-X1-limit-unknown",
+                "path": str(path),
+                "command": command,
+                "scope": "user",
+                "principal": who,
+                "detail": f"{target} is under no space in the ORCD report ({sorted(rows)})",
+            },
+        )
+        return None
+    files_used, files_limit = rows[best[0]]
+    return QuotaReading(
+        files_used=files_used,
+        files_limit=files_limit,
+        source="orcd_report",
+        command=command,
+        raw=raw,
+        path=str(path),
+        taken_at=_now_utc(),
+        fs_type=kind,
+        scope="user",
+        principal=f"{who}:{best[0]}",
+    )
+
+
 def read_quotas(
     path: PathLike,
     runner: Optional[Runner] = None,
     user: Optional[str] = None,
     emit: Emitter = log_emitter,
     group: Optional[str] = None,
+    orcd_dir: Union[PathLike, None, str] = "auto",
+    orcd_max_age_s: float = ORCD_MAX_AGE_S,
+    home: Optional[PathLike] = None,
 ) -> List[QuotaReading]:
     """Every quota that bounds new files under ``path``, tightest scope first.
 
@@ -411,12 +540,23 @@ def read_quotas(
     shared NFS server the ``df`` figure is the whole server, so it is never the per-user cap;
     when ``quota`` reports no row for the device, a ``quota_limit_unknown`` event says the
     guard cannot see a per-user cap there.
+
+    MIT ORCD (Engaging): ``orcd_dir`` (default ``"auto"``: ``~/orcd`` when it holds a
+    ``.quota`` report; ``None`` disables) adds the per-user report row for the space
+    (HOME, SCRATCH, POOL) the path resolves into. This is the only per-user source for
+    scratch and pool there. An unreadable, unparseable or stale (``orcd_max_age_s``) report
+    is refused, never skipped.
     """
     run = runner or default_runner
     who = user or getpass.getuser()
     kind = fs_type(path, run, emit)
+    resolved_orcd = default_orcd_dir() if orcd_dir == "auto" else orcd_dir
+    orcd_reading = None
+    if resolved_orcd is not None:
+        orcd_reading = _read_orcd(emit, path, kind, Path(resolved_orcd), who, orcd_max_age_s, home)
     if kind == LUSTRE:
-        readings = [_read_lfs(run, emit, path, kind, "-u", who)]
+        readings = [r for r in (orcd_reading,) if r is not None]
+        readings.append(_read_lfs(run, emit, path, kind, "-u", who))
         if group is not None:
             readings.append(_read_lfs(run, emit, path, kind, "-g", group))
         return readings
@@ -426,7 +566,7 @@ def read_quotas(
         raise RuntimeError(f"cannot read file quota for {path}: df rc={rc}")
     fs_reading = replace(parse_df_inodes(out, path), command=shlex.join(argv), fs_type=kind)
     device = _df_device(out)
-    readings: List[QuotaReading] = []
+    readings = [r for r in (orcd_reading,) if r is not None]
     principals = [("-u", who)] + ([("-g", group)] if group is not None else [])
     for flag, principal in principals:
         r = _read_quota_cmd(run, emit, path, kind, device, flag, principal)
@@ -500,6 +640,8 @@ class FileCapGuard:
         emit: Emitter = log_emitter,
         record_path: Optional[PathLike] = None,
         check_setgid_group: bool = True,
+        orcd_dir: Union[PathLike, None, str] = "auto",
+        orcd_max_age_s: float = ORCD_MAX_AGE_S,
     ) -> None:
         if not 0.0 < cap_fraction <= 1.0:
             raise ValueError(f"cap_fraction must be in (0, 1], got {cap_fraction}")
@@ -512,6 +654,8 @@ class FileCapGuard:
         self._runner = runner
         self._user = user
         self._emit = emit
+        self._orcd_dir = orcd_dir
+        self._orcd_max_age_s = orcd_max_age_s
         self.location = describe_location(path)
         self._group = self.location.group if check_setgid_group and self.location.setgid else None
         self.last_readings: List[QuotaReading] = self._take()
@@ -525,7 +669,13 @@ class FileCapGuard:
 
     def _take(self) -> List[QuotaReading]:
         readings = read_quotas(
-            self.path, runner=self._runner, user=self._user, emit=self._emit, group=self._group
+            self.path,
+            runner=self._runner,
+            user=self._user,
+            emit=self._emit,
+            group=self._group,
+            orcd_dir=self._orcd_dir,
+            orcd_max_age_s=self._orcd_max_age_s,
         )
         for r in readings:
             self._emit(

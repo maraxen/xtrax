@@ -24,6 +24,7 @@ from xtrax.fileguard import (
     fs_type,
     parse_df_inodes,
     parse_lfs_quota,
+    parse_orcd_report,
     parse_quota_rows,
     read_quota,
     read_quotas,
@@ -101,6 +102,12 @@ def _runner(
         raise AssertionError(f"unexpected argv {argv!r}")
 
     return run
+
+
+@pytest.fixture(autouse=True)
+def _no_host_orcd(monkeypatch):
+    """Tests never read the host's ~/orcd report unless they ask for it."""
+    monkeypatch.setattr(fileguard._node, "default_orcd_dir", lambda: None)
 
 
 @pytest.fixture
@@ -547,3 +554,141 @@ def test_nfs_group_quota_none_is_flagged_and_user_still_enforced(tmp_path, event
     rs = read_quotas(tmp_path, run, user="maarxaru", group="so3", emit=_emit_into(events))
     assert [r.scope for r in rs] == ["user", "filesystem"]
     assert _named(events, LIMIT_UNKNOWN_EVENT)[0]["scope"] == "group"
+
+
+# --- MIT ORCD (Engaging) per-user report: ~/orcd/.quota ---------------------------------------
+
+# Exact text of ~/orcd/.quota as captured on Engaging 2026-10-30 (fixture, not a finding).
+ORCD_REPORT = """\
+                               QUOTA REPORT
+ Space   | Usage (GB) | Limit (GB) | % Used |  Files | Limit | % Used
+---------+------------+------------+--------+--------+-------+--------
+ HOME    |       38.3 |      200.0 |  19.15 | 217.2K |  1.0M |  21.72
+ SCRATCH |      207.5 |     1024.0 |  20.26 | 815.3K |  1.0M |  81.53
+ POOL    |      125.6 |     1024.0 |  12.27 |   1.1M |  1.1M |  99.36
+Last updated: Fri Oct 30 15:01:06 EDT 2026
+"""
+
+
+def _orcd_tree(tmp_path, report=ORCD_REPORT):
+    """A home with an orcd/ dir: the report plus scratch/pool symlinks to separate roots."""
+    home = tmp_path / "home"
+    orcd = home / "orcd"
+    orcd.mkdir(parents=True)
+    roots = {name: tmp_path / f"{name}_root" for name in ("scratch", "pool")}
+    for name, root in roots.items():
+        root.mkdir()
+        (orcd / name).symlink_to(root)
+    (orcd / ".quota").write_text(report)
+    (tmp_path / "compute").mkdir()
+    return home, orcd, roots
+
+
+def _orcd_read(tmp_path, target, events=None, **kw):
+    home, orcd, roots = _orcd_tree(tmp_path)
+    return read_quotas(
+        target(home, roots),
+        _runner("nfs", df=(0, DF_I_SCRATCH)),
+        user="u",
+        emit=_emit_into(events if events is not None else []),
+        orcd_dir=orcd,
+        home=home,
+        **kw,
+    )
+
+
+def test_parse_orcd_report_is_conservative_and_fraction_exact():
+    rows = parse_orcd_report(ORCD_REPORT)
+    assert set(rows) == {"HOME", "SCRATCH", "POOL"}
+    # limit = rounded limit minus half a rounding unit; used = the precise % of that limit
+    assert rows["SCRATCH"] == (774535, 950000)
+    assert rows["POOL"] == (1043280, 1050000)
+    assert rows["HOME"] == (206340, 950000)
+
+
+@pytest.mark.parametrize("text", ["", "no table here", ORCD_REPORT.replace("81.53", "n/a")])
+def test_parse_orcd_report_unparseable_raises(text):
+    with pytest.raises(ValueError):
+        parse_orcd_report(text)
+
+
+def test_orcd_space_roots_follow_the_symlinks(tmp_path):
+    home, orcd, roots = _orcd_tree(tmp_path)
+    got = fileguard.orcd_space_roots(orcd, home)
+    assert got["SCRATCH"] == roots["scratch"].resolve()
+    assert got["POOL"] == roots["pool"].resolve()
+    assert got["HOME"] == home.resolve()
+
+
+def test_scratch_path_gets_the_orcd_scratch_row_first(tmp_path):
+    rs = _orcd_read(tmp_path, lambda home, roots: roots["scratch"] / "runs" / "new")
+    assert (rs[0].source, rs[0].principal) == ("orcd_report", "u:SCRATCH")
+    assert (rs[0].files_used, rs[0].files_limit) == (774535, 950000)
+    assert rs[-1].scope == "filesystem"
+
+
+def test_path_through_the_home_symlink_resolves_to_scratch_not_home(tmp_path):
+    rs = _orcd_read(tmp_path, lambda home, roots: home / "orcd" / "scratch" / "x")
+    assert rs[0].principal == "u:SCRATCH"
+
+
+def test_negative_control_pool_at_99_percent_refuses_where_df_alone_would_admit(tmp_path):
+    home, orcd, roots = _orcd_tree(tmp_path)
+    target = roots["pool"] / "out"
+    target.mkdir()
+    run = _runner("nfs", df=(0, DF_I_SCRATCH))
+    g = FileCapGuard(target, runner=run, user="u", orcd_dir=orcd, check_setgid_group=False)
+    with pytest.raises(QuotaRefused, match="R-X1"):
+        g.check(1)
+    blind = FileCapGuard(target, runner=run, user="u", orcd_dir=None, check_setgid_group=False)
+    blind.check(1)  # the server-wide df reading alone admits it
+
+
+def test_path_in_no_orcd_space_is_flagged(tmp_path, events):
+    rs = _orcd_read(tmp_path, lambda home, roots: home.parent / "compute", events)
+    assert [r.scope for r in rs] == ["filesystem"]
+    flagged = [e for e in _named(events, LIMIT_UNKNOWN_EVENT) if "ORCD" in e["detail"]]
+    assert flagged
+
+
+def test_negative_control_stale_orcd_report_is_refused(tmp_path):
+    home, orcd, roots = _orcd_tree(tmp_path)
+    old = 1_000_000_000
+    os.utime(orcd / ".quota", (old, old))
+    with pytest.raises(QuotaUnreadable, match="stale"):
+        read_quotas(
+            roots["scratch"],
+            _runner("nfs", df=(0, DF_I_SCRATCH)),
+            user="u",
+            orcd_dir=orcd,
+            home=home,
+        )
+
+
+def test_unparseable_orcd_report_is_refused(tmp_path):
+    home, orcd, roots = _orcd_tree(tmp_path, report="garbage\n")
+    with pytest.raises(QuotaUnreadable, match="ORCD quota report"):
+        read_quotas(
+            roots["scratch"],
+            _runner("nfs", df=(0, DF_I_SCRATCH)),
+            user="u",
+            orcd_dir=orcd,
+            home=home,
+        )
+
+
+def test_auto_detects_orcd_dir_under_home(tmp_path, monkeypatch):
+    monkeypatch.undo()  # drop the autouse "no host orcd" patch for this test
+    home, orcd, roots = _orcd_tree(tmp_path)
+    monkeypatch.setattr(fileguard._node.Path, "home", classmethod(lambda cls: home))
+    assert fileguard.default_orcd_dir() == orcd
+    rs = read_quotas(roots["pool"], _runner("nfs", df=(0, DF_I_SCRATCH)), user="u", home=home)
+    assert rs[0].principal == "u:POOL"
+
+
+def test_orcd_disabled_with_none(tmp_path):
+    home, orcd, roots = _orcd_tree(tmp_path / "b")
+    rs = read_quotas(
+        roots["scratch"], _runner("nfs", df=(0, DF_I_SCRATCH)), user="u", orcd_dir=None
+    )
+    assert all(r.source != "orcd_report" for r in rs)

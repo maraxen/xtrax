@@ -7,7 +7,9 @@ process stay visible. Lustre: ``lfs quota`` (refused, never replaced by a filesy
 ``df -i``). Elsewhere: the per-user ``quota -w`` row for the path's device plus the
 filesystem ``df -i`` reading; a path with no per-user row is flagged with a
 ``quota_limit_unknown`` event, because a shared NFS server's ``df -i`` is never the user's cap.
-When the target directory is setgid, the owning group's quota is enforced too.
+When the target directory is setgid, the owning group's quota is enforced too. On MIT ORCD
+(Engaging) the root-written ``~/orcd/.quota`` report supplies the per-user HOME, SCRATCH and POOL
+file counts, which ``quota`` does not report for scratch or pool.
 
 The logic lives in :mod:`xtrax.fileguard._node`, which is stdlib-only and Python 3.9 compatible
 so a cluster script can embed it (:func:`node_source`) where xtrax is not installed. This module
@@ -27,6 +29,8 @@ from pathlib import Path
 from xtrax.fileguard._node import (
     LIMIT_UNKNOWN_EVENT,
     LUSTRE,
+    ORCD_MAX_AGE_S,
+    ORCD_REPORT_NAME,
     READING_EVENT,
     REFUSAL_EVENT,
     Emitter,
@@ -37,11 +41,14 @@ from xtrax.fileguard._node import (
     QuotaUnreadable,
     Runner,
     check_concurrency_slack,
+    default_orcd_dir,
     describe_location,
     fs_type,
     log_emitter,
+    orcd_space_roots,
     parse_df_inodes,
     parse_lfs_quota,
+    parse_orcd_report,
     parse_quota_rows,
     read_quota,
     read_quotas,
@@ -50,6 +57,8 @@ from xtrax.fileguard._node import (
 __all__ = [
     "LIMIT_UNKNOWN_EVENT",
     "LUSTRE",
+    "ORCD_MAX_AGE_S",
+    "ORCD_REPORT_NAME",
     "READING_EVENT",
     "REFUSAL_EVENT",
     "Emitter",
@@ -61,12 +70,15 @@ __all__ = [
     "Runner",
     "check_concurrency_slack",
     "default_emitter",
+    "default_orcd_dir",
     "describe_location",
     "fs_type",
     "log_emitter",
     "node_source",
+    "orcd_space_roots",
     "parse_df_inodes",
     "parse_lfs_quota",
+    "parse_orcd_report",
     "parse_quota_rows",
     "read_quota",
     "read_quotas",
