@@ -21,6 +21,7 @@ _PACKAGES = [
     "xtrax.config",
     "xtrax.data.module",
     "xtrax.export",
+    "xtrax.fileguard",
     "xtrax.inference",
     "xtrax.inference.errors",
     "xtrax.kernel_seam",
