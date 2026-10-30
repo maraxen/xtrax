@@ -18,7 +18,7 @@ Quota sources:
   the read is REFUSED; ``df -i`` is filesystem-wide on Lustre and is never a substitute.
 * Elsewhere (NFS, ext4, ...): the ``quota -w -u`` (and ``-g``) row for the path's ``df`` device,
   plus the filesystem-wide ``df -i -P`` reading. On a shared NFS server ``df -i`` is the whole
-  server and never the per-user cap (Engaging scratch, 2026-10-30: ~6.3e9 inodes at 1%), so a
+  server and never the per-user cap, so a
   path with no ``quota`` row emits ``quota_limit_unknown`` for the user scope instead of being
   trusted silently. An unknown filesystem type (``stat -f`` fails) is refused.
 
@@ -408,9 +408,9 @@ def read_quotas(
     Lustre: the user's ``lfs quota -u`` reading, plus ``lfs quota -g <group>`` when ``group``
     is given. Elsewhere (NFS, ext4, ...): the ``quota -w -u`` (and ``-g``) row whose device
     matches the path's ``df`` device, then the filesystem-wide ``df -i -P`` reading. On a
-    shared NFS server the ``df`` figure is the whole server (Engaging scratch: ~6.3e9 inodes),
-    so it is never the per-user cap; when ``quota`` reports no row for the device, a
-    ``quota_limit_unknown`` event says the guard cannot see a per-user cap there.
+    shared NFS server the ``df`` figure is the whole server, so it is never the per-user cap;
+    when ``quota`` reports no row for the device, a ``quota_limit_unknown`` event says the
+    guard cannot see a per-user cap there.
     """
     run = runner or default_runner
     who = user or getpass.getuser()
