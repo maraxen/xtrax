@@ -33,7 +33,9 @@ _MODEL = re.compile(r"_rank_\d{3}_.*\.cif$")
 
 def per_unit(lines: list[str]) -> tuple[dict[str, dict[str, int]], int]:
     """``({unit: {"inodes", "files", "models"}}, unassigned)`` from listing lines."""
-    units: dict[str, dict[str, int]] = defaultdict(lambda: {"inodes": 0, "files": 0, "models": 0})
+    units: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"inodes": 0, "files": 0, "models": 0, "done": 0}
+    )
     unassigned = 0
     for line in lines:
         if not line.strip():
@@ -54,17 +56,27 @@ def per_unit(lines: list[str]) -> tuple[dict[str, dict[str, int]], int]:
             u["files"] += 1
             if _MODEL.search(parts[-1]):
                 u["models"] += 1
+            if parts[-1].endswith(".done.txt"):
+                u["done"] += 1
     return dict(units), unassigned
 
 
 def summarize(lines: list[str]) -> dict[str, object]:
-    units, unassigned = per_unit(lines)
+    """Statistics over COMPLETED units (a ``*.done.txt`` below the unit dir), plus totals.
+
+    Run ed1939bb (2026-10-30) counted every unit directory and found most of them empty
+    (unrun units in a test campaign), so the median measured the layout, not finished units.
+    """
+    all_units, unassigned = per_unit(lines)
+    units = {k: v for k, v in all_units.items() if v["done"] > 0}
     inodes = sorted(u["inodes"] for u in units.values())
     models = sorted(u["models"] for u in units.values())
     arms = sorted({"/".join(k.split("/")[:3]) for k in units})
     med = statistics.median(inodes) if inodes else 0.0
     return {
         "n_units": len(units),
+        "n_unit_dirs_total": len(all_units),
+        "n_unit_dirs_empty": sum(1 for v in all_units.values() if v["files"] == 0),
         "n_arms": len(arms),
         "arms": arms,
         "median_inodes_per_unit": float(med),
@@ -91,6 +103,7 @@ def controls() -> dict[str, bool]:
         f"d\t{base}/u1/fold\t0",
         f"f\t{base}/u1/fold/q_rank_001_m_seed_000_sample_0.cif\t1",
         f"f\t{base}/u1/fold/q_rank_002_m_seed_001_sample_0.cif\t1",
+        f"f\t{base}/u1/fold/q.done.txt\t1",
         f"d\t{base}/u2\t0",
         f"f\t{base}/u2/a.json\t1",
         "f\tstray.txt\t1",
@@ -99,8 +112,8 @@ def controls() -> dict[str, bool]:
     positive = (
         units
         == {
-            f"{base}/u1": {"inodes": 5, "files": 3, "models": 2},
-            f"{base}/u2": {"inodes": 2, "files": 1, "models": 0},
+            f"{base}/u1": {"inodes": 6, "files": 4, "models": 2, "done": 1},
+            f"{base}/u2": {"inodes": 2, "files": 1, "models": 0, "done": 0},
         }
         and unassigned == 1
     )
@@ -108,7 +121,17 @@ def controls() -> dict[str, bool]:
     moved = [ln.replace(f"{base}/u2/a.json", "fold_campaigns/c/a.json") for ln in synth]
     units_moved, _ = per_unit(moved)
     negative_detected = units_moved != units
-    return {"positive_control_ok": positive, "negative_control_detected": negative_detected}
+    # Completed-unit filter: only u1 has a done marker, so only u1 is summarized.
+    summary = summarize(synth)
+    completed_ok = (
+        summary["n_units"] == 1
+        and summary["n_unit_dirs_total"] == 2
+        and summary["median_inodes_per_unit"] == 6.0
+    )
+    return {
+        "positive_control_ok": positive and completed_ok,
+        "negative_control_detected": negative_detected,
+    }
 
 
 def main() -> None:

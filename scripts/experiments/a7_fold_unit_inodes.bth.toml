@@ -11,9 +11,16 @@ Input: a file listing of Engaging ~/orcd/scratch/alynxr_runs/g_m1_261016/folds (
 outputs/probes/a7/g_m1_261016_folds.listing.tsv; its sha256 is in the result. Representativeness limit: this batch is three openfold3 arms run through alynxr's
 ColabFold runner (g_m1 test campaigns), not a production ColabFold-AF2 batch.
 
-Disclosure: before this sidecar was written, the layout of ONE unit was inspected (to define the
-unit rule). No count over the batch was computed before registration. Thresholds come from the
-packed-unit cost above, not from that unit.
+Disclosure: before the first version of this sidecar was written, the layout of ONE unit was
+inspected (to define the unit rule). Thresholds come from the packed-unit cost above, not from
+that unit.
+
+AMENDMENT 1 (2026-10-30, after run ed1939bb-e32a-464c-a54f-1aeef2de2250, outcome 'observed'):
+that run counted every unit DIRECTORY; most were empty (unrun units in a test campaign), so its
+median measured the campaign layout, not finished units. The unit rule is changed to COMPLETED
+units (a *.done.txt below the unit dir); the thresholds are unchanged. NOT BLIND: after run 1 an
+ad-hoc inspection of the listing showed every non-empty unit holding at least 10 files. Treat this
+run's verdict as post-hoc-informed and provisional; a production ColabFold batch is the proper test.
 """
 stage_name = "exploration"
 
@@ -66,6 +73,8 @@ control_ok = "bool"
 positive_control_ok = "bool"
 negative_control_detected = "bool"
 n_units = "int"
+n_unit_dirs_total = "int"
+n_unit_dirs_empty = "int"
 n_arms = "int"
 median_inodes_per_unit = "float"
 min_inodes_per_unit = "int"
