@@ -16,7 +16,11 @@ Quota sources:
 * Lustre: ``lfs quota -u <user>`` (and ``-g <group>`` when the target directory is setgid, since
   files created there count against the group). If ``lfs`` is missing, fails or does not parse,
   the read is REFUSED; ``df -i`` is filesystem-wide on Lustre and is never a substitute.
-* Elsewhere: ``df -i -P``. An unknown filesystem type (``stat -f`` fails) is refused.
+* Elsewhere (NFS, ext4, ...): the ``quota -w -u`` (and ``-g``) row for the path's ``df`` device,
+  plus the filesystem-wide ``df -i -P`` reading. On a shared NFS server ``df -i`` is the whole
+  server and never the per-user cap (Engaging scratch, 2026-10-30: ~6.3e9 inodes at 1%), so a
+  path with no ``quota`` row emits ``quota_limit_unknown`` for the user scope instead of being
+  trusted silently. An unknown filesystem type (``stat -f`` fails) is refused.
 
 Events go through an injectable ``emit(name, fields)`` callable. The default logs one JSON line
 per event on the ``xtrax.fileguard`` logger.
@@ -291,12 +295,105 @@ def read_quota(
     user: Optional[str] = None,
     emit: Emitter = log_emitter,
 ) -> QuotaReading:
-    """Read the real per-user file quota for ``path``.
+    """Read the tightest-scoped file quota for ``path``: the user's when one is reported.
 
     On Lustre: ``lfs quota -u``; a missing, failing or unparseable ``lfs`` is REFUSED (R-X1).
-    Elsewhere: ``df -i -P``. An unknown filesystem type is refused.
+    Elsewhere: the ``quota -w -u`` row for the path's device when there is one, else the
+    filesystem-wide ``df -i -P`` reading (see :func:`read_quotas`). An unknown filesystem type
+    is refused.
     """
     return read_quotas(path, runner=runner, user=user, emit=emit, group=None)[0]
+
+
+def parse_quota_rows(text: str) -> Dict[str, Tuple[int, Optional[int]]]:
+    """``{device: (files_used, files_limit)}`` from ``quota -w -u|-g <who>`` output.
+
+    Columns are ``Filesystem blocks quota limit grace files quota limit grace``; a grace cell
+    is present only when the used value before it is over quota (marked ``*``). ``-w`` keeps
+    long device names on one line. A device listed twice keeps its first row. Output such as
+    ``Disk quotas for group g (gid 1): none`` has no rows.
+    """
+    rows: Dict[str, Tuple[int, Optional[int]]] = {}
+    seen_header = False
+    for line in text.splitlines():
+        tokens = line.split()
+        if not tokens:
+            continue
+        if tokens[0] == "Filesystem":
+            seen_header = True
+            continue
+        if not seen_header or tokens[0] == "Disk":
+            continue
+        rest = tokens[1:]
+        i = 4 if rest and rest[0].endswith("*") else 3
+        if len(rest) < i + 3:
+            raise ValueError(f"quota row has {len(rest)} cells after the device: {line!r}")
+        files_used = _num(rest[i], "files")
+        limit = _limit_from(_num(rest[i + 2], "files limit"), _num(rest[i + 1], "files quota"))
+        rows.setdefault(tokens[0], (files_used, limit))
+    return rows
+
+
+def _df_device(df_text: str) -> str:
+    """The device column of a validated ``df -i -P`` data row."""
+    lines = [ln for ln in df_text.splitlines() if ln.strip()]
+    return lines[1].split(None, 1)[0]
+
+
+def _read_quota_cmd(
+    run: Runner,
+    emit: Emitter,
+    path: PathLike,
+    kind: str,
+    device: str,
+    flag: str,
+    who: str,
+) -> Optional[QuotaReading]:
+    """The ``quota -w`` reading for ``device``, or None (with an event) when none is reported."""
+    argv = ["quota", "-w", flag, who]
+    command = shlex.join(argv)
+    scope = "user" if flag == "-u" else "group"
+    rc, out = _run(run, argv)
+    detail = None
+    rows: Dict[str, Tuple[int, Optional[int]]] = {}
+    if rc is None:
+        detail = "the quota command is not installed"
+    else:
+        try:
+            rows = parse_quota_rows(out)
+        except ValueError as e:
+            detail = f"quota output did not parse: {e}"
+        if detail is None and device not in rows:
+            detail = f"quota reports no {scope} row for device {device} (rc={rc})"
+    if detail is not None:
+        # Not a refusal: the filesystem reading still applies. The guard is blind to a
+        # per-principal cap here, and the operator must see that rather than infer it.
+        emit(
+            LIMIT_UNKNOWN_EVENT,
+            {
+                "refusal_id": "R-X1-limit-unknown",
+                "path": str(path),
+                "command": command,
+                "scope": scope,
+                "principal": who,
+                "device": device,
+                "detail": detail,
+            },
+        )
+        return None
+    files_used, files_limit = rows[device]
+    return QuotaReading(
+        files_used=files_used,
+        files_limit=files_limit,
+        source="quota",
+        command=command,
+        raw=out,
+        path=str(path),
+        taken_at=_now_utc(),
+        fs_type=kind,
+        scope=scope,
+        principal=who,
+    )
 
 
 def read_quotas(
@@ -306,10 +403,14 @@ def read_quotas(
     emit: Emitter = log_emitter,
     group: Optional[str] = None,
 ) -> List[QuotaReading]:
-    """Every quota that bounds new files under ``path``: the user's, plus the group's if asked.
+    """Every quota that bounds new files under ``path``, tightest scope first.
 
-    ``group`` names a group whose Lustre quota is read as well (``lfs quota -g``). Off Lustre a
-    group is not separately readable with ``df``, so only the filesystem reading is returned.
+    Lustre: the user's ``lfs quota -u`` reading, plus ``lfs quota -g <group>`` when ``group``
+    is given. Elsewhere (NFS, ext4, ...): the ``quota -w -u`` (and ``-g``) row whose device
+    matches the path's ``df`` device, then the filesystem-wide ``df -i -P`` reading. On a
+    shared NFS server the ``df`` figure is the whole server (Engaging scratch: ~6.3e9 inodes),
+    so it is never the per-user cap; when ``quota`` reports no row for the device, a
+    ``quota_limit_unknown`` event says the guard cannot see a per-user cap there.
     """
     run = runner or default_runner
     who = user or getpass.getuser()
@@ -323,8 +424,16 @@ def read_quotas(
     rc, out = _run(run, argv)
     if rc != 0:
         raise RuntimeError(f"cannot read file quota for {path}: df rc={rc}")
-    r = parse_df_inodes(out, path)
-    return [replace(r, command=shlex.join(argv), fs_type=kind)]
+    fs_reading = replace(parse_df_inodes(out, path), command=shlex.join(argv), fs_type=kind)
+    device = _df_device(out)
+    readings: List[QuotaReading] = []
+    principals = [("-u", who)] + ([("-g", group)] if group is not None else [])
+    for flag, principal in principals:
+        r = _read_quota_cmd(run, emit, path, kind, device, flag, principal)
+        if r is not None:
+            readings.append(r)
+    readings.append(fs_reading)
+    return readings
 
 
 def check_concurrency_slack(
@@ -372,7 +481,7 @@ class FileCapGuard:
     """Refuses writes that would push real file usage above ``cap_fraction`` of the limit.
 
     The real readings are taken at construction and re-taken once ``reread_every`` files have
-    been counted since the last read. When the target directory is setgid on Lustre, the owning
+    been counted since the last read. When the target directory is setgid, the owning
     group's quota is read and enforced alongside the user's (files created there count against
     the group). A reading with no limit never refuses; it emits ``quota_limit_unknown``.
 

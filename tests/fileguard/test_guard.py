@@ -24,6 +24,7 @@ from xtrax.fileguard import (
     fs_type,
     parse_df_inodes,
     parse_lfs_quota,
+    parse_quota_rows,
     read_quota,
     read_quotas,
 )
@@ -63,12 +64,21 @@ tmpfs                -     0     0     -  /dev/shm
 
 
 def _runner(
-    fstype, *, lfs=(0, LFS_ONE_LINE), lfs_group=None, df=(0, DF_OUT_CLEAN), stat_rc=0, calls=None
+    fstype,
+    *,
+    lfs=(0, LFS_ONE_LINE),
+    lfs_group=None,
+    df=(0, DF_OUT_CLEAN),
+    quota=FileNotFoundError,
+    quota_group=None,
+    stat_rc=0,
+    calls=None,
 ):
     """A fake runner: ``stat -f`` answers ``fstype``; lfs (user/group) and df answer as given.
 
     ``lfs`` may be an exception class to raise (e.g. FileNotFoundError, as a missing binary does).
-    ``lfs_group`` answers ``lfs quota -g``; it defaults to ``lfs``.
+    ``lfs_group`` answers ``lfs quota -g``; it defaults to ``lfs``. ``quota`` answers
+    ``quota -w -u`` (default: binary missing) and ``quota_group`` answers ``quota -w -g``.
     """
 
     def run(argv):
@@ -83,6 +93,11 @@ def _runner(
             return answer
         if argv[0] == "df":
             return df
+        if argv[0] == "quota":
+            answer = quota_group if (argv[2] == "-g" and quota_group is not None) else quota
+            if isinstance(answer, type) and issubclass(answer, BaseException):
+                raise answer("quota")
+            return answer
         raise AssertionError(f"unexpected argv {argv!r}")
 
     return run
@@ -425,3 +440,110 @@ def test_default_emitter_falls_back_to_logging_without_cisternal(monkeypatch, ca
     with caplog.at_level("INFO", logger="xtrax.fileguard"):
         emit(READING_EVENT, {"files_used": 1})
     assert READING_EVENT in caplog.text
+
+
+# --- NFS: per-user `quota -w`, matched to the df device (A9, Engaging 2026-10-30) --------------
+
+# Captured on Engaging (login node, 2026-10-30): home is quota-limited per user, scratch is not
+# reported by `quota` at all, and scratch's `df -i` is the whole fstor018 server.
+ENGAGING_QUOTA_U = """\
+Disk quotas for user maarxaru (uid 226996): 
+     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
+nfs001.lb:/home 40162568  204472320 209715200          217187  1000000 1000000        
+nfs001.lb:/home 40162568  204472320 209715200          217187  1000000 1000000        
+"""
+ENGAGING_QUOTA_G_NONE = "Disk quotas for group maarxaru (gid 226996): none\n"
+DF_I_HOME = """\
+Filesystem         Inodes    IUsed      IFree IUse% Mounted on
+nfs001.lb:/home  2000000000  900000000  1100000000   45% /orcd/home/002
+"""
+DF_I_SCRATCH = """\
+Filesystem         Inodes    IUsed      IFree IUse% Mounted on
+fstor018.ib:/  6301144320 29575803 6271568517    1% /orcd/scratch/orcd/011
+"""
+QUOTA_OVER = """\
+Disk quotas for user u (uid 1):
+     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
+nfs001.lb:/home 10  100 200   1000001*  1000000 1000000  6days
+"""
+QUOTA_BLOCKS_OVER = """\
+Disk quotas for user u (uid 1):
+     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
+nfs001.lb:/home 300*  100 200  7days  5  1000 2000
+"""
+
+
+def test_parse_quota_rows_engaging_home():
+    assert parse_quota_rows(ENGAGING_QUOTA_U) == {"nfs001.lb:/home": (217187, 1000000)}
+
+
+def test_parse_quota_rows_files_over_quota_with_grace():
+    assert parse_quota_rows(QUOTA_OVER) == {"nfs001.lb:/home": (1000001, 1000000)}
+
+
+def test_parse_quota_rows_blocks_grace_shifts_the_file_cells():
+    assert parse_quota_rows(QUOTA_BLOCKS_OVER) == {"nfs001.lb:/home": (5, 2000)}
+
+
+def test_parse_quota_rows_none_has_no_rows():
+    assert parse_quota_rows(ENGAGING_QUOTA_G_NONE) == {}
+
+
+def test_parse_quota_rows_short_row_raises():
+    with pytest.raises(ValueError):
+        parse_quota_rows("     Filesystem  blocks\n/dev/x 1 2\n")
+
+
+def test_nfs_home_reads_the_per_user_quota_before_the_filesystem(tmp_path):
+    run = _runner("nfs", df=(0, DF_I_HOME), quota=(0, ENGAGING_QUOTA_U))
+    rs = read_quotas(tmp_path, run, user="maarxaru")
+    assert [(r.scope, r.source) for r in rs] == [("user", "quota"), ("filesystem", "df")]
+    assert (rs[0].files_used, rs[0].files_limit) == (217187, 1000000)
+    assert read_quota(tmp_path, run, user="maarxaru").scope == "user"
+
+
+def test_negative_control_nfs_guard_refuses_on_the_user_cap_the_df_figure_would_pass(tmp_path):
+    near = ENGAGING_QUOTA_U.replace("217187", "799990")
+    run = _runner("nfs", df=(0, DF_I_HOME), quota=(0, near))
+    g = _guard(tmp_path, run)
+    with pytest.raises(QuotaRefused, match="user files_limit 1000000"):
+        g.check(100)
+    # The filesystem-wide df reading alone (2e9 inodes, 45% used) would have admitted it.
+    (tmp_path / "x").mkdir()
+    fs_only = _guard(tmp_path / "x", _runner("nfs", df=(0, DF_I_HOME)))
+    assert fs_only.check(100) == 900000100
+
+
+def test_nfs_scratch_without_a_user_row_is_flagged_not_silently_trusted(tmp_path, events):
+    run = _runner("nfs", df=(0, DF_I_SCRATCH), quota=(0, ENGAGING_QUOTA_U))
+    rs = read_quotas(tmp_path, run, user="maarxaru", emit=_emit_into(events))
+    assert [r.scope for r in rs] == ["filesystem"]
+    unknown = _named(events, LIMIT_UNKNOWN_EVENT)
+    assert unknown[0]["scope"] == "user"
+    assert unknown[0]["device"] == "fstor018.ib:/"
+    assert "no user row" in unknown[0]["detail"]
+
+
+def test_missing_quota_binary_is_flagged(tmp_path, events):
+    rs = read_quotas(tmp_path, _runner("nfs", df=(0, DF_I_HOME)), user="u", emit=_emit_into(events))
+    assert [r.scope for r in rs] == ["filesystem"]
+    assert "not installed" in _named(events, LIMIT_UNKNOWN_EVENT)[0]["detail"]
+
+
+def test_unparseable_quota_output_is_flagged(tmp_path, events):
+    bad = "     Filesystem  blocks\nnfs001.lb:/home 1 2\n"
+    run = _runner("nfs", df=(0, DF_I_HOME), quota=(0, bad))
+    read_quotas(tmp_path, run, user="u", emit=_emit_into(events))
+    assert "did not parse" in _named(events, LIMIT_UNKNOWN_EVENT)[0]["detail"]
+
+
+def test_nfs_group_quota_none_is_flagged_and_user_still_enforced(tmp_path, events):
+    run = _runner(
+        "nfs",
+        df=(0, DF_I_HOME),
+        quota=(0, ENGAGING_QUOTA_U),
+        quota_group=(0, ENGAGING_QUOTA_G_NONE),
+    )
+    rs = read_quotas(tmp_path, run, user="maarxaru", group="so3", emit=_emit_into(events))
+    assert [r.scope for r in rs] == ["user", "filesystem"]
+    assert _named(events, LIMIT_UNKNOWN_EVENT)[0]["scope"] == "group"

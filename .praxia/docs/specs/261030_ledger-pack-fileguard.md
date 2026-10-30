@@ -191,6 +191,12 @@ This lifts alynxr's `FileCapGuard` (`storage.py`) **with its semantics intact**:
 - Plan-time admission **and** in-run checks: re-read the real quota every `reread_every` files and
   interpolate between reads. The guard refuses at the check before a write, and the process is never
   killed mid-write. v1's "never mid-run" contradicted the code it generalized, and is withdrawn.
+- **Off Lustre (v3.1, from A9).** The per-user figure comes from the `quota -w -u` row whose device
+  matches the path's `df` device, and the `df -i` reading is kept as a separate `filesystem` scope.
+  On a shared NFS server `df -i` is the whole server, so it is never the per-user cap. A path with no
+  per-user row (Engaging scratch) emits `quota_limit_unknown` (scope `user`), so the guard is
+  visibly blind there and never quietly trusted. alynxr's `storage.py` has the same gap: it uses
+  `df -i` alone off Lustre.
 - On Lustre, the per-user figure comes from `lfs quota`. When `lfs` cannot give it, the read is
   refused, never replaced by `df -i` (which is filesystem-wide on Lustre). An unknown filesystem type is
   refused.
@@ -243,8 +249,8 @@ Each probe whose number will be cited (A2, A3, A5, A7) runs under a committed ba
 | A10 | compaction's "writer is dead" rule (trailer, or job gone + grace period) has no false positive under preemption and requeue | U | requeue-injection test on Engaging |
 | A6b | demistify zarr internal file count per residue shard | U | measure one finished store |
 | A7 | R = models × seeds per ColabFold unit | U | `storage_report` on a finished Engaging batch, with sidecar |
-| A8 | Python 3.9 on Engaging and titanix nodes runs the `_node.py` cores | U | `-I` run on both |
-| A9 | `lfs quota -u` gives a per-user file count on Engaging scratch | V for alynxr's parser (`storage.py:87-127`), U for current cluster output | one live read |
+| A8 | an Engaging compute node can run the 3.9-syntax `_node.py` cores | **V** (quicktest job 27379653, node1600, 2026-10-30): default `python3` is **3.6.8** (cannot import `dataclasses`); `/usr/bin/python3.11` and `python3.12` exist; no 3.9. alynxr already runs node code under a registered `tools.node_python` with a `>= 3.9` check (`search.py:287-295,666-676`), so embedders must do the same and never call bare `python3`. titanix not probed | — |
+| A9 | the guard can read the per-user file cap on Engaging scratch | **V, assumption false** (2026-10-30): `/orcd/scratch/orcd/011` and `/orcd/home/002` are **NFS**, not Lustre, and `lfs` is absent. Scratch `df -i` is the whole fstor018 server (6.3e9 inodes, 1% used). `quota -w -u` reports a per-user row **only for home** (`nfs001.lb:/home`: 217,187 of 1,000,000 files), none for scratch; the group has none. Resolution in 3.4 | open: where Engaging enforces the scratch per-user cap, if anywhere (ask ORCD or the owner) |
 
 ## 5. Rollout
 

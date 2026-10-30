@@ -1,11 +1,13 @@
 """File-count (inode) guard for shared scratch (spec 261030_ledger-pack-fileguard.md section 3.4).
 
-On Engaging scratch the binding limit is the per-user file count, not bytes. This package reads
-the real quota (``lfs quota`` on Lustre, never a filesystem-wide ``df -i`` there; ``df -i``
-elsewhere), refuses a write that would push the projected count above a cap fraction of the
-limit, and re-reads the real figure every ``reread_every`` counted files so writers outside this
-process stay visible. When the target directory is setgid on Lustre, the owning group's quota is
-enforced too.
+On Engaging the binding limit is the per-user file count, not bytes. This package reads the
+real quota and refuses a write that would push the projected count above a cap fraction of the
+limit, re-reading the real figure every ``reread_every`` counted files so writers outside this
+process stay visible. Lustre: ``lfs quota`` (refused, never replaced by a filesystem-wide
+``df -i``). Elsewhere: the per-user ``quota -w`` row for the path's device plus the
+filesystem ``df -i`` reading; a path with no per-user row is flagged with a
+``quota_limit_unknown`` event, because a shared NFS server's ``df -i`` is never the user's cap.
+When the target directory is setgid, the owning group's quota is enforced too.
 
 The logic lives in :mod:`xtrax.fileguard._node`, which is stdlib-only and Python 3.9 compatible
 so a cluster script can embed it (:func:`node_source`) where xtrax is not installed. This module
@@ -40,6 +42,7 @@ from xtrax.fileguard._node import (
     log_emitter,
     parse_df_inodes,
     parse_lfs_quota,
+    parse_quota_rows,
     read_quota,
     read_quotas,
 )
@@ -64,6 +67,7 @@ __all__ = [
     "node_source",
     "parse_df_inodes",
     "parse_lfs_quota",
+    "parse_quota_rows",
     "read_quota",
     "read_quotas",
 ]
