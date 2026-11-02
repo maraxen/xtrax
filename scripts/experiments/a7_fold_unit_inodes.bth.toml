@@ -21,6 +21,21 @@ median measured the campaign layout, not finished units. The unit rule is change
 units (a *.done.txt below the unit dir); the thresholds are unchanged. NOT BLIND: after run 1 an
 ad-hoc inspection of the listing showed every non-empty unit holding at least 10 files. Treat this
 run's verdict as post-hoc-informed and provisional; a production ColabFold batch is the proper test.
+
+AMENDMENT 2 (2026-11-02, written and committed BEFORE the input below was captured): the
+production re-run. Owner-chosen input: the glp1r production fold campaigns glp1r_d3 and glp1r_d0m
+under Engaging /orcd/compute/so3/002/maarxaru/adaptyv-glp1r/results (fold_campaigns/<c>/<arm>/
+<unit>), scaled down to a subsample (owner decision). No production ColabFold-AF2 batch exists:
+these arms are alphafold3, chai1, openfold3, boltz2, protenix2 and intellifold2, all run through
+alynxr's ColabFold runner, so "production ColabFold-AF2 batch" above is replaced by these engines.
+Sample rule, fixed here: per arm, the 20 units with the lowest sha256("<campaign>/<arm>/<unit>"),
+chosen from unit directory NAMES only (scripts/experiments/a7_capture_sample.sh, K = 20), then
+listed in full. The listing holds only the sampled units and the campaign/arm directory entries,
+so unassigned_entries is 0 by construction; arm-level files (batch records, per-task SLURM logs)
+are not unit inodes (spec decision D3 moves those logs to a pool). Unit rule, thresholds and
+outcomes are unchanged. Disclosure: before this amendment, while locating the campaigns, the file
+list of ONE unit of a different batch (e7a_fold_check, alphafold3) was seen: about 16 entries. No
+glp1r unit's contents had been listed. The result is reported pooled over all sampled arms.
 """
 stage_name = "exploration"
 
@@ -87,4 +102,7 @@ inode_saving_fraction_at_median = "float"
 listing_sha256 = "str"
 
 [outputs]
-roots = ["outputs/probes/a7/g_m1_261016_folds.result.json"]
+roots = [
+  "outputs/probes/a7/g_m1_261016_folds.result.json",
+  "outputs/probes/a7/glp1r_sample_k20.result.json",
+]
