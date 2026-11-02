@@ -1,0 +1,24 @@
+{
+  "arms": [
+    "fold_campaigns/g_m1_alynxr/openfold3-46225a546096",
+    "fold_campaigns/g_m1_server/openfold3-7e58ced5c39f",
+    "fold_campaigns/g_m1_truncated/openfold3-1bec68fc85a9"
+  ],
+  "control_ok": true,
+  "inode_saving_fraction_at_median": 0.8095238095238095,
+  "listing": "outputs/probes/a7/g_m1_261016_folds.listing.tsv",
+  "listing_sha256": "dfc4b6c9b96491e094791f3d1d018b6b882c9c0bb870cc5fe28f6850ad314ee9",
+  "max_inodes_per_unit": 21,
+  "median_inodes_per_unit": 21.0,
+  "median_models_per_unit": 2.0,
+  "min_inodes_per_unit": 21,
+  "n_arms": 3,
+  "n_unit_dirs_empty": 0,
+  "n_unit_dirs_total": 243,
+  "n_units": 72,
+  "negative_control_detected": true,
+  "packed_inodes_per_unit": 4,
+  "positive_control_ok": true,
+  "total_unit_inodes": 1512,
+  "unassigned_entries": 0
+}

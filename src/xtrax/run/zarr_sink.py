@@ -838,6 +838,7 @@ class ZarrStagingSink:
                 meta=info["commit_meta"],
                 run_id=self._spec.run_id,
                 env=env,
+                verify_duplicate=self._spec.verify_duplicate,
             )
             # Drop this key from the buffer as soon as it has its own outcome, so a
             # later key's CommitConflictError leaves already-committed keys out of

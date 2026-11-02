@@ -13,3 +13,5 @@ select = ["E", "F", "I", "UP"]
 # op_name regexes match within a single line.
 "tests/profiling/test_trace_parse.py" = ["E501"]
 "port/reference/**/*.py" = ["UP047"]
+# Node-embeddable core: stdlib-only, Python 3.9 syntax by contract (typing.Optional/Dict/List).
+"src/xtrax/fileguard/_node.py" = ["UP"]

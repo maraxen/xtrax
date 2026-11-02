@@ -72,6 +72,12 @@ class SinkSpec:
 
     ``append=True`` with ``open_mode="create_or_join"`` raises ``ValueError``.
     Durable drains commit whole keys and do not extend arrays.
+
+    ``verify_duplicate=True`` makes a durable drain raise
+    :class:`~xtrax.run.zarr_commit.CommitConflictError` when a key is already committed
+    with the same ``input_digest`` but different content, instead of reporting it as
+    ``Duplicate`` (see :func:`~xtrax.run.zarr_commit.commit_key`). Off by default this
+    minor; it becomes the default in the next minor.
     """
 
     run_id: str
@@ -86,6 +92,7 @@ class SinkSpec:
     seed: int | None = None
     append: bool = False
     level_schemas: Mapping[int, Mapping[str, Any]] | None = None
+    verify_duplicate: bool = False
 
     def __post_init__(self) -> None:
         # Plain-Python backstop: beartype/jaxtyping wrapping is test-env-only
@@ -124,6 +131,12 @@ class SinkSpec:
             raise TypeError(msg)
         if not isinstance(self.append, bool):
             msg = f"SinkSpec.append must be bool, got {type(self.append).__name__}"
+            raise TypeError(msg)
+        if not isinstance(self.verify_duplicate, bool):
+            msg = (
+                "SinkSpec.verify_duplicate must be bool, "
+                f"got {type(self.verify_duplicate).__name__}"
+            )
             raise TypeError(msg)
         if self.append and self.open_mode == "create_or_join":
             msg = (
