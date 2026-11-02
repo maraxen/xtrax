@@ -263,3 +263,12 @@ def test_quarantine_refuses_a_prefix_with_committed_descendants(tmp_path):
 def test_quarantine_of_a_prefix_without_committed_descendants_is_still_allowed(tmp_path):
     store = _store(tmp_path)
     assert zc.quarantine(store, ("chunks",)) is not None
+
+
+def test_read_record_of_an_array_node_is_none_not_an_assertion(tmp_path):
+    """zarr 3.0.8 asserts inside open_group on array metadata; read_record must not reach it."""
+    import zarr
+
+    arr_dir = tmp_path / "arr"
+    zarr.create_array(str(arr_dir), shape=(3,), dtype="int64")
+    assert zc.read_record(arr_dir) is None

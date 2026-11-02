@@ -484,7 +484,16 @@ def _read_record_status(group_dir: Path) -> tuple[CommitRecord | None, str | Non
         msg = "read_record requires the optional 'zarr' dependency"
         raise ImportError(msg) from e
 
-    if not (group_dir / "zarr.json").is_file():
+    meta_path = group_dir / "zarr.json"
+    if not meta_path.is_file():
+        return None, "not a zarr group"
+    # An array node is not a group. Check node_type ourselves: zarr at the floor version
+    # asserts inside open_group on array metadata instead of raising a catchable error.
+    try:
+        node_type = json.loads(meta_path.read_text(encoding="utf-8")).get("node_type")
+    except (ValueError, AttributeError) as e:
+        return None, f"unreadable zarr group: {e}"
+    if node_type != "group":
         return None, "not a zarr group"
 
     try:
