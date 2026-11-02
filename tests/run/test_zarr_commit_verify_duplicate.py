@@ -191,3 +191,75 @@ def test_negative_control_durable_sink_raises_on_same_input_different_content(tm
     strict.stage(key, input_digest="d1", x=np.zeros(5))
     with pytest.raises(zc.CommitConflictError, match="different content"):
         strict.drain()
+
+
+# --- review fixes 261102 -------------------------------------------------------------------
+
+
+def _truncate_last_chunk(key_dir: Path) -> None:
+    chunk = key_dir / "arr" / "c" / "0"
+    chunk.write_bytes(chunk.read_bytes()[:-3])
+
+
+@pytest.mark.parametrize("damage", [_flip_last_chunk_byte, _truncate_last_chunk])
+def test_verify_duplicate_rehashes_the_committed_bytes_on_disk(tmp_path, damage):
+    """Finding 3: the staged digest equals the RECORDED one, but the bytes on disk are damaged."""
+    store = _store(tmp_path)
+    _commit(store, np.arange(5), name="a")
+    damage(store / "chunks" / "k0")
+    with pytest.raises(zc.CommitConflictError, match="damaged"):
+        _commit(store, np.arange(5), name="b", verify_duplicate=True)
+    assert not (zc.staging_root(store) / "w" / "b").exists()
+
+
+def test_default_duplicate_decision_ignores_on_disk_damage_as_documented(tmp_path):
+    store = _store(tmp_path)
+    _commit(store, np.arange(5), name="a")
+    _flip_last_chunk_byte(store / "chunks" / "k0")
+    assert isinstance(_commit(store, np.arange(5), name="b"), zc.Duplicate)
+
+
+def test_a_stale_key_can_be_quarantined_when_the_caller_states_its_judgement(tmp_path):
+    """Finding 2: valid content with a different input_digest is Stale, not a racing writer."""
+    store = _store(tmp_path)
+    _commit(store, np.arange(5), name="a", digest="d1")
+    assert isinstance(zc.lookup(store, KEY, "d2"), zc.Stale)
+    moved = zc.quarantine(store, KEY, expected_input_digest="d2")
+    assert moved is not None and moved.exists()
+    assert isinstance(zc.lookup(store, KEY, "d2"), zc.Missing)
+    assert isinstance(_commit(store, np.arange(5), name="again", digest="d2"), zc.Committed)
+
+
+def test_quarantine_still_restores_a_group_that_now_matches_the_expected_digest(tmp_path):
+    """Finding 2 control: a racing writer fixed the key to what the caller wanted."""
+    store = _store(tmp_path)
+    first = _commit(store, np.arange(5), name="a", digest="d1")
+    with pytest.raises(zc.QuarantineRaceError, match="put back untouched"):
+        zc.quarantine(store, KEY, expected_input_digest="d1")
+    found = zc.lookup(store, KEY, "d1")
+    assert isinstance(found, zc.Reuse) and found.record == first.record
+
+
+def test_quarantine_with_expected_digest_still_moves_a_corrupt_key(tmp_path):
+    store = _store(tmp_path)
+    _commit(store, np.arange(5), name="a", digest="d1")
+    _flip_last_chunk_byte(store / "chunks" / "k0")
+    assert zc.quarantine(store, KEY, expected_input_digest="d1") is not None
+    assert isinstance(zc.lookup(store, KEY, "d1"), zc.Missing)
+
+
+def test_quarantine_refuses_a_prefix_with_committed_descendants(tmp_path):
+    """Finding 4: a non-leaf key must not take its committed subtree with it."""
+    store = _store(tmp_path)
+    first = _commit(store, np.arange(5), name="a")
+    with pytest.raises(zc.NotALeafKeyError, match="committed"):
+        zc.quarantine(store, ("chunks",))
+    assert (store / "chunks").is_dir()
+    found = zc.lookup(store, KEY, "d1")
+    assert isinstance(found, zc.Reuse) and found.record == first.record
+    assert not zc.quarantine_root(store).exists()
+
+
+def test_quarantine_of_a_prefix_without_committed_descendants_is_still_allowed(tmp_path):
+    store = _store(tmp_path)
+    assert zc.quarantine(store, ("chunks",)) is not None

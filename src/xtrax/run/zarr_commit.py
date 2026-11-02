@@ -115,6 +115,24 @@ class QuarantineRaceError(DurableStoreError):
         super().__init__(f"QuarantineRaceError: key={key}: {reason}")
 
 
+class NotALeafKeyError(DurableStoreError):
+    """Raised when ``quarantine`` is asked to move a prefix that holds committed keys.
+
+    Quarantining a prefix would rename its whole committed subtree out of the store. Quarantine
+    the damaged leaf keys instead.
+    """
+
+    def __init__(self, key: tuple[str, ...], descendants: list[tuple[str, ...]]) -> None:
+        self.key = key
+        self.descendants = descendants
+        shown = ", ".join(str(d) for d in descendants[:3])
+        more = "" if len(descendants) <= 3 else f" (+{len(descendants) - 3} more)"
+        super().__init__(
+            f"NotALeafKeyError: key={key} has no commit record of its own but holds "
+            f"{len(descendants)} committed key(s): {shown}{more}; quarantine those instead"
+        )
+
+
 class NotADurableStoreError(DurableStoreError):
     """Raised when a directory is not a durable store."""
 
@@ -330,7 +348,8 @@ def commit_key(
         env: Environment dict (included in the record).
         verify_duplicate: When True, a target already committed with the same
             ``input_digest`` is a ``Duplicate`` only if its recorded content digest also
-            equals this staged group's; otherwise ``CommitConflictError`` is raised. When
+            equals this staged group's AND the committed bytes on disk, re-hashed now, still
+            match that record; otherwise ``CommitConflictError`` is raised. When
             False (the default this minor) ``Duplicate`` is decided on ``input_digest``
             alone, so a nondeterministic producer or a damaged-but-recorded key passes as a
             duplicate. The default becomes True in the next minor.
@@ -429,6 +448,16 @@ def commit_key(
                         f"(committed {existing.content_digest[:12]}, "
                         f"staged {content_digest[:12]}): a nondeterministic producer, "
                         "tampering, or a damaged committed key",
+                    ) from e
+                if verify_duplicate and not _group_is_valid(target):
+                    # The record agrees with the staged bytes, but the committed bytes on
+                    # disk no longer match their own record: the key is damaged.
+                    raise CommitConflictError(
+                        key,
+                        existing,
+                        input_digest,
+                        "same input_digest and content as the staged group, but the committed "
+                        "key on disk no longer matches its own record: a damaged committed key",
                     ) from e
                 return Duplicate(existing)
             raise CommitConflictError(
@@ -610,15 +639,32 @@ def _group_is_valid(group_dir: Path) -> bool:
         return False
 
 
-def quarantine(store: Path, key: tuple[str, ...]) -> Path | None:
-    """Move a damaged or uncommitted key out of the store; never deletes it.
+def quarantine(
+    store: Path, key: tuple[str, ...], *, expected_input_digest: str | None = None
+) -> Path | None:
+    """Move a damaged, stale or uncommitted key out of the store; never deletes it.
 
     The key moves to ``<store>.quarantine/<prefix>/<last>-<uuid8>`` (outside the store, so
     ``committed_keys`` and ``lookup`` no longer see it, and the key can be committed again).
-    The moved directory is then checked against its own record. If it verifies, a racing
-    writer had replaced the damaged group with a good one before the move: it is renamed
-    back and :class:`QuarantineRaceError` is raised. If a newer group has meanwhile taken
-    the key, both are kept and :class:`QuarantineRaceError` is raised.
+    The moved directory is then checked against its own record, to catch a racing writer that
+    replaced the group the caller judged wrong before the move. What counts as a race depends
+    on the judgement the caller acted on:
+
+    * ``expected_input_digest`` given: the caller wanted a group committed with that input
+      digest and judged the key unusable (``lookup`` returned ``Corrupt`` or ``Stale``). The
+      moved group is a race only if it is valid AND carries that digest; it is then renamed
+      back and :class:`QuarantineRaceError` is raised. A valid group with a different digest
+      is the ``Stale`` key the caller meant to move, and is quarantined.
+    * omitted: the caller has stated no judgement, so any valid group is treated as a racing
+      writer's (the conservative reading). A ``Stale`` key can then never be quarantined;
+      pass ``expected_input_digest`` for it.
+
+    If a newer group has meanwhile taken the key, both are kept and
+    :class:`QuarantineRaceError` is raised.
+
+    A ``key`` with no commit record of its own that holds committed keys (a prefix) is refused
+    with :class:`NotALeafKeyError`, since the move would take its whole subtree with it; only
+    committed descendants count, so an empty or uncommitted prefix can still be moved.
 
     Lifted from alynxr ``fold_stats/array_commit.py`` (spec 261030_ledger-pack-fileguard §3.5).
 
@@ -631,6 +677,10 @@ def quarantine(store: Path, key: tuple[str, ...]) -> Path | None:
     dest = dest_parent / f"{key[-1]}-{uuid.uuid4().hex[:8]}"
     if not target.exists():
         return None
+    if read_record(target) is None:
+        descendants = committed_keys(store, key)
+        if descendants:
+            raise NotALeafKeyError(key, descendants)
     dest_parent.mkdir(parents=True, exist_ok=True)
     try:
         os.rename(str(target), str(dest))
@@ -640,6 +690,10 @@ def quarantine(store: Path, key: tuple[str, ...]) -> Path | None:
     fsync_directory(dest_parent)
     if not _group_is_valid(dest):
         return dest
+    if expected_input_digest is not None:
+        moved = read_record(dest)
+        if moved is None or moved.input_digest != expected_input_digest:
+            return dest  # valid, but not what the caller wanted: the stale key it judged wrong
     try:
         os.rename(str(dest), str(target))
     except OSError as e:
