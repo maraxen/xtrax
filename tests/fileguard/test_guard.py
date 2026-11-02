@@ -243,11 +243,6 @@ def test_ext4_uses_df_inodes_and_never_lfs(tmp_path):
     assert not any(c[0] == "lfs" for c in calls)
 
 
-def test_df_failure_raises(tmp_path):
-    with pytest.raises(RuntimeError):
-        read_quota(tmp_path, _runner("ext2/ext3", df=(1, "")), user="u")
-
-
 def test_read_quota_default_user_is_getpass(tmp_path, monkeypatch):
     monkeypatch.setattr(fileguard._node.getpass, "getuser", lambda: "someone")
     calls: list = []
@@ -316,7 +311,7 @@ def test_reread_after_reread_every_refuses_on_fresh_reading(tmp_path):
     def flip(argv):
         return next(answers) if argv[0] == "lfs" else run(argv)
 
-    g = _guard(tmp_path, flip, reread_every=10)
+    g = _guard(tmp_path, flip, reread_every=10, effective_group=None)
     g.check(10)  # triggers the second (near-cap) real read
     assert g.n_reads == 2
     with pytest.raises(QuotaRefused):
@@ -335,9 +330,9 @@ def test_limit_none_emits_limit_unknown_event_and_no_refusal(tmp_path, events):
 
 
 def test_every_real_reading_is_emitted(tmp_path, events):
-    g = _guard(tmp_path, _runner("lustre"), events, reread_every=5)
+    g = _guard(tmp_path, _runner("lustre"), events, reread_every=5, effective_group=None)
     g.check(5)
-    assert len(_named(events, READING_EVENT)) == 2
+    assert len(_named(events, READING_EVENT)) == 2  # one reading x (construction + one re-read)
 
 
 def test_negative_n_new_files_rejected(tmp_path):
@@ -741,3 +736,175 @@ def test_shared_fs_prefixes_cover_nfs4_and_exclude_local():
 
     assert all(is_shared_fs(k) for k in ("nfs", "nfs4", "cifs", "ceph", "gpfs", "fuseblk"))
     assert not any(is_shared_fs(k) for k in ("ext2/ext3", "xfs", "tmpfs", "btrfs", None))
+
+
+# --- review fixes 261102 -----------------------------------------------------------------------
+
+import subprocess  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
+
+
+def _orcd_guard(tmp_path, events=None, **kw):
+    home, orcd, roots = _orcd_tree(tmp_path)
+    kw.setdefault("reread_every", 100)
+    g = FileCapGuard(
+        roots["scratch"],
+        runner=_runner("nfs", df=(0, DF_I_SCRATCH)),
+        user="u",
+        emit=_emit_into(events if events is not None else []),
+        orcd_dir=orcd,
+        check_setgid_group=False,
+        **kw,
+    )
+    return g, orcd
+
+
+def test_orcd_unchanged_report_never_forgets_writes_across_rereads(tmp_path):
+    """Finding 1: a re-read of an unchanged ORCD snapshot must not zero the writes since it."""
+    g, _ = _orcd_guard(tmp_path)
+    admitted = 0
+    with pytest.raises(QuotaRefused, match="R-X1"):
+        for _ in range(2000):
+            g.check(100)
+            admitted += 100
+    assert g.n_reads > 3  # the report really was re-read several times along the way
+    # SCRATCH: 774535 used of a 950000 limit, cap 95% = 902500, so ~127.9k files of headroom.
+    assert 100_000 < admitted <= 128_000
+
+
+def test_orcd_changed_report_resets_the_carried_writes(tmp_path):
+    """Finding 1 control: a NEW snapshot supersedes the interpolation."""
+    g, orcd = _orcd_guard(tmp_path)
+    for _ in range(3):
+        g.check(100)  # three re-reads of the unchanged report: 300 files carried
+    assert g.check(1) > 774_535 + 300
+    fresh = ORCD_REPORT.replace("81.53", "20.00")
+    (orcd / ".quota").write_text(fresh)
+    later = (orcd / ".quota").stat().st_mtime + 60
+    os.utime(orcd / ".quota", (later, later))
+    g.check(100)  # hits reread_every and takes the new snapshot
+    assert g.check(1) == 190_000 + 1  # 20.00% of 950000, nothing carried over
+
+
+def test_orcd_reading_taken_at_is_the_reports_mtime(tmp_path):
+    g, orcd = _orcd_guard(tmp_path)
+    mtime = (orcd / ".quota").stat().st_mtime
+    r = next(r for r in g.last_readings if r.source == "orcd_report")
+    assert datetime.fromisoformat(r.taken_at) == datetime.fromtimestamp(mtime, UTC)
+
+
+@pytest.mark.parametrize("which", ["stat", "lfs", "df", "quota"])
+def test_a_command_timeout_is_a_classified_unreadable_refusal(tmp_path, events, which):
+    """Finding 5: TimeoutExpired is R-X1, not a raw exception, and says it timed out."""
+    fstype = "lustre" if which == "lfs" else "nfs"
+    inner = _runner(fstype, df=(0, DF_I_HOME), quota=(0, ENGAGING_QUOTA_U))
+
+    def run(argv):
+        if argv[0] == which:
+            raise subprocess.TimeoutExpired(argv, 30)
+        return inner(argv)
+
+    with pytest.raises(QuotaUnreadable, match="R-X1"):
+        read_quotas(tmp_path, run, user="u", emit=_emit_into(events))
+    ev = _named(events, REFUSAL_EVENT)
+    assert ev and ev[0]["refusal_id"] == "R-X1" and "timed out" in ev[0]["detail"]
+    assert which in ev[0]["command"]
+
+
+def test_df_failure_is_a_classified_refusal_with_an_event(tmp_path, events):
+    """Finding 6 (replaces the old RuntimeError expectation)."""
+    with pytest.raises(QuotaUnreadable, match="R-X1"):
+        read_quota(tmp_path, _runner("ext2/ext3", df=(1, "")), user="u", emit=_emit_into(events))
+    assert _named(events, REFUSAL_EVENT)[0]["command"].startswith("df -i")
+
+
+def test_unparseable_df_output_is_a_classified_refusal_with_an_event(tmp_path, events):
+    with pytest.raises(QuotaUnreadable, match="R-X1"):
+        read_quota(
+            tmp_path, _runner("ext2/ext3", df=(0, "garbage\n")), user="u", emit=_emit_into(events)
+        )
+    assert "did not parse" in _named(events, REFUSAL_EVENT)[0]["detail"]
+
+
+def test_non_setgid_dir_also_enforces_the_effective_group_quota(tmp_path, events):
+    """Finding 7: files in a non-setgid dir count against the process's egid group."""
+    run = _runner("lustre", lfs_group=(0, LFS_GROUP_FULL))
+    g = _guard(tmp_path, run, events, effective_group="so3")
+    assert [(r.scope, r.principal) for r in g.last_readings] == [
+        ("user", "marielle"),
+        ("group", "so3"),
+    ]
+    with pytest.raises(QuotaRefused, match="group files_limit"):
+        g.check(100)
+
+
+def test_effective_group_defaults_to_the_process_egid_group(tmp_path, monkeypatch):
+    monkeypatch.setattr(fileguard._node, "_effective_group", lambda: "egrp")
+    calls: list = []
+    _guard(tmp_path, _runner("lustre", calls=calls))
+    assert ["lfs", "quota", "-g", "egrp"] == [c for c in calls if c[:3] == ["lfs", "quota", "-g"]][
+        0
+    ][:4]
+
+
+def test_effective_group_can_be_disabled(tmp_path):
+    calls: list = []
+    _guard(tmp_path, _runner("lustre", calls=calls), effective_group=None)
+    assert not [c for c in calls if c[:3] == ["lfs", "quota", "-g"]]
+
+
+def test_implicit_effective_group_without_a_row_is_not_flagged(tmp_path, events):
+    run = _runner(
+        "nfs",
+        df=(0, DF_I_HOME),
+        quota=(0, ENGAGING_QUOTA_U),
+        quota_group=(0, ENGAGING_QUOTA_G_NONE),
+    )
+    g = _guard(tmp_path, run, events, effective_group="so3")
+    assert [r.scope for r in g.last_readings] == ["user", "filesystem"]
+    assert not [e for e in _named(events, LIMIT_UNKNOWN_EVENT) if e.get("scope") == "group"]
+
+
+def test_explicit_setgid_group_without_a_row_is_still_flagged(tmp_path, events):
+    d = _setgid_dir(tmp_path)
+    run = _runner(
+        "nfs",
+        df=(0, DF_I_HOME),
+        quota=(0, ENGAGING_QUOTA_U),
+        quota_group=(0, ENGAGING_QUOTA_G_NONE),
+    )
+    FileCapGuard(d, runner=run, user="u", emit=_emit_into(events), effective_group=None)
+    assert [e for e in _named(events, LIMIT_UNKNOWN_EVENT) if e.get("scope") == "group"]
+
+
+def test_last_reading_is_selected_by_scope_not_position(tmp_path):
+    """Finding 8: no user row but a group row, so readings[0] is the group; last_reading is not."""
+    d = _setgid_dir(tmp_path)
+    run = _runner(
+        "nfs",
+        df=(0, DF_I_HOME),
+        quota=(0, ENGAGING_QUOTA_G_NONE),
+        quota_group=(0, ENGAGING_QUOTA_U),
+    )
+    g = FileCapGuard(d, runner=run, user="u", emit=lambda *_: None, effective_group=None)
+    assert [r.scope for r in g.last_readings] == ["group", "filesystem"]
+    assert g.last_reading.scope == "filesystem"
+    assert g.record()["last_reading"]["scope"] == "filesystem"
+    assert g.check(1) == 900000000 + 1  # the projection returned is the selected reading's
+
+
+def test_orcd_user_cap_skips_the_redundant_quota_u_call(tmp_path):
+    """Finding 9: ORCD already supplies the user cap, so no `quota -w -u` and no limit_unknown."""
+    home, orcd, roots = _orcd_tree(tmp_path)
+    calls: list = []
+    events: list = []
+    read_quotas(
+        roots["scratch"],
+        _runner("nfs", df=(0, DF_I_SCRATCH), calls=calls),
+        user="u",
+        emit=_emit_into(events),
+        orcd_dir=orcd,
+        home=home,
+    )
+    assert not [c for c in calls if c[:3] == ["quota", "-w", "-u"]]
+    assert not [e for e in _named(events, LIMIT_UNKNOWN_EVENT) if e.get("scope") == "user"]

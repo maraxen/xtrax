@@ -208,11 +208,27 @@ def default_runner(argv: List[str]) -> Tuple[Optional[int], str]:
     return proc.returncode, proc.stdout
 
 
-def _run(run: Runner, argv: List[str]) -> Tuple[Optional[int], str]:
+def _run(
+    run: Runner, argv: List[str], emit: Emitter, path: PathLike, kind: Optional[str]
+) -> Tuple[Optional[int], str]:
+    """Run ``argv``. A missing binary is ``(None, "")``; a timeout is an R-X1 refusal.
+
+    A command that hangs leaves the quota unread, which is not the same as the binary being
+    absent (where the caller may carry on with another source), so it is refused here.
+    """
     try:
         return run(argv)
     except FileNotFoundError:
         return None, ""
+    except subprocess.TimeoutExpired as e:
+        command = shlex.join(argv)
+        _refuse(
+            emit,
+            path,
+            kind,
+            command,
+            f"{command} timed out after {e.timeout} s; the quota is unreadable, refusing to guess",
+        )
 
 
 def existing_ancestor(path: PathLike) -> Path:
@@ -262,7 +278,7 @@ def fs_type(path: PathLike, runner: Optional[Runner] = None, emit: Emitter = log
     """
     run = runner or default_runner
     argv = ["stat", "-f", "-c", "%T", str(existing_ancestor(path))]
-    rc, out = _run(run, argv)
+    rc, out = _run(run, argv, emit, path, None)
     name = out.strip()
     if rc != 0 or not name or "\n" in name:
         _refuse(
@@ -281,7 +297,7 @@ def _read_lfs(
 ) -> QuotaReading:
     argv = ["lfs", "quota", flag, who, str(existing_ancestor(path))]
     command = shlex.join(argv)
-    rc, out = _run(run, argv)
+    rc, out = _run(run, argv, emit, path, kind)
     scope = "user" if flag == "-u" else "group"
     if rc != 0:
         _refuse(
@@ -365,12 +381,17 @@ def _read_quota_cmd(
     device: str,
     flag: str,
     who: str,
+    implicit: bool = False,
 ) -> Optional[QuotaReading]:
-    """The ``quota -w`` reading for ``device``, or None (with an event) when none is reported."""
+    """The ``quota -w`` reading for ``device``, or None (with an event) when none is reported.
+
+    ``implicit`` marks a principal the guard added on its own (the process's effective group),
+    where a missing row is the normal case and is not worth a ``quota_limit_unknown`` event.
+    """
     argv = ["quota", "-w", flag, who]
     command = shlex.join(argv)
     scope = "user" if flag == "-u" else "group"
-    rc, out = _run(run, argv)
+    rc, out = _run(run, argv, emit, path, kind)
     detail = None
     rows: Dict[str, Tuple[int, Optional[int]]] = {}
     if rc is None:
@@ -385,6 +406,8 @@ def _read_quota_cmd(
     if detail is not None:
         # Not a refusal: the filesystem reading still applies. The guard is blind to a
         # per-principal cap here, and the operator must see that rather than infer it.
+        if implicit:
+            return None
         emit(
             LIMIT_UNKNOWN_EVENT,
             {
@@ -490,7 +513,8 @@ def _read_orcd(
     command = f"read {report}"
     try:
         raw = report.read_text(encoding="utf-8")
-        age = time.time() - report.stat().st_mtime
+        mtime = report.stat().st_mtime
+        age = time.time() - mtime
         rows = parse_orcd_report(raw)
     except (OSError, ValueError) as e:
         _refuse(emit, path, kind, command, f"cannot read the ORCD quota report {report}: {e}")
@@ -530,7 +554,9 @@ def _read_orcd(
         command=command,
         raw=raw,
         path=str(path),
-        taken_at=_now_utc(),
+        # The report's own time: a re-read of an unchanged report is the SAME snapshot, which
+        # is how FileCapGuard knows not to forget the files written since it was taken.
+        taken_at=datetime.fromtimestamp(mtime, timezone.utc).isoformat(),
         fs_type=kind,
         scope="user",
         principal=f"{who}:{best[0]}",
@@ -546,6 +572,7 @@ def read_quotas(
     orcd_dir: Union[PathLike, None, str] = "auto",
     orcd_max_age_s: float = ORCD_MAX_AGE_S,
     home: Optional[PathLike] = None,
+    group_implicit: bool = False,
 ) -> List[QuotaReading]:
     """Every quota that bounds new files under ``path``, tightest scope first.
 
@@ -560,7 +587,11 @@ def read_quotas(
     ``.quota`` report; ``None`` disables) adds the per-user report row for the space
     (HOME, SCRATCH, POOL) the path resolves into. This is the only per-user source for
     scratch and pool there. An unreadable, unparseable or stale (``orcd_max_age_s``) report
-    is refused, never skipped.
+    is refused, never skipped. When that report supplied the user's cap, the redundant
+    ``quota -w -u`` call (and its ``quota_limit_unknown``) is skipped.
+
+    ``group_implicit`` marks ``group`` as one the caller added on its own (the effective
+    group), not one the directory named: a missing ``quota`` row for it emits no event.
     """
     run = runner or default_runner
     who = user or getpass.getuser()
@@ -576,18 +607,30 @@ def read_quotas(
             readings.append(_read_lfs(run, emit, path, kind, "-g", group))
         return readings
     argv = ["df", "-i", "-P", str(existing_ancestor(path))]
-    rc, out = _run(run, argv)
+    command = shlex.join(argv)
+    rc, out = _run(run, argv, emit, path, kind)
     if rc != 0:
-        raise RuntimeError(f"cannot read file quota for {path}: df rc={rc}")
-    fs_reading = replace(parse_df_inodes(out, path), command=shlex.join(argv), fs_type=kind)
+        _refuse(emit, path, kind, command, f"cannot read file quota for {path}: df rc={rc}")
+    try:
+        fs_reading = replace(parse_df_inodes(out, path), command=command, fs_type=kind)
+    except ValueError as e:
+        _refuse(
+            emit,
+            path,
+            kind,
+            command,
+            f"cannot read file quota for {path}: df output did not parse: {e}",
+        )
     if is_shared_fs(kind):
         # The whole server's inode table is not the user's cap: record it, never enforce it.
         fs_reading = replace(fs_reading, files_limit=None)
     device = _df_device(out)
     readings = [r for r in (orcd_reading,) if r is not None]
-    principals = [("-u", who)] + ([("-g", group)] if group is not None else [])
-    for flag, principal in principals:
-        r = _read_quota_cmd(run, emit, path, kind, device, flag, principal)
+    principals = [] if orcd_reading is not None else [("-u", who, False)]
+    if group is not None:
+        principals.append(("-g", group, group_implicit))
+    for flag, principal, implicit in principals:
+        r = _read_quota_cmd(run, emit, path, kind, device, flag, principal, implicit)
         if r is not None:
             readings.append(r)
     readings.append(fs_reading)
@@ -635,13 +678,38 @@ def _persist(record_path: Path, readings: List[QuotaReading], location: Location
             tmp.unlink()
 
 
+#: Reading sources that are a stored snapshot (a file somebody else refreshes), not a live query.
+#: Re-reading one can return the SAME snapshot, so the writes counted since it was taken must
+#: survive the re-read; for a live source (lfs, quota, df) the re-read already includes them.
+_SNAPSHOT_SOURCES = ("orcd_report",)
+
+
+def _snapshot_key(r: QuotaReading) -> Tuple[object, ...]:
+    return (r.source, r.scope, r.principal, r.taken_at, r.files_used, r.files_limit)
+
+
+def _effective_group() -> Optional[str]:
+    """Name of the process's effective group (new files get it unless the dir is setgid)."""
+    try:
+        return grp.getgrgid(os.getegid()).gr_name
+    except KeyError:
+        return None
+
+
 class FileCapGuard:
     """Refuses writes that would push real file usage above ``cap_fraction`` of the limit.
 
     The real readings are taken at construction and re-taken once ``reread_every`` files have
-    been counted since the last read. When the target directory is setgid, the owning
-    group's quota is read and enforced alongside the user's (files created there count against
-    the group). A reading with no limit never refuses; it emits ``quota_limit_unknown``.
+    been counted since the last read. The group quota is enforced alongside the user's, since
+    files count against the group they are created with: the directory's group when it is
+    setgid, else the process's effective group (``effective_group``: ``"auto"`` resolves it from
+    ``os.getegid()``, a name overrides it, ``None`` disables it). A missing quota row for that
+    implicit effective group is normal and is not flagged. A reading with no limit never
+    refuses; it emits ``quota_limit_unknown``.
+
+    Files counted since a stored snapshot (the ORCD report) are carried across re-reads for as
+    long as the re-read returns that same snapshot, so a report refreshed only every 10-20
+    minutes cannot make the guard forget what this process has written since.
 
     ``record_path``, when given, receives the latest readings and location as JSON after every
     real read. There is no default location.
@@ -660,6 +728,7 @@ class FileCapGuard:
         check_setgid_group: bool = True,
         orcd_dir: Union[PathLike, None, str] = "auto",
         orcd_max_age_s: float = ORCD_MAX_AGE_S,
+        effective_group: Optional[str] = "auto",
     ) -> None:
         if not 0.0 < cap_fraction <= 1.0:
             raise ValueError(f"cap_fraction must be in (0, 1], got {cap_fraction}")
@@ -676,14 +745,32 @@ class FileCapGuard:
         self._orcd_max_age_s = orcd_max_age_s
         self.location = describe_location(path)
         self._group = self.location.group if check_setgid_group and self.location.setgid else None
+        self._group_implicit = False
+        if self._group is None and check_setgid_group:
+            egroup = _effective_group() if effective_group == "auto" else effective_group
+            if egroup is not None:
+                self._group, self._group_implicit = egroup, True
         self.last_readings: List[QuotaReading] = self._take()
         self.files_written_since_read = 0
+        # Per reading: files written against a snapshot that a re-read returned unchanged.
+        self._carried: List[int] = [0] * len(self.last_readings)
         self.n_reads = 1
+
+    def _primary_index(self) -> int:
+        """Index of the user-scope reading, else the filesystem-scope one (never a group row)."""
+        for scope in ("user", "filesystem"):
+            for i, r in enumerate(self.last_readings):
+                if r.scope == scope:
+                    return i
+        return 0
 
     @property
     def last_reading(self) -> QuotaReading:
-        """The user (or filesystem) reading; group readings are in :attr:`last_readings`."""
-        return self.last_readings[0]
+        """The user reading (else the filesystem reading), chosen by scope, not position.
+
+        Group readings are in :attr:`last_readings`.
+        """
+        return self.last_readings[self._primary_index()]
 
     def _take(self) -> List[QuotaReading]:
         readings = read_quotas(
@@ -694,6 +781,7 @@ class FileCapGuard:
             group=self._group,
             orcd_dir=self._orcd_dir,
             orcd_max_age_s=self._orcd_max_age_s,
+            group_implicit=self._group_implicit,
         )
         for r in readings:
             self._emit(
@@ -712,7 +800,12 @@ class FileCapGuard:
                     "group": self.location.group,
                 },
             )
-            if r.files_limit is None and not (r.scope == "filesystem" and is_shared_fs(r.fs_type)):
+            implicit_group = r.scope == "group" and self._group_implicit
+            if (
+                r.files_limit is None
+                and not implicit_group
+                and not (r.scope == "filesystem" and is_shared_fs(r.fs_type))
+            ):
                 # read_quotas already flagged a shared filesystem with no per-user row.
                 # An unset quota is legitimate: no refusal, but the operator should see it.
                 self._emit(
@@ -730,12 +823,14 @@ class FileCapGuard:
         return readings
 
     def check(self, n_new_files: int) -> int:
-        """Admit ``n_new_files`` or raise QuotaRefused. Returns the projected user file count."""
+        """Admit ``n_new_files`` or raise QuotaRefused. Returns the projected file count of the
+        user reading (else the filesystem reading), see :attr:`last_reading`."""
         if n_new_files < 0:
             raise ValueError(f"n_new_files must be >= 0, got {n_new_files}")
+        primary = self._primary_index()
         projections = []
-        for r in self.last_readings:
-            projected = r.files_used + self.files_written_since_read + n_new_files
+        for r, carried in zip(self.last_readings, self._carried):
+            projected = r.files_used + carried + self.files_written_since_read + n_new_files
             projections.append(projected)
             if r.files_limit and projected > self.cap_fraction * r.files_limit:
                 self._emit(
@@ -747,6 +842,7 @@ class FileCapGuard:
                         "files_used": r.files_used,
                         "files_limit": r.files_limit,
                         "files_written_since_read": self.files_written_since_read,
+                        "files_carried_over": carried,
                         "n_new_files": n_new_files,
                         "projected": projected,
                         "cap_fraction": self.cap_fraction,
@@ -758,15 +854,24 @@ class FileCapGuard:
                     f"R-X1: refusing {n_new_files} new file(s) at {self.path}: projected "
                     f"{projected} exceeds {self.cap_fraction:.0%} of the {r.scope} files_limit "
                     f"{r.files_limit} (used {r.files_used} at read + "
-                    f"{self.files_written_since_read} written since; source={r.source}, "
+                    f"{carried + self.files_written_since_read} written since; source={r.source}, "
                     f"command={r.command!r})"
                 )
         self.files_written_since_read += n_new_files
         if self.files_written_since_read >= self.reread_every:
+            old = {
+                _snapshot_key(r): carried + self.files_written_since_read
+                for r, carried in zip(self.last_readings, self._carried)
+                if r.source in _SNAPSHOT_SOURCES
+            }
             self.last_readings = self._take()
+            self._carried = [
+                old.get(_snapshot_key(r), 0) if r.source in _SNAPSHOT_SOURCES else 0
+                for r in self.last_readings
+            ]
             self.files_written_since_read = 0
             self.n_reads += 1
-        return projections[0]
+        return projections[primary]
 
     def record(self) -> Dict[str, object]:
         """The guard's state: last readings, location, cap and counters."""
@@ -776,5 +881,6 @@ class FileCapGuard:
             "location": asdict(self.location),
             "cap_fraction": self.cap_fraction,
             "files_written_since_read": self.files_written_since_read,
+            "files_carried_over": list(self._carried),
             "n_reads": self.n_reads,
         }
