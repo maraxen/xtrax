@@ -25,6 +25,7 @@ Typical use::
 """
 
 from pathlib import Path
+from typing import Any
 
 from xtrax.fileguard._node import (
     DEFAULT_CAP_FRACTION,
@@ -90,12 +91,14 @@ __all__ = [
 def default_emitter() -> Emitter:
     """``cisternal.emit_event`` when cisternal is importable, else :func:`log_emitter`."""
     try:
-        import cisternal  # ty: ignore[unresolved-import]
+        import cisternal
     except ImportError:
         return log_emitter
 
     def _emit(name: str, fields: dict[str, object]) -> None:
-        cisternal.emit_event(name, **fields)
+        # emit_event's typed keywords (level) take what the caller put in fields.
+        payload: dict[str, Any] = dict(fields)
+        cisternal.emit_event(name, **payload)
 
     return _emit
 
