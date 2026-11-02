@@ -709,3 +709,35 @@ def test_default_cap_is_095_and_admits_scratch_at_81_percent(tmp_path):
     g.check(1)  # SCRATCH at 81.53% is under the default cap
     with pytest.raises(QuotaRefused):
         g.check(200_000)  # ...and a burst that would cross 95% is refused
+
+
+# --- shared-filesystem df -i is recorded, never enforced (decision 261102) -------------------
+
+DF_I_HOME_SERVER_FULL = DF_I_HOME.replace(
+    "900000000  1100000000   45%", "1990000000    10000000   99%"
+)
+
+
+def test_nfs_server_near_full_df_is_recorded_but_not_enforced(tmp_path, events):
+    run = _runner("nfs", df=(0, DF_I_HOME_SERVER_FULL), quota=(0, ENGAGING_QUOTA_U))
+    rs = read_quotas(tmp_path, run, user="maarxaru", emit=_emit_into(events))
+    fs = [r for r in rs if r.scope == "filesystem"][0]
+    assert (fs.files_used, fs.files_limit) == (1990000000, None)
+    g = _guard(tmp_path, run, events)
+    assert g.check(100) == 217187 + 100  # admitted on the user's own headroom
+    # No filesystem-scope limit_unknown noise: the user row was found.
+    assert not [e for e in _named(events, LIMIT_UNKNOWN_EVENT) if e.get("scope") == "filesystem"]
+
+
+def test_negative_control_local_ext4_df_near_full_still_refuses(tmp_path):
+    full = DF_I_HOME_SERVER_FULL.replace("nfs001.lb:/home", "/dev/sda1")
+    g = _guard(tmp_path, _runner("ext4", df=(0, full)))
+    with pytest.raises(QuotaRefused, match="R-X1"):
+        g.check(1)
+
+
+def test_shared_fs_prefixes_cover_nfs4_and_exclude_local():
+    from xtrax.fileguard._node import is_shared_fs
+
+    assert all(is_shared_fs(k) for k in ("nfs", "nfs4", "cifs", "ceph", "gpfs", "fuseblk"))
+    assert not any(is_shared_fs(k) for k in ("ext2/ext3", "xfs", "tmpfs", "btrfs", None))

@@ -48,6 +48,17 @@ PathLike = Union[str, Path]
 
 #: ``stat -f -c %T`` name of a Lustre mount.
 LUSTRE = "lustre"
+
+#: ``stat -f -c %T`` name prefixes whose ``df -i`` is a shared server's whole inode table. On these
+#: the ``df`` reading is kept for the record but carries no limit, so it is never enforced.
+SHARED_FS_PREFIXES = ("nfs", "cifs", "smb", "ceph", "gpfs", "wekafs", "beegfs", "afs", "9p", "fuse")
+
+
+def is_shared_fs(kind: Optional[str]) -> bool:
+    """True when ``kind`` (a ``stat -f -c %T`` name) is a network or cluster filesystem."""
+    return kind is not None and kind.startswith(SHARED_FS_PREFIXES)
+
+
 #: Default refusal threshold as a fraction of the real limit. 0.95 leaves a 5% slack: with the
 #: default ``reread_every`` of 1000, up to 49 concurrent guards fit a 1M-file cap
 #: (:func:`check_concurrency_slack`). Lower it for many concurrent writers.
@@ -569,6 +580,9 @@ def read_quotas(
     if rc != 0:
         raise RuntimeError(f"cannot read file quota for {path}: df rc={rc}")
     fs_reading = replace(parse_df_inodes(out, path), command=shlex.join(argv), fs_type=kind)
+    if is_shared_fs(kind):
+        # The whole server's inode table is not the user's cap: record it, never enforce it.
+        fs_reading = replace(fs_reading, files_limit=None)
     device = _df_device(out)
     readings = [r for r in (orcd_reading,) if r is not None]
     principals = [("-u", who)] + ([("-g", group)] if group is not None else [])
@@ -698,7 +712,8 @@ class FileCapGuard:
                     "group": self.location.group,
                 },
             )
-            if r.files_limit is None:
+            if r.files_limit is None and not (r.scope == "filesystem" and is_shared_fs(r.fs_type)):
+                # read_quotas already flagged a shared filesystem with no per-user row.
                 # An unset quota is legitimate: no refusal, but the operator should see it.
                 self._emit(
                     LIMIT_UNKNOWN_EVENT,
