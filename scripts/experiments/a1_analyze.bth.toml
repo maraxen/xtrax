@@ -1,0 +1,82 @@
+[experiment]
+hypothesis = """
+A1 (task 261030_xtrax-ledger-pack; spec .praxia/docs/specs/261030_ledger-pack-fileguard.md section 4):
+os.replace of a sibling temp file, followed by fsync of the directory, is atomic for readers on
+OTHER nodes, on Engaging scratch, pool and home (all NFSv4; home wsize 64 KiB, scratch rdma wsize
+1 MiB). Atomic means: no reader ever reads a torn file (header parse, length or sha256 failure).
+
+Input: raw JSONL logs of ONE Engaging job (a1_replace_atomicity.sh: 3 nodes, 1 writer, 2 readers),
+written before this analysis ran and NOT inspected before this sidecar was committed. Cells: 3
+filesystems (scratch, pool, home) x 4 payload sizes (4 KiB, 256 KiB, 4 MiB, 16 MiB, the last two above
+both wsizes). Per cell a CONTROL phase (writer truncates and rewrites in place, no rename) runs
+before the REAL phase (temp file, fsync, os.replace, fsync directory).
+
+A zero torn count is evidence only where the negative control fired in the same cell, so a cell is
+valid only if ALL hold: at least 2 reader hosts distinct from the writer host each overlap the writer's
+real phase by >= 150 s; the qualifying readers completed >= 2000 real-phase reads in total; control
+torn reads in that cell > 0.
+Outcomes: fail if any real-phase torn read occurs in any cell (any task); pass only if all 12 cells
+are valid and real torn is 0; inconclusive otherwise (a missed threshold, a control that did not fire,
+or a failed analyzer self-test: the analyzer's own logic is checked each run against synthetic logs
+with a known answer, positive and negative).
+ESTALE and ENOENT counts, the new-file visibility lag, and read-error counts are reported and do NOT
+change the outcome. Pre-registered consequence: a nonzero ESTALE count (on open or during read) adds
+a "reader retries the whole open+read" row to the spec's design (3.1 Lookup/Read side), and the
+reader code must implement it before the unit index ships.
+Limits: one job, one writer, two readers, three nodes; cross-node clock skew enters the overlap and
+visibility figures directly; a pass covers these filesystems at these sizes on this date, not NFS in
+general.
+"""
+stage_name = "validation"
+novel = true
+
+[observe]
+outputs = [
+  "per-cell counts: ok, torn, enoent, estale_open, estale_read, other (real phase, readers off the writer host)",
+  "per-cell control torn count and qualifying reader hosts, overlap seconds and read totals",
+  "new-file visibility lag per filesystem (median, p95, max; report only)",
+]
+looking_for = """
+Whether os.replace is torn-read-free across NFS clients on each tier, and whether the instrument
+can see tearing at all (the in-place control). ESTALE presence decides a reader-retry design row.
+"""
+sanity = [
+  "n_cells_expected >= 0",
+  "real_torn_total >= 0",
+]
+
+[outcomes.fail]
+condition = "analyzer_selftest_ok AND real_torn_total > 0"
+decision = "os.replace is not atomic here: redesign the write path before building the unit index"
+reasoning = "a torn read in the real phase falsifies A1 in at least one cell"
+is_residual = false
+
+[outcomes.pass]
+condition = "analyzer_selftest_ok AND real_torn_total = 0 AND n_cells_ok = n_cells_expected"
+decision = "A1 holds on scratch, pool and home at the tested sizes; proceed (check ESTALE row)"
+reasoning = "no torn read in any cell, and every cell's control fired with adequate coverage"
+is_residual = false
+
+[outcomes.inconclusive]
+condition = "true"
+decision = "do not cite zero torn reads; fix coverage or the control and re-run"
+reasoning = "a threshold was missed, a control did not fire, or the analyzer self-test failed"
+is_residual = true
+
+[result_schema]
+analyzer_selftest_ok = "bool"
+n_cells_expected = "int"
+n_cells_ok = "int"
+real_torn_total = "int"
+control_torn_total = "int"
+estale_total = "int"
+enoent_total = "int"
+other_error_total = "int"
+n_reader_hosts = "int"
+vis_lag_median_s = "float"
+n_log_rows = "int"
+
+[outputs]
+roots = [
+  "outputs/probes/a1/a1.result.json",
+]

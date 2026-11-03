@@ -1,0 +1,99 @@
+[experiment]
+hypothesis = """
+A10 (task 261030_xtrax-ledger-pack; spec .praxia/docs/specs/261030_ledger-pack-fileguard.md section 4):
+compaction's "writer is dead" rule (xtrax.run.writer_liveness.segment_writer_dead: trailer, or job
+ABSENT by squeue-invalid-id plus a positive sacct terminal state AND server-side mtime older than a
+300 s grace; UNKNOWN is never dead; a writer with no job id is dead only through the trailer) makes
+NO false positive under preemption and requeue on Engaging.
+
+Input: the raw JSONL of ONE controller job (a10_controller.py): writer job W (--requeue; `scontrol
+requeue` then a 30 s hold, about 2 min after it first runs, then restart 1 to completion) and a
+1-task array writer job A, sampled every 10 s (2 s after the injection) through completion and
+aging out of squeue (MinJobAge 120 s) plus 2 x 300 s. During restart 1 a window of at least 100 s
+also evaluates every rule against a deliberately broken scheduler query (SLURM_CONF=/nonexistent).
+Each sample evaluates three rules on identical raw squeue/sacct outputs: SHIPPING; NAIVE_ERR (dead
+if squeue gives a nonzero rc, an error or no row, in two consecutive samples, no sacct); NAIVE_NOGRACE
+(shipping state logic, grace 0, local clock). The logs were not inspected before this sidecar was
+committed.
+
+Ground truth: a rule's false positive is a dead verdict at sample time t for a segment that LATER
+holds a heartbeat row with wall time > t + 5 s. Broken-query samples count too.
+Outcomes. fail: any shipping false positive. pass: no shipping false positive AND the trace has
+coverage AND the shipping rule marked every segment dead at some sample. marginal: no shipping false
+positive, coverage, but the shipping rule never marked one or more segments dead (safe, but compaction
+would never take them: tune before building). inconclusive otherwise. Coverage means ALL of:
+at least one naive rule made a false positive (proves the probe can see one); W passed through
+running, requeued/pending, running restart 1, completed and aged-out; at least 3 broken-query
+samples; the array job was sampled; and the analyzer's own self-test (synthetic traces with a known
+answer, positive and negative) passed.
+Limits: one requeue, one array task, 4 min writers; scheduler load at the time shapes the pending phase.
+Time to dead for killed and completed segments is reported, not graded.
+
+Amendment 1 (2026-11-02, controller only; [outcomes], [result_schema] and the analyzer unchanged):
+run 9040eb50 (job 27708473) was inconclusive with 2 broken-query samples against the minimum of 3,
+because on Engaging a broken squeue hangs to its 20 s timeout and a broken sample takes ~50 s. The
+broken window is now sized by count (4 samples starting 20 s into restart 1), and W runs 6 min
+instead of 4 so restart 1 is alive throughout. The earlier run's raw logs were inspected before this
+amendment; the change touches only how many broken samples are taken.
+"""
+stage_name = "validation"
+novel = true
+
+[observe]
+outputs = [
+  "false positives per rule and input (live or broken query)",
+  "per-segment time to dead for each rule",
+  "which W phases the trace covered",
+]
+looking_for = """
+Whether the shipping rule ever calls a live writer dead, and whether it eventually marks finished
+and killed segments dead so compaction can take them.
+"""
+sanity = [
+  "shipping_fp >= 0",
+  "n_samples >= 0",
+]
+
+[outcomes.fail]
+condition = "shipping_fp > 0"
+decision = "do not ship the dead-writer rule; redesign before compaction"
+reasoning = "the rule called a writer dead that later wrote"
+is_residual = false
+
+[outcomes.pass]
+condition = "analyzer_selftest_ok AND coverage_ok AND shipping_fp = 0 AND shipping_missed_dead = 0"
+decision = "A10 holds: keep the three-state rule and the 300 s grace"
+reasoning = "no false positive with a naive rule shown to fail, and every segment eventually marked dead"
+is_residual = false
+
+[outcomes.marginal]
+condition = "analyzer_selftest_ok AND coverage_ok AND shipping_fp = 0 AND shipping_missed_dead > 0"
+decision = "rule is safe but leaves segments uncompacted; tune grace or add a path before building"
+reasoning = "shipping never marked some finished or killed segment dead"
+is_residual = false
+
+[outcomes.inconclusive]
+condition = "true"
+decision = "do not cite a zero false-positive count; fix the missing coverage and re-run"
+reasoning = "no naive rule fired, a phase or the broken window or the array job is missing, or the analyzer self-test failed"
+is_residual = true
+
+[result_schema]
+analyzer_selftest_ok = "bool"
+shipping_fp = "int"
+naive_err_fp = "int"
+naive_nograce_fp = "int"
+naive_fp_total = "int"
+shipping_missed_dead = "int"
+shipping_missed_closed = "int"
+phases_ok = "bool"
+broken_window_samples = "int"
+array_sampled = "bool"
+coverage_ok = "bool"
+n_samples = "int"
+n_segments = "int"
+
+[outputs]
+roots = [
+  "outputs/probes/a10/a10.result.json",
+]

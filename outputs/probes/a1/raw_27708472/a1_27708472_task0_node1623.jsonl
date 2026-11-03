@@ -1,0 +1,600 @@
+{"control_s": 30.0, "ev": "meta", "fs_dirs": {"home": "/home/maarxaru/a1_probe", "pool": "/orcd/pool/007/maarxaru/a1_probe", "scratch": "/orcd/scratch/orcd/011/maarxaru/a1_probe"}, "host": "node1623", "jobid": "27708472", "nodelist": "node[1623-1624,3112]", "pid": 3539992, "py": "3.11.7", "real_s": 180.0, "role": "writer", "sizes": [4096, 262144, 4194304, 16777216], "start_epoch": 1793658552.0, "t": 1793658492.2334251, "tag": "27708472", "task": 0}
+{"edge": "start", "ev": "phase", "fs": "scratch", "phase": "control", "size": 4096, "t": 1793658556.0000894, "task": 0}
+{"ev": "wagg", "fs": "scratch", "gen": 1664, "phase": "control", "size": 4096, "t": 1793658561.0007286, "task": 0, "writes": 1664}
+{"ev": "wagg", "fs": "scratch", "gen": 3349, "phase": "control", "size": 4096, "t": 1793658566.0031805, "task": 0, "writes": 1685}
+{"ev": "wagg", "fs": "scratch", "gen": 5043, "phase": "control", "size": 4096, "t": 1793658571.0060432, "task": 0, "writes": 1694}
+{"ev": "wagg", "fs": "scratch", "gen": 6725, "phase": "control", "size": 4096, "t": 1793658576.0064523, "task": 0, "writes": 1682}
+{"ev": "wagg", "fs": "scratch", "gen": 8414, "phase": "control", "size": 4096, "t": 1793658581.0094914, "task": 0, "writes": 1689}
+{"ev": "wagg", "fs": "scratch", "gen": 10102, "phase": "control", "size": 4096, "t": 1793658586.0008478, "task": 0, "writes": 1688}
+{"edge": "end", "ev": "phase", "fs": "scratch", "last_gen": 10102, "phase": "control", "size": 4096, "t": 1793658586.0008912, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "scratch", "phase": "real", "size": 4096, "t": 1793658590.0000753, "task": 0}
+{"ev": "wagg", "fs": "scratch", "gen": 44, "phase": "real", "size": 4096, "t": 1793658595.0737202, "task": 0, "writes": 44}
+{"ev": "wagg", "fs": "scratch", "gen": 96, "phase": "real", "size": 4096, "t": 1793658600.0895984, "task": 0, "writes": 52}
+{"ev": "wagg", "fs": "scratch", "gen": 182, "phase": "real", "size": 4096, "t": 1793658605.0977585, "task": 0, "writes": 86}
+{"ev": "wagg", "fs": "scratch", "gen": 408, "phase": "real", "size": 4096, "t": 1793658610.1617346, "task": 0, "writes": 226}
+{"ev": "wagg", "fs": "scratch", "gen": 851, "phase": "real", "size": 4096, "t": 1793658615.1619253, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 1294, "phase": "real", "size": 4096, "t": 1793658620.169046, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 1737, "phase": "real", "size": 4096, "t": 1793658625.1730826, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 2178, "phase": "real", "size": 4096, "t": 1793658630.1832204, "task": 0, "writes": 441}
+{"ev": "wagg", "fs": "scratch", "gen": 2619, "phase": "real", "size": 4096, "t": 1793658635.1877878, "task": 0, "writes": 441}
+{"ev": "wagg", "fs": "scratch", "gen": 3061, "phase": "real", "size": 4096, "t": 1793658640.1946628, "task": 0, "writes": 442}
+{"ev": "wagg", "fs": "scratch", "gen": 3504, "phase": "real", "size": 4096, "t": 1793658645.2011065, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 3822, "phase": "real", "size": 4096, "t": 1793658650.2177103, "task": 0, "writes": 318}
+{"ev": "wagg", "fs": "scratch", "gen": 3866, "phase": "real", "size": 4096, "t": 1793658655.2497125, "task": 0, "writes": 44}
+{"ev": "wagg", "fs": "scratch", "gen": 3918, "phase": "real", "size": 4096, "t": 1793658660.2817736, "task": 0, "writes": 52}
+{"ev": "wagg", "fs": "scratch", "gen": 4028, "phase": "real", "size": 4096, "t": 1793658665.377794, "task": 0, "writes": 110}
+{"ev": "wagg", "fs": "scratch", "gen": 4313, "phase": "real", "size": 4096, "t": 1793658670.3785892, "task": 0, "writes": 285}
+{"ev": "wagg", "fs": "scratch", "gen": 4736, "phase": "real", "size": 4096, "t": 1793658675.3811817, "task": 0, "writes": 423}
+{"ev": "wagg", "fs": "scratch", "gen": 5178, "phase": "real", "size": 4096, "t": 1793658680.3816025, "task": 0, "writes": 442}
+{"ev": "wagg", "fs": "scratch", "gen": 5621, "phase": "real", "size": 4096, "t": 1793658685.3879814, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 6064, "phase": "real", "size": 4096, "t": 1793658690.396779, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 6506, "phase": "real", "size": 4096, "t": 1793658695.39941, "task": 0, "writes": 442}
+{"ev": "wagg", "fs": "scratch", "gen": 6948, "phase": "real", "size": 4096, "t": 1793658700.4057686, "task": 0, "writes": 442}
+{"ev": "wagg", "fs": "scratch", "gen": 7391, "phase": "real", "size": 4096, "t": 1793658705.410187, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 7834, "phase": "real", "size": 4096, "t": 1793658710.4123578, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 7897, "phase": "real", "size": 4096, "t": 1793658715.5216944, "task": 0, "writes": 63}
+{"ev": "wagg", "fs": "scratch", "gen": 7951, "phase": "real", "size": 4096, "t": 1793658720.5226943, "task": 0, "writes": 54}
+{"ev": "wagg", "fs": "scratch", "gen": 8035, "phase": "real", "size": 4096, "t": 1793658725.5457244, "task": 0, "writes": 84}
+{"ev": "wagg", "fs": "scratch", "gen": 8202, "phase": "real", "size": 4096, "t": 1793658730.5778277, "task": 0, "writes": 167}
+{"ev": "wagg", "fs": "scratch", "gen": 8627, "phase": "real", "size": 4096, "t": 1793658735.582282, "task": 0, "writes": 425}
+{"ev": "wagg", "fs": "scratch", "gen": 9070, "phase": "real", "size": 4096, "t": 1793658740.5850248, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 9513, "phase": "real", "size": 4096, "t": 1793658745.591298, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 9956, "phase": "real", "size": 4096, "t": 1793658750.5920272, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 10399, "phase": "real", "size": 4096, "t": 1793658755.5938892, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 10842, "phase": "real", "size": 4096, "t": 1793658760.6041806, "task": 0, "writes": 443}
+{"ev": "wagg", "fs": "scratch", "gen": 11286, "phase": "real", "size": 4096, "t": 1793658765.609938, "task": 0, "writes": 444}
+{"ev": "wagg", "fs": "scratch", "gen": 11675, "phase": "real", "size": 4096, "t": 1793658770.0099804, "task": 0, "writes": 389}
+{"edge": "end", "ev": "phase", "fs": "scratch", "last_gen": 11675, "phase": "real", "size": 4096, "t": 1793658770.010042, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "scratch", "phase": "control", "size": 262144, "t": 1793658774.0000765, "task": 0}
+{"ev": "wagg", "fs": "scratch", "gen": 541, "phase": "control", "size": 262144, "t": 1793658779.0062978, "task": 0, "writes": 541}
+{"ev": "wagg", "fs": "scratch", "gen": 1093, "phase": "control", "size": 262144, "t": 1793658784.010494, "task": 0, "writes": 552}
+{"ev": "wagg", "fs": "scratch", "gen": 1642, "phase": "control", "size": 262144, "t": 1793658789.0111582, "task": 0, "writes": 549}
+{"ev": "wagg", "fs": "scratch", "gen": 2194, "phase": "control", "size": 262144, "t": 1793658794.018523, "task": 0, "writes": 552}
+{"ev": "wagg", "fs": "scratch", "gen": 2743, "phase": "control", "size": 262144, "t": 1793658799.0213773, "task": 0, "writes": 549}
+{"ev": "wagg", "fs": "scratch", "gen": 3294, "phase": "control", "size": 262144, "t": 1793658804.0076113, "task": 0, "writes": 551}
+{"edge": "end", "ev": "phase", "fs": "scratch", "last_gen": 3294, "phase": "control", "size": 262144, "t": 1793658804.007684, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "scratch", "phase": "real", "size": 262144, "t": 1793658808.000077, "task": 0}
+{"ev": "wagg", "fs": "scratch", "gen": 42, "phase": "real", "size": 262144, "t": 1793658813.0418026, "task": 0, "writes": 42}
+{"ev": "wagg", "fs": "scratch", "gen": 87, "phase": "real", "size": 262144, "t": 1793658818.1057618, "task": 0, "writes": 45}
+{"ev": "wagg", "fs": "scratch", "gen": 161, "phase": "real", "size": 262144, "t": 1793658823.1697915, "task": 0, "writes": 74}
+{"ev": "wagg", "fs": "scratch", "gen": 294, "phase": "real", "size": 262144, "t": 1793658828.1792016, "task": 0, "writes": 133}
+{"ev": "wagg", "fs": "scratch", "gen": 629, "phase": "real", "size": 262144, "t": 1793658833.1856296, "task": 0, "writes": 335}
+{"ev": "wagg", "fs": "scratch", "gen": 1012, "phase": "real", "size": 262144, "t": 1793658838.186742, "task": 0, "writes": 383}
+{"ev": "wagg", "fs": "scratch", "gen": 1394, "phase": "real", "size": 262144, "t": 1793658843.1914856, "task": 0, "writes": 382}
+{"ev": "wagg", "fs": "scratch", "gen": 1778, "phase": "real", "size": 262144, "t": 1793658848.1935983, "task": 0, "writes": 384}
+{"ev": "wagg", "fs": "scratch", "gen": 2161, "phase": "real", "size": 262144, "t": 1793658853.1967278, "task": 0, "writes": 383}
+{"ev": "wagg", "fs": "scratch", "gen": 2545, "phase": "real", "size": 262144, "t": 1793658858.2030256, "task": 0, "writes": 384}
+{"ev": "wagg", "fs": "scratch", "gen": 2929, "phase": "real", "size": 262144, "t": 1793658863.2078104, "task": 0, "writes": 384}
+{"ev": "wagg", "fs": "scratch", "gen": 3204, "phase": "real", "size": 262144, "t": 1793658868.2897823, "task": 0, "writes": 275}
+{"ev": "wagg", "fs": "scratch", "gen": 3247, "phase": "real", "size": 262144, "t": 1793658873.3387659, "task": 0, "writes": 43}
+{"ev": "wagg", "fs": "scratch", "gen": 3295, "phase": "real", "size": 262144, "t": 1793658878.4338386, "task": 0, "writes": 48}
+{"ev": "wagg", "fs": "scratch", "gen": 3397, "phase": "real", "size": 262144, "t": 1793658883.4497046, "task": 0, "writes": 102}
+{"ev": "wagg", "fs": "scratch", "gen": 3603, "phase": "real", "size": 262144, "t": 1793658888.4589274, "task": 0, "writes": 206}
+{"ev": "wagg", "fs": "scratch", "gen": 3977, "phase": "real", "size": 262144, "t": 1793658893.4655538, "task": 0, "writes": 374}
+{"ev": "wagg", "fs": "scratch", "gen": 4359, "phase": "real", "size": 262144, "t": 1793658898.4731054, "task": 0, "writes": 382}
+{"ev": "wagg", "fs": "scratch", "gen": 4741, "phase": "real", "size": 262144, "t": 1793658903.4804692, "task": 0, "writes": 382}
+{"ev": "wagg", "fs": "scratch", "gen": 5124, "phase": "real", "size": 262144, "t": 1793658908.481775, "task": 0, "writes": 383}
+{"ev": "wagg", "fs": "scratch", "gen": 5508, "phase": "real", "size": 262144, "t": 1793658913.490288, "task": 0, "writes": 384}
+{"ev": "wagg", "fs": "scratch", "gen": 5893, "phase": "real", "size": 262144, "t": 1793658918.5007143, "task": 0, "writes": 385}
+{"ev": "wagg", "fs": "scratch", "gen": 6277, "phase": "real", "size": 262144, "t": 1793658923.5072663, "task": 0, "writes": 384}
+{"ev": "wagg", "fs": "scratch", "gen": 6659, "phase": "real", "size": 262144, "t": 1793658928.5172389, "task": 0, "writes": 382}
+{"ev": "wagg", "fs": "scratch", "gen": 6708, "phase": "real", "size": 262144, "t": 1793658933.538704, "task": 0, "writes": 49}
+{"ev": "wagg", "fs": "scratch", "gen": 6759, "phase": "real", "size": 262144, "t": 1793658938.5511124, "task": 0, "writes": 51}
+{"ev": "wagg", "fs": "scratch", "gen": 6835, "phase": "real", "size": 262144, "t": 1793658943.5571084, "task": 0, "writes": 76}
+{"ev": "wagg", "fs": "scratch", "gen": 6989, "phase": "real", "size": 262144, "t": 1793658948.6107767, "task": 0, "writes": 154}
+{"ev": "wagg", "fs": "scratch", "gen": 7302, "phase": "real", "size": 262144, "t": 1793658953.6207938, "task": 0, "writes": 313}
+{"ev": "wagg", "fs": "scratch", "gen": 7680, "phase": "real", "size": 262144, "t": 1793658958.6226518, "task": 0, "writes": 378}
+{"ev": "wagg", "fs": "scratch", "gen": 8065, "phase": "real", "size": 262144, "t": 1793658963.63065, "task": 0, "writes": 385}
+{"ev": "wagg", "fs": "scratch", "gen": 8451, "phase": "real", "size": 262144, "t": 1793658968.6383882, "task": 0, "writes": 386}
+{"ev": "wagg", "fs": "scratch", "gen": 8838, "phase": "real", "size": 262144, "t": 1793658973.651311, "task": 0, "writes": 387}
+{"ev": "wagg", "fs": "scratch", "gen": 9224, "phase": "real", "size": 262144, "t": 1793658978.6540308, "task": 0, "writes": 386}
+{"ev": "wagg", "fs": "scratch", "gen": 9610, "phase": "real", "size": 262144, "t": 1793658983.6640966, "task": 0, "writes": 386}
+{"ev": "wagg", "fs": "scratch", "gen": 9945, "phase": "real", "size": 262144, "t": 1793658988.0035555, "task": 0, "writes": 335}
+{"edge": "end", "ev": "phase", "fs": "scratch", "last_gen": 9945, "phase": "real", "size": 262144, "t": 1793658988.00361, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "scratch", "phase": "control", "size": 4194304, "t": 1793658992.000074, "task": 0}
+{"ev": "wagg", "fs": "scratch", "gen": 52, "phase": "control", "size": 4194304, "t": 1793658997.0335672, "task": 0, "writes": 52}
+{"ev": "wagg", "fs": "scratch", "gen": 105, "phase": "control", "size": 4194304, "t": 1793659002.0832026, "task": 0, "writes": 53}
+{"ev": "wagg", "fs": "scratch", "gen": 158, "phase": "control", "size": 4194304, "t": 1793659007.1380556, "task": 0, "writes": 53}
+{"ev": "wagg", "fs": "scratch", "gen": 211, "phase": "control", "size": 4194304, "t": 1793659012.2119257, "task": 0, "writes": 53}
+{"ev": "wagg", "fs": "scratch", "gen": 264, "phase": "control", "size": 4194304, "t": 1793659017.2731771, "task": 0, "writes": 53}
+{"ev": "wagg", "fs": "scratch", "gen": 314, "phase": "control", "size": 4194304, "t": 1793659022.0414495, "task": 0, "writes": 50}
+{"edge": "end", "ev": "phase", "fs": "scratch", "last_gen": 314, "phase": "control", "size": 4194304, "t": 1793659022.0415354, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "scratch", "phase": "real", "size": 4194304, "t": 1793659026.0000532, "task": 0}
+{"ev": "wagg", "fs": "scratch", "gen": 39, "phase": "real", "size": 4194304, "t": 1793659031.0690277, "task": 0, "writes": 39}
+{"ev": "wagg", "fs": "scratch", "gen": 80, "phase": "real", "size": 4194304, "t": 1793659036.0851123, "task": 0, "writes": 41}
+{"ev": "wagg", "fs": "scratch", "gen": 130, "phase": "real", "size": 4194304, "t": 1793659041.11591, "task": 0, "writes": 50}
+{"ev": "wagg", "fs": "scratch", "gen": 194, "phase": "real", "size": 4194304, "t": 1793659046.1305826, "task": 0, "writes": 64}
+{"ev": "wagg", "fs": "scratch", "gen": 288, "phase": "real", "size": 4194304, "t": 1793659051.1357427, "task": 0, "writes": 94}
+{"ev": "wagg", "fs": "scratch", "gen": 424, "phase": "real", "size": 4194304, "t": 1793659056.156964, "task": 0, "writes": 136}
+{"ev": "wagg", "fs": "scratch", "gen": 562, "phase": "real", "size": 4194304, "t": 1793659061.1820989, "task": 0, "writes": 138}
+{"ev": "wagg", "fs": "scratch", "gen": 699, "phase": "real", "size": 4194304, "t": 1793659066.2134311, "task": 0, "writes": 137}
+{"ev": "wagg", "fs": "scratch", "gen": 842, "phase": "real", "size": 4194304, "t": 1793659071.2136004, "task": 0, "writes": 143}
+{"ev": "wagg", "fs": "scratch", "gen": 983, "phase": "real", "size": 4194304, "t": 1793659076.2268205, "task": 0, "writes": 141}
+{"ev": "wagg", "fs": "scratch", "gen": 1131, "phase": "real", "size": 4194304, "t": 1793659081.2379549, "task": 0, "writes": 148}
+{"ev": "wagg", "fs": "scratch", "gen": 1234, "phase": "real", "size": 4194304, "t": 1793659086.2822719, "task": 0, "writes": 103}
+{"ev": "wagg", "fs": "scratch", "gen": 1271, "phase": "real", "size": 4194304, "t": 1793659091.3703809, "task": 0, "writes": 37}
+{"ev": "wagg", "fs": "scratch", "gen": 1315, "phase": "real", "size": 4194304, "t": 1793659096.4983866, "task": 0, "writes": 44}
+{"ev": "wagg", "fs": "scratch", "gen": 1367, "phase": "real", "size": 4194304, "t": 1793659101.5942712, "task": 0, "writes": 52}
+{"ev": "wagg", "fs": "scratch", "gen": 1443, "phase": "real", "size": 4194304, "t": 1793659106.702058, "task": 0, "writes": 76}
+{"ev": "wagg", "fs": "scratch", "gen": 1553, "phase": "real", "size": 4194304, "t": 1793659111.7583973, "task": 0, "writes": 110}
+{"ev": "wagg", "fs": "scratch", "gen": 1696, "phase": "real", "size": 4194304, "t": 1793659116.7617126, "task": 0, "writes": 143}
+{"ev": "wagg", "fs": "scratch", "gen": 1848, "phase": "real", "size": 4194304, "t": 1793659121.784501, "task": 0, "writes": 152}
+{"ev": "wagg", "fs": "scratch", "gen": 1998, "phase": "real", "size": 4194304, "t": 1793659126.7991104, "task": 0, "writes": 150}
+{"ev": "wagg", "fs": "scratch", "gen": 2147, "phase": "real", "size": 4194304, "t": 1793659131.8166122, "task": 0, "writes": 149}
+{"ev": "wagg", "fs": "scratch", "gen": 2297, "phase": "real", "size": 4194304, "t": 1793659136.8275356, "task": 0, "writes": 150}
+{"ev": "wagg", "fs": "scratch", "gen": 2447, "phase": "real", "size": 4194304, "t": 1793659141.8521028, "task": 0, "writes": 150}
+{"ev": "wagg", "fs": "scratch", "gen": 2592, "phase": "real", "size": 4194304, "t": 1793659146.882195, "task": 0, "writes": 145}
+{"ev": "wagg", "fs": "scratch", "gen": 2631, "phase": "real", "size": 4194304, "t": 1793659152.0141008, "task": 0, "writes": 39}
+{"ev": "wagg", "fs": "scratch", "gen": 2671, "phase": "real", "size": 4194304, "t": 1793659157.1009407, "task": 0, "writes": 40}
+{"ev": "wagg", "fs": "scratch", "gen": 2722, "phase": "real", "size": 4194304, "t": 1793659162.1151075, "task": 0, "writes": 51}
+{"ev": "wagg", "fs": "scratch", "gen": 2784, "phase": "real", "size": 4194304, "t": 1793659167.1311078, "task": 0, "writes": 62}
+{"ev": "wagg", "fs": "scratch", "gen": 2872, "phase": "real", "size": 4194304, "t": 1793659172.1430073, "task": 0, "writes": 88}
+{"ev": "wagg", "fs": "scratch", "gen": 3008, "phase": "real", "size": 4194304, "t": 1793659177.149378, "task": 0, "writes": 136}
+{"ev": "wagg", "fs": "scratch", "gen": 3155, "phase": "real", "size": 4194304, "t": 1793659182.17138, "task": 0, "writes": 147}
+{"ev": "wagg", "fs": "scratch", "gen": 3305, "phase": "real", "size": 4194304, "t": 1793659187.202784, "task": 0, "writes": 150}
+{"ev": "wagg", "fs": "scratch", "gen": 3447, "phase": "real", "size": 4194304, "t": 1793659192.2082691, "task": 0, "writes": 142}
+{"ev": "wagg", "fs": "scratch", "gen": 3585, "phase": "real", "size": 4194304, "t": 1793659197.2302728, "task": 0, "writes": 138}
+{"ev": "wagg", "fs": "scratch", "gen": 3732, "phase": "real", "size": 4194304, "t": 1793659202.2388234, "task": 0, "writes": 147}
+{"ev": "wagg", "fs": "scratch", "gen": 3839, "phase": "real", "size": 4194304, "t": 1793659206.016838, "task": 0, "writes": 107}
+{"edge": "end", "ev": "phase", "fs": "scratch", "last_gen": 3839, "phase": "real", "size": 4194304, "t": 1793659206.016895, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "scratch", "phase": "control", "size": 16777216, "t": 1793659210.0000694, "task": 0}
+{"ev": "wagg", "fs": "scratch", "gen": 14, "phase": "control", "size": 16777216, "t": 1793659215.258046, "task": 0, "writes": 14}
+{"ev": "wagg", "fs": "scratch", "gen": 28, "phase": "control", "size": 16777216, "t": 1793659220.4079084, "task": 0, "writes": 14}
+{"ev": "wagg", "fs": "scratch", "gen": 42, "phase": "control", "size": 16777216, "t": 1793659225.5645063, "task": 0, "writes": 14}
+{"ev": "wagg", "fs": "scratch", "gen": 56, "phase": "control", "size": 16777216, "t": 1793659230.7185802, "task": 0, "writes": 14}
+{"ev": "wagg", "fs": "scratch", "gen": 70, "phase": "control", "size": 16777216, "t": 1793659235.8586764, "task": 0, "writes": 14}
+{"ev": "wagg", "fs": "scratch", "gen": 82, "phase": "control", "size": 16777216, "t": 1793659240.2472272, "task": 0, "writes": 12}
+{"edge": "end", "ev": "phase", "fs": "scratch", "last_gen": 82, "phase": "control", "size": 16777216, "t": 1793659240.2473147, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "scratch", "phase": "real", "size": 16777216, "t": 1793659244.0000777, "task": 0}
+{"ev": "wagg", "fs": "scratch", "gen": 25, "phase": "real", "size": 16777216, "t": 1793659249.0516462, "task": 0, "writes": 25}
+{"ev": "wagg", "fs": "scratch", "gen": 51, "phase": "real", "size": 16777216, "t": 1793659254.1158211, "task": 0, "writes": 26}
+{"ev": "wagg", "fs": "scratch", "gen": 80, "phase": "real", "size": 16777216, "t": 1793659259.2633097, "task": 0, "writes": 29}
+{"ev": "wagg", "fs": "scratch", "gen": 109, "phase": "real", "size": 16777216, "t": 1793659264.379675, "task": 0, "writes": 29}
+{"ev": "wagg", "fs": "scratch", "gen": 142, "phase": "real", "size": 16777216, "t": 1793659269.4438128, "task": 0, "writes": 33}
+{"ev": "wagg", "fs": "scratch", "gen": 177, "phase": "real", "size": 16777216, "t": 1793659274.509915, "task": 0, "writes": 35}
+{"ev": "wagg", "fs": "scratch", "gen": 214, "phase": "real", "size": 16777216, "t": 1793659279.521528, "task": 0, "writes": 37}
+{"ev": "wagg", "fs": "scratch", "gen": 250, "phase": "real", "size": 16777216, "t": 1793659284.6765974, "task": 0, "writes": 36}
+{"ev": "wagg", "fs": "scratch", "gen": 289, "phase": "real", "size": 16777216, "t": 1793659289.8596973, "task": 0, "writes": 39}
+{"ev": "wagg", "fs": "scratch", "gen": 327, "phase": "real", "size": 16777216, "t": 1793659294.875691, "task": 0, "writes": 38}
+{"ev": "wagg", "fs": "scratch", "gen": 370, "phase": "real", "size": 16777216, "t": 1793659299.960879, "task": 0, "writes": 43}
+{"ev": "wagg", "fs": "scratch", "gen": 402, "phase": "real", "size": 16777216, "t": 1793659305.1477487, "task": 0, "writes": 32}
+{"ev": "wagg", "fs": "scratch", "gen": 432, "phase": "real", "size": 16777216, "t": 1793659310.2116537, "task": 0, "writes": 30}
+{"ev": "wagg", "fs": "scratch", "gen": 463, "phase": "real", "size": 16777216, "t": 1793659315.2516832, "task": 0, "writes": 31}
+{"ev": "wagg", "fs": "scratch", "gen": 494, "phase": "real", "size": 16777216, "t": 1793659320.2602608, "task": 0, "writes": 31}
+{"ev": "wagg", "fs": "scratch", "gen": 525, "phase": "real", "size": 16777216, "t": 1793659325.3541138, "task": 0, "writes": 31}
+{"ev": "wagg", "fs": "scratch", "gen": 560, "phase": "real", "size": 16777216, "t": 1793659330.3783135, "task": 0, "writes": 35}
+{"ev": "wagg", "fs": "scratch", "gen": 591, "phase": "real", "size": 16777216, "t": 1793659335.434847, "task": 0, "writes": 31}
+{"ev": "wagg", "fs": "scratch", "gen": 623, "phase": "real", "size": 16777216, "t": 1793659340.515677, "task": 0, "writes": 32}
+{"ev": "wagg", "fs": "scratch", "gen": 660, "phase": "real", "size": 16777216, "t": 1793659345.6012185, "task": 0, "writes": 37}
+{"ev": "wagg", "fs": "scratch", "gen": 692, "phase": "real", "size": 16777216, "t": 1793659350.6820848, "task": 0, "writes": 32}
+{"ev": "wagg", "fs": "scratch", "gen": 735, "phase": "real", "size": 16777216, "t": 1793659355.876648, "task": 0, "writes": 43}
+{"ev": "wagg", "fs": "scratch", "gen": 774, "phase": "real", "size": 16777216, "t": 1793659361.0437307, "task": 0, "writes": 39}
+{"ev": "wagg", "fs": "scratch", "gen": 808, "phase": "real", "size": 16777216, "t": 1793659366.124712, "task": 0, "writes": 34}
+{"ev": "wagg", "fs": "scratch", "gen": 834, "phase": "real", "size": 16777216, "t": 1793659371.1417267, "task": 0, "writes": 26}
+{"ev": "wagg", "fs": "scratch", "gen": 864, "phase": "real", "size": 16777216, "t": 1793659376.29447, "task": 0, "writes": 30}
+{"ev": "wagg", "fs": "scratch", "gen": 894, "phase": "real", "size": 16777216, "t": 1793659381.3154433, "task": 0, "writes": 30}
+{"ev": "wagg", "fs": "scratch", "gen": 928, "phase": "real", "size": 16777216, "t": 1793659386.381604, "task": 0, "writes": 34}
+{"ev": "wagg", "fs": "scratch", "gen": 965, "phase": "real", "size": 16777216, "t": 1793659391.4276156, "task": 0, "writes": 37}
+{"ev": "wagg", "fs": "scratch", "gen": 1002, "phase": "real", "size": 16777216, "t": 1793659396.516179, "task": 0, "writes": 37}
+{"ev": "wagg", "fs": "scratch", "gen": 1034, "phase": "real", "size": 16777216, "t": 1793659401.5357676, "task": 0, "writes": 32}
+{"ev": "wagg", "fs": "scratch", "gen": 1071, "phase": "real", "size": 16777216, "t": 1793659406.7316625, "task": 0, "writes": 37}
+{"ev": "wagg", "fs": "scratch", "gen": 1107, "phase": "real", "size": 16777216, "t": 1793659411.8196926, "task": 0, "writes": 36}
+{"ev": "wagg", "fs": "scratch", "gen": 1146, "phase": "real", "size": 16777216, "t": 1793659416.867755, "task": 0, "writes": 39}
+{"ev": "wagg", "fs": "scratch", "gen": 1181, "phase": "real", "size": 16777216, "t": 1793659421.8946157, "task": 0, "writes": 35}
+{"ev": "wagg", "fs": "scratch", "gen": 1197, "phase": "real", "size": 16777216, "t": 1793659424.0109057, "task": 0, "writes": 16}
+{"edge": "end", "ev": "phase", "fs": "scratch", "last_gen": 1197, "phase": "real", "size": 16777216, "t": 1793659424.0109868, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 0, "t": 1793659428.001593, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 1, "t": 1793659429.0017407, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 2, "t": 1793659430.001867, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 3, "t": 1793659431.0017507, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 4, "t": 1793659432.0018923, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 5, "t": 1793659433.0018933, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 6, "t": 1793659434.0018263, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 7, "t": 1793659435.0019348, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 8, "t": 1793659436.0017912, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 9, "t": 1793659437.001901, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 10, "t": 1793659438.0018008, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 11, "t": 1793659439.0017715, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 12, "t": 1793659440.0016608, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 13, "t": 1793659441.0018232, "task": 0}
+{"ev": "vis_create", "fs": "scratch", "i": 14, "t": 1793659442.0018961, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "pool", "phase": "control", "size": 4096, "t": 1793659507.0000646, "task": 0}
+{"ev": "wagg", "fs": "pool", "gen": 1976, "phase": "control", "size": 4096, "t": 1793659512.0008028, "task": 0, "writes": 1976}
+{"ev": "wagg", "fs": "pool", "gen": 4000, "phase": "control", "size": 4096, "t": 1793659517.003185, "task": 0, "writes": 2024}
+{"ev": "wagg", "fs": "pool", "gen": 6018, "phase": "control", "size": 4096, "t": 1793659522.0040638, "task": 0, "writes": 2018}
+{"ev": "wagg", "fs": "pool", "gen": 8016, "phase": "control", "size": 4096, "t": 1793659527.0044727, "task": 0, "writes": 1998}
+{"ev": "wagg", "fs": "pool", "gen": 10051, "phase": "control", "size": 4096, "t": 1793659532.0068548, "task": 0, "writes": 2035}
+{"ev": "wagg", "fs": "pool", "gen": 12075, "phase": "control", "size": 4096, "t": 1793659537.0001695, "task": 0, "writes": 2024}
+{"edge": "end", "ev": "phase", "fs": "pool", "last_gen": 12075, "phase": "control", "size": 4096, "t": 1793659537.0002172, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "pool", "phase": "real", "size": 4096, "t": 1793659541.00007, "task": 0}
+{"ev": "wagg", "fs": "pool", "gen": 45, "phase": "real", "size": 4096, "t": 1793659546.0655754, "task": 0, "writes": 45}
+{"ev": "wagg", "fs": "pool", "gen": 100, "phase": "real", "size": 4096, "t": 1793659551.0735364, "task": 0, "writes": 55}
+{"ev": "wagg", "fs": "pool", "gen": 190, "phase": "real", "size": 4096, "t": 1793659556.1775188, "task": 0, "writes": 90}
+{"ev": "wagg", "fs": "pool", "gen": 436, "phase": "real", "size": 4096, "t": 1793659561.1848655, "task": 0, "writes": 246}
+{"ev": "wagg", "fs": "pool", "gen": 906, "phase": "real", "size": 4096, "t": 1793659566.1893418, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 1377, "phase": "real", "size": 4096, "t": 1793659571.1970544, "task": 0, "writes": 471}
+{"ev": "wagg", "fs": "pool", "gen": 1848, "phase": "real", "size": 4096, "t": 1793659576.201461, "task": 0, "writes": 471}
+{"ev": "wagg", "fs": "pool", "gen": 2319, "phase": "real", "size": 4096, "t": 1793659581.2112584, "task": 0, "writes": 471}
+{"ev": "wagg", "fs": "pool", "gen": 2788, "phase": "real", "size": 4096, "t": 1793659586.2132437, "task": 0, "writes": 469}
+{"ev": "wagg", "fs": "pool", "gen": 3258, "phase": "real", "size": 4096, "t": 1793659591.2177048, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 3728, "phase": "real", "size": 4096, "t": 1793659596.2209656, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 4199, "phase": "real", "size": 4096, "t": 1793659601.2272992, "task": 0, "writes": 471}
+{"ev": "wagg", "fs": "pool", "gen": 4315, "phase": "real", "size": 4096, "t": 1793659606.3134727, "task": 0, "writes": 116}
+{"ev": "wagg", "fs": "pool", "gen": 4364, "phase": "real", "size": 4096, "t": 1793659611.3295207, "task": 0, "writes": 49}
+{"ev": "wagg", "fs": "pool", "gen": 4446, "phase": "real", "size": 4096, "t": 1793659616.4344778, "task": 0, "writes": 82}
+{"ev": "wagg", "fs": "pool", "gen": 4632, "phase": "real", "size": 4096, "t": 1793659621.5374558, "task": 0, "writes": 186}
+{"ev": "wagg", "fs": "pool", "gen": 5065, "phase": "real", "size": 4096, "t": 1793659626.547058, "task": 0, "writes": 433}
+{"ev": "wagg", "fs": "pool", "gen": 5536, "phase": "real", "size": 4096, "t": 1793659631.5534487, "task": 0, "writes": 471}
+{"ev": "wagg", "fs": "pool", "gen": 6007, "phase": "real", "size": 4096, "t": 1793659636.5612016, "task": 0, "writes": 471}
+{"ev": "wagg", "fs": "pool", "gen": 6477, "phase": "real", "size": 4096, "t": 1793659641.5697966, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 6947, "phase": "real", "size": 4096, "t": 1793659646.5726538, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 7418, "phase": "real", "size": 4096, "t": 1793659651.5787973, "task": 0, "writes": 471}
+{"ev": "wagg", "fs": "pool", "gen": 7888, "phase": "real", "size": 4096, "t": 1793659656.5794594, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 8359, "phase": "real", "size": 4096, "t": 1793659661.5825655, "task": 0, "writes": 471}
+{"ev": "wagg", "fs": "pool", "gen": 8615, "phase": "real", "size": 4096, "t": 1793659666.6424694, "task": 0, "writes": 256}
+{"ev": "wagg", "fs": "pool", "gen": 8665, "phase": "real", "size": 4096, "t": 1793659671.6655042, "task": 0, "writes": 50}
+{"ev": "wagg", "fs": "pool", "gen": 8734, "phase": "real", "size": 4096, "t": 1793659676.729472, "task": 0, "writes": 69}
+{"ev": "wagg", "fs": "pool", "gen": 8882, "phase": "real", "size": 4096, "t": 1793659681.7535117, "task": 0, "writes": 148}
+{"ev": "wagg", "fs": "pool", "gen": 9255, "phase": "real", "size": 4096, "t": 1793659686.7565339, "task": 0, "writes": 373}
+{"ev": "wagg", "fs": "pool", "gen": 9725, "phase": "real", "size": 4096, "t": 1793659691.763589, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 10196, "phase": "real", "size": 4096, "t": 1793659696.7732832, "task": 0, "writes": 471}
+{"ev": "wagg", "fs": "pool", "gen": 10666, "phase": "real", "size": 4096, "t": 1793659701.7746813, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 11136, "phase": "real", "size": 4096, "t": 1793659706.776956, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 11606, "phase": "real", "size": 4096, "t": 1793659711.7809012, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 12076, "phase": "real", "size": 4096, "t": 1793659716.7908468, "task": 0, "writes": 470}
+{"ev": "wagg", "fs": "pool", "gen": 12471, "phase": "real", "size": 4096, "t": 1793659721.0065763, "task": 0, "writes": 395}
+{"edge": "end", "ev": "phase", "fs": "pool", "last_gen": 12471, "phase": "real", "size": 4096, "t": 1793659721.0066288, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "pool", "phase": "control", "size": 262144, "t": 1793659725.0000567, "task": 0}
+{"ev": "wagg", "fs": "pool", "gen": 635, "phase": "control", "size": 262144, "t": 1793659730.0055757, "task": 0, "writes": 635}
+{"ev": "wagg", "fs": "pool", "gen": 1284, "phase": "control", "size": 262144, "t": 1793659735.0112884, "task": 0, "writes": 649}
+{"ev": "wagg", "fs": "pool", "gen": 1932, "phase": "control", "size": 262144, "t": 1793659740.0142841, "task": 0, "writes": 648}
+{"ev": "wagg", "fs": "pool", "gen": 2581, "phase": "control", "size": 262144, "t": 1793659745.0207136, "task": 0, "writes": 649}
+{"ev": "wagg", "fs": "pool", "gen": 3230, "phase": "control", "size": 262144, "t": 1793659750.0270104, "task": 0, "writes": 649}
+{"ev": "wagg", "fs": "pool", "gen": 3875, "phase": "control", "size": 262144, "t": 1793659755.0054958, "task": 0, "writes": 645}
+{"edge": "end", "ev": "phase", "fs": "pool", "last_gen": 3875, "phase": "control", "size": 262144, "t": 1793659755.0055444, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "pool", "phase": "real", "size": 262144, "t": 1793659759.0000756, "task": 0}
+{"ev": "wagg", "fs": "pool", "gen": 44, "phase": "real", "size": 262144, "t": 1793659764.1135902, "task": 0, "writes": 44}
+{"ev": "wagg", "fs": "pool", "gen": 93, "phase": "real", "size": 262144, "t": 1793659769.1455524, "task": 0, "writes": 49}
+{"ev": "wagg", "fs": "pool", "gen": 157, "phase": "real", "size": 262144, "t": 1793659774.1493962, "task": 0, "writes": 64}
+{"ev": "wagg", "fs": "pool", "gen": 343, "phase": "real", "size": 262144, "t": 1793659779.1531081, "task": 0, "writes": 186}
+{"ev": "wagg", "fs": "pool", "gen": 736, "phase": "real", "size": 262144, "t": 1793659784.1636226, "task": 0, "writes": 393}
+{"ev": "wagg", "fs": "pool", "gen": 1166, "phase": "real", "size": 262144, "t": 1793659789.1728919, "task": 0, "writes": 430}
+{"ev": "wagg", "fs": "pool", "gen": 1591, "phase": "real", "size": 262144, "t": 1793659794.1794455, "task": 0, "writes": 425}
+{"ev": "wagg", "fs": "pool", "gen": 2020, "phase": "real", "size": 262144, "t": 1793659799.1879113, "task": 0, "writes": 429}
+{"ev": "wagg", "fs": "pool", "gen": 2449, "phase": "real", "size": 262144, "t": 1793659804.1924016, "task": 0, "writes": 429}
+{"ev": "wagg", "fs": "pool", "gen": 2878, "phase": "real", "size": 262144, "t": 1793659809.1956687, "task": 0, "writes": 429}
+{"ev": "wagg", "fs": "pool", "gen": 3307, "phase": "real", "size": 262144, "t": 1793659814.196464, "task": 0, "writes": 429}
+{"ev": "wagg", "fs": "pool", "gen": 3725, "phase": "real", "size": 262144, "t": 1793659819.2896068, "task": 0, "writes": 418}
+{"ev": "wagg", "fs": "pool", "gen": 3768, "phase": "real", "size": 262144, "t": 1793659824.36152, "task": 0, "writes": 43}
+{"ev": "wagg", "fs": "pool", "gen": 3816, "phase": "real", "size": 262144, "t": 1793659829.394484, "task": 0, "writes": 48}
+{"ev": "wagg", "fs": "pool", "gen": 3899, "phase": "real", "size": 262144, "t": 1793659834.4585748, "task": 0, "writes": 83}
+{"ev": "wagg", "fs": "pool", "gen": 4078, "phase": "real", "size": 262144, "t": 1793659839.4672582, "task": 0, "writes": 179}
+{"ev": "wagg", "fs": "pool", "gen": 4469, "phase": "real", "size": 262144, "t": 1793659844.4753575, "task": 0, "writes": 391}
+{"ev": "wagg", "fs": "pool", "gen": 4897, "phase": "real", "size": 262144, "t": 1793659849.4764664, "task": 0, "writes": 428}
+{"ev": "wagg", "fs": "pool", "gen": 5323, "phase": "real", "size": 262144, "t": 1793659854.4792793, "task": 0, "writes": 426}
+{"ev": "wagg", "fs": "pool", "gen": 5750, "phase": "real", "size": 262144, "t": 1793659859.4802508, "task": 0, "writes": 427}
+{"ev": "wagg", "fs": "pool", "gen": 6178, "phase": "real", "size": 262144, "t": 1793659864.483254, "task": 0, "writes": 428}
+{"ev": "wagg", "fs": "pool", "gen": 6605, "phase": "real", "size": 262144, "t": 1793659869.4850001, "task": 0, "writes": 427}
+{"ev": "wagg", "fs": "pool", "gen": 7032, "phase": "real", "size": 262144, "t": 1793659874.491839, "task": 0, "writes": 427}
+{"ev": "wagg", "fs": "pool", "gen": 7460, "phase": "real", "size": 262144, "t": 1793659879.4991767, "task": 0, "writes": 428}
+{"ev": "wagg", "fs": "pool", "gen": 7623, "phase": "real", "size": 262144, "t": 1793659884.513543, "task": 0, "writes": 163}
+{"ev": "wagg", "fs": "pool", "gen": 7671, "phase": "real", "size": 262144, "t": 1793659889.6175303, "task": 0, "writes": 48}
+{"ev": "wagg", "fs": "pool", "gen": 7732, "phase": "real", "size": 262144, "t": 1793659894.6735086, "task": 0, "writes": 61}
+{"ev": "wagg", "fs": "pool", "gen": 7865, "phase": "real", "size": 262144, "t": 1793659899.684851, "task": 0, "writes": 133}
+{"ev": "wagg", "fs": "pool", "gen": 8195, "phase": "real", "size": 262144, "t": 1793659904.6915202, "task": 0, "writes": 330}
+{"ev": "wagg", "fs": "pool", "gen": 8624, "phase": "real", "size": 262144, "t": 1793659909.7006612, "task": 0, "writes": 429}
+{"ev": "wagg", "fs": "pool", "gen": 9054, "phase": "real", "size": 262144, "t": 1793659914.7045474, "task": 0, "writes": 430}
+{"ev": "wagg", "fs": "pool", "gen": 9483, "phase": "real", "size": 262144, "t": 1793659919.7148979, "task": 0, "writes": 429}
+{"ev": "wagg", "fs": "pool", "gen": 9913, "phase": "real", "size": 262144, "t": 1793659924.72223, "task": 0, "writes": 430}
+{"ev": "wagg", "fs": "pool", "gen": 10343, "phase": "real", "size": 262144, "t": 1793659929.7288663, "task": 0, "writes": 430}
+{"ev": "wagg", "fs": "pool", "gen": 10772, "phase": "real", "size": 262144, "t": 1793659934.7312515, "task": 0, "writes": 429}
+{"ev": "wagg", "fs": "pool", "gen": 11138, "phase": "real", "size": 262144, "t": 1793659939.009628, "task": 0, "writes": 366}
+{"edge": "end", "ev": "phase", "fs": "pool", "last_gen": 11138, "phase": "real", "size": 262144, "t": 1793659939.009679, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "pool", "phase": "control", "size": 4194304, "t": 1793659943.000075, "task": 0}
+{"ev": "wagg", "fs": "pool", "gen": 58, "phase": "control", "size": 4194304, "t": 1793659948.084324, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "pool", "gen": 117, "phase": "control", "size": 4194304, "t": 1793659953.1434512, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "pool", "gen": 176, "phase": "control", "size": 4194304, "t": 1793659958.2032561, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "pool", "gen": 235, "phase": "control", "size": 4194304, "t": 1793659963.2698014, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "pool", "gen": 294, "phase": "control", "size": 4194304, "t": 1793659968.3382003, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "pool", "gen": 349, "phase": "control", "size": 4194304, "t": 1793659973.070936, "task": 0, "writes": 55}
+{"edge": "end", "ev": "phase", "fs": "pool", "last_gen": 349, "phase": "control", "size": 4194304, "t": 1793659973.071006, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "pool", "phase": "real", "size": 4194304, "t": 1793659977.0000768, "task": 0}
+{"ev": "wagg", "fs": "pool", "gen": 42, "phase": "real", "size": 4194304, "t": 1793659982.0901103, "task": 0, "writes": 42}
+{"ev": "wagg", "fs": "pool", "gen": 88, "phase": "real", "size": 4194304, "t": 1793659987.185945, "task": 0, "writes": 46}
+{"ev": "wagg", "fs": "pool", "gen": 144, "phase": "real", "size": 4194304, "t": 1793659992.274013, "task": 0, "writes": 56}
+{"ev": "wagg", "fs": "pool", "gen": 237, "phase": "real", "size": 4194304, "t": 1793659997.2923784, "task": 0, "writes": 93}
+{"ev": "wagg", "fs": "pool", "gen": 381, "phase": "real", "size": 4194304, "t": 1793660002.3008008, "task": 0, "writes": 144}
+{"ev": "wagg", "fs": "pool", "gen": 561, "phase": "real", "size": 4194304, "t": 1793660007.3072944, "task": 0, "writes": 180}
+{"ev": "wagg", "fs": "pool", "gen": 753, "phase": "real", "size": 4194304, "t": 1793660012.3307855, "task": 0, "writes": 192}
+{"ev": "wagg", "fs": "pool", "gen": 948, "phase": "real", "size": 4194304, "t": 1793660017.3389404, "task": 0, "writes": 195}
+{"ev": "wagg", "fs": "pool", "gen": 1143, "phase": "real", "size": 4194304, "t": 1793660022.3574514, "task": 0, "writes": 195}
+{"ev": "wagg", "fs": "pool", "gen": 1338, "phase": "real", "size": 4194304, "t": 1793660027.3663595, "task": 0, "writes": 195}
+{"ev": "wagg", "fs": "pool", "gen": 1533, "phase": "real", "size": 4194304, "t": 1793660032.3763537, "task": 0, "writes": 195}
+{"ev": "wagg", "fs": "pool", "gen": 1686, "phase": "real", "size": 4194304, "t": 1793660037.4590409, "task": 0, "writes": 153}
+{"ev": "wagg", "fs": "pool", "gen": 1726, "phase": "real", "size": 4194304, "t": 1793660042.5859594, "task": 0, "writes": 40}
+{"ev": "wagg", "fs": "pool", "gen": 1777, "phase": "real", "size": 4194304, "t": 1793660047.6179879, "task": 0, "writes": 51}
+{"ev": "wagg", "fs": "pool", "gen": 1861, "phase": "real", "size": 4194304, "t": 1793660052.6413429, "task": 0, "writes": 84}
+{"ev": "wagg", "fs": "pool", "gen": 1978, "phase": "real", "size": 4194304, "t": 1793660057.6633518, "task": 0, "writes": 117}
+{"ev": "wagg", "fs": "pool", "gen": 2136, "phase": "real", "size": 4194304, "t": 1793660062.687339, "task": 0, "writes": 158}
+{"ev": "wagg", "fs": "pool", "gen": 2321, "phase": "real", "size": 4194304, "t": 1793660067.7002504, "task": 0, "writes": 185}
+{"ev": "wagg", "fs": "pool", "gen": 2512, "phase": "real", "size": 4194304, "t": 1793660072.7244337, "task": 0, "writes": 191}
+{"ev": "wagg", "fs": "pool", "gen": 2698, "phase": "real", "size": 4194304, "t": 1793660077.7446089, "task": 0, "writes": 186}
+{"ev": "wagg", "fs": "pool", "gen": 2888, "phase": "real", "size": 4194304, "t": 1793660082.7555964, "task": 0, "writes": 190}
+{"ev": "wagg", "fs": "pool", "gen": 3082, "phase": "real", "size": 4194304, "t": 1793660087.7622485, "task": 0, "writes": 194}
+{"ev": "wagg", "fs": "pool", "gen": 3272, "phase": "real", "size": 4194304, "t": 1793660092.7820575, "task": 0, "writes": 190}
+{"ev": "wagg", "fs": "pool", "gen": 3451, "phase": "real", "size": 4194304, "t": 1793660097.8030555, "task": 0, "writes": 179}
+{"ev": "wagg", "fs": "pool", "gen": 3495, "phase": "real", "size": 4194304, "t": 1793660102.8431098, "task": 0, "writes": 44}
+{"ev": "wagg", "fs": "pool", "gen": 3538, "phase": "real", "size": 4194304, "t": 1793660107.9540217, "task": 0, "writes": 43}
+{"ev": "wagg", "fs": "pool", "gen": 3597, "phase": "real", "size": 4194304, "t": 1793660112.9798155, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "pool", "gen": 3682, "phase": "real", "size": 4194304, "t": 1793660118.098065, "task": 0, "writes": 85}
+{"ev": "wagg", "fs": "pool", "gen": 3835, "phase": "real", "size": 4194304, "t": 1793660123.109743, "task": 0, "writes": 153}
+{"ev": "wagg", "fs": "pool", "gen": 4016, "phase": "real", "size": 4194304, "t": 1793660128.1247945, "task": 0, "writes": 181}
+{"ev": "wagg", "fs": "pool", "gen": 4210, "phase": "real", "size": 4194304, "t": 1793660133.1249187, "task": 0, "writes": 194}
+{"ev": "wagg", "fs": "pool", "gen": 4402, "phase": "real", "size": 4194304, "t": 1793660138.1383026, "task": 0, "writes": 192}
+{"ev": "wagg", "fs": "pool", "gen": 4595, "phase": "real", "size": 4194304, "t": 1793660143.1454, "task": 0, "writes": 193}
+{"ev": "wagg", "fs": "pool", "gen": 4787, "phase": "real", "size": 4194304, "t": 1793660148.150511, "task": 0, "writes": 192}
+{"ev": "wagg", "fs": "pool", "gen": 4978, "phase": "real", "size": 4194304, "t": 1793660153.1759198, "task": 0, "writes": 191}
+{"ev": "wagg", "fs": "pool", "gen": 5125, "phase": "real", "size": 4194304, "t": 1793660157.004392, "task": 0, "writes": 147}
+{"edge": "end", "ev": "phase", "fs": "pool", "last_gen": 5125, "phase": "real", "size": 4194304, "t": 1793660157.0044441, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "pool", "phase": "control", "size": 16777216, "t": 1793660161.0000818, "task": 0}
+{"ev": "wagg", "fs": "pool", "gen": 15, "phase": "control", "size": 16777216, "t": 1793660166.1312027, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "pool", "gen": 30, "phase": "control", "size": 16777216, "t": 1793660171.1452978, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "pool", "gen": 45, "phase": "control", "size": 16777216, "t": 1793660176.155823, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "pool", "gen": 60, "phase": "control", "size": 16777216, "t": 1793660181.1583016, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "pool", "gen": 75, "phase": "control", "size": 16777216, "t": 1793660186.1646483, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "pool", "gen": 90, "phase": "control", "size": 16777216, "t": 1793660191.1756756, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "pool", "gen": 90, "phase": "control", "size": 16777216, "t": 1793660191.1757534, "task": 0, "writes": 0}
+{"edge": "end", "ev": "phase", "fs": "pool", "last_gen": 90, "phase": "control", "size": 16777216, "t": 1793660191.175764, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "pool", "phase": "real", "size": 16777216, "t": 1793660195.0000684, "task": 0}
+{"ev": "wagg", "fs": "pool", "gen": 29, "phase": "real", "size": 16777216, "t": 1793660200.0035841, "task": 0, "writes": 29}
+{"ev": "wagg", "fs": "pool", "gen": 60, "phase": "real", "size": 16777216, "t": 1793660205.1473346, "task": 0, "writes": 31}
+{"ev": "wagg", "fs": "pool", "gen": 92, "phase": "real", "size": 16777216, "t": 1793660210.1632764, "task": 0, "writes": 32}
+{"ev": "wagg", "fs": "pool", "gen": 126, "phase": "real", "size": 16777216, "t": 1793660215.2113202, "task": 0, "writes": 34}
+{"ev": "wagg", "fs": "pool", "gen": 168, "phase": "real", "size": 16777216, "t": 1793660220.2628996, "task": 0, "writes": 42}
+{"ev": "wagg", "fs": "pool", "gen": 216, "phase": "real", "size": 16777216, "t": 1793660225.3148575, "task": 0, "writes": 48}
+{"ev": "wagg", "fs": "pool", "gen": 263, "phase": "real", "size": 16777216, "t": 1793660230.3328524, "task": 0, "writes": 47}
+{"ev": "wagg", "fs": "pool", "gen": 313, "phase": "real", "size": 16777216, "t": 1793660235.452275, "task": 0, "writes": 50}
+{"ev": "wagg", "fs": "pool", "gen": 366, "phase": "real", "size": 16777216, "t": 1793660240.4528708, "task": 0, "writes": 53}
+{"ev": "wagg", "fs": "pool", "gen": 415, "phase": "real", "size": 16777216, "t": 1793660245.496601, "task": 0, "writes": 49}
+{"ev": "wagg", "fs": "pool", "gen": 464, "phase": "real", "size": 16777216, "t": 1793660250.5232582, "task": 0, "writes": 49}
+{"ev": "wagg", "fs": "pool", "gen": 510, "phase": "real", "size": 16777216, "t": 1793660255.66761, "task": 0, "writes": 46}
+{"ev": "wagg", "fs": "pool", "gen": 544, "phase": "real", "size": 16777216, "t": 1793660260.7132487, "task": 0, "writes": 34}
+{"ev": "wagg", "fs": "pool", "gen": 580, "phase": "real", "size": 16777216, "t": 1793660265.7872176, "task": 0, "writes": 36}
+{"ev": "wagg", "fs": "pool", "gen": 618, "phase": "real", "size": 16777216, "t": 1793660270.899295, "task": 0, "writes": 38}
+{"ev": "wagg", "fs": "pool", "gen": 661, "phase": "real", "size": 16777216, "t": 1793660275.9317036, "task": 0, "writes": 43}
+{"ev": "wagg", "fs": "pool", "gen": 710, "phase": "real", "size": 16777216, "t": 1793660280.9595304, "task": 0, "writes": 49}
+{"ev": "wagg", "fs": "pool", "gen": 758, "phase": "real", "size": 16777216, "t": 1793660285.9963083, "task": 0, "writes": 48}
+{"ev": "wagg", "fs": "pool", "gen": 804, "phase": "real", "size": 16777216, "t": 1793660291.008192, "task": 0, "writes": 46}
+{"ev": "wagg", "fs": "pool", "gen": 847, "phase": "real", "size": 16777216, "t": 1793660296.1317778, "task": 0, "writes": 43}
+{"ev": "wagg", "fs": "pool", "gen": 898, "phase": "real", "size": 16777216, "t": 1793660301.171292, "task": 0, "writes": 51}
+{"ev": "wagg", "fs": "pool", "gen": 950, "phase": "real", "size": 16777216, "t": 1793660306.3076782, "task": 0, "writes": 52}
+{"ev": "wagg", "fs": "pool", "gen": 1000, "phase": "real", "size": 16777216, "t": 1793660311.3770876, "task": 0, "writes": 50}
+{"ev": "wagg", "fs": "pool", "gen": 1054, "phase": "real", "size": 16777216, "t": 1793660316.50727, "task": 0, "writes": 54}
+{"ev": "wagg", "fs": "pool", "gen": 1093, "phase": "real", "size": 16777216, "t": 1793660321.659315, "task": 0, "writes": 39}
+{"ev": "wagg", "fs": "pool", "gen": 1128, "phase": "real", "size": 16777216, "t": 1793660326.7472727, "task": 0, "writes": 35}
+{"ev": "wagg", "fs": "pool", "gen": 1164, "phase": "real", "size": 16777216, "t": 1793660331.8282952, "task": 0, "writes": 36}
+{"ev": "wagg", "fs": "pool", "gen": 1207, "phase": "real", "size": 16777216, "t": 1793660336.8862443, "task": 0, "writes": 43}
+{"ev": "wagg", "fs": "pool", "gen": 1257, "phase": "real", "size": 16777216, "t": 1793660341.9886487, "task": 0, "writes": 50}
+{"ev": "wagg", "fs": "pool", "gen": 1309, "phase": "real", "size": 16777216, "t": 1793660347.0189867, "task": 0, "writes": 52}
+{"ev": "wagg", "fs": "pool", "gen": 1349, "phase": "real", "size": 16777216, "t": 1793660352.1716228, "task": 0, "writes": 40}
+{"ev": "wagg", "fs": "pool", "gen": 1399, "phase": "real", "size": 16777216, "t": 1793660357.1792622, "task": 0, "writes": 50}
+{"ev": "wagg", "fs": "pool", "gen": 1448, "phase": "real", "size": 16777216, "t": 1793660362.3235497, "task": 0, "writes": 49}
+{"ev": "wagg", "fs": "pool", "gen": 1499, "phase": "real", "size": 16777216, "t": 1793660367.3956048, "task": 0, "writes": 51}
+{"ev": "wagg", "fs": "pool", "gen": 1544, "phase": "real", "size": 16777216, "t": 1793660372.4590633, "task": 0, "writes": 45}
+{"ev": "wagg", "fs": "pool", "gen": 1566, "phase": "real", "size": 16777216, "t": 1793660375.1716473, "task": 0, "writes": 22}
+{"edge": "end", "ev": "phase", "fs": "pool", "last_gen": 1566, "phase": "real", "size": 16777216, "t": 1793660375.171726, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 0, "t": 1793660379.0009534, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 1, "t": 1793660380.0008628, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 2, "t": 1793660381.0007756, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 3, "t": 1793660382.0008068, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 4, "t": 1793660383.0007231, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 5, "t": 1793660384.0008337, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 6, "t": 1793660385.0007536, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 7, "t": 1793660386.000837, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 8, "t": 1793660387.0007703, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 9, "t": 1793660388.0007813, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 10, "t": 1793660389.0008101, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 11, "t": 1793660390.0008228, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 12, "t": 1793660391.0008097, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 13, "t": 1793660392.000743, "task": 0}
+{"ev": "vis_create", "fs": "pool", "i": 14, "t": 1793660393.000724, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "home", "phase": "control", "size": 4096, "t": 1793660458.000053, "task": 0}
+{"ev": "wagg", "fs": "home", "gen": 1342, "phase": "control", "size": 4096, "t": 1793660463.0014486, "task": 0, "writes": 1342}
+{"ev": "wagg", "fs": "home", "gen": 2674, "phase": "control", "size": 4096, "t": 1793660468.003569, "task": 0, "writes": 1332}
+{"ev": "wagg", "fs": "home", "gen": 4021, "phase": "control", "size": 4096, "t": 1793660473.0053728, "task": 0, "writes": 1347}
+{"ev": "wagg", "fs": "home", "gen": 5336, "phase": "control", "size": 4096, "t": 1793660478.008811, "task": 0, "writes": 1315}
+{"ev": "wagg", "fs": "home", "gen": 6686, "phase": "control", "size": 4096, "t": 1793660483.011345, "task": 0, "writes": 1350}
+{"ev": "wagg", "fs": "home", "gen": 7956, "phase": "control", "size": 4096, "t": 1793660488.0032144, "task": 0, "writes": 1270}
+{"edge": "end", "ev": "phase", "fs": "home", "last_gen": 7956, "phase": "control", "size": 4096, "t": 1793660488.0032556, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "home", "phase": "real", "size": 4096, "t": 1793660492.0000753, "task": 0}
+{"ev": "wagg", "fs": "home", "gen": 393, "phase": "real", "size": 4096, "t": 1793660497.0092075, "task": 0, "writes": 393}
+{"ev": "wagg", "fs": "home", "gen": 787, "phase": "real", "size": 4096, "t": 1793660502.0193949, "task": 0, "writes": 394}
+{"ev": "wagg", "fs": "home", "gen": 1185, "phase": "real", "size": 4096, "t": 1793660507.0285506, "task": 0, "writes": 398}
+{"ev": "wagg", "fs": "home", "gen": 1578, "phase": "real", "size": 4096, "t": 1793660512.0342994, "task": 0, "writes": 393}
+{"ev": "wagg", "fs": "home", "gen": 1976, "phase": "real", "size": 4096, "t": 1793660517.0348995, "task": 0, "writes": 398}
+{"ev": "wagg", "fs": "home", "gen": 2365, "phase": "real", "size": 4096, "t": 1793660522.0396996, "task": 0, "writes": 389}
+{"ev": "wagg", "fs": "home", "gen": 2763, "phase": "real", "size": 4096, "t": 1793660527.0430682, "task": 0, "writes": 398}
+{"ev": "wagg", "fs": "home", "gen": 3160, "phase": "real", "size": 4096, "t": 1793660532.0549214, "task": 0, "writes": 397}
+{"ev": "wagg", "fs": "home", "gen": 3559, "phase": "real", "size": 4096, "t": 1793660537.0594919, "task": 0, "writes": 399}
+{"ev": "wagg", "fs": "home", "gen": 3960, "phase": "real", "size": 4096, "t": 1793660542.0679893, "task": 0, "writes": 401}
+{"ev": "wagg", "fs": "home", "gen": 4354, "phase": "real", "size": 4096, "t": 1793660547.0680487, "task": 0, "writes": 394}
+{"ev": "wagg", "fs": "home", "gen": 4713, "phase": "real", "size": 4096, "t": 1793660552.076244, "task": 0, "writes": 359}
+{"ev": "wagg", "fs": "home", "gen": 5110, "phase": "real", "size": 4096, "t": 1793660557.0838141, "task": 0, "writes": 397}
+{"ev": "wagg", "fs": "home", "gen": 5509, "phase": "real", "size": 4096, "t": 1793660562.089306, "task": 0, "writes": 399}
+{"ev": "wagg", "fs": "home", "gen": 5904, "phase": "real", "size": 4096, "t": 1793660567.090285, "task": 0, "writes": 395}
+{"ev": "wagg", "fs": "home", "gen": 6300, "phase": "real", "size": 4096, "t": 1793660572.0973043, "task": 0, "writes": 396}
+{"ev": "wagg", "fs": "home", "gen": 6694, "phase": "real", "size": 4096, "t": 1793660577.1078131, "task": 0, "writes": 394}
+{"ev": "wagg", "fs": "home", "gen": 7093, "phase": "real", "size": 4096, "t": 1793660582.1116467, "task": 0, "writes": 399}
+{"ev": "wagg", "fs": "home", "gen": 7494, "phase": "real", "size": 4096, "t": 1793660587.1155212, "task": 0, "writes": 401}
+{"ev": "wagg", "fs": "home", "gen": 7890, "phase": "real", "size": 4096, "t": 1793660592.1180027, "task": 0, "writes": 396}
+{"ev": "wagg", "fs": "home", "gen": 8293, "phase": "real", "size": 4096, "t": 1793660597.1212106, "task": 0, "writes": 403}
+{"ev": "wagg", "fs": "home", "gen": 8688, "phase": "real", "size": 4096, "t": 1793660602.1288416, "task": 0, "writes": 395}
+{"ev": "wagg", "fs": "home", "gen": 9087, "phase": "real", "size": 4096, "t": 1793660607.1333284, "task": 0, "writes": 399}
+{"ev": "wagg", "fs": "home", "gen": 9482, "phase": "real", "size": 4096, "t": 1793660612.140423, "task": 0, "writes": 395}
+{"ev": "wagg", "fs": "home", "gen": 9881, "phase": "real", "size": 4096, "t": 1793660617.1413069, "task": 0, "writes": 399}
+{"ev": "wagg", "fs": "home", "gen": 10274, "phase": "real", "size": 4096, "t": 1793660622.1538496, "task": 0, "writes": 393}
+{"ev": "wagg", "fs": "home", "gen": 10672, "phase": "real", "size": 4096, "t": 1793660627.1618967, "task": 0, "writes": 398}
+{"ev": "wagg", "fs": "home", "gen": 11071, "phase": "real", "size": 4096, "t": 1793660632.1665483, "task": 0, "writes": 399}
+{"ev": "wagg", "fs": "home", "gen": 11467, "phase": "real", "size": 4096, "t": 1793660637.1726446, "task": 0, "writes": 396}
+{"ev": "wagg", "fs": "home", "gen": 11863, "phase": "real", "size": 4096, "t": 1793660642.1800263, "task": 0, "writes": 396}
+{"ev": "wagg", "fs": "home", "gen": 12253, "phase": "real", "size": 4096, "t": 1793660647.1855462, "task": 0, "writes": 390}
+{"ev": "wagg", "fs": "home", "gen": 12645, "phase": "real", "size": 4096, "t": 1793660652.1954267, "task": 0, "writes": 392}
+{"ev": "wagg", "fs": "home", "gen": 13040, "phase": "real", "size": 4096, "t": 1793660657.1974506, "task": 0, "writes": 395}
+{"ev": "wagg", "fs": "home", "gen": 13438, "phase": "real", "size": 4096, "t": 1793660662.2070773, "task": 0, "writes": 398}
+{"ev": "wagg", "fs": "home", "gen": 13834, "phase": "real", "size": 4096, "t": 1793660667.21599, "task": 0, "writes": 396}
+{"ev": "wagg", "fs": "home", "gen": 14210, "phase": "real", "size": 4096, "t": 1793660672.0007565, "task": 0, "writes": 376}
+{"edge": "end", "ev": "phase", "fs": "home", "last_gen": 14210, "phase": "real", "size": 4096, "t": 1793660672.0008123, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "home", "phase": "control", "size": 262144, "t": 1793660676.000076, "task": 0}
+{"ev": "wagg", "fs": "home", "gen": 508, "phase": "control", "size": 262144, "t": 1793660681.0091794, "task": 0, "writes": 508}
+{"ev": "wagg", "fs": "home", "gen": 1016, "phase": "control", "size": 262144, "t": 1793660686.0139668, "task": 0, "writes": 508}
+{"ev": "wagg", "fs": "home", "gen": 1525, "phase": "control", "size": 262144, "t": 1793660691.0203667, "task": 0, "writes": 509}
+{"ev": "wagg", "fs": "home", "gen": 2029, "phase": "control", "size": 262144, "t": 1793660696.0215693, "task": 0, "writes": 504}
+{"ev": "wagg", "fs": "home", "gen": 2450, "phase": "control", "size": 262144, "t": 1793660702.1266253, "task": 0, "writes": 421}
+{"ev": "wagg", "fs": "home", "gen": 2795, "phase": "control", "size": 262144, "t": 1793660706.0081732, "task": 0, "writes": 345}
+{"edge": "end", "ev": "phase", "fs": "home", "last_gen": 2795, "phase": "control", "size": 262144, "t": 1793660706.0082324, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "home", "phase": "real", "size": 262144, "t": 1793660710.0000708, "task": 0}
+{"ev": "wagg", "fs": "home", "gen": 318, "phase": "real", "size": 262144, "t": 1793660715.0062156, "task": 0, "writes": 318}
+{"ev": "wagg", "fs": "home", "gen": 631, "phase": "real", "size": 262144, "t": 1793660720.0063636, "task": 0, "writes": 313}
+{"ev": "wagg", "fs": "home", "gen": 949, "phase": "real", "size": 262144, "t": 1793660725.008819, "task": 0, "writes": 318}
+{"ev": "wagg", "fs": "home", "gen": 1274, "phase": "real", "size": 262144, "t": 1793660730.0223272, "task": 0, "writes": 325}
+{"ev": "wagg", "fs": "home", "gen": 1599, "phase": "real", "size": 262144, "t": 1793660735.0309424, "task": 0, "writes": 325}
+{"ev": "wagg", "fs": "home", "gen": 1919, "phase": "real", "size": 262144, "t": 1793660740.0356536, "task": 0, "writes": 320}
+{"ev": "wagg", "fs": "home", "gen": 2243, "phase": "real", "size": 262144, "t": 1793660745.045996, "task": 0, "writes": 324}
+{"ev": "wagg", "fs": "home", "gen": 2562, "phase": "real", "size": 262144, "t": 1793660750.0602546, "task": 0, "writes": 319}
+{"ev": "wagg", "fs": "home", "gen": 2857, "phase": "real", "size": 262144, "t": 1793660755.0651639, "task": 0, "writes": 295}
+{"ev": "wagg", "fs": "home", "gen": 3151, "phase": "real", "size": 262144, "t": 1793660760.0693543, "task": 0, "writes": 294}
+{"ev": "wagg", "fs": "home", "gen": 3478, "phase": "real", "size": 262144, "t": 1793660765.0804162, "task": 0, "writes": 327}
+{"ev": "wagg", "fs": "home", "gen": 3801, "phase": "real", "size": 262144, "t": 1793660770.0833116, "task": 0, "writes": 323}
+{"ev": "wagg", "fs": "home", "gen": 4106, "phase": "real", "size": 262144, "t": 1793660775.084164, "task": 0, "writes": 305}
+{"ev": "wagg", "fs": "home", "gen": 4440, "phase": "real", "size": 262144, "t": 1793660780.097301, "task": 0, "writes": 334}
+{"ev": "wagg", "fs": "home", "gen": 4788, "phase": "real", "size": 262144, "t": 1793660785.1111739, "task": 0, "writes": 348}
+{"ev": "wagg", "fs": "home", "gen": 5126, "phase": "real", "size": 262144, "t": 1793660790.115912, "task": 0, "writes": 338}
+{"ev": "wagg", "fs": "home", "gen": 5352, "phase": "real", "size": 262144, "t": 1793660795.1275592, "task": 0, "writes": 226}
+{"ev": "wagg", "fs": "home", "gen": 5562, "phase": "real", "size": 262144, "t": 1793660800.1308246, "task": 0, "writes": 210}
+{"ev": "wagg", "fs": "home", "gen": 5802, "phase": "real", "size": 262144, "t": 1793660805.140908, "task": 0, "writes": 240}
+{"ev": "wagg", "fs": "home", "gen": 6010, "phase": "real", "size": 262144, "t": 1793660810.1508007, "task": 0, "writes": 208}
+{"ev": "wagg", "fs": "home", "gen": 6235, "phase": "real", "size": 262144, "t": 1793660815.163805, "task": 0, "writes": 225}
+{"ev": "wagg", "fs": "home", "gen": 6459, "phase": "real", "size": 262144, "t": 1793660820.1815228, "task": 0, "writes": 224}
+{"ev": "wagg", "fs": "home", "gen": 6766, "phase": "real", "size": 262144, "t": 1793660825.1946993, "task": 0, "writes": 307}
+{"ev": "wagg", "fs": "home", "gen": 7097, "phase": "real", "size": 262144, "t": 1793660830.2054727, "task": 0, "writes": 331}
+{"ev": "wagg", "fs": "home", "gen": 7441, "phase": "real", "size": 262144, "t": 1793660835.2147553, "task": 0, "writes": 344}
+{"ev": "wagg", "fs": "home", "gen": 7701, "phase": "real", "size": 262144, "t": 1793660840.2152302, "task": 0, "writes": 260}
+{"ev": "wagg", "fs": "home", "gen": 8039, "phase": "real", "size": 262144, "t": 1793660845.217008, "task": 0, "writes": 338}
+{"ev": "wagg", "fs": "home", "gen": 8377, "phase": "real", "size": 262144, "t": 1793660850.2239864, "task": 0, "writes": 338}
+{"ev": "wagg", "fs": "home", "gen": 8714, "phase": "real", "size": 262144, "t": 1793660855.2296238, "task": 0, "writes": 337}
+{"ev": "wagg", "fs": "home", "gen": 9056, "phase": "real", "size": 262144, "t": 1793660860.230762, "task": 0, "writes": 342}
+{"ev": "wagg", "fs": "home", "gen": 9395, "phase": "real", "size": 262144, "t": 1793660865.2317362, "task": 0, "writes": 339}
+{"ev": "wagg", "fs": "home", "gen": 9738, "phase": "real", "size": 262144, "t": 1793660870.236873, "task": 0, "writes": 343}
+{"ev": "wagg", "fs": "home", "gen": 10072, "phase": "real", "size": 262144, "t": 1793660875.2384174, "task": 0, "writes": 334}
+{"ev": "wagg", "fs": "home", "gen": 10413, "phase": "real", "size": 262144, "t": 1793660880.251322, "task": 0, "writes": 341}
+{"ev": "wagg", "fs": "home", "gen": 10752, "phase": "real", "size": 262144, "t": 1793660885.2599514, "task": 0, "writes": 339}
+{"ev": "wagg", "fs": "home", "gen": 11068, "phase": "real", "size": 262144, "t": 1793660890.0088904, "task": 0, "writes": 316}
+{"edge": "end", "ev": "phase", "fs": "home", "last_gen": 11068, "phase": "real", "size": 262144, "t": 1793660890.0089417, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "home", "phase": "control", "size": 4194304, "t": 1793660894.0000718, "task": 0}
+{"ev": "wagg", "fs": "home", "gen": 54, "phase": "control", "size": 4194304, "t": 1793660899.0443683, "task": 0, "writes": 54}
+{"ev": "wagg", "fs": "home", "gen": 108, "phase": "control", "size": 4194304, "t": 1793660904.1047478, "task": 0, "writes": 54}
+{"ev": "wagg", "fs": "home", "gen": 162, "phase": "control", "size": 4194304, "t": 1793660909.1501796, "task": 0, "writes": 54}
+{"ev": "wagg", "fs": "home", "gen": 216, "phase": "control", "size": 4194304, "t": 1793660914.2068286, "task": 0, "writes": 54}
+{"ev": "wagg", "fs": "home", "gen": 270, "phase": "control", "size": 4194304, "t": 1793660919.2903297, "task": 0, "writes": 54}
+{"ev": "wagg", "fs": "home", "gen": 321, "phase": "control", "size": 4194304, "t": 1793660924.0558052, "task": 0, "writes": 51}
+{"edge": "end", "ev": "phase", "fs": "home", "last_gen": 321, "phase": "control", "size": 4194304, "t": 1793660924.0558827, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "home", "phase": "real", "size": 4194304, "t": 1793660928.0000772, "task": 0}
+{"ev": "wagg", "fs": "home", "gen": 134, "phase": "real", "size": 4194304, "t": 1793660933.0174491, "task": 0, "writes": 134}
+{"ev": "wagg", "fs": "home", "gen": 271, "phase": "real", "size": 4194304, "t": 1793660938.028749, "task": 0, "writes": 137}
+{"ev": "wagg", "fs": "home", "gen": 408, "phase": "real", "size": 4194304, "t": 1793660943.048742, "task": 0, "writes": 137}
+{"ev": "wagg", "fs": "home", "gen": 547, "phase": "real", "size": 4194304, "t": 1793660948.0617344, "task": 0, "writes": 139}
+{"ev": "wagg", "fs": "home", "gen": 686, "phase": "real", "size": 4194304, "t": 1793660953.0767202, "task": 0, "writes": 139}
+{"ev": "wagg", "fs": "home", "gen": 827, "phase": "real", "size": 4194304, "t": 1793660958.1111727, "task": 0, "writes": 141}
+{"ev": "wagg", "fs": "home", "gen": 962, "phase": "real", "size": 4194304, "t": 1793660963.1284308, "task": 0, "writes": 135}
+{"ev": "wagg", "fs": "home", "gen": 1102, "phase": "real", "size": 4194304, "t": 1793660968.1468375, "task": 0, "writes": 140}
+{"ev": "wagg", "fs": "home", "gen": 1241, "phase": "real", "size": 4194304, "t": 1793660973.1748686, "task": 0, "writes": 139}
+{"ev": "wagg", "fs": "home", "gen": 1377, "phase": "real", "size": 4194304, "t": 1793660978.2099056, "task": 0, "writes": 136}
+{"ev": "wagg", "fs": "home", "gen": 1515, "phase": "real", "size": 4194304, "t": 1793660983.21132, "task": 0, "writes": 138}
+{"ev": "wagg", "fs": "home", "gen": 1652, "phase": "real", "size": 4194304, "t": 1793660988.2140093, "task": 0, "writes": 137}
+{"ev": "wagg", "fs": "home", "gen": 1789, "phase": "real", "size": 4194304, "t": 1793660993.2227983, "task": 0, "writes": 137}
+{"ev": "wagg", "fs": "home", "gen": 1926, "phase": "real", "size": 4194304, "t": 1793660998.241668, "task": 0, "writes": 137}
+{"ev": "wagg", "fs": "home", "gen": 2062, "phase": "real", "size": 4194304, "t": 1793661003.2530222, "task": 0, "writes": 136}
+{"ev": "wagg", "fs": "home", "gen": 2198, "phase": "real", "size": 4194304, "t": 1793661008.2812865, "task": 0, "writes": 136}
+{"ev": "wagg", "fs": "home", "gen": 2334, "phase": "real", "size": 4194304, "t": 1793661013.2849548, "task": 0, "writes": 136}
+{"ev": "wagg", "fs": "home", "gen": 2473, "phase": "real", "size": 4194304, "t": 1793661018.2913883, "task": 0, "writes": 139}
+{"ev": "wagg", "fs": "home", "gen": 2601, "phase": "real", "size": 4194304, "t": 1793661023.3050404, "task": 0, "writes": 128}
+{"ev": "wagg", "fs": "home", "gen": 2740, "phase": "real", "size": 4194304, "t": 1793661028.3060226, "task": 0, "writes": 139}
+{"ev": "wagg", "fs": "home", "gen": 2856, "phase": "real", "size": 4194304, "t": 1793661033.3415432, "task": 0, "writes": 116}
+{"ev": "wagg", "fs": "home", "gen": 2990, "phase": "real", "size": 4194304, "t": 1793661038.341924, "task": 0, "writes": 134}
+{"ev": "wagg", "fs": "home", "gen": 3123, "phase": "real", "size": 4194304, "t": 1793661043.347336, "task": 0, "writes": 133}
+{"ev": "wagg", "fs": "home", "gen": 3262, "phase": "real", "size": 4194304, "t": 1793661048.3547149, "task": 0, "writes": 139}
+{"ev": "wagg", "fs": "home", "gen": 3401, "phase": "real", "size": 4194304, "t": 1793661053.3570096, "task": 0, "writes": 139}
+{"ev": "wagg", "fs": "home", "gen": 3537, "phase": "real", "size": 4194304, "t": 1793661058.3632224, "task": 0, "writes": 136}
+{"ev": "wagg", "fs": "home", "gen": 3675, "phase": "real", "size": 4194304, "t": 1793661063.366477, "task": 0, "writes": 138}
+{"ev": "wagg", "fs": "home", "gen": 3813, "phase": "real", "size": 4194304, "t": 1793661068.3748157, "task": 0, "writes": 138}
+{"ev": "wagg", "fs": "home", "gen": 3951, "phase": "real", "size": 4194304, "t": 1793661073.3811965, "task": 0, "writes": 138}
+{"ev": "wagg", "fs": "home", "gen": 4087, "phase": "real", "size": 4194304, "t": 1793661078.3850725, "task": 0, "writes": 136}
+{"ev": "wagg", "fs": "home", "gen": 4224, "phase": "real", "size": 4194304, "t": 1793661083.3992593, "task": 0, "writes": 137}
+{"ev": "wagg", "fs": "home", "gen": 4362, "phase": "real", "size": 4194304, "t": 1793661088.4118938, "task": 0, "writes": 138}
+{"ev": "wagg", "fs": "home", "gen": 4496, "phase": "real", "size": 4194304, "t": 1793661093.419507, "task": 0, "writes": 134}
+{"ev": "wagg", "fs": "home", "gen": 4634, "phase": "real", "size": 4194304, "t": 1793661098.4519787, "task": 0, "writes": 138}
+{"ev": "wagg", "fs": "home", "gen": 4772, "phase": "real", "size": 4194304, "t": 1793661103.4781146, "task": 0, "writes": 138}
+{"ev": "wagg", "fs": "home", "gen": 4898, "phase": "real", "size": 4194304, "t": 1793661108.025734, "task": 0, "writes": 126}
+{"edge": "end", "ev": "phase", "fs": "home", "last_gen": 4898, "phase": "real", "size": 4194304, "t": 1793661108.0258195, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "home", "phase": "control", "size": 16777216, "t": 1793661112.000073, "task": 0}
+{"ev": "wagg", "fs": "home", "gen": 15, "phase": "control", "size": 16777216, "t": 1793661117.2237437, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "home", "gen": 30, "phase": "control", "size": 16777216, "t": 1793661122.4377244, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "home", "gen": 45, "phase": "control", "size": 16777216, "t": 1793661127.6862216, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "home", "gen": 60, "phase": "control", "size": 16777216, "t": 1793661132.9080784, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "home", "gen": 75, "phase": "control", "size": 16777216, "t": 1793661138.1354315, "task": 0, "writes": 15}
+{"ev": "wagg", "fs": "home", "gen": 87, "phase": "control", "size": 16777216, "t": 1793661142.290649, "task": 0, "writes": 12}
+{"edge": "end", "ev": "phase", "fs": "home", "last_gen": 87, "phase": "control", "size": 16777216, "t": 1793661142.290751, "task": 0}
+{"edge": "start", "ev": "phase", "fs": "home", "phase": "real", "size": 16777216, "t": 1793661146.0000718, "task": 0}
+{"ev": "wagg", "fs": "home", "gen": 59, "phase": "real", "size": 16777216, "t": 1793661151.074318, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 118, "phase": "real", "size": 16777216, "t": 1793661156.1275945, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 176, "phase": "real", "size": 16777216, "t": 1793661161.1602666, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 234, "phase": "real", "size": 16777216, "t": 1793661166.1658752, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 292, "phase": "real", "size": 16777216, "t": 1793661171.2048678, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 350, "phase": "real", "size": 16777216, "t": 1793661176.2727456, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 407, "phase": "real", "size": 16777216, "t": 1793661181.284904, "task": 0, "writes": 57}
+{"ev": "wagg", "fs": "home", "gen": 465, "phase": "real", "size": 16777216, "t": 1793661186.291526, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 524, "phase": "real", "size": 16777216, "t": 1793661191.3609076, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 583, "phase": "real", "size": 16777216, "t": 1793661196.4213505, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 642, "phase": "real", "size": 16777216, "t": 1793661201.4894261, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 700, "phase": "real", "size": 16777216, "t": 1793661206.527381, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 758, "phase": "real", "size": 16777216, "t": 1793661211.5637019, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 815, "phase": "real", "size": 16777216, "t": 1793661216.6130111, "task": 0, "writes": 57}
+{"ev": "wagg", "fs": "home", "gen": 873, "phase": "real", "size": 16777216, "t": 1793661221.6949139, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 930, "phase": "real", "size": 16777216, "t": 1793661226.7009833, "task": 0, "writes": 57}
+{"ev": "wagg", "fs": "home", "gen": 987, "phase": "real", "size": 16777216, "t": 1793661231.7813287, "task": 0, "writes": 57}
+{"ev": "wagg", "fs": "home", "gen": 1046, "phase": "real", "size": 16777216, "t": 1793661236.8420398, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 1104, "phase": "real", "size": 16777216, "t": 1793661241.8970118, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 1163, "phase": "real", "size": 16777216, "t": 1793661246.9608305, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 1221, "phase": "real", "size": 16777216, "t": 1793661252.00956, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 1279, "phase": "real", "size": 16777216, "t": 1793661257.0104163, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 1338, "phase": "real", "size": 16777216, "t": 1793661262.0712466, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 1396, "phase": "real", "size": 16777216, "t": 1793661267.1288514, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 1454, "phase": "real", "size": 16777216, "t": 1793661272.193969, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 1512, "phase": "real", "size": 16777216, "t": 1793661277.2280087, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 1571, "phase": "real", "size": 16777216, "t": 1793661282.308223, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 1629, "phase": "real", "size": 16777216, "t": 1793661287.3421993, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 1688, "phase": "real", "size": 16777216, "t": 1793661292.4363356, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 1745, "phase": "real", "size": 16777216, "t": 1793661297.4609785, "task": 0, "writes": 57}
+{"ev": "wagg", "fs": "home", "gen": 1803, "phase": "real", "size": 16777216, "t": 1793661302.485742, "task": 0, "writes": 58}
+{"ev": "wagg", "fs": "home", "gen": 1853, "phase": "real", "size": 16777216, "t": 1793661307.5103412, "task": 0, "writes": 50}
+{"ev": "wagg", "fs": "home", "gen": 1910, "phase": "real", "size": 16777216, "t": 1793661312.547924, "task": 0, "writes": 57}
+{"ev": "wagg", "fs": "home", "gen": 1969, "phase": "real", "size": 16777216, "t": 1793661317.5815415, "task": 0, "writes": 59}
+{"ev": "wagg", "fs": "home", "gen": 2026, "phase": "real", "size": 16777216, "t": 1793661322.5868492, "task": 0, "writes": 57}
+{"ev": "wagg", "fs": "home", "gen": 2066, "phase": "real", "size": 16777216, "t": 1793661326.0875874, "task": 0, "writes": 40}
+{"edge": "end", "ev": "phase", "fs": "home", "last_gen": 2066, "phase": "real", "size": 16777216, "t": 1793661326.0876734, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 0, "t": 1793661330.0023587, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 1, "t": 1793661331.001654, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 2, "t": 1793661332.001468, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 3, "t": 1793661333.0015159, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 4, "t": 1793661334.0016642, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 5, "t": 1793661335.0069005, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 6, "t": 1793661336.0014477, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 7, "t": 1793661337.001485, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 8, "t": 1793661338.00158, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 9, "t": 1793661339.00176, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 10, "t": 1793661340.0015895, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 11, "t": 1793661341.0017893, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 12, "t": 1793661342.0024724, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 13, "t": 1793661343.0016704, "task": 0}
+{"ev": "vis_create", "fs": "home", "i": 14, "t": 1793661344.0026827, "task": 0}
+{"ev": "done", "t": 1793661344.0027492, "task": 0}
