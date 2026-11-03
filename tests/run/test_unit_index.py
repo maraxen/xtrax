@@ -845,14 +845,14 @@ def test_stale_segments_listing_waits_instead_of_raising(
     clock = {"t": 0.0}
 
     def stale(root: Path, d: str) -> list[Path]:
-        if d == "segments" and clock["t"] < 30.0:
+        if d == "segments" and clock["t"] < 60.0:  # a full acdirmax of staleness
             return list(stale_segments)
         return real(root, d)
 
     monkeypatch.setattr(ui, "_listing", stale)
     monkeypatch.setattr(ui.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
     assert keys(tmp_path) == {row(1).read_key}
-    assert clock["t"] >= 30.0
+    assert clock["t"] >= 60.0
 
 
 # ---- deferred archive (decision D6) ----------------------------------------------------------
@@ -891,16 +891,53 @@ def test_deferred_chain_archives_everything_the_newest_file_holds(tmp_path: Path
     """Y is folded into Y2 before Y's own inputs were archived; Y2's window archives all."""
     s1 = write_segment(tmp_path, [row(1)])
     y = Path(ui.compact(tmp_path, runner=unknown()).sealed_path)
+    # Y's clock reads far ahead, so Y never comes due on its own in this test: s1 can leave only
+    # through the walk from Y2's manifest into Y's. (Set before Y2 records Y's identity.)
+    ahead = y.stat().st_mtime + 10 * ui.DEFAULT_ARCHIVE_AFTER_S
+    os.utime(y, (ahead, ahead))
     s2 = write_segment(tmp_path, [row(2)], writer=WID2)
-    second = ui.compact(tmp_path, runner=unknown(), archive_now=y.stat().st_mtime + 1)
+    second = ui.compact(tmp_path, runner=unknown(), archive_now=ahead + 1)
     y2 = Path(second.sealed_path)
     assert second.sealed_inputs == (y.name,) and second.taken == (s2.name,)
     assert s1.exists()  # still pending under Y
     before = keys(tmp_path)
-    done = ui.compact(tmp_path, runner=unknown(), archive_now=FAR)
+    now = y2.stat().st_mtime + ui.DEFAULT_ARCHIVE_AFTER_S
+    assert now - y.stat().st_mtime < ui.DEFAULT_ARCHIVE_AFTER_S  # Y alone is not due
+    done = ui.compact(tmp_path, runner=unknown(), archive_now=now)
     assert set(done.archived) == {s1.name, s2.name, y.name}
     assert _sealed(tmp_path) == [y2] and keys(tmp_path) == before
     assert list((tmp_path / "sealed").glob(f"*{ui.MANIFEST_SUFFIX}")) == []
+
+
+def test_same_size_replacement_at_an_input_path_is_never_archived(tmp_path: Path) -> None:
+    """Crash after archiving, before the manifest is removed; then a reused writer id writes a
+    segment of the same length at the same path. Its row is in no sealed file: it must stay."""
+    first = write_segment(tmp_path, [row(1)])
+    ui.compact(tmp_path, runner=unknown())  # sealed + manifest, input still in segments/
+    (tmp_path / "archive").mkdir()
+    os.replace(first, tmp_path / "archive" / f"segment-{first.name}")  # the crashed archive
+    again = write_segment(tmp_path, [row(2)])  # same writer id, same path
+    assert (
+        again == first
+        and again.stat().st_size == (tmp_path / "archive" / f"segment-{first.name}").stat().st_size
+    )
+    rep = ui.compact(tmp_path, runner=unknown(), archive_now=FAR)
+    assert again.name not in rep.archived and again.exists()
+    assert keys(tmp_path) == {row(1).read_key, row(2).read_key}
+
+
+def test_writer_alive_again_at_archive_time_is_not_archived(tmp_path: Path) -> None:
+    """A trailer-less segment judged dead when sealed is re-asked before the move: a writer
+    that turns out to be running keeps its file in segments/ (its descriptor would follow)."""
+    p = write_segment(tmp_path, [row(1)], close=False)
+    assert ui.compact(tmp_path, runner=absent(), now_server=old(p)).taken == (p.name,)
+    alive = ui.compact(tmp_path, runner=present(), now_server=old(p), archive_now=FAR)
+    assert p.name not in alive.archived and p.exists()
+    resealed = ui.compact(tmp_path, runner=absent(), now_server=FAR, archive_now=FAR)
+    assert resealed.taken == (p.name,)  # its manifest is gone, so it is sealed again
+    gone = ui.compact(tmp_path, runner=absent(), now_server=FAR, archive_now=FAR)
+    assert p.name in gone.archived
+    assert not p.exists() and keys(tmp_path) == {row(1).read_key}
 
 
 def test_input_grown_since_sealing_is_not_archived_and_is_taken_again(tmp_path: Path) -> None:

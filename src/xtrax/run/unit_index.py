@@ -45,7 +45,7 @@ import socket
 import subprocess
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -682,13 +682,22 @@ def _collapse(rows: list[IndexRow]) -> tuple[list[IndexRow], int, int, list[Conf
     return kept, collapsed, copies, conflicts
 
 
+# What identifies the file that was read: (size, inode, mtime_ns). All three come from the NFS
+# server, so another client sees the same values; st_dev is client-local and is left out.
+_Ident = tuple[int, int, int]
+
+
+def _ident(st: os.stat_result) -> _Ident:
+    return (st.st_size, st.st_ino, st.st_mtime_ns)
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _Manifest:
-    """``sealed/<stem>.inputs.json``: the inputs a sealed file holds, with their sizes as read."""
+    """``sealed/<stem>.inputs.json``: the inputs a sealed file holds, as identified when read."""
 
     path: Path
     sealed: Path
-    inputs: tuple[tuple[Path, int], ...]
+    inputs: tuple[tuple[Path, _Ident], ...]
 
 
 def _load_manifest(root: Path, path: Path) -> _Manifest | None:
@@ -704,9 +713,10 @@ def _load_manifest(root: Path, path: Path) -> _Manifest | None:
             rel = Path(item["path"])
             if len(rel.parts) != 2 or rel.parts[0] not in _ARCHIVE_PREFIX:
                 raise ValueError(f"input path {item['path']!r} is outside segments/ and sealed/")
-            if rel.parts[1].startswith(".") or not isinstance(item["size"], int):
+            ident = (item["size"], item["ino"], item["mtime_ns"])
+            if rel.parts[1].startswith(".") or not all(type(x) is int for x in ident):
                 raise ValueError(f"bad input entry {item!r}")
-            inputs.append((root / rel, item["size"]))
+            inputs.append((root / rel, ident))
         if Path(d["sealed"]).name != d["sealed"]:
             raise ValueError(f"sealed name {d['sealed']!r} is not a plain file name")
     except (ValueError, KeyError, TypeError) as e:
@@ -757,13 +767,16 @@ def _archive_due(
     *,
     archive_after_s: int | float,
     archive_now: float | None,
+    still_dead: Callable[[Path], bool],
 ) -> list[str]:
     """Archive the inputs of every sealed file at least ``archive_after_s`` old (server time).
 
     An input that is itself a sealed file with a manifest has its own inputs archived too: they
-    are inside it, and so inside the old-enough file. An input whose size differs from the one
-    the manifest recorded (a writer judged dead that was not) stays; once its manifest is gone it
-    is taken again. The manifest is removed last, after the moves are fsynced.
+    are inside it, and so inside the old-enough file. An input stays where it is when its
+    ``(size, inode, mtime_ns)`` differs from what the manifest recorded (it grew, or the path now
+    names another file), or when it is a segment without a trailer whose writer
+    ``still_dead`` no longer judges dead; once its manifest is gone it is taken again. The
+    manifest is removed last, after the moves are fsynced.
     """
     if not manifests:
         return []
@@ -794,13 +807,16 @@ def _archive_due(
             continue
         seen.add(m.path)
         done.append(m)
-        for p, size in m.inputs:
-            inner = manifests.get(p)
-            if inner is not None:
-                stack.append(inner)
+        for p, ident in m.inputs:
             try:
-                if p.stat().st_size != size:
-                    continue  # changed since it was read: not all of it is in the sealed file
+                if _ident(p.stat()) != ident:
+                    continue  # not the file that was read: its rows may not be in the sealed file
+                inner = manifests.get(p)
+                if inner is not None:
+                    stack.append(inner)  # the file that was read, so its own inputs are inside
+                if p.parent.name == SEGMENTS_DIRNAME and not _wl._has_trailer(p):
+                    if not still_dead(p):
+                        continue  # an open descriptor would follow the rename out of view
             except FileNotFoundError:
                 continue  # archived already, by this pass or a concurrent compactor
             name = _ARCHIVE_PREFIX[p.parent.name] + p.name
@@ -857,6 +873,20 @@ def compact(
     """
     root = Path(root)
     pass_runner = _PassRunner(runner)
+    liveness_now: list[float] = [] if now_server is None else [now_server]
+
+    def still_dead(p: Path) -> bool:
+        """Re-ask liveness for a trailer-less segment just before archiving it."""
+        if not liveness_now:
+            liveness_now.append(server_now(p.parent))
+        try:
+            v = segment_writer_dead(
+                p, grace_s=grace_s, now_server=liveness_now[0], runner=pass_runner
+            )
+        except FileNotFoundError:
+            return False
+        return v.dead
+
     archived: list[str] = []
     if not dry_run:
         archived += _archive_due(
@@ -864,13 +894,21 @@ def compact(
             _manifests(root, remove_orphans=True),
             archive_after_s=archive_after_s,
             archive_now=archive_now,
+            still_dead=still_dead,
         )
     pending = {p for m in _manifests(root).values() for p, _ in m.inputs}
     segments = [p for p in _listing(root, SEGMENTS_DIRNAME) if p not in pending]
     decisions = _decide(segments, grace_s=grace_s, now_server=now_server, runner=pass_runner)
 
     taken: dict[Path, _Parsed] = {}
-    sizes: dict[Path, int] = {}
+    idents: dict[Path, _Ident] = {}
+
+    def read_with_ident(p: Path) -> tuple[bytes, _Ident | None]:
+        """Read, then stat; ``None`` ident when the file changed while it was being read."""
+        raw = _read_bytes(p)
+        ident = _ident(p.stat())
+        return raw, (ident if ident[0] == len(raw) else None)
+
     left_unreadable: list[str] = []
     final: list[SegmentDecision] = [
         SegmentDecision(p.name, False, "already sealed; archive pending")
@@ -882,9 +920,12 @@ def compact(
             final.append(d)
             continue
         try:
-            raw = _read_bytes(p)
+            raw, ident = read_with_ident(p)
         except FileNotFoundError:
             final.append(SegmentDecision(d.name, False, "vanished (moved by another compactor)"))
+            continue
+        if ident is None:
+            final.append(SegmentDecision(d.name, False, "changed while being read; next pass"))
             continue
         parsed = _parse(p, raw)
         if parsed.unreadable:
@@ -894,7 +935,7 @@ def compact(
             )
             continue
         taken[p] = parsed
-        sizes[p] = len(raw)
+        idents[p] = ident
         final.append(d)
 
     def report(**kw: Any) -> CompactReport:
@@ -916,9 +957,11 @@ def compact(
         if p in pending:
             continue  # already inside a newer sealed file that is waiting to archive it
         try:
-            raw = _read_bytes(p)
+            raw, ident = read_with_ident(p)
         except FileNotFoundError:
             continue  # archived by a concurrent compactor; its rows are in that one's output
+        if ident is None:
+            continue  # sealed files never change; skipping one only leaves duplicates
         parsed = _parse(p, raw)
         if parsed.unreadable or parsed.torn:
             bad = (parsed.unreadable or parsed.torn)[0]
@@ -927,7 +970,7 @@ def compact(
                 f"{bad.kind} ({bad.reason}); sealing now would archive it out of view"
             )
         sealed_in[p] = parsed
-        sizes[p] = len(raw)
+        idents[p] = ident
 
     rows = [r for p in (*sealed_in.values(), *taken.values()) for r in p.rows]
     kept, collapsed, copies, conflicts = _collapse(rows)
@@ -953,7 +996,13 @@ def compact(
     manifest = {
         "sealed": target.name,
         "inputs": [
-            {"path": f"{p.parent.name}/{p.name}", "size": sizes[p]} for p in (*sealed_in, *taken)
+            {
+                "path": f"{p.parent.name}/{p.name}",
+                "size": idents[p][0],
+                "ino": idents[p][1],
+                "mtime_ns": idents[p][2],
+            }
+            for p in (*sealed_in, *taken)
         ],
     }
     manifest_path = sealed_dir / f"{target.stem}{MANIFEST_SUFFIX}"
@@ -962,7 +1011,9 @@ def compact(
     if archive_after_s <= 0:
         m = _load_manifest(root, manifest_path)
         if m is not None:
-            archived += _archive_due(root, {target: m}, archive_after_s=0, archive_now=None)
+            archived += _archive_due(
+                root, {target: m}, archive_after_s=0, archive_now=None, still_dead=still_dead
+            )
     return report(
         **summary,
         sealed_path=str(target),

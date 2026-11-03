@@ -130,13 +130,16 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   none). Two compactors at once are safe because sealed and temp names are unique (`<ns>-<uuid8>`)
   and each compactor moves to `archive/` only the files it read into its own sealed output; at
   worst rows are duplicated, and the read side removes duplicates. Order: write the temp, fsync,
-  `os.replace`, fsync `sealed/`, then write `sealed/<stem>.inputs.json` (the inputs and their sizes
-  as read) the same way. **Archiving is deferred (D6):** a later pass moves those inputs to
-  `archive/` only once the sealed file is `archive_after_s` old in NFS server time (default 180 s),
-  then removes the manifest. Inputs still listed by a manifest are neither taken nor folded again.
-  An input whose size changed since it was read is not archived and is taken again once its
-  manifest is gone. Archiving a sealed file also archives the inputs of its own manifest, which it
-  contains. Until then, every input stays readable, including rows a collapse dropped, and the
+  `os.replace`, fsync `sealed/`, then write `sealed/<stem>.inputs.json` (each input with its
+  `(size, inode, mtime_ns)` as read; `st_dev` is client-local and left out) the same way.
+  **Archiving is deferred (D6):** a later pass moves those inputs to `archive/` only once the
+  sealed file is `archive_after_s` old in NFS server time (default 180 s), then removes the
+  manifest. Inputs still listed by a manifest are neither taken nor folded again. An input stays
+  in place, and is taken again once its manifest is gone, when its identity differs from the
+  recorded one (it grew, or a reused writer id put another file at the path), or when it is a
+  segment with no trailer whose writer is no longer judged dead at archive time (an open
+  descriptor would follow the rename out of view). Archiving a sealed file whose identity matches
+  also archives the inputs of its own manifest, which it contains. Until then, every input stays readable, including rows a collapse dropped, and the
   index holds about one extra compaction interval's worth of files (this counts against A3's
   verified bound of 1e4 segments). A pass with nothing to archive and no segment to take writes
   nothing. Reader rescans back off for about 64 s in total before giving up, so a reader whose cached
