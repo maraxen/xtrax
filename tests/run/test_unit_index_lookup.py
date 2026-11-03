@@ -18,6 +18,7 @@ from xtrax.run import unit_index as ui
 from xtrax.run import zarr_commit as zc
 
 WID = "node-1-777-0-abcdef12"
+W2 = "node-2-778-0-abcdef22"
 
 
 def make_store(tmp_path: Path, name: str = "store") -> Path:
@@ -193,11 +194,101 @@ def _rows(root: Path, store: Path, locators: list[str], adapter: str) -> None:
 
 
 def test_any_reusable_copy_wins(tmp_path: Path) -> None:
+    """The reusable copy is the OLDER row, so newest-first order classifies Corrupt first."""
     core = ui.CoreRecord("u", "d", "c", "r", "run")
     reuse = ui.IndexReuse(str(tmp_path), "b", core)
     fake = FakeAdapter("fake", {"a": zc.Corrupt("bad"), "b": reuse})
-    _rows(tmp_path / "idx", tmp_path, ["a", "b"], "fake")
+    _rows(tmp_path / "idx", tmp_path, ["b", "a"], "fake")
+    rows = sorted(ui.iter_rows(tmp_path / "idx"), key=lambda r: -r.ts)
+    assert rows[0].locator == "a"  # the Corrupt copy really is tried first
     assert ui.lookup(tmp_path / "idx", tmp_path, "u", "d", adapters={"fake": fake}) == reuse
+
+
+def test_row_pointing_at_another_units_record_is_not_reuse(tmp_path: Path) -> None:
+    """A row for chunks/k0 whose locator is chunks/k1 must not reuse k1's artifact."""
+    store = make_store(tmp_path)
+    commit(store, "k0", "d0")
+    commit(store, "k1", "d0")  # same input digest, another unit
+    rows = {r.locator: r for r in index_store(tmp_path / "other", store)}
+    bad = dataclasses.replace(rows["chunks/k1"], unit_key="chunks/k0", record_digest="bad")
+    with ui.SegmentWriter(tmp_path / "idx", writer_id=WID) as w:
+        w.append(bad)
+    got = ui.lookup(tmp_path / "idx", store, "chunks/k0", "d0")
+    assert isinstance(got, zc.Corrupt) and "chunks/k1" in got.reason
+    with ui.SegmentWriter(tmp_path / "idx", writer_id=W2) as w:
+        w.append(
+            dataclasses.replace(rows["chunks/k0"], writer_id=W2)
+        )  # the real row: the bad copy no longer hides it
+    got = ui.lookup(tmp_path / "idx", store, "chunks/k0", "d0")
+    assert isinstance(got, ui.IndexReuse) and got.locator == "chunks/k0"
+
+
+def test_reuse_for_another_input_is_corrupt(tmp_path: Path) -> None:
+    core = ui.CoreRecord("u", "other", "c", "r", "run")
+    fake = FakeAdapter("fake", {"a": ui.IndexReuse(str(tmp_path), "a", core)})
+    _rows(tmp_path / "idx", tmp_path, ["a"], "fake")
+    got = ui.lookup(tmp_path / "idx", tmp_path, "u", "d", adapters={"fake": fake})
+    assert isinstance(got, zc.Corrupt) and "reuse" in got.reason
+
+
+def test_illegal_zarr_locator_is_corrupt_and_scan_continues(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    commit(store, "k0", "d0")
+    (row,) = index_store(tmp_path / "idx", store)
+    with ui.SegmentWriter(tmp_path / "idx", writer_id=W2) as w:
+        w.append(
+            dataclasses.replace(
+                row, locator="chunks//k0", record_digest="x", ts=row.ts + 9, writer_id=W2
+            )
+        )
+    ad = ui.ZarrCommitAdapter()
+    assert isinstance(ad.classify(store, "chunks/..", "d0", verify=True), zc.Corrupt)
+    assert isinstance(ui.lookup(tmp_path / "idx", store, "chunks/k0", "d0"), ui.IndexReuse)
+
+
+def test_relative_and_tilde_store_spellings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ValueError, match="relative"):
+        ui.canonical_store("store")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert ui.canonical_store("~/s") == os.path.realpath(tmp_path / "s")
+
+
+def test_schema_mismatch_found_through_a_symlinked_spelling(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    commit(store, "k0", "d0")
+    link = tmp_path / "link"
+    link.symlink_to(store)
+    (row,) = index_store(tmp_path / "other", store)
+    seg = tmp_path / "idx" / "segments"
+    seg.mkdir(parents=True)
+    raw = dict(row.to_dict(), schema_version=2, store=str(link) + "/")
+    (seg / f"{WID}.jsonl").write_text(json.dumps(raw) + "\n")
+    assert isinstance(ui.lookup(tmp_path / "idx", store, "chunks/k0", "d0"), ui.SchemaMismatch)
+
+
+def test_make_row_refuses_what_readers_drop(tmp_path: Path) -> None:
+    core = ui.CoreRecord("u", "", "c", "r", "run")
+    with pytest.raises(ui.RowError, match="input_digest"):
+        ui.make_row(tmp_path, "a", core, adapter="fake", writer_id=WID)
+
+
+def test_rebuild_skips_a_record_no_reader_would_see(tmp_path: Path) -> None:
+    @dataclasses.dataclass
+    class Finder:
+        name: str = "fake"
+
+        def find(self, store: Path) -> Iterator[tuple[str, ui.CoreRecord]]:
+            yield "good", ui.CoreRecord("u", "d", "c", "r", "run")
+            yield "bad", ui.CoreRecord("v", "", "c", "r2", "run")
+
+        def classify(self, *a: object, **k: object) -> object:
+            raise AssertionError
+
+    rep = ui.rebuild(tmp_path / "idx", [(tmp_path, Finder())])
+    assert rep.rows == 1 and rep.skipped == (f"{os.path.realpath(tmp_path)}:bad",)
+    assert [r.locator for r in ui.iter_rows(tmp_path / "idx")] == ["good"]
 
 
 def test_corrupt_outranks_stale_and_missing(tmp_path: Path) -> None:
@@ -280,12 +371,62 @@ def test_duckdb_view_agrees_with_iter_rows(tmp_path: Path) -> None:
         commit(store, f"k{i}", f"d{i}")
     _messy_index(tmp_path / "idx", store)
     report = ui.ReadReport()
-    canonical = {r.read_key for r in ui.iter_rows(tmp_path / "idx", report=report)}
+    canonical = list(ui.iter_rows(tmp_path / "idx", report=report))
     assert report.torn and report.unreadable and report.duplicates  # the fixture bites
-    con = ui.duckdb_view(tmp_path / "idx")
-    (n,) = con.execute("SELECT count(*) FROM unit_index").fetchone()
-    got = set(con.execute("SELECT store, locator, record_digest FROM unit_index").fetchall())
-    assert n == len(canonical) and got == canonical
+    assert _view_rows(tmp_path / "idx") == sorted(_full(r) for r in canonical)
+
+
+def _full(row: ui.IndexRow) -> tuple:
+    d = row.to_dict()
+    d["reused_from"] = tuple(d["reused_from"]) if d["reused_from"] is not None else None
+    return tuple(d[c] for c in ui._VIEW_COLUMNS)
+
+
+def _view_rows(root: Path) -> list[tuple]:
+    con = ui.duckdb_view(root)
+    out = con.execute(f"SELECT {', '.join(ui._VIEW_COLUMNS)} FROM unit_index").fetchall()
+    return sorted(tuple(tuple(v) if isinstance(v, list) else v for v in r) for r in out)
+
+
+def test_duckdb_view_applies_the_readers_types(tmp_path: Path) -> None:
+    """Values DuckDB would coerce (bool ts, string ts, a numeric store, a short reused_from,
+    a boolean schema_version) are dropped by iter_rows, and so by the view."""
+    pytest.importorskip("duckdb")
+    good = ui.make_row(
+        "/s", "a", ui.CoreRecord("u", "d", "c", "r", "run"), adapter="x", writer_id=WID, ts=1.0
+    )
+    bads = [
+        dict(good.to_dict(), ts=True, record_digest="b1"),
+        dict(good.to_dict(), ts="1.5", record_digest="b2"),
+        dict(good.to_dict(), store=5, record_digest="b3"),
+        dict(good.to_dict(), reused_from=["only", "two"], record_digest="b4"),
+        dict(good.to_dict(), schema_version=True, record_digest="b5"),
+        dict(good.to_dict(), run_id=7, record_digest="b6"),
+    ]
+    seg = tmp_path / "idx" / "segments"
+    seg.mkdir(parents=True)
+    lines = [json.dumps(good.to_dict())] + [json.dumps(b) for b in bads]
+    (seg / f"{WID}.jsonl").write_text("\n".join(lines) + "\n")
+    canonical = list(ui.iter_rows(tmp_path / "idx"))
+    assert [r.record_digest for r in canonical] == ["r"]
+    assert _view_rows(tmp_path / "idx") == [_full(good)]
+
+
+def test_duckdb_view_keeps_the_copy_iter_rows_keeps(tmp_path: Path) -> None:
+    """Duplicates of a read key differ in ts/writer_id; both readers keep the first in scan order
+    (segments before sealed before rebuilt)."""
+    pytest.importorskip("duckdb")
+    core = ui.CoreRecord("u", "d", "c", "r", "run")
+    other = "node-9-1-0-abcdef19"
+    with ui.SegmentWriter(tmp_path / "idx", writer_id=other) as w:
+        w.append(ui.make_row("/s", "a", core, adapter="x", writer_id=other, ts=50.0))
+    rebuilt = tmp_path / "idx" / "rebuilt"
+    rebuilt.mkdir()
+    early = ui.make_row("/s", "a", core, adapter="x", writer_id=WID, ts=1.0)
+    (rebuilt / "index-0-x.jsonl").write_text(early.to_json_line())
+    (kept,) = ui.iter_rows(tmp_path / "idx")
+    assert kept.writer_id == other  # a min-ts rule would have picked the rebuilt copy
+    assert _view_rows(tmp_path / "idx") == [_full(kept)]
 
 
 def test_duckdb_view_without_dedup_would_overcount(tmp_path: Path) -> None:

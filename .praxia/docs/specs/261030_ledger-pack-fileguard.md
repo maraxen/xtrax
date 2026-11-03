@@ -1,7 +1,7 @@
 # Spec: unit index, output packing and file-count guard (DRAFT v3)
 
 - **task_id**: `261030_xtrax-ledger-pack`
-- **status**: DRAFT v3. Two adversarial passes on 2026-10-30: v1 against the code (§8), and v2 by an independent challenger (§9). Owner decisions D1 to D6 are taken (§7). Built so far: `xtrax.fileguard`, `xtrax.run.writer_liveness`, the `zarr_commit` duplicate check and quarantine (§3.5), and in `xtrax.run.unit_index` (2026-11-03) the segment writer, read side, compaction, lookup, the `zarr_commit` record adapter, rebuild and the DuckDB view. **Not built:** `xtrax.pack` and the `unit.json` record (§3.2, §3.3). Owner decision 2026-11-03: lift alynxr's fold-unit packer (`alynxr/unit_pack.py`, uncommitted on an alynxr branch as of 2026-11-03) once it lands, rather than build a second format. So this item is **blocked on that alynxr PR merging**. Also not built: the aminx done-marker and alynxr fragment adapters. Consumer adoption happens in the consumer repos (§5).
+- **status**: DRAFT v3. Two adversarial passes on 2026-10-30: v1 against the code (§8), and v2 by an independent challenger (§9). Owner decisions D1 to D6 are taken (§7). Built so far: `xtrax.fileguard`, `xtrax.run.writer_liveness`, the `zarr_commit` duplicate check and quarantine (§3.5), and in `xtrax.run.unit_index` (2026-11-03) the segment writer, read side, compaction, lookup, the `zarr_commit` record adapter, rebuild and the DuckDB view. **Not built:** `xtrax.pack` and the `unit.json` record (§3.2, §3.3). Owner decision 2026-11-03: lift alynxr's fold-unit packer (`alynxr/unit_pack.py`, uncommitted on an alynxr branch as of 2026-11-03) once it lands, rather than build a second format. So this item is **blocked on that alynxr PR merging**. The aminx done-marker v3 and alynxr fold-stats fragment adapters are built (`xtrax.run.unit_index_adapters`). Consumer adoption happens in the consumer repos (§5).
 - **consumers**: alynxr, aminx, aminx-ensemble, demistify, prolix
 - **origin**: owner request 2026-10-30 (upstream the alynxr provenance/consolidation design into xtrax).
   Owner decisions already taken: (1) recon the five consumers first; (2) the index is **lock-free
@@ -122,13 +122,21 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   `IndexReuse(store, locator, core)` and `IndexStale(store, locator, core)`, with `core` a
   `CoreRecord(unit_key, input_digest, content_digest, record_digest, run_id)`. When a unit has
   several rows (copies), any reusable copy wins; otherwise `Corrupt` beats `IndexStale`, which beats
-  `Missing`. A row whose `record_digest` no longer matches the artifact is classified from the
-  artifact. A row naming an adapter that is not registered raises `UnitIndexError`. Stores are
-  canonicalized with `os.path.realpath` both in `make_row` and `SegmentWriter.append` and in
-  `lookup`, so a store reached through a symlink finds the same rows. Adapters built so far:
-  `ZarrCommitAdapter` (`xtrax.commit`; `unit_key` = `locator` = the key path). The `unit.json`
-  adapter waits on the record format the lifted packer brings (§3.3). The aminx done-marker and
-  alynxr fragment adapters are not built.
+  `Missing`, with an adapter `SchemaMismatch` ranked between `Corrupt` and `IndexStale`. A row
+  whose `record_digest` no longer matches the artifact is classified from the artifact. A record
+  for another `unit_key` (a row pointing at the wrong locator), or a reuse claim for another input
+  digest, is `Corrupt`, never reuse. A row naming an adapter that is not registered raises
+  `UnitIndexError`. Stores are canonicalized (`~` expanded, relative paths refused,
+  `os.path.realpath`) in `make_row`, `SegmentWriter.append` and `lookup`, and schema-mismatch rows
+  are keyed the same way, so a store reached through a symlink finds the same rows. `make_row`
+  refuses a row `iter_rows` would drop; `rebuild` skips such records and lists them. Adapters
+  built: `ZarrCommitAdapter` (`xtrax.commit`; `unit_key` = `locator` = the key path; an illegal
+  key path is `Corrupt`), and in `xtrax.run.unit_index_adapters` `AminxDoneMarkerAdapter` (aminx
+  `campaign_done_marker_v3`; `unit_key` = `manifest_row_hash`, v2 markers are `SchemaMismatch`)
+  and `AlynxrFragmentAdapter` (alynxr `fold_stats_part/1` fragments; `unit_key` = `locator` = the
+  part path; verified by the part file's size and sha256). Formats were read from each consumer's
+  `origin/main` on 2026-11-03. The `unit.json` adapter waits on the record format the lifted
+  packer brings (§3.3).
 - **Rebuild.** `rebuild(root, stores)` walks the records through the adapters and writes a derived
   `rebuilt/index-<ts>.jsonl`. That is its own directory, never `sealed/` and never `segments/`. Anyone
   can run it, and it is idempotent, following alynxr's derived-`MANIFEST.json` rule.
@@ -202,7 +210,12 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   compaction empties a directory. So the view is a snapshot: create it again to see later files.
   The agreement test fixture has torn lines, a schema-2 row, a trailer-only segment, a segment
   and a sealed file holding the same rows (the deferred-archive state), an `.inputs.json`
-  manifest, and a rebuilt copy. Removing `DISTINCT ON` makes the test fail.
+  manifest, and a rebuilt copy. Removing `DISTINCT ON` makes the test fail. Every field is read as
+  raw JSON and checked with `IndexRow.from_dict`'s type rules, since DuckDB's casts would admit a
+  boolean or string `ts`, a numeric string field or a short `reused_from`. Among copies of one read
+  key the view keeps `iter_rows`'s copy: first file in scan order, then smallest `ts`, then
+  `writer_id` (DuckDB exposes no line number; within one file a later line has a later `ts`). The
+  agreement test compares full rows.
 - **ESTALE.** Every reader of a file that a writer replaces with `os.replace` (sealed segments, index
   files, unit records) retries the **whole** open-and-read on `ESTALE`, with a short bounded backoff,
   and never reuses a file descriptor across the retry. A1 saw 77 `ESTALE` (home 74, pool 3, scratch

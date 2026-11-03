@@ -158,7 +158,7 @@ class IndexRow:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "IndexRow":
         version = d.get("schema_version")
-        if version != SCHEMA_VERSION:
+        if isinstance(version, bool) or version != SCHEMA_VERSION:
             raise SchemaMismatchError(f"schema_version {version!r}, expected {SCHEMA_VERSION}")
         for f in _REQUIRED_STR:
             v = d.get(f)
@@ -243,9 +243,14 @@ def canonical_store(store: Path | str) -> str:
     """The one spelling of a store root that rows carry: ``os.path.realpath``.
 
     Used when a row is written and when a lookup asks, so a store reached through a symlink
-    (``~/orcd/scratch`` on Engaging) finds the same rows under either spelling.
+    (``~/orcd/scratch`` on Engaging) finds the same rows under either spelling. ``~`` expands;
+    a relative path is refused (``ValueError``), since its meaning would depend on the cwd. Not
+    ``strict``: a lookup of a store that does not exist yet answers ``Missing``, not an error.
     """
-    return os.path.realpath(os.fspath(store))
+    path = os.path.expanduser(os.fspath(store))
+    if not os.path.isabs(path):
+        raise ValueError(f"store {store!r} is relative; give the absolute path")
+    return os.path.realpath(path)
 
 
 # ---- low-level IO --------------------------------------------------------------------------
@@ -496,8 +501,10 @@ def _parse(path: Path, data: bytes) -> _Parsed:
             key = None
             store, unit_key = obj.get("store"), obj.get("unit_key")
             if isinstance(e, SchemaMismatchError) and isinstance(store, str):
+                # Keyed by the spelling a lookup asks with; a relative store keeps its raw text.
                 if isinstance(unit_key, str):
-                    key = (store, unit_key)
+                    path = os.path.expanduser(store)
+                    key = (os.path.realpath(path) if os.path.isabs(path) else store, unit_key)
             out.unreadable.append(BadLine(str(path), i, "unreadable", str(e), key))
     return out
 
@@ -663,7 +670,10 @@ class ZarrCommitAdapter:
                 yield locator, _core_from_commit(locator, rec)
 
     def classify(self, store: Path, locator: str, input_digest: str, *, verify: bool) -> Any:
-        got = _zc.lookup(Path(store), tuple(locator.split("/")), input_digest, verify=verify)
+        try:
+            got = _zc.lookup(Path(store), tuple(locator.split("/")), input_digest, verify=verify)
+        except ValueError as e:  # an illegal key path: this copy is bad, other copies may not be
+            return Corrupt(f"illegal zarr_commit locator {locator!r}: {e}")
         if isinstance(got, _zc.Reuse):
             return IndexReuse(
                 canonical_store(store), locator, _core_from_commit(locator, got.record)
@@ -696,8 +706,12 @@ def make_row(
     reused_from: tuple[str, str, str] | None = None,
     ts: float | None = None,
 ) -> IndexRow:
-    """The index row for one record, with the store in its canonical spelling."""
-    return IndexRow(
+    """The index row for one record, with the store in its canonical spelling.
+
+    Raises :class:`RowError` for a row :func:`iter_rows` would drop (an empty required field),
+    so no writer emits a row that no reader can see.
+    """
+    row = IndexRow(
         store=canonical_store(store),
         locator=locator,
         unit_key=core.unit_key,
@@ -710,6 +724,8 @@ def make_row(
         ts=time.time() if ts is None else ts,
         reused_from=reused_from,
     )
+    IndexRow.from_dict(row.to_dict())  # the reader's own validation
+    return row
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -762,7 +778,7 @@ def lookup(
             return SchemaMismatch(snap.schema_mismatch[(s, unit_key)])
         return Missing()
     table = default_adapters() if adapters is None else adapters
-    rank = {Corrupt: 0, SchemaMismatch: 1, IndexStale: 2, Missing: 3}
+    rank: dict[type, int] = {Corrupt: 0, SchemaMismatch: 1, IndexStale: 2, Missing: 3}
     best: Any = None
     seen: set[tuple[str, str]] = set()
     for row in sorted(rows, key=lambda r: (r.input_digest != input_digest, -r.ts)):
@@ -772,7 +788,14 @@ def lookup(
         adapter = table.get(row.adapter)
         if adapter is None:
             raise UnitIndexError(f"no record adapter named {row.adapter!r} for {s}:{row.locator}")
-        got = adapter.classify(Path(row.store), row.locator, input_digest, verify=verify)
+        got: Any = adapter.classify(Path(row.store), row.locator, input_digest, verify=verify)
+        # The row only pointed here: the record must be this unit's (and, to reuse, this input's).
+        if isinstance(got, IndexReuse | IndexStale) and got.core.unit_key != unit_key:
+            got = Corrupt(
+                f"{row.locator} holds the record of unit {got.core.unit_key!r}, not {unit_key!r}"
+            )
+        elif isinstance(got, IndexReuse) and got.core.input_digest != input_digest:
+            got = Corrupt(f"{row.locator} reported reuse for input {got.core.input_digest!r}")
         if isinstance(got, IndexReuse):
             return got
         if best is None or rank[type(got)] < rank[type(best)]:
@@ -785,6 +808,7 @@ class RebuildReport:
     path: str | None
     rows: int
     stores: tuple[str, ...]
+    skipped: tuple[str, ...] = ()
 
 
 def rebuild(root: Path | str, stores: "list[tuple[Path | str, RecordAdapter]]") -> RebuildReport:
@@ -792,23 +816,29 @@ def rebuild(root: Path | str, stores: "list[tuple[Path | str, RecordAdapter]]") 
 
     Idempotent: a record gives the same read key every time, so repeated rebuilds add one file
     each and no rows. Nothing is moved or deleted (that would reopen the stale-listing window
-    D6 closes). Writes nothing when no store holds a record.
+    D6 closes). Writes nothing when no store holds a record. A record whose row no reader would
+    accept (an empty required field) is not written; its ``store:locator`` is in ``skipped``.
     """
     root = Path(root)
     writer_id = new_writer_id()
-    rows = [
-        make_row(store, locator, core, adapter=adapter.name, writer_id=writer_id)
-        for store, adapter in stores
-        for locator, core in adapter.find(Path(store))
-    ]
+    rows: list[IndexRow] = []
+    skipped: list[str] = []
+    for store, adapter in stores:
+        for locator, core in adapter.find(Path(store)):
+            try:
+                rows.append(
+                    make_row(store, locator, core, adapter=adapter.name, writer_id=writer_id)
+                )
+            except RowError:
+                skipped.append(f"{canonical_store(store)}:{locator}")
     names = tuple(canonical_store(s) for s, _ in stores)
     if not rows:
-        return RebuildReport(None, 0, names)
+        return RebuildReport(None, 0, names, tuple(skipped))
     rebuilt = root / REBUILT_DIRNAME
     _ensure_dir(rebuilt)
     target = rebuilt / f"index-{time.time_ns():020d}-{uuid.uuid4().hex[:8]}.jsonl"
     _write_atomic(target, "".join(r.to_json_line() for r in rows).encode("utf-8"), fault=None)
-    return RebuildReport(str(target), len(rows), names)
+    return RebuildReport(str(target), len(rows), names, tuple(skipped))
 
 
 # ---- DuckDB view (optional: xtrax[index]) -----------------------------------------------------
@@ -860,21 +890,50 @@ def duckdb_view(root: Path | str, con: Any = None, *, name: str = "unit_index") 
             "WHERE false"
         )
         return con
-    columns = "{" + ", ".join(f"{_sql_str(c)}: {_sql_str(t)}" for c, t in _VIEW_COLUMNS.items())
-    columns += "}"
+    # Every field is read as raw JSON and checked with IndexRow.from_dict's rules, so DuckDB's
+    # casts (true -> 1.0, "1.5" -> 1.5, 5 -> '5') cannot admit a row iter_rows drops.
+    columns = "{" + ", ".join(f"{_sql_str(c)}: 'JSON'" for c in _VIEW_COLUMNS) + "}"
+    file_list = "[" + ", ".join(_sql_str(f) for f in files) + "]"
     source = (
-        f"read_json([{', '.join(_sql_str(f) for f in files)}], format='newline_delimited', "
-        f"ignore_errors=true, columns={columns})"
+        f"read_json({file_list}, format='newline_delimited', ignore_errors=true, "
+        f"filename=true, columns={columns})"
     )
-    required = ("store", "locator", "unit_key", "input_digest", "content_digest", "record_digest")
+    num = "('BIGINT', 'UBIGINT', 'DOUBLE')"
     where = " AND ".join(
-        [f"schema_version = {SCHEMA_VERSION}", "ts IS NOT NULL"]
-        + [f"{c} IS NOT NULL AND {c} <> ''" for c in required]
-        + [f"{c} IS NOT NULL" for c in ("adapter", "writer_id", "run_id")]
+        [
+            f"json_type(schema_version) IN {num}",
+            f"CAST(schema_version AS DOUBLE) = {SCHEMA_VERSION}",
+            f"json_type(ts) IN {num}",
+            "(json_type(reused_from) IS NULL OR json_type(reused_from) = 'NULL' OR ("
+            "json_type(reused_from) = 'ARRAY' AND json_array_length(reused_from) = 3 AND "
+            + " AND ".join(
+                f"json_type(reused_from, '$[{i}]') = 'VARCHAR' AND reused_from->>'$[{i}]' <> ''"
+                for i in range(3)
+            )
+            + "))",
+        ]
+        + [f"json_type({c}) = 'VARCHAR' AND {c}->>'$' <> ''" for c in _REQUIRED_STR]
+        + [f"json_type({c}) = 'VARCHAR'" for c in _STR]
     )
+    project = ", ".join(
+        "CAST(schema_version AS BIGINT) AS schema_version"
+        if c == "schema_version"
+        else "CAST(ts AS DOUBLE) AS ts"
+        if c == "ts"
+        else "CASE WHEN json_type(reused_from) = 'ARRAY' "
+        "THEN CAST(reused_from AS VARCHAR[]) END AS reused_from"
+        if c == "reused_from"
+        else f"{c}->>'$' AS {c}"
+        for c in _VIEW_COLUMNS
+    )
+    # iter_rows keeps the first copy of a read key in scan order (file order, then line order).
+    # DuckDB has no line number; within one file a writer's later line has a later ts.
     con.execute(
-        f"CREATE OR REPLACE VIEW {name} AS SELECT DISTINCT ON (store, locator, record_digest) * "
-        f"FROM {source} WHERE {where}"
+        f"CREATE OR REPLACE VIEW {name} AS SELECT {', '.join(_VIEW_COLUMNS)} FROM ("
+        f"SELECT DISTINCT ON (store, locator, record_digest) *, "
+        f"list_position({file_list}, filename) AS _file_rank FROM ("
+        f"SELECT {project}, filename FROM {source} WHERE {where}) "
+        "ORDER BY store, locator, record_digest, _file_rank, ts, writer_id)"
     )
     return con
 
