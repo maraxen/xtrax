@@ -38,8 +38,16 @@ mode can skip parsing (the control uses count(store)), and DuckDB 2.0.0 with thr
 drops a torn line silently instead of raising (about half of strict reads at 4 threads), so the
 strict control runs single-threaded and the multi-thread rate is recorded, not gated. Smoke timings
 at 2e4 rows (about 0.1 s) were seen; the 5 s threshold is the spec's, set on 2026-10-30.
+
+AMENDMENT 1 (2026-11-03, before any Engaging data existed): stage_name exploration -> validation,
+matching the A1 and A10 sidecars. Under exploration bathos stores outcome 'observed' and keeps the
+label as tentative_outcome only; A3 gates a design decision, so its verdict must be the run's
+outcome. Conditions, thresholds and the result schema are unchanged. The one run made before this
+amendment is the local instrument run a6a42e6f (tentative_outcome local_instrument_ok). Its
+timings, which cannot pass A3 by construction, were seen before the amendment: local disk, steady
+0.48 s, busy 5.8 s, uncompacted up to 86 s (cost follows file count, not rows).
 """
-stage_name = "exploration"
+stage_name = "validation"
 
 [observe]
 outputs = [
