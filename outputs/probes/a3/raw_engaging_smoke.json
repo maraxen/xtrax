@@ -1,0 +1,103 @@
+{
+  "env": "engaging_scratch",
+  "host": "node1601",
+  "python": "3.12.3",
+  "duckdb": "2.0.0",
+  "threads": 4,
+  "repeats": 3,
+  "rows": 20000,
+  "slurm_job_id": "27789942",
+  "root": "/orcd/scratch/orcd/011/maarxaru/a3_probe_smoke",
+  "layouts": {
+    "steady": {
+      "fixture": {
+        "n_rows_unique": 20000,
+        "n_dup_planted": 2000,
+        "n_torn": 1,
+        "n_segments": 2,
+        "n_sealed_files": 1,
+        "n_files": 4,
+        "bytes": 10476187,
+        "build_s": 0.16813953407108784,
+        "build_host": "node1600",
+        "rows": 20000,
+        "build_slurm_job_id": "27789788",
+        "cross_node": true,
+        "visibility_wait_s": 0.0011132024228572845,
+        "files_visible": 4
+      },
+      "queries": {
+        "view_count_s": [
+          0.030983293429017067,
+          0.01943898294121027,
+          0.024385524913668633
+        ],
+        "lookup_s": [
+          0.017745555378496647,
+          0.015542961657047272,
+          0.01682334579527378
+        ],
+        "view_count": 20000,
+        "lookup_rows": 1
+      },
+      "controls": {
+        "count_no_distinct": 22000,
+        "strict_refused": true,
+        "strict_error": "InvalidInputException: Invalid Input Error: Malformed JSON in file \"/orcd/scratch/orcd/011/maarxaru/a3_probe_smoke/steady/segments/node0000-1000-27000000-0-00000000.jsonl\", at byte 41 in line 603: unexpected end of data. ",
+        "strict_multi_threads": 4,
+        "strict_multi_refusals": 0,
+        "strict_multi_tries": 5
+      },
+      "stdlib": {
+        "count": 20000,
+        "skipped_lines": 1,
+        "s": 0.07717952504754066
+      }
+    },
+    "busy": {
+      "fixture": {
+        "n_rows_unique": 20000,
+        "n_dup_planted": 2000,
+        "n_torn": 20,
+        "n_segments": 200,
+        "n_sealed_files": 1,
+        "n_files": 202,
+        "bytes": 10528573,
+        "build_s": 0.3286452731117606,
+        "build_host": "node1600",
+        "rows": 20000,
+        "build_slurm_job_id": "27789788",
+        "cross_node": true,
+        "visibility_wait_s": 0.0031252214685082436,
+        "files_visible": 202
+      },
+      "queries": {
+        "view_count_s": [
+          0.059926776215434074,
+          0.044161342084407806,
+          0.04356348514556885
+        ],
+        "lookup_s": [
+          0.04411129001528025,
+          0.041813415475189686,
+          0.04247116297483444
+        ],
+        "view_count": 20000,
+        "lookup_rows": 1
+      },
+      "controls": {
+        "count_no_distinct": 22000,
+        "strict_refused": true,
+        "strict_error": "InvalidInputException: Invalid Input Error: Malformed JSON in file \"/orcd/scratch/orcd/011/maarxaru/a3_probe_smoke/busy/segments/node0000-1000-27000000-0-00000000.jsonl\", at byte 41 in line 18: unexpected end of data. ",
+        "strict_multi_threads": 4,
+        "strict_multi_refusals": 5,
+        "strict_multi_tries": 5
+      },
+      "stdlib": {
+        "count": 20000,
+        "skipped_lines": 20,
+        "s": 0.0912210438400507
+      }
+    }
+  }
+}
