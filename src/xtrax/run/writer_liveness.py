@@ -1,7 +1,8 @@
 # ruff: noqa: UP031
 """Is a unit-index segment's writer dead? (spec 261030 §3.1, Compact; assumption A10.)
 
-Stdlib only and Python 3.9 compatible, so it can be embedded on compute nodes the way
+Stdlib only and Python 3.9 compatible (pinned by ``tests/run/test_writer_liveness_standalone.py``
+and the ``node-py39`` CI job), so it can be embedded on compute nodes the way
 ``fileguard/_node.py`` is. Internal for now: nothing is exported from ``xtrax.run``.
 
 Writer id encoding (segment file stem)::
@@ -35,15 +36,16 @@ import json
 import os
 import subprocess
 import uuid
-from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, List, NamedTuple, Optional, Tuple, Union
 
 NOJOB = "nojob"
 DEFAULT_GRACE_S = 300.0
 DEFAULT_TIMEOUT_S = 20.0
 
-Runner = Callable[[list[str], float], tuple[int, str, str]]
+# typing generics, not ``X | None`` or ``list[str]``: annotations here are evaluated at import,
+# and this module must import under Python 3.9 (tests/run/test_writer_liveness_standalone.py).
+Runner = Callable[[List[str], float], Tuple[int, str, str]]
 
 _TERMINAL = frozenset(
     {"COMPLETED", "FAILED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL", "DEADLINE"}
@@ -88,7 +90,7 @@ class JobState(NamedTuple):
 class WriterId(NamedTuple):
     host: str
     pid: int
-    job_id: str | None  # None when the writer is outside SLURM ("nojob")
+    job_id: Optional[str]  # None when the writer is outside SLURM ("nojob")
     restart: int
     uuid8: str
 
@@ -107,7 +109,7 @@ def parse_writer_id(s: str) -> WriterId:
     if not (pid.isdigit() and restart.isdigit() and u):
         raise ValueError("not a writer id: %r" % (s,))
     if job == NOJOB:
-        job_id: str | None = None
+        job_id: Optional[str] = None
     elif job.isdigit():
         job_id = job
     else:
@@ -115,12 +117,12 @@ def parse_writer_id(s: str) -> WriterId:
     return WriterId(host, int(pid), job_id, int(restart), u)
 
 
-def _subprocess_runner(argv: list[str], timeout: float) -> tuple[int, str, str]:
+def _subprocess_runner(argv: List[str], timeout: float) -> Tuple[int, str, str]:
     p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
     return p.returncode, p.stdout, p.stderr
 
 
-def _classify(raw: str) -> State | None:
+def _classify(raw: str) -> Optional[State]:
     """PRESENT/ABSENT for a recognised sacct/squeue state word, else None."""
     word = raw.strip().split(" ")[0].rstrip("+")
     if word in _TERMINAL or word.startswith("CANCELLED"):
@@ -130,7 +132,7 @@ def _classify(raw: str) -> State | None:
     return None
 
 
-def job_state(job_id: str, runner: Runner | None = None) -> JobState:
+def job_state(job_id: str, runner: Optional[Runner] = None) -> JobState:
     """Three-state scheduler lookup; see the module docstring for the rules."""
     run = runner or _subprocess_runner
     unknown = lambda why: JobState(State.UNKNOWN, "", why)  # noqa: E731
@@ -163,7 +165,7 @@ def job_state(job_id: str, runner: Runner | None = None) -> JobState:
     return JobState(State.ABSENT, states[0], "sacct terminal")
 
 
-def server_now(directory: str | Path) -> float:
+def server_now(directory: Union[str, Path]) -> float:
     """NFS server time: create a probe file in ``directory`` and read its mtime.
 
     A freshly created file's timestamps are set by the file server, so this is the clock the
@@ -198,11 +200,11 @@ def _has_trailer(path: Path) -> bool:
 
 
 def segment_writer_dead(
-    segment_path: str | Path,
+    segment_path: Union[str, Path],
     *,
-    grace_s: int | float = DEFAULT_GRACE_S,
-    now_server: float | None = None,
-    runner: Runner | None = None,
+    grace_s: Union[int, float] = DEFAULT_GRACE_S,
+    now_server: Optional[float] = None,
+    runner: Optional[Runner] = None,
 ) -> Verdict:
     """Decide whether a segment's writer is dead. UNKNOWN is never dead."""
     path = Path(segment_path)
