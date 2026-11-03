@@ -68,6 +68,7 @@ TRAILER = b'{"closed": true}\n'
 READ_DIRS = (SEGMENTS_DIRNAME, SEALED_DIRNAME, REBUILT_DIRNAME)
 ESTALE_TRIES = 6
 MAX_RESCANS = 5
+PARTIAL_MAX_AGE_S = 3600.0
 
 _REQUIRED_STR = ("store", "locator", "unit_key", "input_digest", "content_digest", "record_digest")
 _STR = ("adapter", "writer_id", "run_id")
@@ -305,6 +306,13 @@ class SegmentWriter:
         self.root = Path(root)
         self.writer_id = writer_id if writer_id is not None else new_writer_id()
         parse_writer_id(self.writer_id)  # ValueError on a malformed id
+        # The id is a file name in segments/: a "/" would nest the file outside the read glob.
+        if (
+            Path(self.writer_id).name != self.writer_id
+            or self.writer_id.startswith(".")
+            or "\0" in self.writer_id
+        ):
+            raise ValueError(f"writer_id {self.writer_id!r} is not a plain file name")
         self.path = self.root / SEGMENTS_DIRNAME / f"{self.writer_id}.jsonl"
         self.rows_written = 0
         self._guard = guard
@@ -465,7 +473,7 @@ def _scan(root: Path) -> dict[Path, _Parsed]:
     """
     for _ in range(MAX_RESCANS):
         listed = [p for d in READ_DIRS for p in _listing(root, d)]
-        sealed_before = set(_listing(root, SEALED_DIRNAME))
+        sealed_before = {p for p in listed if p.parent.name == SEALED_DIRNAME}
         parsed: dict[Path, _Parsed] = {}
         vanished = False
         for p in listed:
@@ -544,6 +552,7 @@ class CompactReport:
     sealed_path: str | None = None
     archived: tuple[str, ...] = ()
     scheduler_calls: int = 0
+    partials_removed: int = 0
 
     @property
     def taken(self) -> tuple[str, ...]:
@@ -715,6 +724,7 @@ def compact(
     archive_dir = root / ARCHIVE_DIRNAME
     _ensure_dir(sealed_dir)
     _ensure_dir(archive_dir)
+    partials_removed = _sweep_partials(sealed_dir)
     tag = uuid.uuid4().hex[:8]
     target = sealed_dir / f"{time.time_ns():020d}-{tag}.jsonl"
     tmp = sealed_dir / f".{target.stem}.partial"
@@ -732,8 +742,11 @@ def compact(
     archived = []
     moves = [(p, f"sealed-{p.name}") for p in sealed_in] + [(p, f"segment-{p.name}") for p in taken]
     for i, (p, name) in enumerate(moves):
+        dest = archive_dir / name
+        if dest.exists():  # never overwrite an archived file (a reused explicit writer_id)
+            dest = archive_dir / f"{name}.{uuid.uuid4().hex[:8]}"
         try:
-            os.replace(p, archive_dir / name)
+            os.replace(p, dest)
         except FileNotFoundError:
             continue  # a concurrent compactor archived it first
         archived.append(p.name)
@@ -741,4 +754,30 @@ def compact(
             _fault("first_input_archived")
     for d in (archive_dir, sealed_dir, root / SEGMENTS_DIRNAME):
         _fsync_dir(d)
-    return report(**summary, sealed_path=str(target), archived=tuple(archived))
+    return report(
+        **summary,
+        sealed_path=str(target),
+        archived=tuple(archived),
+        partials_removed=partials_removed,
+    )
+
+
+def _sweep_partials(sealed_dir: Path) -> int:
+    """Remove sealed temp files a crashed compactor left, once older than ``PARTIAL_MAX_AGE_S``.
+
+    Ages use NFS server time. A live compactor's temp file exists for seconds, so the age bound
+    never touches one in flight; the temp holds no row that is not still in its inputs.
+    """
+    partials = list(sealed_dir.glob(".*.partial"))
+    if not partials:
+        return 0
+    now = server_now(sealed_dir)
+    removed = 0
+    for p in partials:
+        try:
+            if now - p.stat().st_mtime > PARTIAL_MAX_AGE_S:
+                p.unlink()
+                removed += 1
+        except FileNotFoundError:
+            continue
+    return removed

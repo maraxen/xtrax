@@ -628,16 +628,93 @@ def test_interleaved_compactors_lose_no_row(
     def run_other(s: str) -> None:
         if s == step and not state["done"]:
             state["done"] = True
+            mid.append(keys(tmp_path))  # a reader inside the first compactor's window
             ui.compact(tmp_path, runner=unknown())  # a second compactor runs to completion here
+            mid.append(keys(tmp_path))  # and again, with the first one still mid-pass
         real_fault(s)
+
+    mid: list[set[tuple[str, str, str]]] = []
 
     monkeypatch.setattr(ui, "_fault", run_other)
     ui.compact(tmp_path, runner=unknown())
     assert state["done"]
+    assert mid == [before, before]
     assert keys(tmp_path) == before
     monkeypatch.undo()
     ui.compact(tmp_path, runner=unknown())  # nothing left to take: idle
     assert keys(tmp_path) == before
+
+
+def test_reader_rescans_when_a_sealed_file_appears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_segment(tmp_path, [row(1)])
+    real = ui._read_bytes
+    state = {"done": False}
+
+    def compact_during_read(path: Path) -> bytes:
+        data = real(path)
+        if not state["done"]:
+            state["done"] = True
+            write_segment(tmp_path, [row(2)], writer=WID2)
+            ui.compact(tmp_path, runner=unknown())  # real archive + new sealed mid-scan
+        return data
+
+    monkeypatch.setattr(ui, "_read_bytes", compact_during_read)
+    assert keys(tmp_path) == {row(1).read_key, row(2).read_key}
+
+
+def test_writer_id_must_be_a_plain_file_name(tmp_path: Path) -> None:
+    for bad in ("a/b-1-nojob-0-aaaaaaaa", ".hidden-1-nojob-0-aaaaaaaa"):
+        with pytest.raises(ValueError):
+            ui.SegmentWriter(tmp_path, writer_id=bad)
+
+
+def test_reused_writer_id_never_overwrites_archive(tmp_path: Path) -> None:
+    write_segment(tmp_path, [row(1)])
+    ui.compact(tmp_path, runner=unknown())
+    write_segment(tmp_path, [row(2)])  # same explicit writer id, after the first was archived
+    ui.compact(tmp_path, runner=unknown())
+    archived = sorted(p.name for p in (tmp_path / "archive").glob(f"segment-{WID}*"))
+    assert len(archived) == 2
+    assert keys(tmp_path) == {row(1).read_key, row(2).read_key}
+
+
+def test_stale_partials_swept_fresh_kept(tmp_path: Path) -> None:
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    stale, fresh = sealed / ".old.partial", sealed / ".new.partial"
+    for p in (stale, fresh):
+        p.write_text("x")
+    t = stale.stat().st_mtime - 2 * ui.PARTIAL_MAX_AGE_S
+    os.utime(stale, (t, t))
+    write_segment(tmp_path, [row(1)])
+    rep = ui.compact(tmp_path, runner=unknown())
+    assert rep.partials_removed == 1 and not stale.exists() and fresh.exists()
+
+
+def test_append_fails_then_close_puts_trailer_on_own_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = ui._write_all
+    state = {"fail": False}
+
+    def flaky(fd: int, data: bytes) -> None:
+        if state["fail"]:
+            state["fail"] = False
+            os.write(fd, data[:10])
+            raise OSError(errno.EDQUOT, "Disk quota exceeded")
+        real(fd, data)
+
+    monkeypatch.setattr(ui, "_write_all", flaky)
+    w = ui.SegmentWriter(tmp_path, writer_id=WID).open()
+    w.append(row(1))
+    state["fail"] = True
+    with pytest.raises(OSError):
+        w.append(row(2))
+    w.close()
+    assert w.path.read_bytes().endswith(b'\n{"closed": true}\n')
+    assert wl._has_trailer(w.path)
 
 
 def test_real_process_kill_after_replace(tmp_path: Path) -> None:
