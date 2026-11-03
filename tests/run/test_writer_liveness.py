@@ -231,6 +231,18 @@ def test_unknown_never_dead(tmp_path: Path) -> None:
     assert not segment_writer_dead(p, now_server=now_of(p) + 1e6, runner=UNKNOWN).dead
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [subprocess.TimeoutExpired("squeue", 20), OSError("broken scheduler config")],
+    ids=["timeout", "oserror"],
+)
+def test_raising_query_never_dead(tmp_path: Path, exc: BaseException) -> None:
+    # A10 on Engaging: with SLURM_CONF broken, squeue hung to its timeout (run 9040eb50) or
+    # raised OSError (run 306cbabb). Either must leave an old, trailerless segment alive.
+    p = seg(tmp_path, ['{"a": 1}'], age=1e6)
+    assert not segment_writer_dead(p, now_server=now_of(p) + 1e6, runner=raising(exc)).dead
+
+
 def test_torn_trailer_is_not_a_trailer(tmp_path: Path) -> None:
     p = tmp_path / (WID + ".jsonl")
     p.write_text('{"a": 1}\n{"clos')
