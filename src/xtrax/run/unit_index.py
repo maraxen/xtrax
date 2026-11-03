@@ -678,6 +678,14 @@ class ZarrCommitAdapter:
 DEFAULT_ADAPTERS: dict[str, RecordAdapter] = {ZARR_COMMIT: ZarrCommitAdapter()}
 
 
+def default_adapters() -> dict[str, RecordAdapter]:
+    """Every built-in adapter by name: ``zarr_commit`` plus the consumer adapters in
+    :mod:`xtrax.run.unit_index_adapters` (imported here, lazily, to avoid an import cycle)."""
+    from xtrax.run.unit_index_adapters import ADAPTERS
+
+    return {**DEFAULT_ADAPTERS, **ADAPTERS}
+
+
 def make_row(
     store: Path | str,
     locator: str,
@@ -741,6 +749,7 @@ def lookup(
     ``index`` is a snapshot from :func:`load_index` (use one for many lookups) or an index root
     (read once for this call). Rows only say where to look: every candidate is classified by its
     adapter from the record at its locator. Any reusable copy wins; otherwise ``Corrupt`` beats
+    :class:`SchemaMismatch` beats
     :class:`IndexStale` beats ``Missing``. No row: ``Missing``, or :class:`SchemaMismatch` when
     the unit's only rows have an unknown ``schema_version``. The result is a classification
     only; what to do with it stays with the consumer.
@@ -752,8 +761,8 @@ def lookup(
         if (s, unit_key) in snap.schema_mismatch:
             return SchemaMismatch(snap.schema_mismatch[(s, unit_key)])
         return Missing()
-    table = DEFAULT_ADAPTERS if adapters is None else adapters
-    rank = {Corrupt: 0, IndexStale: 1, Missing: 2}
+    table = default_adapters() if adapters is None else adapters
+    rank = {Corrupt: 0, SchemaMismatch: 1, IndexStale: 2, Missing: 3}
     best: Any = None
     seen: set[tuple[str, str]] = set()
     for row in sorted(rows, key=lambda r: (r.input_digest != input_digest, -r.ts)):
