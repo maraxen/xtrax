@@ -134,6 +134,12 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   `read_json(..., format='newline_delimited', ignore_errors=true)` plus a `DISTINCT ON
   (store, locator, record_digest)`. A test pins that the two readers agree, including on a torn-tail
   fixture. DuckDB is not a core dependency, and it is never a writer.
+  Torn lines are reported by `iter_rows` only. DuckDB with `ignore_errors=false` is not a torn-line
+  detector: in A3 (run `ff246f5d`), 4-thread strict reads refused a torn tail in only 7 of 10 tries,
+  and a bare `count(*)` can skip parsing altogether. The agreement test therefore compares
+  deduplicated counts and never relies on a DuckDB error. A3 timed this view at 2.1 s worst case
+  over 1e6 rows and 1e4 segments on Engaging scratch. Cost follows file count, so the view stays in
+  budget only while compaction keeps the segment count bounded.
 - **ESTALE.** Every reader of a file that a writer replaces with `os.replace` (sealed segments, index
   files, unit records) retries the **whole** open-and-read on `ESTALE`, with a short bounded backoff,
   and never reuses a file descriptor across the retry. A1 saw 77 `ESTALE` (home 74, pool 3, scratch
@@ -252,7 +258,7 @@ Each probe whose number will be cited (A2, A3, A5, A7) runs under a committed ba
 |---|---|---|---|
 | A1 | `os.replace` of a sibling temp file is atomic on Engaging scratch, pool and home (all NFSv4) | **V (2026-11-02)**: bathos run `d47a983e-19eb-4000-8ba6-330313760a70`, pass | 3-node contention probe (`a1_replace_atomicity.sh`, 1 writer, 2 readers, 3 filesystems x 4 sizes) with an in-place-rewrite negative control per cell; torn reads must be 0 where the control fired, else inconclusive. Nonzero ESTALE adds a "reader retries the whole open+read" design row. Sidecar `a1_analyze.bth.toml`. **V, run 2026-11-02**: bathos run `d47a983e-19eb-4000-8ba6-330313760a70`, `outcome=pass` (analysis of Engaging job 27708472 at c73fe55; writer node1623, readers node1624 and node3112; raw logs `outputs/probes/a1/raw_27708472/`, result `outputs/probes/a1/a1.result.json`). All 12 cells qualified (2 reader hosts each, 6,274 to 2,757,697 qualifying reads per cell); **0 torn reads** in every cell while the in-place negative control tore 70,426 to 365,133 times per cell. **ESTALE 77** (home 74, 67 of them at 16 MiB; pool 3; scratch 0), so the reader-retry row applies: a reader that gets ESTALE on open or read retries the whole open+read. Report only: new-file visibility to a reader on another node has median ~2 ms on all three, but p95/max are 14 s/30 s on home and 8 s/27 s on scratch (pool max 5 ms); cross-node clock skew enters these | **pass: `os.replace` is safe for sealed segments and index files on all three; add ESTALE retry to readers** |
 | A2 | segment file count = writers per campaign; per consumer the count is < 1% of the units | U | model from §2.1 and one real campaign |
-| A3 | DuckDB `read_json` over segments + sealed at 1e6 rows returns in < 5 s | U | spike, with sidecar |
+| A3 | DuckDB `read_json` over segments + sealed at 1e6 rows returns in < 5 s | **V (2026-11-03)**: bathos run `ff246f5d-57bd-4bad-8945-f962159b7fb8`, pass. Engaging scratch, DuckDB 2.0.0, threads 4, fixture built on node3104 (job 27790069) and read on node2511 (job 27790386). Worst query, cold first run included: 2.12 s (`busy`: 1e4 segments + 9 sealed files, 10,010 files); `steady` (100 segments): 0.29 s. Controls held: exact dedup over planted duplicates, trailers and torn tails; the stdlib reader agrees. **Scope:** verified up to 1e4 segments. The 1e5-segment `uncompacted` layout ran on local disk only (19–86 s, run `a6a42e6f`), so read cost follows file count, and compaction is what keeps the view inside budget | `a3_duckdb_read.py` + `a3_analyze.bth.toml` |
 | A4 | DuckDB 2.0 reads the same files, and wheels exist for 3.13 and 3.14 | U | throwaway venv; does not block, since DuckDB is an optional read extra |
 | A5 | zstd beats gzip on real fold unit dirs by enough to matter. **No floor change either way.** | U | measure on fold unit dirs, with sidecar |
 | A6 | aminx done marker v3 carries `input_hash`, `content_digest_sha256`, `attempt_id`, `manifest_row_hash` | **V** for field names (aminx origin/main `ef8810c2`, `campaign.py:1015-1045`; the local aminx checkout is stale at v2) | — |
