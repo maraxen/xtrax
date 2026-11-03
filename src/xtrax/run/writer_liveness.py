@@ -30,8 +30,6 @@ grace of 300 s is above the NFS attribute-cache ceiling (``acregmax`` 60 s) plus
 (120 s).
 """
 
-from __future__ import annotations
-
 import enum
 import json
 import os
