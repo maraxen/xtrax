@@ -28,6 +28,13 @@ samples; the array job was sampled; and the analyzer's own self-test (synthetic 
 answer, positive and negative) passed.
 Limits: one requeue, one array task, 4 min writers; scheduler load at the time shapes the pending phase.
 Time to dead for killed and completed segments is reported, not graded.
+
+Amendment 1 (2026-11-02, controller only; [outcomes], [result_schema] and the analyzer unchanged):
+run 9040eb50 (job 27708473) was inconclusive with 2 broken-query samples against the minimum of 3,
+because on Engaging a broken squeue hangs to its 20 s timeout and a broken sample takes ~50 s. The
+broken window is now sized by count (4 samples starting 20 s into restart 1), and W runs 6 min
+instead of 4 so restart 1 is alive throughout. The earlier run's raw logs were inspected before this
+amendment; the change touches only how many broken samples are taken.
 """
 stage_name = "validation"
 novel = true

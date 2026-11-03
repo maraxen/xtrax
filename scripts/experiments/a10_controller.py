@@ -21,9 +21,12 @@ What it does
    * NAIVE_NOGRACE: the shipping state logic with ``grace_s=0`` and the local clock.
 3. Injection: ``--requeue-after-s`` after W is first RUNNING, ``scontrol requeue W`` then
    ``scontrol hold W`` for ``--hold-s`` (a deterministic pending phase), then ``scontrol release``.
-   Once the restart-1 segment has been alive ``--broken-after-s``, for ``--broken-len-s`` every rule
-   is ALSO evaluated against a deliberately broken scheduler query (``SLURM_CONF=/nonexistent``):
-   the shipping rule must say not-dead (UNKNOWN), NAIVE_ERR says dead.
+   Once the restart-1 segment has been alive ``--broken-after-s``, for the next ``--broken-samples``
+   samples every rule is ALSO evaluated against a deliberately broken scheduler query
+   (``SLURM_CONF=/nonexistent``): the shipping rule must say not-dead (UNKNOWN), NAIVE_ERR says dead.
+   The window is sized by sample count, not seconds: on Engaging a broken ``squeue`` hangs to its
+   20 s timeout (run 2026-11-02, job 27708473), so a broken sample takes ~50 s and a 100 s window
+   held only 2. ``--w-run-s`` defaults to 360 so restart 1 stays alive through all of them.
 4. Samples until W and A are aged out of squeue (MinJobAge 120 s) plus 2 x grace, then copies the
    segments to ``--out-dir`` and logs each segment's heartbeat wall times for ground truth.
 Total time is bounded by ``--max-s`` (default 3000 s).
@@ -163,15 +166,15 @@ def main():
     ap.add_argument("--tag", default=os.environ.get("SLURM_JOB_ID", "local"))
     ap.add_argument("--partition", default="mit_normal")
     ap.add_argument("--writer-time", default="00:12:00")
-    ap.add_argument("--w-run-s", type=int, default=240)
+    ap.add_argument("--w-run-s", type=int, default=360)
     ap.add_argument("--a-run-s", type=int, default=120)
     ap.add_argument("--sample-s", type=float, default=10.0)
     ap.add_argument("--fast-sample-s", type=float, default=2.0)
     ap.add_argument("--grace-s", type=float, default=300.0)
     ap.add_argument("--requeue-after-s", type=float, default=120.0)
     ap.add_argument("--hold-s", type=float, default=30.0)
-    ap.add_argument("--broken-after-s", type=float, default=40.0)
-    ap.add_argument("--broken-len-s", type=float, default=100.0)
+    ap.add_argument("--broken-after-s", type=float, default=20.0)
+    ap.add_argument("--broken-samples", type=int, default=4)
     ap.add_argument("--start-timeout-s", type=float, default=1500.0)
     ap.add_argument("--max-s", type=float, default=3000.0)
     ap.add_argument("--w-job", default="")
@@ -218,6 +221,7 @@ def main():
     restart1_seen_at = None
     gone_at = None
     prev_gone = {}
+    n_broken = 0
     status = "completed"
     try:
         while True:
@@ -232,10 +236,10 @@ def main():
             memo = Memo()
             broken_active = (
                 restart1_seen_at is not None
-                and restart1_seen_at + args.broken_after_s
-                <= now
-                < restart1_seen_at + args.broken_after_s + args.broken_len_s
+                and restart1_seen_at + args.broken_after_s <= now
+                and n_broken < args.broken_samples
             )
+            n_broken += broken_active
             bmemo = Memo(env=dict(os.environ, SLURM_CONF="/nonexistent")) if broken_active else None
             # the two main jobs, same argv shapes the shipping code uses
             for jid in (w_job, a_job):
