@@ -70,6 +70,9 @@ eda-parquet = [ "pyarrow>=14.0",]
 eda = [ "xtrax[eda-matplotlib]", "xtrax[eda-vega]", "xtrax[eda-parquet]",]
 cli = [ "tyro>=0.9.1,<2", "flatbuffers>=2",]
 io = [ "zarr>=3.0.8",]
+# Read-only DuckDB view over the unit index (xtrax.run.unit_index.duckdb_view). Never a writer,
+# never a core dependency (spec 261030 §3.1).
+index = [ "duckdb>=1.1",]
 # grain is a data-pipeline dependency, not a core one: it was in runtime
 # `dependencies` but is imported nowhere under src/. Consumers who need it must
 # now ask for xtrax[data]. See backlog #4967.

@@ -4351,6 +4351,9 @@ export-runtime = [
     { name = "iree-base-runtime" },
     { name = "safetensors" },
 ]
+index = [
+    { name = "duckdb" },
+]
 io = [
     { name = "zarr" },
 ]
@@ -4385,6 +4388,7 @@ requires-dist = [
     { name = "chex", marker = "extra == 'dev'", specifier = ">=0.1.86" },
     { name = "cisternal", marker = "extra == 'plugin'", specifier = ">=0.1.5" },
     { name = "complexipy", marker = "extra == 'dev'", specifier = ">=5.6.1" },
+    { name = "duckdb", marker = "extra == 'index'", specifier = ">=1.1" },
     { name = "equinox", marker = "extra == 'dev'", specifier = ">=0.13.1" },
     { name = "flatbuffers", marker = "extra == 'cli'", specifier = ">=2" },
     { name = "flatbuffers", marker = "extra == 'dev'", specifier = ">=2" },
@@ -4433,7 +4437,7 @@ requires-dist = [
     { name = "vl-convert-python", marker = "extra == 'eda-vega'", specifier = ">=1.0.0" },
     { name = "zarr", marker = "extra == 'io'", specifier = ">=3.0.8" },
 ]
-provides-extras = ["authoring-smoke", "cli", "controller", "data", "dev", "eda", "eda-matplotlib", "eda-parquet", "eda-vega", "export", "export-runtime", "io", "onnx", "plugin"]
+provides-extras = ["authoring-smoke", "cli", "controller", "data", "dev", "eda", "eda-matplotlib", "eda-parquet", "eda-vega", "export", "export-runtime", "index", "io", "onnx", "plugin"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "xtrax", extras = ["dev"] }]

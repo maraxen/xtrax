@@ -38,6 +38,7 @@ duplicated, and the read side removes duplicates. A crash at any step leaves eve
 
 import dataclasses
 import errno
+import importlib
 import json
 import os
 import re
@@ -51,6 +52,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from xtrax.config import resolve_layered
 from xtrax.run import writer_liveness as _wl
+from xtrax.run import zarr_commit as _zc
 from xtrax.run.writer_liveness import (
     DEFAULT_GRACE_S,
     NOJOB,
@@ -59,7 +61,7 @@ from xtrax.run.writer_liveness import (
     segment_writer_dead,
     server_now,
 )
-from xtrax.run.zarr_commit import FAULT_ENV
+from xtrax.run.zarr_commit import FAULT_ENV, Corrupt, Missing
 
 SCHEMA_VERSION = 1
 ROOT_ENV = "XTRAX_UNIT_INDEX_ROOT"
@@ -156,7 +158,7 @@ class IndexRow:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "IndexRow":
         version = d.get("schema_version")
-        if version != SCHEMA_VERSION:
+        if isinstance(version, bool) or version != SCHEMA_VERSION:
             raise SchemaMismatchError(f"schema_version {version!r}, expected {SCHEMA_VERSION}")
         for f in _REQUIRED_STR:
             v = d.get(f)
@@ -235,6 +237,20 @@ def root_source(
 def resolve_root(root: Path | str | None = None, *, start: Path | str | None = None) -> Path | None:
     """The index root, or None when the index is off. See :func:`root_source`."""
     return root_source(root, start=start)[0]
+
+
+def canonical_store(store: Path | str) -> str:
+    """The one spelling of a store root that rows carry: ``os.path.realpath``.
+
+    Used when a row is written and when a lookup asks, so a store reached through a symlink
+    (``~/orcd/scratch`` on Engaging) finds the same rows under either spelling. ``~`` expands;
+    a relative path is refused (``ValueError``), since its meaning would depend on the cwd. Not
+    ``strict``: a lookup of a store that does not exist yet answers ``Missing``, not an error.
+    """
+    path = os.path.expanduser(os.fspath(store))
+    if not os.path.isabs(path):
+        raise ValueError(f"store {store!r} is relative; give the absolute path")
+    return os.path.realpath(path)
 
 
 # ---- low-level IO --------------------------------------------------------------------------
@@ -372,6 +388,9 @@ class SegmentWriter:
             raise RuntimeError(f"segment {self.path} is closed")
         if row.writer_id != self.writer_id:
             raise ValueError(f"row writer_id {row.writer_id!r} is not {self.writer_id!r}")
+        store = canonical_store(row.store)
+        if store != row.store:
+            row = dataclasses.replace(row, store=store)
         self._write(row.to_json_line().encode("utf-8"))
         self.rows_written += 1
 
@@ -447,6 +466,9 @@ class BadLine:
     line: int
     kind: str
     reason: str
+    # (store, unit_key) when an unreadable line still names them (a schema mismatch), so a
+    # lookup can say SchemaMismatch instead of Missing.
+    key: tuple[str, str] | None = None
 
 
 @dataclasses.dataclass(slots=True)
@@ -476,7 +498,15 @@ def _parse(path: Path, data: bytes) -> _Parsed:
         try:
             out.rows.append(IndexRow.from_dict(obj))
         except RowError as e:
-            out.unreadable.append(BadLine(str(path), i, "unreadable", str(e)))
+            key = None
+            store, unit_key = obj.get("store"), obj.get("unit_key")
+            if isinstance(e, SchemaMismatchError) and isinstance(store, str):
+                # Keyed by the spelling a lookup asks with; a relative store keeps its raw text.
+                if isinstance(unit_key, str):
+                    spelled = os.path.expanduser(store)
+                    canon = os.path.realpath(spelled) if os.path.isabs(spelled) else store
+                    key = (canon, unit_key)
+            out.unreadable.append(BadLine(str(path), i, "unreadable", str(e), key))
     return out
 
 
@@ -558,6 +588,360 @@ def iter_rows(root: Path | str, *, report: ReadReport | None = None) -> Iterator
                 continue
             seen.add(row.read_key)
             yield row
+
+
+# ---- records, lookup and rebuild -----------------------------------------------------------
+
+ZARR_COMMIT = "zarr_commit"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class CoreRecord:
+    """The immutable core of a unit's own record, as an adapter reads it (spec §3.1)."""
+
+    unit_key: str
+    input_digest: str
+    content_digest: str
+    record_digest: str
+    run_id: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class IndexReuse:
+    """Lookup: the artifact at ``store``/``locator`` holds a verifying record for the input."""
+
+    store: str
+    locator: str
+    core: CoreRecord
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class IndexStale:
+    """Lookup: the artifact's record is for another input digest."""
+
+    store: str
+    locator: str
+    core: CoreRecord
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SchemaMismatch:
+    """Lookup: the only rows for the unit have a ``schema_version`` this code does not read."""
+
+    reason: str
+
+
+Classified = IndexReuse | IndexStale | Missing | Corrupt
+LookupResult = IndexReuse | IndexStale | Missing | Corrupt | SchemaMismatch
+
+
+@runtime_checkable
+class RecordAdapter(Protocol):
+    """Reads one kind of per-unit record. The record, never the index row, is the truth."""
+
+    name: str
+
+    def find(self, store: Path) -> Iterator[tuple[str, CoreRecord]]:
+        """Every committed record in ``store``, as ``(locator, core)``."""
+        ...
+
+    def classify(self, store: Path, locator: str, input_digest: str, *, verify: bool) -> Any:
+        """Open the record at ``locator`` and classify it (a :data:`Classified` value)."""
+        ...
+
+
+def _core_from_commit(locator: str, rec: "_zc.CommitRecord") -> CoreRecord:
+    return CoreRecord(locator, rec.input_digest, rec.content_digest, rec.record_digest, rec.run_id)
+
+
+class ZarrCommitAdapter:
+    """``xtrax.commit`` records of a :mod:`xtrax.run.zarr_commit` durable store.
+
+    ``locator`` and ``unit_key`` are both the key path (``"chunks/k0"``). Classification is
+    :func:`xtrax.run.zarr_commit.lookup`, so an artifact that is not visible yet is ``Missing``.
+    """
+
+    name = ZARR_COMMIT
+
+    def find(self, store: Path) -> Iterator[tuple[str, CoreRecord]]:
+        for key in _zc.committed_keys(Path(store)):
+            locator = _zc.key_path(key)
+            rec = _zc.read_record(Path(store) / locator)
+            if rec is not None:
+                yield locator, _core_from_commit(locator, rec)
+
+    def classify(self, store: Path, locator: str, input_digest: str, *, verify: bool) -> Any:
+        try:
+            got = _zc.lookup(Path(store), tuple(locator.split("/")), input_digest, verify=verify)
+        except ValueError as e:  # an illegal key path: this copy is bad, other copies may not be
+            return Corrupt(f"illegal zarr_commit locator {locator!r}: {e}")
+        if isinstance(got, _zc.Reuse):
+            return IndexReuse(
+                canonical_store(store), locator, _core_from_commit(locator, got.record)
+            )
+        if isinstance(got, _zc.Stale):
+            return IndexStale(
+                canonical_store(store), locator, _core_from_commit(locator, got.record)
+            )
+        return got
+
+
+DEFAULT_ADAPTERS: dict[str, RecordAdapter] = {ZARR_COMMIT: ZarrCommitAdapter()}
+
+
+def default_adapters() -> dict[str, RecordAdapter]:
+    """Every built-in adapter by name: ``zarr_commit`` plus the consumer adapters in
+    :mod:`xtrax.run.unit_index_adapters` (imported here, lazily, to avoid an import cycle)."""
+    from xtrax.run.unit_index_adapters import ADAPTERS
+
+    return {**DEFAULT_ADAPTERS, **ADAPTERS}
+
+
+def make_row(
+    store: Path | str,
+    locator: str,
+    core: CoreRecord,
+    *,
+    adapter: str,
+    writer_id: str,
+    reused_from: tuple[str, str, str] | None = None,
+    ts: float | None = None,
+) -> IndexRow:
+    """The index row for one record, with the store in its canonical spelling.
+
+    Raises :class:`RowError` for a row :func:`iter_rows` would drop (an empty required field),
+    so no writer emits a row that no reader can see.
+    """
+    row = IndexRow(
+        store=canonical_store(store),
+        locator=locator,
+        unit_key=core.unit_key,
+        input_digest=core.input_digest,
+        content_digest=core.content_digest,
+        record_digest=core.record_digest,
+        adapter=adapter,
+        writer_id=writer_id,
+        run_id=core.run_id,
+        ts=time.time() if ts is None else ts,
+        reused_from=reused_from,
+    )
+    IndexRow.from_dict(row.to_dict())  # the reader's own validation
+    return row
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class IndexSnapshot:
+    """One read of the index, grouped for lookups. Build it once with :func:`load_index`."""
+
+    rows: dict[tuple[str, str], tuple[IndexRow, ...]]
+    schema_mismatch: dict[tuple[str, str], str]
+    report: ReadReport
+
+
+def load_index(root: Path | str) -> IndexSnapshot:
+    """Read the index once (:func:`iter_rows`) and group rows by ``(store, unit_key)``.
+
+    A lookup against a snapshot costs no index read, so a consumer resuming many units reads
+    the index once, not once per unit. The snapshot does not see rows appended after it.
+    """
+    report = ReadReport()
+    grouped: dict[tuple[str, str], list[IndexRow]] = {}
+    for row in iter_rows(root, report=report):
+        grouped.setdefault((row.store, row.unit_key), []).append(row)
+    mismatch = {b.key: b.reason for b in report.unreadable if b.key is not None}
+    return IndexSnapshot({k: tuple(v) for k, v in grouped.items()}, mismatch, report)
+
+
+def lookup(
+    index: "IndexSnapshot | Path | str",
+    store: Path | str,
+    unit_key: str,
+    input_digest: str,
+    *,
+    verify: bool = True,
+    adapters: dict[str, RecordAdapter] | None = None,
+) -> LookupResult:
+    """Classify a unit through its index rows, by opening the artifact's own record.
+
+    ``index`` is a snapshot from :func:`load_index` (use one for many lookups) or an index root
+    (read once for this call). Rows only say where to look: every candidate is classified by its
+    adapter from the record at its locator. Any reusable copy wins; otherwise ``Corrupt`` beats
+    :class:`SchemaMismatch` beats
+    :class:`IndexStale` beats ``Missing``. No row: ``Missing``, or :class:`SchemaMismatch` when
+    the unit's only rows have an unknown ``schema_version``. The result is a classification
+    only; what to do with it stays with the consumer.
+    """
+    snap = index if isinstance(index, IndexSnapshot) else load_index(index)
+    s = canonical_store(store)
+    rows = snap.rows.get((s, unit_key), ())
+    if not rows:
+        if (s, unit_key) in snap.schema_mismatch:
+            return SchemaMismatch(snap.schema_mismatch[(s, unit_key)])
+        return Missing()
+    table = default_adapters() if adapters is None else adapters
+    rank: dict[type, int] = {Corrupt: 0, SchemaMismatch: 1, IndexStale: 2, Missing: 3}
+    best: Any = None
+    seen: set[tuple[str, str]] = set()
+    for row in sorted(rows, key=lambda r: (r.input_digest != input_digest, -r.ts)):
+        if (row.adapter, row.locator) in seen:
+            continue
+        seen.add((row.adapter, row.locator))
+        adapter = table.get(row.adapter)
+        if adapter is None:
+            raise UnitIndexError(f"no record adapter named {row.adapter!r} for {s}:{row.locator}")
+        got: Any = adapter.classify(Path(row.store), row.locator, input_digest, verify=verify)
+        # The row only pointed here: the record must be this unit's (and, to reuse, this input's).
+        if isinstance(got, IndexReuse | IndexStale) and got.core.unit_key != unit_key:
+            got = Corrupt(
+                f"{row.locator} holds the record of unit {got.core.unit_key!r}, not {unit_key!r}"
+            )
+        elif isinstance(got, IndexReuse) and got.core.input_digest != input_digest:
+            got = Corrupt(f"{row.locator} reported reuse for input {got.core.input_digest!r}")
+        if isinstance(got, IndexReuse):
+            return got
+        if best is None or rank[type(got)] < rank[type(best)]:
+            best = got
+    return best
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class RebuildReport:
+    path: str | None
+    rows: int
+    stores: tuple[str, ...]
+    skipped: tuple[str, ...] = ()
+
+
+def rebuild(root: Path | str, stores: "list[tuple[Path | str, RecordAdapter]]") -> RebuildReport:
+    """Write one derived ``rebuilt/index-<ns>-<uuid8>.jsonl`` from the records themselves.
+
+    Idempotent: a record gives the same read key every time, so repeated rebuilds add one file
+    each and no rows. Nothing is moved or deleted (that would reopen the stale-listing window
+    D6 closes). Writes nothing when no store holds a record. A record whose row no reader would
+    accept (an empty required field) is not written; its ``store:locator`` is in ``skipped``.
+    """
+    root = Path(root)
+    writer_id = new_writer_id()
+    rows: list[IndexRow] = []
+    skipped: list[str] = []
+    for store, adapter in stores:
+        for locator, core in adapter.find(Path(store)):
+            try:
+                rows.append(
+                    make_row(store, locator, core, adapter=adapter.name, writer_id=writer_id)
+                )
+            except RowError:
+                skipped.append(f"{canonical_store(store)}:{locator}")
+    names = tuple(canonical_store(s) for s, _ in stores)
+    if not rows:
+        return RebuildReport(None, 0, names, tuple(skipped))
+    rebuilt = root / REBUILT_DIRNAME
+    _ensure_dir(rebuilt)
+    target = rebuilt / f"index-{time.time_ns():020d}-{uuid.uuid4().hex[:8]}.jsonl"
+    _write_atomic(target, "".join(r.to_json_line() for r in rows).encode("utf-8"), fault=None)
+    return RebuildReport(str(target), len(rows), names, tuple(skipped))
+
+
+# ---- DuckDB view (optional: xtrax[index]) -----------------------------------------------------
+
+_VIEW_COLUMNS = {
+    "schema_version": "BIGINT",
+    "store": "VARCHAR",
+    "locator": "VARCHAR",
+    "unit_key": "VARCHAR",
+    "input_digest": "VARCHAR",
+    "content_digest": "VARCHAR",
+    "record_digest": "VARCHAR",
+    "adapter": "VARCHAR",
+    "writer_id": "VARCHAR",
+    "run_id": "VARCHAR",
+    "ts": "DOUBLE",
+    "reused_from": "VARCHAR[]",
+}
+
+
+def _sql_str(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
+def duckdb_view(root: Path | str, con: Any = None, *, name: str = "unit_index") -> Any:
+    """A read-only DuckDB view ``name`` over the index, by :func:`iter_rows`'s rule.
+
+    ``read_json(..., ignore_errors=true)`` plus ``DISTINCT ON (store, locator, record_digest)``,
+    keeping only rows of this ``schema_version`` with every required field set. The view lists
+    the index files present now (a snapshot): create it again to see later files. Torn lines
+    are reported by :func:`iter_rows` only; DuckDB is not a torn-line detector (A3). The view
+    holds :func:`iter_rows`'s read keys; for a duplicate copy within one file whose ``ts`` went
+    backwards it may show another copy's non-key fields (no line number in DuckDB). Returns the
+    connection (a new in-memory one when ``con`` is None).
+    """
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(f"view name {name!r} is not a plain SQL identifier")
+    try:
+        # Optional extra: imported by name so type checks pass in environments without it.
+        duckdb = importlib.import_module("duckdb")
+    except ImportError as e:
+        raise ImportError("duckdb_view needs the optional extra: pip install 'xtrax[index]'") from e
+    root = Path(root)
+    files = [str(p) for d in READ_DIRS for p in _listing(root, d)]
+    if con is None:
+        con = duckdb.connect()
+    if not files:
+        con.execute(
+            f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM "
+            f"(SELECT {', '.join(f'NULL::{t} AS {c}' for c, t in _VIEW_COLUMNS.items())}) "
+            "WHERE false"
+        )
+        return con
+    # Every field is read as raw JSON and checked with IndexRow.from_dict's rules, so DuckDB's
+    # casts (true -> 1.0, "1.5" -> 1.5, 5 -> '5') cannot admit a row iter_rows drops.
+    columns = "{" + ", ".join(f"{_sql_str(c)}: 'JSON'" for c in _VIEW_COLUMNS) + "}"
+    file_list = "[" + ", ".join(_sql_str(f) for f in files) + "]"
+    source = (
+        f"read_json({file_list}, format='newline_delimited', ignore_errors=true, "
+        f"filename=true, columns={columns})"
+    )
+    num = "('BIGINT', 'UBIGINT', 'DOUBLE')"
+    where = " AND ".join(
+        [
+            f"json_type(schema_version) IN {num}",
+            f"CAST(schema_version AS DOUBLE) = {SCHEMA_VERSION}",
+            f"json_type(ts) IN {num}",
+            "(json_type(reused_from) IS NULL OR json_type(reused_from) = 'NULL' OR ("
+            "json_type(reused_from) = 'ARRAY' AND json_array_length(reused_from) = 3 AND "
+            + " AND ".join(
+                f"json_type(reused_from, '$[{i}]') = 'VARCHAR' AND reused_from->>'$[{i}]' <> ''"
+                for i in range(3)
+            )
+            + "))",
+        ]
+        + [f"json_type({c}) = 'VARCHAR' AND {c}->>'$' <> ''" for c in _REQUIRED_STR]
+        + [f"json_type({c}) = 'VARCHAR'" for c in _STR]
+    )
+    project = ", ".join(
+        "CAST(schema_version AS BIGINT) AS schema_version"
+        if c == "schema_version"
+        else "CAST(ts AS DOUBLE) AS ts"
+        if c == "ts"
+        else "CASE WHEN json_type(reused_from) = 'ARRAY' "
+        "THEN CAST(reused_from AS VARCHAR[]) END AS reused_from"
+        if c == "reused_from"
+        else f"{c}->>'$' AS {c}"
+        for c in _VIEW_COLUMNS
+    )
+    # iter_rows keeps the first copy of a read key in scan order (file order, then line order).
+    # DuckDB 2.0 exposes no line number (read_json/read_csv refuse file_row_number; read_text
+    # refuses a torn UTF-8 tail), so within one file the order is (ts, writer_id). That matches
+    # iter_rows while a file's ts never decreases; otherwise the read-key set still agrees, and
+    # only the non-key fields of a duplicate copy may differ (lookup never trusts those).
+    con.execute(
+        f"CREATE OR REPLACE VIEW {name} AS SELECT {', '.join(_VIEW_COLUMNS)} FROM ("
+        f"SELECT DISTINCT ON (store, locator, record_digest) *, "
+        f"list_position({file_list}, filename) AS _file_rank FROM ("
+        f"SELECT {project}, filename FROM {source} WHERE {where}) "
+        "ORDER BY store, locator, record_digest, _file_rank, ts, writer_id)"
+    )
+    return con
 
 
 # ---- compaction ----------------------------------------------------------------------------
@@ -746,8 +1130,11 @@ def _manifests(root: Path, *, remove_orphans: bool = False) -> dict[Path, _Manif
     return out
 
 
-def _write_atomic(path: Path, data: bytes) -> None:
-    """temp (``O_EXCL``) + fsync + ``os.replace`` + fsync of the directory."""
+def _write_atomic(path: Path, data: bytes, *, fault: str | None = None) -> None:
+    """temp (``O_EXCL``) + fsync + ``os.replace`` + fsync of the directory.
+
+    ``fault`` names the crash-injection step between the temp write and the replace.
+    """
     tmp = path.with_name(f".{path.name}.partial")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o644)
     try:
@@ -755,8 +1142,8 @@ def _write_atomic(path: Path, data: bytes) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
-    if path.suffix == ".jsonl":
-        _fault("sealed_tmp_written")
+    if fault is not None:
+        _fault(fault)
     os.replace(tmp, path)
     _fsync_dir(path.parent)
 
@@ -991,7 +1378,11 @@ def compact(
     _ensure_dir(sealed_dir)
     partials_removed = _sweep_partials(sealed_dir)
     target = sealed_dir / f"{time.time_ns():020d}-{uuid.uuid4().hex[:8]}.jsonl"
-    _write_atomic(target, "".join(r.to_json_line() for r in kept).encode("utf-8"))
+    _write_atomic(
+        target,
+        "".join(r.to_json_line() for r in kept).encode("utf-8"),
+        fault="sealed_tmp_written",
+    )
     _fault("sealed_replaced")
     manifest = {
         "sealed": target.name,
