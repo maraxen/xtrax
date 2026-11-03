@@ -38,6 +38,7 @@ duplicated, and the read side removes duplicates. A crash at any step leaves eve
 
 import dataclasses
 import errno
+import importlib
 import json
 import os
 import re
@@ -835,7 +836,8 @@ def duckdb_view(root: Path | str, con: Any = None, *, name: str = "unit_index") 
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         raise ValueError(f"view name {name!r} is not a plain SQL identifier")
     try:
-        import duckdb
+        # Optional extra: imported by name so type checks pass in environments without it.
+        duckdb = importlib.import_module("duckdb")
     except ImportError as e:
         raise ImportError("duckdb_view needs the optional extra: pip install 'xtrax[index]'") from e
     root = Path(root)
