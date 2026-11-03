@@ -55,6 +55,7 @@ DUP_REBUILT = 1000  # exact copies of sealed/segment rows written to rebuilt/
 DUP_OVERLAP = 1000  # rows present in both a sealed file and a segment (crash between seal and move)
 TORN_EVERY = 10  # every 10th segment ends with a torn last line
 STRICT_MULTI_TRIES = 5
+VISIBILITY_WAIT_S = 120.0
 OPEN_EVERY = 10  # every 10th segment (offset 5) has no trailer (live writer)
 
 # name -> (n_segments, rows held in segments); the rest of --rows is sealed
@@ -283,6 +284,22 @@ def read_phase(a: argparse.Namespace) -> None:
         fx = json.loads((root / "fixture.json").read_text())
         result["rows"] = fx["rows"]
         fx["cross_node"] = fx["build_host"] != host
+        # NFS: a file made on another node can take up to ~30 s to appear (spec §3.1 ESTALE note).
+        # Wait (bounded) until every built file is listed, so timing never runs on a partial set.
+        t0 = time.perf_counter()
+        seen = sum(1 for _ in root.rglob("*.jsonl"))
+        while seen < fx["n_files"] and time.perf_counter() - t0 < VISIBILITY_WAIT_S:
+            time.sleep(2.0)
+            seen = sum(1 for _ in root.rglob("*.jsonl"))
+        fx["visibility_wait_s"] = time.perf_counter() - t0
+        fx["files_visible"] = seen
+        log.info(
+            "%s: %d/%d files visible after %.1fs",
+            name,
+            seen,
+            fx["n_files"],
+            fx["visibility_wait_s"],
+        )
         q = time_queries(root, a.threads, a.repeats, probe_i=fx["rows"] - 7)
         log.info("timed %s: %s", name, q)
         c = controls(root, a.threads)
