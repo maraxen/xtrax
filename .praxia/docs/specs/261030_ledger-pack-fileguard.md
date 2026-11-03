@@ -1,7 +1,7 @@
 # Spec: unit index, output packing and file-count guard (DRAFT v3)
 
 - **task_id**: `261030_xtrax-ledger-pack`
-- **status**: DRAFT v3. Two adversarial passes on 2026-10-30: v1 against the code (§8), and v2 by an independent challenger (§9). Owner decisions D1 to D6 are taken (§7). Built so far: `xtrax.fileguard`, `xtrax.run.writer_liveness`, and the unit-index segment writer, read side and compaction (`xtrax.run.unit_index`, 2026-11-03); lookup, adapters, rebuild and the DuckDB view are not built yet.
+- **status**: DRAFT v3. Two adversarial passes on 2026-10-30: v1 against the code (§8), and v2 by an independent challenger (§9). Owner decisions D1 to D6 are taken (§7). Built so far: `xtrax.fileguard`, `xtrax.run.writer_liveness`, the `zarr_commit` duplicate check and quarantine (§3.5), and in `xtrax.run.unit_index` (2026-11-03) the segment writer, read side, compaction, lookup, the `zarr_commit` record adapter, rebuild and the DuckDB view. **Not built:** `xtrax.pack` and the `unit.json` record (§3.2, §3.3). Owner decision 2026-11-03: lift alynxr's fold-unit packer (`alynxr/unit_pack.py`, uncommitted on an alynxr branch as of 2026-11-03) once it lands, rather than build a second format. So this item is **blocked on that alynxr PR merging**. Also not built: the aminx done-marker and alynxr fragment adapters. Consumer adoption happens in the consumer repos (§5).
 - **consumers**: alynxr, aminx, aminx-ensemble, demistify, prolix
 - **origin**: owner request 2026-10-30 (upstream the alynxr provenance/consolidation design into xtrax).
   Owner decisions already taken: (1) recon the five consumers first; (2) the index is **lock-free
@@ -103,15 +103,41 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   The segment file count is bounded by **writers, not units, and not batches**. That is A2, now a
   design property, but still probed: a 1e5-task array job is 1e5 segments until compaction, so
   `unit_index` checks its own segment count against the file guard (3.4) before opening a new segment.
+  **Implemented as** the guard's `check(1)` in `SegmentWriter.open()`, before the segment exists: a
+  new segment is one new file against the user's file budget. No separate segment-count cap: it
+  would cost a full `readdir` of `segments/` on every writer open, which across a 1e5-task array is
+  the metadata load this spec exists to remove (2026-11-03).
 - **Lookup.** `lookup(store, unit_key, input_digest)` returns `Reuse | Missing | Stale | Corrupt`
   (imported from `zarr_commit`, not redefined), plus `SchemaMismatch` for a record or row whose
   `schema_version` is not current. Lookup always goes to the artifact's record through the row's
   `locator`. The index only narrows which artifacts to open. The return value is a **classification
   only**. What to do with it (aminx quarantines and recomputes; aminx-ensemble raises) stays with the
   consumer.
+  **Implemented (2026-11-03)** as `lookup(index, store, unit_key, input_digest, verify=True,
+  adapters=None)`. `index` is a snapshot from `load_index(root)`, which reads the index once and
+  groups rows by `(store, unit_key)`, or a root that is read once for the call. A consumer resuming
+  N units reads the index once, not N times (A3 timed one stdlib read at up to 4.4 s). `Missing` and
+  `Corrupt` are `zarr_commit`'s. `Reuse` and `Stale` are not reused, because both carry a
+  `CommitRecord`, which a non-zarr record does not have. The index-level results are
+  `IndexReuse(store, locator, core)` and `IndexStale(store, locator, core)`, with `core` a
+  `CoreRecord(unit_key, input_digest, content_digest, record_digest, run_id)`. When a unit has
+  several rows (copies), any reusable copy wins; otherwise `Corrupt` beats `IndexStale`, which beats
+  `Missing`. A row whose `record_digest` no longer matches the artifact is classified from the
+  artifact. A row naming an adapter that is not registered raises `UnitIndexError`. Stores are
+  canonicalized with `os.path.realpath` both in `make_row` and `SegmentWriter.append` and in
+  `lookup`, so a store reached through a symlink finds the same rows. Adapters built so far:
+  `ZarrCommitAdapter` (`xtrax.commit`; `unit_key` = `locator` = the key path). The `unit.json`
+  adapter waits on the record format the lifted packer brings (§3.3). The aminx done-marker and
+  alynxr fragment adapters are not built.
 - **Rebuild.** `rebuild(root, stores)` walks the records through the adapters and writes a derived
   `rebuilt/index-<ts>.jsonl`. That is its own directory, never `sealed/` and never `segments/`. Anyone
   can run it, and it is idempotent, following alynxr's derived-`MANIFEST.json` rule.
+  **Implemented (2026-11-03)** as `rebuild(root, [(store, adapter), ...])`, which writes
+  `rebuilt/index-<ns>-<uuid8>.jsonl` by temp + `os.replace`, and nothing when no store holds a
+  record. Repeated rebuilds add one file each and no rows, since reads deduplicate. Nothing prunes
+  older rebuilt files: moving or deleting index files outside the D6 archive path would reopen the
+  cross-host stale-listing window. Rebuilds are manual and rare, so the extra files are accepted;
+  pruning them is future work, gated on the same visibility rule.
 - **Compact.** Compaction takes only **closed** segments (trailer present), plus segments with no
   trailer whose `writer_id` job is no longer in the scheduler and whose mtime is older than a stated
   grace period. A segment with a live writer is never moved. The test is `xtrax.run.writer_liveness.segment_writer_dead` (stdlib only): a scheduler lookup that cannot be answered (UNKNOWN) never counts as "gone", and the mtime age uses NFS server time, default grace 300 s. A squeue that hangs to its timeout or raises `OSError` is UNKNOWN; A10 saw both on Engaging with a broken `SLURM_CONF`, and `test_raising_query_never_dead` pins them. Taken segments fold into `sealed/` and
@@ -169,6 +195,14 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   deduplicated counts and never relies on a DuckDB error. A3 timed this view at 2.1 s worst case
   over 1e6 rows and 1e4 segments on Engaging scratch. Cost follows file count, so the view stays in
   budget only while compaction keeps the segment count bounded.
+  **Implemented (2026-11-03)** as `duckdb_view(root, con=None, name="unit_index")`, with `duckdb`
+  imported inside the function and `xtrax[index] = duckdb>=1.1`. The view keeps rows of the
+  current `schema_version` that have every required field set. It reads an explicit list of the
+  index files present when it is created, because a per-directory glob (as in A3) errors once
+  compaction empties a directory. So the view is a snapshot: create it again to see later files.
+  The agreement test fixture has torn lines, a schema-2 row, a trailer-only segment, a segment
+  and a sealed file holding the same rows (the deferred-archive state), an `.inputs.json`
+  manifest, and a rebuilt copy. Removing `DISTINCT ON` makes the test fail.
 - **ESTALE.** Every reader of a file that a writer replaces with `os.replace` (sealed segments, index
   files, unit records) retries the **whole** open-and-read on `ESTALE`, with a short bounded backoff,
   and never reuses a file descriptor across the retry. A1 saw 77 `ESTALE` (home 74, pool 3, scratch
@@ -288,7 +322,7 @@ Each probe whose number will be cited (A2, A3, A5, A7) runs under a committed ba
 | A1 | `os.replace` of a sibling temp file is atomic on Engaging scratch, pool and home (all NFSv4) | **V (2026-11-02)**: bathos run `d47a983e-19eb-4000-8ba6-330313760a70`, pass | 3-node contention probe (`a1_replace_atomicity.sh`, 1 writer, 2 readers, 3 filesystems x 4 sizes) with an in-place-rewrite negative control per cell; torn reads must be 0 where the control fired, else inconclusive. Nonzero ESTALE adds a "reader retries the whole open+read" design row. Sidecar `a1_analyze.bth.toml`. **V, run 2026-11-02**: bathos run `d47a983e-19eb-4000-8ba6-330313760a70`, `outcome=pass` (analysis of Engaging job 27708472 at c73fe55; writer node1623, readers node1624 and node3112; raw logs `outputs/probes/a1/raw_27708472/`, result `outputs/probes/a1/a1.result.json`). All 12 cells qualified (2 reader hosts each, 6,274 to 2,757,697 qualifying reads per cell); **0 torn reads** in every cell while the in-place negative control tore 70,426 to 365,133 times per cell. **ESTALE 77** (home 74, 67 of them at 16 MiB; pool 3; scratch 0), so the reader-retry row applies: a reader that gets ESTALE on open or read retries the whole open+read. Report only: new-file visibility to a reader on another node has median ~2 ms on all three, but p95/max are 14 s/30 s on home and 8 s/27 s on scratch (pool max 5 ms); cross-node clock skew enters these | **pass: `os.replace` is safe for sealed segments and index files on all three; add ESTALE retry to readers** |
 | A2 | segment file count = writers per campaign; per consumer the count is < 1% of the units | U | model from §2.1 and one real campaign |
 | A3 | DuckDB `read_json` over segments + sealed at 1e6 rows returns in < 5 s | **V (2026-11-03)**: bathos run `ff246f5d-57bd-4bad-8945-f962159b7fb8`, pass. Engaging scratch, DuckDB 2.0.0, threads 4, fixture built on node3104 (job 27790069) and read on node2511 (job 27790386). Worst query, cold first run included: 2.12 s (`busy`: 1e4 segments + 9 sealed files, 10,010 files); `steady` (100 segments): 0.29 s. Controls held: exact dedup over planted duplicates, trailers and torn tails; the stdlib reader agrees. **Scope:** verified up to 1e4 segments. The 1e5-segment `uncompacted` layout ran on local disk only (19–86 s, run `a6a42e6f`), so read cost follows file count, and compaction is what keeps the view inside budget | `a3_duckdb_read.py` + `a3_analyze.bth.toml` |
-| A4 | DuckDB 2.0 reads the same files, and wheels exist for 3.13 and 3.14 | U | throwaway venv; does not block, since DuckDB is an optional read extra |
+| A4 | DuckDB 2.0 reads the same files, and wheels exist for 3.13 and 3.14 | **V for 3.13** (2026-11-03): `duckdb` 2.0.0 installs from a wheel into the project's 3.13.12 venv, and the view's agreement test passes on it; A3 ran 2.0.0 on Engaging under 3.12. **3.14: U** | throwaway venv; does not block, since DuckDB is an optional read extra |
 | A5 | zstd beats gzip on real fold unit dirs by enough to matter. **No floor change either way.** | U | measure on fold unit dirs, with sidecar |
 | A6 | aminx done marker v3 carries `input_hash`, `content_digest_sha256`, `attempt_id`, `manifest_row_hash` | **V** for field names (aminx origin/main `ef8810c2`, `campaign.py:1015-1045`; the local aminx checkout is stale at v2) | — |
 | A6c | the aminx adapter (3.1) can rebuild index rows from a finished aminx campaign without a `CommitRecord` | U | run `rebuild` over one finished campaign; every marker yields a row |
