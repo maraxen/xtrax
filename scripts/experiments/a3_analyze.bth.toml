@@ -1,0 +1,132 @@
+[experiment]
+hypothesis = """
+A3 (task 261030_xtrax-ledger-pack; spec .praxia/docs/specs/261030_ledger-pack-fileguard.md §3.1
+Read side, §4 row A3): the spec's DuckDB view over a unit index at 1e6 rows answers in under 5 s
+on Engaging, so the read side needs no index or columnar sidecar.
+
+View under test (spec §3.1): read_json([segments/*.jsonl, sealed/*.jsonl, rebuilt/*.jsonl],
+format='newline_delimited', ignore_errors=true, columns=<the 12 index-row fields>) filtered to rows
+with a store, then DISTINCT ON (store, locator, record_digest). Two queries are timed, each in a
+fresh connection (threads=4, memory_limit 4GB), repeats=3: a count of the whole deduplicated view,
+and a point lookup on (unit_key, input_digest).
+
+Instrument: scripts/experiments/a3_duckdb_read.py (stdlib + duckdb==2.0.0). Deterministic fixture
+of 1e6 unique rows (about 0.5 GB of JSON) plus planted exact duplicates (1000 in rebuilt/, 1000
+sealed/segment overlap), {"closed": true} trailers on 9 of 10 segments and a torn last line on 1 of
+10. Layouts at 1e6 rows:
+  steady       100 segments holding 1e4 rows, the rest in 10 sealed files of 1e5 rows
+  busy         1e4 segments holding 1e5 rows, the rest sealed
+  uncompacted  1e5 segments holding all rows (worst case before compaction; spec §3.1 A2 note)
+Gating layouts: steady and busy. uncompacted is reported, not gated: compaction exists to bound
+it, and 1e5 transient files would spend 10% of the Engaging scratch per-user file cap. It is run
+locally only.
+
+On Engaging the fixture is built by one job and read by a second job (--phase build / --phase
+read), so the reader does not see the builder's page cache; cross_node records whether the two ran
+on different nodes. A run on env 'local' validates the instrument only and cannot pass A3.
+
+Gate: gate_max_s = the largest single query time (either query, any repeat, first run included)
+over the gating layouts. Correctness controls, all required (controls_ok), per layout: dedup count
+== unique rows; the lookup returns exactly 1 row; without DISTINCT ON the count exceeds unique by
+exactly the planted duplicates; a strict read (ignore_errors=false, threads=1) refuses the torn
+tails; a stdlib reader applying the same rule agrees with DuckDB and skips exactly the torn lines.
+self_test_ok checks the judge on a synthetic raw result (positive and negative).
+
+Disclosure: before this sidecar was written, the instrument was smoke-run untracked at 2e4 rows
+(local, 2026-11-03) to debug it. Two instrument facts came from that: a bare count(*) under strict
+mode can skip parsing (the control uses count(store)), and DuckDB 2.0.0 with threads > 1 sometimes
+drops a torn line silently instead of raising (about half of strict reads at 4 threads), so the
+strict control runs single-threaded and the multi-thread rate is recorded, not gated. Smoke timings
+at 2e4 rows (about 0.1 s) were seen; the 5 s threshold is the spec's, set on 2026-10-30.
+"""
+stage_name = "exploration"
+
+[observe]
+outputs = [
+  "gate_max_s, gate_median_s, gate_first_run_max_s: query times over steady + busy",
+  "steady_max_s, busy_max_s, uncompacted_max_s (-1 when not run)",
+  "stdlib_reader_max_s: the canonical-reader stand-in, informational",
+  "strict_multi_refusals / strict_multi_tries: strict reads at threads=4 that raised",
+  "cross_node: the read job ran on a different node from the build job",
+]
+looking_for = """
+Whether the read side as specified is fast enough at 1e6 rows on Engaging NFS, including the
+cold first query on a node that did not write the files, or whether it needs an index or a
+columnar sidecar before it is built.
+"""
+sanity = [
+  "gate_max_s IS NOT NULL",
+  "rows >= 0",
+]
+
+[breakdown]
+waive = "gate_max_s is already the worst unit (max over every query, repeat and gating layout); per-layout maxima steady_max_s and busy_max_s and gate_median_s are reported beside it"
+
+[outcomes.local_instrument_ok]
+condition = "env <> 'engaging_scratch' AND controls_ok AND self_test_ok AND rows = 1000000"
+decision = "instrument validated at full scale off-cluster; run the Engaging build and read jobs"
+reasoning = "local disk is not the target filesystem, so a local run can only validate the instrument"
+source = "provisional:routing branch, no threshold; A3 is defined on Engaging"
+is_residual = false
+
+[outcomes.pass]
+condition = "env = 'engaging_scratch' AND controls_ok AND self_test_ok AND rows = 1000000 AND gating_layouts_present AND cross_node AND gate_max_s < 5"
+decision = "A3 verified: build the read side as specified (DuckDB view, no index or columnar sidecar)"
+reasoning = "every query on the gating layouts, cold first run included, is under the spec's budget"
+source = "sesoi:5:spec 261030 §4 row A3 budget, set 2026-10-30"
+is_residual = false
+
+[outcomes.marginal]
+condition = "env = 'engaging_scratch' AND controls_ok AND self_test_ok AND rows = 1000000 AND gating_layouts_present AND cross_node AND gate_max_s >= 5 AND gate_max_s < 15"
+decision = "owner decision: accept, or add a narrower lookup path (per-store files or a sealed-side digest index)"
+reasoning = "over the budget by less than 3x; a targeted fix may be enough"
+source = "sesoi:15:three times the spec budget, beyond which the view is the wrong read path"
+is_residual = false
+
+[outcomes.fail_slow]
+condition = "env = 'engaging_scratch' AND controls_ok AND self_test_ok AND rows = 1000000 AND gating_layouts_present AND cross_node AND gate_max_s >= 15"
+decision = "redesign the read side before building it (columnar sealed files or an index); amend spec §3.1"
+reasoning = "the view is more than 3x over budget at the target scale"
+source = "sesoi:15:three times the spec budget"
+is_residual = false
+
+[outcomes.inconclusive_same_node]
+condition = "env = 'engaging_scratch' AND controls_ok AND self_test_ok AND rows = 1000000 AND gating_layouts_present AND NOT cross_node"
+decision = "re-run with the read job on a different node from the build job"
+reasoning = "the reader may have hit the builder's page cache, which flatters the cold first query"
+source = "provisional:routing branch, no threshold; cold-reader realism"
+is_residual = false
+
+[outcomes.instrument_invalid]
+condition = "true"
+decision = "fix the instrument before reading any time"
+reasoning = "a correctness control or the judge self-test failed, a gating layout is missing, or the run was not at 1e6 rows"
+is_residual = true
+
+[result_schema]
+env = "str"
+host = "str"
+duckdb = "str"
+threads = "int"
+rows = "int"
+slurm_job_id = "str"
+controls_ok = "bool"
+self_test_ok = "bool"
+gating_layouts_present = "bool"
+cross_node = "bool"
+gate_max_s = "float"
+gate_median_s = "float"
+gate_first_run_max_s = "float"
+steady_max_s = "float"
+busy_max_s = "float"
+uncompacted_max_s = "float"
+stdlib_reader_max_s = "float"
+busy_n_files = "int"
+strict_multi_refusals = "int"
+strict_multi_tries = "int"
+failed_controls = "str"
+raw_path = "str"
+raw_sha256 = "str"
+
+[outputs]
+roots = ["outputs/probes/a3"]
