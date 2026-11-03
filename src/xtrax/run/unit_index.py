@@ -503,8 +503,9 @@ def _parse(path: Path, data: bytes) -> _Parsed:
             if isinstance(e, SchemaMismatchError) and isinstance(store, str):
                 # Keyed by the spelling a lookup asks with; a relative store keeps its raw text.
                 if isinstance(unit_key, str):
-                    path = os.path.expanduser(store)
-                    key = (os.path.realpath(path) if os.path.isabs(path) else store, unit_key)
+                    spelled = os.path.expanduser(store)
+                    canon = os.path.realpath(spelled) if os.path.isabs(spelled) else store
+                    key = (canon, unit_key)
             out.unreadable.append(BadLine(str(path), i, "unreadable", str(e), key))
     return out
 
@@ -869,7 +870,9 @@ def duckdb_view(root: Path | str, con: Any = None, *, name: str = "unit_index") 
     ``read_json(..., ignore_errors=true)`` plus ``DISTINCT ON (store, locator, record_digest)``,
     keeping only rows of this ``schema_version`` with every required field set. The view lists
     the index files present now (a snapshot): create it again to see later files. Torn lines
-    are reported by :func:`iter_rows` only; DuckDB is not a torn-line detector (A3). Returns the
+    are reported by :func:`iter_rows` only; DuckDB is not a torn-line detector (A3). The view
+    holds :func:`iter_rows`'s read keys; for a duplicate copy within one file whose ``ts`` went
+    backwards it may show another copy's non-key fields (no line number in DuckDB). Returns the
     connection (a new in-memory one when ``con`` is None).
     """
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
@@ -927,7 +930,10 @@ def duckdb_view(root: Path | str, con: Any = None, *, name: str = "unit_index") 
         for c in _VIEW_COLUMNS
     )
     # iter_rows keeps the first copy of a read key in scan order (file order, then line order).
-    # DuckDB has no line number; within one file a writer's later line has a later ts.
+    # DuckDB 2.0 exposes no line number (read_json/read_csv refuse file_row_number; read_text
+    # refuses a torn UTF-8 tail), so within one file the order is (ts, writer_id). That matches
+    # iter_rows while a file's ts never decreases; otherwise the read-key set still agrees, and
+    # only the non-key fields of a duplicate copy may differ (lookup never trusts those).
     con.execute(
         f"CREATE OR REPLACE VIEW {name} AS SELECT {', '.join(_VIEW_COLUMNS)} FROM ("
         f"SELECT DISTINCT ON (store, locator, record_digest) *, "

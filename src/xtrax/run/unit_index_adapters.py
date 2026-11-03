@@ -56,6 +56,22 @@ def _read_json(path: Path) -> Any:
     return json.loads(_read_bytes(path))
 
 
+def _inside(store: Path, locator: str) -> bool:
+    """``locator`` is a plain relative path whose target resolves strictly inside ``store``.
+
+    Rows are not trusted: ``../x``, an absolute path, ``.``/empty parts, or a symlink that leads
+    out of the store would make an adapter read (and reuse) an artifact the store does not hold.
+    """
+    parts = locator.split("/")
+    if not locator or "\0" in locator or locator.startswith("/"):
+        return False
+    if any(p in ("", ".", "..") for p in parts):
+        return False
+    root = os.path.realpath(store)
+    target = os.path.realpath(os.path.join(root, locator))
+    return target.startswith(root + os.sep)
+
+
 # ---- aminx ---------------------------------------------------------------------------------------
 
 
@@ -103,6 +119,8 @@ class AminxDoneMarkerAdapter:
 
     def classify(self, store: Path, locator: str, input_digest: str, *, verify: bool) -> Any:
         store = Path(store)
+        if not _inside(store, locator):
+            return Corrupt(f"locator {locator!r} is not a path inside the store")
         output = store / locator
         try:
             marker = _read_json(output.with_name(output.name + _DONE))
@@ -222,19 +240,23 @@ class AlynxrFragmentAdapter:
             return Corrupt(f"unreadable fragment: {type(e).__name__}: {e}")
         if not isinstance(frag, dict) or frag.get("part") != locator:
             return Corrupt(f"fragment does not name part {locator!r}")
-        core = _alynxr_core(frag)
-        if core is None:
+        if frag.get("schema") != ALYNXR_FRAGMENT:
             return SchemaMismatch(
                 f"fragment schema {frag.get('schema')!r}, expected {ALYNXR_FRAGMENT!r}"
             )
+        core = _alynxr_core(frag)
+        if core is None:
+            return Corrupt("fragment lacks part, inputs_sha256 or logical_sha256")
         if core.input_digest != input_digest:
             return IndexStale(canonical_store(store), locator, core)
+        part = store / locator
+        if not _inside(store, locator):
+            return Corrupt(f"part {locator!r} resolves outside the store")
+        try:
+            size = part.stat().st_size
+        except FileNotFoundError:
+            return Corrupt(f"part file is missing: {locator}")  # as aminx: checked without verify
         if verify:
-            part = store / locator
-            try:
-                size = part.stat().st_size
-            except FileNotFoundError:
-                return Corrupt(f"part file is missing: {locator}")
             if size != frag.get("file_bytes") or _sha256_file(part) != frag.get("file_sha256"):
                 return Corrupt("part file does not match its fragment's size and sha256")
         return IndexReuse(canonical_store(store), locator, core)

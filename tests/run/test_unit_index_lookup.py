@@ -268,6 +268,18 @@ def test_schema_mismatch_found_through_a_symlinked_spelling(tmp_path: Path) -> N
     assert isinstance(ui.lookup(tmp_path / "idx", store, "chunks/k0", "d0"), ui.SchemaMismatch)
 
 
+def test_bad_lines_name_the_index_file_not_the_store(tmp_path: Path) -> None:
+    seg = tmp_path / "idx" / "segments"
+    seg.mkdir(parents=True)
+    f = seg / f"{WID}.jsonl"
+    f.write_text(
+        json.dumps({"schema_version": 2, "store": "/data/camp", "unit_key": "u"}) + "\n{not\n"
+    )
+    rep = ui.ReadReport()
+    list(ui.iter_rows(tmp_path / "idx", report=rep))
+    assert [b.path for b in rep.unreadable + rep.torn] == [str(f), str(f)]
+
+
 def test_make_row_refuses_what_readers_drop(tmp_path: Path) -> None:
     core = ui.CoreRecord("u", "", "c", "r", "run")
     with pytest.raises(ui.RowError, match="input_digest"):

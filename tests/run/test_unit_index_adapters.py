@@ -94,6 +94,21 @@ def test_aminx_marker_gone_is_missing_and_v2_is_schema_mismatch(tmp_path: Path) 
     assert isinstance(got, ui.SchemaMismatch) and ua.AMINX_V2 in got.reason
 
 
+def test_aminx_locator_outside_the_store_is_corrupt(tmp_path: Path) -> None:
+    """A row is not trusted: a verifying artifact outside the store must not be reused."""
+    store = tmp_path / "camp"
+    store.mkdir()
+    aminx_unit(tmp_path, "evil.zarr", row="rowA", inp="inA")  # beside the store, not in it
+    (store / "link.zarr").symlink_to(tmp_path / "evil.zarr")
+    (store / "link.zarr.done.json").write_text((tmp_path / "evil.zarr.done.json").read_text())
+    ad = ua.AminxDoneMarkerAdapter()
+    for loc in ("../evil.zarr", str(tmp_path / "evil.zarr"), "./x.zarr", "a//b", "link.zarr"):
+        got = ad.classify(store, loc, "inA", verify=True)
+        assert isinstance(got, zc.Corrupt) and "inside the store" in got.reason, loc
+    aminx_unit(store, "ok.zarr", row="rowB", inp="inB")
+    assert isinstance(ad.classify(store, "ok.zarr", "inB", verify=True), ui.IndexReuse)
+
+
 def test_aminx_rows_need_no_explicit_adapter_table(tmp_path: Path) -> None:
     """Rows name their adapter; lookup finds the built-in ones without an ``adapters`` table."""
     store = tmp_path / "camp"
@@ -173,6 +188,22 @@ def test_alynxr_null_run_id_and_missing_fragment(tmp_path: Path) -> None:
     ad = ua.AlynxrFragmentAdapter()
     other = PART.replace("0123456789ab", "ba9876543210")
     assert isinstance(ad.classify(tmp_path, other, "inS", verify=True), zc.Missing)
+
+
+def test_alynxr_current_schema_missing_fields_is_corrupt(tmp_path: Path) -> None:
+    alynxr_part(tmp_path)
+    frag_path = next((tmp_path / "parts").glob("*.json"))
+    d = json.loads(frag_path.read_text())
+    del d["logical_sha256"]
+    frag_path.write_text(json.dumps(d))
+    got = ua.AlynxrFragmentAdapter().classify(tmp_path, PART, "inS", verify=True)
+    assert isinstance(got, zc.Corrupt) and "logical_sha256" in got.reason
+
+
+def test_alynxr_missing_part_is_corrupt_without_verify(tmp_path: Path) -> None:
+    alynxr_part(tmp_path).unlink()
+    got = ua.AlynxrFragmentAdapter().classify(tmp_path, PART, "inS", verify=False)
+    assert isinstance(got, zc.Corrupt) and "missing" in got.reason
 
 
 def test_alynxr_refuses_paths_outside_the_store(tmp_path: Path) -> None:

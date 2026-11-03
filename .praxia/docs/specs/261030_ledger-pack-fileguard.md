@@ -134,7 +134,8 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   key path is `Corrupt`), and in `xtrax.run.unit_index_adapters` `AminxDoneMarkerAdapter` (aminx
   `campaign_done_marker_v3`; `unit_key` = `manifest_row_hash`, v2 markers are `SchemaMismatch`)
   and `AlynxrFragmentAdapter` (alynxr `fold_stats_part/1` fragments; `unit_key` = `locator` = the
-  part path; verified by the part file's size and sha256). Formats were read from each consumer's
+  part path; verified by the part file's size and sha256). Both refuse a locator that is not a
+  plain relative path resolving inside the store (`Corrupt`). Formats were read from each consumer's
   `origin/main` on 2026-11-03. The `unit.json` adapter waits on the record format the lifted
   packer brings (§3.3).
 - **Rebuild.** `rebuild(root, stores)` walks the records through the adapters and writes a derived
@@ -213,9 +214,11 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   manifest, and a rebuilt copy. Removing `DISTINCT ON` makes the test fail. Every field is read as
   raw JSON and checked with `IndexRow.from_dict`'s type rules, since DuckDB's casts would admit a
   boolean or string `ts`, a numeric string field or a short `reused_from`. Among copies of one read
-  key the view keeps `iter_rows`'s copy: first file in scan order, then smallest `ts`, then
-  `writer_id` (DuckDB exposes no line number; within one file a later line has a later `ts`). The
-  agreement test compares full rows.
+  key the view keeps the first file in scan order, then smallest `ts`, then `writer_id`. DuckDB
+  2.0 exposes no line number (`read_json` and `read_csv` refuse `file_row_number`; `read_text`
+  refuses a torn UTF-8 tail), so this equals `iter_rows`'s first-line copy only while a file's `ts`
+  never decreases. Otherwise the read-key set still agrees and only a duplicate copy's non-key
+  fields may differ, which `lookup` never trusts. The agreement test compares full rows.
 - **ESTALE.** Every reader of a file that a writer replaces with `os.replace` (sealed segments, index
   files, unit records) retries the **whole** open-and-read on `ESTALE`, with a short bounded backoff,
   and never reuses a file descriptor across the retry. A1 saw 77 `ESTALE` (home 74, pool 3, scratch
