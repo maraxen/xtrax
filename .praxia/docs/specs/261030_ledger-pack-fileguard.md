@@ -1,7 +1,7 @@
 # Spec: unit index, output packing and file-count guard (DRAFT v3)
 
 - **task_id**: `261030_xtrax-ledger-pack`
-- **status**: DRAFT v3. Two adversarial passes on 2026-10-30: v1 against the code (§8), and v2 by an independent challenger (§9). Owner decisions D1, D2 and D3 are taken (§7). No code has been written.
+- **status**: DRAFT v3. Two adversarial passes on 2026-10-30: v1 against the code (§8), and v2 by an independent challenger (§9). Owner decisions D1 to D5 are taken (§7). Built so far: `xtrax.fileguard`, `xtrax.run.writer_liveness`, and the unit-index segment writer, read side and compaction (`xtrax.run.unit_index`, 2026-11-03); lookup, adapters, rebuild and the DuckDB view are not built yet.
 - **consumers**: alynxr, aminx, aminx-ensemble, demistify, prolix
 - **origin**: owner request 2026-10-30 (upstream the alynxr provenance/consolidation design into xtrax).
   Owner decisions already taken: (1) recon the five consumers first; (2) the index is **lock-free
@@ -117,12 +117,26 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   grace period. A segment with a live writer is never moved. The test is `xtrax.run.writer_liveness.segment_writer_dead` (stdlib only): a scheduler lookup that cannot be answered (UNKNOWN) never counts as "gone", and the mtime age uses NFS server time, default grace 300 s. A squeue that hangs to its timeout or raises `OSError` is UNKNOWN; A10 saw both on Engaging with a broken `SLURM_CONF`, and `test_raising_query_never_dead` pins them. Taken segments fold into `sealed/` and
   are **moved** to `archive/`, never deleted. The dedup key is `(unit_key, input_digest)`, not
   timestamp order:
-  - rows that agree on `content_digest` collapse to one;
+  - rows that agree on `content_digest` **and name the same `store` and `locator`** collapse to one
+    (the latest `ts`, then `record_digest`, wins). Rows with the same content at another location are
+    copies and are all kept, so no pointer to an existing artifact is dropped (D5);
   - one `(unit_key, input_digest)` with two `content_digest`s is the R-S6 conflict, and **that pair** is
-    refused and listed, while compaction of every other key proceeds (no wedge);
+    refused and listed, while compaction of every other key proceeds (no wedge). "Refused" means
+    never resolved: one row per content stays sealed and visible, and every pass lists the pair again;
   - a new `input_digest` for the same `unit_key` is a legitimate recompute (aminx quarantine and
     recompute). Both rows are kept, and the current one is the one whose artifact record verifies now.
   Timestamps are informational.
+  **Implemented (2026-11-03, `xtrax.run.unit_index`, internal).** No compaction lock (the index has
+  none). Two compactors at once are safe because sealed and temp names are unique (`<ns>-<uuid8>`)
+  and each compactor moves to `archive/` only the files it read into its own sealed output; at
+  worst rows are duplicated, and the read side removes duplicates. Order: write the temp, fsync,
+  `os.replace`, fsync `sealed/`, then archive. A pass that takes no segment writes nothing. An
+  unparseable line is torn: skipped, reported, and dropped by compaction (the record is the truth,
+  and rebuild restores the row). A parseable row with an unknown `schema_version` keeps its segment
+  in place, and one in a sealed file refuses the pass. A pass takes NFS server time once and caches
+  scheduler answers per job, and after the first query timeout or `OSError` it answers the rest
+  UNKNOWN, so a hung scheduler costs one timeout, not one per segment. The writer appends the
+  trailer on close (also when the body raises), on its own line even after a failed partial write.
 - **Root.** The location is resolved as: explicit argument > `XTRAX_UNIT_INDEX_ROOT` (`none` or empty
   disables) > `[tool.xtrax]` in the nearest `pyproject.toml` > `${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml`
   > off. There is no default path, and the resolver exposes which layer decided.
@@ -303,6 +317,7 @@ and join on `run_id`.
 | D2 | First adopter | **alynxr fold units**: the measured problem, with existing pack/guard code | aminx-ensemble: no legacy code, but its spec needs neither index nor pack |
 | D3 | Where do SLURM logs live? (decided 2026-11-02) | **a pool, not scratch or home**: on Engaging the personal pool, `/orcd/pool/007/maarxaru/slurm_logs/<project>/…`. A unit directory and its pack never contain SLURM logs, and the A7 count never counts them as units. The location is configuration (global derived-data rule: explicit argument > env var > `[tool.<name>]` > XDG config > the tool's current behavior), not a path in library code. The personal pool, not `so3_shared`, because `so3_shared/marielle/` is setgid to a group whose quota is full | logs inside the unit, packed with it (one less loose file per task, but a log is not unit content and is wanted before the pack exists); logs on scratch (counts against the binding 1.0M cap); logs under `~/projects/<p>/outputs/logs/slurm` (myxcel's current default: home is backed up and has the tightest file cap) |
 | D4 | Does the guard enforce a shared filesystem's `df -i`? (decided 2026-11-02) | **no**: on NFS, CIFS, Ceph, GPFS and similar (`is_shared_fs`), the `df -i` reading is recorded with `files_limit=None` and never refuses. The per-user caps come from `quota -w` and `~/orcd/.quota`; when neither gives a row the guard emits `quota_limit_unknown` and admits (flag, not refuse). Local filesystems still enforce `df -i`. alynxr embeds the stdlib-only `_node` module rather than taking xtrax as a core dependency | enforce it as a backstop (other users' files on a full server would refuse your writes); refuse when no per-user limit is readable (breaks machines with no quota tooling) |
+| D5 | Compaction: rows that agree on `(unit_key, input_digest, content_digest)` but name different `store`/`locator` (decided 2026-11-03) | **keep both**: collapse only rows that name the same store and locator; other locations are copies, kept and counted | collapse to one row per content (the spec's v3 wording): smaller sealed set, but the other copy's location drops out of the index until a rebuild |
 
 ## 8. Adversarial review of v1 (2026-10-30)
 
