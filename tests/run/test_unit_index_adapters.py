@@ -102,9 +102,11 @@ def test_aminx_locator_outside_the_store_is_corrupt(tmp_path: Path) -> None:
     (store / "link.zarr").symlink_to(tmp_path / "evil.zarr")
     (store / "link.zarr.done.json").write_text((tmp_path / "evil.zarr.done.json").read_text())
     ad = ua.AminxDoneMarkerAdapter()
-    for loc in ("../evil.zarr", str(tmp_path / "evil.zarr"), "./x.zarr", "a//b", "link.zarr"):
+    for loc in ("../evil.zarr", str(tmp_path / "evil.zarr"), "./x.zarr", "a//b"):
         got = ad.classify(store, loc, "inA", verify=True)
         assert isinstance(got, zc.Corrupt) and "inside the store" in got.reason, loc
+    # A symlink inside the store is the owner's (an output dir on scratch, say): it is followed.
+    assert isinstance(ad.classify(store, "link.zarr", "inA", verify=True), ui.IndexReuse)
     aminx_unit(store, "ok.zarr", row="rowB", inp="inB")
     assert isinstance(ad.classify(store, "ok.zarr", "inB", verify=True), ui.IndexReuse)
 
@@ -178,7 +180,9 @@ def test_alynxr_find_and_lookup(tmp_path: Path) -> None:
     assert isinstance(ui.lookup(snap, store, PART, "inS"), zc.Corrupt)
     assert isinstance(ui.lookup(snap, store, PART, "inS", verify=False), ui.IndexReuse)
     part.unlink()
-    assert isinstance(ui.lookup(snap, store, PART, "inS"), zc.Corrupt)
+    assert isinstance(
+        ui.lookup(snap, store, PART, "inS"), zc.Missing
+    )  # not visible yet, as zarr_commit (A1)
 
 
 def test_alynxr_null_run_id_and_missing_fragment(tmp_path: Path) -> None:
@@ -200,10 +204,11 @@ def test_alynxr_current_schema_missing_fields_is_corrupt(tmp_path: Path) -> None
     assert isinstance(got, zc.Corrupt) and "logical_sha256" in got.reason
 
 
-def test_alynxr_missing_part_is_corrupt_without_verify(tmp_path: Path) -> None:
+def test_alynxr_part_not_visible_is_missing_either_way(tmp_path: Path) -> None:
     alynxr_part(tmp_path).unlink()
     got = ua.AlynxrFragmentAdapter().classify(tmp_path, PART, "inS", verify=False)
-    assert isinstance(got, zc.Corrupt) and "missing" in got.reason
+    assert got == zc.Missing()
+    assert ua.AlynxrFragmentAdapter().classify(tmp_path, PART, "inS", verify=True) == zc.Missing()
 
 
 def test_alynxr_refuses_paths_outside_the_store(tmp_path: Path) -> None:

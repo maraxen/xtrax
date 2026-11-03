@@ -56,20 +56,17 @@ def _read_json(path: Path) -> Any:
     return json.loads(_read_bytes(path))
 
 
-def _inside(store: Path, locator: str) -> bool:
-    """``locator`` is a plain relative path whose target resolves strictly inside ``store``.
+def _plain_locator(locator: str) -> bool:
+    """``locator`` is a plain relative path below the store: no ``..``, ``.``, empty part, NUL or
+    leading ``/``.
 
-    Rows are not trusted: ``../x``, an absolute path, ``.``/empty parts, or a symlink that leads
-    out of the store would make an adapter read (and reuse) an artifact the store does not hold.
+    Rows are not trusted, and those spellings would make an adapter read (and reuse) an artifact
+    the store does not hold. The check is lexical on purpose: a symlink inside the store was put
+    there by the store's owner (an output directory on scratch, say) and is followed.
     """
-    parts = locator.split("/")
     if not locator or "\0" in locator or locator.startswith("/"):
         return False
-    if any(p in ("", ".", "..") for p in parts):
-        return False
-    root = os.path.realpath(store)
-    target = os.path.realpath(os.path.join(root, locator))
-    return target.startswith(root + os.sep)
+    return not any(p in ("", ".", "..") for p in locator.split("/"))
 
 
 # ---- aminx ---------------------------------------------------------------------------------------
@@ -119,7 +116,7 @@ class AminxDoneMarkerAdapter:
 
     def classify(self, store: Path, locator: str, input_digest: str, *, verify: bool) -> Any:
         store = Path(store)
-        if not _inside(store, locator):
+        if not _plain_locator(locator):
             return Corrupt(f"locator {locator!r} is not a path inside the store")
         output = store / locator
         try:
@@ -136,7 +133,7 @@ class AminxDoneMarkerAdapter:
         core = _aminx_core(marker)
         if core is None:
             return Corrupt("v3 done marker without manifest_row_hash, input_hash or digest")
-        if not output.exists():
+        if not output.exists():  # aminx raises here too (campaign.py:996, 7291397c)
             return Corrupt(f"done marker present but output store is missing: {locator}")
         if core.input_digest != input_digest:
             return IndexStale(canonical_store(store), locator, core)
@@ -250,12 +247,13 @@ class AlynxrFragmentAdapter:
         if core.input_digest != input_digest:
             return IndexStale(canonical_store(store), locator, core)
         part = store / locator
-        if not _inside(store, locator):
-            return Corrupt(f"part {locator!r} resolves outside the store")
         try:
             size = part.stat().st_size
         except FileNotFoundError:
-            return Corrupt(f"part file is missing: {locator}")  # as aminx: checked without verify
+            # alynxr writes the part before its fragment, in another directory; a fragment seen
+            # without its part is not reusable (alynxr ``reusable``) and ``write_part`` repairs
+            # it. On NFS it may simply not be visible here yet (A1), so Missing, as zarr_commit.
+            return Missing()
         if verify:
             if size != frag.get("file_bytes") or _sha256_file(part) != frag.get("file_sha256"):
                 return Corrupt("part file does not match its fragment's size and sha256")

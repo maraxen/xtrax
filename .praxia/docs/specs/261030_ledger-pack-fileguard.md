@@ -135,7 +135,13 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   `campaign_done_marker_v3`; `unit_key` = `manifest_row_hash`, v2 markers are `SchemaMismatch`)
   and `AlynxrFragmentAdapter` (alynxr `fold_stats_part/1` fragments; `unit_key` = `locator` = the
   part path; verified by the part file's size and sha256). Both refuse a locator that is not a
-  plain relative path resolving inside the store (`Corrupt`). Formats were read from each consumer's
+  plain relative path (`..`, absolute, `.`, empty part: `Corrupt`). The check is lexical: a
+  symlink inside the store is the owner's and is followed. A missing artifact follows each
+  consumer's own rule: aminx raises on a marker without its output (`campaign.py:996`,
+  7291397c), so the adapter says `Corrupt`; alynxr writes the part before its fragment, in
+  another directory, and treats a fragment without its part as not reusable and repairs it
+  (`layout.py` `reusable`, `write_part`), so the adapter says `Missing`, as `zarr_commit` does
+  for an artifact not visible yet (A1). Formats were read from each consumer's
   `origin/main` on 2026-11-03. The `unit.json` adapter waits on the record format the lifted
   packer brings (§3.3).
 - **Rebuild.** `rebuild(root, stores)` walks the records through the adapters and writes a derived
