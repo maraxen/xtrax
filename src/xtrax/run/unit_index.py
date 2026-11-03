@@ -8,6 +8,7 @@ Layout under the index root::
 
     segments/<writer_id>.jsonl   one append-only file per writer; fsync after every row
     sealed/<ns>-<uuid8>.jsonl    compaction output, written by temp + os.replace
+    sealed/<ns>-<uuid8>.inputs.json   that file's inputs and their sizes, until archived
     rebuilt/index-<ts>.jsonl     rebuild output (not written here)
     archive/                     compacted inputs, moved here and never deleted
 
@@ -17,12 +18,15 @@ Layout under the index root::
 * **Read.** :func:`iter_rows` covers ``segments/``, ``sealed/`` and ``rebuilt/`` and dedups on
   ``(store, locator, record_digest)``. An unparseable line is *torn*: skipped and reported. A
   parseable row this code cannot accept (unknown ``schema_version``, missing field) is
-  *unreadable*: skipped and reported. Every read retries the whole open-and-read on ``ESTALE``;
-  a file that vanishes mid-scan (a concurrent compaction) restarts the scan.
+  *unreadable*: skipped and reported. Every read and listing retries on ``ESTALE``; a file that
+  vanishes mid-scan (a compaction, or a stale NFS listing) restarts the scan after a backoff
+  longer than the NFS directory-cache window.
 * **Compact.** :func:`compact` takes closed segments, and segments whose writer is dead by
   :func:`xtrax.run.writer_liveness.segment_writer_dead` (UNKNOWN is never dead). It writes one
   new sealed file holding every row it read from the taken segments and the existing sealed
-  files, then moves exactly those inputs to ``archive/``. Rows collapse only when they agree on
+  files, plus a manifest of those inputs. A later pass moves exactly those inputs to
+  ``archive/`` once the sealed file is ``archive_after_s`` old (decision D6), so a reader on a
+  host with a stale ``sealed/`` listing never misses a row. Rows collapse only when they agree on
   ``(unit_key, input_digest, content_digest, store, locator)``: copies at other locations stay,
   and one ``(unit_key, input_digest)`` with two content digests (R-S6) keeps both rows and is
   listed, never resolved. A new ``input_digest`` for a ``unit_key`` is a recompute, a new key.
@@ -67,8 +71,19 @@ ARCHIVE_DIRNAME = "archive"
 TRAILER = b'{"closed": true}\n'
 READ_DIRS = (SEGMENTS_DIRNAME, SEALED_DIRNAME, REBUILT_DIRNAME)
 ESTALE_TRIES = 6
-MAX_RESCANS = 5
+# Sleeps between read rescans. They sum past the NFS directory attribute cache ceiling (kernel
+# default acdirmax = 60 s; Engaging mounts set no actimeo/acdir* option, read 2026-11-03), so a
+# reader whose cached listing still names an archived segment waits until the listing refreshes.
+RESCAN_SLEEPS_S = (0.1, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
+MAX_RESCANS = len(RESCAN_SLEEPS_S) + 1
+# Compaction archives a sealed file's inputs only once that file is this old (NFS server time):
+# 3x acdirmax, so every host's sealed/ listing shows it before its inputs leave segments/.
+DEFAULT_ARCHIVE_AFTER_S = 180.0
 PARTIAL_MAX_AGE_S = 3600.0
+MANIFEST_SUFFIX = ".inputs.json"
+_ARCHIVE_PREFIX = {SEGMENTS_DIRNAME: "segment-", SEALED_DIRNAME: "sealed-"}
+# archive/segment-<id>.jsonl plus a ".<uuid8>" collision suffix must fit NAME_MAX (255 bytes).
+WRITER_ID_MAX_BYTES = 255 - len("segment-") - len(".jsonl") - 9
 
 _REQUIRED_STR = ("store", "locator", "unit_key", "input_digest", "content_digest", "record_digest")
 _STR = ("adapter", "writer_id", "run_id")
@@ -250,7 +265,7 @@ def _ensure_dir(path: Path) -> None:
         try:
             d.mkdir()
         except FileExistsError:
-            continue
+            pass  # another process won the race; its parent fsync may not have happened yet
         _fsync_dir(d.parent)
 
 
@@ -313,6 +328,11 @@ class SegmentWriter:
             or "\0" in self.writer_id
         ):
             raise ValueError(f"writer_id {self.writer_id!r} is not a plain file name")
+        if len(self.writer_id.encode("utf-8")) > WRITER_ID_MAX_BYTES:
+            raise ValueError(
+                f"writer_id is {len(self.writer_id.encode('utf-8'))} bytes; the archived segment "
+                f"name needs it to be at most {WRITER_ID_MAX_BYTES}"
+            )
         self.path = self.root / SEGMENTS_DIRNAME / f"{self.writer_id}.jsonl"
         self.rows_written = 0
         self._guard = guard
@@ -460,18 +480,42 @@ def _parse(path: Path, data: bytes) -> _Parsed:
     return out
 
 
+def _names(d: Path, suffix: str) -> list[Path]:
+    """Sorted non-hidden entries of ``d`` ending in ``suffix``; ``[]`` if ``d`` is missing.
+
+    ``os.listdir`` rather than ``Path.glob``: glob swallows ``scandir`` errors and would turn a
+    failed listing into an empty directory. ESTALE is retried; any other error raises.
+    """
+    for attempt in range(ESTALE_TRIES):
+        try:
+            names = os.listdir(d)
+        except FileNotFoundError:
+            return []
+        except OSError as e:
+            if e.errno != errno.ESTALE or attempt == ESTALE_TRIES - 1:
+                raise
+            time.sleep(min(0.05 * 2**attempt, 1.0))
+            continue
+        return sorted(d / n for n in names if n.endswith(suffix) and not n.startswith("."))
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def _listing(root: Path, dirname: str) -> list[Path]:
-    d = root / dirname
-    return sorted(d.glob("*.jsonl")) if d.is_dir() else []
+    return _names(root / dirname, ".jsonl")
 
 
 def _scan(root: Path) -> dict[Path, _Parsed]:
     """Parse every readable file. Restart when a listed file vanishes or a sealed file appears.
 
     ``segments/`` is listed before ``sealed/`` so a compaction that moves segments after this
-    listing is caught: the moved file vanishes, or a new sealed file appears.
+    listing is caught: the moved file vanishes, or a new sealed file appears. Rescans back off
+    (:data:`RESCAN_SLEEPS_S`) past the NFS listing-cache window: a segment is archived only
+    after the sealed file holding its rows is visible everywhere, so a vanished segment means a
+    stale listing, which a wait cures.
     """
-    for _ in range(MAX_RESCANS):
+    for attempt in range(MAX_RESCANS):
+        if attempt:
+            time.sleep(RESCAN_SLEEPS_S[attempt - 1])
         listed = [p for d in READ_DIRS for p in _listing(root, d)]
         sealed_before = {p for p in listed if p.parent.name == SEALED_DIRNAME}
         parsed: dict[Path, _Parsed] = {}
@@ -551,6 +595,7 @@ class CompactReport:
     left_unreadable: tuple[str, ...] = ()
     sealed_path: str | None = None
     archived: tuple[str, ...] = ()
+    pending_archive: tuple[str, ...] = ()
     scheduler_calls: int = 0
     partials_removed: int = 0
 
@@ -637,6 +682,150 @@ def _collapse(rows: list[IndexRow]) -> tuple[list[IndexRow], int, int, list[Conf
     return kept, collapsed, copies, conflicts
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Manifest:
+    """``sealed/<stem>.inputs.json``: the inputs a sealed file holds, with their sizes as read."""
+
+    path: Path
+    sealed: Path
+    inputs: tuple[tuple[Path, int], ...]
+
+
+def _load_manifest(root: Path, path: Path) -> _Manifest | None:
+    try:
+        raw = _read_bytes(path)
+    except FileNotFoundError:
+        return None  # removed by a concurrent compactor
+    try:
+        d = json.loads(raw)
+        sealed = root / SEALED_DIRNAME / d["sealed"]
+        inputs = []
+        for item in d["inputs"]:
+            rel = Path(item["path"])
+            if len(rel.parts) != 2 or rel.parts[0] not in _ARCHIVE_PREFIX:
+                raise ValueError(f"input path {item['path']!r} is outside segments/ and sealed/")
+            if rel.parts[1].startswith(".") or not isinstance(item["size"], int):
+                raise ValueError(f"bad input entry {item!r}")
+            inputs.append((root / rel, item["size"]))
+        if Path(d["sealed"]).name != d["sealed"]:
+            raise ValueError(f"sealed name {d['sealed']!r} is not a plain file name")
+    except (ValueError, KeyError, TypeError) as e:
+        raise UnitIndexError(f"refusing to compact {root}: manifest {path.name} is malformed: {e}")
+    return _Manifest(path, sealed, tuple(inputs))
+
+
+def _manifests(root: Path, *, remove_orphans: bool = False) -> dict[Path, _Manifest]:
+    """Manifests whose sealed file exists, keyed by that sealed file.
+
+    A manifest whose sealed file is gone (archived by a concurrent compactor's later pass) is an
+    orphan: it is ignored, and removed when ``remove_orphans``. Ignoring or removing a manifest
+    can only make its inputs be sealed again (duplicates), never archive them.
+    """
+    out = {}
+    for p in _names(root / SEALED_DIRNAME, MANIFEST_SUFFIX):
+        m = _load_manifest(root, p)
+        if m is None:
+            continue
+        if m.sealed.exists():
+            out[m.sealed] = m
+        elif remove_orphans:
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+    return out
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    """temp (``O_EXCL``) + fsync + ``os.replace`` + fsync of the directory."""
+    tmp = path.with_name(f".{path.name}.partial")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o644)
+    try:
+        _write_all(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if path.suffix == ".jsonl":
+        _fault("sealed_tmp_written")
+    os.replace(tmp, path)
+    _fsync_dir(path.parent)
+
+
+def _archive_due(
+    root: Path,
+    manifests: dict[Path, _Manifest],
+    *,
+    archive_after_s: int | float,
+    archive_now: float | None,
+) -> list[str]:
+    """Archive the inputs of every sealed file at least ``archive_after_s`` old (server time).
+
+    An input that is itself a sealed file with a manifest has its own inputs archived too: they
+    are inside it, and so inside the old-enough file. An input whose size differs from the one
+    the manifest recorded (a writer judged dead that was not) stays; once its manifest is gone it
+    is taken again. The manifest is removed last, after the moves are fsynced.
+    """
+    if not manifests:
+        return []
+    now = 0.0
+    if archive_after_s > 0:
+        now = archive_now if archive_now is not None else server_now(root / SEALED_DIRNAME)
+    due = []
+    for sealed, m in manifests.items():
+        if archive_after_s > 0:
+            try:
+                age = now - sealed.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if age < archive_after_s:
+                continue
+        due.append(m)
+    if not due:
+        return []
+    archive_dir = root / ARCHIVE_DIRNAME
+    _ensure_dir(archive_dir)
+    archived: list[str] = []
+    done: list[_Manifest] = []
+    stack = list(due)
+    seen: set[Path] = set()
+    while stack:
+        m = stack.pop()
+        if m.path in seen:
+            continue
+        seen.add(m.path)
+        done.append(m)
+        for p, size in m.inputs:
+            inner = manifests.get(p)
+            if inner is not None:
+                stack.append(inner)
+            try:
+                if p.stat().st_size != size:
+                    continue  # changed since it was read: not all of it is in the sealed file
+            except FileNotFoundError:
+                continue  # archived already, by this pass or a concurrent compactor
+            name = _ARCHIVE_PREFIX[p.parent.name] + p.name
+            dest = archive_dir / name
+            if dest.exists():  # never overwrite an archived file (a reused explicit writer_id)
+                dest = archive_dir / f"{name}.{uuid.uuid4().hex[:8]}"
+            try:
+                os.replace(p, dest)
+            except FileNotFoundError:
+                continue
+            archived.append(p.name)
+            if len(archived) == 1:
+                _fault("first_input_archived")
+    for d in (archive_dir, root / SEALED_DIRNAME, root / SEGMENTS_DIRNAME):
+        if d.is_dir():
+            _fsync_dir(d)
+    for m in done:
+        try:
+            m.path.unlink()
+        except FileNotFoundError:
+            pass
+    _fsync_dir(root / SEALED_DIRNAME)
+    return archived
+
+
 def compact(
     root: Path | str,
     *,
@@ -644,32 +833,60 @@ def compact(
     dry_run: bool = False,
     runner: Runner | None = None,
     now_server: float | None = None,
+    archive_after_s: int | float = DEFAULT_ARCHIVE_AFTER_S,
+    archive_now: float | None = None,
 ) -> CompactReport:
     """Fold closed and dead segments, plus the existing sealed files, into one new sealed file.
 
-    Order: write the new sealed file (temp, fsync, ``os.replace``, fsync ``sealed/``), then move
-    every input it holds to ``archive/``. A pass that takes no segment changes nothing. A segment
-    holding an unreadable row stays in place; a sealed file holding one refuses the pass
+    A pass has two halves (decision D6):
+
+    1. **Archive.** For every sealed file at least ``archive_after_s`` old (NFS server time;
+       ``archive_now`` overrides the probe), move the inputs its manifest lists to ``archive/``,
+       then remove the manifest. Inputs stay readable until then, so a reader on a host whose
+       ``sealed/`` listing is cached never loses sight of a row.
+    2. **Seal.** Inputs still listed by a manifest are skipped. The rest (closed segments, dead
+       writers' segments, other sealed files) are read and written to one new sealed file (temp,
+       fsync, ``os.replace``, fsync ``sealed/``), then its manifest is written the same way.
+       With ``archive_after_s <= 0`` the archive half runs again at once.
+
+    A pass with nothing due and no segment to take changes nothing. A segment holding an
+    unreadable row stays in place; a sealed file holding one refuses the pass
     (:class:`UnitIndexError`, nothing written). Torn lines in taken segments are dropped and
-    reported. ``dry_run`` reports the same decisions and writes nothing but the server-time probe.
+    reported. ``dry_run`` reports the same decisions, archives nothing and writes nothing but the
+    server-time probe.
     """
     root = Path(root)
     pass_runner = _PassRunner(runner)
-    segments = _listing(root, SEGMENTS_DIRNAME)
+    archived: list[str] = []
+    if not dry_run:
+        archived += _archive_due(
+            root,
+            _manifests(root, remove_orphans=True),
+            archive_after_s=archive_after_s,
+            archive_now=archive_now,
+        )
+    pending = {p for m in _manifests(root).values() for p, _ in m.inputs}
+    segments = [p for p in _listing(root, SEGMENTS_DIRNAME) if p not in pending]
     decisions = _decide(segments, grace_s=grace_s, now_server=now_server, runner=pass_runner)
 
     taken: dict[Path, _Parsed] = {}
+    sizes: dict[Path, int] = {}
     left_unreadable: list[str] = []
-    final: list[SegmentDecision] = []
+    final: list[SegmentDecision] = [
+        SegmentDecision(p.name, False, "already sealed; archive pending")
+        for p in sorted(pending)
+        if p.parent.name == SEGMENTS_DIRNAME
+    ]
     for p, d in zip(segments, decisions, strict=True):
         if not d.taken:
             final.append(d)
             continue
         try:
-            parsed = _parse(p, _read_bytes(p))
+            raw = _read_bytes(p)
         except FileNotFoundError:
             final.append(SegmentDecision(d.name, False, "vanished (moved by another compactor)"))
             continue
+        parsed = _parse(p, raw)
         if parsed.unreadable:
             left_unreadable.append(d.name)
             final.append(
@@ -677,6 +894,7 @@ def compact(
             )
             continue
         taken[p] = parsed
+        sizes[p] = len(raw)
         final.append(d)
 
     def report(**kw: Any) -> CompactReport:
@@ -685,6 +903,8 @@ def compact(
             segments=tuple(final),
             left_unreadable=tuple(left_unreadable),
             scheduler_calls=pass_runner.calls,
+            archived=tuple(archived),
+            pending_archive=tuple(sorted(p.name for p in pending)),
             **kw,
         )
 
@@ -693,10 +913,13 @@ def compact(
 
     sealed_in: dict[Path, _Parsed] = {}
     for p in _listing(root, SEALED_DIRNAME):
+        if p in pending:
+            continue  # already inside a newer sealed file that is waiting to archive it
         try:
-            parsed = _parse(p, _read_bytes(p))
+            raw = _read_bytes(p)
         except FileNotFoundError:
             continue  # archived by a concurrent compactor; its rows are in that one's output
+        parsed = _parse(p, raw)
         if parsed.unreadable or parsed.torn:
             bad = (parsed.unreadable or parsed.torn)[0]
             raise UnitIndexError(
@@ -704,6 +927,7 @@ def compact(
                 f"{bad.kind} ({bad.reason}); sealing now would archive it out of view"
             )
         sealed_in[p] = parsed
+        sizes[p] = len(raw)
 
     rows = [r for p in (*sealed_in.values(), *taken.values()) for r in p.rows]
     kept, collapsed, copies, conflicts = _collapse(rows)
@@ -721,43 +945,27 @@ def compact(
         return report(**summary)
 
     sealed_dir = root / SEALED_DIRNAME
-    archive_dir = root / ARCHIVE_DIRNAME
     _ensure_dir(sealed_dir)
-    _ensure_dir(archive_dir)
     partials_removed = _sweep_partials(sealed_dir)
-    tag = uuid.uuid4().hex[:8]
-    target = sealed_dir / f"{time.time_ns():020d}-{tag}.jsonl"
-    tmp = sealed_dir / f".{target.stem}.partial"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o644)
-    try:
-        _write_all(fd, "".join(r.to_json_line() for r in kept).encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    _fault("sealed_tmp_written")
-    os.replace(tmp, target)
-    _fsync_dir(sealed_dir)
+    target = sealed_dir / f"{time.time_ns():020d}-{uuid.uuid4().hex[:8]}.jsonl"
+    _write_atomic(target, "".join(r.to_json_line() for r in kept).encode("utf-8"))
     _fault("sealed_replaced")
-
-    archived = []
-    moves = [(p, f"sealed-{p.name}") for p in sealed_in] + [(p, f"segment-{p.name}") for p in taken]
-    for i, (p, name) in enumerate(moves):
-        dest = archive_dir / name
-        if dest.exists():  # never overwrite an archived file (a reused explicit writer_id)
-            dest = archive_dir / f"{name}.{uuid.uuid4().hex[:8]}"
-        try:
-            os.replace(p, dest)
-        except FileNotFoundError:
-            continue  # a concurrent compactor archived it first
-        archived.append(p.name)
-        if i == 0:
-            _fault("first_input_archived")
-    for d in (archive_dir, sealed_dir, root / SEGMENTS_DIRNAME):
-        _fsync_dir(d)
+    manifest = {
+        "sealed": target.name,
+        "inputs": [
+            {"path": f"{p.parent.name}/{p.name}", "size": sizes[p]} for p in (*sealed_in, *taken)
+        ],
+    }
+    manifest_path = sealed_dir / f"{target.stem}{MANIFEST_SUFFIX}"
+    _write_atomic(manifest_path, json.dumps(manifest, sort_keys=True).encode("utf-8"))
+    _fault("manifest_written")
+    if archive_after_s <= 0:
+        m = _load_manifest(root, manifest_path)
+        if m is not None:
+            archived += _archive_due(root, {target: m}, archive_after_s=0, archive_now=None)
     return report(
         **summary,
         sealed_path=str(target),
-        archived=tuple(archived),
         partials_removed=partials_removed,
     )
 

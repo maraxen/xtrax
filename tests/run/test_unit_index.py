@@ -363,30 +363,64 @@ def test_estale_gives_up_after_bounded_tries(
 
 
 def test_vanished_file_restarts_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The second listed segment really moves into sealed/ before it is read: only a fresh
+    listing finds its row, so retrying the same path would lose it."""
     write_segment(tmp_path, [row(1)])
-    write_segment(tmp_path, [row(2)], writer=WID2)
+    moved = write_segment(tmp_path, [row(2)], writer=WID2)
     real = ui._read_bytes
     state = {"n": 0}
 
-    def once(path: Path) -> bytes:
+    def move_second(path: Path) -> bytes:
         state["n"] += 1
-        if state["n"] == 2:
-            raise FileNotFoundError(path)
+        if state["n"] == 1:
+            (tmp_path / "sealed").mkdir()
+            os.replace(moved, tmp_path / "sealed" / "00000000000000000001-aaaaaaaa.jsonl")
         return real(path)
 
-    monkeypatch.setattr(ui, "_read_bytes", once)
+    monkeypatch.setattr(ui, "_read_bytes", move_second)
+    monkeypatch.setattr(ui.time, "sleep", lambda s: None)
     assert keys(tmp_path) == {row(1).read_key, row(2).read_key}
+    assert state["n"] > 2  # a rescan happened
 
 
 def test_always_changing_index_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_segment(tmp_path, [row(1)])
+    slept: list[float] = []
 
     def gone(path: Path) -> bytes:
         raise FileNotFoundError(path)
 
     monkeypatch.setattr(ui, "_read_bytes", gone)
+    monkeypatch.setattr(ui.time, "sleep", slept.append)
     with pytest.raises(ui.UnitIndexError, match="kept changing"):
         list(ui.iter_rows(tmp_path))
+    assert sum(slept) > 60.0  # waited out the NFS listing cache before giving up
+
+
+def test_listing_retries_estale_and_never_reads_it_as_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_segment(tmp_path, [row(1)])
+    real = ui.os.listdir
+    state = {"n": 0}
+
+    def flaky(d: object) -> list[str]:
+        state["n"] += 1
+        if state["n"] == 1:
+            raise OSError(errno.ESTALE, "Stale file handle")
+        return real(d)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ui.os, "listdir", flaky)
+    monkeypatch.setattr(ui.time, "sleep", lambda s: None)
+    assert keys(tmp_path) == {row(1).read_key}
+
+    def always(d: object) -> list[str]:
+        raise OSError(errno.ESTALE, "Stale file handle")
+
+    monkeypatch.setattr(ui.os, "listdir", always)
+    with pytest.raises(OSError) as e:
+        list(ui.iter_rows(tmp_path))
+    assert e.value.errno == errno.ESTALE
 
 
 # ---- compaction: which segments --------------------------------------------------------------
@@ -396,7 +430,7 @@ def test_closed_segments_sealed_and_archived(tmp_path: Path) -> None:
     a = write_segment(tmp_path, [row(1), row(2)])
     b = write_segment(tmp_path, [row(3)], writer=WID2)
     before = keys(tmp_path)
-    rep = ui.compact(tmp_path, runner=unknown())
+    rep = ui.compact(tmp_path, runner=unknown(), archive_after_s=0)
     assert set(rep.taken) == {a.name, b.name}
     assert rep.rows_sealed == 3 and rep.sealed_path is not None
     assert keys(tmp_path) == before
@@ -416,8 +450,17 @@ def test_live_writer_segment_never_moves(tmp_path: Path) -> None:
 
 def test_negative_control_closed_twin_does_move(tmp_path: Path) -> None:
     p = write_segment(tmp_path, [row(1)])  # same content, but closed
-    rep = ui.compact(tmp_path, runner=present(), now_server=old(p))
+    rep = ui.compact(tmp_path, runner=present(), now_server=old(p), archive_after_s=0)
     assert rep.taken == (p.name,) and not p.exists()
+
+
+def test_live_and_closed_in_one_pass_only_closed_moves(tmp_path: Path) -> None:
+    live = write_segment(tmp_path, [row(1)], close=False)
+    closed = write_segment(tmp_path, [row(2)], writer=WID2)
+    rep = ui.compact(tmp_path, runner=present(), now_server=old(live), archive_after_s=0)
+    assert rep.taken == (closed.name,)
+    assert live.exists() and not closed.exists()
+    assert keys(tmp_path) == {row(1).read_key, row(2).read_key}
 
 
 def test_unknown_scheduler_never_dead(tmp_path: Path) -> None:
@@ -522,14 +565,16 @@ def test_same_place_collapses_other_places_kept(tmp_path: Path) -> None:
             row(1, content="A", record="r-early", ts=1.0),
             row(1, content="A", record="r-late", ts=2.0),  # same place, re-committed
             row(1, content="A", store="/copy"),  # same content, another store
+            row(1, content="A", locator="units/1-copy"),  # same store, another locator
         ],
     )
-    rep = ui.compact(tmp_path, runner=unknown())
-    assert (rep.rows_in, rep.rows_sealed, rep.collapsed, rep.copies) == (3, 2, 1, 1)
+    rep = ui.compact(tmp_path, runner=unknown(), archive_after_s=0)
+    assert (rep.rows_in, rep.rows_sealed, rep.collapsed, rep.copies) == (4, 3, 1, 2)
     assert rep.conflicts == ()
-    got = {(r.store, r.record_digest) for r in ui.iter_rows(tmp_path)}
-    assert ("/s", "r-late") in got and ("/s", "r-early") not in got
-    assert any(s == "/copy" for s, _ in got)
+    got = {(r.store, r.locator, r.record_digest) for r in ui.iter_rows(tmp_path)}
+    assert ("/s", "units/1", "r-late") in got and ("/s", "units/1", "r-early") not in got
+    assert any(s == "/copy" for s, _, _ in got)
+    assert any(loc == "units/1-copy" for _, loc, _ in got)
 
 
 def test_torn_tail_in_dead_segment_dropped_and_reported(tmp_path: Path) -> None:
@@ -569,9 +614,9 @@ def test_unreadable_sealed_file_refuses_whole_pass(tmp_path: Path) -> None:
 
 def test_second_pass_folds_previous_sealed(tmp_path: Path) -> None:
     write_segment(tmp_path, [row(1)])
-    first = ui.compact(tmp_path, runner=unknown())
+    first = ui.compact(tmp_path, runner=unknown(), archive_after_s=0)
     write_segment(tmp_path, [row(2)], writer=WID2)
-    second = ui.compact(tmp_path, runner=unknown())
+    second = ui.compact(tmp_path, runner=unknown(), archive_after_s=0)
     assert second.sealed_inputs == (Path(first.sealed_path).name,)
     assert [p.name for p in (tmp_path / "sealed").glob("*.jsonl")] == [
         Path(second.sealed_path).name
@@ -582,7 +627,11 @@ def test_second_pass_folds_previous_sealed(tmp_path: Path) -> None:
 
 # ---- crashes and concurrency ---------------------------------------------------------------
 
-STEPS = ["sealed_tmp_written", "sealed_replaced", "first_input_archived"]
+STEPS = ["sealed_tmp_written", "sealed_replaced", "manifest_written", "first_input_archived"]
+FAR = 1e12  # an archive_now past every archive window
+# immediate: archive in the sealing pass. deferred: seal now (default window), archive in a
+# later pass once the window has passed, which is the production path.
+MODES = ["immediate", "deferred"]
 
 
 class Crash(Exception):
@@ -591,15 +640,35 @@ class Crash(Exception):
 
 def _setup_three(root: Path) -> set[tuple[str, str, str]]:
     write_segment(root, [row(1)])
-    ui.compact(root, runner=unknown())  # an existing sealed file joins the next pass
+    ui.compact(root, runner=unknown(), archive_after_s=0)  # a sealed file joins the next pass
     write_segment(root, [row(2), row(3)], writer=WID2)
     write_segment(root, [row(4)], writer="node-3-779-0-abcdef14")
     return keys(root)
 
 
+def _passes(root: Path, mode: str) -> None:
+    """One full compaction in ``mode``: seal, and (deferred) a later pass that archives."""
+    if mode == "immediate":
+        ui.compact(root, runner=unknown(), archive_after_s=0)
+    else:
+        ui.compact(root, runner=unknown())
+        ui.compact(root, runner=unknown(), archive_now=FAR)
+
+
+def _converged(root: Path) -> None:
+    for _ in range(2):  # re-seal whatever a crash left, then archive it
+        ui.compact(root, runner=unknown(), archive_now=FAR)
+    assert list((root / "segments").glob("*.jsonl")) == []
+    # Two compactors that sealed the same inputs leave two sealed files (duplicate rows, which
+    # reads remove); a later pass that takes a segment folds them together.
+    assert len(list((root / "sealed").glob("*.jsonl"))) in (1, 2)
+    assert list((root / "sealed").glob(f"*{ui.MANIFEST_SUFFIX}")) == []
+
+
+@pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("step", STEPS)
 def test_crash_at_each_step_loses_no_row(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str, mode: str
 ) -> None:
     before = _setup_three(tmp_path)
 
@@ -609,17 +678,17 @@ def test_crash_at_each_step_loses_no_row(
 
     monkeypatch.setattr(ui, "_fault", crash)
     with pytest.raises(Crash):
-        ui.compact(tmp_path, runner=unknown())
+        _passes(tmp_path, mode)
     assert keys(tmp_path) == before  # duplicates allowed, losses not
     monkeypatch.undo()
-    ui.compact(tmp_path, runner=unknown())  # recovers
+    _converged(tmp_path)
     assert keys(tmp_path) == before
-    assert list((tmp_path / "segments").glob("*.jsonl")) == []
 
 
+@pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("step", STEPS)
 def test_interleaved_compactors_lose_no_row(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str, mode: str
 ) -> None:
     before = _setup_three(tmp_path)
     real_fault = ui._fault
@@ -629,19 +698,19 @@ def test_interleaved_compactors_lose_no_row(
         if s == step and not state["done"]:
             state["done"] = True
             mid.append(keys(tmp_path))  # a reader inside the first compactor's window
-            ui.compact(tmp_path, runner=unknown())  # a second compactor runs to completion here
+            _passes(tmp_path, mode)  # a second compactor runs to completion here
             mid.append(keys(tmp_path))  # and again, with the first one still mid-pass
         real_fault(s)
 
     mid: list[set[tuple[str, str, str]]] = []
 
     monkeypatch.setattr(ui, "_fault", run_other)
-    ui.compact(tmp_path, runner=unknown())
+    _passes(tmp_path, mode)
     assert state["done"]
     assert mid == [before, before]
     assert keys(tmp_path) == before
     monkeypatch.undo()
-    ui.compact(tmp_path, runner=unknown())  # nothing left to take: idle
+    _converged(tmp_path)
     assert keys(tmp_path) == before
 
 
@@ -657,7 +726,7 @@ def test_reader_rescans_when_a_sealed_file_appears(
         if not state["done"]:
             state["done"] = True
             write_segment(tmp_path, [row(2)], writer=WID2)
-            ui.compact(tmp_path, runner=unknown())  # real archive + new sealed mid-scan
+            ui.compact(tmp_path, runner=unknown(), archive_after_s=0)  # archive + seal mid-scan
         return data
 
     monkeypatch.setattr(ui, "_read_bytes", compact_during_read)
@@ -670,11 +739,20 @@ def test_writer_id_must_be_a_plain_file_name(tmp_path: Path) -> None:
             ui.SegmentWriter(tmp_path, writer_id=bad)
 
 
+def test_writer_id_too_long_for_archive_name_refused(tmp_path: Path) -> None:
+    longest = "h" * (ui.WRITER_ID_MAX_BYTES - len("-1-nojob-0-aaaaaaaa")) + "-1-nojob-0-aaaaaaaa"
+    seg = write_segment(tmp_path, [row(1, writer=longest)], writer=longest)
+    ui.compact(tmp_path, runner=unknown(), archive_after_s=0)  # archive name fits NAME_MAX
+    assert not seg.exists() and keys(tmp_path) == {row(1).read_key}
+    with pytest.raises(ValueError, match="at most"):
+        ui.SegmentWriter(tmp_path, writer_id="h" + longest)
+
+
 def test_reused_writer_id_never_overwrites_archive(tmp_path: Path) -> None:
     write_segment(tmp_path, [row(1)])
-    ui.compact(tmp_path, runner=unknown())
+    ui.compact(tmp_path, runner=unknown(), archive_after_s=0)
     write_segment(tmp_path, [row(2)])  # same explicit writer id, after the first was archived
-    ui.compact(tmp_path, runner=unknown())
+    ui.compact(tmp_path, runner=unknown(), archive_after_s=0)
     archived = sorted(p.name for p in (tmp_path / "archive").glob(f"segment-{WID}*"))
     assert len(archived) == 2
     assert keys(tmp_path) == {row(1).read_key, row(2).read_key}
@@ -729,3 +807,127 @@ def test_real_process_kill_after_replace(tmp_path: Path) -> None:
     assert proc.returncode == 137
     assert len(list((tmp_path / "sealed").glob("*.jsonl"))) == 2  # old + new, nothing archived
     assert keys(tmp_path) == before
+
+
+# ---- cross-host NFS listing caches (Cursor review of #260, decision D6) ---------------------
+
+
+def test_stale_sealed_listing_never_hides_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reader on another host whose ``sealed/`` listing predates a compaction, while its
+    ``segments/`` listing is fresh, still sees every row: inputs stay in place until the sealed
+    file is old enough to be visible everywhere."""
+    write_segment(tmp_path, [row(1)])
+    write_segment(tmp_path, [row(2)], writer=WID2)
+    before = keys(tmp_path)
+    real = ui._listing
+    stale_sealed = real(tmp_path, "sealed")
+    ui.compact(tmp_path, runner=unknown())
+
+    def stale(root: Path, d: str) -> list[Path]:
+        return list(stale_sealed) if d == "sealed" else real(root, d)
+
+    monkeypatch.setattr(ui, "_listing", stale)
+    assert keys(tmp_path) == before
+
+
+def test_stale_segments_listing_waits_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reader whose ``segments/`` listing still names an archived segment backs off across the
+    listing-cache window instead of failing after immediate rescans."""
+    seg = write_segment(tmp_path, [row(1)])
+    stale_segments = [seg]
+    (tmp_path / "sealed").mkdir()
+    os.replace(seg, tmp_path / "sealed" / "00000000000000000001-aaaaaaaa.jsonl")  # rows now sealed
+    real = ui._listing
+    clock = {"t": 0.0}
+
+    def stale(root: Path, d: str) -> list[Path]:
+        if d == "segments" and clock["t"] < 30.0:
+            return list(stale_segments)
+        return real(root, d)
+
+    monkeypatch.setattr(ui, "_listing", stale)
+    monkeypatch.setattr(ui.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    assert keys(tmp_path) == {row(1).read_key}
+    assert clock["t"] >= 30.0
+
+
+# ---- deferred archive (decision D6) ----------------------------------------------------------
+
+
+def _sealed(root: Path) -> list[Path]:
+    return sorted((root / "sealed").glob("*.jsonl"))
+
+
+def test_deferred_archive_waits_for_the_window_then_converges(tmp_path: Path) -> None:
+    a = write_segment(tmp_path, [row(1)])
+    b = write_segment(tmp_path, [row(2)], writer=WID2)
+    before = keys(tmp_path)
+    first = ui.compact(tmp_path, runner=unknown())
+    assert set(first.taken) == {a.name, b.name} and first.archived == ()
+    assert a.exists() and b.exists()  # inputs stay readable through the window
+    y = Path(first.sealed_path)
+    manifest = y.with_name(y.stem + ui.MANIFEST_SUFFIX)
+    assert manifest.exists()
+
+    inside = ui.compact(tmp_path, runner=unknown(), archive_now=y.stat().st_mtime + 10)
+    assert inside.sealed_path is None and inside.archived == ()  # no re-seal of pending inputs
+    assert set(inside.pending_archive) == {a.name, b.name}
+    assert {d.reason for d in inside.segments} == {"already sealed; archive pending"}
+    assert _sealed(tmp_path) == [y]
+
+    after = ui.compact(
+        tmp_path, runner=unknown(), archive_now=y.stat().st_mtime + ui.DEFAULT_ARCHIVE_AFTER_S
+    )
+    assert set(after.archived) == {a.name, b.name} and after.sealed_path is None
+    assert not a.exists() and not b.exists() and not manifest.exists()
+    assert _sealed(tmp_path) == [y] and keys(tmp_path) == before
+
+
+def test_deferred_chain_archives_everything_the_newest_file_holds(tmp_path: Path) -> None:
+    """Y is folded into Y2 before Y's own inputs were archived; Y2's window archives all."""
+    s1 = write_segment(tmp_path, [row(1)])
+    y = Path(ui.compact(tmp_path, runner=unknown()).sealed_path)
+    s2 = write_segment(tmp_path, [row(2)], writer=WID2)
+    second = ui.compact(tmp_path, runner=unknown(), archive_now=y.stat().st_mtime + 1)
+    y2 = Path(second.sealed_path)
+    assert second.sealed_inputs == (y.name,) and second.taken == (s2.name,)
+    assert s1.exists()  # still pending under Y
+    before = keys(tmp_path)
+    done = ui.compact(tmp_path, runner=unknown(), archive_now=FAR)
+    assert set(done.archived) == {s1.name, s2.name, y.name}
+    assert _sealed(tmp_path) == [y2] and keys(tmp_path) == before
+    assert list((tmp_path / "sealed").glob(f"*{ui.MANIFEST_SUFFIX}")) == []
+
+
+def test_input_grown_since_sealing_is_not_archived_and_is_taken_again(tmp_path: Path) -> None:
+    """A writer judged dead that was not: rows appended after the seal must not be archived."""
+    p = write_segment(tmp_path, [row(1)], close=False)
+    rep = ui.compact(tmp_path, runner=absent(), now_server=old(p))
+    assert rep.taken == (p.name,)
+    with open(p, "ab") as fh:
+        fh.write(row(2, writer=WID).to_json_line().encode())
+    done = ui.compact(tmp_path, runner=absent(), now_server=FAR, archive_now=FAR)
+    assert p.name not in done.archived and p.exists()
+    assert done.taken == (p.name,)  # manifest gone, so the grown segment is sealed again
+    ui.compact(tmp_path, runner=absent(), now_server=FAR, archive_now=FAR)
+    assert not p.exists() and keys(tmp_path) == {row(1).read_key, row(2).read_key}
+
+
+def test_mkdir_race_loser_still_fsyncs_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced: list[Path] = []
+    real_mkdir = Path.mkdir
+
+    def racing_mkdir(self: Path, *a: object, **k: object) -> None:
+        real_mkdir(self)  # another process wins the race
+        raise FileExistsError(str(self))
+
+    monkeypatch.setattr(Path, "mkdir", racing_mkdir)
+    monkeypatch.setattr(ui, "_fsync_dir", synced.append)
+    ui._ensure_dir(tmp_path / "idx" / "sealed")
+    assert synced == [tmp_path, tmp_path / "idx"]

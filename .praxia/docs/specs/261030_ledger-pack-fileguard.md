@@ -1,7 +1,7 @@
 # Spec: unit index, output packing and file-count guard (DRAFT v3)
 
 - **task_id**: `261030_xtrax-ledger-pack`
-- **status**: DRAFT v3. Two adversarial passes on 2026-10-30: v1 against the code (§8), and v2 by an independent challenger (§9). Owner decisions D1 to D5 are taken (§7). Built so far: `xtrax.fileguard`, `xtrax.run.writer_liveness`, and the unit-index segment writer, read side and compaction (`xtrax.run.unit_index`, 2026-11-03); lookup, adapters, rebuild and the DuckDB view are not built yet.
+- **status**: DRAFT v3. Two adversarial passes on 2026-10-30: v1 against the code (§8), and v2 by an independent challenger (§9). Owner decisions D1 to D6 are taken (§7). Built so far: `xtrax.fileguard`, `xtrax.run.writer_liveness`, and the unit-index segment writer, read side and compaction (`xtrax.run.unit_index`, 2026-11-03); lookup, adapters, rebuild and the DuckDB view are not built yet.
 - **consumers**: alynxr, aminx, aminx-ensemble, demistify, prolix
 - **origin**: owner request 2026-10-30 (upstream the alynxr provenance/consolidation design into xtrax).
   Owner decisions already taken: (1) recon the five consumers first; (2) the index is **lock-free
@@ -130,7 +130,19 @@ verb. The index is an **index** over per-unit commit records. It never certifies
   none). Two compactors at once are safe because sealed and temp names are unique (`<ns>-<uuid8>`)
   and each compactor moves to `archive/` only the files it read into its own sealed output; at
   worst rows are duplicated, and the read side removes duplicates. Order: write the temp, fsync,
-  `os.replace`, fsync `sealed/`, then archive. A pass that takes no segment writes nothing. An
+  `os.replace`, fsync `sealed/`, then write `sealed/<stem>.inputs.json` (the inputs and their sizes
+  as read) the same way. **Archiving is deferred (D6):** a later pass moves those inputs to
+  `archive/` only once the sealed file is `archive_after_s` old in NFS server time (default 180 s),
+  then removes the manifest. Inputs still listed by a manifest are neither taken nor folded again.
+  An input whose size changed since it was read is not archived and is taken again once its
+  manifest is gone. Archiving a sealed file also archives the inputs of its own manifest, which it
+  contains. Until then, every input stays readable, including rows a collapse dropped, and the
+  index holds about one extra compaction interval's worth of files (this counts against A3's
+  verified bound of 1e4 segments). A pass with nothing to archive and no segment to take writes
+  nothing. Reader rescans back off for about 64 s in total before giving up, so a reader whose cached
+  `segments/` listing still names an archived file waits for the listing to refresh. Directory
+  listings use `os.listdir` with an ESTALE retry; `Path.glob` would turn a failed listing into an
+  empty directory. An
   unparseable line is torn: skipped, reported, and dropped by compaction (the record is the truth,
   and rebuild restores the row). A parseable row with an unknown `schema_version` keeps its segment
   in place, and one in a sealed file refuses the pass. A pass takes NFS server time once and caches
@@ -318,6 +330,7 @@ and join on `run_id`.
 | D3 | Where do SLURM logs live? (decided 2026-11-02) | **a pool, not scratch or home**: on Engaging the personal pool, `/orcd/pool/007/maarxaru/slurm_logs/<project>/…`. A unit directory and its pack never contain SLURM logs, and the A7 count never counts them as units. The location is configuration (global derived-data rule: explicit argument > env var > `[tool.<name>]` > XDG config > the tool's current behavior), not a path in library code. The personal pool, not `so3_shared`, because `so3_shared/marielle/` is setgid to a group whose quota is full | logs inside the unit, packed with it (one less loose file per task, but a log is not unit content and is wanted before the pack exists); logs on scratch (counts against the binding 1.0M cap); logs under `~/projects/<p>/outputs/logs/slurm` (myxcel's current default: home is backed up and has the tightest file cap) |
 | D4 | Does the guard enforce a shared filesystem's `df -i`? (decided 2026-11-02) | **no**: on NFS, CIFS, Ceph, GPFS and similar (`is_shared_fs`), the `df -i` reading is recorded with `files_limit=None` and never refuses. The per-user caps come from `quota -w` and `~/orcd/.quota`; when neither gives a row the guard emits `quota_limit_unknown` and admits (flag, not refuse). Local filesystems still enforce `df -i`. alynxr embeds the stdlib-only `_node` module rather than taking xtrax as a core dependency | enforce it as a backstop (other users' files on a full server would refuse your writes); refuse when no per-user limit is readable (breaks machines with no quota tooling) |
 | D5 | Compaction: rows that agree on `(unit_key, input_digest, content_digest)` but name different `store`/`locator` (decided 2026-11-03) | **keep both**: collapse only rows that name the same store and locator; other locations are copies, kept and counted | collapse to one row per content (the spec's v3 wording): smaller sealed set, but the other copy's location drops out of the index until a rebuild |
+| D6 | When does compaction archive its inputs? (decided 2026-11-03, after a Cursor review of PR #260) | **a later pass, once the sealed file is `archive_after_s` old** (default 180 s = 3× the NFS `acdirmax` of 60 s). The manifest `sealed/<stem>.inputs.json` lists what to archive. Reason: an NFS client caches each directory's listing separately for up to `acdirmax`, so a reader whose `sealed/` listing predates the new sealed file, but whose `segments/` listing is fresh, would see neither copy of the rows (the regression test reproduced this on the earlier code). Engaging mount options were read on 2026-11-03 from `/proc/mounts` on the login node: no `actimeo` or `acdir*` option, so kernel defaults apply (**V** for the login node; compute nodes are assumed to match, **unverified**) | archive in the same pass, and have the reader wait out the cache window on any vanished file: simpler compaction, but reads can stall about 60 s, and a stale `sealed/` listing alone (nothing vanished) still hides rows |
 
 ## 8. Adversarial review of v1 (2026-10-30)
 
