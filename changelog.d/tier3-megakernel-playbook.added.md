@@ -1,0 +1,1 @@
+- `xtrax-optimizing` skill: new `references/tier3-pallas-megakernels-and-ragged-buckets.md`, a Tier-3 playbook for Pallas megakernels, ragged-bucket ghost compaction and multi-GPU execution (MK-01..MK-35).

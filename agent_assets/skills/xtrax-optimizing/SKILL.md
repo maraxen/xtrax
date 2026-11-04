@@ -212,3 +212,7 @@ Load as needed -- do not read all up front:
   bucketing, dtype placement (measured, incl. a negative result).
 - **`references/tier3-composition.md`** -- strategy swaps, on-the-fly
   encoding, donate/remat, parity gating.
+- **`references/tier3-pallas-megakernels-and-ragged-buckets.md`** -- Pallas
+  megakernel fusion, ragged-bucket ghost-atom filtering & compaction, 2D-grid
+  multi-replica batching, runtime GPU architecture adaptation (`sm_80`/`sm_89`/`sm_90`/`sm_120`),
+  and ground-truth A/B parity testing.

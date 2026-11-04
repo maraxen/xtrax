@@ -66,3 +66,11 @@ metric launders a numerics regression violates Non-Negotiable 5.
   `xtrax.loop.compile_time_clock.measure_two_phase_timing` (AC-27): use it when
   a candidate trades compile time for steady-state speed; never let a persistent
   XLA cache launder compile cost into "free".
+
+## Pallas Megakernels, Ragged Buckets, and Multi-GPU Adaptation
+
+When a Tier-3 composition change fuses multiple physics/simulation terms into Pallas megakernels or operates across ragged size buckets (`N_ATOMS`, `N_WATERS`) and multi-replica batches (`N_MOLS` / `B`), see **`references/tier3-pallas-megakernels-and-ragged-buckets.md`** for:
+- Routing ghost atoms (`~atom_mask`) to sentinel cell `c_i = G_cells` and compacting valid neighbors (`jnp.argsort`) for CTA-level early exit.
+- Avoiding the Triton `scf.yield` `TypedNdArray` lowering crash by deriving `jax.lax.cond` zero carries from in-kernel MLIR `ir.Value`s (`c_i - c_i`).
+- Preventing silent `BatchTracer` host-fallback bugs (e.g., `_host_box_size` defaulting to `30.0 A` under `jax.vmap`) and sizing shared `NeighborList` seeds from the densest bundle using the union `atom_mask`.
+- Adapting `num_warps` and `num_stages` across Blackwell (`sm_120`), Hopper (`sm_90`), Ada (`sm_89`), and Ampere (`sm_80`) via `resolve_pallas_compiler_params`.
