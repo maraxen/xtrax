@@ -12,6 +12,10 @@ Replace a local copy with the primitive below. Import paths are the ones the pac
 | Private device-budget / compile-memory math | `device_memory_budget` and `lowered_memory_estimate` in `xtrax.tiling.estimators` |
 | Hand-rolled jax2onnx call | `convert_to_onnx` (`references/onnx-standalone.md`) |
 | `np.unique` to build a `DedupSpec` | `synthesize_dedup_spec` (below) |
+| Per-unit completion stamp (`done.json`, `*.stamp.json`) with input and output sha256s | `write_unit_record` in `xtrax.pack` (`unit.json`), below |
+| Hand-rolled tar/zstd of a finished unit dir, or many small files against a file-count cap | `pack_unit` / `read_unit_member` in `xtrax.pack`, below |
+| A scan of unit dirs to find what is already done | `UnitJsonAdapter` in `xtrax.run.unit_index_adapters` |
+| A pre-write file-count (inode) quota check | `FileCapGuard` in `xtrax.fileguard` |
 
 ```python
 import jax
@@ -35,6 +39,28 @@ Verify: `src/xtrax/transforms/map.py:9-34`, `src/xtrax/tiling/strategy.py:66-69`
 Migrate with the ast-grep rules in `codemods/safemap-to-chunkedmap/` (`rules.yml` for Python, `rename_markdown.py` for Markdown). See that directory's README and the CHANGELOG `[0.4.0a12]` Removed entry.
 
 Name-based strategy matching in `xtrax.stages.topology` and `xtrax.export.composer` still accepts the class name `"SafeMap"`, for a consumer's own duck-typed class of that name.
+
+## Per-unit outputs: `unit.json` and packs
+
+A unit is one directory of outputs for one work item (a design, a seed, a cell). `xtrax.pack` commits it with a record and can later fold its loose files into two (`members.tar.zst` + `members.idx.json`) with random access to each member. Install `xtrax[pack]` for the `zstandard` codec. Without it, `compression.zstd` (Python 3.14) or the `zstd` CLI is used, and with none of them `CodecUnavailable` (an `OSError`) is raised.
+
+```python
+from xtrax.pack import pack_unit, read_unit_member, unit_content_digest, write_unit_record
+
+record = write_unit_record("units/d1", input_digest="0" * 64, run_id="run-1")
+pack_unit("units/d1")  # refuses (R-U1) unless the members still match record["content_digest"]
+scores = read_unit_member("units/d1", "fold/scores.json")  # loose or packed, sha256-checked
+digest = unit_content_digest("units/d1")  # the same before and after packing
+```
+
+- `write_unit_record` is written last and only once. A second call refuses (`R-U1`). Its `record_digest` equals `zarr_commit`'s over the same fields, so an index row keyed on it survives packing.
+- A consumer with its own stamp keeps it: pass `record_name="<stamp>.json"` and a `check(unit_dir, record, digest)` that raises `UnitPackRefused` when the unit is not complete. **Pass the same `record_name` to every call** (`is_packed`, `list_unit_members`, `read_unit_member`, `find_packed_unit`, `pack_sweep`). A call that defaults to `unit.json` sees a packed unit as loose and empty.
+- Packing holds a POSIX lock per unit. Where locks do not exclude other nodes (no lock support, NFS `local_lock=all|posix`, Lustre `localflock`), `pack_unit` raises `LockUnavailable` (an `OSError`; `local_only_lock_reason(path)` says why). `lock=False` skips the lock and is safe only when one packer per unit is guaranteed.
+- Packs written by alynxr's `unit_pack` read through `xtrax.pack`, and the reverse. New packs name `storage.schema = "xtrax.unit_pack/1"`; a reader should check `storage.format == PACK_FORMAT`, not the schema string.
+- On a cluster node without xtrax installed, `xtrax.pack.node_source()` returns the stdlib-only module (Python >= 3.9) to embed in the job script.
+- `UnitJsonAdapter` (`xtrax.run.unit_index_adapters`) indexes `unit.json` units, loose or packed, for `xtrax.run`'s unit index.
+
+Verify: `src/xtrax/pack/_node.py:424` (`write_unit_record`), `:884` (`pack_unit`), `:649` (`read_unit_member`), `:356` (`unit_content_digest`), `:811` (`local_only_lock_reason`), `:106-110` (`CodecUnavailable`, `LockUnavailable`), `src/xtrax/pack/__init__.py:78` (`node_source`), `src/xtrax/run/unit_index_adapters.py:298`.
 
 ## What xtrax does not provide
 

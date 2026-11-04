@@ -1,7 +1,7 @@
 ---
 name: xtrax-io-on-shared-filesystems
-description: "Use when a job that reads large files (MD trajectories, XTC/DCD/NetCDF, zarr or HDF5 shards) from NFS, Lustre, GPFS, or another shared filesystem is slow, hits walltime, shows CPU time far below elapsed time, or sits in process state D. Also when choosing a seek or strided reader versus a sequential read or a copy onto local disk."
-when_to_use: 'Triggers: job hits walltime reading large files on NFS, Lustre, or GPFS, CPU time far below elapsed time, process state D, iowait, seek or strided reader versus a sequential read, copy a trajectory, zarr shard, or HDF5 file to local disk before analysis, cache one slim copy and read it many times.'
+description: "Use when a job that reads large files (MD trajectories, XTC/DCD/NetCDF, zarr or HDF5 shards) from NFS, Lustre, GPFS, or another shared filesystem is slow, hits walltime, shows CPU time far below elapsed time, or sits in process state D. Also when choosing a seek or strided reader versus a sequential read or a copy onto local disk. Also when a run writes many small files against a file-count (inode) cap."
+when_to_use: 'Triggers: job hits walltime reading large files on NFS, Lustre, or GPFS, CPU time far below elapsed time, process state D, iowait, seek or strided reader versus a sequential read, copy a trajectory, zarr shard, or HDF5 file to local disk before analysis, cache one slim copy and read it many times, file-count or inode cap on scratch, Disk quota exceeded with free bytes, many small files per output directory, pack a finished unit directory into one archive.'
 ---
 # xtrax-io-on-shared-filesystems
 
@@ -62,6 +62,31 @@ page-cache hits -- use it to compare readers, not to classify the filesystem.
    other way can cost more than that on a contended pool).
 4. **Log per-phase timings** (stage, header scan, decode, compute) with MB/s, so
    the next slow run tells you which phase.
+
+## Writes: the file-count budget
+
+Shared tiers cap files as well as bytes, and the file cap usually binds first: Engaging
+scratch hit its ~1,000,000-file cap at ~46% of bytes (2026-09-30). A run that writes one
+directory of small files per work item spends that budget per item.
+
+1. **Check before writing.** `xtrax.fileguard.FileCapGuard` reads the real per-user (and
+   setgid-group) file quota and refuses a write whose projected count would pass
+   `cap_fraction` of it. `check_concurrency_slack` refuses at plan time when N concurrent
+   writers could jointly overshoot.
+2. **Commit each unit, then pack it.** `xtrax.pack.write_unit_record` stamps a finished unit
+   directory (`unit.json`, sha256 of every member), and `pack_unit` folds its files into
+   `members.tar.zst` + `members.idx.json`: three files per unit, each member still readable
+   alone with `read_unit_member`. API, consumer stamps and pitfalls: `using-xtrax`,
+   `references/adoption.md`.
+3. **Mind the lock.** `pack_unit` holds a POSIX lock per unit and raises `LockUnavailable`
+   on a mount where locks stay node-local (NFS `local_lock=all|posix`, Lustre `localflock`)
+   or are unsupported. Check the mount options (`grep <mount> /proc/mounts`) before choosing
+   `lock=False`, which is safe only with one packer per unit. Engaging's NFS v4.2 mounts
+   (`local_lock=none`) were probed to exclude across nodes (job 27899947, 2026-11-04).
+4. **On a node without xtrax**, embed `xtrax.pack.node_source()` or
+   `xtrax.fileguard.node_source()` in the job script: both are stdlib-only, Python >= 3.9.
+   Engaging's default `python3` is 3.6; load a 3.11+ module first. Its compute nodes have
+   the `zstd` 1.4.4 CLI and GNU tar 1.30 without `--zstd` (`zstd -dc x.tar.zst | tar -x`).
 
 ## Gate before shipping an I/O-path change
 
