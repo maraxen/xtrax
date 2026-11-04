@@ -31,14 +31,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from xtrax.pack._node import (
-    PACK_FILE,
-    PACK_INDEX,
     RECORD_SCHEMA,
     UNIT_RECORD,
     UnitPackRefused,
     is_packed,
     is_plain_relpath,
     record_problem,
+    storage_files,
     unit_content_digest,
 )
 from xtrax.run.unit_index import (
@@ -286,13 +285,14 @@ def _unit_core(locator: str, record: dict[str, Any]) -> CoreRecord:
     )
 
 
-def _pack_not_visible(unit: Path, record: dict[str, Any]) -> bool:
-    """The record names a pack or index that is not there; on NFS it may not be visible yet (A1)."""
-    storage = record["storage"]
-    names = (storage.get("pack", PACK_FILE), storage.get("index", PACK_INDEX))
-    return all(isinstance(n, str) and is_plain_relpath(n) for n in names) and not all(
-        (unit / n).exists() for n in names
-    )
+def _pack_not_visible(unit: Path, record: dict[str, Any]) -> bool | None:
+    """True if the record names a pack or index that is not there (on NFS it may not be visible
+    yet, A1); None if the record's ``storage`` names a file outside the unit."""
+    try:
+        names = storage_files(record["storage"])
+    except UnitPackRefused:
+        return None
+    return not all((unit / n).exists() for n in names)
 
 
 class UnitJsonAdapter:
@@ -303,9 +303,9 @@ class UnitJsonAdapter:
     def find(self, store: Path) -> Iterator[tuple[str, CoreRecord]]:
         root = Path(store)
         for dirpath, dirnames, filenames in os.walk(root):
+            dirnames.sort()
             if UNIT_RECORD not in filenames:
                 continue
-            dirnames.clear()  # a unit's own files are not further units
             locator = Path(dirpath).relative_to(root).as_posix()
             if locator == ".":
                 continue  # a unit is a directory below the store, never the store itself
@@ -318,10 +318,11 @@ class UnitJsonAdapter:
             if not isinstance(record, dict):
                 raise UnitIndexError(f"unit record {locator} is not a JSON object")
             if record.get("schema") != RECORD_SCHEMA:
-                continue
+                continue  # someone else's unit.json: keep looking below it
             problem = record_problem(record)
             if problem is not None:
                 raise UnitIndexError(f"unit record {locator}: {problem}")
+            dirnames.clear()  # an accepted unit's own files are members, not further units
             yield locator, _unit_core(locator, record)
 
     def classify(self, store: Path, locator: str, input_digest: str, *, verify: bool) -> Any:
@@ -347,13 +348,19 @@ class UnitJsonAdapter:
         core = _unit_core(locator, record)
         if core.input_digest != input_digest:
             return IndexStale(canonical_store(store), locator, core)
-        if verify:
-            if is_packed(unit, record) and _pack_not_visible(unit, record):
+        if is_packed(unit, record):  # checked with or without verify, like the other adapters
+            gone = _pack_not_visible(unit, record)
+            if gone is None:
+                return Corrupt("unit record's storage names a file outside the unit")
+            if gone:
                 return Missing()
+        if verify:
             try:
                 observed = unit_content_digest(unit)
             except UnitPackRefused as e:
                 return Corrupt(str(e))
+            # CodecUnavailable and other OSErrors propagate: they are the environment, not the
+            # unit (as zarr_commit.lookup and the aminx adapter treat I/O).
             if observed != core.content_digest:
                 return Corrupt("content digest mismatch")
         return IndexReuse(canonical_store(store), locator, core)

@@ -394,7 +394,7 @@ def test_loose_reads_refuse_traversal_too(tmp_path: Path) -> None:
         pack.read_unit_member(unit, "lnk/x")
     with pytest.raises(pack.UnitPackRefused) as e:
         pack.read_unit_member(unit, "fold/nope.cif")
-    assert e.value.rid == "R-U2"
+    assert e.value.rid == "R-U-unknown-member"  # the same id as for a packed unit
 
 
 def test_index_that_does_not_match_the_record_is_refused(tmp_path: Path) -> None:
@@ -601,40 +601,58 @@ def test_empty_run_id_is_allowed(tmp_path: Path) -> None:
 # ---- codecs --------------------------------------------------------------------------------------
 
 
+def use_codec(monkeypatch: pytest.MonkeyPatch, kind: str, impl: Any) -> None:
+    monkeypatch.setattr(_node, "_codec", lambda: (kind, impl))
+
+
 def test_zstd_cli_path_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:
-    if shutil.which("zstd") is None:
+    binary = shutil.which("zstd")
+    if binary is None:
         pytest.skip("no zstd CLI")
-    monkeypatch.setattr(_node, "_optional_module", lambda name: None)
+    use_codec(monkeypatch, "cli", binary)
     data = b"x" * 5000
     assert _node.zstd_decompress(_node.zstd_compress(data)) == data
+    with pytest.raises(pack.UnitPackRefused):
+        _node.zstd_decompress(b"not zstd", "m")
 
 
 def test_zstandard_path_reads_concatenated_frames(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("zstandard")
-    real = _node._optional_module
-    monkeypatch.setattr(
-        _node, "_optional_module", lambda name: None if name == "compression.zstd" else real(name)
-    )
+    zstandard = pytest.importorskip("zstandard")
+    use_codec(monkeypatch, "zstandard", zstandard)
     assert _node.zstd_decompress(_node.zstd_compress(b"a") + _node.zstd_compress(b"b")) == b"ab"
 
 
-def test_no_compressor_refuses_and_keeps_the_loose_files(
+def test_codec_is_resolved_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(_node, "_CODEC_CACHE", [])
+    monkeypatch.setattr(_node, "_find_codec", lambda: calls.append(1) or ("none", None))
+    for _ in range(3):
+        with pytest.raises(pack.CodecUnavailable):
+            _node.zstd_compress(b"x")
+    assert calls == [1]
+
+
+def test_no_codec_is_environmental_and_keeps_the_loose_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Not a refusal and not corruption: the unit is fine, the host has no zstd."""
     unit = tmp_path / "u"
     files = make_unit(unit)
-
-    def no_binary(*_args: Any, **_kwargs: Any) -> Any:
-        raise FileNotFoundError("zstd")
-
-    monkeypatch.setattr(_node, "_optional_module", lambda name: None)
-    monkeypatch.setattr(_node.subprocess, "run", no_binary)
-    with pytest.raises(pack.UnitPackRefused) as e:
+    use_codec(monkeypatch, "none", None)
+    with pytest.raises(pack.CodecUnavailable) as e:
         pack.pack_unit(unit)
-    assert e.value.rid == "R-U2" and "compressor" in e.value.detail
-    assert not pack.is_packed(unit) and not (unit / pack.PACK_FILE).exists()
+    assert isinstance(e.value, OSError) and not isinstance(e.value, pack.UnitPackRefused)
+    assert sorted(p.name for p in unit.iterdir()) == sorted(
+        {*{r.split("/")[0] for r in files}, "unit.json"}
+    )
     for rel, data in files.items():
         assert (unit / rel).read_bytes() == data
+
+
+def test_vanished_cli_binary_is_environmental(monkeypatch: pytest.MonkeyPatch) -> None:
+    use_codec(monkeypatch, "cli", "/nonexistent/zstd")
+    with pytest.raises(pack.CodecUnavailable):
+        _node.zstd_decompress(b"anything", "m")
 
 
 def test_garbage_frame_is_a_refusal_not_a_crash() -> None:
@@ -763,3 +781,264 @@ def test_cli_exit_codes(tmp_path: Path) -> None:
     assert _node.main(["pack", str(unit)]) == 6
     assert _node.main(["bogus"]) == 2
     assert _node.main(["read", str(unit)]) == 2
+
+
+# ---- review findings (PR #262) -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["meta/stamp.json", "../stamp.json", "", "members.tar.zst"])
+def test_record_name_must_be_a_bare_file_name(tmp_path: Path, name: str) -> None:
+    unit = tmp_path / "u"
+    make_unit(unit, commit=False)
+    with pytest.raises(pack.UnitPackRefused) as e:
+        pack.pack_unit(unit, record_name=name, check=lambda *_a: None)
+    assert e.value.rid == "R-U3"
+    assert not (unit / pack.PACK_FILE).exists()
+
+
+def test_unreadable_record_is_an_error_not_a_loose_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EIO on the record of a packed unit must not read as 'loose, with no members'."""
+    unit = tmp_path / "u"
+    make_unit(unit)
+    pack.pack_unit(unit)
+    real = _node._read_bytes
+
+    def eio(path: Any) -> bytes:
+        if str(path).endswith(pack.UNIT_RECORD):
+            raise OSError(5, "Input/output error")
+        return real(path)
+
+    monkeypatch.setattr(_node, "_read_bytes", eio)
+    for call in (pack.unit_content_digest, pack.list_unit_members):
+        with pytest.raises(OSError):
+            call(unit)
+
+
+def test_estale_is_retried(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
+    import errno as errno_mod
+
+    path = tmp_path / "f"
+    path.write_bytes(b"ok")
+    real_open = builtins.open
+    fails = [2]
+
+    def flaky(file: Any, *args: Any, **kwargs: Any) -> Any:
+        if str(file) == str(path) and fails[0]:
+            fails[0] -= 1
+            raise OSError(errno_mod.ESTALE, "Stale file handle")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", flaky)
+    assert _node._read_bytes(path) == b"ok"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "needle"),
+    [
+        ({"input_digest": ""}, "input_digest"),
+        ({"run_id": 7}, "run_id"),
+        ({"meta": []}, "meta"),
+        ({"committed_at": 5}, "committed_at"),
+    ],
+)
+def test_write_unit_record_refuses_an_invalid_record(
+    tmp_path: Path, kwargs: dict[str, Any], needle: str
+) -> None:
+    unit = tmp_path / "u"
+    make_unit(unit, commit=False)
+    args: dict[str, Any] = {"input_digest": "i", "run_id": "r", **kwargs}
+    with pytest.raises(pack.UnitPackRefused) as e:
+        pack.write_unit_record(unit, **args)
+    assert e.value.rid == "R-U3" and needle in e.value.detail
+    assert not (unit / pack.UNIT_RECORD).exists()
+
+
+@pytest.mark.parametrize("name", ["members.tar.zst", "members.idx.json", "members.tar.zst.partial"])
+def test_write_unit_record_refuses_root_files_named_like_artefacts(
+    tmp_path: Path, name: str
+) -> None:
+    unit = tmp_path / "u"
+    make_unit(unit, commit=False)
+    (unit / name).write_bytes(b"user data")
+    with pytest.raises(pack.UnitPackRefused) as e:
+        pack.write_unit_record(unit, input_digest="i", run_id="r")
+    assert e.value.rid == "R-U3"
+    assert (unit / name).read_bytes() == b"user data"
+
+
+def test_write_unit_record_never_replaces_a_record_that_appears_meanwhile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check-then-write race: another writer's record lands after the existence check."""
+    unit = tmp_path / "u"
+    make_unit(unit, commit=False)
+    real = _node._write_tmp
+
+    def racing(path: str, data: bytes) -> str:
+        tmp = real(path, data)
+        if path.endswith(pack.UNIT_RECORD):
+            (unit / pack.UNIT_RECORD).write_bytes(b'{"theirs": true}')
+        return tmp
+
+    monkeypatch.setattr(_node, "_write_tmp", racing)
+    with pytest.raises(pack.UnitPackRefused) as e:
+        pack.write_unit_record(unit, input_digest="i", run_id="r")
+    assert e.value.rid == "R-U1"
+    assert (unit / pack.UNIT_RECORD).read_bytes() == b'{"theirs": true}'
+    assert not [p for p in unit.iterdir() if p.name.endswith(".tmp")]
+
+
+@pytest.mark.parametrize("fault", ["tamper", "no_codec"])
+def test_a_refusal_after_step_one_leaves_no_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    unit = tmp_path / "u"
+    make_unit(unit)
+    if fault == "tamper":
+        (unit / "query.fasta").write_bytes(b">tampered\n")
+        expected: Any = pack.UnitPackRefused
+    else:
+        use_codec(monkeypatch, "none", None)
+        expected = pack.CodecUnavailable
+    with pytest.raises(expected):
+        pack.pack_unit(unit)
+    names = {p.name for p in unit.iterdir()}
+    assert not names & {
+        "members.tar.zst.partial",
+        pack.PACK_FILE,
+        pack.PACK_INDEX,
+        "members.tar.zst.lock",
+    }
+
+
+def test_loose_read_refuses_a_symlinked_leaf_and_transient_files(tmp_path: Path) -> None:
+    unit = tmp_path / "u"
+    make_unit(unit)
+    (tmp_path / "secret").write_bytes(b"outside the unit")
+    (unit / "leaf").symlink_to(tmp_path / "secret")
+    (unit / ".x.1.tmp").write_bytes(b"temp")
+    (unit / ".nfs0001").write_bytes(b"nfs")
+    for rel in ("leaf", ".x.1.tmp", ".nfs0001"):
+        with pytest.raises(pack.UnitPackRefused) as e:
+            pack.read_unit_member(unit, rel)
+        assert e.value.rid == "R-U-unknown-member", rel
+
+
+def test_a_reader_racing_the_sweep_falls_over_to_the_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reader sees the unit loose, then the packer sweeps the file it was about to read."""
+    unit = tmp_path / "u"
+    files = make_unit(unit)
+    digest = pack.unit_content_digest(unit)
+    crash_at(unit, "stamp_rewritten")
+    record = json.loads((unit / pack.UNIT_RECORD).read_text())
+    loose_view = {k: v for k, v in record.items() if k != "storage"}
+    reads = [0]
+    real = _node._read_record
+
+    def stale_then_fresh(unit_dir: Any, name: str) -> Any:
+        reads[0] += 1
+        if reads[0] == 1:
+            pack.pack_sweep(unit)  # the packer finishes between the reader's two looks
+            return loose_view
+        return real(unit_dir, name)
+
+    monkeypatch.setattr(_node, "_read_record", stale_then_fresh)
+    assert pack.read_unit_member(unit, "query.fasta") == files["query.fasta"]
+    reads[0] = 0
+    crash_at_unit = tmp_path / "u2"
+    make_unit(crash_at_unit)
+    monkeypatch.setattr(_node, "_read_record", real)
+    crash_at(crash_at_unit, "stamp_rewritten")
+    record2 = json.loads((crash_at_unit / pack.UNIT_RECORD).read_text())
+    loose2 = {k: v for k, v in record2.items() if k != "storage"}
+
+    def stale_digest(unit_dir: Any, name: str) -> Any:
+        reads[0] += 1
+        if reads[0] == 1:
+            pack.pack_sweep(crash_at_unit)
+            return loose2
+        return real(unit_dir, name)
+
+    monkeypatch.setattr(_node, "_read_record", stale_digest)
+    assert pack.unit_content_digest(crash_at_unit) == record2["content_digest"]
+    assert digest == record["content_digest"]
+
+
+_HOLD_LOCK = """
+import sys, time
+from xtrax.pack import _node
+with _node._pack_lock(sys.argv[1]):
+    print("held", flush=True)
+    time.sleep(30)
+"""
+
+
+def test_a_second_packer_is_refused_while_the_first_holds_the_lock(tmp_path: Path) -> None:
+    unit = tmp_path / "u"
+    files = make_unit(unit)
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLD_LOCK, str(unit)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        with pytest.raises(pack.UnitPackRefused) as e:
+            pack.pack_unit(unit)
+        assert e.value.rid == "R-U4"
+        assert not (unit / "members.tar.zst.partial").exists()
+    finally:
+        holder.kill()
+        holder.wait()
+    # The holder died without cleaning up: its lock file is left, and the lock is free.
+    assert (unit / "members.tar.zst.lock").exists()
+    pack.pack_unit(unit)
+    assert sorted(p.name for p in unit.iterdir()) == THREE_FILES
+    for rel, data in files.items():
+        assert pack.read_unit_member(unit, rel) == data
+
+
+def test_lock_file_is_not_a_member_and_is_removed(tmp_path: Path) -> None:
+    unit = tmp_path / "u"
+    make_unit(unit)
+    (unit / "members.tar.zst.lock").write_bytes(b"")  # a dead packer's leftover
+    assert "members.tar.zst.lock" not in pack.collect_loose_members(unit)
+    pack.pack_unit(unit)
+    assert not (unit / "members.tar.zst.lock").exists()
+
+
+def test_sweep_tolerates_a_directory_that_gains_a_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unit = tmp_path / "u"
+    make_unit(unit)
+    crash_at(unit, "stamp_rewritten")
+    real_rmdir = os.rmdir
+
+    def busy(path: Any) -> None:
+        raise OSError(39, "Directory not empty", str(path))
+
+    monkeypatch.setattr(_node.os, "rmdir", busy)
+    pack.pack_sweep(unit)  # finishes; leftover empty dirs are harmless
+    monkeypatch.setattr(_node.os, "rmdir", real_rmdir)
+    assert pack.is_packed(unit) and not (unit / "query.fasta").exists()
+
+
+def test_pack_unit_does_not_reverify_what_it_just_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unit = tmp_path / "u"
+    files = make_unit(unit)
+    calls = [0]
+    real = _node.zstd_decompress
+
+    def counting(data: bytes, name: str = "<member>") -> bytes:
+        calls[0] += 1
+        return real(data, name)
+
+    monkeypatch.setattr(_node, "zstd_decompress", counting)
+    pack.pack_unit(unit)
+    assert calls[0] == len(files)  # step 2 only

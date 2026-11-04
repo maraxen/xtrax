@@ -312,12 +312,16 @@ def test_unit_json_tampered_pack_is_corrupt(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("name", [pack.PACK_FILE, pack.PACK_INDEX])
-def test_unit_json_pack_not_visible_is_missing(tmp_path: Path, name: str) -> None:
-    """Spec A1: a file another node wrote may not be visible yet; that is Missing, not Corrupt."""
+@pytest.mark.parametrize("verify", [True, False])
+def test_unit_json_pack_not_visible_is_missing(tmp_path: Path, name: str, verify: bool) -> None:
+    """Spec A1: a file another node wrote may not be visible yet; that is Missing, not Corrupt.
+
+    With or without verify: a fast-path resume must not reuse a unit whose only copy is gone.
+    """
     unit = json_unit(tmp_path, "u1")
     pack.pack_unit(unit)
     (unit / name).unlink()
-    assert ua.UnitJsonAdapter().classify(tmp_path, "u1", "inU", verify=True) == zc.Missing()
+    assert ua.UnitJsonAdapter().classify(tmp_path, "u1", "inU", verify=verify) == zc.Missing()
 
 
 def test_unit_json_record_faults_classify(tmp_path: Path) -> None:
@@ -368,3 +372,35 @@ def test_unit_json_rows_need_no_explicit_adapter_table(tmp_path: Path) -> None:
     json_unit(tmp_path / "s", "u1")
     ui.rebuild(tmp_path / "idx", [(tmp_path / "s", ua.UnitJsonAdapter())])
     assert isinstance(ui.lookup(tmp_path / "idx", tmp_path / "s", "u1", "inU"), ui.IndexReuse)
+
+
+def test_unit_json_find_is_not_hidden_by_a_foreign_or_root_record(tmp_path: Path) -> None:
+    json_unit(tmp_path, "arm/u1")
+    json_unit(tmp_path, "arm/u2")
+    (tmp_path / "unit.json").write_text("{}")  # the store root is never a unit
+    (tmp_path / "arm" / "unit.json").write_text(json.dumps({"schema": "someone-elses/1"}))
+    assert set(dict(ua.UnitJsonAdapter().find(tmp_path))) == {"arm/u1", "arm/u2"}
+
+
+def test_unit_json_missing_codec_propagates_not_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from xtrax.pack import _node
+
+    unit = json_unit(tmp_path, "u1")
+    pack.pack_unit(unit)
+    monkeypatch.setattr(_node, "_codec", lambda: ("none", None))
+    with pytest.raises(pack.CodecUnavailable):
+        ua.UnitJsonAdapter().classify(tmp_path, "u1", "inU", verify=True)
+
+
+def test_unit_json_storage_outside_the_unit_is_corrupt(tmp_path: Path) -> None:
+    from xtrax.pack import _node
+
+    unit = json_unit(tmp_path, "u1")
+    pack.pack_unit(unit)
+    record = json.loads((unit / "unit.json").read_text())
+    record["storage"]["pack"] = "../elsewhere"
+    _node.write_json_atomic(unit / "unit.json", record)
+    got = ua.UnitJsonAdapter().classify(tmp_path, "u1", "inU", verify=False)
+    assert isinstance(got, zc.Corrupt)

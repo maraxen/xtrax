@@ -25,6 +25,7 @@ from xtrax.pack._node import (
     PACK_INDEX,
     RECORD_SCHEMA,
     UNIT_RECORD,
+    CodecUnavailable,
     UnitPackRefused,
     collect_loose_members,
     compute_record_digest,
@@ -37,6 +38,7 @@ from xtrax.pack._node import (
     pack_unit,
     read_unit_member,
     record_problem,
+    storage_files,
     unit_content_digest,
     write_unit_record,
 )
@@ -47,6 +49,7 @@ __all__ = [
     "PACK_INDEX",
     "RECORD_SCHEMA",
     "UNIT_RECORD",
+    "CodecUnavailable",
     "UnitPackRefused",
     "collect_loose_members",
     "compute_record_digest",
@@ -60,6 +63,7 @@ __all__ = [
     "pack_unit",
     "read_unit_member",
     "record_problem",
+    "storage_files",
     "unit_content_digest",
     "write_unit_record",
 ]
