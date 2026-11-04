@@ -185,13 +185,14 @@ def test_zarr_lazy_import_resolves_via_the_io_extra() -> None:
 
 
 def test_guarded_optional_imports_are_exempted_on_repo() -> None:
-    """`cisternal` (src/xtrax/telemetry/record.py:347-355) and `zstandard`
-    (src/xtrax/telemetry/store.py:65-76) are deliberately never declared ANYWHERE
-    -- not in dependencies, not in any extra, not in the override table -- but
-    both are guarded: `try: import ... except ImportError: ...`. Such an import
-    cannot raise ModuleNotFoundError at a consumer's install, which is direction
-    2's whole rationale for existing, so the guarded-import exemption (applied
-    last, after all three resolution steps miss) exempts both.
+    """`cisternal` (src/xtrax/telemetry/record.py:347-355) is deliberately never
+    declared ANYWHERE -- not in dependencies, not in any extra, not in the override
+    table -- but it is guarded: `try: import ... except ImportError: ...`. Such an
+    import cannot raise ModuleNotFoundError at a consumer's install, which is
+    direction 2's whole rationale for existing, so the guarded-import exemption
+    (applied last, after all three resolution steps miss) exempts it. `zstandard`
+    is now the `pack` extra and is imported by name (`importlib.import_module`),
+    so it must not surface as a failure either.
     """
     config = load_project_hygiene_config(CONFIG_PATH)
     failures = check_imports_are_declared(
@@ -302,7 +303,7 @@ def test_check_dependencies_are_imported_passes_on_repo() -> None:
 def test_check_imports_are_declared_passes_on_repo() -> None:
     """Direction 2 (import -> declared name) contributes zero failures on the real
     repo: `iree`/`matplotlib`/`pandas`/`seaborn` all resolve via steps 1-3, and
-    `cisternal`/`zstandard` are exempted by the guarded-import rule. Same
+    `cisternal` is exempted by the guarded-import rule. Same
     non-duplication rationale as `test_check_dependencies_are_imported_passes_on_repo`
     above -- this isolates direction 2 specifically, rather than repeating
     `test_project_hygiene.py`'s whole-gate assertion.
