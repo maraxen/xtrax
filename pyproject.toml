@@ -73,6 +73,10 @@ io = [ "zarr>=3.0.8",]
 # Read-only DuckDB view over the unit index (xtrax.run.unit_index.duckdb_view). Never a writer,
 # never a core dependency (spec 261030 §3.1).
 index = [ "duckdb>=1.1",]
+# In-process zstd for xtrax.pack. Without it (and before Python 3.14's compression.zstd), the
+# pack core falls back to one `zstd` CLI process per member. Never a core dependency: the
+# embedded node core stays stdlib-only (spec 261030 §3.3).
+pack = [ "zstandard>=0.23",]
 # grain is a data-pipeline dependency, not a core one: it was in runtime
 # `dependencies` but is imported nowhere under src/. Consumers who need it must
 # now ask for xtrax[data]. See backlog #4967.

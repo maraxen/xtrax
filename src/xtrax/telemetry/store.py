@@ -36,6 +36,7 @@ and reads are suffix-agnostic, so a future switch (a 3.14 floor, or an installed
 
 import gzip
 import hashlib
+import importlib
 import os
 import warnings
 from collections.abc import Callable, Iterator
@@ -62,9 +63,10 @@ _CODECS: "dict[str, tuple[Callable[[bytes], bytes], Callable[[bytes], bytes]]]" 
 }
 
 try:  # pragma: no cover - depends on an optional third-party package
-    # Not a declared dependency: if a consumer happens to have it, blobs get a
-    # better ratio; if not, gzip is used and existing blobs stay readable.
-    import zstandard as _zstd  # ty: ignore[unresolved-import]
+    # Optional (the `pack` extra): with it, blobs get a better ratio; without it,
+    # gzip is used and existing blobs stay readable. Imported by name so the type
+    # check passes whether or not the extra is installed.
+    _zstd = importlib.import_module("zstandard")
 
     _CODECS[".zst"] = (
         lambda raw: _zstd.ZstdCompressor(level=10).compress(raw),
@@ -77,6 +79,10 @@ except ImportError:
 
 class BlobStoreError(OSError):
     """Raised when the blob store cannot satisfy a read or write."""
+
+
+class BlobCorrupt(BlobStoreError):
+    """A stored blob's bytes do not decode with the codec its suffix names."""
 
 
 def digest_of(text: str) -> "tuple[str, int]":
@@ -155,9 +161,15 @@ class BlobStore:
             raise BlobStoreError(f"blob {sha256} is not present in {self.root}")
         _, decompress = _CODECS[path.suffix]
         try:
-            return decompress(path.read_bytes()).decode("utf-8")
+            blob = path.read_bytes()
         except OSError as exc:
             raise BlobStoreError(f"could not read blob {sha256}: {exc}") from exc
+        try:
+            return decompress(blob).decode("utf-8")
+        except Exception as exc:  # noqa: BLE001 - each codec raises its own decode error type
+            raise BlobCorrupt(
+                f"blob {sha256} does not decode ({type(exc).__name__}: {exc})"
+            ) from exc
 
     def verify(self, sha256: str) -> bool:
         """Whether the stored blob still hashes to the digest it is filed under.
@@ -168,7 +180,11 @@ class BlobStore:
         """
         if not self.has(sha256):
             return False
-        actual, _ = digest_of(self.get(sha256))
+        try:
+            text = self.get(sha256)
+        except BlobCorrupt:
+            return False  # an undecodable blob is corrupt; an I/O error still raises
+        actual, _ = digest_of(text)
         return actual == sha256
 
     def iter_digests(self) -> Iterator[str]:

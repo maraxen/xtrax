@@ -27,6 +27,7 @@ _PACKAGES = [
     "xtrax.kernel_seam",
     "xtrax.loop",
     "xtrax.loop.admission",
+    "xtrax.pack",
     "xtrax.run.spec",
     "xtrax.stages.boundaries",
     "xtrax.stages.bundle",
