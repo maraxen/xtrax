@@ -1,0 +1,16 @@
+{
+ "complete": true,
+ "record": "fold/alynxr_run.json",
+ "record_sha256": "1c6c91228666cbca3e625c109f243bcd913b1e8c9532dfc3e41c1372d25e063d",
+ "schema": "alynxr.fold_unit/1",
+ "storage": {
+  "codec": "zstd",
+  "format": "tar.zst+frame-index/1",
+  "index": "members.idx.json",
+  "index_sha256": "45a883c3d0e01d713357299b999f43e995dadb4b6d4acb18156d649e482f1160",
+  "n_members": 3,
+  "pack": "members.tar.zst",
+  "pack_sha256": "bf0e6a289a05372e6bb26054a4791f35e1ba0998b34851c851036d5854dc50c7",
+  "schema": "alynxr.unit_pack/1"
+ }
+}

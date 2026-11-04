@@ -12,12 +12,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from xtrax import pack
 from xtrax.run import unit_index as ui
 from xtrax.run import unit_index_adapters as ua
 from xtrax.run import zarr_commit as zc
 from xtrax.run.zarr_integrity import zarr_content_digest
 
-# ---- aminx done marker v3 ----------------------------------------------------------------------
+# ---- aminx done marker v3 ------------------------------------------------------------------------
 
 
 def aminx_unit(
@@ -130,7 +131,7 @@ def test_adapter_schema_mismatch_ranks_below_corrupt_above_stale(tmp_path: Path)
     assert isinstance(ui.lookup(tmp_path / "idx", store, "rowA", "inA"), ui.SchemaMismatch)
 
 
-# ---- alynxr fold-stats fragment ----------------------------------------------------------------
+# ---- alynxr fold-stats fragment ------------------------------------------------------------------
 
 PART = "metrics/arm=a1/source=derived/fn=ipsae@1/part-0123456789ab-000000000000.parquet"
 
@@ -227,3 +228,143 @@ def test_alynxr_fragment_naming_another_part_is_corrupt(tmp_path: Path) -> None:
     assert isinstance(got, zc.Corrupt)
     with pytest.raises(ui.UnitIndexError):
         list(ua.AlynxrFragmentAdapter().find(tmp_path))
+
+
+# ---- unit.json -----------------------------------------------------------------------------------
+
+
+def json_unit(store: Path, name: str, *, inp: str = "inU", run_id: str = "run-1") -> Path:
+    unit = store / name
+    (unit / "fold").mkdir(parents=True)
+    (unit / "a.txt").write_bytes(b"alpha")
+    (unit / "fold" / "b.txt").write_bytes(b"beta")
+    pack.write_unit_record(unit, input_digest=inp, run_id=run_id)
+    return unit
+
+
+def test_unit_json_find_maps_the_record_and_stops_at_the_unit(tmp_path: Path) -> None:
+    unit = json_unit(tmp_path, "arm/u1")
+    json_unit(tmp_path, "arm/u2")
+    (unit / "fold" / "nested").mkdir()
+    (unit / "fold" / "nested" / "unit.json").write_text("not a unit, a member")
+    got = dict(ua.UnitJsonAdapter().find(tmp_path))
+    assert set(got) == {"arm/u1", "arm/u2"}
+    record = json.loads((unit / "unit.json").read_text())
+    core = got["arm/u1"]
+    assert core == ui.CoreRecord(
+        "arm/u1", "inU", record["content_digest"], record["record_digest"], "run-1"
+    )
+
+
+def test_unit_json_row_stays_valid_after_packing(tmp_path: Path) -> None:
+    """§3.1: a pack adds ``storage`` outside the digest, so the index needs no rewrite."""
+    store, idx = tmp_path / "s", tmp_path / "idx"
+    unit = json_unit(store, "u1")
+    ui.rebuild(idx, [(store, ua.UnitJsonAdapter())])
+    snap = ui.load_index(idx)
+    loose = ui.lookup(snap, store, "u1", "inU")
+    assert isinstance(loose, ui.IndexReuse)
+    pack.pack_unit(unit)
+    packed = ui.lookup(snap, store, "u1", "inU")
+    assert isinstance(packed, ui.IndexReuse) and packed.core == loose.core
+    assert dict(ua.UnitJsonAdapter().find(store))["u1"] == loose.core
+
+
+@pytest.mark.parametrize("packed", [False, True])
+def test_unit_json_lookup_outcomes(tmp_path: Path, packed: bool) -> None:
+    store, idx = tmp_path / "s", tmp_path / "idx"
+    unit = json_unit(store, "u1")
+    if packed:
+        pack.pack_unit(unit)
+    ui.rebuild(idx, [(store, ua.UnitJsonAdapter())])
+    snap = ui.load_index(idx)
+    assert isinstance(ui.lookup(snap, store, "u1", "inU"), ui.IndexReuse)
+    assert isinstance(ui.lookup(snap, store, "u1", "other"), ui.IndexStale)
+    assert isinstance(ui.lookup(snap, store, "nope", "inU"), zc.Missing)
+
+
+def test_unit_json_tampered_loose_member_is_corrupt(tmp_path: Path) -> None:
+    unit = json_unit(tmp_path, "u1")
+    ad = ua.UnitJsonAdapter()
+    (unit / "a.txt").write_bytes(b"tampered")
+    got = ad.classify(tmp_path, "u1", "inU", verify=True)
+    assert isinstance(got, zc.Corrupt) and "content" in got.reason
+    assert isinstance(ad.classify(tmp_path, "u1", "inU", verify=False), ui.IndexReuse)
+
+
+def test_unit_json_extra_loose_member_is_corrupt(tmp_path: Path) -> None:
+    unit = json_unit(tmp_path, "u1")
+    (unit / "stray.txt").write_bytes(b"not committed")
+    got = ua.UnitJsonAdapter().classify(tmp_path, "u1", "inU", verify=True)
+    assert isinstance(got, zc.Corrupt)
+
+
+def test_unit_json_tampered_pack_is_corrupt(tmp_path: Path) -> None:
+    unit = json_unit(tmp_path, "u1")
+    pack.pack_unit(unit)
+    entry = json.loads((unit / pack.PACK_INDEX).read_text())["members"]["a.txt"]
+    raw = bytearray((unit / pack.PACK_FILE).read_bytes())
+    raw[entry["offset"]] ^= 0xFF
+    (unit / pack.PACK_FILE).write_bytes(bytes(raw))
+    ad = ua.UnitJsonAdapter()
+    assert isinstance(ad.classify(tmp_path, "u1", "inU", verify=True), zc.Corrupt)
+    assert isinstance(ad.classify(tmp_path, "u1", "inU", verify=False), ui.IndexReuse)
+
+
+@pytest.mark.parametrize("name", [pack.PACK_FILE, pack.PACK_INDEX])
+def test_unit_json_pack_not_visible_is_missing(tmp_path: Path, name: str) -> None:
+    """Spec A1: a file another node wrote may not be visible yet; that is Missing, not Corrupt."""
+    unit = json_unit(tmp_path, "u1")
+    pack.pack_unit(unit)
+    (unit / name).unlink()
+    assert ua.UnitJsonAdapter().classify(tmp_path, "u1", "inU", verify=True) == zc.Missing()
+
+
+def test_unit_json_record_faults_classify(tmp_path: Path) -> None:
+    unit = json_unit(tmp_path, "u1")
+    ad = ua.UnitJsonAdapter()
+    path = unit / "unit.json"
+    good = path.read_text()
+    record = json.loads(good)
+
+    path.write_text(json.dumps(dict(record, input_digest="forged")))
+    forged = ad.classify(tmp_path, "u1", "forged", verify=False)
+    assert isinstance(forged, zc.Corrupt) and "record_digest" in forged.reason
+
+    path.write_text("{torn")
+    assert isinstance(ad.classify(tmp_path, "u1", "inU", verify=True), zc.Corrupt)
+    path.write_text("[1]")
+    assert isinstance(ad.classify(tmp_path, "u1", "inU", verify=True), zc.Corrupt)
+    path.write_text(json.dumps(dict(record, schema="xtrax.unit/99")))
+    assert isinstance(ad.classify(tmp_path, "u1", "inU", verify=True), ui.SchemaMismatch)
+    path.unlink()
+    assert ad.classify(tmp_path, "u1", "inU", verify=True) == zc.Missing()
+
+
+def test_unit_json_find_raises_on_a_damaged_record_and_skips_a_foreign_one(tmp_path: Path) -> None:
+    unit = json_unit(tmp_path, "u1")
+    ad = ua.UnitJsonAdapter()
+    path = unit / "unit.json"
+    record = json.loads(path.read_text())
+    path.write_text(json.dumps(dict(record, schema="someone-elses/1")))
+    assert list(ad.find(tmp_path)) == []
+    for bad in ("{torn", "[1]", json.dumps(dict(record, input_digest="forged"))):
+        path.write_text(bad)
+        with pytest.raises(ui.UnitIndexError):
+            list(ad.find(tmp_path))
+
+
+def test_unit_json_refuses_locators_outside_the_store(tmp_path: Path) -> None:
+    store = tmp_path / "s"
+    store.mkdir()
+    json_unit(tmp_path, "evil")
+    ad = ua.UnitJsonAdapter()
+    for loc in ("../evil", str(tmp_path / "evil"), "./x", "a//b", ""):
+        got = ad.classify(store, loc, "inU", verify=True)
+        assert isinstance(got, zc.Corrupt) and "inside the store" in got.reason, loc
+
+
+def test_unit_json_rows_need_no_explicit_adapter_table(tmp_path: Path) -> None:
+    json_unit(tmp_path / "s", "u1")
+    ui.rebuild(tmp_path / "idx", [(tmp_path / "s", ua.UnitJsonAdapter())])
+    assert isinstance(ui.lookup(tmp_path / "idx", tmp_path / "s", "u1", "inU"), ui.IndexReuse)

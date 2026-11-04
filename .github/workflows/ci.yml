@@ -180,7 +180,7 @@ jobs:
             tests/training/test_struct_step3.py
 
   node-py39:
-    # Node-embeddable cores (fileguard/_node.py, run/writer_liveness.py) must run under
+    # Node-embeddable cores (fileguard/_node.py, pack/_node.py, run/writer_liveness.py) must run under
     # Python 3.9 on compute nodes (spec 261030, A8). Their standalone tests skip when no 3.9
     # interpreter exists, so this job installs one and fails on any skip.
     runs-on: ubuntu-latest
@@ -202,6 +202,7 @@ jobs:
           set -o pipefail
           .venv-node/bin/python -m pytest -q -o addopts="" -p no:cacheprovider -rs \
             tests/fileguard/test_node_standalone.py \
+            tests/pack/test_node_standalone.py \
             tests/run/test_writer_liveness_standalone.py 2>&1 | tee node_py39.txt
           if grep -q "SKIPPED" node_py39.txt; then
             echo "::error::a Python 3.9 standalone test was skipped"

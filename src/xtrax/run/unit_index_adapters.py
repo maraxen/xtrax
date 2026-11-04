@@ -15,6 +15,10 @@ maps it onto :class:`xtrax.run.unit_index.CoreRecord`. Formats were read from th
   ``content_digest``. Verification is alynxr's own reuse rule: the part file's size and sha256
   match its fragment (the logical hash needs pyarrow, the transfer hash does not).
 
+* :class:`UnitJsonAdapter`: xtrax's own ``unit.json`` (:mod:`xtrax.pack`), for a loose or packed
+  non-zarr unit. ``unit_key`` and ``locator`` are the unit directory below the store. The record's
+  core maps across unchanged, and its ``content_digest`` is the same either way (spec §3.2).
+
 Stdlib only at import time; aminx content verification imports ``xtrax.run.zarr_integrity``
 (and so zarr) when it runs.
 """
@@ -26,6 +30,17 @@ from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from xtrax.pack._node import (
+    PACK_FILE,
+    PACK_INDEX,
+    RECORD_SCHEMA,
+    UNIT_RECORD,
+    UnitPackRefused,
+    is_packed,
+    is_plain_relpath,
+    record_problem,
+    unit_content_digest,
+)
 from xtrax.run.unit_index import (
     CoreRecord,
     IndexReuse,
@@ -41,6 +56,7 @@ AMINX_V3 = "campaign_done_marker_v3"
 AMINX_V2 = "campaign_done_marker_v2"
 ALYNXR_FRAGMENT_ADAPTER = "alynxr_fold_stats_fragment"
 ALYNXR_FRAGMENT = "alynxr.fold_stats_part/1"
+UNIT_JSON = "unit_json"
 _DONE = ".done.json"
 
 
@@ -57,16 +73,13 @@ def _read_json(path: Path) -> Any:
 
 
 def _plain_locator(locator: str) -> bool:
-    """``locator`` is a plain relative path below the store: no ``..``, ``.``, empty part, NUL or
-    leading ``/``.
+    """``locator`` is a plain relative path below the store.
 
-    Rows are not trusted, and those spellings would make an adapter read (and reuse) an artifact
+    Rows are not trusted, and other spellings would make an adapter read (and reuse) an artifact
     the store does not hold. The check is lexical on purpose: a symlink inside the store was put
     there by the store's owner (an output directory on scratch, say) and is followed.
     """
-    if not locator or "\0" in locator or locator.startswith("/"):
-        return False
-    return not any(p in ("", ".", "..") for p in locator.split("/"))
+    return is_plain_relpath(locator)
 
 
 # ---- aminx ---------------------------------------------------------------------------------------
@@ -151,7 +164,7 @@ class AminxDoneMarkerAdapter:
         return IndexReuse(canonical_store(store), locator, core)
 
 
-# ---- alynxr ------------------------------------------------------------------------------------
+# ---- alynxr --------------------------------------------------------------------------------------
 
 
 def _fragment_name(part: str) -> str:
@@ -260,7 +273,94 @@ class AlynxrFragmentAdapter:
         return IndexReuse(canonical_store(store), locator, core)
 
 
+# ---- unit.json -----------------------------------------------------------------------------------
+
+
+def _unit_core(locator: str, record: dict[str, Any]) -> CoreRecord:
+    return CoreRecord(
+        locator,
+        record["input_digest"],
+        record["content_digest"],
+        record["record_digest"],
+        record["run_id"],
+    )
+
+
+def _pack_not_visible(unit: Path, record: dict[str, Any]) -> bool:
+    """The record names a pack or index that is not there; on NFS it may not be visible yet (A1)."""
+    storage = record["storage"]
+    names = (storage.get("pack", PACK_FILE), storage.get("index", PACK_INDEX))
+    return all(isinstance(n, str) and is_plain_relpath(n) for n in names) and not all(
+        (unit / n).exists() for n in names
+    )
+
+
+class UnitJsonAdapter:
+    """``unit.json`` records of loose or packed units; the locator is the unit directory."""
+
+    name = UNIT_JSON
+
+    def find(self, store: Path) -> Iterator[tuple[str, CoreRecord]]:
+        root = Path(store)
+        for dirpath, dirnames, filenames in os.walk(root):
+            if UNIT_RECORD not in filenames:
+                continue
+            dirnames.clear()  # a unit's own files are not further units
+            locator = Path(dirpath).relative_to(root).as_posix()
+            if locator == ".":
+                continue  # a unit is a directory below the store, never the store itself
+            try:
+                record = _read_json(Path(dirpath) / UNIT_RECORD)
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as e:
+                raise UnitIndexError(f"unreadable unit record {locator}: {e}") from e
+            if not isinstance(record, dict):
+                raise UnitIndexError(f"unit record {locator} is not a JSON object")
+            if record.get("schema") != RECORD_SCHEMA:
+                continue
+            problem = record_problem(record)
+            if problem is not None:
+                raise UnitIndexError(f"unit record {locator}: {problem}")
+            yield locator, _unit_core(locator, record)
+
+    def classify(self, store: Path, locator: str, input_digest: str, *, verify: bool) -> Any:
+        if not _plain_locator(locator):
+            return Corrupt(f"locator {locator!r} is not a path inside the store")
+        store = Path(store)
+        unit = store / locator
+        try:
+            record = _read_json(unit / UNIT_RECORD)
+        except FileNotFoundError:
+            return Missing()
+        except (OSError, ValueError) as e:
+            return Corrupt(f"unreadable unit record: {type(e).__name__}: {e}")
+        if not isinstance(record, dict):
+            return Corrupt("unit record is not a JSON object")
+        if record.get("schema") != RECORD_SCHEMA:
+            return SchemaMismatch(
+                f"unit record schema {record.get('schema')!r}, expected {RECORD_SCHEMA!r}"
+            )
+        problem = record_problem(record)
+        if problem is not None:
+            return Corrupt(problem)
+        core = _unit_core(locator, record)
+        if core.input_digest != input_digest:
+            return IndexStale(canonical_store(store), locator, core)
+        if verify:
+            if is_packed(unit, record) and _pack_not_visible(unit, record):
+                return Missing()
+            try:
+                observed = unit_content_digest(unit)
+            except UnitPackRefused as e:
+                return Corrupt(str(e))
+            if observed != core.content_digest:
+                return Corrupt("content digest mismatch")
+        return IndexReuse(canonical_store(store), locator, core)
+
+
 ADAPTERS = {
     AMINX_DONE_MARKER: AminxDoneMarkerAdapter(),
     ALYNXR_FRAGMENT_ADAPTER: AlynxrFragmentAdapter(),
+    UNIT_JSON: UnitJsonAdapter(),
 }
