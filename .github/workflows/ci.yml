@@ -76,7 +76,9 @@ jobs:
         run: uv tool install rust-just
 
       - name: Install dependencies
-        run: uv sync --extra dev --extra eda --extra io --extra data --extra plugin --extra index
+        # `pack` gives xtrax.pack in-process zstd here; the lean job above has no zstandard, so
+        # it runs the pack tests through the zstd CLI instead. Both codec paths stay tested.
+        run: uv sync --extra dev --extra eda --extra io --extra data --extra plugin --extra index --extra pack
 
       - name: Lint with ruff
         run: uv run ruff check .

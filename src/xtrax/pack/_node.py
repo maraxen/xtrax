@@ -29,7 +29,8 @@ the record with its ``storage`` field; (5) delete the loose files. A crash befor
 loose file and no ``storage``; after (4), :func:`pack_sweep` finishes the job.
 
 A compressor is needed to pack, and a decompressor to read: PEP 784 ``compression.zstd``,
-``zstandard``, or the ``zstd`` CLI (present on Engaging compute nodes), resolved once per process.
+``zstandard`` (``xtrax[pack]``), or the ``zstd`` CLI (on Engaging compute nodes; one process per
+member), resolved once per process.
 With none, :class:`CodecUnavailable` (an ``OSError``) is raised: that is the environment, not the
 unit, so it is never reported as a refusal or as corruption. Members are read whole into memory,
 so a unit's largest member must fit.
