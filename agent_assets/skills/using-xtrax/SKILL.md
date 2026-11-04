@@ -1,7 +1,7 @@
 ---
 name: using-xtrax
-description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function, or when a hand-written Pallas kernel should sit beside a plain-JAX reference. The library is xtrax."
-when_to_use: 'Triggers: padding or bucketing loop for variable-length sequences before a JIT step, chunked vmap or lax.map over a large batch, memory-budgeted batching / batch plan that must fit a device budget, ONNX or StableHLO export of a JAX pipeline, resumable training loop / resume training from a checkpoint, zarr output sink / staged zarr writes, TOML file that should launch or resume a training run, infer batch axes from a typed function signature, compose batching primitives into your own CLI, hand-written Pallas kernel beside a plain-JAX reference / replace a use_pallas flag or interpret= switch with xtrax.op.'
+description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function, or when a hand-written Pallas kernel should sit beside a plain-JAX reference. Also when per-unit output directories need a completion record or packing into one seekable archive. The library is xtrax."
+when_to_use: 'Triggers: padding or bucketing loop for variable-length sequences before a JIT step, chunked vmap or lax.map over a large batch, memory-budgeted batching / batch plan that must fit a device budget, ONNX or StableHLO export of a JAX pipeline, resumable training loop / resume training from a checkpoint, zarr output sink / staged zarr writes, TOML file that should launch or resume a training run, infer batch axes from a typed function signature, compose batching primitives into your own CLI, hand-written Pallas kernel beside a plain-JAX reference / replace a use_pallas flag or interpret= switch with xtrax.op, per-unit completion stamp or done.json with sha256s, pack a finished unit directory / many small files under a file-count cap, replace a local unit_pack or tar.zst packer.'
 ---
 # using-xtrax
 
@@ -20,7 +20,7 @@ import xtrax
 # This skill was written against the xtrax alpha named in the plugin manifest
 # (.praxia/manifest.toml [plugin] version). Warn when the installed package
 # differs, then read src/xtrax/__init__.py.
-_WRITTEN_AGAINST = "0.4.1b6"
+_WRITTEN_AGAINST = "0.4.1b7"
 if xtrax.__version__ != _WRITTEN_AGAINST:
     warnings.warn(
         f"using-xtrax was written against xtrax {_WRITTEN_AGAINST}; "
@@ -44,6 +44,9 @@ pip install xtrax[io]
 # For the `xtrax` CLI verbs (tyro); for ahead-of-time export (IREE)
 pip install xtrax[cli]
 pip install xtrax[export]
+
+# For the zstandard codec behind per-unit packs (xtrax.pack)
+pip install xtrax[pack]
 ```
 
 Dependency floor: read the `jax`/`jaxlib` specifiers in `pyproject.toml`'s `dependencies` rather than trusting a number quoted here -- this line said `<0.11` for the whole period the pin was already `<0.12`. The io_callback shim (`xtrax.stages._callback`, shipped 0.4.0a6) pins this same range (`PINNED_JAX_RANGE`, `src/xtrax/stages/_callback.py:33`) and fails loud at import time if the resolved jax drifts outside it.
@@ -300,6 +303,9 @@ Choose your task:
 13. **Put a Pallas (or other backend) kernel beside a plain-JAX reference, selected by Context instead of a `use_pallas` flag or env var (xtrax.op)**  
    → Read `references/op.md`
 
+14. **Stamp a finished per-unit output directory, pack its small files under a file-count cap, or replace a local unit packer or completion stamp (xtrax.pack)**  
+   → Read `references/adoption.md` (section "Per-unit outputs") and the `xtrax-io-on-shared-filesystems` skill
+
 ---
 
 ## TIER-2: Deep Reference
@@ -317,7 +323,7 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | Signature Inference | `references/inference.md` | — | xtrax.inference: derive AxisSpecs + BundleSchema from a typed function |
 | Export (AOT) | `references/export.md` | — | xtrax.export: export_pipeline, Target/VerificationLevel, native + wasm32 + SPIR-V codegen, dtype envelope, load_hf_weights, materialize stripping, multi-axis composition |
 | Length bucketing | `references/length-bucketing.md` | — | AxisSpec.bucket_boundaries, Bucket, host select_bucket/bucketize, BUCKET_LADDER, one compile per rung |
-| Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives |
+| Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives, per-unit `unit.json` records and packs (xtrax.pack), file-count guard |
 | Standalone ONNX | `references/onnx-standalone.md` | — | convert_to_onnx vs jax2onnx, find_onnx_rng_ops, verify_native_parity, rings, divergence |
 | Intent | `references/intent.md` | — | xtrax.intent: Context, compile, loop, map, Plan, overrides, hazards, errors |
 | Kernel seam | `references/op.md` | — | xtrax.op: reference + per-backend kernels, selection rules, static args by closure, custom_jvp/custom_vjp derivatives, kernel_parity tests, interpret-mode GPU hazards |
