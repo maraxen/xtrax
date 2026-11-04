@@ -1042,3 +1042,96 @@ def test_pack_unit_does_not_reverify_what_it_just_wrote(
     monkeypatch.setattr(_node, "zstd_decompress", counting)
     pack.pack_unit(unit)
     assert calls[0] == len(files)  # step 2 only
+
+
+# ---- lock scope --------------------------------------------------------------------------------
+
+ENGAGING_MOUNTS = r"""\
+/dev/sda2 / xfs rw,relatime,attr2,inode64 0 0
+nfs001.lb:/home /home nfs4 rw,relatime,vers=4.2,hard,proto=rdma,local_lock=none,addr=172.16.3.1 0 0
+srv:/scratch /orcd/scratch/orcd/011 nfs4 rw,relatime,vers=4.2,hard,local_lock=none 0 0
+srv:/local /mnt/local\040lock nfs rw,vers=3,local_lock=all 0 0
+srv:/posix /mnt/posix nfs4 rw,vers=4.2,local_lock=posix 0 0
+mds@tcp:/lus /lus lustre rw,localflock 0 0
+mds@tcp:/lus2 /lus2 lustre rw,flock 0 0
+"""
+
+
+@pytest.mark.parametrize(
+    ("path", "local"),
+    [
+        ("/home/u/unit", None),
+        ("/orcd/scratch/orcd/011/u/unit", None),
+        ("/mnt/local lock/unit", "local_lock=all"),
+        ("/mnt/posix/unit", "local_lock=posix"),
+        ("/lus/unit", "localflock"),
+        ("/lus2/unit", None),
+        ("/elsewhere", None),
+    ],
+)
+def test_local_only_lock_mounts_are_detected(tmp_path: Path, path: str, local: str | None) -> None:
+    mounts = tmp_path / "mounts"
+    mounts.write_text(ENGAGING_MOUNTS)
+    reason = pack.local_only_lock_reason(path, str(mounts))
+    assert (reason is None) == (local is None)
+    if local is not None:
+        assert reason is not None and local in reason
+
+
+def test_mount_of_takes_the_longest_prefix_not_a_name_prefix(tmp_path: Path) -> None:
+    mounts = tmp_path / "mounts"
+    mounts.write_text(
+        "a / xfs rw 0 0\nb /home nfs4 rw 0 0\nc /homework nfs rw,local_lock=all 0 0\n"
+    )
+    assert pack.mount_of("/home/u", str(mounts)) == ("/home", "nfs4", "rw")
+    assert pack.mount_of("/homework/u", str(mounts))[0] == "/homework"  # type: ignore[index]
+    assert pack.mount_of("/x", str(tmp_path / "absent")) is None
+
+
+def test_a_local_only_lock_mount_refuses_and_packs_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unit = tmp_path / "u"
+    files = make_unit(unit)
+    monkeypatch.setattr(_node, "local_only_lock_reason", lambda _p: "/x is nfs with local_lock=all")
+    with pytest.raises(pack.LockUnavailable) as e:
+        pack.pack_unit(unit)
+    assert isinstance(e.value, OSError) and "lock=False" in str(e.value)
+    assert not pack.is_packed(unit) and not (unit / "members.tar.zst.lock").exists()
+    for rel, data in files.items():
+        assert (unit / rel).read_bytes() == data
+
+
+def test_no_lock_support_is_lock_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno as errno_mod
+
+    unit = tmp_path / "u"
+    make_unit(unit)
+
+    def enolck(_fd: int, _op: int) -> None:
+        raise OSError(errno_mod.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(_node.fcntl, "lockf", enolck)
+    with pytest.raises(pack.LockUnavailable) as e:
+        pack.pack_unit(unit)
+    assert e.value.errno == errno_mod.ENOLCK
+    assert not (unit / "members.tar.zst.lock").exists() and not pack.is_packed(unit)
+
+
+def test_lock_false_is_the_explicit_opt_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unit = tmp_path / "u"
+    files = make_unit(unit)
+
+    def no_lock(_fd: int, _op: int) -> None:
+        raise AssertionError("lock=False must not lock")
+
+    monkeypatch.setattr(_node.fcntl, "lockf", no_lock)
+    monkeypatch.setattr(_node, "local_only_lock_reason", lambda _p: "would refuse")
+    pack.pack_unit(unit, lock=False)
+    assert sorted(p.name for p in unit.iterdir()) == THREE_FILES
+    for rel, data in files.items():
+        assert pack.read_unit_member(unit, rel) == data

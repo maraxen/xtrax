@@ -20,8 +20,10 @@ written by either implementation reads through the other. What differs from alyn
   every file before deleting any.
 * ``min_members`` is the per-unit-class threshold; below it a unit stays loose.
 * One packer per unit at a time: ``pack_unit`` holds a POSIX record lock (``fcntl.lockf``, which
-  NFS forwards) on ``members.tar.zst.lock`` and removes the lock file when done. A second packer
-  is refused (``R-U4``) rather than left to overwrite the first one's partial.
+  NFS v4 arbitrates across nodes) on ``members.tar.zst.lock`` and removes the lock file when done.
+  A second packer is refused (``R-U4``) rather than left to overwrite the first one's partial. A
+  filesystem without cross-node locks (no lock support, or NFS ``local_lock=all|posix``, Lustre
+  ``localflock``) raises :class:`LockUnavailable`; ``lock=False`` is the explicit opt-out.
 
 Commit order. (1) write ``members.tar.zst.partial``; (2) re-read every member from it, verify its
 sha256 and run the completion check; (3) rename the pack into place and write the index; (4) rewrite
@@ -103,6 +105,14 @@ class UnitPackRefused(ValueError):
 
 class CodecUnavailable(OSError):
     """No zstd implementation in this environment. Environmental: says nothing about the unit."""
+
+
+class LockUnavailable(OSError):
+    """The unit's filesystem cannot give a lock that excludes other nodes. Environmental.
+
+    Pass ``lock=False`` to :func:`pack_unit` only when the caller already guarantees one packer
+    per unit (a SLURM array with one task per unit, say).
+    """
 
 
 # ---- hashing, reads and atomic writes ------------------------------------------------------------
@@ -768,14 +778,74 @@ def _check_content_digest(unit_dir: PathLike, record: Dict[str, Any], digest: st
         raise UnitPackRefused("R-U1", "{}: members do not match content_digest".format(unit_dir))
 
 
+_MOUNTS = "/proc/mounts"
+
+
+def _unescape_mount(field: str) -> str:
+    """``/proc/mounts`` writes space, tab, newline and backslash as octal escapes."""
+    for code, char in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
+        field = field.replace(code, char)
+    return field
+
+
+def mount_of(path: PathLike, mounts: str = _MOUNTS) -> Optional[Tuple[str, str, str]]:
+    """``(mount point, fstype, options)`` of the mount holding ``path``; None if not readable."""
+    target = os.path.realpath(path)
+    try:
+        with open(mounts, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None  # not Linux, or no /proc: the lockf call alone decides
+    best: Optional[Tuple[str, str, str]] = None
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        point = _unescape_mount(parts[1])
+        inside = target == point or target.startswith(point.rstrip("/") + "/")
+        if inside and (best is None or len(point) >= len(best[0])):
+            best = (point, parts[2], parts[3])  # a later mount on the same point shadows
+    return best
+
+
+def local_only_lock_reason(path: PathLike, mounts: str = _MOUNTS) -> Optional[str]:
+    """Why a POSIX lock under ``path`` would only exclude processes on this node; None if it would
+    not. Such locks succeed, so without this check two nodes would both pack the same unit.
+
+    NFS with ``local_lock=all`` or ``local_lock=posix`` keeps locks on the client; Lustre with
+    ``localflock`` does the same. ``noflock`` (Lustre) makes ``lockf`` fail, which is caught there.
+    """
+    found = mount_of(path, mounts)
+    if found is None:
+        return None
+    point, fstype, options = found
+    opts = options.split(",")
+    if fstype.startswith("nfs") and ("local_lock=all" in opts or "local_lock=posix" in opts):
+        local = [o for o in opts if o.startswith("local_lock=")][0]
+        return "{} is {} with {}".format(point, fstype, local)
+    if fstype == "lustre" and "localflock" in opts:
+        return "{} is lustre with localflock".format(point)
+    return None
+
+
 @contextlib.contextmanager
 def _pack_lock(unit_dir: PathLike) -> Generator[None, None, None]:
     """Hold the unit's pack lock, or refuse (``R-U4``) if a live process holds it.
+
+    The lock is a POSIX record lock, which NFS v4 arbitrates on the server, so it excludes other
+    nodes (verified on Engaging home, scratch, pool and so3/002: quicktest array job 27899947). A
+    filesystem whose locks are local to the node, or that has none, raises :class:`LockUnavailable`.
 
     The lock file is removed on release, so a packed unit stays at three files. Removing it can
     leave a waiter holding a lock on a file no longer in the directory, so a holder checks that its
     lock is on the file at the path, and retries otherwise.
     """
+    local = local_only_lock_reason(unit_dir)
+    if local is not None:
+        raise LockUnavailable(
+            "{}: locks there do not exclude other nodes ({}); pass lock=False only if one packer "
+            "per unit is guaranteed".format(unit_dir, local)
+        )
     path = os.path.join(unit_dir, PACK_LOCK)
     for _ in range(8):
         fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
@@ -786,7 +856,13 @@ def _pack_lock(unit_dir: PathLike) -> Generator[None, None, None]:
                 if exc.errno in (errno.EACCES, errno.EAGAIN):
                     message = "{}: another process is packing this unit".format(unit_dir)
                     raise UnitPackRefused("R-U4", message) from None
-                raise
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+                raise LockUnavailable(
+                    exc.errno,
+                    "{}: no POSIX lock on this filesystem ({}); pass lock=False only if one "
+                    "packer per unit is guaranteed".format(unit_dir, os.strerror(exc.errno or 0)),
+                ) from None
             try:
                 current = os.stat(path).st_ino
             except FileNotFoundError:
@@ -812,6 +888,7 @@ def pack_unit(
     min_members: int = 1,
     record_name: str = UNIT_RECORD,
     check: Optional[Callable[[PathLike, Dict[str, Any], str], None]] = None,
+    lock: bool = True,
     _crash_after: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Pack a completed unit into ``members.tar.zst`` + ``members.idx.json``; returns the record.
@@ -828,9 +905,11 @@ def pack_unit(
         check: ``check(unit_dir, record, digest)`` raises :class:`UnitPackRefused` if the unit is
             not complete; ``digest`` is the verified :func:`digest_of_members` of what was packed.
             The default compares it to the record's ``content_digest``.
+        lock: Hold the unit's pack lock (default). ``False`` skips it, and is safe only when the
+            caller guarantees one packer per unit; it is the escape from :class:`LockUnavailable`.
     """
     _excluded_names(record_name)
-    with _pack_lock(unit_dir):
+    with _pack_lock(unit_dir) if lock else contextlib.nullcontext():
         record = _load_record(unit_dir, record_name)
         if is_packed(unit_dir, record):
             return pack_sweep(unit_dir, record_name=record_name, _crash_after=_crash_after)
