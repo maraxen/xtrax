@@ -220,10 +220,11 @@ def _run_status(args: CampaignArgs) -> dict[str, int]:
             failed_count += 1
 
     # 3. Count quarantined units
-    quarantine_dir = out_dir / ".quarantine"
-    if quarantine_dir.is_dir():
-        quarantined_count += len(list(quarantine_dir.iterdir()))
-    for corrupt_file in out_dir.glob("*.corrupt.*"):
+    quarantine_roots = [out_dir / ".quarantine", *out_dir.glob("*/.quarantine")]
+    for q_root in quarantine_roots:
+        if q_root.is_dir():
+            quarantined_count += len(list(q_root.iterdir()))
+    for corrupt_file in out_dir.glob("**/*.corrupt.*"):
         quarantined_count += 1
 
     print(f"Campaign Status: {out_dir}")

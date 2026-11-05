@@ -267,6 +267,10 @@ def quarantine_output(
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     quarantine_dir = campaign_dir / ".quarantine" / f"{timestamp}_{reason}_{output_path.name}"
     done_marker = output_path.with_name(f"{output_path.name}.done.json")
+    alt_markers: list[Path] = [
+        output_path.with_name(f"{output_path.stem}.done.json"),
+        campaign_dir.parent / f"{output_path.stem}.done.json",
+    ]
 
     try:
         quarantine_dir.mkdir(parents=True, exist_ok=True)
@@ -282,6 +286,9 @@ def quarantine_output(
             os.replace(output_path, quarantine_dir / output_path.name)
         if done_marker.exists():
             os.replace(done_marker, quarantine_dir / done_marker.name)
+        for alt in alt_markers:
+            if alt != done_marker and alt.exists():
+                os.replace(alt, quarantine_dir / alt.name)
         return quarantine_dir
     except OSError as err:
         if err.errno == errno.ENOSPC:
@@ -295,6 +302,12 @@ def quarantine_output(
                     done_marker,
                     output_path.with_name(f"{done_marker.name}.{unique_suffix}"),
                 )
+            for alt in alt_markers:
+                if alt != done_marker and alt.exists():
+                    try:
+                        alt.unlink()
+                    except OSError:
+                        pass
             return fallback_path
         if err.errno == errno.EXDEV:
             # Fallback 2: Cross-device link - use copy-and-unlink
@@ -302,6 +315,9 @@ def quarantine_output(
                 shutil.move(output_path, quarantine_dir / output_path.name)
             if done_marker.exists():
                 shutil.move(done_marker, quarantine_dir / done_marker.name)
+            for alt in alt_markers:
+                if alt != done_marker and alt.exists():
+                    shutil.move(alt, quarantine_dir / alt.name)
             return quarantine_dir
         msg = f"Failed to quarantine corrupt output {output_path}: {err}"
         raise QuarantineFailedError(msg) from err
