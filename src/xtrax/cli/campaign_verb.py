@@ -15,6 +15,7 @@ from typing import Any
 from xtrax.campaign.executors.local import (
     LocalProcessPoolExecutor,
     LocalSequentialExecutor,
+    _resolve_output_path,
 )
 from xtrax.campaign.executors.slurm import SlurmArrayExecutor
 from xtrax.campaign.lease import CLOCK_DRIFT_GRACE_PERIOD_S, CampaignLock
@@ -136,11 +137,7 @@ def _run_run(args: CampaignArgs) -> Any:
     # Resolve output directory
     output_dir = args.output_dir
     if output_dir is None:
-        if manifest.rows and manifest.rows[0].output_locator:
-            loc = Path(manifest.rows[0].output_locator)
-            output_dir = str(loc.parent if loc.parent != Path(".") else manifest_path.parent)
-        else:
-            output_dir = str(manifest_path.parent)
+        output_dir = str(manifest_path.parent)
 
     # Resolve unit function
     if args.fn:
@@ -185,8 +182,14 @@ def _run_run(args: CampaignArgs) -> Any:
 
 def _run_status(args: CampaignArgs) -> dict[str, int]:
     """Execute 'xtrax campaign status'."""
-    out_dir_str = args.output_dir or args.target or "outputs"
+    out_dir_str = args.output_dir
+    if not out_dir_str and args.manifest:
+        out_dir_str = str(Path(args.manifest).parent)
+    if not out_dir_str:
+        out_dir_str = args.target or "outputs"
     out_dir = Path(out_dir_str)
+    if out_dir.is_file():
+        out_dir = out_dir.parent
     if not out_dir.exists():
         raise CLIError(f"Output directory does not exist: {out_dir_str}")
 
@@ -196,28 +199,36 @@ def _run_status(args: CampaignArgs) -> dict[str, int]:
     quarantined_count = 0
 
     import time
+
     now = time.time()
 
-    # 1. Count completed done markers
+    # 1. Count completed done markers (deduplicated by manifest_row_hash)
+    completed_hashes: set[str] = set()
     for done_file in out_dir.glob("*.done.json"):
         try:
             data = json.loads(done_file.read_text(encoding="utf-8"))
-            if "manifest_row_hash" in data:
-                completed_count += 1
+            row_hash = data.get("manifest_row_hash")
+            if row_hash:
+                completed_hashes.add(row_hash)
         except Exception:
             failed_count += 1
+    completed_count = len(completed_hashes)
 
-    # 2. Count active running locks
+    # 2. Count active running locks (deduplicated by manifest_row_hash)
+    running_hashes: set[str] = set()
     for lock_file in out_dir.glob("*.lock"):
         try:
             data = json.loads(lock_file.read_text(encoding="utf-8"))
             lock = CampaignLock.from_dict(data)
+            row_hash = lock.manifest_row_hash
             if now < lock.lease_expires_at_unix_s + CLOCK_DRIFT_GRACE_PERIOD_S:
-                running_count += 1
+                if row_hash not in completed_hashes:
+                    running_hashes.add(row_hash)
             else:
                 failed_count += 1
         except Exception:
             failed_count += 1
+    running_count = len(running_hashes)
 
     # 3. Count quarantined units
     quarantine_roots = [out_dir / ".quarantine", *out_dir.glob("*/.quarantine")]
@@ -243,8 +254,14 @@ def _run_status(args: CampaignArgs) -> dict[str, int]:
 
 def _run_verify(args: CampaignArgs) -> dict[str, int]:
     """Execute 'xtrax campaign verify'."""
-    out_dir_str = args.output_dir or args.target or "outputs"
+    out_dir_str = args.output_dir
+    if not out_dir_str and args.manifest:
+        out_dir_str = str(Path(args.manifest).parent)
+    if not out_dir_str:
+        out_dir_str = args.target or "outputs"
     out_dir = Path(out_dir_str)
+    if out_dir.is_file():
+        out_dir = out_dir.parent
     if not out_dir.exists():
         raise CLIError(f"Output directory does not exist: {out_dir_str}")
 
@@ -264,10 +281,7 @@ def _run_verify(args: CampaignArgs) -> dict[str, int]:
             raise CLIError(f"Failed to load campaign manifest: {exc}") from exc
 
         for row in manifest.rows:
-            store_path = out_dir / f"{row.manifest_row_hash}.zarr"
-            if row.output_locator:
-                loc_path = Path(row.output_locator)
-                store_path = loc_path if loc_path.is_absolute() else out_dir / loc_path
+            store_path = _resolve_output_path(out_dir, row)
 
             res = validate_unit_done(
                 store_path,

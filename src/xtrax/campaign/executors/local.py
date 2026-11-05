@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from xtrax.campaign.executors.protocol import CampaignSummary
 from xtrax.campaign.lease import FileLock, LockUnavailableError
 from xtrax.campaign.marker import (
+    CampaignDoneMarker,
     compute_content_digest,
     create_done_marker,
     validate_unit_done,
@@ -82,6 +83,8 @@ def _resolve_output_path(output_dir: Path, row: ManifestRow) -> Path:
         loc_path = Path(row.output_locator)
         if loc_path.is_absolute():
             return loc_path
+        if len(loc_path.parts) > 1 and output_dir.name == loc_path.parts[0]:
+            return output_dir / Path(*loc_path.parts[1:])
         return output_dir / loc_path
     return output_dir / f"{row.manifest_row_hash}.zarr"
 
@@ -90,18 +93,14 @@ def _check_tier1_resume(output_dir: Path, row: ManifestRow) -> bool:
     """Check Tier-1 fast resume status (< 5 ms per unit)."""
     output_path = _resolve_output_path(output_dir, row)
 
-    val = validate_unit_done(
-        output_path, row, deep_verify=False, quarantine_on_failure=False
-    )
+    val = validate_unit_done(output_path, row, deep_verify=False, quarantine_on_failure=False)
     if val.is_valid:
         return True
 
     # Check output_dir direct filename variations
     alt_zarr = output_dir / f"{row.manifest_row_hash}.zarr"
     if alt_zarr != output_path and alt_zarr.exists():
-        val = validate_unit_done(
-            alt_zarr, row, deep_verify=False, quarantine_on_failure=False
-        )
+        val = validate_unit_done(alt_zarr, row, deep_verify=False, quarantine_on_failure=False)
         if val.is_valid:
             return True
 
@@ -163,38 +162,33 @@ def _execute_single_unit(
         _clean_memory(state)
 
         # Commit output according to singleton commit token protocol
-        if partial_path.exists():
-            digest = compute_content_digest(partial_path)
-            marker = create_done_marker(
-                manifest_row_hash=row.manifest_row_hash,
-                input_hash=row.input_hash,
-                output_locator=str(output_path),
-                content_digest_sha256=digest,
-                duration_s=duration_s,
-            )
-            lock.commit_output(
-                partial_path=partial_path,
-                output_path=output_path,
-                done_marker=marker,
-                attempt_uuid=attempt_uuid,
-            )
-        else:
-            if not output_path.exists():
-                output_path.mkdir(parents=True, exist_ok=True)
-                (output_path / ".zgroup").write_text('{"zarr_format": 2}', encoding="utf-8")
-            digest = compute_content_digest(output_path)
-            marker = create_done_marker(
-                manifest_row_hash=row.manifest_row_hash,
-                input_hash=row.input_hash,
-                output_locator=str(output_path),
-                content_digest_sha256=digest,
-                duration_s=duration_s,
-            )
+        if not partial_path.exists():
+            if output_path.exists():
+                os.replace(output_path, partial_path)
+            else:
+                partial_path.mkdir(parents=True, exist_ok=True)
+                (partial_path / ".zgroup").write_text('{"zarr_format": 2}', encoding="utf-8")
+
+        digest = compute_content_digest(partial_path)
+        marker = create_done_marker(
+            manifest_row_hash=row.manifest_row_hash,
+            input_hash=row.input_hash,
+            output_locator=str(output_path),
+            content_digest_sha256=digest,
+            duration_s=duration_s,
+        )
+        commit_res = lock.commit_output(
+            partial_path=partial_path,
+            output_path=output_path,
+            done_marker=marker,
+            attempt_uuid=attempt_uuid,
+        )
+        if isinstance(commit_res, CampaignDoneMarker):
             done_marker_path = output_path.with_name(f"{output_path.name}.done.json")
-            marker.write(done_marker_path)
             alt_marker_path = output_dir / f"{row.manifest_row_hash}.done.json"
             if alt_marker_path != done_marker_path:
-                marker.write(alt_marker_path)
+                commit_res.write(alt_marker_path)
+        if lock.is_locked:
             lock.release()
     except Exception:
         lock.release()
@@ -228,6 +222,30 @@ def _pool_worker_task(
             "success": False,
             "error": str(exc),
         }
+
+
+def _pool_worker_task_wrapper(
+    args: tuple[
+        int,
+        ManifestRow,
+        Callable[[ManifestRow], Any],
+        str,
+        int,
+        float,
+        str | None,
+    ],
+) -> tuple[int, ManifestRow, dict[str, Any]]:
+    """Unpack task arguments for pool.imap_unordered and return indexed result."""
+    idx, row, unit_fn, output_dir, lease_seconds, heartbeat_interval, cache_dir = args
+    res = _pool_worker_task(
+        row=row,
+        unit_fn=unit_fn,
+        output_dir=output_dir,
+        lease_seconds=lease_seconds,
+        heartbeat_interval=heartbeat_interval,
+        cache_dir=cache_dir,
+    )
+    return idx, row, res
 
 
 class LocalSequentialExecutor:
@@ -321,11 +339,13 @@ class LocalSequentialExecutor:
                 completed_units += 1
             except Exception as exc:
                 failed_units += 1
-                failures.append({
-                    "manifest_row_hash": row.manifest_row_hash,
-                    "row_index": idx,
-                    "error": str(exc),
-                })
+                failures.append(
+                    {
+                        "manifest_row_hash": row.manifest_row_hash,
+                        "row_index": idx,
+                        "error": str(exc),
+                    }
+                )
                 if max_failures is not None and failed_units >= max_failures:
                     break
 
@@ -426,6 +446,7 @@ class LocalProcessPoolExecutor:
         with ctx.Pool(**pool_kwargs) as pool:
             task_args = [
                 (
+                    idx,
                     row,
                     unit_fn,
                     str(out_dir),
@@ -433,26 +454,29 @@ class LocalProcessPoolExecutor:
                     self.heartbeat_interval,
                     self.cache_dir,
                 )
-                for _, row in pending_rows
+                for idx, row in pending_rows
             ]
 
-            results = pool.starmap_async(_pool_worker_task, task_args)
             try:
-                task_results = results.get()
-                for (idx, row), res in zip(pending_rows, task_results, strict=False):
+                for idx, row, res in pool.imap_unordered(_pool_worker_task_wrapper, task_args):
                     if res.get("success"):
                         completed_units += 1
                     else:
                         failed_units += 1
-                        failures.append({
-                            "manifest_row_hash": row.manifest_row_hash,
-                            "row_index": idx,
-                            "error": res.get("error", "Unknown worker error"),
-                        })
+                        failures.append(
+                            {
+                                "manifest_row_hash": row.manifest_row_hash,
+                                "row_index": idx,
+                                "error": res.get("error", "Unknown worker error"),
+                            }
+                        )
                         if max_failures is not None and failed_units >= max_failures:
+                            pool.terminate()
+                            pool.join()
                             break
             except Exception as exc:
                 pool.terminate()
+                pool.join()
                 raise exc
 
         elapsed = time.time() - start_time

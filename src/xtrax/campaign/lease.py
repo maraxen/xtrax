@@ -298,9 +298,7 @@ class FileLock:
             raise LockUnavailableError(msg) from exc
 
         # Dual Expiration & Clock Drift Check (Section 5.3)
-        is_stale = (
-            now >= lock_obj.lease_expires_at_unix_s + CLOCK_DRIFT_GRACE_PERIOD_S
-        ) and (
+        is_stale = (now >= lock_obj.lease_expires_at_unix_s + CLOCK_DRIFT_GRACE_PERIOD_S) and (
             now - lock_stat.st_mtime >= lock_obj.lease_seconds + CLOCK_DRIFT_GRACE_PERIOD_S
         )
 
@@ -311,41 +309,51 @@ class FileLock:
             )
             raise LockUnavailableError(msg)
 
-        # Step 3: Stale Lease Stealing with CAS Verification
-        steal_acquired = now
-        stolen_lock = CampaignLock(
-            schema_version=CAMPAIGN_LOCK_SCHEMA_VERSION,
-            owner_token=self.owner_token,
-            manifest_row_hash=self.manifest_row_hash,
-            acquired_at_unix_s=steal_acquired,
-            lease_expires_at_unix_s=now + self.lease_seconds,
-            lease_seconds=self.lease_seconds,
-            heartbeat_count=0,
-        )
-        steal_suffix = f"steal.{uuid.uuid4().hex[:8]}.tmp"
-        steal_tmp = self.lock_path.with_name(f"{self.lock_path.name}.{steal_suffix}")
-        steal_tmp.write_text(stolen_lock.to_json(), encoding="utf-8")
-        fsync_file(steal_tmp)
-
-        os.replace(steal_tmp, self.lock_path)
-        fsync_directory(self.lock_path.parent)
-
-        # CAS Readback Verification
+        # Step 3: Stale Lease Stealing with Atomic Steal Token
+        steal_token = self.lock_path.with_name(f"{self.lock_path.name}.steal")
         try:
-            post_stat = json.loads(self.lock_path.read_text(encoding="utf-8"))
-            if (
-                post_stat.get("owner_token") == self.owner_token
-                and post_stat.get("acquired_at_unix_s") == steal_acquired
-            ):
-                self.acquired_at_unix_s = steal_acquired
-                self._start_heartbeat(steal_acquired)
-                self.is_locked = True
-                return True
-        except Exception:
-            pass
+            steal_fd = os.open(steal_token, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError as exc:
+            msg = f"Lost CAS race while attempting to steal lock on {self.lock_path}"
+            raise LockUnavailableError(msg) from exc
 
-        msg = f"Lost CAS race while attempting to steal lock on {self.lock_path}"
-        raise LockUnavailableError(msg)
+        try:
+            # Re-verify lock is still the same stale lock
+            curr_data = json.loads(self.lock_path.read_text(encoding="utf-8"))
+            if (
+                curr_data.get("owner_token") != lock_obj.owner_token
+                or curr_data.get("acquired_at_unix_s") != lock_obj.acquired_at_unix_s
+            ):
+                msg = f"Lock on {self.lock_path} was modified before steal could complete"
+                raise LockUnavailableError(msg)
+
+            steal_acquired = now
+            stolen_lock = CampaignLock(
+                schema_version=CAMPAIGN_LOCK_SCHEMA_VERSION,
+                owner_token=self.owner_token,
+                manifest_row_hash=self.manifest_row_hash,
+                acquired_at_unix_s=steal_acquired,
+                lease_expires_at_unix_s=now + self.lease_seconds,
+                lease_seconds=self.lease_seconds,
+                heartbeat_count=0,
+            )
+            steal_suffix = f"steal.{uuid.uuid4().hex[:8]}.tmp"
+            steal_tmp = self.lock_path.with_name(f"{self.lock_path.name}.{steal_suffix}")
+            steal_tmp.write_text(stolen_lock.to_json(), encoding="utf-8")
+            fsync_file(steal_tmp)
+
+            os.replace(steal_tmp, self.lock_path)
+            fsync_directory(self.lock_path.parent)
+
+            self.acquired_at_unix_s = steal_acquired
+            self._start_heartbeat(steal_acquired)
+            self.is_locked = True
+            return True
+        finally:
+            with suppress(OSError):
+                os.close(steal_fd)
+            with suppress(OSError):
+                steal_token.unlink()
 
     def _start_heartbeat(self, acquired_at: float) -> None:
         self.heartbeat = HeartbeatThread(
