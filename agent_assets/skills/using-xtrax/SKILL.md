@@ -306,6 +306,9 @@ Choose your task:
 14. **Stamp a finished per-unit output directory, pack its small files under a file-count cap, or replace a local unit packer or completion stamp (xtrax.pack)**  
    → Read `references/adoption.md` (section "Per-unit outputs") and the `xtrax-io-on-shared-filesystems` skill
 
+15. **Migrate a dependent project onto xtrax.pack, xtrax.eda or campaign tooling with an agent swarm**  
+   → Use the `xtrax-consumer-adoption` skill
+
 ---
 
 ## TIER-2: Deep Reference

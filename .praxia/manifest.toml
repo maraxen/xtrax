@@ -23,6 +23,10 @@ name     = "xtrax-activation-parity"
 path     = "agent_assets/skills/xtrax-activation-parity/SKILL.md"
 
 [[plugin.skills]]
+name     = "xtrax-consumer-adoption"
+path     = "agent_assets/skills/xtrax-consumer-adoption/SKILL.md"
+
+[[plugin.skills]]
 name     = "xtrax-io-on-shared-filesystems"
 path     = "agent_assets/skills/xtrax-io-on-shared-filesystems/SKILL.md"
 
