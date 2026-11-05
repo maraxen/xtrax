@@ -4,6 +4,15 @@ A standardized, distributed, scheduler-agnostic campaign execution engine
 for high-throughput computational campaigns across multi-node clusters.
 """
 
+from xtrax.campaign.executors import (
+    CampaignExecutor,
+    CampaignSummary,
+    LocalProcessPoolExecutor,
+    LocalSequentialExecutor,
+    SlurmArrayExecutor,
+    format_slurm_array_indices,
+    get_pending_row_indices,
+)
 from xtrax.campaign.lease import (
     CLOCK_DRIFT_GRACE_PERIOD_S,
     CampaignLeaseError,
@@ -66,11 +75,13 @@ __all__ = [
     "AminxDoneMarkerAdapter",
     "ArmSpec",
     "CampaignDoneMarker",
+    "CampaignExecutor",
     "CampaignLeaseError",
     "CampaignLock",
     "CampaignManifest",
     "CampaignMarkerError",
     "CampaignSpec",
+    "CampaignSummary",
     "ContentDigestMismatchError",
     "DoneMarkerAdapter",
     "DoneMarkerCorruptError",
@@ -80,6 +91,8 @@ __all__ = [
     "HeartbeatThread",
     "InputHashMismatchError",
     "LeaseLostError",
+    "LocalProcessPoolExecutor",
+    "LocalSequentialExecutor",
     "LockUnavailableError",
     "ManifestMetadata",
     "ManifestRow",
@@ -87,6 +100,7 @@ __all__ = [
     "ProducerInfo",
     "QuarantineFailedError",
     "ResourceRequirements",
+    "SlurmArrayExecutor",
     "SpecPartitionError",
     "StolenAttemptDiscarded",
     "StoreMissingError",
@@ -98,7 +112,9 @@ __all__ = [
     "compute_manifest_row_hash",
     "compute_unit_input_hash",
     "create_done_marker",
+    "format_slurm_array_indices",
     "fsync_directory",
+    "get_pending_row_indices",
     "normalize_json_value",
     "plan",
     "plan_campaign",
