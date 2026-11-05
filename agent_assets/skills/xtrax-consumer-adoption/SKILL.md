@@ -97,10 +97,10 @@ One worktree and branch per workstream off fresh `origin/main`, with the pin bum
 
 Assess in P1 and implement in P3. py2Dmol is the viewer, not a typo for py3Dmol, and structure views do not fall back to matplotlib. Wherever the project shows structures, per-residue tracks, contacts or sites, the spec decides between built-in views, a py2Dmol renderer plugin, or not applicable, with one line of reasoning.
 
-Read `~/repos/py2Dmol/CLAUDE.md` and `docs/PLUGINS.md` first. The agent skills are on an unmerged branch; if they are not installed, read them with `git -C ~/repos/py2Dmol show fork/agent-surface:agent_assets/skills/<skill>/SKILL.md`, where `<skill>` is `using-py2Dmol`, `developing-py2Dmol-plugins`, `augmenting-views` or `embedding-py2Dmol`.
+Read `~/repos/py2Dmol/CLAUDE.md` and `docs/PLUGINS.md` first. The agent skills are on an unmerged branch (draft `sokrypton/py2Dmol#31`), behind upstream main, so check their claims against current `docs/PLUGINS.md`. If they are not installed, read them with `git -C ~/repos/py2Dmol show fork/agent-surface:agent_assets/skills/<skill>/SKILL.md`, where `<skill>` is `using-py2Dmol`, `developing-py2Dmol-plugins`, `augmenting-views` or `embedding-py2Dmol`.
 
 - A plugin fits geometry that is not a residue: isosurfaces, site markers, marker-to-residue contacts, MI or coupling edges. If built-ins do the job, write no plugin.
-- PyPI 1.6.5 and maraxiom's vendored copy have no `add_plugin`. Pin a git SHA at or after `3f9e851`, and before designing, assert `py2Dmol.__file__` and `hasattr(py2Dmol.viewer.view, "add_plugin")` in the project's env.
+- PyPI 1.6.5 and maraxiom's vendored copy have no `add_plugin`. Pin a git SHA from `sokrypton/py2Dmol` main at or after `19317016`: the first `add_plugin` commits lack later fixes to live payloads and framing, and the fork and a local `~/repos/py2Dmol` can lag upstream. Before designing, assert `py2Dmol.__file__` and `hasattr(py2Dmol.viewer.view, "add_plugin")` in the project's env.
 - Plugin contract: `apiVersion` 1, register through `window.py2dmolPlugins` (never `py2dmolMolParts`), over-budget geometry throws, no legend or `remove_plugin` yet. Take the test pattern from `tests/plugin_browser.py`. The plugin lives in the project; `~/repos/py2Dmol` is read-only. Pin the structure, bundle and plugin sha256s so figures are reproducible.
 
 Bio prose follows `prose-biosafe`.
