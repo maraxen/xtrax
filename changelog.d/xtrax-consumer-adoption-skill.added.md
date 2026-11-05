@@ -1,0 +1,1 @@
+- `xtrax-consumer-adoption` skill: the procedure an agent swarm follows to move a dependent project onto `xtrax.pack`, `xtrax.eda` or campaign tooling, from spec through adversarial review, PR and review cycles. It records which campaign code ships in the wheel and what bio projects do with py2Dmol.
