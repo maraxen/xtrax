@@ -1,29 +1,25 @@
 ---
 name: xtrax-consumer-adoption
-description: "Use when an agent swarm migrates a dependent project onto xtrax.pack, xtrax.eda or xtrax campaign tooling (debts #3257, #3143, #3142), from spec through adversarial review, PR and review cycles. For the APIs themselves, use using-xtrax."
+description: "Use when migrating a dependent project onto xtrax.pack, xtrax.eda or xtrax campaign tooling (debts #3257, #3143, #3142), from spec through adversarial review, PR and review cycles. For the APIs themselves, use using-xtrax."
 ---
 
 # Migrating a dependent project onto xtrax
 
-The procedure a swarm follows to move one project onto xtrax, from spec to a reviewed PR. The swarm stops at the PR; the owner merges.
-
-Start a run with:
-
-```text
-/goal /teamwork /boost
-Use skill xtrax-consumer-adoption. PROJECT=aminx TASK_ID=261105_xtrax-adopt-aminx WORKSTREAMS=pack,eda,campaign DEBTS=#3147
-```
-
-`PROJECT` is a directory under `~/projects`. `DEBTS` lists the project's own debts to fold in, or `none`. Put `TASK_ID` in every log call, dispatch, commit and PR. A "move xtrax pin to 0.4.1b6" debt is superseded by the `>=0.4.1b7` target.
+When you load this skill, you are the lead orchestrator moving one dependent project onto xtrax, from spec to a reviewed PR (e.g. `/goal /teamwork /boost migrate aminx onto xtrax pack and eda`). Drive P0–P5 yourself and stop at the PR; the owner merges.
 
 ## Inputs
 
-- xtrax debts: #3257 pack, #3143 eda, #3142 campaign. Read them with `debt(action="list", payload={"workspace":"/home/marielle/projects/xtrax","query":"Dependents:","detail":"full"})`.
-- Consumer scan, dated 0.4.1b6 and pattern-based, so verify it: `git -C ~/projects/xtrax show origin/docs/xtrax-dependent-scope:.praxia/docs/research/261030_xtrax-0-4-1b6-dependent-scope.md`.
+Derive your inputs from the user's request and the target repo, asking the user only for what you cannot determine from either:
+
+- **Project (`<project>`):** Identify the target directory under `~/projects/<project>` from the user's prompt or current working directory. Ask the user only if neither names it.
+- **Task ID (`<task_id>`):** Mint `YYMMDD_xtrax-adopt-<project>` from today's date (unless the user supplied one) and include it in every log call, subagent dispatch, commit message, and PR.
+- **xtrax debts and consumer scan:** Read xtrax debts #3257 (pack), #3143 (eda), and #3142 (campaign) with `debt(action="list", payload={"workspace":"/home/marielle/projects/xtrax","query":"Dependents:","detail":"full"})`. Read the pattern-based consumer scan (dated 0.4.1b6, so verify every claim in code): `git -C ~/projects/xtrax show origin/docs/xtrax-dependent-scope:.praxia/docs/research/261030_xtrax-0-4-1b6-dependent-scope.md`.
+- **Workstreams (`pack`, `eda`, `campaign`):** Treat any workstreams the user named as scope hints, and evaluate applicability of `pack`, `eda`, and `campaign` against the project's code in P0.
+- **Project debts:** List open debts in `~/projects/<project>` (`debt(action="list", payload={"workspace":"/home/marielle/projects/<project>"})`) and fold in those touching xtrax, packing, batch plans, or campaigns, plus any the user named. A "move xtrax pin to 0.4.1b6" debt is superseded by the `>=0.4.1b7` target. Ask the user only if folding in a borderline debt is ambiguous.
 
 ## Role
 
-The lead orchestrates, delegates, and keeps only conclusions. No role grades its own output. State lives in `.praxia/loop/<TASK_ID>/state.md`: per item, status, branch, PR, bth run id, verdict and blocker. Read it at the start of each iteration and update it at the end.
+Act as lead: orchestrate, delegate, and keep only conclusions. No role grades its own output—dispatch challenger, defender, adjudicator, editor, implementers, and reviewers as separate agents. Create and maintain `.praxia/loop/<task_id>/state.md` recording per-item status, branch, PR, `bth` run id, verdict, and blocker. Read it at the start of each iteration and update it at the end.
 
 ## Skills to load
 
@@ -61,7 +57,7 @@ A project may adopt the gate where it launches approval-bound campaigns. For a s
 
 ## P1: spec
 
-File it with `docs(action="add", payload={category:"specs", workspace:<abs cwd>, ...})`. It contains:
+File the spec with `docs(action="add", payload={category:"specs", workspace:<abs cwd>, ...})`. Include:
 
 - An assumption table tagging each claim about code, tools, data layouts or APIs as verified (read at file:line, or probed) or unverified. Read the code, not its docstring, README or a subagent's summary.
 - For pack, an old-vs-new table of every edge case in the old writer: failure stamps, regenerated loose files, empty units, `OSError` wrapping, what resume reuses, and existing on-disk units (reader compatibility or migration). alynxr #49 lost six of these on first pass.
@@ -71,20 +67,20 @@ File it with `docs(action="add", payload={category:"specs", workspace:<abs cwd>,
 
 ## P2: adversarial review and spikes, until coherent
 
-Each round, as separate agents:
+Each round, dispatch as separate agents:
 
 1. **Challenger** lists incoherences with section, quoted text, severity (FATAL, MAJOR or MINOR) and file:line evidence.
 2. **Defender** rebuts from spec and source, conceding only real gaps.
 3. **Adjudicator** rules accept or reject, with a reason.
 4. **Editor** applies accepted findings only, as the smallest edit.
 
-A finding resting on an unverified assumption gets a throwaway spike before the ruling, and the tag updates. A spike whose number gets cited is re-run as a tracked script with a sidecar.
+Run a throwaway spike before the ruling on any finding resting on an unverified assumption, and update the tag. Re-run any spike whose number gets cited as a tracked script with a sidecar.
 
-Converged means one round with no accepted FATAL or MAJOR, and the lead has checked every citation at source; a swarm's own CONVERGED has been wrong before. The cap is 5 rounds. If it has not converged by then, stop, list what is open, and implement nothing. Log rounds in `.praxia/docs/audits/`.
+Converged means one round with no accepted FATAL or MAJOR, after you have checked every citation at source; a swarm's own CONVERGED has been wrong before. The cap is 5 rounds. If it has not converged by then, stop, list what is open, and implement nothing. Log rounds in `.praxia/docs/audits/`.
 
 ## P3: implement
 
-One worktree and branch per workstream off fresh `origin/main`, with the pin bump first if the others need it. Tests come first and are shown red for the right reason. Stage files by name; `.agents/` and `.praxia` telemetry stay uncommitted.
+Create one worktree and branch per workstream off fresh `origin/main`, with the pin bump first if the others need it, and dispatch separate implementer agents. Write tests first and show them red for the right reason. Stage files by name; keep `.agents/` and `.praxia` telemetry uncommitted.
 
 - **Pre-registration:** every run producing a finding gets a tracked script and a committed `.bth.toml` with `[outcomes]` in a commit before it runs. Use `bth`, never `uv run bth`. Verify from the run record, not the exit code.
 - **pack acceptance:** units are committed with `write_unit_record` or a stamp via `record_name=` and `check=`; resume reuses a unit only when its `content_digest` verifies, and a corrupted unit is refused (the control); packed members read back byte-identical.
@@ -95,7 +91,7 @@ One worktree and branch per workstream off fresh `origin/main`, with the pin bum
 
 ## Bio projects: py2Dmol
 
-Assess in P1 and implement in P3. py2Dmol is the viewer, not a typo for py3Dmol, and structure views do not fall back to matplotlib. Wherever the project shows structures, per-residue tracks, contacts or sites, the spec decides between built-in views, a py2Dmol renderer plugin, or not applicable, with one line of reasoning.
+Assess in P1 and implement in P3. py2Dmol is the viewer, not a typo for py3Dmol, and structure views do not fall back to matplotlib. Wherever the project shows structures, per-residue tracks, contacts or sites, decide in the spec between built-in views, a py2Dmol renderer plugin, or not applicable, with one line of reasoning.
 
 Read `~/repos/py2Dmol/CLAUDE.md` and `docs/PLUGINS.md` first. The agent skills are on an unmerged branch (draft `sokrypton/py2Dmol#31`), behind upstream main, so check their claims against current `docs/PLUGINS.md`. If they are not installed, read them with `git -C ~/repos/py2Dmol show fork/agent-surface:agent_assets/skills/<skill>/SKILL.md`, where `<skill>` is `using-py2Dmol`, `developing-py2Dmol-plugins`, `augmenting-views` or `embedding-py2Dmol`.
 
@@ -107,19 +103,19 @@ Bio prose follows `prose-biosafe`.
 
 ## P4: push and PR
 
-Push the branch and open one PR per workstream against `main`, naming the debts, epic, spec, bth run ids, and what CI does and does not verify. Never push to `main`, force-push, merge or close a PR.
+Push the branch and open one PR per workstream against `main`, naming the debts, epic, spec, `bth` run ids, and what CI does and does not verify. Never push to `main`, force-push, merge or close a PR.
 
 ## P5: review and remediate, until satisfied
 
-Each round, fresh reviewers who did not write the code review the full diff against the spec: correctness, the edge-case table, false greens, and whether tests can fail. Findings carry file:line, a failure scenario and a severity. Verify each before acting; a fixer applies confirmed ones on the same branch. Then read CI's actual failures and logs, not just its status.
+Each round, dispatch fresh reviewers who did not write the code to review the full diff against the spec: correctness, the edge-case table, false greens, and whether tests can fail. Findings carry file:line, a failure scenario and a severity. Verify each before acting; dispatch a fixer to apply confirmed ones on the same branch. Then read CI's actual failures and logs, not just its status.
 
 Satisfied means one full round with no confirmed BLOCKER or MAJOR, and CI green. The cap is 5 rounds; then stop and list what is open. After two failed attempts at the same check, stop that item, record what was tried, and move on.
 
 ## Boundaries
 
-- `~/projects/xtrax`, other projects and `~/repos/*` are read-only. An xtrax gap gets a debt filed from an xtrax-cwd session or a note in the report.
-- Questions for the owner go in `.praxia/loop/<TASK_ID>/owner_questions.md` with a recommended default. The swarm does not answer them itself and keeps working on whatever they do not block.
+- `~/projects/xtrax`, other projects and `~/repos/*` are read-only. File any xtrax gap as a debt from an xtrax-cwd session or note it in the report.
+- Put questions for the owner in `.praxia/loop/<task_id>/owner_questions.md` with a recommended default. Do not answer them yourself; keep working on whatever they do not block.
 
 ## Done
 
-Report the workstream verdicts with evidence; epic id; spec and audit log paths; rounds to converge at each gate; PR URLs; bth run ids; the py2Dmol decision; debts to resolve or re-scope (#3257, #3142, #3143 and project debts); and open owner questions. A workstream is complete only with its verification record.
+Report the workstream verdicts with evidence; epic id; spec and audit log paths; rounds to converge at each gate; PR URLs; `bth` run ids; the py2Dmol decision; debts to resolve or re-scope (#3257, #3142, #3143 and project debts); and open owner questions. A workstream is complete only with its verification record.
