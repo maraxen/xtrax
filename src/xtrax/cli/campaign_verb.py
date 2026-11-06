@@ -187,9 +187,13 @@ def _run_run(args: CampaignArgs) -> Any:
         raise CLIError(f"Campaign execution failed: {exc}") from exc
 
     if summary.submitted_units:
+        # The CLI builds the executor with submit=False: it writes the script only.
+        script = Path(output_dir) / "submit_campaign.sh"
         print(
-            f"Campaign '{summary.campaign_id}': submitted {summary.submitted_units}/"
-            f"{summary.total_units} units to SLURM ({summary.skipped_units} already done)"
+            f"Campaign '{summary.campaign_id}': wrote SLURM array script for "
+            f"{summary.submitted_units}/{summary.total_units} units "
+            f"({summary.skipped_units} already done). Nothing is queued yet; "
+            f"submit with: sbatch {script}"
         )
     else:
         print(
