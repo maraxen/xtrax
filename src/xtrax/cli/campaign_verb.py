@@ -33,7 +33,7 @@ from xtrax.cli.loader import load_fn
 # tyro is bound dynamically in entrypoint.py:main() to keep imports tyro-free
 tyro: Any = None
 
-_ACTIONS = ("plan", "run", "status", "verify")
+_ACTIONS = ("plan", "run", "status", "verify", "eda")
 
 
 @dataclass
@@ -590,6 +590,40 @@ def _run_verify(args: CampaignArgs) -> dict[str, int]:
     return {"passed": passed_count, "failed": failed_count}
 
 
+def _run_eda(args: CampaignArgs) -> dict[str, Any]:
+    """Execute 'xtrax campaign eda <campaign_dir>'."""
+    campaign_dir_str = args.output_dir or args.target or "."
+    campaign_dir = Path(campaign_dir_str).resolve()
+    if not campaign_dir.is_dir():
+        raise CLIError(f"Campaign directory not found: {campaign_dir_str}")
+
+    from xtrax.eda.campaign import run_campaign_eda
+
+    try:
+        manifest: CampaignManifest | None = None
+        manifest_path = Path(args.manifest) if args.manifest else campaign_dir / "manifest.json"
+        if manifest_path.is_file():
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest_dict = json.load(f)
+            manifest = CampaignManifest.from_dict(manifest_dict)
+
+        results = run_campaign_eda(
+            campaign_dir=campaign_dir,
+            manifest=manifest,
+            export_artifacts=True,
+        )
+        print(f"Executed Campaign EDA for '{results['campaign_id']}':")
+        print(f"  - Q1: {len(results['q1_composition']['rows'])} units evaluated")
+        print(f"  - Q2: {len(results['q2_scores']['rows'])} scores evaluated")
+        print(f"  - Q3: {len(results['q3_uncertainty']['rows'])} conditions with bootstrap uncertainty")
+        print(f"  - Q4: {results['q4_coverage']['committed_rows']}/{results['q4_coverage']['total_planned_rows']} rows committed")
+        print(f"  - Q5: {results['q5_telemetry']['pack_telemetry_banner']}")
+        print(f"Exported neutral artifacts to {campaign_dir / 'eda'}")
+        return results
+    except Exception as exc:
+        raise CLIError(f"Campaign EDA failed: {exc}") from exc
+
+
 def run_campaign(args: CampaignArgs) -> Any:
     """Dispatch campaign subcommand."""
     action = args.action.lower()
@@ -601,6 +635,8 @@ def run_campaign(args: CampaignArgs) -> Any:
         return _run_status(args)
     if action == "verify":
         return _run_verify(args)
+    if action == "eda":
+        return _run_eda(args)
 
     raise CLIError(f"error: unknown action {args.action!r}; expected one of {', '.join(_ACTIONS)}")
 

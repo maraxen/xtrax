@@ -1,0 +1,79 @@
+[metadata]
+title = "xtrax Campaign EDA: Statistical Verification Controls and Ubiquitin Demo Campaign Benchmark"
+created = "261106"
+schema_version = "0.3"
+task_id = "261106_xtrax-campaign-eda"
+spec_ref = ".praxia/docs/specs/261106_campaign-eda-redesign.md"
+spec_revision = "1.1"
+
+[experiment]
+hypothesis = """
+xtrax Campaign EDA (xtrax.eda.campaign) reliably quantifies multi-knob biomolecular library composition, \
+scoring distributions, and honest uncertainty across committed sinks without spurious significance: \
+(1) The statistical engine detects real planted knob effects (Delta* = 1.50) with 95% confidence intervals \
+bounded away from 0 while rigorously maintaining false-positive rates <= 5% under synthetic null campaigns; \
+(2) The vectorized cluster ratio bootstrap estimator (Theta* = (W @ T) / (W @ n)[:, None]) matches iterative \
+loops to machine precision (|batched - looped| < 1e-12) across unequal cluster sizes; \
+(3) Storage format parity guarantees bit-identical metric extraction across loose filesystem sinks and packed \
+.tar.zst archives; \
+(4) The unit index filters out uncommitted, partial, or corrupt units from pooling while explicitly bannering \
+them in coverage reconciliation; \
+(5) Small-sample conditions (U < 3) safely trigger descriptive-only mode with interval suppression; and \
+(6) An end-to-end 18-unit ubiquitin demo campaign (across proteinmpnn and solublempnn arms, 3 temperatures, 3 seeds) \
+answers all five foundational questions (Q1 composition/diversity, Q2 scores/Pareto, Q3 cluster bootstrap uncertainty, \
+Q4 coverage reconciliation, Q5 run telemetry and debt #3300 pack banner) in <= 60.0 seconds.
+"""
+stage_name = "validation"
+novel = true
+
+[reproduction]
+reproduces_paper = "Revision 1.1 Specification: .praxia/docs/specs/261106_campaign-eda-redesign.md (§7, §8)"
+tolerance_pct = 0.0
+
+[controls]
+positive_outcome = ["pass"]
+negative_outcome = ["instrument_invalid", "statistical_regression", "fail"]
+
+[outcomes.instrument_invalid]
+condition = "positive_control_detected = false OR negative_control_null = false"
+decision = "Reject measurement instrument; synthetic positive or negative control failed."
+reasoning = "A statistical engine that fails to detect a planted knob effect or produces false positives under a null campaign is invalid."
+is_residual = false
+
+[outcomes.statistical_regression]
+condition = "vectorized_bootstrap_parity = false OR storage_format_parity = false OR uncommitted_units_refused = false OR small_sample_guard_active = false"
+decision = "Reject implementation; mathematical parity, storage parity, uncommitted unit refusal, or small-sample guard violated."
+reasoning = "Numerical divergence between batched and looped bootstrap, loose/packed storage divergence, pooling of uncommitted units, or failure to guard small sample sizes violates core architectural contracts."
+is_residual = false
+
+[outcomes.pass]
+condition = "positive_control_detected = true AND negative_control_null = true AND vectorized_bootstrap_parity = true AND storage_format_parity = true AND uncommitted_units_refused = true AND small_sample_guard_active = true AND demo_units_committed = 18 AND demo_runtime_seconds <= 60.0 AND q1_diversity_calculated = true AND q2_scores_calculated = true AND q3_honest_uncertainty_calculated = true AND q4_coverage_reconciled = true AND q5_secondary_telemetry_rendered = true"
+decision = "Accept Campaign EDA implementation and statistical controls."
+reasoning = "All 6 synthetic verification controls and all 5 scientific questions on 18-unit ubiquitin demo campaign evaluated successfully within 60s walltime budget."
+is_residual = false
+
+[outcomes.fail]
+condition = "true"
+decision = "Reject Campaign EDA benchmark; one or more pre-registered outcomes did not meet the pass criteria."
+reasoning = "Residual failure state: demo units count mismatch, demo questions unanswered, or runtime exceeded 60.0 seconds."
+is_residual = true
+
+[result_schema]
+positive_control_detected = "bool"
+negative_control_null = "bool"
+vectorized_bootstrap_parity = "bool"
+storage_format_parity = "bool"
+uncommitted_units_refused = "bool"
+small_sample_guard_active = "bool"
+demo_units_committed = "int"
+demo_runtime_seconds = "float"
+q1_diversity_calculated = "bool"
+q2_scores_calculated = "bool"
+q3_honest_uncertainty_calculated = "bool"
+q4_coverage_reconciled = "bool"
+q5_secondary_telemetry_rendered = "bool"
+timestamp = "str"
+git_sha = "str"
+controls_summary = "dict"
+demo_summary = "dict"
+timing = "dict"
