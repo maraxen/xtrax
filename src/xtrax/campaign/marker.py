@@ -356,6 +356,15 @@ def compute_content_digest(path: Path) -> str:
     return hasher.hexdigest()
 
 
+#: OSErrors that mean the store itself is missing pieces, so the unit is not done. Any
+#: other OSError during deep verification is an I/O failure and is raised, not reported
+#: as an invalid store.
+_STORE_DEFECT_OS_ERRORS: tuple[type[OSError], ...] = (
+    FileNotFoundError,
+    NotADirectoryError,
+    IsADirectoryError,
+)
+
 #: Zarr root metadata files, v3 first. Any one of them marks a directory as a store.
 ZARR_ROOT_METADATA_FILES: tuple[str, ...] = ("zarr.json", ".zgroup", ".zarray")
 
@@ -378,6 +387,11 @@ def validate_unit_done(
 
     ``quarantine_on_failure`` defaults to False: a read-only check never moves a store.
     Quarantine moves files, so callers that enable it must hold the unit's lease.
+
+    Raises:
+        OSError: An I/O error (other than a missing file or directory) while computing
+            the Tier-2 digest. The store's state is unknown, so it is neither reported
+            invalid nor quarantined.
     """
     path = Path(output_path)
     done_marker_path = path.with_name(f"{path.name}.done.json")
@@ -561,6 +575,11 @@ def validate_unit_done(
                 quarantine_path=q_path,
             )
     except Exception as exc:
+        if isinstance(exc, OSError) and not isinstance(exc, _STORE_DEFECT_OS_ERRORS):
+            # EIO, ESTALE, EACCES, ENOSPC, a timed-out network read: the environment failed,
+            # not the store. Reporting the store invalid would let callers quarantine a good
+            # unit and recompute it, so surface the error instead.
+            raise
         q_path = None
         if quarantine_on_failure:
             q_path = quarantine_output(path, reason="deep_verification_exception", exc=exc)

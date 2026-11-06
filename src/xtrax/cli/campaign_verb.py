@@ -254,24 +254,34 @@ def _run_status(args: CampaignArgs) -> dict[str, int]:
     now = time.time()
 
     # 1. Count completed done markers (deduplicated by manifest_row_hash)
+    # Each store is counted once: a broken marker marks its store failed, and that store's
+    # lock (expired or unreadable) is not counted again below.
     completed_hashes: set[str] = set()
     completed_stores: set[Path] = set()
+    failed_stores: set[Path] = set()
     for done_file in _iter_campaign_files(out_dir, "*.done.json"):
+        store_path = done_file.with_name(done_file.name.removesuffix(".done.json"))
         try:
             data = json.loads(done_file.read_text(encoding="utf-8"))
-            row_hash = data.get("manifest_row_hash")
-            store_path = done_file.with_name(done_file.name.removesuffix(".done.json"))
-            if row_hash and store_path.exists():
-                completed_hashes.add(row_hash)
-                completed_stores.add(store_path)
+            row_hash = data.get("manifest_row_hash") if isinstance(data, dict) else None
         except Exception:
-            failed_count += 1
+            row_hash = None
+        if not isinstance(row_hash, str) or not row_hash.strip():
+            # Unparseable marker, or one without a row hash: the unit is not done and
+            # verify rejects it, so status reports it failed rather than hiding it.
+            failed_stores.add(store_path)
+        elif store_path.exists():
+            completed_hashes.add(row_hash)
+            completed_stores.add(store_path)
+    failed_count += len(failed_stores)
     completed_count = len(completed_hashes)
 
     # 2. Count active running locks (deduplicated by manifest_row_hash)
     running_hashes: set[str] = set()
     for lock_file in _iter_campaign_files(out_dir, "*.lock"):
         lock_store = lock_file.with_name(lock_file.name.removesuffix(".lock"))
+        if lock_store in failed_stores:
+            continue
         try:
             data = json.loads(lock_file.read_text(encoding="utf-8"))
             lock = CampaignLock.from_dict(data)
@@ -350,12 +360,17 @@ def _run_verify(args: CampaignArgs) -> dict[str, int]:
         for row in manifest.rows:
             store_path = _resolve_output_path(out_dir, row)
 
-            res = validate_unit_done(
-                store_path,
-                expected_row=row,
-                deep_verify=args.deep,
-                quarantine_on_failure=False,
-            )
+            try:
+                res = validate_unit_done(
+                    store_path,
+                    expected_row=row,
+                    deep_verify=args.deep,
+                    quarantine_on_failure=False,
+                )
+            except OSError as exc:
+                failed_count += 1
+                errors.append(f"Row {row.manifest_row_hash}: I/O error while verifying: {exc}")
+                continue
             if res.is_valid:
                 passed_count += 1
             else:

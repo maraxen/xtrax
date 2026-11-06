@@ -161,15 +161,22 @@ def _check_resume_done(
     ``resume_verify="deep"`` (the default) the store's content digest must also match the
     marker's ``content_digest_sha256``; ``"tier1"`` skips that byte-level check. A bare marker
     file is never enough.
+
+    An I/O error while verifying returns False: the unit is not known to be done, so it
+    goes to the leased run path, where the same error is raised and the unit is reported
+    failed. Nothing is quarantined on an I/O error.
     """
     mode = _validate_resume_verify(resume_verify)
     output_path = _resolve_output_path(output_dir, row)
-    val = validate_unit_done(
-        output_path,
-        row,
-        deep_verify=mode == "deep",
-        quarantine_on_failure=False,
-    )
+    try:
+        val = validate_unit_done(
+            output_path,
+            row,
+            deep_verify=mode == "deep",
+            quarantine_on_failure=False,
+        )
+    except OSError:
+        return False
     return val.is_valid
 
 
@@ -474,8 +481,13 @@ def _pool_worker_task(
     heartbeat_interval: float,
     cache_dir: str | None,
     resume_verify: ResumeVerify = "deep",
+    owner_token_prefix: str | None = None,
 ) -> dict[str, Any]:
-    """Module-level task function executed in spawned worker processes."""
+    """Module-level task function executed in spawned worker processes.
+
+    ``owner_token_prefix`` names the pool run that submitted the task, so the parent can
+    recognise, and reclaim, a lease left behind by one of its own workers that died.
+    """
     _initialize_worker_process(cache_dir)
     out_dir = Path(output_dir)
     try:
@@ -485,7 +497,7 @@ def _pool_worker_task(
             output_dir=out_dir,
             lease_seconds=lease_seconds,
             heartbeat_interval=heartbeat_interval,
-            owner_token_prefix=f"pool:{os.getpid()}",
+            owner_token_prefix=owner_token_prefix or "pool",
             resume_verify=resume_verify,
         )
         return {
@@ -660,6 +672,46 @@ class LocalSequentialExecutor:
         )
 
 
+def _reclaim_dead_worker_leases(
+    output_dir: Path, rows: list[ManifestRow], owner_prefix: str
+) -> list[Path]:
+    """Remove leases, and their partial outputs, left by this pool run's dead workers.
+
+    Call only after the pool has shut down, when none of the run's workers is alive. A
+    lock is removed only when its ``owner_token`` starts with ``owner_prefix``, which is
+    unique to this run, so another run's or another host's live lease is never touched.
+    The lock bytes are re-read just before unlinking, so a lock rewritten in between is
+    left alone. Returns the lock paths removed.
+    """
+    import shutil
+
+    reclaimed: list[Path] = []
+    token_prefix = f"{owner_prefix}:"
+    for row in rows:
+        output_path = _resolve_output_path(output_dir, row)
+        lock_path = output_path.with_name(f"{output_path.name}.lock")
+        try:
+            raw = lock_path.read_bytes()
+            owner = json.loads(raw.decode("utf-8")).get("owner_token", "")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if not isinstance(owner, str) or not owner.startswith(token_prefix):
+            continue
+        for partial in output_path.parent.glob(f"{output_path.name}.partial.*"):
+            if partial.is_dir():
+                shutil.rmtree(partial, ignore_errors=True)
+            else:
+                partial.unlink(missing_ok=True)
+        try:
+            if lock_path.read_bytes() != raw:
+                continue
+            lock_path.unlink()
+        except OSError:
+            continue
+        reclaimed.append(lock_path)
+    return reclaimed
+
+
 def _terminate_pool_workers(pool: ProcessPoolExecutor, join_timeout: float = 10.0) -> None:
     """SIGTERM every worker of ``pool`` and wait briefly for them to exit.
 
@@ -773,6 +825,9 @@ class LocalProcessPoolExecutor:
         )
         unfinished: dict[int, ManifestRow] = dict(pending_rows)
         future_to_row: dict[Future[dict[str, Any]], tuple[int, ManifestRow]] = {}
+        # Unique to this run, so after shutdown the parent can tell its own workers'
+        # leftover leases from anyone else's.
+        run_owner_prefix = f"pool:{os.getpid()}.{uuid.uuid4().hex[:8]}"
         try:
             try:
                 for idx, row in pending_rows:
@@ -785,6 +840,7 @@ class LocalProcessPoolExecutor:
                         self.heartbeat_interval,
                         self.cache_dir,
                         self.resume_verify,
+                        run_owner_prefix,
                     )
                     future_to_row[fut] = (idx, row)
 
@@ -832,6 +888,9 @@ class LocalProcessPoolExecutor:
                     pending_fut.cancel()
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
+            # Every worker has exited. A worker killed outright (SIGKILL, the OOM killer)
+            # never ran its cleanup, so its lease would block the unit for lease + 300 s.
+            _reclaim_dead_worker_leases(out_dir, [row for _, row in pending_rows], run_owner_prefix)
 
         elapsed = time.time() - start_time
         return CampaignSummary(
