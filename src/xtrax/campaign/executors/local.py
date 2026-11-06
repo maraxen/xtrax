@@ -746,24 +746,37 @@ def _reclaim_dead_worker_leases(
     return reclaimed
 
 
-def _terminate_pool_workers(pool: ProcessPoolExecutor, join_timeout: float = 10.0) -> None:
-    """SIGTERM every worker of ``pool`` and wait briefly for them to exit.
+def _terminate_pool_workers(pool: ProcessPoolExecutor, grace_seconds: float = 3.0) -> None:
+    """Stop every worker of ``pool``: SIGTERM, a short grace period, then SIGKILL.
 
     ``ProcessPoolExecutor.shutdown`` waits for running tasks; an early exit on
-    ``max_failures`` must not. Python 3.14 has ``terminate_workers``; older versions
-    expose the worker table only as ``_processes``.
+    ``max_failures`` must not. SIGTERM lets a unit in progress unwind (its handler
+    releases the lease and discards the partial), but that worker then survives and
+    waits for more work. Once the pool is broken, its internal cleanup joins every
+    worker without a timeout, so a survivor hangs ``shutdown`` forever. Any worker still
+    alive after the grace period is therefore killed; a lease it left behind is removed
+    by ``_reclaim_dead_worker_leases`` after shutdown.
+
+    Python 3.14's ``terminate_workers`` sends only SIGTERM, so the worker table
+    (``_processes``) is used whenever it exists.
     """
-    terminate = getattr(pool, "terminate_workers", None)
-    if callable(terminate):
-        terminate()
+    table = getattr(pool, "_processes", None)
+    if table is None:
+        terminate = getattr(pool, "terminate_workers", None)
+        if callable(terminate):
+            terminate()
         return
-    processes = list((getattr(pool, "_processes", None) or {}).values())
+    processes = list(table.values())
     for proc in processes:
         if proc.is_alive():
             proc.terminate()
-    deadline = time.time() + join_timeout
+    deadline = time.time() + grace_seconds
     for proc in processes:
         proc.join(max(0.0, deadline - time.time()))
+    for proc in processes:
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
 
 
 class LocalProcessPoolExecutor:

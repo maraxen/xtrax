@@ -242,3 +242,48 @@ def test_sbatch_log_path_with_whitespace_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="whitespace"):
         executor.generate_script(manifest, out)
     assert not (out / "logs").exists(), "a refused script must not create log directories"
+
+
+# ==============================================================================
+# Early exit on max_failures must not hang on a worker that survives SIGTERM
+# ==============================================================================
+
+
+def test_max_failures_early_exit_does_not_hang_on_sigterm_survivor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker that does not stop on SIGTERM is killed, so shutdown does not wait on it.
+
+    Before the fix, the broken pool's cleanup joined that worker with no timeout, and
+    run() returned only when its unit did (the CI-visible symptom was a rare hang in
+    test_process_pool_max_failures_early_exit).
+    """
+    import threading
+
+    from tests.campaign.unit_fns import SYNC_DIR_ENV, fail_fast_or_sleep_unit
+
+    manifest = _create_mock_manifest(num_rows=2, campaign_id="camp_pr267_early_exit_hang")
+    out = tmp_path / "camp_pr267_early_exit_hang"
+    sync_dir = tmp_path / "sync"
+    sync_dir.mkdir()
+    monkeypatch.setenv(SYNC_DIR_ENV, str(sync_dir))
+    holder: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            holder["summary"] = LocalProcessPoolExecutor(max_workers=2).run(
+                manifest, fail_fast_or_sleep_unit, output_dir=str(out), max_failures=1
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            holder["exc"] = exc
+
+    runner = threading.Thread(target=_run, daemon=True)
+    runner.start()
+    runner.join(timeout=40.0)
+    assert (sync_dir / "sleeper_started").exists(), "control: the slow unit never started"
+    assert not runner.is_alive(), "run() hung after the max_failures early exit"
+    assert "exc" not in holder, holder.get("exc")
+    summary = holder["summary"]
+    assert summary.failed_units >= 1
+    assert summary.completed_units == 0
+    assert not list(out.rglob("*.lock")), "a stopped worker's lease was left behind"
