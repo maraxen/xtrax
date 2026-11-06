@@ -509,6 +509,7 @@ def plan_campaign(
         combinations = [{}]
 
     rows: list[ManifestRow] = []
+    seen_row_hashes: dict[str, str] = {}
 
     for target_input in spec.target_inputs:
         target_stem = _target_stem(target_input)
@@ -559,6 +560,14 @@ def plan_campaign(
                         output_locator=None,
                         resource_requirements=res_req,
                     )
+                    if row.manifest_row_hash in seen_row_hashes:
+                        prev_job_id = seen_row_hashes[row.manifest_row_hash]
+                        msg = (
+                            f"Duplicate manifest_row_hash {row.manifest_row_hash!r} "
+                            f"for job_id={row.job_id!r} and job_id={prev_job_id!r}"
+                        )
+                        raise ValueError(msg)
+                    seen_row_hashes[row.manifest_row_hash] = row.job_id
                     rows.append(row)
 
     if created_at_utc is not None:

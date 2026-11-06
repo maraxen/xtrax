@@ -151,12 +151,15 @@ class HeartbeatThread(threading.Thread):
         initial_acquired_at: float | None = None,
         expiry_guard_margin: float | None = None,
     ) -> None:
+        if lease_seconds < 10:
+            msg = f"lease_seconds must be >= 10, got {lease_seconds}"
+            raise ValueError(msg)
         super().__init__(daemon=True, name=f"Heartbeat-{manifest_row_hash[:8]}")
         self.lock_path = lock_path
         self.owner_token = owner_token
         self.manifest_row_hash = manifest_row_hash
         self.lease_seconds = lease_seconds
-        self.interval_seconds = interval_seconds
+        self.interval_seconds = min(float(interval_seconds), lease_seconds / 3.0)
         self.acquired_at_unix_s = (
             initial_acquired_at if initial_acquired_at is not None else time.time()
         )
@@ -164,7 +167,7 @@ class HeartbeatThread(threading.Thread):
         self.expiry_guard_margin = (
             expiry_guard_margin
             if expiry_guard_margin is not None
-            else min(60.0, lease_seconds / 2.0)
+            else min(60.0, lease_seconds / 6.0)
         )
         self.abort_event = threading.Event()
         self.stop_event = threading.Event()
@@ -270,12 +273,16 @@ class FileLock:
         lease_seconds: int = 1800,
         heartbeat_interval: float = 60.0,
     ) -> None:
+        if lease_seconds < 10:
+            msg = f"lease_seconds must be >= 10, got {lease_seconds}"
+            raise ValueError(msg)
         self.output_path = Path(output_path)
         self.lock_path = self.output_path.with_name(f"{self.output_path.name}.lock")
         self.owner_token = owner_token
         self.manifest_row_hash = manifest_row_hash
         self.lease_seconds = lease_seconds
-        self.heartbeat_interval = heartbeat_interval
+        self.heartbeat_interval = min(float(heartbeat_interval), lease_seconds / 3.0)
+        self.expiry_guard_margin = min(60.0, lease_seconds / 6.0)
         self.acquired_at_unix_s: float | None = None
         self.heartbeat: HeartbeatThread | None = None
         self.is_locked: bool = False
@@ -444,6 +451,7 @@ class FileLock:
             lease_seconds=self.lease_seconds,
             interval_seconds=self.heartbeat_interval,
             initial_acquired_at=acquired_at,
+            expiry_guard_margin=self.expiry_guard_margin,
         )
         self.heartbeat.start()
 

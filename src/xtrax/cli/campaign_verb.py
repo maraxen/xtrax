@@ -255,12 +255,15 @@ def _run_status(args: CampaignArgs) -> dict[str, int]:
 
     # 1. Count completed done markers (deduplicated by manifest_row_hash)
     completed_hashes: set[str] = set()
+    completed_stores: set[Path] = set()
     for done_file in _iter_campaign_files(out_dir, "*.done.json"):
         try:
             data = json.loads(done_file.read_text(encoding="utf-8"))
             row_hash = data.get("manifest_row_hash")
-            if row_hash:
+            store_path = done_file.with_name(done_file.name.removesuffix(".done.json"))
+            if row_hash and store_path.exists():
                 completed_hashes.add(row_hash)
+                completed_stores.add(store_path)
         except Exception:
             failed_count += 1
     completed_count = len(completed_hashes)
@@ -268,17 +271,20 @@ def _run_status(args: CampaignArgs) -> dict[str, int]:
     # 2. Count active running locks (deduplicated by manifest_row_hash)
     running_hashes: set[str] = set()
     for lock_file in _iter_campaign_files(out_dir, "*.lock"):
+        lock_store = lock_file.with_name(lock_file.name.removesuffix(".lock"))
         try:
             data = json.loads(lock_file.read_text(encoding="utf-8"))
             lock = CampaignLock.from_dict(data)
             row_hash = lock.manifest_row_hash
+            if row_hash in completed_hashes or lock_store in completed_stores:
+                continue
             if now < lock.lease_expires_at_unix_s + CLOCK_DRIFT_GRACE_PERIOD_S:
-                if row_hash not in completed_hashes:
-                    running_hashes.add(row_hash)
+                running_hashes.add(row_hash)
             else:
                 failed_count += 1
         except Exception:
-            failed_count += 1
+            if lock_store not in completed_stores:
+                failed_count += 1
     running_count = len(running_hashes)
 
     # 3. Count quarantined units
@@ -286,8 +292,14 @@ def _run_status(args: CampaignArgs) -> dict[str, int]:
     for q_root in quarantine_roots:
         if q_root.is_dir():
             quarantined_count += len(list(q_root.iterdir()))
+    corrupt_ids: set[str] = set()
     for corrupt_file in out_dir.glob("**/*.corrupt.*"):
-        quarantined_count += 1
+        if ".quarantine" in corrupt_file.relative_to(out_dir).parts:
+            continue
+        _, sep, corrupt_id = corrupt_file.name.rpartition(".corrupt.")
+        if sep and corrupt_id:
+            corrupt_ids.add(corrupt_id)
+    quarantined_count += len(corrupt_ids)
 
     print(f"Campaign Status: {out_dir}")
     print(f"  Completed:   {completed_count}")
@@ -305,9 +317,13 @@ def _run_status(args: CampaignArgs) -> dict[str, int]:
 
 def _run_verify(args: CampaignArgs) -> dict[str, int]:
     """Execute 'xtrax campaign verify'."""
+    manifest_str = args.manifest
+    if not manifest_str and args.target and Path(args.target).is_file():
+        manifest_str = args.target
+
     out_dir_str = args.output_dir
-    if not out_dir_str and args.manifest:
-        out_dir_str = str(Path(args.manifest).parent)
+    if not out_dir_str and manifest_str:
+        out_dir_str = str(Path(manifest_str).parent)
     if not out_dir_str:
         out_dir_str = args.target or "outputs"
     out_dir = Path(out_dir_str)
@@ -321,10 +337,10 @@ def _run_verify(args: CampaignArgs) -> dict[str, int]:
     errors: list[str] = []
 
     # If manifest is supplied, verify against planned rows
-    if args.manifest:
-        manifest_path = Path(args.manifest)
+    if manifest_str:
+        manifest_path = Path(manifest_str)
         if not manifest_path.is_file():
-            raise CLIError(f"Campaign manifest file not found: {args.manifest}")
+            raise CLIError(f"Campaign manifest file not found: {manifest_str}")
         try:
             manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest = CampaignManifest.from_dict(manifest_data)
@@ -359,7 +375,19 @@ def _run_verify(args: CampaignArgs) -> dict[str, int]:
                 marker_data = json.loads(marker_file.read_text(encoding="utf-8"))
                 row_hash = marker_data.get("manifest_row_hash", "")
                 input_hash = marker_data.get("input_hash", "")
-                if row_hash and row_hash in seen_hashes:
+                if (
+                    not isinstance(row_hash, str)
+                    or not row_hash.strip()
+                    or not isinstance(input_hash, str)
+                    or not input_hash.strip()
+                ):
+                    failed_count += 1
+                    errors.append(
+                        f"Unit {marker_file.name}: done marker has empty "
+                        "manifest_row_hash or input_hash"
+                    )
+                    continue
+                if row_hash in seen_hashes:
                     continue
                 seen_hashes.add(row_hash)
 

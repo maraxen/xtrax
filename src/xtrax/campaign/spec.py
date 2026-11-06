@@ -7,7 +7,6 @@ callable-field partitioning, and TOML serialization.
 
 from __future__ import annotations
 
-import json
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -83,13 +82,15 @@ class ParamGrid:
     axes: dict[str, list[Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        from xtrax.campaign.manifest import canonical_json_bytes, normalize_json_value
+
         _check_no_callables(self.axes, path="ParamGrid.axes")
         # Unit identity is content-derived, so a repeated value on an axis would plan two
         # rows with the same hash writing the same store.
         for axis, values in self.axes.items():
-            seen: set[str] = set()
+            seen: set[bytes] = set()
             for value in values:
-                key = json.dumps(value, sort_keys=True, default=str)
+                key = canonical_json_bytes(normalize_json_value(value))
                 if key in seen:
                     msg = f"ParamGrid axis {axis!r} repeats the value {value!r}"
                     raise ValueError(msg)
@@ -178,6 +179,20 @@ class CampaignSpec:
             raise ValueError(f"chunk_size must be >= 1, got {self.chunk_size}")
         if self.samples_per_target < 1:
             raise ValueError(f"samples_per_target must be >= 1, got {self.samples_per_target}")
+
+        seen_targets: set[str] = set()
+        for target in self.target_inputs:
+            if target in seen_targets:
+                msg = f"Duplicate target_input in CampaignSpec.target_inputs: {target!r}"
+                raise ValueError(msg)
+            seen_targets.add(target)
+
+        seen_arm_ids: set[str] = set()
+        for arm in self.arms:
+            if arm.arm_id in seen_arm_ids:
+                msg = f"Duplicate arm_id in CampaignSpec.arms: {arm.arm_id!r}"
+                raise ValueError(msg)
+            seen_arm_ids.add(arm.arm_id)
 
         _check_no_callables(self.metadata, path="CampaignSpec.metadata")
         _check_no_callables(self.parameters, path="CampaignSpec.parameters")

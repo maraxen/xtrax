@@ -19,10 +19,34 @@ if TYPE_CHECKING:
     from xtrax.campaign.manifest import CampaignManifest, ManifestRow
 
 
+def _validate_row_indices(
+    manifest: CampaignManifest,
+    row_indices: list[int] | None,
+) -> list[int]:
+    """Return deduplicated row indices in manifest order, or raise ``ValueError``."""
+    n_rows = len(manifest.rows)
+    if row_indices is None:
+        return list(range(n_rows))
+    valid_range = range(n_rows)
+    selected: set[int] = set()
+    for idx in row_indices:
+        if idx not in valid_range:
+            msg = (
+                f"Row index {idx} is out of range for manifest with {n_rows} row(s) "
+                f"(expected 0..{n_rows - 1})"
+                if n_rows > 0
+                else f"Row index {idx} is out of range for empty manifest"
+            )
+            raise ValueError(msg)
+        selected.add(idx)
+    return sorted(selected)
+
+
 def get_pending_row_indices(
     manifest: CampaignManifest,
     output_dir: Path | str,
     resume_verify: str = "deep",
+    row_indices: list[int] | None = None,
 ) -> list[int]:
     """Identify uncompleted row indices eligible for scheduling.
 
@@ -40,9 +64,11 @@ def get_pending_row_indices(
     )
 
     mode = _validate_resume_verify(resume_verify)
+    candidate_indices = _validate_row_indices(manifest, row_indices)
     out_dir = Path(output_dir)
     pending: list[int] = []
-    for idx, row in enumerate(manifest.rows):
+    for idx in candidate_indices:
+        row = manifest.rows[idx]
         if _check_resume_done(out_dir, row, resume_verify=mode):
             _record_reuse(
                 out_dir,
@@ -197,14 +223,17 @@ class SlurmArrayExecutor:
         resolved_manifest = manifest_path if manifest_path is not None else self.manifest_path
         resolved_fn = fn_spec if fn_spec is not None else self.fn_spec
 
+        candidate_indices = _validate_row_indices(manifest, row_indices)
         pending_indices = (
-            get_pending_row_indices(manifest, out_dir, resume_verify=self.resume_verify)
+            get_pending_row_indices(
+                manifest,
+                out_dir,
+                resume_verify=self.resume_verify,
+                row_indices=candidate_indices,
+            )
             if resume
-            else list(range(len(manifest.rows)))
+            else candidate_indices
         )
-        if row_indices is not None:
-            wanted = set(row_indices)
-            pending_indices = [idx for idx in pending_indices if idx in wanted]
 
         # Boundary Control (GATE-09): Exit cleanly if all units completed
         if not pending_indices:
@@ -273,6 +302,7 @@ class SlurmArrayExecutor:
             '  --output-dir "${OUTPUT_DIR}" \\',
             '  --fn "${UNIT_FN}" \\',
             "  --executor local-seq \\",
+            f"  --resume-verify {self.resume_verify} \\",
             '  --row-index "${ROW_INDEX}"',
             "",
         ]
@@ -305,12 +335,14 @@ class SlurmArrayExecutor:
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        selected = list(row_indices) if row_indices is not None else None
-        pending = get_pending_row_indices(manifest, out_dir, resume_verify=self.resume_verify)
-        if selected is not None:
-            wanted = set(selected)
-            pending = [idx for idx in pending if idx in wanted]
-        total_units = len(selected) if selected is not None else len(manifest.rows)
+        candidate_indices = _validate_row_indices(manifest, row_indices)
+        pending = get_pending_row_indices(
+            manifest,
+            out_dir,
+            resume_verify=self.resume_verify,
+            row_indices=candidate_indices,
+        )
+        total_units = len(candidate_indices)
         skipped_units = total_units - len(pending)
 
         # Boundary Control (GATE-09): early return on empty pending

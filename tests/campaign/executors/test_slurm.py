@@ -180,6 +180,7 @@ def test_gate_08_positive_control_sparse_range_on_resume(tmp_path: Path):
     assert '--fn "${UNIT_FN}"' in script_text
     assert '--output-dir "${OUTPUT_DIR}"' in script_text
     assert "--executor local-seq" in script_text
+    assert "--resume-verify deep" in script_text
     assert "#SBATCH --array=12,15,44-50%20" in script_text
     assert "#SBATCH --job-name=gate08_run" in script_text
     assert "#SBATCH --cpus-per-task=4" in script_text

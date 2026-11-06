@@ -15,6 +15,8 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -136,14 +138,15 @@ def _clean_memory(state: Any) -> None:
 
 def _resolve_output_path(output_dir: Path, row: ManifestRow) -> Path:
     """Resolve the target output path for a manifest row."""
+    resolved_dir = Path(output_dir).resolve()
     if row.output_locator:
         loc_path = Path(row.output_locator)
         if loc_path.is_absolute():
             return loc_path
-        if len(loc_path.parts) > 1 and output_dir.name == loc_path.parts[0]:
-            return output_dir / Path(*loc_path.parts[1:])
-        return output_dir / loc_path
-    return output_dir / f"{row.manifest_row_hash}.zarr"
+        if len(loc_path.parts) > 1 and resolved_dir.name == loc_path.parts[0]:
+            return resolved_dir / Path(*loc_path.parts[1:])
+        return resolved_dir / loc_path
+    return resolved_dir / f"{row.manifest_row_hash}.zarr"
 
 
 def _check_resume_done(
@@ -293,7 +296,8 @@ def _stage_unit_output(state: Any, output_path: Path, partial_path: Path) -> Non
     """
     if partial_path.exists():
         return
-    if output_path.exists():
+    done_marker_path = output_path.with_name(f"{output_path.name}.done.json")
+    if output_path.exists() and not done_marker_path.exists():
         os.replace(output_path, partial_path)
         return
     if isinstance(state, Mapping):
@@ -385,12 +389,22 @@ def _execute_single_unit(
 
     previous_sigterm = _install_sigterm_interrupt()
     partial_path: Path | None = None
+    staged = False
     try:
-        # Another worker may have committed between the resume check and our acquire.
+        # Another worker may have committed between the resume check and our acquire,
+        # or between _check_resume_done and _set_aside_orphaned_output.
         if _check_resume_done(output_dir, row, resume_verify=mode):
             _record_reuse(output_dir, row, output_path, mode, reused_by="lease_recheck")
             return UNIT_DISCARDED
         _set_aside_orphaned_output(output_path, row, resume_verify=mode)
+        if validate_unit_done(
+            output_path,
+            row,
+            deep_verify=mode == "deep",
+            quarantine_on_failure=False,
+        ).is_valid:
+            _record_reuse(output_dir, row, output_path, mode, reused_by="lease_recheck")
+            return UNIT_DISCARDED
 
         start_time = time.time()
         attempt_uuid = uuid.uuid4().hex[:8]
@@ -400,7 +414,15 @@ def _execute_single_unit(
         duration_s = max(0.001, time.time() - start_time)
 
         try:
+            if validate_unit_done(
+                output_path,
+                row,
+                deep_verify=mode == "deep",
+                quarantine_on_failure=False,
+            ).is_valid:
+                return UNIT_DISCARDED
             _stage_unit_output(state, output_path, partial_path)
+            staged = True
         finally:
             # Memory hygiene: device tensor blocking & garbage collection
             _clean_memory(state)
@@ -429,6 +451,15 @@ def _execute_single_unit(
             # On any failure it removes this attempt's output while the lease is still held.
             if partial_path is not None:
                 _discard_partial(partial_path)
+            if partial_path is not None and not staged and output_path.exists():
+                val = validate_unit_done(
+                    output_path,
+                    row,
+                    deep_verify=mode == "deep",
+                    quarantine_on_failure=False,
+                )
+                if not val.is_valid:
+                    quarantine_output(output_path, reason="aborted_unit_output")
         finally:
             if lock.is_locked:
                 lock.release()
@@ -463,7 +494,7 @@ def _pool_worker_task(
             "outcome": outcome,
             "error": None,
         }
-    except Exception as exc:
+    except (Exception, UnitInterruptedError) as exc:
         return {
             "manifest_row_hash": row.manifest_row_hash,
             "success": False,
@@ -629,6 +660,26 @@ class LocalSequentialExecutor:
         )
 
 
+def _terminate_pool_workers(pool: ProcessPoolExecutor, join_timeout: float = 10.0) -> None:
+    """SIGTERM every worker of ``pool`` and wait briefly for them to exit.
+
+    ``ProcessPoolExecutor.shutdown`` waits for running tasks; an early exit on
+    ``max_failures`` must not. Python 3.14 has ``terminate_workers``; older versions
+    expose the worker table only as ``_processes``.
+    """
+    terminate = getattr(pool, "terminate_workers", None)
+    if callable(terminate):
+        terminate()
+        return
+    processes = list((getattr(pool, "_processes", None) or {}).values())
+    for proc in processes:
+        if proc.is_alive():
+            proc.terminate()
+    deadline = time.time() + join_timeout
+    for proc in processes:
+        proc.join(max(0.0, deadline - time.time()))
+
+
 class LocalProcessPoolExecutor:
     """Multiprocessing pool executor with chunked worker recycling and persistent JAX cache.
 
@@ -713,31 +764,34 @@ class LocalProcessPoolExecutor:
             )
 
         ctx = multiprocessing.get_context("spawn")
-        pool_kwargs: dict[str, Any] = {
-            "processes": self.max_workers,
-            "initializer": _initialize_worker_process,
-            "initargs": (self.cache_dir,),
-        }
-        if self.recycle_interval is not None:
-            pool_kwargs["maxtasksperchild"] = self.recycle_interval
-
-        with ctx.Pool(**pool_kwargs) as pool:
-            task_args = [
-                (
-                    idx,
-                    row,
-                    unit_fn,
-                    str(out_dir),
-                    self.lease_seconds,
-                    self.heartbeat_interval,
-                    self.cache_dir,
-                    self.resume_verify,
-                )
-                for idx, row in pending_rows
-            ]
-
+        pool = ProcessPoolExecutor(
+            max_workers=self.max_workers,
+            mp_context=ctx,
+            initializer=_initialize_worker_process,
+            initargs=(self.cache_dir,),
+            max_tasks_per_child=self.recycle_interval,
+        )
+        unfinished: dict[int, ManifestRow] = dict(pending_rows)
+        future_to_row: dict[Future[dict[str, Any]], tuple[int, ManifestRow]] = {}
+        try:
             try:
-                for idx, row, res in pool.imap_unordered(_pool_worker_task_wrapper, task_args):
+                for idx, row in pending_rows:
+                    fut = pool.submit(
+                        _pool_worker_task,
+                        row,
+                        unit_fn,
+                        str(out_dir),
+                        self.lease_seconds,
+                        self.heartbeat_interval,
+                        self.cache_dir,
+                        self.resume_verify,
+                    )
+                    future_to_row[fut] = (idx, row)
+
+                for fut in as_completed(future_to_row):
+                    idx, row = future_to_row[fut]
+                    res = fut.result()
+                    unfinished.pop(idx, None)
                     if res.get("success"):
                         outcome = res.get("outcome")
                         if outcome == UNIT_COMMITTED:
@@ -756,13 +810,28 @@ class LocalProcessPoolExecutor:
                             }
                         )
                         if max_failures is not None and failed_units >= max_failures:
-                            pool.terminate()
-                            pool.join()
+                            for pending_fut in future_to_row:
+                                pending_fut.cancel()
+                            # Stop in-flight units now rather than waiting for them; each
+                            # worker's SIGTERM handler releases its lease and partial store.
+                            _terminate_pool_workers(pool)
                             break
-            except Exception as exc:
-                pool.terminate()
-                pool.join()
-                raise exc
+            except BrokenProcessPool as exc:
+                broken_error = f"{type(exc).__name__}: {exc}"
+                for rem_idx, rem_row in unfinished.items():
+                    failed_units += 1
+                    failures.append(
+                        {
+                            "manifest_row_hash": rem_row.manifest_row_hash,
+                            "row_index": rem_idx,
+                            "error": broken_error,
+                        }
+                    )
+                unfinished.clear()
+                for pending_fut in future_to_row:
+                    pending_fut.cancel()
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
 
         elapsed = time.time() - start_time
         return CampaignSummary(

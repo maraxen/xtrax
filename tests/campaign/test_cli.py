@@ -291,15 +291,17 @@ def test_campaign_status_reporting(
     out_dir = tmp_path / "status_out"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Completed unit: create .done.json
+    # 1. Completed unit: create store and .done.json
+    done_store = out_dir / "hash_done_1.zarr"
+    done_store.mkdir(parents=True, exist_ok=True)
     marker = create_done_marker(
         manifest_row_hash="hash_done_1",
         input_hash="input_done_1",
-        output_locator=str(out_dir / "hash_done_1.zarr"),
+        output_locator=str(done_store),
         content_digest_sha256="abc",
         duration_s=1.0,
     )
-    marker.write(out_dir / "hash_done_1.done.json")
+    marker.write(out_dir / "hash_done_1.zarr.done.json")
 
     # 2. Running unit: active lock file
     import time
