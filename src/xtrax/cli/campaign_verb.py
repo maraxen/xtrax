@@ -5,6 +5,7 @@ sequential/process-pool/SLURM backends, status inspection, and Tier-1/Tier-2
 verification.
 """
 
+import contextlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,6 +119,60 @@ def _run_plan(args: CampaignArgs) -> CampaignManifest:
     return manifest
 
 
+def _open_campaign_ledger(
+    manifest: CampaignManifest,
+    manifest_path: Path,
+    executor_kind: str,
+    row_indices: list[int] | None,
+) -> Any:
+    """Open the run-ledger entry for one `campaign run`, failing closed.
+
+    The ledger's run kinds are train/eval/export; a campaign run executes unit
+    functions without training, so it is recorded as ``eval`` and identified by
+    ``context["verb"] == "campaign"``. Per-unit provenance stays in the done markers
+    and ``reuse_log.jsonl``; this row records the run as a whole.
+    """
+    import hashlib
+
+    from xtrax.run.ident import new_run_id
+    from xtrax.telemetry.ledger import LedgerUnavailableError, RunLedger
+    from xtrax.telemetry.record import KIND_EVAL
+
+    context = {
+        "verb": "campaign",
+        "campaign_id": manifest.metadata.campaign_id,
+        "manifest_path": str(manifest_path.resolve()),
+        "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "executor": executor_kind,
+        "row_indices": "all" if row_indices is None else ",".join(map(str, row_indices)),
+    }
+    try:
+        return RunLedger.open(new_run_id(), kind=KIND_EVAL, context=context)
+    except LedgerUnavailableError as exc:
+        raise CLIError(str(exc)) from exc
+
+
+def _record_campaign_outcome(ledger: Any, summary: Any) -> None:
+    """Add a campaign run's counts to its ledger row and mark failed or blocked runs."""
+    from xtrax.telemetry.record import STATUS_FAILED
+
+    ledger.context.update(
+        {
+            "total_units": str(summary.total_units),
+            "completed_units": str(summary.completed_units),
+            "skipped_units": str(summary.skipped_units),
+            "failed_units": str(summary.failed_units),
+            "locked_units": str(summary.locked_units),
+        }
+    )
+    if summary.failed_units > 0:
+        ledger.set_status(STATUS_FAILED, f"{summary.failed_units} unit(s) failed")
+    elif summary.locked_units > 0:
+        ledger.set_status(
+            STATUS_FAILED, f"{summary.locked_units} unit(s) locked by another worker, not run"
+        )
+
+
 def _run_run(args: CampaignArgs) -> Any:
     """Execute 'xtrax campaign run'."""
     try:
@@ -188,15 +243,28 @@ def _run_run(args: CampaignArgs) -> Any:
             "Expected one of 'local-seq', 'local-pool', 'slurm'"
         )
 
+    # A run that executes unit functions writes one run-ledger row (telemetry contract:
+    # audit/telemetry_coverage.toml). The SLURM executor only writes a script; each
+    # array task is its own local `campaign run` and records its own row. The ledger
+    # is opened before any unit runs, so an unwritable ledger refuses the run up front.
+    ledger = None
+    if not isinstance(executor, SlurmArrayExecutor):
+        ledger = _open_campaign_ledger(manifest, manifest_path, executor_kind, row_indices)
+
     try:
-        summary = executor.run(
-            manifest,
-            unit_fn,
-            output_dir=output_dir,
-            row_indices=row_indices,
-        )
+        with ledger if ledger is not None else contextlib.nullcontext():
+            summary = executor.run(
+                manifest,
+                unit_fn,
+                output_dir=output_dir,
+                row_indices=row_indices,
+            )
+            if ledger is not None:
+                _record_campaign_outcome(ledger, summary)
     except Exception as exc:
         raise CLIError(f"Campaign execution failed: {exc}") from exc
+    if ledger is not None:
+        print(f"Campaign run recorded in the run ledger as {ledger.run_id}")
 
     if summary.submitted_units:
         # The CLI builds the executor with submit=False: it writes the script only.

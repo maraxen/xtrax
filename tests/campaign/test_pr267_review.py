@@ -287,3 +287,102 @@ def test_max_failures_early_exit_does_not_hang_on_sigterm_survivor(
     assert summary.failed_units >= 1
     assert summary.completed_units == 0
     assert not list(out.rglob("*.lock")), "a stopped worker's lease was left behind"
+
+
+# ==============================================================================
+# Telemetry contract: `campaign run` writes one run-ledger row
+# ==============================================================================
+
+_FAIL_FN = "tests.campaign.test_r3_local:_always_fail_unit_fn"
+
+
+def _campaign_rows(root: Path) -> list[Any]:
+    from xtrax.telemetry.ledger import iter_rows
+
+    return [r for r in iter_rows(root) if r.context.get("verb") == "campaign"]
+
+
+def _write_mock_manifest(tmp_path: Path, campaign_id: str, num_rows: int = 2) -> Path:
+    from tests.campaign.test_r3_cli_slurm import _write_manifest
+
+    manifest = _create_mock_manifest(num_rows=num_rows, campaign_id=campaign_id)
+    return _write_manifest(tmp_path / campaign_id / "manifest.json", manifest)
+
+
+def test_campaign_run_records_one_ledger_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolated_run_ledger: Path
+) -> None:
+    import hashlib
+
+    from tests.campaign.unit_fns import ARRAY_UNIT_FN
+    from xtrax.cli.campaign_verb import run_campaign
+    from xtrax.telemetry.record import KIND_EVAL, STATUS_COMPLETE
+
+    monkeypatch.delenv("XTRAX_TELEMETRY_OPTOUT", raising=False)
+    manifest_path = _write_mock_manifest(tmp_path, "camp_pr267_ledger_ok")
+    run_campaign(
+        CampaignArgs(
+            action="run", fn=ARRAY_UNIT_FN, manifest=str(manifest_path), executor="local-seq"
+        )
+    )
+    (row,) = _campaign_rows(_isolated_run_ledger)
+    assert row.kind == KIND_EVAL
+    assert row.telemetry_status == STATUS_COMPLETE
+    assert row.context["campaign_id"] == "camp_pr267_ledger_ok"
+    assert row.context["manifest_sha256"] == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    assert row.context["completed_units"] == "2"
+    assert row.context["failed_units"] == "0"
+
+
+def test_failed_campaign_run_records_a_failed_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolated_run_ledger: Path
+) -> None:
+    from xtrax.cli.campaign_verb import run_campaign
+    from xtrax.cli.errors import CLIError
+    from xtrax.telemetry.record import STATUS_FAILED
+
+    monkeypatch.delenv("XTRAX_TELEMETRY_OPTOUT", raising=False)
+    manifest_path = _write_mock_manifest(tmp_path, "camp_pr267_ledger_fail")
+    with pytest.raises(CLIError, match="failed"):
+        run_campaign(
+            CampaignArgs(
+                action="run", fn=_FAIL_FN, manifest=str(manifest_path), executor="local-seq"
+            )
+        )
+    (row,) = _campaign_rows(_isolated_run_ledger)
+    assert row.telemetry_status == STATUS_FAILED
+    assert row.context["failed_units"] == "2"
+    assert "2 unit(s) failed" in (row.status_reason or "")
+
+
+def test_unwritable_ledger_refuses_the_run_before_any_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.campaign.unit_fns import ARRAY_UNIT_FN
+    from xtrax.cli.campaign_verb import run_campaign
+    from xtrax.cli.errors import CLIError
+
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("", encoding="utf-8")
+    monkeypatch.setenv("XTRAX_LEDGER_ROOT", str(blocker / "ledger"))
+    manifest_path = _write_mock_manifest(tmp_path, "camp_pr267_ledger_unwritable")
+    with pytest.raises(CLIError, match="not writable"):
+        run_campaign(
+            CampaignArgs(
+                action="run", fn=ARRAY_UNIT_FN, manifest=str(manifest_path), executor="local-seq"
+            )
+        )
+    assert not list(manifest_path.parent.rglob("*.done.json")), "units ran without a ledger"
+
+
+def test_slurm_script_generation_writes_no_ledger_row(
+    tmp_path: Path, _isolated_run_ledger: Path
+) -> None:
+    from tests.campaign.unit_fns import ARRAY_UNIT_FN
+    from xtrax.cli.campaign_verb import run_campaign
+
+    manifest_path = _write_mock_manifest(tmp_path, "camp_pr267_ledger_slurm")
+    run_campaign(
+        CampaignArgs(action="run", fn=ARRAY_UNIT_FN, manifest=str(manifest_path), executor="slurm")
+    )
+    assert _campaign_rows(_isolated_run_ledger) == []
