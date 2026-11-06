@@ -168,20 +168,35 @@ class HeartbeatThread(threading.Thread):
         )
         self.abort_event = threading.Event()
         self.stop_event = threading.Event()
+        # Held across each whole renewal and across stop(). That makes the stop decision and
+        # the lock-file replace mutually exclusive: once stop() returns, no renewal can
+        # replace the lock file again, even if join() later times out.
+        self._renew_lock = threading.Lock()
         self.heartbeat_count = 0
 
     def stop(self) -> None:
-        """Signal heartbeat thread to terminate cleanly."""
-        self.stop_event.set()
+        """Signal heartbeat thread to terminate cleanly.
+
+        Blocks until any renewal already in progress has finished. After this returns the
+        thread cannot replace the lock file, so the caller may safely unlink it.
+        """
+        with self._renew_lock:
+            self.stop_event.set()
 
     def run(self) -> None:
         while not self.stop_event.wait(self.interval_seconds):
-            if not self._renew_lease_cas():
+            # A renewal refused because stop() was called is not a lost lease.
+            if not self._renew_lease_cas() and not self.stop_event.is_set():
                 self.abort_event.set()
                 break
 
     def _renew_lease_cas(self) -> bool:
         """Atomically renew lease using CAS readback verification and expiration guard."""
+        with self._renew_lock:
+            return self._renew_lease_cas_locked()
+
+    def _renew_lease_cas_locked(self) -> bool:
+        """Renewal body. Caller must hold self._renew_lock."""
         try:
             now = time.time()
             # 1. Expiration Guard: Never attempt renewal if lease is within
@@ -216,7 +231,13 @@ class HeartbeatThread(threading.Thread):
             tmp_path.write_text(json.dumps(updated_lock, indent=2), encoding="utf-8")
             fsync_file(tmp_path)
 
-            # 4. Atomically replace lock file
+            # 4. Atomically replace lock file, unless stop() has been decided. The lock is
+            # held here, so stop() cannot set the event mid-renewal; this check is the
+            # last guard before the replace.
+            if self.stop_event.is_set():
+                with suppress(OSError):
+                    tmp_path.unlink()
+                return False
             os.replace(tmp_path, self.lock_path)
             fsync_directory(self.lock_path.parent)
 
@@ -470,7 +491,8 @@ class FileLock:
         5. Re-verify <output_path>.lock ownership, expiration, and abort event.
         6. Promote .partial.<attempt_uuid> to <output_path> via os.replace.
         7. Write <output_path>.done.json.tmp, fsync_file, and os.replace to .done.json.
-        8. Durabilize parent directory and unlink .commit and .lock.
+        8. Stop and join the heartbeat, then unlink .commit and .lock and durabilize the
+           parent directory. The heartbeat stops first so no renewal can recreate .lock.
         """
         done_marker_path = output_path.with_name(f"{output_path.name}.done.json")
 
@@ -562,15 +584,17 @@ class FileLock:
             # blocks every later commit of this unit.
             with suppress(OSError):
                 commit_token_path.unlink()
-        if self.lock_path.exists():
-            with suppress(OSError):
-                self.lock_path.unlink()
-        fsync_directory(output_path.parent)
 
+        # Stop the heartbeat before unlinking the lock. stop() waits out any renewal in
+        # progress and bars later ones, so no renewal can recreate the lock afterwards.
         if self.heartbeat is not None:
             self.heartbeat.stop()
             self.heartbeat.join(timeout=1.0)
             self.heartbeat = None
+        if self.lock_path.exists():
+            with suppress(OSError):
+                self.lock_path.unlink()
+        fsync_directory(output_path.parent)
         self.is_locked = False
 
         return done_marker

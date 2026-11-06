@@ -6,15 +6,21 @@ Covering [T3-02], [T3-03], GATE-07, and AC-08 from SPEC-261105-CAMPAIGN-RUNNER.
 from __future__ import annotations
 
 import gc
+import multiprocessing
+import time
+from functools import partial
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 import zarr
 
 from xtrax.campaign.executors.local import (
     LocalProcessPoolExecutor,
     LocalSequentialExecutor,
+    _execute_single_unit,
     _initialize_worker_process,
     _resolve_output_path,
 )
@@ -304,3 +310,80 @@ def test_gate_07_positive_control_rss_bounded_across_50_units(tmp_path: Path):
         f"GATE-07 FAILED: Process RSS drifted by {drift:.4%} (base: {base_rss} kB, "
         f"final: {final_rss} kB), exceeding ±2% limit."
     )
+
+
+def _started_then_sleep_unit(row: ManifestRow, *, started: str, seconds: float) -> dict[str, Any]:
+    """Signal that the unit is running (lock held, handler installed), then sleep."""
+    Path(started).write_text("started", encoding="utf-8")
+    time.sleep(seconds)
+    return {"result": np.zeros(4, dtype=np.float32)}
+
+
+def _run_unit_in_child(row: ManifestRow, output_dir: str, started: str, lease: int) -> None:
+    """Spawned-process target: run one unit in the child's main thread."""
+    _execute_single_unit(
+        row=row,
+        unit_fn=partial(_started_then_sleep_unit, started=started, seconds=30.0),
+        output_dir=Path(output_dir),
+        lease_seconds=lease,
+        heartbeat_interval=60.0,
+    )
+
+
+def test_sigterm_during_unit_releases_lock_and_discards_partial(tmp_path: Path) -> None:
+    """SIGTERM (what pool.terminate and SLURM send) must not leave a lock or partial behind."""
+    manifest = _create_mock_manifest(num_rows=1)
+    row = manifest.rows[0]
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    output_path = _resolve_output_path(output_dir, row)
+    lock_path = output_path.with_name(f"{output_path.name}.lock")
+    started = tmp_path / "unit_started.flag"
+
+    ctx = multiprocessing.get_context("spawn")
+    proc = ctx.Process(
+        target=_run_unit_in_child,
+        args=(row, str(output_dir), str(started), 1800),
+    )
+    proc.start()
+    try:
+        deadline = time.monotonic() + 15.0
+        while not (started.exists() and lock_path.exists()):
+            assert proc.is_alive(), f"child exited early with code {proc.exitcode}"
+            assert time.monotonic() < deadline, "unit never started within 15 s"
+            time.sleep(0.05)
+        proc.terminate()
+        proc.join(timeout=10)
+    finally:
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+
+    assert not proc.is_alive()
+    assert not lock_path.exists(), "SIGTERM left a fresh lock file behind"
+    assert not list(output_dir.glob(f"{output_path.name}.partial.*"))
+
+
+def test_execute_single_unit_discards_partial_when_commit_prep_fails(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """An exception after staging must remove the .partial.<uuid> path and release the lock."""
+    import xtrax.campaign.executors.local as local_mod
+
+    def _boom(path: Path) -> str:
+        raise RuntimeError("digest failed")
+
+    monkeypatch.setattr(local_mod, "compute_content_digest", _boom)
+    manifest = _create_mock_manifest(num_rows=1)
+    row = manifest.rows[0]
+    output_dir = tmp_path / "outputs"
+    output_path = _resolve_output_path(output_dir, row)
+
+    def _unit(r: ManifestRow) -> dict[str, Any]:
+        return {"values": np.ones(3, dtype=np.float32)}
+
+    with pytest.raises(RuntimeError, match="digest failed"):
+        _execute_single_unit(row=row, unit_fn=_unit, output_dir=output_dir)
+
+    assert not list(output_path.parent.glob(f"{output_path.name}.partial.*"))
+    assert not output_path.with_name(f"{output_path.name}.lock").exists()

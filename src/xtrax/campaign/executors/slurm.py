@@ -22,18 +22,38 @@ if TYPE_CHECKING:
 def get_pending_row_indices(
     manifest: CampaignManifest,
     output_dir: Path | str,
+    resume_verify: str = "deep",
 ) -> list[int]:
     """Identify uncompleted row indices eligible for scheduling.
 
     Per Section 6.3.3 of SPEC-261105-CAMPAIGN-RUNNER. A row counts as completed only
-    when it passes the same Tier-1 validation the local executors use to skip it
-    (matching done marker and a present, readable store), so a deleted or corrupt
-    store is rescheduled rather than trusted because a marker file survived.
+    when it passes the same resume verification the local executors use to skip it
+    (matching done marker, a present, readable store, and by default a matching content
+    digest), so a deleted or corrupt store is rescheduled rather than trusted because a
+    marker file survived. Each row skipped as done is recorded in ``reuse_log.jsonl``.
     """
-    from xtrax.campaign.executors.local import _check_tier1_resume
+    from xtrax.campaign.executors.local import (
+        _check_resume_done,
+        _record_reuse,
+        _resolve_output_path,
+        _validate_resume_verify,
+    )
 
+    mode = _validate_resume_verify(resume_verify)
     out_dir = Path(output_dir)
-    return [idx for idx, row in enumerate(manifest.rows) if not _check_tier1_resume(out_dir, row)]
+    pending: list[int] = []
+    for idx, row in enumerate(manifest.rows):
+        if _check_resume_done(out_dir, row, resume_verify=mode):
+            _record_reuse(
+                out_dir,
+                row,
+                _resolve_output_path(out_dir, row),
+                mode,
+                reused_by="SlurmArrayExecutor.get_pending",
+            )
+        else:
+            pending.append(idx)
+    return pending
 
 
 #: SLURM's default ``MaxArraySize``; array task IDs must be strictly below it.
@@ -68,6 +88,13 @@ def format_slurm_array_indices(
     return f"{spec}%{max_concurrent}" if max_concurrent else spec
 
 
+def _anchor_log_path(log_path: str, base_dir: str) -> str:
+    """Return an absolute SLURM log path: absolute input is kept, relative is under ``base_dir``."""
+    if Path(log_path).is_absolute():
+        return log_path
+    return str(Path(base_dir) / log_path)
+
+
 class SlurmArrayExecutor:
     """Pure host script generator emitting portable #SBATCH submission scripts for SLURM arrays.
 
@@ -94,7 +121,11 @@ class SlurmArrayExecutor:
         manifest_path: str | Path | None = None,
         fn_spec: str | None = None,
         max_array_size: int = DEFAULT_MAX_ARRAY_SIZE,
+        resume_verify: str = "deep",
     ) -> None:
+        from xtrax.campaign.executors.local import _validate_resume_verify
+
+        self.resume_verify = _validate_resume_verify(resume_verify)
         self.job_name = job_name
         self.cpus_per_task = cpus_per_task
         self.gpus = gpus
@@ -167,7 +198,7 @@ class SlurmArrayExecutor:
         resolved_fn = fn_spec if fn_spec is not None else self.fn_spec
 
         pending_indices = (
-            get_pending_row_indices(manifest, out_dir)
+            get_pending_row_indices(manifest, out_dir, resume_verify=self.resume_verify)
             if resume
             else list(range(len(manifest.rows)))
         )
@@ -205,6 +236,14 @@ class SlurmArrayExecutor:
         abs_manifest = str(Path(resolved_manifest).resolve())
         abs_output_dir = str(out_dir.resolve())
 
+        # sbatch resolves relative log paths against its own cwd, and SLURM does not
+        # create missing log directories: anchor relative logs under the output directory
+        # and create their parent so every array task can open its log at launch.
+        out_log = _anchor_log_path(self.output_log, abs_output_dir)
+        err_log = _anchor_log_path(self.error_log, abs_output_dir)
+        for log_path in (out_log, err_log):
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+
         directives = [
             "#!/usr/bin/env bash",
             f"#SBATCH --job-name={self.job_name}",
@@ -216,8 +255,8 @@ class SlurmArrayExecutor:
         directives.append(f"#SBATCH --time={self.time_limit}")
         if self.partition:
             directives.append(f"#SBATCH --partition={self.partition}")
-        directives.append(f"#SBATCH --output={self.output_log}")
-        directives.append(f"#SBATCH --error={self.error_log}")
+        directives.append(f"#SBATCH --output={out_log}")
+        directives.append(f"#SBATCH --error={err_log}")
 
         script_lines = directives + [
             "",
@@ -267,7 +306,7 @@ class SlurmArrayExecutor:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         selected = list(row_indices) if row_indices is not None else None
-        pending = get_pending_row_indices(manifest, out_dir)
+        pending = get_pending_row_indices(manifest, out_dir, resume_verify=self.resume_verify)
         if selected is not None:
             wanted = set(selected)
             pending = [idx for idx in pending if idx in wanted]

@@ -21,7 +21,7 @@ from tests.campaign.unit_fns import ARRAY_UNIT_FN, array_unit
 from xtrax.campaign.executors.local import (
     LocalProcessPoolExecutor,
     LocalSequentialExecutor,
-    _check_tier1_resume,
+    _check_resume_done,
     _initialize_worker_process,
     _resolve_output_path,
 )
@@ -401,7 +401,7 @@ def test_deleted_store_is_rescheduled_despite_marker(tmp_path: Path) -> None:
     store = _resolve_output_path(tmp_path, row)
     shutil.rmtree(store)  # user deletes a bad store to force a rerun; marker remains
 
-    assert not _check_tier1_resume(tmp_path, row)
+    assert not _check_resume_done(tmp_path, row)
     assert get_pending_row_indices(manifest, tmp_path) == [0]
     rerun = LocalSequentialExecutor().run(manifest, array_unit, output_dir=str(tmp_path))
     assert rerun.completed_units == 1

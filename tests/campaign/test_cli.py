@@ -387,3 +387,79 @@ def test_campaign_unknown_action_raises() -> None:
     args = CampaignArgs(action="unknown_verb")
     with pytest.raises(CLIError):
         run_campaign(args)
+
+
+def test_campaign_run_failed_unit_raises_cli_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """A unit that raises must fail 'campaign run' (nonzero exit), not look COMPLETED."""
+    from xtrax.cli import campaign_verb
+    from xtrax.cli.campaign_verb import CampaignArgs, run_campaign
+
+    monkeypatch.chdir(tmp_path)
+    out_dir = tmp_path / "fail_out"
+    spec_path = _write_spec_file(tmp_path / "spec.toml", output_dir=str(out_dir))
+    manifest_path = tmp_path / "manifest.json"
+    run_campaign(CampaignArgs(action="plan", spec_path=str(spec_path), output=str(manifest_path)))
+
+    def always_raises(row: object) -> None:
+        raise RuntimeError("unit diverged")
+
+    monkeypatch.setattr(campaign_verb, "load_fn", lambda _path: always_raises)
+
+    with pytest.raises(CLIError, match=r"8 unit\(s\) failed.*unit diverged"):
+        run_campaign(
+            CampaignArgs(
+                action="run",
+                fn="unused.module:unused",
+                manifest=str(manifest_path),
+                output_dir=str(out_dir),
+                executor="local-seq",
+            )
+        )
+
+    # The summary line is still printed before the error is raised.
+    assert "8 failed" in capsys.readouterr().out
+
+
+def test_campaign_run_held_lock_raises_cli_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A unit held by another worker must fail 'campaign run' rather than exit 0."""
+    from xtrax.campaign.executors.local import _resolve_output_path
+    from xtrax.campaign.lease import FileLock
+    from xtrax.campaign.manifest import CampaignManifest
+    from xtrax.cli.campaign_verb import CampaignArgs, run_campaign
+
+    monkeypatch.chdir(tmp_path)
+    out_dir = tmp_path / "lock_out"
+    spec_path = _write_spec_file(tmp_path / "spec.toml", output_dir=str(out_dir))
+    manifest_path = tmp_path / "manifest.json"
+    run_campaign(CampaignArgs(action="plan", spec_path=str(spec_path), output=str(manifest_path)))
+
+    manifest = CampaignManifest.from_dict(json.loads(manifest_path.read_text(encoding="utf-8")))
+    row = manifest.rows[0]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(
+        output_path=_resolve_output_path(out_dir, row),
+        owner_token="other-worker",
+        manifest_row_hash=row.manifest_row_hash,
+        lease_seconds=3600,
+        heartbeat_interval=3600,
+    )
+    assert lock.acquire()
+    try:
+        with pytest.raises(CLIError, match="1 unit\\(s\\) are locked by another worker"):
+            run_campaign(
+                CampaignArgs(
+                    action="run",
+                    fn=ARRAY_UNIT_FN,
+                    manifest=str(manifest_path),
+                    output_dir=str(out_dir),
+                    executor="local-seq",
+                )
+            )
+    finally:
+        lock.release()

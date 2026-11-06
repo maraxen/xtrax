@@ -10,15 +10,19 @@ import gc
 import json
 import multiprocessing
 import os
+import signal
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from xtrax.campaign.executors.protocol import CampaignSummary
 from xtrax.campaign.lease import FileLock, LockUnavailableError, StolenAttemptDiscarded
 from xtrax.campaign.marker import (
+    CampaignDoneMarker,
     compute_content_digest,
     create_done_marker,
     quarantine_output,
@@ -30,9 +34,41 @@ UNIT_COMMITTED = "committed"
 UNIT_LOCK_HELD = "lock_held"
 UNIT_DISCARDED = "discarded"
 
+#: How resume decides a completed unit is still valid. ``deep`` recomputes the store's content
+#: digest against the done marker (reads every chunk); ``tier1`` checks only the marker and the
+#: store's root metadata (the fast path, which trusts chunk bytes).
+ResumeVerify = Literal["deep", "tier1"]
+RESUME_VERIFY_MODES: tuple[str, ...] = ("deep", "tier1")
+
+#: Log of units skipped because they were already done, one JSON object per line.
+REUSE_LOG_NAME = "reuse_log.jsonl"
+
+
+def _validate_resume_verify(resume_verify: str) -> ResumeVerify:
+    """Return ``resume_verify`` narrowed to a supported mode, or raise ``ValueError``."""
+    if resume_verify == "deep":
+        return "deep"
+    if resume_verify == "tier1":
+        return "tier1"
+    msg = f"resume_verify must be one of {', '.join(RESUME_VERIFY_MODES)}; got {resume_verify!r}"
+    raise ValueError(msg)
+
 
 class UnitProducedNoOutputError(RuntimeError):
     """Raised when a unit function returns without writing its output store."""
+
+
+class UnitInterruptedError(BaseException):
+    """Raised inside a unit run when the process receives SIGTERM.
+
+    A ``BaseException`` so that ``except Exception`` in unit code does not swallow it. It
+    unwinds through the ``finally`` blocks of ``_execute_single_unit``, which release the
+    lease and discard the partial output before the process exits.
+    """
+
+
+#: Sentinel: this unit run did not install a SIGTERM handler (not the main thread).
+_NO_SIGTERM_HANDLER: Any = object()
 
 
 if TYPE_CHECKING:
@@ -110,31 +146,90 @@ def _resolve_output_path(output_dir: Path, row: ManifestRow) -> Path:
     return output_dir / f"{row.manifest_row_hash}.zarr"
 
 
-def _check_tier1_resume(output_dir: Path, row: ManifestRow) -> bool:
-    """Check Tier-1 fast resume status (< 5 ms per unit).
+def _check_resume_done(
+    output_dir: Path,
+    row: ManifestRow,
+    resume_verify: ResumeVerify = "deep",
+) -> bool:
+    """Return True when the unit's completed output may be reused instead of recomputed.
 
-    A unit is done only when ``validate_unit_done`` accepts its resolved output path:
-    marker present and matching, and the store present with valid root metadata. A bare
-    marker file is never enough.
+    A unit is done only when ``validate_unit_done`` accepts its resolved output path: marker
+    present and matching, and the store present with valid root metadata. With
+    ``resume_verify="deep"`` (the default) the store's content digest must also match the
+    marker's ``content_digest_sha256``; ``"tier1"`` skips that byte-level check. A bare marker
+    file is never enough.
     """
+    mode = _validate_resume_verify(resume_verify)
     output_path = _resolve_output_path(output_dir, row)
-    val = validate_unit_done(output_path, row, deep_verify=False, quarantine_on_failure=False)
+    val = validate_unit_done(
+        output_path,
+        row,
+        deep_verify=mode == "deep",
+        quarantine_on_failure=False,
+    )
     return val.is_valid
 
 
-def _set_aside_orphaned_output(output_path: Path, row: ManifestRow) -> None:
+def _record_reuse(
+    output_dir: Path,
+    row: ManifestRow,
+    store_path: Path,
+    verified: ResumeVerify,
+    reused_by: str,
+) -> None:
+    """Append one JSON line to ``<output_dir>/reuse_log.jsonl`` for a skipped, done unit.
+
+    The content digest is read from the unit's done marker. The line is written with one
+    ``os.write`` on an ``O_APPEND`` descriptor so concurrent writers do not interleave.
+    """
+    marker_path = store_path.with_name(f"{store_path.name}.done.json")
+    marker = CampaignDoneMarker.read(marker_path)
+    record = {
+        "manifest_row_hash": row.manifest_row_hash,
+        "input_hash": row.input_hash,
+        "store_path": str(store_path),
+        "content_digest_sha256": marker.content_digest_sha256,
+        "verified": verified,
+        "reused_at_utc": datetime.now(UTC).isoformat(),
+        "reused_by": reused_by,
+    }
+    data = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+    fd = os.open(
+        output_dir / REUSE_LOG_NAME,
+        os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+        0o644,
+    )
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+
+
+def _set_aside_orphaned_output(
+    output_path: Path,
+    row: ManifestRow,
+    resume_verify: ResumeVerify = "deep",
+) -> None:
     """Quarantine a store or done marker that does not form a valid completed unit.
 
     Called while holding the unit's lease, before the unit function runs. A store
     without a valid marker is left over from an attempt that crashed before stamping
     it; a marker without a valid store (for example, the store was deleted to force a
-    rerun) would make the commit protocol discard this attempt as already done. After
-    this call neither exists, so whatever appears at ``output_path`` is this attempt's.
+    rerun) would make the commit protocol discard this attempt as already done. A store
+    that fails the configured resume verification (a corrupted chunk under ``deep``) is
+    set aside too, so the recomputed output replaces it rather than being promoted over
+    it. After this call neither exists, so whatever appears at ``output_path`` is this
+    attempt's.
     """
     marker_path = output_path.with_name(f"{output_path.name}.done.json")
     if not output_path.exists() and not marker_path.exists():
         return
-    val = validate_unit_done(output_path, row, deep_verify=False, quarantine_on_failure=False)
+    val = validate_unit_done(
+        output_path,
+        row,
+        deep_verify=_validate_resume_verify(resume_verify) == "deep",
+        quarantine_on_failure=False,
+    )
     if not val.is_valid:
         quarantine_output(output_path, reason="orphaned_uncommitted_output")
 
@@ -225,6 +320,32 @@ def _discard_partial(partial_path: Path) -> None:
         partial_path.unlink(missing_ok=True)
 
 
+def _raise_unit_interrupted(signum: int, frame: Any) -> None:
+    """SIGTERM handler for a unit run: unwind so cleanup in ``finally`` runs."""
+    msg = f"unit run interrupted by signal {signum}"
+    raise UnitInterruptedError(msg)
+
+
+def _install_sigterm_interrupt() -> Any:
+    """Route SIGTERM to ``UnitInterruptedError`` for the duration of one unit run.
+
+    ``signal.signal`` only works in the main thread, so any other thread gets no handler
+    and the sentinel ``_NO_SIGTERM_HANDLER`` is returned. Returns the previous handler
+    otherwise, for ``_restore_sigterm``.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return _NO_SIGTERM_HANDLER
+    return signal.signal(signal.SIGTERM, _raise_unit_interrupted)
+
+
+def _restore_sigterm(previous: Any) -> None:
+    """Put back the handler returned by ``_install_sigterm_interrupt``."""
+    if previous is _NO_SIGTERM_HANDLER:
+        return
+    # A handler installed from C returns None here, which signal.signal cannot restore.
+    signal.signal(signal.SIGTERM, signal.SIG_DFL if previous is None else previous)
+
+
 def _execute_single_unit(
     row: ManifestRow,
     unit_fn: Callable[[ManifestRow], Any],
@@ -232,13 +353,19 @@ def _execute_single_unit(
     lease_seconds: int = 1800,
     heartbeat_interval: float = 60.0,
     owner_token_prefix: str = "local",
+    resume_verify: ResumeVerify = "deep",
 ) -> str:
     """Execute a single unit with atomic leasing, output promotion, and done marker stamping.
 
     Returns one of ``UNIT_COMMITTED`` (this attempt stamped the done marker),
     ``UNIT_LOCK_HELD`` (another worker holds the lease; nothing ran) or
     ``UNIT_DISCARDED`` (another worker finished the unit first). Raises on failure.
+
+    Any exception, including ``UnitInterruptedError`` from SIGTERM, discards this attempt's
+    ``.partial.<uuid>`` path and releases the lease, so a killed worker neither keeps a
+    fresh lock nor leaves partial stores behind.
     """
+    mode = _validate_resume_verify(resume_verify)
     output_path = _resolve_output_path(output_dir, row)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     owner_token = f"{owner_token_prefix}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
@@ -256,11 +383,14 @@ def _execute_single_unit(
     except LockUnavailableError:
         return UNIT_LOCK_HELD
 
+    previous_sigterm = _install_sigterm_interrupt()
+    partial_path: Path | None = None
     try:
         # Another worker may have committed between the resume check and our acquire.
-        if _check_tier1_resume(output_dir, row):
+        if _check_resume_done(output_dir, row, resume_verify=mode):
+            _record_reuse(output_dir, row, output_path, mode, reused_by="lease_recheck")
             return UNIT_DISCARDED
-        _set_aside_orphaned_output(output_path, row)
+        _set_aside_orphaned_output(output_path, row, resume_verify=mode)
 
         start_time = time.time()
         attempt_uuid = uuid.uuid4().hex[:8]
@@ -294,8 +424,15 @@ def _execute_single_unit(
             return UNIT_DISCARDED
         return UNIT_COMMITTED
     finally:
-        if lock.is_locked:
-            lock.release()
+        try:
+            # After a successful commit the partial has been promoted, so this is a no-op.
+            # On any failure it removes this attempt's output while the lease is still held.
+            if partial_path is not None:
+                _discard_partial(partial_path)
+        finally:
+            if lock.is_locked:
+                lock.release()
+            _restore_sigterm(previous_sigterm)
 
 
 def _pool_worker_task(
@@ -305,6 +442,7 @@ def _pool_worker_task(
     lease_seconds: int,
     heartbeat_interval: float,
     cache_dir: str | None,
+    resume_verify: ResumeVerify = "deep",
 ) -> dict[str, Any]:
     """Module-level task function executed in spawned worker processes."""
     _initialize_worker_process(cache_dir)
@@ -317,6 +455,7 @@ def _pool_worker_task(
             lease_seconds=lease_seconds,
             heartbeat_interval=heartbeat_interval,
             owner_token_prefix=f"pool:{os.getpid()}",
+            resume_verify=resume_verify,
         )
         return {
             "manifest_row_hash": row.manifest_row_hash,
@@ -342,10 +481,11 @@ def _pool_worker_task_wrapper(
         int,
         float,
         str | None,
+        ResumeVerify,
     ],
 ) -> tuple[int, ManifestRow, dict[str, Any]]:
     """Unpack task arguments for pool.imap_unordered and return indexed result."""
-    idx, row, unit_fn, output_dir, lease_seconds, heartbeat_interval, cache_dir = args
+    idx, row, unit_fn, output_dir, lease_seconds, heartbeat_interval, cache_dir, mode = args
     res = _pool_worker_task(
         row=row,
         unit_fn=unit_fn,
@@ -353,6 +493,7 @@ def _pool_worker_task_wrapper(
         lease_seconds=lease_seconds,
         heartbeat_interval=heartbeat_interval,
         cache_dir=cache_dir,
+        resume_verify=mode,
     )
     return idx, row, res
 
@@ -373,9 +514,11 @@ class LocalSequentialExecutor:
         *,
         lease_seconds: int = 1800,
         heartbeat_interval: float = 60.0,
+        resume_verify: ResumeVerify = "deep",
     ) -> None:
         self.lease_seconds = lease_seconds
         self.heartbeat_interval = heartbeat_interval
+        self.resume_verify = _validate_resume_verify(resume_verify)
         self._cancelled_tasks: set[Any] = set()
         self._last_backend: str | None = None
         self._last_bucket: Any | None = None
@@ -414,8 +557,15 @@ class LocalSequentialExecutor:
                 skipped_units += 1
                 continue
 
-            # Tier-1 Fast Resume Check (< 5 ms)
-            if _check_tier1_resume(out_dir, row):
+            # Resume check: reuse a completed unit only if it still verifies.
+            if _check_resume_done(out_dir, row, resume_verify=self.resume_verify):
+                _record_reuse(
+                    out_dir,
+                    row,
+                    _resolve_output_path(out_dir, row),
+                    self.resume_verify,
+                    reused_by="LocalSequentialExecutor",
+                )
                 skipped_units += 1
                 continue
 
@@ -445,6 +595,7 @@ class LocalSequentialExecutor:
                     lease_seconds=self.lease_seconds,
                     heartbeat_interval=self.heartbeat_interval,
                     owner_token_prefix=f"local_seq:{os.getpid()}",
+                    resume_verify=self.resume_verify,
                 )
             except Exception as exc:
                 failed_units += 1
@@ -495,12 +646,14 @@ class LocalProcessPoolExecutor:
         cache_dir: str | None = None,
         lease_seconds: int = 1800,
         heartbeat_interval: float = 60.0,
+        resume_verify: ResumeVerify = "deep",
     ) -> None:
         self.max_workers = max_workers or max(1, (os.cpu_count() or 1) - 1)
         self.recycle_interval = recycle_interval
         self.cache_dir = cache_dir
         self.lease_seconds = lease_seconds
         self.heartbeat_interval = heartbeat_interval
+        self.resume_verify = _validate_resume_verify(resume_verify)
         self._cancelled_tasks: set[Any] = set()
 
     def cancel_tasks(self, task_ids: list[Any]) -> None:
@@ -536,7 +689,14 @@ class LocalProcessPoolExecutor:
             if idx in self._cancelled_tasks or row.manifest_row_hash in self._cancelled_tasks:
                 skipped_units += 1
                 continue
-            if _check_tier1_resume(out_dir, row):
+            if _check_resume_done(out_dir, row, resume_verify=self.resume_verify):
+                _record_reuse(
+                    out_dir,
+                    row,
+                    _resolve_output_path(out_dir, row),
+                    self.resume_verify,
+                    reused_by="LocalProcessPoolExecutor",
+                )
                 skipped_units += 1
                 continue
             pending_rows.append((idx, row))
@@ -571,6 +731,7 @@ class LocalProcessPoolExecutor:
                     self.lease_seconds,
                     self.heartbeat_interval,
                     self.cache_dir,
+                    self.resume_verify,
                 )
                 for idx, row in pending_rows
             ]

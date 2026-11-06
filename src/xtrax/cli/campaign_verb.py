@@ -16,6 +16,7 @@ from xtrax.campaign.executors.local import (
     LocalProcessPoolExecutor,
     LocalSequentialExecutor,
     _resolve_output_path,
+    _validate_resume_verify,
 )
 from xtrax.campaign.executors.slurm import SlurmArrayExecutor
 from xtrax.campaign.lease import CLOCK_DRIFT_GRACE_PERIOD_S, CampaignLock
@@ -67,6 +68,9 @@ class CampaignArgs:
     require_approval: bool = False
     deep: bool = False
     fn: str | None = None
+    #: 'run' resume check: 'deep' (default) recomputes each completed store's content digest
+    #: before reusing it; 'tier1' trusts the done marker and root metadata only (fast path).
+    resume_verify: str = "deep"
 
 
 def _iter_campaign_files(out_dir: Path, pattern: str) -> list[Path]:
@@ -116,6 +120,10 @@ def _run_plan(args: CampaignArgs) -> CampaignManifest:
 
 def _run_run(args: CampaignArgs) -> Any:
     """Execute 'xtrax campaign run'."""
+    try:
+        resume_mode = _validate_resume_verify(args.resume_verify)
+    except ValueError as exc:
+        raise CLIError(str(exc)) from exc
     manifest_path_str = args.manifest or args.target
     if not manifest_path_str:
         raise CLIError("xtrax campaign run requires --manifest <path>")
@@ -165,11 +173,15 @@ def _run_run(args: CampaignArgs) -> Any:
     # Instantiate chosen executor
     executor_kind = args.executor.lower()
     if executor_kind in ("local-seq", "local_seq", "sequential"):
-        executor = LocalSequentialExecutor()
+        executor = LocalSequentialExecutor(resume_verify=resume_mode)
     elif executor_kind in ("local-pool", "local_pool", "pool"):
-        executor = LocalProcessPoolExecutor()
+        executor = LocalProcessPoolExecutor(resume_verify=resume_mode)
     elif executor_kind in ("slurm", "slurm-array"):
-        executor = SlurmArrayExecutor(manifest_path=manifest_path.resolve(), fn_spec=args.fn)
+        executor = SlurmArrayExecutor(
+            manifest_path=manifest_path.resolve(),
+            fn_spec=args.fn,
+            resume_verify=resume_mode,
+        )
     else:
         raise CLIError(
             f"Unknown executor: {args.executor!r}. "
@@ -201,6 +213,20 @@ def _run_run(args: CampaignArgs) -> Any:
             f"{summary.completed_units}/{summary.total_units} completed "
             f"({summary.skipped_units} skipped, {summary.locked_units} locked by another "
             f"worker, {summary.failed_units} failed)"
+        )
+
+    # A failed or lock-held unit must not exit 0: a SLURM array task would then look
+    # COMPLETED to the scheduler. The script-only SLURM path has neither, so it passes.
+    if summary.failed_units > 0:
+        first_errors = [str(f.get("error", "unknown error")) for f in summary.failures[:3]]
+        raise CLIError(
+            f"Campaign '{summary.campaign_id}': {summary.failed_units} unit(s) failed; "
+            f"first error(s): {'; '.join(first_errors)}"
+        )
+    if summary.locked_units > 0:
+        raise CLIError(
+            f"Campaign '{summary.campaign_id}': {summary.locked_units} unit(s) are locked by "
+            "another worker and were not run"
         )
     return summary
 

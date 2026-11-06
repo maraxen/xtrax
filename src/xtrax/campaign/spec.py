@@ -7,6 +7,7 @@ callable-field partitioning, and TOML serialization.
 
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -83,6 +84,16 @@ class ParamGrid:
 
     def __post_init__(self) -> None:
         _check_no_callables(self.axes, path="ParamGrid.axes")
+        # Unit identity is content-derived, so a repeated value on an axis would plan two
+        # rows with the same hash writing the same store.
+        for axis, values in self.axes.items():
+            seen: set[str] = set()
+            for value in values:
+                key = json.dumps(value, sort_keys=True, default=str)
+                if key in seen:
+                    msg = f"ParamGrid axis {axis!r} repeats the value {value!r}"
+                    raise ValueError(msg)
+                seen.add(key)
 
     def to_dict(self) -> dict[str, Any]:
         return {"axes": {str(k): list(v) for k, v in self.axes.items()}}

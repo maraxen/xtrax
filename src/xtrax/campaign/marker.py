@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import importlib.metadata
 import json
 import os
 import shutil
@@ -77,7 +78,7 @@ class ProducerInfo:
     def from_dict(cls, data: dict[str, Any]) -> ProducerInfo:
         return cls(
             version=str(data.get("version", "")),
-            git_sha=str(data.get("git_sha", "clean")),
+            git_sha=str(data.get("git_sha", "unknown")),
             hostname=str(data.get("hostname", "")),
         )
 
@@ -142,17 +143,42 @@ class CampaignDoneMarker:
         return cls.from_json(path.read_text(encoding="utf-8"))
 
 
+def _default_producer_version() -> str:
+    """``xtrax@<installed version>``, or ``xtrax@unknown`` when the package is not installed."""
+    try:
+        return f"xtrax@{importlib.metadata.version('xtrax')}"
+    except importlib.metadata.PackageNotFoundError:
+        return "xtrax@unknown"
+
+
+def _default_producer_git_sha() -> str:
+    """Git sha from ``XTRAX_PRODUCER_GIT_SHA`` (empty counts as unset), else ``unknown``.
+
+    The sha is never read by shelling out to git and never defaulted to ``clean``.
+    """
+    env_value = os.environ.get("XTRAX_PRODUCER_GIT_SHA", "").strip()
+    return env_value or "unknown"
+
+
 def create_done_marker(
     manifest_row_hash: str,
     input_hash: str,
     output_locator: str,
     content_digest_sha256: str,
     duration_s: float,
-    version: str = "xtrax@0.5.0",
-    git_sha: str = "clean",
+    version: str | None = None,
+    git_sha: str | None = None,
     hostname: str | None = None,
 ) -> CampaignDoneMarker:
-    """Create a new CampaignDoneMarker stamped with current environment and timestamps."""
+    """Create a new CampaignDoneMarker stamped with current environment and timestamps.
+
+    ``version`` defaults to the installed xtrax version; ``git_sha`` defaults to
+    ``XTRAX_PRODUCER_GIT_SHA`` or ``unknown``.
+    """
+    if version is None:
+        version = _default_producer_version()
+    if git_sha is None:
+        git_sha = _default_producer_git_sha()
     host = hostname or socket.getfqdn()
     now_unix = time.time()
     now_utc = datetime.now(UTC).isoformat()
@@ -200,7 +226,7 @@ class AlynxrFragmentAdapter:
     def to_done_marker(self, record: dict[str, Any]) -> CampaignDoneMarker:
         prod_info = ProducerInfo(
             version=str(record.get("producer_version", "alynxr@unknown")),
-            git_sha=str(record.get("producer_git_sha", "clean")),
+            git_sha=str(record.get("producer_git_sha", "unknown")),
             hostname=str(record.get("producer_hostname", socket.getfqdn())),
         )
         return CampaignDoneMarker(
@@ -354,7 +380,7 @@ def validate_unit_done(
     output_path: Path | str,
     expected_row: ManifestRow,
     deep_verify: bool = False,
-    quarantine_on_failure: bool = True,
+    quarantine_on_failure: bool = False,
 ) -> UnitValidationResult:
     """Validate a completed unit using decoupled Two-Tier Resume verification.
 
@@ -365,6 +391,9 @@ def validate_unit_done(
 
     Tier 2 (Opt-in via deep_verify=True): Streams chunk bytes with bounded buffer
     to recompute and verify zarr_content_digest.
+
+    ``quarantine_on_failure`` defaults to False: a read-only check never moves a store.
+    Quarantine moves files, so callers that enable it must hold the unit's lease.
     """
     path = Path(output_path)
     done_marker_path = path.with_name(f"{path.name}.done.json")

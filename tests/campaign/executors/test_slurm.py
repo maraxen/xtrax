@@ -262,3 +262,73 @@ def test_slurm_array_executor_cancel_tasks_explicit_job_id():
         executor.cancel_tasks([99], job_id="778899")
 
     mock_run.assert_called_once_with(["scancel", "778899_99"], check=True)
+
+
+def _write_manifest_file(tmp_path: Path, manifest: CampaignManifest) -> Path:
+    manifest_file = tmp_path / "manifest.json"
+    manifest_file.write_bytes(canonical_json_bytes(manifest.to_dict()))
+    return manifest_file
+
+
+def _sbatch_log_paths(script_text: str) -> tuple[Path, Path]:
+    lines = script_text.splitlines()
+    out_line = next(line for line in lines if line.startswith("#SBATCH --output="))
+    err_line = next(line for line in lines if line.startswith("#SBATCH --error="))
+    return Path(out_line.split("=", 1)[1]), Path(err_line.split("=", 1)[1])
+
+
+def test_default_relative_logs_resolve_under_output_dir_and_exist(tmp_path: Path, monkeypatch):
+    """Default relative log paths must not depend on sbatch's cwd; their dir must exist."""
+    manifest = _create_slurm_manifest(num_rows=3, campaign_id="logs_default")
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_file = _write_manifest_file(tmp_path, manifest)
+    # Submission happens from elsewhere; the default log path must still be absolute.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    executor = SlurmArrayExecutor()  # defaults: logs/slurm_%A_%a.out / .err
+    script_text = executor.generate_script(
+        manifest=manifest,
+        output_dir=output_dir,
+        manifest_path=manifest_file,
+        fn_spec="mypkg.units:predict",
+        script_path=tmp_path / "submit.sh",
+    )
+
+    assert script_text is not None
+    out_log, err_log = _sbatch_log_paths(script_text)
+    assert out_log.is_absolute()
+    assert err_log.is_absolute()
+    assert out_log.parent == output_dir.resolve() / "logs"
+    assert err_log.parent == output_dir.resolve() / "logs"
+    assert out_log.parent.is_dir()
+    assert err_log.parent.is_dir()
+    assert not (elsewhere / "logs").exists()
+
+
+def test_absolute_log_paths_used_as_given_and_parent_created(tmp_path: Path):
+    """Absolute log paths are kept verbatim; their parent directory is still created."""
+    manifest = _create_slurm_manifest(num_rows=2, campaign_id="logs_absolute")
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_file = _write_manifest_file(tmp_path, manifest)
+    abs_log_dir = tmp_path / "slurm_logs" / "nested"
+    executor = SlurmArrayExecutor(
+        output_log=str(abs_log_dir / "run_%A_%a.out"),
+        error_log=str(abs_log_dir / "run_%A_%a.err"),
+    )
+
+    script_text = executor.generate_script(
+        manifest=manifest,
+        output_dir=output_dir,
+        manifest_path=manifest_file,
+        fn_spec="mypkg.units:predict",
+    )
+
+    assert script_text is not None
+    out_log, err_log = _sbatch_log_paths(script_text)
+    assert out_log == abs_log_dir / "run_%A_%a.out"
+    assert err_log == abs_log_dir / "run_%A_%a.err"
+    assert abs_log_dir.is_dir()

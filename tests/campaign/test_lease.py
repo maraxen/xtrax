@@ -8,12 +8,15 @@ from __future__ import annotations
 import errno
 import json
 import os
+import threading
 import time
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from xtrax.campaign import lease as lease_module
 from xtrax.campaign.lease import (
     CLOCK_DRIFT_GRACE_PERIOD_S,
     CampaignLock,
@@ -21,6 +24,127 @@ from xtrax.campaign.lease import (
     LockUnavailableError,
     fsync_directory,
 )
+from xtrax.campaign.marker import CampaignDoneMarker, ProducerInfo
+
+
+def _pause_first_heartbeat_fsync(paused: threading.Event, resume: threading.Event):
+    """Wrap fsync_file so the first renewal parks between its CAS read and os.replace."""
+    real_fsync_file = lease_module.fsync_file
+    armed = [True]
+
+    def _wrapper(path: Path) -> None:
+        if armed[0] and threading.current_thread().name.startswith("Heartbeat"):
+            armed[0] = False
+            paused.set()
+            resume.wait(10.0)
+        real_fsync_file(path)
+
+    return _wrapper
+
+
+def _run_in_thread(fn):
+    """Run fn in a daemon thread; return (thread, outcome dict with 'value' or 'error')."""
+    outcome: dict[str, object] = {}
+
+    def _target() -> None:
+        try:
+            outcome["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - surfaced to the test body
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+def test_commit_output_lock_not_recreated_by_inflight_renewal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A renewal paused mid-CAS must not recreate the lock after commit_output unlinks it."""
+    output_path = tmp_path / "unit_commit_race.zarr"
+    lock_path = output_path.with_name(f"{output_path.name}.lock")
+    paused = threading.Event()
+    resume = threading.Event()
+    monkeypatch.setattr(lease_module, "fsync_file", _pause_first_heartbeat_fsync(paused, resume))
+
+    lock = FileLock(
+        output_path=output_path,
+        owner_token="worker_commit_race:pid401",
+        manifest_row_hash="row_commit_race_001",
+        lease_seconds=600,
+        heartbeat_interval=0.02,
+    )
+    assert lock.acquire() is True
+    assert paused.wait(5.0), "renewal never reached the fsync point"
+
+    attempt_uuid = uuid.uuid4().hex[:8]
+    partial_path = tmp_path / f"unit_commit_race.zarr.partial.{attempt_uuid}"
+    partial_path.mkdir()
+    (partial_path / ".zgroup").write_text('{"zarr_format": 2}', encoding="utf-8")
+    marker = CampaignDoneMarker(
+        schema_version="campaign_done_marker_v3",
+        manifest_row_hash="row_commit_race_001",
+        input_hash="input_commit_race_001",
+        producer=ProducerInfo(version="xtrax@0.5.0", git_sha="clean", hostname="localhost"),
+        output_locator=str(output_path),
+        content_digest_sha256="digest_sha256_dummy",
+        completed_at_utc="2026-11-05T19:00:00Z",
+        completed_at_unix_s=time.time(),
+        duration_s=1.0,
+    )
+
+    committer, outcome = _run_in_thread(
+        lambda: lock.commit_output(
+            partial_path=partial_path,
+            output_path=output_path,
+            done_marker=marker,
+            attempt_uuid=attempt_uuid,
+        )
+    )
+    time.sleep(0.2)
+    resume.set()
+    committer.join(timeout=10.0)
+
+    assert not committer.is_alive()
+    assert "error" not in outcome, outcome.get("error")
+    assert output_path.exists()
+    assert not lock_path.exists(), "orphan lock recreated by renewal after commit"
+
+
+def test_release_lock_not_recreated_by_inflight_renewal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A renewal paused mid-CAS must not recreate the lock after release() unlinks it."""
+    output_path = tmp_path / "unit_release_race.zarr"
+    lock_path = output_path.with_name(f"{output_path.name}.lock")
+    paused = threading.Event()
+    resume = threading.Event()
+    monkeypatch.setattr(lease_module, "fsync_file", _pause_first_heartbeat_fsync(paused, resume))
+
+    lock = FileLock(
+        output_path=output_path,
+        owner_token="worker_release_race:pid402",
+        manifest_row_hash="row_release_race_001",
+        lease_seconds=600,
+        heartbeat_interval=0.02,
+    )
+    assert lock.acquire() is True
+    assert paused.wait(5.0), "renewal never reached the fsync point"
+    heartbeat = lock.heartbeat
+    assert heartbeat is not None
+
+    releaser, outcome = _run_in_thread(lock.release)
+    # Hold the renewal past release()'s 1.0 s join timeout, so the unlink has a chance to
+    # run before the renewal resumes.
+    releaser.join(timeout=1.5)
+    resume.set()
+    releaser.join(timeout=10.0)
+    heartbeat.join(timeout=10.0)
+
+    assert not releaser.is_alive()
+    assert not heartbeat.is_alive()
+    assert "error" not in outcome, outcome.get("error")
+    assert not lock_path.exists(), "orphan lock recreated by renewal after release"
 
 
 def test_campaign_lock_schema_and_immutability():

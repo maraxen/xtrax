@@ -28,6 +28,7 @@ from xtrax.campaign.lease import (
 from xtrax.campaign.manifest import (
     CAMPAIGN_OWNED_KEYS,
     CampaignManifest,
+    ManifestIntegrityError,
     ManifestMetadata,
     ManifestRow,
     ResourceRequirements,
@@ -94,6 +95,7 @@ __all__ = [
     "LocalProcessPoolExecutor",
     "LocalSequentialExecutor",
     "LockUnavailableError",
+    "ManifestIntegrityError",
     "ManifestMetadata",
     "ManifestRow",
     "ParamGrid",

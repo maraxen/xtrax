@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,6 +87,10 @@ def canonical_json_bytes(value: Any) -> bytes:
         ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
+
+
+class ManifestIntegrityError(ValueError):
+    """Raised when a stored manifest row's hash does not match its recomputed content."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,7 +175,7 @@ class ManifestRow:
         else:
             res_req = ResourceRequirements(gpu_memory_bytes=0)
 
-        return cls(
+        row = cls(
             manifest_row_hash=str(data["manifest_row_hash"]),
             input_hash=str(data["input_hash"]),
             campaign_id=str(data["campaign_id"]),
@@ -189,6 +194,8 @@ class ManifestRow:
             output_locator=str(data["output_locator"]),
             resource_requirements=res_req,
         )
+        verify_manifest_row_hashes(row)
+        return row
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,7 +303,8 @@ def compute_manifest_row_hash(normalized_row_payload: dict[str, Any]) -> str:
     return hashlib.sha256(payload_bytes).hexdigest()
 
 
-def build_manifest_row(
+def _compute_unit_hashes(
+    *,
     campaign_id: str,
     job_id: str,
     chunk_id: int,
@@ -306,17 +314,18 @@ def build_manifest_row(
     arm_id: str,
     arm_backend: str,
     checkpoint_id: str,
-    fixed_policy: str = "none",
-    state_weight_profile: str = "equal",
-    seed: int = 42,
-    parameters: dict[str, Any] | None = None,
-    output_locator: str | None = None,
-    resource_requirements: ResourceRequirements | None = None,
-) -> ManifestRow:
-    """Build a content-addressed ManifestRow calculating input_hash and manifest_row_hash."""
-    clean_params = dict(parameters) if parameters else {}
-    _check_no_callables(clean_params, path=f"ManifestRow({job_id}).parameters")
-    normalized_params = normalize_json_value(clean_params)
+    fixed_policy: str,
+    state_weight_profile: str,
+    seed: int,
+    parameters: dict[str, Any],
+) -> tuple[str, str]:
+    """Return (input_hash, manifest_row_hash) for a unit.
+
+    Single code path shared by build_manifest_row (planning) and verify_manifest_row_hashes
+    (loading), so the two cannot drift. Normalization is idempotent, so callers may pass
+    either raw or already-normalized parameters.
+    """
+    normalized_params = normalize_json_value(parameters)
 
     input_hash = compute_unit_input_hash(
         spec_dict=normalized_params,
@@ -346,7 +355,83 @@ def build_manifest_row(
         "seed": seed,
         "parameters": normalized_params,
     }
-    manifest_row_hash = compute_manifest_row_hash(row_identity_payload)
+    return input_hash, compute_manifest_row_hash(row_identity_payload)
+
+
+def verify_manifest_row_hashes(row: ManifestRow) -> None:
+    """Recompute a row's hashes from its content; raise ManifestIntegrityError on mismatch.
+
+    Tier-1 resume matches done markers by these hashes, so a row whose parameters or
+    identity fields were edited while keeping stale hashes would serve outputs computed
+    for the old parameters.
+    """
+    input_hash, manifest_row_hash = _compute_unit_hashes(
+        campaign_id=row.campaign_id,
+        job_id=row.job_id,
+        chunk_id=row.chunk_id,
+        sample_start=row.sample_start,
+        sample_count=row.sample_count,
+        target_input=row.target_input,
+        arm_id=row.arm_id,
+        arm_backend=row.arm_backend,
+        checkpoint_id=row.checkpoint_id,
+        fixed_policy=row.fixed_policy,
+        state_weight_profile=row.state_weight_profile,
+        seed=row.seed,
+        parameters=row.parameters,
+    )
+    mismatches: list[str] = []
+    if row.input_hash != input_hash:
+        mismatches.append(f"input_hash (stored {row.input_hash}, recomputed {input_hash})")
+    if row.manifest_row_hash != manifest_row_hash:
+        mismatches.append(
+            f"manifest_row_hash (stored {row.manifest_row_hash}, recomputed {manifest_row_hash})"
+        )
+    if mismatches:
+        raise ManifestIntegrityError(
+            f"manifest row job_id={row.job_id!r} failed hash verification: "
+            + "; ".join(mismatches)
+            + ". The row's content was edited after planning; re-plan the campaign."
+        )
+
+
+def build_manifest_row(
+    campaign_id: str,
+    job_id: str,
+    chunk_id: int,
+    sample_start: int,
+    sample_count: int,
+    target_input: str,
+    arm_id: str,
+    arm_backend: str,
+    checkpoint_id: str,
+    fixed_policy: str = "none",
+    state_weight_profile: str = "equal",
+    seed: int = 42,
+    parameters: dict[str, Any] | None = None,
+    output_locator: str | None = None,
+    resource_requirements: ResourceRequirements | None = None,
+) -> ManifestRow:
+    """Build a content-addressed ManifestRow calculating input_hash and manifest_row_hash."""
+    clean_params = dict(parameters) if parameters else {}
+    _check_no_callables(clean_params, path=f"ManifestRow({job_id}).parameters")
+    normalized_params = normalize_json_value(clean_params)
+
+    input_hash, manifest_row_hash = _compute_unit_hashes(
+        campaign_id=campaign_id,
+        job_id=job_id,
+        chunk_id=chunk_id,
+        sample_start=sample_start,
+        sample_count=sample_count,
+        target_input=target_input,
+        arm_id=arm_id,
+        arm_backend=arm_backend,
+        checkpoint_id=checkpoint_id,
+        fixed_policy=fixed_policy,
+        state_weight_profile=state_weight_profile,
+        seed=seed,
+        parameters=normalized_params,
+    )
 
     if output_locator is None:
         output_locator = f"{campaign_id}/{manifest_row_hash}.zarr"
@@ -377,6 +462,21 @@ def build_manifest_row(
         output_locator=output_locator,
         resource_requirements=resource_requirements,
     )
+
+
+def _target_stem(target_input: str) -> str:
+    """Filesystem-safe file stem of a target input, used as the job_id prefix."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", Path(target_input).stem)
+
+
+def _grid_point_digest(target_input: str, grid_point: dict[str, Any]) -> str:
+    """Content digest of (target_input, grid point) for job_id.
+
+    Derived from content rather than positional indices, so inserting a grid value or
+    prepending a target does not change the job_id (and hence the hashes) of existing units.
+    """
+    payload = {"target_input": target_input, "grid_point": grid_point}
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()[:12]
 
 
 def plan_campaign(
@@ -410,9 +510,11 @@ def plan_campaign(
 
     rows: list[ManifestRow] = []
 
-    for t_idx, target_input in enumerate(spec.target_inputs):
-        for a_idx, arm in enumerate(spec.arms):
-            for c_idx, combo in enumerate(combinations):
+    for target_input in spec.target_inputs:
+        target_stem = _target_stem(target_input)
+        for arm in spec.arms:
+            for combo in combinations:
+                params_digest = _grid_point_digest(target_input, combo)
                 merged_params: dict[str, Any] = {}
                 merged_params.update(spec.parameters)
                 merged_params.update(arm.parameters)
@@ -438,10 +540,7 @@ def plan_campaign(
                     if sample_count <= 0:
                         continue
 
-                    job_id = (
-                        f"target_{t_idx:03d}_arm_{arm.arm_id}"
-                        f"_combo_{c_idx:03d}_chunk_{chunk_id:03d}"
-                    )
+                    job_id = f"{target_stem}_arm_{arm.arm_id}_p{params_digest}_chunk_{chunk_id:03d}"
 
                     row = build_manifest_row(
                         campaign_id=spec.campaign_id,

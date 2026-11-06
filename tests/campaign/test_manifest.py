@@ -8,6 +8,7 @@ import pytest
 
 from xtrax.campaign.manifest import (
     CampaignManifest,
+    ManifestIntegrityError,
     ManifestMetadata,
     ManifestRow,
     ResourceRequirements,
@@ -46,10 +47,7 @@ def test_resource_requirements_dataclass() -> None:
 
 
 def test_manifest_row_dataclass_and_separation_of_hashes() -> None:
-    res = ResourceRequirements(gpu_memory_bytes=0)
-    row = ManifestRow(
-        manifest_row_hash="a" * 64,
-        input_hash="b" * 64,
+    row = build_manifest_row(
         campaign_id="test_camp",
         job_id="job_001",
         chunk_id=0,
@@ -59,12 +57,7 @@ def test_manifest_row_dataclass_and_separation_of_hashes() -> None:
         arm_id="arm_1",
         arm_backend="boltz2",
         checkpoint_id="ckpt_1",
-        fixed_policy="none",
-        state_weight_profile="equal",
-        seed=42,
         parameters={"temperature": 0.2},
-        output_locator="test_camp/" + "a" * 64 + ".zarr",
-        resource_requirements=res,
     )
     assert row.manifest_row_hash != row.input_hash
     assert len(row.manifest_row_hash) == 64
@@ -282,3 +275,111 @@ def test_gate_02_negative_control_spec_partition_error_on_callable() -> None:
 
     with pytest.raises(SpecPartitionError, match="Callable"):
         plan_campaign(bypassed_spec)
+
+
+def _planned_manifest_dict(tmp_path: Path) -> dict:
+    """Plan a small campaign with awkward parameter values, write it, and reload the JSON."""
+    arm = ArmSpec(
+        arm_id="arm_1",
+        backend="b1",
+        checkpoint_id="c1",
+        parameters={"alpha": 0.1, "neg_zero": -0.0, "tags": ["x", "y"]},
+    )
+    spec = CampaignSpec(
+        campaign_id="integrity_campaign",
+        target_inputs=["target.pdb"],
+        arms=[arm],
+        grid=ParamGrid(axes={"temp": [0.1, 0.5]}),
+        samples_per_target=100,
+        chunk_size=100,
+        seed=7,
+        parameters={"scale": 2.5},
+    )
+    path = tmp_path / "manifest.json"
+    plan_campaign(spec, output_manifest_path=path)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_planned_manifest_round_trip_verifies(tmp_path: Path) -> None:
+    data = _planned_manifest_dict(tmp_path)
+    assert len(data["rows"]) == 2
+    loaded = CampaignManifest.from_dict(data)
+    assert [row.manifest_row_hash for row in loaded.rows] == [
+        r["manifest_row_hash"] for r in data["rows"]
+    ]
+    assert [row.input_hash for row in loaded.rows] == [r["input_hash"] for r in data["rows"]]
+
+
+def test_edited_parameters_raise_manifest_integrity_error(tmp_path: Path) -> None:
+    data = _planned_manifest_dict(tmp_path)
+    data["rows"][0]["parameters"]["temp"] = 0.9999
+    with pytest.raises(ManifestIntegrityError, match="job_id") as excinfo:
+        CampaignManifest.from_dict(data)
+    assert data["rows"][0]["job_id"] in str(excinfo.value)
+
+
+def test_edited_input_hash_raises_manifest_integrity_error(tmp_path: Path) -> None:
+    data = _planned_manifest_dict(tmp_path)
+    data["rows"][1]["input_hash"] = "0" * 64
+    with pytest.raises(ManifestIntegrityError, match="input_hash"):
+        CampaignManifest.from_dict(data)
+
+
+def test_edited_manifest_row_hash_raises_manifest_integrity_error(tmp_path: Path) -> None:
+    data = _planned_manifest_dict(tmp_path)
+    data["rows"][0]["manifest_row_hash"] = "f" * 64
+    with pytest.raises(ManifestIntegrityError, match="manifest_row_hash"):
+        CampaignManifest.from_dict(data)
+
+
+def _identity_spec(temps: list[float], targets: list[str]) -> CampaignSpec:
+    """One-arm spec with a single-chunk grid over ``temp``; used by the identity tests."""
+    return CampaignSpec(
+        campaign_id="identity_campaign",
+        target_inputs=targets,
+        arms=[ArmSpec(arm_id="arm_1", backend="b1", checkpoint_id="c1")],
+        grid=ParamGrid(axes={"temp": temps}),
+        samples_per_target=100,
+        chunk_size=100,
+        seed=7,
+    )
+
+
+def test_inserting_grid_value_mid_axis_keeps_existing_row_hashes() -> None:
+    """Inserting 0.5 between 0.1 and 1.0 must not change identity of existing units."""
+    targets = ["t1.pdb", "t2.pdb"]
+    before = plan_campaign(_identity_spec([0.1, 1.0], targets)).rows
+    after = plan_campaign(_identity_spec([0.1, 0.5, 1.0], targets)).rows
+    after_hashes = {row.manifest_row_hash for row in after}
+    assert len(before) == 4
+    for row in before:
+        assert row.manifest_row_hash in after_hashes, f"row {row.job_id} changed identity"
+
+
+def test_prepending_target_keeps_existing_row_hashes() -> None:
+    """Prepending a target must not shift the identity of rows for the existing targets."""
+    before = plan_campaign(_identity_spec([0.1, 1.0], ["t1.pdb"])).rows
+    after = plan_campaign(_identity_spec([0.1, 1.0], ["t_new.pdb", "t1.pdb"])).rows
+    after_hashes = {row.manifest_row_hash for row in after}
+    assert len(before) == 2
+    for row in before:
+        assert row.manifest_row_hash in after_hashes, f"row {row.job_id} changed identity"
+
+
+def test_same_stem_in_different_directories_gets_distinct_identity() -> None:
+    """Targets that share a file stem but differ in directory must not collide."""
+    rows = plan_campaign(_identity_spec([0.1], ["dir_a/target.pdb", "dir_b/target.pdb"])).rows
+    assert len(rows) == 2
+    assert len({row.job_id for row in rows}) == 2
+    assert len({row.manifest_row_hash for row in rows}) == 2
+
+
+def test_planning_is_deterministic_with_unique_job_ids(tmp_path: Path) -> None:
+    """Same spec planned twice yields identical manifest bytes and unique job_ids."""
+    spec = _identity_spec([0.1, 0.5, 1.0], ["dir_a/t.pdb", "dir_b/t.pdb"])
+    path1 = tmp_path / "run1" / "manifest.json"
+    path2 = tmp_path / "run2" / "manifest.json"
+    m1 = plan_campaign(spec, output_manifest_path=path1)
+    plan_campaign(spec, output_manifest_path=path2)
+    assert path1.read_bytes() == path2.read_bytes()
+    assert len({row.job_id for row in m1.rows}) == len(m1.rows)
