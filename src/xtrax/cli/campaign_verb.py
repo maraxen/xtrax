@@ -381,8 +381,17 @@ def _run_verify(args: CampaignArgs) -> dict[str, int]:
         # (<store>.done.json), so the store is the marker's sibling.
         done_markers = _iter_campaign_files(out_dir, "*.done.json")
         if not done_markers:
-            print(f"No done markers found in {out_dir}")
-            return {"passed": 0, "failed": 0}
+            # Nothing verified is not a pass: an empty or fully quarantined campaign must
+            # not satisfy a verify gate.
+            quarantined = sum(
+                len(list(q_root.iterdir()))
+                for q_root in (out_dir / ".quarantine", *out_dir.glob("*/.quarantine"))
+                if q_root.is_dir()
+            )
+            raise CLIError(
+                f"Campaign verification failed: no done markers found in {out_dir} "
+                f"({quarantined} quarantined unit(s)); nothing was verified"
+            )
 
         seen_hashes: set[str] = set()
         for marker_file in done_markers:

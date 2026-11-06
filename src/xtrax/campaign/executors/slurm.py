@@ -114,6 +114,27 @@ def format_slurm_array_indices(
     return f"{spec}%{max_concurrent}" if max_concurrent else spec
 
 
+def _sbatch_log_path(log_path: str, base_dir: str) -> str:
+    """Return ``log_path`` as written in an ``#SBATCH --output/--error`` directive.
+
+    A relative log path is anchored under ``base_dir`` like :func:`_anchor_log_path`, but
+    any ``%`` in ``base_dir`` is escaped as ``%%``: sbatch reads ``%`` as a filename
+    pattern (``%j``, ``%A``, ``%a``), and the output directory is literal. The configured
+    log path keeps its patterns. A path with whitespace, a quote or a newline would be
+    split or misread in the directive, so it is refused rather than written.
+    """
+    anchored = _anchor_log_path(log_path, base_dir)
+    if any(ch.isspace() or ch in "\"'" for ch in anchored):
+        msg = (
+            f"SLURM log path {anchored!r} contains whitespace or a quote, which an #SBATCH "
+            "directive cannot carry; use an output directory and log name without them"
+        )
+        raise ValueError(msg)
+    if Path(log_path).is_absolute():
+        return log_path
+    return str(Path(base_dir.replace("%", "%%")) / log_path)
+
+
 def _anchor_log_path(log_path: str, base_dir: str) -> str:
     """Return an absolute SLURM log path: absolute input is kept, relative is under ``base_dir``."""
     if Path(log_path).is_absolute():
@@ -270,6 +291,9 @@ class SlurmArrayExecutor:
         # and create their parent so every array task can open its log at launch.
         out_log = _anchor_log_path(self.output_log, abs_output_dir)
         err_log = _anchor_log_path(self.error_log, abs_output_dir)
+        # Checked before any directory is created, so a refused path leaves nothing behind.
+        out_directive = _sbatch_log_path(self.output_log, abs_output_dir)
+        err_directive = _sbatch_log_path(self.error_log, abs_output_dir)
         for log_path in (out_log, err_log):
             Path(log_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -284,8 +308,8 @@ class SlurmArrayExecutor:
         directives.append(f"#SBATCH --time={self.time_limit}")
         if self.partition:
             directives.append(f"#SBATCH --partition={self.partition}")
-        directives.append(f"#SBATCH --output={out_log}")
-        directives.append(f"#SBATCH --error={err_log}")
+        directives.append(f"#SBATCH --output={out_directive}")
+        directives.append(f"#SBATCH --error={err_directive}")
 
         script_lines = directives + [
             "",

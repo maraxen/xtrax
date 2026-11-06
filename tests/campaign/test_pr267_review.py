@@ -1,12 +1,14 @@
 """Regression tests for the PR #267 review (Grok, praxia surface_dispatch, 261106).
 
-Each test failed on 88b5aad, before the fix.
+The first group failed on 88b5aad (fixed in d1d7967); the follow-up group, for debt
+#3307 and #3309-#3311, failed on d1d7967.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -144,3 +146,99 @@ def test_reclaim_leaves_other_owners_leases_alone(tmp_path: Path) -> None:
     theirs_lock = _resolve_output_path(out, theirs)
     assert removed == [ours_lock.with_name(f"{ours_lock.name}.lock")]
     assert theirs_lock.with_name(f"{theirs_lock.name}.lock").exists()
+
+
+# ==============================================================================
+# Follow-ups filed from the review, fixed in the same PR: debt #3307, #3309-#3311
+# ==============================================================================
+
+
+def test_root_array_output_fails_with_a_clear_error_and_is_set_aside(tmp_path: Path) -> None:
+    """#3307: a unit that writes a root zarr array gets a named error, not a digest crash."""
+    import zarr
+
+    manifest = _create_mock_manifest(num_rows=1, campaign_id="camp_pr267_root_array")
+    row = manifest.rows[0]
+    out = tmp_path / "camp_pr267_root_array"
+    path = _resolve_output_path(out, row)
+
+    def root_array_unit(_row: object) -> None:
+        arr = zarr.create_array(str(path), shape=(4,), dtype="f4", zarr_format=3)
+        arr[:] = 1.0
+
+    summary = LocalSequentialExecutor().run(manifest, root_array_unit, output_dir=str(out))
+    assert summary.failed_units == 1
+    assert "UnitOutputNotAGroupError" in summary.failures[0]["error"]
+    assert "root zarr array" in summary.failures[0]["error"]
+    assert not path.exists(), "the rejected array stays in place and blocks the next attempt"
+    assert not path.with_name(f"{path.name}.done.json").exists()
+
+
+def test_broken_pool_counts_a_unit_committed_on_disk_as_completed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#3309: a queued unit valid on disk is completed, not failed, when the pool breaks."""
+    from tests.campaign.unit_fns import SIBLING_OUT_ENV, commit_sibling_then_die_unit
+
+    campaign_id = "camp_pr267_broken_sibling"
+    manifest = _create_mock_manifest(num_rows=2, campaign_id=campaign_id)
+    out = tmp_path / campaign_id
+    monkeypatch.setenv(SIBLING_OUT_ENV, str(out))
+
+    summary = LocalProcessPoolExecutor(max_workers=1).run(
+        manifest, commit_sibling_then_die_unit, output_dir=str(out)
+    )
+    sibling = manifest.rows[1]
+    sibling_path = _resolve_output_path(out, sibling)
+    assert validate_unit_done(sibling_path, sibling, deep_verify=True).is_valid
+    failed_rows = {f["row_index"] for f in summary.failures}
+    assert 1 not in failed_rows, summary.failures
+    assert 0 in failed_rows
+    assert summary.completed_units == 1
+    assert summary.failed_units == 1
+    assert summary.accounted_units() == summary.total_units
+
+
+def test_manifestless_verify_with_no_markers_fails(tmp_path: Path) -> None:
+    """#3310: verifying a campaign with nothing done (here: all quarantined) is not a pass."""
+    from xtrax.campaign.marker import quarantine_output
+    from xtrax.cli.campaign_verb import run_campaign
+    from xtrax.cli.errors import CLIError
+
+    manifest = _create_mock_manifest(num_rows=1, campaign_id="camp_pr267_empty_verify")
+    out = tmp_path / "camp_pr267_empty_verify"
+    LocalSequentialExecutor().run(manifest, array_unit, output_dir=str(out))
+    quarantine_output(_resolve_output_path(out, manifest.rows[0]), reason="test")
+
+    with pytest.raises(CLIError, match=r"no done markers.*1 quarantined"):
+        run_campaign(CampaignArgs(action="verify", output_dir=str(out)))
+
+
+def _slurm_executor(tmp_path: Path, manifest: Any) -> Any:
+    from tests.campaign.test_r3_cli_slurm import _write_manifest
+    from tests.campaign.unit_fns import ARRAY_UNIT_FN
+    from xtrax.campaign.executors.slurm import SlurmArrayExecutor
+
+    manifest_path = _write_manifest(tmp_path / "manifest.json", manifest)
+    return SlurmArrayExecutor(manifest_path=manifest_path, fn_spec=ARRAY_UNIT_FN)
+
+
+def test_sbatch_log_directive_escapes_percent_in_output_dir(tmp_path: Path) -> None:
+    """#3311: a literal % in the output dir is escaped; the log name keeps its patterns."""
+    manifest = _create_mock_manifest(num_rows=1, campaign_id="camp_pr267_sbatch")
+    executor = _slurm_executor(tmp_path, manifest)
+    out = tmp_path / "run_100%"
+    script = executor.generate_script(manifest, out)
+    out_lines = [ln for ln in script.splitlines() if ln.startswith("#SBATCH --output=")]
+    escaped_dir = str(out.resolve()).replace("%", "%%")
+    assert out_lines == [f"#SBATCH --output={escaped_dir}/logs/slurm_%A_%a.out"]
+
+
+def test_sbatch_log_path_with_whitespace_is_refused(tmp_path: Path) -> None:
+    """#3311: an output dir with a space cannot go into an #SBATCH directive."""
+    manifest = _create_mock_manifest(num_rows=1, campaign_id="camp_pr267_sbatch_space")
+    executor = _slurm_executor(tmp_path, manifest)
+    out = tmp_path / "run one"
+    with pytest.raises(ValueError, match="whitespace"):
+        executor.generate_script(manifest, out)
+    assert not (out / "logs").exists(), "a refused script must not create log directories"

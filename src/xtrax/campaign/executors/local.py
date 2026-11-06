@@ -60,6 +60,10 @@ class UnitProducedNoOutputError(RuntimeError):
     """Raised when a unit function returns without writing its output store."""
 
 
+class UnitOutputNotAGroupError(ValueError):
+    """Raised when a unit function writes a root zarr array instead of a group."""
+
+
 class UnitInterruptedError(BaseException):
     """Raised inside a unit run when the process receives SIGTERM.
 
@@ -291,6 +295,32 @@ def _write_state_store(state: Mapping[Any, Any], partial_path: Path) -> None:
         group.attrs.update(attrs)
 
 
+def _require_group_store(output_path: Path) -> None:
+    """Raise ``UnitOutputNotAGroupError`` if the unit wrote a root zarr array.
+
+    The campaign content digest walks a zarr group, so a store whose root is an array
+    could never be stamped done. Failing here names the problem; the abort path then sets
+    the store aside like any other failed attempt.
+    """
+    if not output_path.is_dir():
+        return
+    if (output_path / ".zarray").exists():
+        node_type = "array"
+    else:
+        meta = output_path / "zarr.json"
+        try:
+            node_type = json.loads(meta.read_text(encoding="utf-8")).get("node_type")
+        except (OSError, ValueError, AttributeError):
+            return
+    if node_type == "array":
+        msg = (
+            f"Unit function wrote a root zarr array at {output_path}; campaign outputs must "
+            "be zarr groups. Write the array inside a group (e.g. group.create_array(...)) "
+            "or return a mapping of arrays"
+        )
+        raise UnitOutputNotAGroupError(msg)
+
+
 def _stage_unit_output(state: Any, output_path: Path, partial_path: Path) -> None:
     """Put this attempt's output at ``partial_path`` for the commit protocol.
 
@@ -305,6 +335,7 @@ def _stage_unit_output(state: Any, output_path: Path, partial_path: Path) -> Non
         return
     done_marker_path = output_path.with_name(f"{output_path.name}.done.json")
     if output_path.exists() and not done_marker_path.exists():
+        _require_group_store(output_path)
         os.replace(output_path, partial_path)
         return
     if isinstance(state, Mapping):
@@ -828,6 +859,7 @@ class LocalProcessPoolExecutor:
         # Unique to this run, so after shutdown the parent can tell its own workers'
         # leftover leases from anyone else's.
         run_owner_prefix = f"pool:{os.getpid()}.{uuid.uuid4().hex[:8]}"
+        broken_error: str | None = None
         try:
             try:
                 for idx, row in pending_rows:
@@ -874,16 +906,6 @@ class LocalProcessPoolExecutor:
                             break
             except BrokenProcessPool as exc:
                 broken_error = f"{type(exc).__name__}: {exc}"
-                for rem_idx, rem_row in unfinished.items():
-                    failed_units += 1
-                    failures.append(
-                        {
-                            "manifest_row_hash": rem_row.manifest_row_hash,
-                            "row_index": rem_idx,
-                            "error": broken_error,
-                        }
-                    )
-                unfinished.clear()
                 for pending_fut in future_to_row:
                     pending_fut.cancel()
         finally:
@@ -891,6 +913,26 @@ class LocalProcessPoolExecutor:
             # Every worker has exited. A worker killed outright (SIGKILL, the OOM killer)
             # never ran its cleanup, so its lease would block the unit for lease + 300 s.
             _reclaim_dead_worker_leases(out_dir, [row for _, row in pending_rows], run_owner_prefix)
+
+        # Rows whose result never reached the parent (the pool broke, or a max_failures
+        # exit stopped reading results). A unit may still have committed before its
+        # worker died or was stopped, so count from what is on disk: a valid store is
+        # completed; otherwise a broken pool is that unit's failure, and after an early
+        # exit the unit simply did not run.
+        for rem_idx, rem_row in unfinished.items():
+            if validate_unit_done(
+                _resolve_output_path(out_dir, rem_row), rem_row, deep_verify=False
+            ).is_valid:
+                completed_units += 1
+            elif broken_error is not None:
+                failed_units += 1
+                failures.append(
+                    {
+                        "manifest_row_hash": rem_row.manifest_row_hash,
+                        "row_index": rem_idx,
+                        "error": broken_error,
+                    }
+                )
 
         elapsed = time.time() - start_time
         return CampaignSummary(
