@@ -25,6 +25,20 @@ class CampaignSummary:
     failed_units: int
     elapsed_seconds: float
     failures: list[dict[str, Any]] = field(default_factory=list)
+    #: Units not run because another worker holds their lease. Not completed.
+    locked_units: int = 0
+    #: Units handed to an external scheduler (SLURM) by this call. Not completed.
+    submitted_units: int = 0
+
+    def accounted_units(self) -> int:
+        """Sum of every outcome bucket; equals ``total_units`` for a well-formed summary."""
+        return (
+            self.completed_units
+            + self.skipped_units
+            + self.failed_units
+            + self.locked_units
+            + self.submitted_units
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -35,6 +49,8 @@ class CampaignSummary:
             "failed_units": self.failed_units,
             "elapsed_seconds": self.elapsed_seconds,
             "failures": self.failures,
+            "locked_units": self.locked_units,
+            "submitted_units": self.submitted_units,
         }
 
 
@@ -61,7 +77,11 @@ class CampaignExecutor(Protocol):
 
         Args:
             manifest: The planned CampaignManifest to execute.
-            unit_fn: Unit compute callable taking a ManifestRow and returning execution state.
+            unit_fn: Unit compute callable taking a ManifestRow. Its output reaches disk in
+                one of two ways: it writes a store at the row's resolved output path, or
+                it returns a Mapping that the executor persists as a zarr v3 group
+                (arrays as arrays, scalars and JSON values as attributes). A unit that
+                does neither fails; it is never stamped done.
             output_dir: Directory where unit output stores and done markers reside.
             row_indices: Optional list of integer row indices to restrict execution to.
             max_failures: Optional threshold of allowable failed units before aborting.

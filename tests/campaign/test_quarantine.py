@@ -33,16 +33,18 @@ def _create_test_zarr_store(
     arr_dir = store_path / "data"
     arr_dir.mkdir(parents=True, exist_ok=True)
     (arr_dir / ".zarray").write_text(
-        json.dumps({
-            "zarr_format": 2,
-            "shape": [len(array_data)],
-            "chunks": [len(array_data)],
-            "dtype": "|u1",
-            "order": "C",
-            "filters": None,
-            "fill_value": 0,
-            "compressor": None,
-        }),
+        json.dumps(
+            {
+                "zarr_format": 2,
+                "shape": [len(array_data)],
+                "chunks": [len(array_data)],
+                "dtype": "|u1",
+                "order": "C",
+                "filters": None,
+                "fill_value": 0,
+                "compressor": None,
+            }
+        ),
         encoding="utf-8",
     )
     # chunk 0

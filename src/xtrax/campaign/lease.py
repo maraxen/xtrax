@@ -282,6 +282,7 @@ class FileLock:
             os.close(fd)
             fsync_directory(self.lock_path.parent)
 
+            self._clear_stale_commit_token()
             self._start_heartbeat(now)
             self.is_locked = True
             return True
@@ -291,16 +292,30 @@ class FileLock:
         # Step 2: Lock exists. Evaluate stale lease stealing with clock drift grace period.
         try:
             lock_stat = self.lock_path.stat()
-            current_data = json.loads(self.lock_path.read_text(encoding="utf-8"))
-            lock_obj = CampaignLock.from_dict(current_data)
-        except Exception as exc:
+            raw_lock = self.lock_path.read_bytes()
+        except FileNotFoundError as exc:
+            msg = f"Lock file {self.lock_path} vanished during acquisition; retry"
+            raise LockUnavailableError(msg) from exc
+        except OSError as exc:
             msg = f"Failed to read lock file {self.lock_path}: {exc}"
             raise LockUnavailableError(msg) from exc
 
+        mtime_age = now - lock_stat.st_mtime
+        try:
+            lock_obj: CampaignLock | None = CampaignLock.from_json(raw_lock.decode("utf-8"))
+        except Exception:
+            # A crash between O_EXCL create and write leaves an empty or torn lock.
+            # It can never be renewed (the heartbeat CAS needs parseable JSON), so
+            # judge it by mtime alone against this worker's lease length.
+            lock_obj = None
+
         # Dual Expiration & Clock Drift Check (Section 5.3)
-        is_stale = (now >= lock_obj.lease_expires_at_unix_s + CLOCK_DRIFT_GRACE_PERIOD_S) and (
-            now - lock_stat.st_mtime >= lock_obj.lease_seconds + CLOCK_DRIFT_GRACE_PERIOD_S
-        )
+        if lock_obj is not None:
+            is_stale = (now >= lock_obj.lease_expires_at_unix_s + CLOCK_DRIFT_GRACE_PERIOD_S) and (
+                mtime_age >= lock_obj.lease_seconds + CLOCK_DRIFT_GRACE_PERIOD_S
+            )
+        else:
+            is_stale = mtime_age >= self.lease_seconds + CLOCK_DRIFT_GRACE_PERIOD_S
 
         if not is_stale:
             msg = (
@@ -311,19 +326,15 @@ class FileLock:
 
         # Step 3: Stale Lease Stealing with Atomic Steal Token
         steal_token = self.lock_path.with_name(f"{self.lock_path.name}.steal")
-        try:
-            steal_fd = os.open(steal_token, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError as exc:
-            msg = f"Lost CAS race while attempting to steal lock on {self.lock_path}"
-            raise LockUnavailableError(msg) from exc
+        steal_fd = self._open_steal_token(steal_token, now)
 
         try:
-            # Re-verify lock is still the same stale lock
-            curr_data = json.loads(self.lock_path.read_text(encoding="utf-8"))
-            if (
-                curr_data.get("owner_token") != lock_obj.owner_token
-                or curr_data.get("acquired_at_unix_s") != lock_obj.acquired_at_unix_s
-            ):
+            # Re-verify lock is still the same stale lock (byte-for-byte CAS)
+            try:
+                curr_raw = self.lock_path.read_bytes()
+            except FileNotFoundError:
+                curr_raw = None
+            if curr_raw != raw_lock:
                 msg = f"Lock on {self.lock_path} was modified before steal could complete"
                 raise LockUnavailableError(msg)
 
@@ -346,6 +357,7 @@ class FileLock:
             fsync_directory(self.lock_path.parent)
 
             self.acquired_at_unix_s = steal_acquired
+            self._clear_stale_commit_token()
             self._start_heartbeat(steal_acquired)
             self.is_locked = True
             return True
@@ -354,6 +366,54 @@ class FileLock:
                 os.close(steal_fd)
             with suppress(OSError):
                 steal_token.unlink()
+
+    def _open_steal_token(self, steal_token: Path, now: float) -> int:
+        """Create the singleton steal token, reclaiming one orphaned by a dead stealer.
+
+        A steal completes in milliseconds, so a token older than the clock-drift grace
+        period belongs to a stealer that died between create and unlink. Without this
+        reclaim the unit would stay locked forever.
+        """
+        for attempt in range(2):
+            try:
+                return os.open(steal_token, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError as exc:
+                try:
+                    token_age = now - steal_token.stat().st_mtime
+                except FileNotFoundError:
+                    continue  # holder just finished; retry once
+                if attempt == 0 and token_age >= CLOCK_DRIFT_GRACE_PERIOD_S:
+                    with suppress(FileNotFoundError):
+                        steal_token.unlink()
+                    continue
+                msg = f"Lost CAS race while attempting to steal lock on {self.lock_path}"
+                raise LockUnavailableError(msg) from exc
+        msg = f"Lost CAS race while attempting to steal lock on {self.lock_path}"
+        raise LockUnavailableError(msg)
+
+    def _clear_stale_commit_token(self) -> None:
+        """Remove a commit token left by a previous lease holder.
+
+        Called only after this worker holds the lease. A token whose owner is not this
+        worker was written by a holder whose lease has since expired or been released
+        (it crashed or was preempted between commit steps 3 and 8), so it is stale.
+        Left in place it would make every later commit fail with FileExistsError.
+        """
+        commit_token_path = self.output_path.with_name(f"{self.output_path.name}.commit")
+        try:
+            raw = commit_token_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except OSError:
+            raw = ""
+        try:
+            owner = json.loads(raw).get("owner_token")
+        except Exception:
+            owner = None
+        if owner != self.owner_token:
+            with suppress(FileNotFoundError):
+                commit_token_path.unlink()
+            fsync_directory(commit_token_path.parent)
 
     def _start_heartbeat(self, acquired_at: float) -> None:
         self.heartbeat = HeartbeatThread(
@@ -479,18 +539,27 @@ class FileLock:
             msg = f"Lease for {output_path} was lost, stolen, or expired before commit"
             raise LeaseLostError(msg)
 
-        # 6. Output Promotion
-        os.replace(partial_path, output_path)
+        try:
+            # 6. Output Promotion. An existing store with no done marker (step 1 found
+            # none) is an orphan from a holder that crashed between steps 6 and 7; set
+            # it aside so os.replace does not fail with ENOTEMPTY on every retry.
+            if output_path.exists():
+                from xtrax.campaign.marker import quarantine_output
 
-        # 7. Write and Rename Done Marker
-        tmp_done = output_path.with_name(f"{output_path.name}.done.json.tmp.{attempt_uuid}")
-        tmp_done.write_text(done_marker.to_json(), encoding="utf-8")
-        fsync_file(tmp_done)
-        os.replace(tmp_done, done_marker_path)
+                quarantine_output(output_path, reason="orphaned_uncommitted_output")
+            os.replace(partial_path, output_path)
 
-        # 8. Directory Durabilization & Release
-        fsync_directory(output_path.parent)
-        if commit_token_path.exists():
+            # 7. Write and Rename Done Marker
+            tmp_done = output_path.with_name(f"{output_path.name}.done.json.tmp.{attempt_uuid}")
+            tmp_done.write_text(done_marker.to_json(), encoding="utf-8")
+            fsync_file(tmp_done)
+            os.replace(tmp_done, done_marker_path)
+
+            # 8. Directory Durabilization & Release
+            fsync_directory(output_path.parent)
+        finally:
+            # The token must not outlive this attempt, success or failure; a stale token
+            # blocks every later commit of this unit.
             with suppress(OSError):
                 commit_token_path.unlink()
         if self.lock_path.exists():

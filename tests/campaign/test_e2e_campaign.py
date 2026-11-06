@@ -16,18 +16,18 @@ from typing import Any
 
 import numpy as np
 import pytest
+import zarr
 
+from tests.campaign.unit_fns import ARRAY_UNIT_FN
 from xtrax.campaign.executors.local import (
     LocalProcessPoolExecutor,
     LocalSequentialExecutor,
 )
 from xtrax.campaign.manifest import (
-    CampaignManifest,
     ManifestRow,
     plan_campaign,
 )
 from xtrax.campaign.marker import (
-    compute_content_digest,
     validate_unit_done,
 )
 from xtrax.campaign.spec import ArmSpec, CampaignSpec, ParamGrid
@@ -136,7 +136,13 @@ def test_e2e_multi_arm_lifecycle_process_pool(tmp_path: Path) -> None:
     for row in manifest.rows:
         store_path = _resolve_row_store(output_dir, row)
         assert store_path.exists(), f"Store missing: {store_path}"
-        assert (store_path / ".zgroup").exists()
+        assert (store_path / "zarr.json").exists()
+        # The unit function's returned arrays are what the store holds.
+        group = zarr.open_group(str(store_path), mode="r")
+        temp = float(row.parameters.get("temperature", 1.0))
+        expected = np.arange(100, dtype=np.float32).reshape((10, 10)) * temp + float(row.seed)
+        np.testing.assert_array_equal(np.asarray(group["predictions"]), expected)
+        assert group.attrs["mean_val"] == float(expected.mean())
 
         done_marker_path = store_path.with_name(f"{store_path.name}.done.json")
         assert done_marker_path.exists(), f"Done marker missing: {done_marker_path}"
@@ -176,16 +182,17 @@ def test_e2e_multi_arm_lifecycle_process_pool(tmp_path: Path) -> None:
         output_dir=str(output_dir),
     )
     assert resume_summary.total_units == 8
-    assert resume_summary.completed_units == 8
+    assert resume_summary.completed_units == 0
     assert resume_summary.skipped_units == 8
+    assert resume_summary.accounted_units() == resume_summary.total_units
     assert resume_summary.failed_units == 0
 
     # 9. Corruption & quarantine recovery:
     # Tamper with metadata in store 0
     row_0 = manifest.rows[0]
     store_0 = _resolve_row_store(output_dir, row_0)
-    zgroup_file = store_0 / ".zgroup"
-    zgroup_file.write_text("corrupted_invalid_json_metadata", encoding="utf-8")
+    root_meta_file = store_0 / "zarr.json"
+    root_meta_file.write_text("corrupted_invalid_json_metadata", encoding="utf-8")
 
     # Tier-2 verification detects tampering and triggers defensive quarantine
     val_tampered = validate_unit_done(
@@ -261,6 +268,7 @@ def test_e2e_campaign_cli_full_workflow(tmp_path: Path, monkeypatch: pytest.Monk
     # 3. Action: run with LocalSequentialExecutor
     args_run = CampaignArgs(
         action="run",
+        fn=ARRAY_UNIT_FN,
         manifest=str(manifest_dest),
         output_dir=str(out_dir),
         executor="local-seq",

@@ -12,44 +12,65 @@ import multiprocessing
 import os
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xtrax.campaign.executors.protocol import CampaignSummary
-from xtrax.campaign.lease import FileLock, LockUnavailableError
+from xtrax.campaign.lease import FileLock, LockUnavailableError, StolenAttemptDiscarded
 from xtrax.campaign.marker import (
-    CampaignDoneMarker,
     compute_content_digest,
     create_done_marker,
+    quarantine_output,
     validate_unit_done,
 )
+
+#: ``_execute_single_unit`` outcomes.
+UNIT_COMMITTED = "committed"
+UNIT_LOCK_HELD = "lock_held"
+UNIT_DISCARDED = "discarded"
+
+
+class UnitProducedNoOutputError(RuntimeError):
+    """Raised when a unit function returns without writing its output store."""
+
 
 if TYPE_CHECKING:
     from xtrax.campaign.manifest import CampaignManifest, ManifestRow
 
 
+def _resolve_compilation_cache_dir(cache_dir: str | None) -> str | None:
+    """Resolve the JAX persistent compilation cache directory, or None for off.
+
+    Order: explicit ``cache_dir`` > ``JAX_COMPILATION_CACHE_DIR`` (``none`` or empty
+    disables) > off. There is no default path: a cache is derived data and its location
+    is configuration, never a directory invented under the current working directory.
+    """
+    if cache_dir:
+        return cache_dir
+    env_value = os.environ.get("JAX_COMPILATION_CACHE_DIR")
+    if env_value is None or env_value.strip().lower() in ("", "none"):
+        return None
+    return env_value
+
+
 def _initialize_worker_process(cache_dir: str | None = None) -> None:
     """Initialize worker process configuration for JAX persistent disk compilation cache.
 
-    Per Section 6.3.2 of SPEC-261105-CAMPAIGN-RUNNER:
-    Each spawned worker process configures jax_compilation_cache_dir and
-    jax_persistent_cache_min_compile_time_secs to amortize compilation latency
-    across recycled worker lifecycles.
+    Per Section 6.3.2 of SPEC-261105-CAMPAIGN-RUNNER, each spawned worker configures
+    jax_compilation_cache_dir to amortize compilation across recycled workers, but only
+    when a cache directory is configured (see ``_resolve_compilation_cache_dir``).
     """
-    resolved_cache = (
-        cache_dir
-        or os.environ.get("JAX_COMPILATION_CACHE_DIR")
-        or str(Path.cwd() / ".jax_compilation_cache")
-    )
+    resolved_cache = _resolve_compilation_cache_dir(cache_dir)
+    if resolved_cache is None:
+        return
+    os.makedirs(resolved_cache, exist_ok=True)
     try:
-        os.makedirs(resolved_cache, exist_ok=True)
         import jax
-
-        jax.config.update("jax_compilation_cache_dir", resolved_cache)
-        jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
-    except (ImportError, Exception):
-        pass
+    except ImportError:
+        return
+    jax.config.update("jax_compilation_cache_dir", resolved_cache)
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
 
 
 def _clean_memory(state: Any) -> None:
@@ -90,37 +111,118 @@ def _resolve_output_path(output_dir: Path, row: ManifestRow) -> Path:
 
 
 def _check_tier1_resume(output_dir: Path, row: ManifestRow) -> bool:
-    """Check Tier-1 fast resume status (< 5 ms per unit)."""
+    """Check Tier-1 fast resume status (< 5 ms per unit).
+
+    A unit is done only when ``validate_unit_done`` accepts its resolved output path:
+    marker present and matching, and the store present with valid root metadata. A bare
+    marker file is never enough.
+    """
     output_path = _resolve_output_path(output_dir, row)
-
     val = validate_unit_done(output_path, row, deep_verify=False, quarantine_on_failure=False)
-    if val.is_valid:
-        return True
+    return val.is_valid
 
-    # Check output_dir direct filename variations
-    alt_zarr = output_dir / f"{row.manifest_row_hash}.zarr"
-    if alt_zarr != output_path and alt_zarr.exists():
-        val = validate_unit_done(alt_zarr, row, deep_verify=False, quarantine_on_failure=False)
-        if val.is_valid:
-            return True
 
-    done_candidates = [
-        output_dir / f"{row.manifest_row_hash}.done.json",
-        output_dir / f"{Path(row.output_locator).name}.done.json",
-    ]
-    for marker_file in done_candidates:
-        if marker_file.exists():
-            try:
-                data = json.loads(marker_file.read_text(encoding="utf-8"))
-                if (
-                    data.get("manifest_row_hash") == row.manifest_row_hash
-                    and data.get("input_hash") == row.input_hash
-                ):
-                    return True
-            except Exception:
-                pass
+def _set_aside_orphaned_output(output_path: Path, row: ManifestRow) -> None:
+    """Quarantine a store or done marker that does not form a valid completed unit.
 
-    return False
+    Called while holding the unit's lease, before the unit function runs. A store
+    without a valid marker is left over from an attempt that crashed before stamping
+    it; a marker without a valid store (for example, the store was deleted to force a
+    rerun) would make the commit protocol discard this attempt as already done. After
+    this call neither exists, so whatever appears at ``output_path`` is this attempt's.
+    """
+    marker_path = output_path.with_name(f"{output_path.name}.done.json")
+    if not output_path.exists() and not marker_path.exists():
+        return
+    val = validate_unit_done(output_path, row, deep_verify=False, quarantine_on_failure=False)
+    if not val.is_valid:
+        quarantine_output(output_path, reason="orphaned_uncommitted_output")
+
+
+def _write_state_store(state: Mapping[Any, Any], partial_path: Path) -> None:
+    """Persist a unit function's returned mapping as a zarr v3 group at ``partial_path``.
+
+    Values with one or more dimensions become arrays; scalars (including 0-d arrays)
+    and JSON-serializable values become group attributes. Anything else is an error,
+    never silently dropped.
+    """
+    import numpy as np
+    import zarr
+
+    from xtrax.campaign.manifest import normalize_json_value
+
+    if not state:
+        msg = "Unit function returned an empty mapping; there is no output to persist"
+        raise UnitProducedNoOutputError(msg)
+
+    arrays: dict[str, Any] = {}
+    attrs: dict[str, Any] = {}
+    for raw_key, value in state.items():
+        key = str(raw_key)
+        if not key or "/" in key or key.startswith("."):
+            msg = f"Unit output key {key!r} is not a valid zarr node name"
+            raise ValueError(msg)
+        if hasattr(value, "__array__") and not isinstance(value, (str, bytes)):
+            arr = np.asarray(value)
+            if arr.ndim > 0:
+                arrays[key] = arr
+                continue
+            value = arr.item()
+        try:
+            normalized = normalize_json_value(value)
+            json.dumps(normalized, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            msg = (
+                f"Unit output {key!r} of type {type(value).__name__} is neither an array "
+                f"nor a JSON-serializable value: {exc}"
+            )
+            raise TypeError(msg) from exc
+        attrs[key] = normalized
+
+    group = zarr.open_group(str(partial_path), mode="w", zarr_format=3)
+    for key, arr in arrays.items():
+        group.create_array(key, data=arr)
+    if attrs:
+        group.attrs.update(attrs)
+
+
+def _stage_unit_output(state: Any, output_path: Path, partial_path: Path) -> None:
+    """Put this attempt's output at ``partial_path`` for the commit protocol.
+
+    In order of precedence:
+
+    1. The unit function wrote its own store at ``output_path``: move it to the partial.
+    2. The unit function returned a ``Mapping``: write it as a zarr v3 group.
+    3. Otherwise the unit fails. Stamping a done marker on missing output would record
+       the unit as complete and resume would skip it forever.
+    """
+    if partial_path.exists():
+        return
+    if output_path.exists():
+        os.replace(output_path, partial_path)
+        return
+    if isinstance(state, Mapping):
+        try:
+            _write_state_store(state, partial_path)
+        except BaseException:
+            _discard_partial(partial_path)
+            raise
+        return
+    msg = (
+        f"Unit function neither wrote a store at {output_path} nor returned a mapping "
+        f"(got {type(state).__name__}); refusing to stamp a done marker on missing output"
+    )
+    raise UnitProducedNoOutputError(msg)
+
+
+def _discard_partial(partial_path: Path) -> None:
+    """Remove a partially written attempt directory or file."""
+    import shutil
+
+    if partial_path.is_dir():
+        shutil.rmtree(partial_path, ignore_errors=True)
+    elif partial_path.exists():
+        partial_path.unlink(missing_ok=True)
 
 
 def _execute_single_unit(
@@ -130,8 +232,13 @@ def _execute_single_unit(
     lease_seconds: int = 1800,
     heartbeat_interval: float = 60.0,
     owner_token_prefix: str = "local",
-) -> None:
-    """Execute a single unit with atomic leasing, output promotion, and done marker stamping."""
+) -> str:
+    """Execute a single unit with atomic leasing, output promotion, and done marker stamping.
+
+    Returns one of ``UNIT_COMMITTED`` (this attempt stamped the done marker),
+    ``UNIT_LOCK_HELD`` (another worker holds the lease; nothing ran) or
+    ``UNIT_DISCARDED`` (another worker finished the unit first). Raises on failure.
+    """
     output_path = _resolve_output_path(output_dir, row)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     owner_token = f"{owner_token_prefix}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
@@ -147,27 +254,27 @@ def _execute_single_unit(
     try:
         lock.acquire()
     except LockUnavailableError:
-        # Lock currently held by another worker; skip this unit attempt
-        return
+        return UNIT_LOCK_HELD
 
-    start_time = time.time()
     try:
+        # Another worker may have committed between the resume check and our acquire.
+        if _check_tier1_resume(output_dir, row):
+            return UNIT_DISCARDED
+        _set_aside_orphaned_output(output_path, row)
+
+        start_time = time.time()
         attempt_uuid = uuid.uuid4().hex[:8]
         partial_path = output_path.with_name(f"{output_path.name}.partial.{attempt_uuid}")
 
         state = unit_fn(row)
         duration_s = max(0.001, time.time() - start_time)
 
-        # Memory hygiene: device tensor blocking & garbage collection
-        _clean_memory(state)
-
-        # Commit output according to singleton commit token protocol
-        if not partial_path.exists():
-            if output_path.exists():
-                os.replace(output_path, partial_path)
-            else:
-                partial_path.mkdir(parents=True, exist_ok=True)
-                (partial_path / ".zgroup").write_text('{"zarr_format": 2}', encoding="utf-8")
+        try:
+            _stage_unit_output(state, output_path, partial_path)
+        finally:
+            # Memory hygiene: device tensor blocking & garbage collection
+            _clean_memory(state)
+            del state
 
         digest = compute_content_digest(partial_path)
         marker = create_done_marker(
@@ -183,16 +290,12 @@ def _execute_single_unit(
             done_marker=marker,
             attempt_uuid=attempt_uuid,
         )
-        if isinstance(commit_res, CampaignDoneMarker):
-            done_marker_path = output_path.with_name(f"{output_path.name}.done.json")
-            alt_marker_path = output_dir / f"{row.manifest_row_hash}.done.json"
-            if alt_marker_path != done_marker_path:
-                commit_res.write(alt_marker_path)
+        if isinstance(commit_res, StolenAttemptDiscarded):
+            return UNIT_DISCARDED
+        return UNIT_COMMITTED
+    finally:
         if lock.is_locked:
             lock.release()
-    except Exception:
-        lock.release()
-        raise
 
 
 def _pool_worker_task(
@@ -207,7 +310,7 @@ def _pool_worker_task(
     _initialize_worker_process(cache_dir)
     out_dir = Path(output_dir)
     try:
-        _execute_single_unit(
+        outcome = _execute_single_unit(
             row=row,
             unit_fn=unit_fn,
             output_dir=out_dir,
@@ -215,12 +318,18 @@ def _pool_worker_task(
             heartbeat_interval=heartbeat_interval,
             owner_token_prefix=f"pool:{os.getpid()}",
         )
-        return {"manifest_row_hash": row.manifest_row_hash, "success": True, "error": None}
+        return {
+            "manifest_row_hash": row.manifest_row_hash,
+            "success": True,
+            "outcome": outcome,
+            "error": None,
+        }
     except Exception as exc:
         return {
             "manifest_row_hash": row.manifest_row_hash,
             "success": False,
-            "error": str(exc),
+            "outcome": None,
+            "error": f"{type(exc).__name__}: {exc}",
         }
 
 
@@ -295,6 +404,7 @@ class LocalSequentialExecutor:
         completed_units = 0
         skipped_units = 0
         failed_units = 0
+        locked_units = 0
         failures: list[dict[str, Any]] = []
 
         for idx in target_indices:
@@ -328,7 +438,7 @@ class LocalSequentialExecutor:
 
             # Execute unit
             try:
-                _execute_single_unit(
+                outcome = _execute_single_unit(
                     row=row,
                     unit_fn=unit_fn,
                     output_dir=out_dir,
@@ -336,18 +446,24 @@ class LocalSequentialExecutor:
                     heartbeat_interval=self.heartbeat_interval,
                     owner_token_prefix=f"local_seq:{os.getpid()}",
                 )
-                completed_units += 1
             except Exception as exc:
                 failed_units += 1
                 failures.append(
                     {
                         "manifest_row_hash": row.manifest_row_hash,
                         "row_index": idx,
-                        "error": str(exc),
+                        "error": f"{type(exc).__name__}: {exc}",
                     }
                 )
                 if max_failures is not None and failed_units >= max_failures:
                     break
+                continue
+            if outcome == UNIT_COMMITTED:
+                completed_units += 1
+            elif outcome == UNIT_LOCK_HELD:
+                locked_units += 1
+            else:
+                skipped_units += 1
 
         elapsed = time.time() - start_time
         return CampaignSummary(
@@ -358,6 +474,7 @@ class LocalSequentialExecutor:
             failed_units=failed_units,
             elapsed_seconds=elapsed,
             failures=failures,
+            locked_units=locked_units,
         )
 
 
@@ -410,6 +527,7 @@ class LocalProcessPoolExecutor:
         completed_units = 0
         skipped_units = 0
         failed_units = 0
+        locked_units = 0
         failures: list[dict[str, Any]] = []
 
         pending_rows: list[tuple[int, ManifestRow]] = []
@@ -427,7 +545,7 @@ class LocalProcessPoolExecutor:
             return CampaignSummary(
                 campaign_id=manifest.metadata.campaign_id,
                 total_units=total_units,
-                completed_units=total_units,
+                completed_units=0,
                 skipped_units=skipped_units,
                 failed_units=0,
                 elapsed_seconds=time.time() - start_time,
@@ -460,7 +578,13 @@ class LocalProcessPoolExecutor:
             try:
                 for idx, row, res in pool.imap_unordered(_pool_worker_task_wrapper, task_args):
                     if res.get("success"):
-                        completed_units += 1
+                        outcome = res.get("outcome")
+                        if outcome == UNIT_COMMITTED:
+                            completed_units += 1
+                        elif outcome == UNIT_LOCK_HELD:
+                            locked_units += 1
+                        else:
+                            skipped_units += 1
                     else:
                         failed_units += 1
                         failures.append(
@@ -488,4 +612,5 @@ class LocalProcessPoolExecutor:
             failed_units=failed_units,
             elapsed_seconds=elapsed,
             failures=failures,
+            locked_units=locked_units,
         )

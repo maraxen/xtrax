@@ -98,6 +98,7 @@ seed = [1, 2]
     run_called = False
 
     from xtrax.campaign.executors.local import LocalSequentialExecutor
+
     original_run = LocalSequentialExecutor.run
 
     def mock_run(self, manifest, unit_fn, **kwargs):

@@ -26,17 +26,19 @@ if TYPE_CHECKING:
 
 #: Keys owned by the campaign runner that must be mapped to normalized names
 #: in aminx-compatible parameter hashing.
-CAMPAIGN_OWNED_KEYS: frozenset[str] = frozenset({
-    "grid_mode",
-    "samples_chunk_size",
-    "job_id",
-    "chunk_id",
-    "sample_start",
-    "sample_count",
-    "output_path",
-    "output_zarr_path",
-    "output_h5_path",
-})
+CAMPAIGN_OWNED_KEYS: frozenset[str] = frozenset(
+    {
+        "grid_mode",
+        "samples_chunk_size",
+        "job_id",
+        "chunk_id",
+        "sample_start",
+        "sample_count",
+        "output_path",
+        "output_zarr_path",
+        "output_h5_path",
+    }
+)
 
 
 def normalize_json_value(value: Any) -> Any:  # noqa: ANN401
@@ -223,7 +225,7 @@ class ManifestMetadata:
 class CampaignManifest:
     """Complete planned campaign manifest containing all execution units."""
 
-    schema_version: str             # Fixed: "campaign_manifest_v1"
+    schema_version: str  # Fixed: "campaign_manifest_v1"
     metadata: ManifestMetadata
     rows: list[ManifestRow]
 
@@ -437,7 +439,8 @@ def plan_campaign(
                         continue
 
                     job_id = (
-                        f"target_{t_idx:03d}_arm_{arm.arm_id}_combo_{c_idx:03d}_chunk_{chunk_id:03d}"
+                        f"target_{t_idx:03d}_arm_{arm.arm_id}"
+                        f"_combo_{c_idx:03d}_chunk_{chunk_id:03d}"
                     )
 
                     row = build_manifest_row(
@@ -469,6 +472,7 @@ def plan_campaign(
     if planner_version is None:
         try:
             import xtrax
+
             ver = getattr(xtrax, "__version__", "0.5.0")
         except ImportError:
             ver = "0.5.0"

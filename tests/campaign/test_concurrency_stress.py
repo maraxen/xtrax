@@ -25,14 +25,10 @@ from xtrax.campaign.executors.local import LocalProcessPoolExecutor
 from xtrax.campaign.lease import (
     CLOCK_DRIFT_GRACE_PERIOD_S,
     FileLock,
-    LeaseLostError,
     LockUnavailableError,
 )
 from xtrax.campaign.manifest import (
-    CampaignManifest,
     ManifestRow,
-    ResourceRequirements,
-    build_manifest_row,
     plan_campaign,
 )
 from xtrax.campaign.marker import (
@@ -147,9 +143,18 @@ def _worker_commit_only(
         )
         if isinstance(res, CampaignDoneMarker):
             return {"token": owner_token, "status": "committed", "error": None}
-        return {"token": owner_token, "status": "discarded", "error": getattr(res, "reason", "discarded")}
+        return {
+            "token": owner_token,
+            "status": "discarded",
+            "error": getattr(res, "reason", "discarded"),
+        }
     except Exception as exc:
-        return {"token": owner_token, "status": "failed", "error": str(exc), "type": type(exc).__name__}
+        return {
+            "token": owner_token,
+            "status": "failed",
+            "error": str(exc),
+            "type": type(exc).__name__,
+        }
 
 
 def test_8_worker_concurrent_manifest_competition(tmp_path: Path) -> None:
@@ -217,7 +222,9 @@ def test_8_worker_concurrent_manifest_competition(tmp_path: Path) -> None:
         val = validate_unit_done(
             store_path, expected_row=row, deep_verify=True, quarantine_on_failure=False
         )
-        assert val.is_valid, f"Unit validation failed for {row.manifest_row_hash}: {val.error_message}"
+        assert val.is_valid, (
+            f"Unit validation failed for {row.manifest_row_hash}: {val.error_message}"
+        )
 
 
 def test_stale_lease_stealing_clock_drift_margin(tmp_path: Path) -> None:
@@ -225,7 +232,8 @@ def test_stale_lease_stealing_clock_drift_margin(tmp_path: Path) -> None:
 
     Verifies:
     1. Worker 1 acquires lock on output path.
-    2. Competing Worker 2 attempts acquisition while lease is active: refused with LockUnavailableError.
+    2. Competing Worker 2 attempts acquisition while lease is active: refused with
+       LockUnavailableError.
     3. Even when lease is technically expired (now > expires_at), if within 300s clock drift margin,
        acquisition is still refused (AC-04 Negative Control).
     4. When now >= expires_at + 300 AND now - st_mtime >= lease_seconds + 300,
@@ -376,7 +384,9 @@ def test_zombie_worker_heartbeat_and_commit_abort(tmp_path: Path) -> None:
 
     # Wait briefly for Worker A's heartbeat thread to detect theft
     time.sleep(0.3)
-    assert lock_a.heartbeat.abort_event.is_set(), "Heartbeat thread failed to signal abort on lock theft"
+    assert lock_a.heartbeat.abort_event.is_set(), (
+        "Heartbeat thread failed to signal abort on lock theft"
+    )
 
     # Worker A wakes up and attempts to commit output
     marker_a = create_done_marker(
@@ -388,7 +398,7 @@ def test_zombie_worker_heartbeat_and_commit_abort(tmp_path: Path) -> None:
     )
 
     # When done marker already exists, commit_output safely discards partial attempt
-    result = lock_a.commit_output(
+    lock_a.commit_output(
         partial_path=partial_a,
         output_path=output_path,
         done_marker=marker_a,
@@ -410,7 +420,8 @@ def test_simultaneous_commit_singleton_token_race(tmp_path: Path) -> None:
     Verifies:
     - 4 concurrent processes attempt commit_output simultaneously for the same output.
     - Exactly 1 process succeeds in creating <output>.commit and promoting its partial.
-    - Competing processes receive FileExistsError / StolenAttemptDiscarded and clean up their scratch dirs.
+    - Competing processes receive FileExistsError / StolenAttemptDiscarded and clean up
+      their scratch dirs.
     - Output store is intact with exactly one winner's payload.
     """
     output_path = tmp_path / "unit_race.zarr"

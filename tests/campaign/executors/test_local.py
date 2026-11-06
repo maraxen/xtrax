@@ -10,11 +10,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import zarr
 
 from xtrax.campaign.executors.local import (
     LocalProcessPoolExecutor,
     LocalSequentialExecutor,
     _initialize_worker_process,
+    _resolve_output_path,
 )
 from xtrax.campaign.manifest import (
     CampaignManifest,
@@ -23,6 +25,14 @@ from xtrax.campaign.manifest import (
     ResourceRequirements,
     build_manifest_row,
 )
+from xtrax.campaign.marker import validate_unit_done
+
+
+def _assert_unit_done(output_dir: Path, row: ManifestRow) -> None:
+    """Assert the row's store and marker pass Tier-2 validation at the resolved path."""
+    store = _resolve_output_path(output_dir, row)
+    val = validate_unit_done(store, row, deep_verify=True, quarantine_on_failure=False)
+    assert val.is_valid, f"row {row.manifest_row_hash[:12]}: {val.error_message}"
 
 
 def _get_process_rss_kb() -> int:
@@ -48,11 +58,7 @@ def _create_mock_manifest(
     rows = []
     for i in range(num_rows):
         backend = backends[i] if backends and i < len(backends) else "boltz2"
-        bucket = (
-            padding_buckets[i]
-            if padding_buckets and i < len(padding_buckets)
-            else 256
-        )
+        bucket = padding_buckets[i] if padding_buckets and i < len(padding_buckets) else 256
         row = build_manifest_row(
             campaign_id=campaign_id,
             job_id=f"job_{i:03d}",
@@ -113,11 +119,14 @@ def test_local_sequential_executor_basic_run(tmp_path: Path):
     assert summary.elapsed_seconds >= 0.0
     assert len(summary.failures) == 0
 
-    # Output stores and done markers should exist
+    # Each row's returned arrays were persisted and pass deep validation
     for row in manifest.rows:
-        done_marker_path = output_dir / f"{row.manifest_row_hash}.done.json"
-        alt_marker_path = output_dir / f"{Path(row.output_locator).name}.done.json"
-        assert done_marker_path.exists() or alt_marker_path.exists()
+        _assert_unit_done(output_dir, row)
+        store = _resolve_output_path(output_dir, row)
+        np.testing.assert_array_equal(
+            np.asarray(zarr.open_group(str(store), mode="r")["result"]),
+            np.ones((50, 50), dtype=np.float32) * row.seed,
+        )
 
 
 def test_local_sequential_executor_tier1_fast_resume(tmp_path: Path):
@@ -161,14 +170,10 @@ def test_local_sequential_executor_row_indices_subset(tmp_path: Path):
     assert summary.skipped_units == 0
 
     # Only rows 1 and 3 outputs exist
-    row1 = manifest.rows[1]
-    row3 = manifest.rows[3]
-    assert (output_dir / f"{row1.manifest_row_hash}.done.json").exists() or (
-        output_dir / f"{Path(row1.output_locator).name}.done.json"
-    ).exists()
-    assert (output_dir / f"{row3.manifest_row_hash}.done.json").exists() or (
-        output_dir / f"{Path(row3.output_locator).name}.done.json"
-    ).exists()
+    _assert_unit_done(output_dir, manifest.rows[1])
+    _assert_unit_done(output_dir, manifest.rows[3])
+    for idx in (0, 2):
+        assert not _resolve_output_path(output_dir, manifest.rows[idx]).exists()
 
 
 def test_local_sequential_executor_max_failures_threshold(tmp_path: Path):
@@ -205,9 +210,7 @@ def test_local_sequential_executor_cache_clearing_transitions(tmp_path: Path):
     """
     backends = ["boltz2", "boltz2", "chai1", "chai1", "chai1"]
     buckets = [256, 256, 256, 512, 512]
-    manifest = _create_mock_manifest(
-        num_rows=5, backends=backends, padding_buckets=buckets
-    )
+    manifest = _create_mock_manifest(num_rows=5, backends=backends, padding_buckets=buckets)
     output_dir = tmp_path / "outputs"
 
     executor = LocalSequentialExecutor()
@@ -275,10 +278,7 @@ def test_gate_07_positive_control_rss_bounded_across_50_units(tmp_path: Path):
     assert summary.failed_units == 0
 
     for row in manifest.rows:
-        done_file = output_dir / f"{row.manifest_row_hash}.done.json"
-        if not done_file.exists():
-            done_file = output_dir / f"{Path(row.output_locator).name}.done.json"
-        assert done_file.exists(), f"Done marker missing for row {row.manifest_row_hash}"
+        _assert_unit_done(output_dir, row)
 
     # Also verify LocalSequentialExecutor memory bounded across 50 units
     seq_executor = LocalSequentialExecutor()

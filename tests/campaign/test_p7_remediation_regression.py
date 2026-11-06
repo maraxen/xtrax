@@ -20,6 +20,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from tests.campaign.unit_fns import ARRAY_UNIT_FN
 from xtrax.campaign.executors.local import (
     LocalProcessPoolExecutor,
     _execute_single_unit,
@@ -141,7 +142,14 @@ def test_in_memory_unit_fn_commits_via_protocol(tmp_path: Path) -> None:
 
     # Output store and done marker should exist and pass deep validation
     assert output_path.exists(), f"Output store {output_path} does not exist"
-    assert (output_path / ".zgroup").exists()
+    # The returned mapping is persisted as a zarr v3 group (user decision 261106:
+    # persist a returned Mapping; an empty synthetic store is no longer written).
+    assert (output_path / "zarr.json").exists()
+    import zarr
+
+    np.testing.assert_array_equal(
+        np.asarray(zarr.open_group(str(output_path), mode="r")["tensor"]), np.ones((10, 10))
+    )
 
     done_marker_path = output_path.with_name(f"{output_path.name}.done.json")
     assert done_marker_path.exists(), f"Done marker {done_marker_path} does not exist"
@@ -184,6 +192,7 @@ def test_cli_run_without_output_dir_no_path_doubling(
     summary = run_campaign(
         CampaignArgs(
             action="run",
+            fn=ARRAY_UNIT_FN,
             manifest=str(manifest_path),
             executor="local-seq",
         )
@@ -228,7 +237,11 @@ def test_cli_status_and_verify_without_output_dir(
     manifest_path = camp_dir / "manifest.json"
 
     # Run the campaign
-    run_campaign(CampaignArgs(action="run", manifest=str(manifest_path), executor="local-seq"))
+    run_campaign(
+        CampaignArgs(
+            action="run", fn=ARRAY_UNIT_FN, manifest=str(manifest_path), executor="local-seq"
+        )
+    )
 
     # Status without output_dir
     status_res = run_campaign(CampaignArgs(action="status", manifest=str(manifest_path)))

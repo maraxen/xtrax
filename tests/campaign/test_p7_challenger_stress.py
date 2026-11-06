@@ -195,8 +195,9 @@ def test_concurrent_steal_race_post_cas(tmp_path: Path) -> None:
 def test_stale_lease_stealing_with_corrupt_or_truncated_lock(tmp_path: Path) -> None:
     """Adversarial probe: What if the existing lock file is empty / corrupt JSON?
 
-    Verify that an unparseable lock file raises LockUnavailableError and does not crash
-    with unhandled JSONDecodeError.
+    A fresh unparseable lock (a writer may be between O_EXCL create and write) raises
+    LockUnavailableError rather than crashing with JSONDecodeError. Once its mtime is past
+    the lease plus grace it is stolen instead (see test_review_261105_regressions).
     """
     output_path = tmp_path / "corrupt_lock_unit.zarr"
     lock_path = output_path.with_name(f"{output_path.name}.lock")
@@ -208,7 +209,7 @@ def test_stale_lease_stealing_with_corrupt_or_truncated_lock(tmp_path: Path) -> 
         manifest_row_hash="row_probe_01",
         lease_seconds=60,
     )
-    with pytest.raises(LockUnavailableError, match="Failed to read lock file"):
+    with pytest.raises(LockUnavailableError, match="currently active"):
         lock.acquire()
 
 

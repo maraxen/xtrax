@@ -90,22 +90,14 @@ def normalize_json_value(value: Any) -> Any:  # noqa: ANN401
     as UTF-8.
     """
     normalized: Any = value
-    if isinstance(value, float):
-        normalized = 0.0 if value == 0.0 else value
-    elif isinstance(value, np.floating):
-        val = float(value.item())
-        normalized = 0.0 if val == 0.0 else val
-    elif isinstance(value, np.generic):
+    if isinstance(value, np.generic):
         normalized = normalize_json_value(value.item())
     elif isinstance(value, np.ndarray):
         normalized = [normalize_json_value(item) for item in value.tolist()]
     elif isinstance(value, (list, tuple)):
         normalized = [normalize_json_value(item) for item in value]
     elif isinstance(value, dict):
-        normalized = {
-            str(key): normalize_json_value(item)
-            for key, item in sorted(value.items(), key=lambda kv: str(kv[0]))
-        }
+        normalized = {str(key): normalize_json_value(item) for key, item in sorted(value.items())}
     elif isinstance(value, bytes):
         normalized = value.decode("utf-8")
     elif isinstance(value, str):

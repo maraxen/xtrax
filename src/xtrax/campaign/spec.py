@@ -7,6 +7,7 @@ callable-field partitioning, and TOML serialization.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,21 @@ def _check_no_callables(obj: Any, path: str = "") -> None:
             _check_no_callables(item, f"{path}[{idx}]")
 
 
+_BARE_TOML_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _format_toml_key(key: Any) -> str:
+    """Format a TOML key, quoting anything that is not a bare key.
+
+    An unquoted ``optimizer.lr`` is a dotted key and parses back as a nested table, so a
+    key outside ``[A-Za-z0-9_-]+`` is emitted as a basic (quoted) string.
+    """
+    text = str(key)
+    if _BARE_TOML_KEY.fullmatch(text):
+        return text
+    return _format_toml_value(text)
+
+
 def _format_toml_value(val: Any) -> str:
     """Format primitive Python values into TOML syntax."""
     if isinstance(val, bool):
@@ -45,17 +61,16 @@ def _format_toml_value(val: Any) -> str:
         return str(val)
     if isinstance(val, str):
         escaped = (
-            val.replace("\\", "\\\\")
-            .replace('"', '\\"')
-            .replace("\n", "\\n")
-            .replace("\t", "\\t")
+            val.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t")
         )
         return f'"{escaped}"'
     if isinstance(val, list):
         items = ", ".join(_format_toml_value(x) for x in val)
         return f"[{items}]"
     if isinstance(val, dict):
-        items = ", ".join(f'{k} = {_format_toml_value(v)}' for k, v in sorted(val.items()))
+        items = ", ".join(
+            f"{_format_toml_key(k)} = {_format_toml_value(v)}" for k, v in sorted(val.items())
+        )
         return f"{{{items}}}"
     raise TypeError(f"Unsupported TOML type: {type(val)}")
 
@@ -173,10 +188,7 @@ class CampaignSpec:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CampaignSpec:
         arms_raw = data.get("arms", [])
-        arms = [
-            a if isinstance(a, ArmSpec) else ArmSpec.from_dict(a)
-            for a in arms_raw
-        ]
+        arms = [a if isinstance(a, ArmSpec) else ArmSpec.from_dict(a) for a in arms_raw]
         grid_raw = data.get("grid", {})
         if isinstance(grid_raw, ParamGrid):
             grid = grid_raw
@@ -215,13 +227,13 @@ class CampaignSpec:
             lines.append("")
             lines.append("[metadata]")
             for k, v in sorted(self.metadata.items()):
-                lines.append(f"{k} = {_format_toml_value(v)}")
+                lines.append(f"{_format_toml_key(k)} = {_format_toml_value(v)}")
 
         if self.grid.axes:
             lines.append("")
             lines.append("[grid.axes]")
             for k, v in sorted(self.grid.axes.items()):
-                lines.append(f"{k} = {_format_toml_value(v)}")
+                lines.append(f"{_format_toml_key(k)} = {_format_toml_value(v)}")
 
         for arm in self.arms:
             lines.append("")
@@ -247,9 +259,7 @@ class CampaignSpec:
     def from_toml(cls, path_or_str: str | Path) -> CampaignSpec:
         """Parse a CampaignSpec from a TOML string or file path."""
         if isinstance(path_or_str, Path) or (
-            isinstance(path_or_str, str)
-            and "\n" not in path_or_str
-            and Path(path_or_str).is_file()
+            isinstance(path_or_str, str) and "\n" not in path_or_str and Path(path_or_str).is_file()
         ):
             content = Path(path_or_str).read_text(encoding="utf-8")
         else:

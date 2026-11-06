@@ -116,9 +116,7 @@ class CampaignDoneMarker:
     def from_dict(cls, data: dict[str, Any]) -> CampaignDoneMarker:
         prod_raw = data.get("producer", {})
         producer = (
-            prod_raw
-            if isinstance(prod_raw, ProducerInfo)
-            else ProducerInfo.from_dict(prod_raw)
+            prod_raw if isinstance(prod_raw, ProducerInfo) else ProducerInfo.from_dict(prod_raw)
         )
         return cls(
             schema_version=str(data.get("schema_version", CAMPAIGN_DONE_MARKER_SCHEMA_VERSION)),
@@ -265,7 +263,12 @@ def quarantine_output(
     """
     campaign_dir = output_path.parent
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    quarantine_dir = campaign_dir / ".quarantine" / f"{timestamp}_{reason}_{output_path.name}"
+    # The uuid suffix keeps two quarantines of the same unit within one second apart.
+    quarantine_dir = (
+        campaign_dir
+        / ".quarantine"
+        / f"{timestamp}_{reason}_{output_path.name}_{uuid.uuid4().hex[:8]}"
+    )
     done_marker = output_path.with_name(f"{output_path.name}.done.json")
     alt_markers: list[Path] = [
         output_path.with_name(f"{output_path.stem}.done.json"),
@@ -273,7 +276,7 @@ def quarantine_output(
     ]
 
     try:
-        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        quarantine_dir.mkdir(parents=True, exist_ok=False)
         manifest_path = quarantine_dir / "quarantine_manifest.json"
         manifest_payload = {
             "original_path": str(output_path),
@@ -324,34 +327,27 @@ def quarantine_output(
 
 
 def compute_content_digest(path: Path) -> str:
-    """Compute content digest of a file or directory store.
+    """Compute the content digest of a zarr store directory or a single file.
 
-    Uses zarr_content_digest if zarr is available; otherwise streams files
-    deterministically with a bounded 64 MB buffer.
+    A directory is digested with :func:`xtrax.run.zarr_integrity.zarr_content_digest`
+    (the logical array digest). There is no fallback to a raw byte hash: the producer
+    and the verifier must use the same algorithm, and a directory zarr cannot open is
+    an error to surface, not a store to hash differently. A file is digested by streaming
+    its bytes with a bounded 64 MB buffer.
     """
     if path.is_dir():
-        try:
-            from xtrax.run.zarr_integrity import zarr_content_digest
+        from xtrax.run.zarr_integrity import zarr_content_digest
 
-            return zarr_content_digest(path)
-        except (ImportError, Exception):
-            hasher = hashlib.sha256()
-            for file_path in sorted(path.rglob("*")):
-                if file_path.is_file():
-                    rel_path = file_path.relative_to(path)
-                    hasher.update(str(rel_path).encode("utf-8"))
-                    hasher.update(b"\n")
-                    with file_path.open("rb") as f:
-                        while chunk := f.read(64 * 1024 * 1024):
-                            hasher.update(chunk)
-                    hasher.update(b"\n")
-            return hasher.hexdigest()
-    else:
-        hasher = hashlib.sha256()
-        with path.open("rb") as handle:
-            while chunk := handle.read(64 * 1024 * 1024):
-                hasher.update(chunk)
-        return hasher.hexdigest()
+        return zarr_content_digest(path)
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(64 * 1024 * 1024):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+#: Zarr root metadata files, v3 first. Any one of them marks a directory as a store.
+ZARR_ROOT_METADATA_FILES: tuple[str, ...] = ("zarr.json", ".zgroup", ".zarray")
 
 
 def validate_unit_done(
@@ -363,7 +359,8 @@ def validate_unit_done(
     """Validate a completed unit using decoupled Two-Tier Resume verification.
 
     Tier 1 (< 5 ms): Checks .done.json existence, parses schema v3, verifies
-    manifest_row_hash and input_hash, and checks Zarr root metadata (.zgroup/.zarray)
+    manifest_row_hash and input_hash, and checks Zarr root metadata (zarr.json for
+    v3, .zgroup/.zarray for v2)
     without reading multi-gigabyte array chunk bytes.
 
     Tier 2 (Opt-in via deep_verify=True): Streams chunk bytes with bounded buffer
@@ -475,11 +472,14 @@ def validate_unit_done(
             quarantine_path=q_path,
         )
 
-    # 4. Check Zarr root metadata (Tier 1: < 5 ms, NO chunk reading)
+    # 4. Check Zarr root metadata (Tier 1: < 5 ms, NO chunk reading). zarr v3 writes
+    # zarr.json; v2 writes .zgroup or .zarray.
     if path.is_dir():
-        zgroup = path / ".zgroup"
-        zarray = path / ".zarray"
-        if not zgroup.exists() and not zarray.exists():
+        meta_file = next(
+            (path / name for name in ZARR_ROOT_METADATA_FILES if (path / name).exists()),
+            None,
+        )
+        if meta_file is None:
             q_path = None
             if quarantine_on_failure:
                 q_path = quarantine_output(path, reason="missing_zarr_root_metadata")
@@ -488,12 +488,14 @@ def validate_unit_done(
                 tier=1,
                 manifest_row_hash=expected_row.manifest_row_hash,
                 input_hash=expected_row.input_hash,
-                error_message="Zarr store missing .zgroup and .zarray metadata",
+                error_message=(
+                    "Zarr store has no root metadata (expected one of "
+                    f"{', '.join(ZARR_ROOT_METADATA_FILES)})"
+                ),
                 error_type="StoreMissingError",
                 quarantine_path=q_path,
             )
         # Verify metadata is valid JSON
-        meta_file = zgroup if zgroup.exists() else zarray
         try:
             json.loads(meta_file.read_text(encoding="utf-8"))
         except Exception as exc:

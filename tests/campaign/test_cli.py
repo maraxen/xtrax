@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.campaign.unit_fns import ARRAY_UNIT_FN
 from xtrax.campaign.lease import CampaignLock
 from xtrax.campaign.marker import create_done_marker
 from xtrax.campaign.spec import ArmSpec, CampaignSpec, ParamGrid
@@ -127,11 +128,14 @@ def test_campaign_run_local_seq(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     run_campaign(CampaignArgs(action="plan", spec_path=str(spec_path), output=str(manifest_path)))
 
     # Run
-    summary = run_campaign(CampaignArgs(
-        action="run",
-        manifest=str(manifest_path),
-        executor="local-seq",
-    ))
+    summary = run_campaign(
+        CampaignArgs(
+            action="run",
+            fn=ARRAY_UNIT_FN,
+            manifest=str(manifest_path),
+            executor="local-seq",
+        )
+    )
 
     assert summary.total_units == 8
     assert summary.completed_units == 8
@@ -151,12 +155,15 @@ def test_campaign_run_single_row_index(tmp_path: Path, monkeypatch: pytest.Monke
     run_campaign(CampaignArgs(action="plan", spec_path=str(spec_path), output=str(manifest_path)))
 
     # Run only row index 2
-    summary = run_campaign(CampaignArgs(
-        action="run",
-        manifest=str(manifest_path),
-        row_index=2,
-        executor="local-seq",
-    ))
+    summary = run_campaign(
+        CampaignArgs(
+            action="run",
+            fn=ARRAY_UNIT_FN,
+            manifest=str(manifest_path),
+            row_index=2,
+            executor="local-seq",
+        )
+    )
 
     assert summary.total_units == 1
     assert summary.completed_units == 1
@@ -175,11 +182,14 @@ def test_campaign_run_local_pool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     run_campaign(CampaignArgs(action="plan", spec_path=str(spec_path), output=str(manifest_path)))
 
     # Run via local-pool
-    summary = run_campaign(CampaignArgs(
-        action="run",
-        manifest=str(manifest_path),
-        executor="local-pool",
-    ))
+    summary = run_campaign(
+        CampaignArgs(
+            action="run",
+            fn=ARRAY_UNIT_FN,
+            manifest=str(manifest_path),
+            executor="local-pool",
+        )
+    )
 
     assert summary.total_units == 8
     assert summary.completed_units == 8
@@ -198,12 +208,15 @@ def test_campaign_run_slurm_executor(tmp_path: Path, monkeypatch: pytest.MonkeyP
     run_campaign(CampaignArgs(action="plan", spec_path=str(spec_path), output=str(manifest_path)))
 
     # Run slurm
-    run_campaign(CampaignArgs(
-        action="run",
-        manifest=str(manifest_path),
-        output_dir=str(out_dir),
-        executor="slurm",
-    ))
+    run_campaign(
+        CampaignArgs(
+            action="run",
+            fn=ARRAY_UNIT_FN,
+            manifest=str(manifest_path),
+            output_dir=str(out_dir),
+            executor="slurm",
+        )
+    )
 
     submit_script = out_dir / "submit_campaign.sh"
     assert submit_script.exists()
@@ -230,16 +243,20 @@ def test_campaign_run_approval_gate_enforcement(
 
     # Negative control: missing attestation raises CampaignNotApprovedError or CLIError
     with pytest.raises((CampaignNotApprovedError, CLIError)):
-        run_campaign(CampaignArgs(
-            action="run",
-            manifest=str(manifest_path),
-            require_approval=True,
-        ))
+        run_campaign(
+            CampaignArgs(
+                action="run",
+                fn=ARRAY_UNIT_FN,
+                manifest=str(manifest_path),
+                require_approval=True,
+            )
+        )
 
     # Positive control: provide valid fresh attestation in gates file
     gates_file = tmp_path / ".praxia" / "loop_human_gates.toml"
     gates_file.parent.mkdir(parents=True, exist_ok=True)
-    gates_file.write_text("""
+    gates_file.write_text(
+        """
 [[gates]]
 id = "T2-32"
 event_ref = "unapproved_camp"
@@ -247,13 +264,18 @@ attested_at = "2026-11-05T00:00:00Z"
 ttl_days = 365.0
 attested_by = "marielle"
 note = "approved for test"
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
 
-    summary = run_campaign(CampaignArgs(
-        action="run",
-        manifest=str(manifest_path),
-        require_approval=True,
-    ))
+    summary = run_campaign(
+        CampaignArgs(
+            action="run",
+            fn=ARRAY_UNIT_FN,
+            manifest=str(manifest_path),
+            require_approval=True,
+        )
+    )
     assert summary.completed_units == 8
 
 
@@ -281,6 +303,7 @@ def test_campaign_status_reporting(
 
     # 2. Running unit: active lock file
     import time
+
     lock = CampaignLock(
         schema_version="campaign_lock_v1",
         manifest_row_hash="hash_running_1",
@@ -319,9 +342,14 @@ def test_campaign_verify_tier1_and_tier2(tmp_path: Path, monkeypatch: pytest.Mon
 
     # Setup valid unit
     unit_path = out_dir / "unit_001.zarr"
-    unit_path.mkdir(parents=True, exist_ok=True)
-    (unit_path / ".zgroup").write_text('{"zarr_format": 2}', encoding="utf-8")
+    import numpy as np
+    import zarr
+
+    zarr.open_group(str(unit_path), mode="w").create_array(
+        "x", data=np.arange(16, dtype=np.float32), chunks=(16,)
+    )
     from xtrax.campaign.marker import compute_content_digest
+
     digest = compute_content_digest(unit_path)
 
     marker = create_done_marker(
@@ -343,8 +371,9 @@ def test_campaign_verify_tier1_and_tier2(tmp_path: Path, monkeypatch: pytest.Mon
     assert res_tier2["passed"] == 1
     assert res_tier2["failed"] == 0
 
-    # Tamper with store by adding a chunk with unexpected content
-    (unit_path / "tampered_chunk").write_text("corrupted_data", encoding="utf-8")
+    # Tamper with the array's data. (A stray non-zarr file is not array content, so the
+    # logical digest ignores it by design; the corruption must change what zarr reads.)
+    zarr.open_group(str(unit_path), mode="r+")["x"][0] = 999.0
 
     # Tier-2 deep verify should now detect failure
     with pytest.raises(CLIError):

@@ -52,7 +52,8 @@ class CampaignArgs:
         executor: Execution backend ('local-seq', 'local-pool', 'slurm').
         require_approval: Whether to verify human approval gate attestation before run.
         deep: Whether to perform Tier-2 chunk digest audit during 'verify'.
-        fn: Optional import path (module:fn) for custom unit compute callable.
+        fn: Import path (module:fn) of the unit compute callable. Required for 'run':
+            the callable must write its output store, so there is no default.
     """
 
     action: tyro.conf.Positional[str] = "status"
@@ -68,9 +69,19 @@ class CampaignArgs:
     fn: str | None = None
 
 
-def _default_unit_fn(row: ManifestRow) -> dict[str, Any]:
-    """Default unit execution callable when --fn is omitted."""
-    return {"manifest_row_hash": row.manifest_row_hash, "input_hash": row.input_hash}
+def _iter_campaign_files(out_dir: Path, pattern: str) -> list[Path]:
+    """Recursively find campaign bookkeeping files, skipping quarantine and store internals.
+
+    Planned locators nest stores under ``<campaign_id>/``, so a top-level glob misses
+    them. Files inside ``.quarantine/`` or inside a ``*.zarr`` store are not live units.
+    """
+    found: list[Path] = []
+    for path in sorted(out_dir.rglob(pattern)):
+        rel_parts = path.relative_to(out_dir).parts[:-1]
+        if any(part == ".quarantine" or part.endswith(".zarr") for part in rel_parts):
+            continue
+        found.append(path)
+    return found
 
 
 def _run_plan(args: CampaignArgs) -> CampaignManifest:
@@ -139,11 +150,14 @@ def _run_run(args: CampaignArgs) -> Any:
     if output_dir is None:
         output_dir = str(manifest_path.parent)
 
-    # Resolve unit function
-    if args.fn:
-        unit_fn = load_fn(args.fn)
-    else:
-        unit_fn = _default_unit_fn
+    # Resolve unit function. There is no default: a unit function that writes nothing
+    # would otherwise be recorded as complete.
+    if not args.fn:
+        raise CLIError(
+            "xtrax campaign run requires --fn <module:function>; the function must write "
+            "the unit's output store"
+        )
+    unit_fn = load_fn(args.fn)
 
     # Resolve target row index
     row_indices = [int(args.row_index)] if args.row_index is not None else None
@@ -155,7 +169,7 @@ def _run_run(args: CampaignArgs) -> Any:
     elif executor_kind in ("local-pool", "local_pool", "pool"):
         executor = LocalProcessPoolExecutor()
     elif executor_kind in ("slurm", "slurm-array"):
-        executor = SlurmArrayExecutor()
+        executor = SlurmArrayExecutor(manifest_path=manifest_path.resolve(), fn_spec=args.fn)
     else:
         raise CLIError(
             f"Unknown executor: {args.executor!r}. "
@@ -172,11 +186,18 @@ def _run_run(args: CampaignArgs) -> Any:
     except Exception as exc:
         raise CLIError(f"Campaign execution failed: {exc}") from exc
 
-    print(
-        f"Campaign '{summary.campaign_id}' execution complete: "
-        f"{summary.completed_units}/{summary.total_units} completed "
-        f"({summary.skipped_units} skipped, {summary.failed_units} failed)"
-    )
+    if summary.submitted_units:
+        print(
+            f"Campaign '{summary.campaign_id}': submitted {summary.submitted_units}/"
+            f"{summary.total_units} units to SLURM ({summary.skipped_units} already done)"
+        )
+    else:
+        print(
+            f"Campaign '{summary.campaign_id}' execution complete: "
+            f"{summary.completed_units}/{summary.total_units} completed "
+            f"({summary.skipped_units} skipped, {summary.locked_units} locked by another "
+            f"worker, {summary.failed_units} failed)"
+        )
     return summary
 
 
@@ -204,7 +225,7 @@ def _run_status(args: CampaignArgs) -> dict[str, int]:
 
     # 1. Count completed done markers (deduplicated by manifest_row_hash)
     completed_hashes: set[str] = set()
-    for done_file in out_dir.glob("*.done.json"):
+    for done_file in _iter_campaign_files(out_dir, "*.done.json"):
         try:
             data = json.loads(done_file.read_text(encoding="utf-8"))
             row_hash = data.get("manifest_row_hash")
@@ -216,7 +237,7 @@ def _run_status(args: CampaignArgs) -> dict[str, int]:
 
     # 2. Count active running locks (deduplicated by manifest_row_hash)
     running_hashes: set[str] = set()
-    for lock_file in out_dir.glob("*.lock"):
+    for lock_file in _iter_campaign_files(out_dir, "*.lock"):
         try:
             data = json.loads(lock_file.read_text(encoding="utf-8"))
             lock = CampaignLock.from_dict(data)
@@ -295,25 +316,24 @@ def _run_verify(args: CampaignArgs) -> dict[str, int]:
                 failed_count += 1
                 errors.append(f"Row {row.manifest_row_hash}: {res.error_message}")
     else:
-        # Scan done markers directly
-        done_markers = list(out_dir.glob("*.done.json"))
+        # Scan done markers directly. Each marker sits beside its store
+        # (<store>.done.json), so the store is the marker's sibling.
+        done_markers = _iter_campaign_files(out_dir, "*.done.json")
         if not done_markers:
             print(f"No done markers found in {out_dir}")
             return {"passed": 0, "failed": 0}
 
+        seen_hashes: set[str] = set()
         for marker_file in done_markers:
             try:
                 marker_data = json.loads(marker_file.read_text(encoding="utf-8"))
                 row_hash = marker_data.get("manifest_row_hash", "")
                 input_hash = marker_data.get("input_hash", "")
-                output_loc = marker_data.get("output_locator")
+                if row_hash and row_hash in seen_hashes:
+                    continue
+                seen_hashes.add(row_hash)
 
-                if output_loc:
-                    loc = Path(output_loc)
-                    store_path = loc if loc.is_absolute() else out_dir / loc.name
-                else:
-                    store_name = marker_file.name.removesuffix(".done.json")
-                    store_path = marker_file.with_name(store_name)
+                store_path = marker_file.with_name(marker_file.name.removesuffix(".done.json"))
 
                 synthetic_row = ManifestRow(
                     manifest_row_hash=row_hash,

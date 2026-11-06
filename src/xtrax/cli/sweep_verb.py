@@ -21,12 +21,13 @@ import traceback
 import uuid
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 
-from xtrax.campaign.executors.local import LocalSequentialExecutor
+from xtrax.campaign.executors.local import LocalSequentialExecutor, _resolve_output_path
 from xtrax.campaign.manifest import plan_campaign
 from xtrax.campaign.spec import ArmSpec, CampaignSpec, ParamGrid
 from xtrax.cli.config import ConfigError, TrainConfig, load_config
@@ -201,11 +202,30 @@ def run_sweep(args: SweepArgs) -> None:
         sweep_manifest[run_id] = overrides
 
         _write_sweep_manifest(sweep_dir, sweep_manifest)
-        return _run_sweep_point(cfg_obj, run_id, sweep_id, overrides)
+        state = _run_sweep_point(cfg_obj, run_id, sweep_id, overrides)
+        if state is None:
+            # _run_sweep_point already recorded the failure in the run ledger. Raise so
+            # the executor counts the unit as failed instead of stamping it done.
+            msg = f"sweep run {run_id} failed; see its run ledger"
+            raise RuntimeError(msg)
+        _write_sweep_unit_record(_resolve_output_path(Path(sweep_dir), row), run_id, overrides)
+        return state
 
     # 7. Execute via LocalSequentialExecutor
     executor = LocalSequentialExecutor()
     executor.run(manifest, _sweep_unit_adapter, output_dir=sweep_dir)
+
+
+def _write_sweep_unit_record(output_path: Path, run_id: str, overrides: dict[str, Any]) -> None:
+    """Write the unit's output store: a zarr group pointing at the completed run.
+
+    The training run keeps its own checkpoints and ledger; the campaign store records
+    which run satisfied this grid point so the done marker covers real output.
+    """
+    import zarr
+
+    group = zarr.open_group(str(output_path), mode="w")
+    group.attrs.update({"run_id": run_id, "overrides": json.loads(json.dumps(overrides))})
 
 
 def _record_sweep_failure(

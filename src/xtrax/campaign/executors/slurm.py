@@ -7,6 +7,7 @@ Zero imports of controller/ or bathos.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -24,21 +25,19 @@ def get_pending_row_indices(
 ) -> list[int]:
     """Identify uncompleted row indices eligible for scheduling.
 
-    Per Section 6.3.3 of SPEC-261105-CAMPAIGN-RUNNER:
-    Scans output_dir for valid .done.json markers and filters out completed units.
+    Per Section 6.3.3 of SPEC-261105-CAMPAIGN-RUNNER. A row counts as completed only
+    when it passes the same Tier-1 validation the local executors use to skip it
+    (matching done marker and a present, readable store), so a deleted or corrupt
+    store is rescheduled rather than trusted because a marker file survived.
     """
+    from xtrax.campaign.executors.local import _check_tier1_resume
+
     out_dir = Path(output_dir)
-    pending = []
-    for idx, row in enumerate(manifest.rows):
-        done_candidates = [
-            out_dir / f"{row.manifest_row_hash}.done.json",
-            out_dir / f"{row.manifest_row_hash}.zarr.done.json",
-            out_dir / f"{Path(row.output_locator).name}.done.json",
-            out_dir / f"{row.output_locator}.done.json",
-        ]
-        if not any(cand.exists() for cand in done_candidates):
-            pending.append(idx)
-    return pending
+    return [idx for idx, row in enumerate(manifest.rows) if not _check_tier1_resume(out_dir, row)]
+
+
+#: SLURM's default ``MaxArraySize``; array task IDs must be strictly below it.
+DEFAULT_MAX_ARRAY_SIZE = 1001
 
 
 def format_slurm_array_indices(
@@ -92,6 +91,9 @@ class SlurmArrayExecutor:
         error_log: str = "logs/slurm_%A_%a.err",
         job_id: str | None = None,
         submit: bool = False,
+        manifest_path: str | Path | None = None,
+        fn_spec: str | None = None,
+        max_array_size: int = DEFAULT_MAX_ARRAY_SIZE,
     ) -> None:
         self.job_name = job_name
         self.cpus_per_task = cpus_per_task
@@ -103,6 +105,12 @@ class SlurmArrayExecutor:
         self.error_log = error_log
         self.job_id = job_id
         self.submit = submit
+        #: Manifest the array tasks read; required by ``run``.
+        self.manifest_path = manifest_path
+        #: ``module:function`` import path each array task runs; required by ``run``.
+        self.fn_spec = fn_spec
+        #: Cluster ``MaxArraySize``; a row index at or above it cannot be a task ID.
+        self.max_array_size = max_array_size
         self._cancelled_tasks: set[Any] = set()
 
     def cancel_tasks(self, task_ids: list[Any], job_id: str | None = None) -> None:
@@ -124,46 +132,78 @@ class SlurmArrayExecutor:
         output_dir: Path | str,
         *,
         manifest_path: Path | str | None = None,
+        fn_spec: str | None = None,
+        row_indices: list[int] | None = None,
         resume: bool = True,
         max_concurrent: int | None = None,
         script_path: Path | str | None = None,
     ) -> str | None:
         """Generate a portable Bash #SBATCH array script.
 
+        Each array task runs ``xtrax campaign run --executor local-seq`` on one row, so
+        the task ID is the manifest row index.
+
         Args:
             manifest: Planned CampaignManifest.
             output_dir: Output directory containing results and done markers.
-            manifest_path: Path to the canonical manifest.json on disk.
+            manifest_path: Path to the manifest.json the tasks read (default: the
+                executor's ``manifest_path``). Required.
+            fn_spec: ``module:function`` each task runs (default: the executor's
+                ``fn_spec``). Required.
+            row_indices: Optional subset of rows to schedule.
             resume: Whether to filter out completed units.
             max_concurrent: Optional concurrency throttle override (%M).
             script_path: Optional path to write the generated script file.
 
         Returns:
             Generated submission script text, or None if no pending tasks remain.
+
+        Raises:
+            ValueError: If the manifest path or function spec is missing, or a pending
+                row index is not below ``max_array_size``.
         """
         out_dir = Path(output_dir)
-        if resume:
-            pending_indices = get_pending_row_indices(manifest, out_dir)
-        else:
-            pending_indices = list(range(len(manifest.rows)))
+        resolved_manifest = manifest_path if manifest_path is not None else self.manifest_path
+        resolved_fn = fn_spec if fn_spec is not None else self.fn_spec
+
+        pending_indices = (
+            get_pending_row_indices(manifest, out_dir)
+            if resume
+            else list(range(len(manifest.rows)))
+        )
+        if row_indices is not None:
+            wanted = set(row_indices)
+            pending_indices = [idx for idx in pending_indices if idx in wanted]
 
         # Boundary Control (GATE-09): Exit cleanly if all units completed
         if not pending_indices:
             print(
-                f"All {len(manifest.rows)} units in campaign "
-                f"'{manifest.metadata.campaign_id}' are already completed. "
-                f"No tasks to schedule."
+                f"All selected units in campaign '{manifest.metadata.campaign_id}' are "
+                "already completed. No tasks to schedule."
             )
             return None
+
+        if resolved_manifest is None:
+            msg = "SlurmArrayExecutor needs manifest_path: array tasks must read the manifest"
+            raise ValueError(msg)
+        if not resolved_fn:
+            msg = "SlurmArrayExecutor needs fn_spec ('module:function') for array tasks to run"
+            raise ValueError(msg)
+
+        if max(pending_indices) >= self.max_array_size:
+            msg = (
+                f"Row index {max(pending_indices)} is not below the cluster MaxArraySize "
+                f"({self.max_array_size}); sbatch would reject the array. Split the "
+                "manifest or pass max_array_size matching the cluster's configuration."
+            )
+            raise ValueError(msg)
 
         concurrent_limit = max_concurrent or self.max_concurrent
         array_spec = format_slurm_array_indices(pending_indices, max_concurrent=concurrent_limit)
 
-        resolved_manifest_path = (
-            str(manifest_path)
-            if manifest_path is not None
-            else str(out_dir / "manifest.json")
-        )
+        # Array tasks may start in a different working directory: pass absolute paths.
+        abs_manifest = str(Path(resolved_manifest).resolve())
+        abs_output_dir = str(out_dir.resolve())
 
         directives = [
             "#!/usr/bin/env bash",
@@ -183,12 +223,17 @@ class SlurmArrayExecutor:
             "",
             "set -euo pipefail",
             "",
-            f'MANIFEST_PATH="{resolved_manifest_path}"',
+            f"MANIFEST_PATH={shlex.quote(abs_manifest)}",
+            f"OUTPUT_DIR={shlex.quote(abs_output_dir)}",
+            f"UNIT_FN={shlex.quote(resolved_fn)}",
             "ROW_INDEX=${SLURM_ARRAY_TASK_ID}",
             "",
             'echo "Executing task ${SLURM_ARRAY_TASK_ID} on $(hostname)"',
             "xtrax campaign run \\",
             '  --manifest "${MANIFEST_PATH}" \\',
+            '  --output-dir "${OUTPUT_DIR}" \\',
+            '  --fn "${UNIT_FN}" \\',
+            "  --executor local-seq \\",
             '  --row-index "${ROW_INDEX}"',
             "",
         ]
@@ -211,25 +256,30 @@ class SlurmArrayExecutor:
         row_indices: list[int] | None = None,
         max_failures: int | None = None,
     ) -> CampaignSummary:
-        """Coordinate SLURM array generation or submission."""
+        """Generate (and optionally submit) the array script for the pending rows.
+
+        ``unit_fn`` cannot cross into array tasks; they import ``fn_spec`` instead, so
+        both ``manifest_path`` and ``fn_spec`` must be set on the executor. Nothing is
+        completed by this call: pending rows are reported as ``submitted_units``.
+        """
+        del unit_fn, max_failures  # tasks import fn_spec; failures are per-task
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        pending = (
-            list(row_indices)
-            if row_indices is not None
-            else get_pending_row_indices(manifest, out_dir)
-        )
-        total_units = len(manifest.rows)
-        completed_units = total_units - len(pending)
-        skipped_units = completed_units
+        selected = list(row_indices) if row_indices is not None else None
+        pending = get_pending_row_indices(manifest, out_dir)
+        if selected is not None:
+            wanted = set(selected)
+            pending = [idx for idx in pending if idx in wanted]
+        total_units = len(selected) if selected is not None else len(manifest.rows)
+        skipped_units = total_units - len(pending)
 
         # Boundary Control (GATE-09): early return on empty pending
         if not pending:
             return CampaignSummary(
                 campaign_id=manifest.metadata.campaign_id,
                 total_units=total_units,
-                completed_units=total_units,
+                completed_units=0,
                 skipped_units=skipped_units,
                 failed_units=0,
                 elapsed_seconds=0.0,
@@ -240,7 +290,8 @@ class SlurmArrayExecutor:
         self.generate_script(
             manifest=manifest,
             output_dir=out_dir,
-            resume=True,
+            row_indices=pending,
+            resume=False,
             script_path=script_path,
         )
 
@@ -259,9 +310,10 @@ class SlurmArrayExecutor:
         return CampaignSummary(
             campaign_id=manifest.metadata.campaign_id,
             total_units=total_units,
-            completed_units=completed_units,
+            completed_units=0,
             skipped_units=skipped_units,
             failed_units=0,
             elapsed_seconds=0.0,
             failures=[],
+            submitted_units=len(pending),
         )

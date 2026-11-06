@@ -198,10 +198,12 @@ def test_stale_lease_stealing_with_clock_drift_safety_margin(tmp_path: Path):
 
     # Case 3: Lease expired, but file mtime is fresh (< lease_seconds + 300) -> Cannot steal
     lock_path.write_text(
-        json.dumps({
-            **near_expired_payload,
-            "lease_expires_at_unix_s": now - 400,  # past grace period on nominal expiry
-        }),
+        json.dumps(
+            {
+                **near_expired_payload,
+                "lease_expires_at_unix_s": now - 400,  # past grace period on nominal expiry
+            }
+        ),
         encoding="utf-8",
     )
     # But mtime is fresh (e.g. touched 10 seconds ago)

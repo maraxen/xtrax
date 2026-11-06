@@ -132,9 +132,10 @@ def test_aminx_manifest_slice_parity() -> None:
     """Verify bit-for-bit parity with pre-computed aminx golden vectors across all fields."""
     for vec in GOLDEN_VECTORS:
         row = build_manifest_row(**vec["inputs"])
-        assert (
-            row.input_hash == vec["expected_input_hash"]
-        ), f"Row input_hash diverged on vector {vec['name']}: {row.input_hash} != {vec['expected_input_hash']}"
+        assert row.input_hash == vec["expected_input_hash"], (
+            f"Row input_hash diverged on vector {vec['name']}: "
+            f"{row.input_hash} != {vec['expected_input_hash']}"
+        )
 
         computed = compute_unit_input_hash(
             spec_dict=vec["inputs"]["parameters"],
@@ -148,9 +149,10 @@ def test_aminx_manifest_slice_parity() -> None:
             state_weight_profile=vec["inputs"]["state_weight_profile"],
             seed=vec["inputs"]["seed"],
         )
-        assert (
-            computed == vec["expected_input_hash"]
-        ), f"compute_unit_input_hash diverged on vector {vec['name']}: {computed} != {vec['expected_input_hash']}"
+        assert computed == vec["expected_input_hash"], (
+            f"compute_unit_input_hash diverged on vector {vec['name']}: "
+            f"{computed} != {vec['expected_input_hash']}"
+        )
 
         # Manifest row hash must be a valid 64-char hex string
         assert len(row.manifest_row_hash) == 64
