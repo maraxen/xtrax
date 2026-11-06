@@ -5,8 +5,6 @@ sequential/process-pool/SLURM backends, status inspection, and Tier-1/Tier-2
 verification.
 """
 
-from __future__ import annotations
-
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,8 +55,10 @@ class CampaignArgs:
             the callable must write its output store, so there is no default.
     """
 
-    action: tyro.conf.Positional[str] = "status"
-    target: tyro.conf.Positional[str | None] = None
+    # Quoted: ``tyro`` is None until entrypoint.main() binds it (AC2 keeps imports
+    # tyro-free), so these annotations are resolved only when tyro reads the hints.
+    action: "tyro.conf.Positional[str]" = "status"
+    target: "tyro.conf.Positional[str | None]" = None
     spec_path: str | None = None
     manifest: str | None = None
     output_dir: str | None = None

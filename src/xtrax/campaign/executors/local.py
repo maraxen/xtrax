@@ -4,8 +4,6 @@ Covering [T3-02], [T3-03], GATE-07, and Sections 6.3.1, 6.3.2 of SPEC-261105-CAM
 Zero imports of controller/ or bathos.
 """
 
-from __future__ import annotations
-
 import gc
 import json
 import multiprocessing
@@ -140,7 +138,7 @@ def _clean_memory(state: Any) -> None:
     gc.collect()
 
 
-def _resolve_output_path(output_dir: Path, row: ManifestRow) -> Path:
+def _resolve_output_path(output_dir: Path, row: "ManifestRow") -> Path:
     """Resolve the target output path for a manifest row."""
     resolved_dir = Path(output_dir).resolve()
     if row.output_locator:
@@ -155,7 +153,7 @@ def _resolve_output_path(output_dir: Path, row: ManifestRow) -> Path:
 
 def _check_resume_done(
     output_dir: Path,
-    row: ManifestRow,
+    row: "ManifestRow",
     resume_verify: ResumeVerify = "deep",
 ) -> bool:
     """Return True when the unit's completed output may be reused instead of recomputed.
@@ -186,7 +184,7 @@ def _check_resume_done(
 
 def _record_reuse(
     output_dir: Path,
-    row: ManifestRow,
+    row: "ManifestRow",
     store_path: Path,
     verified: ResumeVerify,
     reused_by: str,
@@ -221,7 +219,7 @@ def _record_reuse(
 
 def _set_aside_orphaned_output(
     output_path: Path,
-    row: ManifestRow,
+    row: "ManifestRow",
     resume_verify: ResumeVerify = "deep",
 ) -> None:
     """Quarantine a store or done marker that does not form a valid completed unit.
@@ -389,8 +387,8 @@ def _restore_sigterm(previous: Any) -> None:
 
 
 def _execute_single_unit(
-    row: ManifestRow,
-    unit_fn: Callable[[ManifestRow], Any],
+    row: "ManifestRow",
+    unit_fn: "Callable[[ManifestRow], Any]",
     output_dir: Path,
     lease_seconds: int = 1800,
     heartbeat_interval: float = 60.0,
@@ -505,8 +503,8 @@ def _execute_single_unit(
 
 
 def _pool_worker_task(
-    row: ManifestRow,
-    unit_fn: Callable[[ManifestRow], Any],
+    row: "ManifestRow",
+    unit_fn: "Callable[[ManifestRow], Any]",
     output_dir: str,
     lease_seconds: int,
     heartbeat_interval: float,
@@ -546,18 +544,23 @@ def _pool_worker_task(
         }
 
 
+#: Positional arguments of one pool task. A ``type`` alias is evaluated lazily, so it may
+#: name ``ManifestRow``, which is imported only for type checking.
+type _PoolTaskArgs = tuple[
+    int,
+    ManifestRow,
+    Callable[[ManifestRow], Any],
+    str,
+    int,
+    float,
+    str | None,
+    ResumeVerify,
+]
+
+
 def _pool_worker_task_wrapper(
-    args: tuple[
-        int,
-        ManifestRow,
-        Callable[[ManifestRow], Any],
-        str,
-        int,
-        float,
-        str | None,
-        ResumeVerify,
-    ],
-) -> tuple[int, ManifestRow, dict[str, Any]]:
+    args: _PoolTaskArgs,
+) -> "tuple[int, ManifestRow, dict[str, Any]]":
     """Unpack task arguments for pool.imap_unordered and return indexed result."""
     idx, row, unit_fn, output_dir, lease_seconds, heartbeat_interval, cache_dir, mode = args
     res = _pool_worker_task(
@@ -603,8 +606,8 @@ class LocalSequentialExecutor:
 
     def run(
         self,
-        manifest: CampaignManifest,
-        unit_fn: Callable[[ManifestRow], Any],
+        manifest: "CampaignManifest",
+        unit_fn: "Callable[[ManifestRow], Any]",
         *,
         output_dir: str,
         row_indices: list[int] | None = None,
@@ -704,7 +707,7 @@ class LocalSequentialExecutor:
 
 
 def _reclaim_dead_worker_leases(
-    output_dir: Path, rows: list[ManifestRow], owner_prefix: str
+    output_dir: Path, rows: "list[ManifestRow]", owner_prefix: str
 ) -> list[Path]:
     """Remove leases, and their partial outputs, left by this pool run's dead workers.
 
@@ -796,8 +799,8 @@ class LocalProcessPoolExecutor:
 
     def run(
         self,
-        manifest: CampaignManifest,
-        unit_fn: Callable[[ManifestRow], Any],
+        manifest: "CampaignManifest",
+        unit_fn: "Callable[[ManifestRow], Any]",
         *,
         output_dir: str,
         row_indices: list[int] | None = None,

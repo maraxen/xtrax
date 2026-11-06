@@ -4,8 +4,6 @@ Provides canonical hashing, aminx input hash parity, content-addressed unit iden
 and the pure host manifest planner (0 GPUs, deterministic canonical JSON output).
 """
 
-from __future__ import annotations
-
 import hashlib
 import itertools
 import json
@@ -113,7 +111,7 @@ class ResourceRequirements:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ResourceRequirements:
+    def from_dict(cls, data: dict[str, Any]) -> "ResourceRequirements":
         return cls(
             gpu_memory_bytes=int(data.get("gpu_memory_bytes", 0)),
             cpu_cores=int(data.get("cpu_cores", 1)),
@@ -166,7 +164,7 @@ class ManifestRow:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ManifestRow:
+    def from_dict(cls, data: dict[str, Any]) -> "ManifestRow":
         res = data.get("resource_requirements", {})
         if isinstance(res, dict):
             res_req = ResourceRequirements.from_dict(res)
@@ -218,7 +216,7 @@ class ManifestMetadata:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ManifestMetadata:
+    def from_dict(cls, data: dict[str, Any]) -> "ManifestMetadata":
         return cls(
             campaign_id=str(data["campaign_id"]),
             created_at_utc=str(data["created_at_utc"]),
@@ -244,7 +242,7 @@ class CampaignManifest:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CampaignManifest:
+    def from_dict(cls, data: dict[str, Any]) -> "CampaignManifest":
         schema_version = str(data.get("schema_version", "campaign_manifest_v1"))
         if schema_version != "campaign_manifest_v1":
             raise ValueError(f"Unsupported schema_version: {schema_version}")

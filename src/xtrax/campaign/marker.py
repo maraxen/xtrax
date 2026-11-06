@@ -4,8 +4,6 @@ Covering [T2-04], [T2-05], Section 3.4, and Section 4 of SPEC-261105-CAMPAIGN-RU
 Zero imports of controller/ or bathos.
 """
 
-from __future__ import annotations
-
 import errno
 import hashlib
 import importlib.metadata
@@ -75,7 +73,7 @@ class ProducerInfo:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ProducerInfo:
+    def from_dict(cls, data: dict[str, Any]) -> "ProducerInfo":
         return cls(
             version=str(data.get("version", "")),
             git_sha=str(data.get("git_sha", "unknown")),
@@ -114,7 +112,7 @@ class CampaignDoneMarker:
         return json.dumps(self.to_dict(), indent=2)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CampaignDoneMarker:
+    def from_dict(cls, data: dict[str, Any]) -> "CampaignDoneMarker":
         prod_raw = data.get("producer", {})
         producer = (
             prod_raw if isinstance(prod_raw, ProducerInfo) else ProducerInfo.from_dict(prod_raw)
@@ -132,14 +130,14 @@ class CampaignDoneMarker:
         )
 
     @classmethod
-    def from_json(cls, text: str) -> CampaignDoneMarker:
+    def from_json(cls, text: str) -> "CampaignDoneMarker":
         return cls.from_dict(json.loads(text))
 
     def write(self, path: Path) -> None:
         path.write_text(self.to_json(), encoding="utf-8")
 
     @classmethod
-    def read(cls, path: Path) -> CampaignDoneMarker:
+    def read(cls, path: Path) -> "CampaignDoneMarker":
         return cls.from_json(path.read_text(encoding="utf-8"))
 
 
@@ -371,7 +369,7 @@ ZARR_ROOT_METADATA_FILES: tuple[str, ...] = ("zarr.json", ".zgroup", ".zarray")
 
 def validate_unit_done(
     output_path: Path | str,
-    expected_row: ManifestRow,
+    expected_row: "ManifestRow",
     deep_verify: bool = False,
     quarantine_on_failure: bool = False,
 ) -> UnitValidationResult:

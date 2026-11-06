@@ -4,8 +4,6 @@ Covering [T3-04], GATE-08, GATE-09, and Section 6.3.3 of SPEC-261105-CAMPAIGN-RU
 Zero imports of controller/ or bathos.
 """
 
-from __future__ import annotations
-
 import os
 import shlex
 import subprocess
@@ -20,7 +18,7 @@ if TYPE_CHECKING:
 
 
 def _validate_row_indices(
-    manifest: CampaignManifest,
+    manifest: "CampaignManifest",
     row_indices: list[int] | None,
 ) -> list[int]:
     """Return deduplicated row indices in manifest order, or raise ``ValueError``."""
@@ -43,7 +41,7 @@ def _validate_row_indices(
 
 
 def get_pending_row_indices(
-    manifest: CampaignManifest,
+    manifest: "CampaignManifest",
     output_dir: Path | str,
     resume_verify: str = "deep",
     row_indices: list[int] | None = None,
@@ -206,7 +204,7 @@ class SlurmArrayExecutor:
 
     def generate_script(
         self,
-        manifest: CampaignManifest,
+        manifest: "CampaignManifest",
         output_dir: Path | str,
         *,
         manifest_path: Path | str | None = None,
@@ -342,8 +340,8 @@ class SlurmArrayExecutor:
 
     def run(
         self,
-        manifest: CampaignManifest,
-        unit_fn: Callable[[ManifestRow], Any],
+        manifest: "CampaignManifest",
+        unit_fn: "Callable[[ManifestRow], Any]",
         *,
         output_dir: str,
         row_indices: list[int] | None = None,

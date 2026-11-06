@@ -5,8 +5,6 @@ parameter sweep grids, and arm configurations, with pure host validation,
 callable-field partitioning, and TOML serialization.
 """
 
-from __future__ import annotations
-
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -100,7 +98,7 @@ class ParamGrid:
         return {"axes": {str(k): list(v) for k, v in self.axes.items()}}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ParamGrid:
+    def from_dict(cls, data: dict[str, Any]) -> "ParamGrid":
         axes = data.get("axes", data)
         return cls(axes={str(k): list(v) for k, v in axes.items()})
 
@@ -141,7 +139,7 @@ class ArmSpec:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ArmSpec:
+    def from_dict(cls, data: dict[str, Any]) -> "ArmSpec":
         return cls(
             arm_id=str(data["arm_id"]),
             backend=str(data["backend"]),
@@ -212,7 +210,7 @@ class CampaignSpec:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CampaignSpec:
+    def from_dict(cls, data: dict[str, Any]) -> "CampaignSpec":
         arms_raw = data.get("arms", [])
         arms = [a if isinstance(a, ArmSpec) else ArmSpec.from_dict(a) for a in arms_raw]
         grid_raw = data.get("grid", {})
@@ -282,7 +280,7 @@ class CampaignSpec:
         return toml_text
 
     @classmethod
-    def from_toml(cls, path_or_str: str | Path) -> CampaignSpec:
+    def from_toml(cls, path_or_str: str | Path) -> "CampaignSpec":
         """Parse a CampaignSpec from a TOML string or file path."""
         if isinstance(path_or_str, Path) or (
             isinstance(path_or_str, str) and "\n" not in path_or_str and Path(path_or_str).is_file()

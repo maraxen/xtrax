@@ -4,8 +4,6 @@ Covering [T3-01] and Section 6.2 of SPEC-261105-CAMPAIGN-RUNNER.
 Zero imports of controller/ or bathos.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -66,8 +64,8 @@ class CampaignExecutor(Protocol):
 
     def run(
         self,
-        manifest: CampaignManifest,
-        unit_fn: Callable[[ManifestRow], Any],
+        manifest: "CampaignManifest",
+        unit_fn: "Callable[[ManifestRow], Any]",
         *,
         output_dir: str,
         row_indices: list[int] | None = None,

@@ -4,8 +4,6 @@ Covering [T2-01], [T2-02], [T2-03], Section 3.3, and Section 5 of SPEC-261105-CA
 Zero imports of controller/ or bathos.
 """
 
-from __future__ import annotations
-
 import errno
 import json
 import os
@@ -80,7 +78,7 @@ class CampaignLock:
         return json.dumps(self.to_dict(), indent=2)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CampaignLock:
+    def from_dict(cls, data: dict[str, Any]) -> "CampaignLock":
         return cls(
             schema_version=str(data.get("schema_version", CAMPAIGN_LOCK_SCHEMA_VERSION)),
             owner_token=str(data.get("owner_token", "")),
@@ -92,7 +90,7 @@ class CampaignLock:
         )
 
     @classmethod
-    def from_json(cls, text: str) -> CampaignLock:
+    def from_json(cls, text: str) -> "CampaignLock":
         return cls.from_dict(json.loads(text))
 
 
@@ -473,7 +471,7 @@ class FileLock:
 
         self.is_locked = False
 
-    def __enter__(self) -> FileLock:
+    def __enter__(self) -> "FileLock":
         self.acquire()
         return self
 
@@ -484,7 +482,7 @@ class FileLock:
         self,
         partial_path: Path,
         output_path: Path,
-        done_marker: CampaignDoneMarker,
+        done_marker: "CampaignDoneMarker",
         attempt_uuid: str,
         generation_dir: Path | None = None,
     ) -> Any:
