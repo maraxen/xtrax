@@ -399,7 +399,12 @@ def _run_verify(args: CampaignArgs) -> dict[str, int]:
     if not manifest_str and args.target and Path(args.target).is_file():
         manifest_str = args.target
 
+    # Output dir: --output-dir, else a positional directory, else the manifest's parent.
+    # A positional directory must win over the manifest's parent: in
+    # `verify outputs --manifest manifest.json` the stores live under outputs/.
     out_dir_str = args.output_dir
+    if not out_dir_str and args.target and Path(args.target).is_dir():
+        out_dir_str = args.target
     if not out_dir_str and manifest_str:
         out_dir_str = str(Path(manifest_str).parent)
     if not out_dir_str:

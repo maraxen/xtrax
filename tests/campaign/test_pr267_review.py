@@ -386,3 +386,36 @@ def test_slurm_script_generation_writes_no_ledger_row(
         CampaignArgs(action="run", fn=ARRAY_UNIT_FN, manifest=str(manifest_path), executor="slurm")
     )
     assert _campaign_rows(_isolated_run_ledger) == []
+
+
+# ==============================================================================
+# 7. verify: a positional output dir wins over the manifest's parent
+#    (found by the Engaging sbatch smoke run, job 28152909, 261106)
+# ==============================================================================
+
+
+def test_verify_positional_output_dir_wins_over_manifest_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.campaign.unit_fns import ARRAY_UNIT_FN
+    from xtrax.cli.campaign_verb import run_campaign
+
+    manifest_path = _write_mock_manifest(tmp_path, "camp_pr267_verify_target")
+    campaign_root = manifest_path.parent
+    out = campaign_root / "outputs"
+    run_campaign(
+        CampaignArgs(
+            action="run",
+            fn=ARRAY_UNIT_FN,
+            manifest=str(manifest_path),
+            output_dir=str(out),
+            executor="local-seq",
+        )
+    )
+    monkeypatch.chdir(campaign_root)
+    # `xtrax campaign verify outputs --manifest manifest.json --deep`
+    result = run_campaign(
+        CampaignArgs(action="verify", target="outputs", manifest="manifest.json", deep=True)
+    )
+    assert result["passed"] == 2
+    assert result["failed"] == 0
