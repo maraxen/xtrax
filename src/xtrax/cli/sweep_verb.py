@@ -1,7 +1,9 @@
-"""Sweep CLI verb implementation for xtrax.
+"""Sweep CLI verb implementation for xtrax (deprecated as of 0.5.0).
 
-Provides grid search parameter sweeping functionality, sequentially running
-combinations in a single process while isolating compilation and execution memory.
+DEPRECATED: 'xtrax sweep' is deprecated as of xtrax 0.5.0 and will be removed in 0.6.0.
+Please migrate to 'xtrax campaign plan' and 'xtrax campaign run'.
+
+Provides backward-compatibility shim wrapping xtrax.campaign infrastructure.
 """
 
 from __future__ import annotations
@@ -17,12 +19,17 @@ import tempfile
 import tomllib
 import traceback
 import uuid
+import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 
+from xtrax.campaign.executors.local import LocalSequentialExecutor, _resolve_output_path
+from xtrax.campaign.manifest import plan_campaign
+from xtrax.campaign.spec import ArmSpec, CampaignSpec, ParamGrid
 from xtrax.cli.config import ConfigError, TrainConfig, load_config
 from xtrax.cli.run import generate_run_id, run_from_config
 
@@ -112,7 +119,7 @@ def _run_sweep_point(
     run_id: str,
     sweep_id: str,
     overrides: dict[str, Any],
-) -> None:
+) -> Any:
     """Run one sweep configuration; record and survive its failure."""
     try:
         state = run_from_config(cfg_obj, run_id=run_id)
@@ -121,9 +128,9 @@ def _run_sweep_point(
         # Flush device execution queues
         jax.tree_util.tree_map(lambda x: getattr(x, "block_until_ready", lambda: x)(), state)
 
-        del state
         gc.collect()
         jax.clear_caches()
+        return state
 
     except Exception as e:
         print(f"Sweep run {run_id} failed with error: {e}", file=sys.stderr)
@@ -132,15 +139,24 @@ def _run_sweep_point(
         _flush_device_queues()
         gc.collect()
         jax.clear_caches()
+        return None
 
 
 def run_sweep(args: SweepArgs) -> None:
-    """Run a grid-search parameter sweep sequentially in the same process."""
+    """Run a grid-search parameter sweep via xtrax.campaign LocalSequentialExecutor (DEPRECATED)."""
+    warnings.warn(
+        "'xtrax sweep' is deprecated as of xtrax 0.5.0 and will be removed in 0.6.0. "
+        "Please migrate to 'xtrax campaign plan' and 'xtrax campaign run'.",
+        category=FutureWarning,
+        stacklevel=2,
+    )
+
     # 1. Load and validate base config
     base_cfg = load_config(args.config_path)
 
     # 2. Parse config file to extract sweep.axes; validate leaves and flatten
-    paths, combinations = _sweep_grid(_read_sweep_axes(args.config_path))
+    axes = _read_sweep_axes(args.config_path)
+    paths, combinations = _sweep_grid(axes)
 
     # 3. Configure JAX compilation cache
     jax.config.update("jax_compilation_cache_dir", ".xtrax/jax_cache")
@@ -151,34 +167,65 @@ def run_sweep(args: SweepArgs) -> None:
     sweep_dir = f".xtrax/sweeps/{sweep_id}"
     os.makedirs(sweep_dir, exist_ok=True)
 
-    # 5. Track run_id to overrides mappings
+    # 5. Map to single-arm CampaignSpec and plan manifest
+    flat_axes = {}
+    if axes:
+        for p, vals in _validate_and_flatten_axes(axes):
+            flat_axes[".".join(p)] = vals
+
+    spec = CampaignSpec(
+        campaign_id=sweep_id,
+        target_inputs=[args.config_path],
+        arms=[ArmSpec(arm_id="sweep_arm", backend="default", checkpoint_id="none")],
+        grid=ParamGrid(axes=flat_axes if flat_axes else {}),
+        samples_per_target=1,
+        chunk_size=1,
+        output_dir=sweep_dir,
+    )
+    manifest = plan_campaign(spec)
+
+    # 6. Track run_id to overrides mappings
     sweep_manifest: dict[str, dict[str, Any]] = {}
 
-    # 6. Sequential execution loop
-    for comb in combinations:
+    def _sweep_unit_adapter(row: Any) -> Any:
+        overrides = dict(getattr(row, "parameters", {}))
         cfg_dict = dataclasses.asdict(base_cfg)
-
-        # Traverse cfg_dict and set override leaf values
-        for path, val in zip(paths, comb):
+        for dot_path, val in overrides.items():
+            path_parts = dot_path.split(".")
             current = cfg_dict
-            for key in path[:-1]:
+            for key in path_parts[:-1]:
                 current = current.setdefault(key, {})
-            current[path[-1]] = val
+            current[path_parts[-1]] = val
 
-        # Re-instantiate TrainConfig
         cfg_obj = TrainConfig(**cfg_dict)
-
-        # Generate run ID and reserve directory
         run_id = generate_run_id(cfg_obj)
-
-        # Record overrides
-        overrides = {".".join(p): v for p, v in zip(paths, comb)}
         sweep_manifest[run_id] = overrides
 
-        # Write sweep_manifest.json incrementally and atomically
         _write_sweep_manifest(sweep_dir, sweep_manifest)
+        state = _run_sweep_point(cfg_obj, run_id, sweep_id, overrides)
+        if state is None:
+            # _run_sweep_point already recorded the failure in the run ledger. Raise so
+            # the executor counts the unit as failed instead of stamping it done.
+            msg = f"sweep run {run_id} failed; see its run ledger"
+            raise RuntimeError(msg)
+        _write_sweep_unit_record(_resolve_output_path(Path(sweep_dir), row), run_id, overrides)
+        return state
 
-        _run_sweep_point(cfg_obj, run_id, sweep_id, overrides)
+    # 7. Execute via LocalSequentialExecutor
+    executor = LocalSequentialExecutor()
+    executor.run(manifest, _sweep_unit_adapter, output_dir=sweep_dir)
+
+
+def _write_sweep_unit_record(output_path: Path, run_id: str, overrides: dict[str, Any]) -> None:
+    """Write the unit's output store: a zarr group pointing at the completed run.
+
+    The training run keeps its own checkpoints and ledger; the campaign store records
+    which run satisfied this grid point so the done marker covers real output.
+    """
+    import zarr
+
+    group = zarr.open_group(str(output_path), mode="w")
+    group.attrs.update({"run_id": run_id, "overrides": json.loads(json.dumps(overrides))})
 
 
 def _record_sweep_failure(
@@ -187,17 +234,7 @@ def _record_sweep_failure(
     overrides: dict,
     exc: BaseException,
 ) -> None:
-    """Record a sweep run that died before Engine could open its own ledger.
-
-    A failure inside ``fit_sync`` is already written by the Engine's ledger, so
-    this only fills the earlier window -- a config that fails to resolve, a
-    dataset that will not construct -- where the run would otherwise leave no
-    trace at all beyond a line on stderr. ``find_run`` is what keeps the two from
-    double-writing.
-
-    Fail-open: a sweep must continue to its next configuration even if this
-    bookkeeping cannot be written.
-    """
+    """Record a sweep run that died before Engine could open its own ledger."""
     from xtrax.telemetry.ledger import RunLedger, find_run
     from xtrax.telemetry.record import KIND_TRAIN, STATUS_FAILED
 
