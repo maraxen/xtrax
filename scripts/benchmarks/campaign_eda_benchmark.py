@@ -11,7 +11,7 @@ Statistical Controls Suite:
 1. Control 1 (Positive Planted Knob Effect): Delta* = 1.50, Delta_hat in [1.35, 1.65],
    0 not in CI_95%, |Delta_hat| >= MDE_0.80.
 2. Control 2 (Negative Null Campaign): 0 in CI_95%, false-positive rate <= 0.05
-   across 100 independent null simulations.
+   across 100 independent null simulations evaluated under §5.3.4 power discipline.
 3. Control 3 (Vectorized Bootstrap Parity): |batched - looped| < 1e-12 on unequal
    cluster sizes (BLK-01 cluster ratio estimator), and exact equivalence to unweighted
    bootstrap on equal cluster sizes.
@@ -26,6 +26,8 @@ Ubiquitin Demo Campaign:
 - 18 committed units (2 arms x 3 temperatures x 3 replication seeds, U = 3 >= 3)
 - Answering Q1 (Library Composition), Q2 (Scores & Energetics), Q3 (Honest Uncertainty),
   Q4 (Coverage Reconciliation), and Q5 (Secondary Run Telemetry with debt #3300 seam)
+- Neutral artifact persistence to outputs/demo_ubq_campaign/eda/ (HTML, summary.json,
+  manifest.json with sha256 checksums, static SVGs, Vega-Lite specs, Parquet tables)
 - Execution completed in <= 60.0 seconds.
 """
 
@@ -36,15 +38,14 @@ import hashlib
 import io
 import json
 import logging
-import math
 import os
 import shutil
 import sys
 import tarfile
 import tempfile
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -53,154 +54,41 @@ try:
 except ImportError:
     zstd = None
 
+from xtrax.campaign.manifest import (
+    CampaignManifest,
+    ManifestMetadata,
+    ManifestRow,
+    ResourceRequirements,
+)
+from xtrax.eda.campaign.runner import run_campaign_eda
+from xtrax.eda.campaign.stats import (
+    calculate_pairwise_diversity,
+    compute_best_of_n,
+    compute_composition_entropy,
+    compute_duplicate_rates,
+    compute_pareto_frontier_2d,
+    compute_positional_entropy,
+    compute_target_recovery,
+    evaluate_cluster_bootstrap_condition,
+    evaluate_contrast,
+    generate_multinomial_cluster_weights,
+    looped_cluster_ratio_bootstrap,
+    vectorized_cluster_ratio_bootstrap,
+)
+from xtrax.pack import pack_unit
+
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("campaign_eda_benchmark")
-
-
-# ==============================================================================
-# Mathematical Primitives & Statistical Inference Engine
-# ==============================================================================
-
-def generate_multinomial_cluster_weights(
-    U: int, B: int, rng: np.random.Generator
-) -> np.ndarray:
-    """Generate multinomial cluster resampling weight matrix W in N^{B x U}.
-
-    W[b, :] ~ Multinomial(U, [1/U, 1/U, ..., 1/U])
-    """
-    pvals = [1.0 / U] * U
-    return rng.multinomial(n=U, pvals=pvals, size=B)
-
-
-def vectorized_cluster_ratio_bootstrap(
-    unit_sums: np.ndarray,      # shape (U, D)
-    unit_counts: np.ndarray,    # shape (U,) or (U, 1)
-    weights: np.ndarray,        # shape (B, U)
-) -> np.ndarray:                # shape (B, D)
-    """Evaluate B cluster ratio bootstrap replications via BLAS matrix algebra.
-
-    Theta* = (W @ T) / (W @ n)[:, None]
-    where T is the (U, D) matrix of unit sums and n is the (U, 1) column of sample counts.
-    """
-    n_vec = unit_counts.reshape(-1, 1)
-    numerator = weights @ unit_sums             # (B, D)
-    denominator = weights @ n_vec               # (B, 1)
-    return numerator / denominator              # (B, D)
-
-
-def looped_cluster_ratio_bootstrap(
-    unit_sums: np.ndarray,
-    unit_counts: np.ndarray,
-    weights: np.ndarray,
-) -> np.ndarray:
-    """Iterative Python loop implementation of cluster ratio bootstrap for parity testing."""
-    B, U = weights.shape
-    D = unit_sums.shape[1]
-    n_vec = unit_counts.reshape(-1)
-    theta_loop = np.zeros((B, D), dtype=np.float64)
-    for b in range(B):
-        num_b = np.zeros(D, dtype=np.float64)
-        den_b = 0.0
-        for u in range(U):
-            w = weights[b, u]
-            num_b += w * unit_sums[u]
-            den_b += w * n_vec[u]
-        theta_loop[b] = num_b / den_b
-    return theta_loop
-
-
-def compute_mde_080(se: float) -> float:
-    """Calculate Minimum Detectable Effect at 80% power and alpha=0.05.
-
-    MDE_0.80 = (z_0.975 + z_0.80) * SE = (1.95996 + 0.84162) * SE ≈ 2.80158 * SE
-    """
-    return 2.80158 * se
-
-
-def safe_shannon_entropy(probs: np.ndarray) -> float:
-    """Calculate safe positive-support Shannon entropy in bits (MAJ-07).
-
-    H = - sum_{p > 0} p * log2(p) >= 0.0
-    """
-    p = probs[probs > 0]
-    if len(p) == 0:
-        return 0.0
-    h = -float(np.sum(p * np.log2(p)))
-    return max(0.0, h)
-
-
-def calculate_pairwise_diversity(sequences: List[str]) -> float:
-    """Calculate mean pairwise diversity (1 - mean pairwise identity) with boundary guards (BLK-04)."""
-    N = len(sequences)
-    if N <= 1:
-        return 0.0
-    L = len(sequences[0])
-    if L == 0:
-        return 0.0
-
-    total_pid = 0.0
-    pairs = 0
-    for i in range(N):
-        for j in range(i + 1, N):
-            matches = sum(1 for a, b in zip(sequences[i], sequences[j]) if a == b)
-            total_pid += matches / L
-            pairs += 1
-    mean_pid = total_pid / pairs if pairs > 0 else 1.0
-    return max(0.0, 1.0 - mean_pid)
-
-
-def compute_best_of_n(scores: np.ndarray, candidate_grid: List[int]) -> Dict[int, float]:
-    """Calculate expected Best-of-N minimum scores using iterative ratio recurrence (BLK-03).
-
-    Avoids float64 combinatorial overflow:
-    omega_0 = n / N
-    omega_{j+1} = omega_j * (N - n - j) / (N - 1 - j)
-    """
-    N = len(scores)
-    sorted_scores = np.sort(scores)
-    results = {}
-    for n in candidate_grid:
-        if n > N or n <= 0:
-            continue
-        expected_min = 0.0
-        w = float(n) / float(N)
-        for j in range(N - n + 1):
-            expected_min += w * sorted_scores[j]
-            if j < N - n:
-                w *= float(N - n - j) / float(N - 1 - j)
-        results[n] = float(expected_min)
-    return results
-
-
-def compute_pareto_frontier_2d(points: List[Tuple[float, float, str]]) -> List[Tuple[float, float, str]]:
-    """Compute 2D non-dominated Pareto frontier minimizing score and pairwise identity (MIN-02).
-
-    Minimizes:
-    - S (Negative Log-Likelihood)
-    - PID (Pairwise Identity, maximizing diversity)
-    """
-    non_dominated = []
-    for i, pt_a in enumerate(points):
-        dominated = False
-        for j, pt_b in enumerate(points):
-            if i != j:
-                if pt_b[0] <= pt_a[0] and pt_b[1] <= pt_a[1]:
-                    if pt_b[0] < pt_a[0] or pt_b[1] < pt_a[1]:
-                        dominated = True
-                        break
-        if not dominated:
-            non_dominated.append(pt_a)
-    non_dominated.sort(key=lambda x: x[0])
-    return non_dominated
 
 
 # ==============================================================================
 # Verification Control Implementations
 # ==============================================================================
 
+
 def run_control_1_positive_planted_knob(
     rng: np.random.Generator, B: int = 2000
-) -> Tuple[bool, Dict[str, Any]]:
+) -> tuple[bool, dict[str, Any]]:
     """Verification Control 1: Positive planted knob effect (spec §7.1).
 
     Fixture: 2 knob levels (K0, K1) across U=6 independent seeds.
@@ -223,32 +111,28 @@ def run_control_1_positive_planted_knob(
     t_k1 = np.sum(data_k1, axis=1, keepdims=True)  # (U, 1)
     n_vec = np.full((U, 1), N_u, dtype=np.int64)
 
-    # Point estimates
-    mean_k0 = float(np.sum(t_k0) / np.sum(n_vec))
-    mean_k1 = float(np.sum(t_k1) / np.sum(n_vec))
-    delta_hat = mean_k1 - mean_k0
+    contrast = evaluate_contrast(
+        unit_sums_a=t_k0,
+        unit_counts_a=n_vec,
+        unit_sums_b=t_k1,
+        unit_counts_b=n_vec,
+        metric_name="score",
+        B=B,
+        seed=int(rng.integers(0, 1_000_000)),
+    )
 
-    # Resample weights
-    weights = generate_multinomial_cluster_weights(U, B, rng)
-    boot_k0 = vectorized_cluster_ratio_bootstrap(t_k0, n_vec, weights)
-    boot_k1 = vectorized_cluster_ratio_bootstrap(t_k1, n_vec, weights)
-    boot_delta = boot_k1 - boot_k0
-
-    ci_lower = float(np.percentile(boot_delta, 2.5))
-    ci_upper = float(np.percentile(boot_delta, 97.5))
-    se_delta = float(np.std(boot_delta, ddof=1))
-    mde = compute_mde_080(se_delta)
-
-    in_range = 1.35 <= delta_hat <= 1.65
+    in_range = 1.35 <= contrast.delta_hat <= 1.65
+    ci_lower = contrast.ci_95[0] if contrast.ci_95 else 0.0
+    ci_upper = contrast.ci_95[1] if contrast.ci_95 else 0.0
     detected = ci_lower > 0.0 or ci_upper < 0.0
-    powered = abs(delta_hat) >= mde
+    powered = abs(contrast.delta_hat) >= contrast.mde_080
 
-    passed = in_range and detected and powered
+    passed = in_range and detected and powered and contrast.detected_and_powered
     details = {
-        "delta_hat": delta_hat,
-        "ci_95": [ci_lower, ci_upper],
-        "se": se_delta,
-        "mde_080": mde,
+        "delta_hat": contrast.delta_hat,
+        "ci_95": [ci_lower, ci_upper] if contrast.ci_95 else None,
+        "se": contrast.se,
+        "mde_080": contrast.mde_080,
         "in_range": in_range,
         "detected": detected,
         "powered": powered,
@@ -258,7 +142,7 @@ def run_control_1_positive_planted_knob(
 
 def run_control_2_negative_null_campaign(
     rng: np.random.Generator, B: int = 2000, n_simulations: int = 100
-) -> Tuple[bool, Dict[str, Any]]:
+) -> tuple[bool, dict[str, Any]]:
     """Verification Control 2: Negative null campaign (spec §7.2, §5.3.4).
 
     Fixture: 2 knob levels (K0, K1) drawn from identical distributions.
@@ -278,14 +162,18 @@ def run_control_2_negative_null_campaign(
     t_k1 = np.sum(data_k1, axis=1, keepdims=True)
     n_vec = np.full((U, 1), N_u, dtype=np.int64)
 
-    w0 = generate_multinomial_cluster_weights(U, B, rng)
-    w1 = generate_multinomial_cluster_weights(U, B, rng)
-    boot_k0 = vectorized_cluster_ratio_bootstrap(t_k0, n_vec, w0)
-    boot_k1 = vectorized_cluster_ratio_bootstrap(t_k1, n_vec, w1)
-    boot_delta = boot_k1 - boot_k0
+    single_contrast = evaluate_contrast(
+        unit_sums_a=t_k0,
+        unit_counts_a=n_vec,
+        unit_sums_b=t_k1,
+        unit_counts_b=n_vec,
+        metric_name="score",
+        B=B,
+        seed=int(rng.integers(0, 1_000_000)),
+    )
 
-    single_ci_lower = float(np.percentile(boot_delta, 2.5))
-    single_ci_upper = float(np.percentile(boot_delta, 97.5))
+    single_ci_lower = single_contrast.ci_95[0] if single_contrast.ci_95 else 0.0
+    single_ci_upper = single_contrast.ci_95[1] if single_contrast.ci_95 else 0.0
     single_null_contained = single_ci_lower <= 0.0 <= single_ci_upper
 
     # 2. Rejection rate over simulations under §5.3.4 inference rules
@@ -296,18 +184,16 @@ def run_control_2_negative_null_campaign(
         d1 = rng.normal(loc=0.0, scale=sigma, size=(U, N_u))
         tk0 = np.sum(d0, axis=1, keepdims=True)
         tk1 = np.sum(d1, axis=1, keepdims=True)
-        w0_sim = generate_multinomial_cluster_weights(U, b_sim, rng)
-        w1_sim = generate_multinomial_cluster_weights(U, b_sim, rng)
-        b0 = vectorized_cluster_ratio_bootstrap(tk0, n_vec, w0_sim)
-        b1 = vectorized_cluster_ratio_bootstrap(tk1, n_vec, w1_sim)
-        b_d = b1 - b0
-        lo = np.percentile(b_d, 2.5)
-        hi = np.percentile(b_d, 97.5)
-        delta_hat = float((np.sum(tk1) - np.sum(tk0)) / (U * N_u))
-        se = float(np.std(b_d, ddof=1))
-        mde = compute_mde_080(se)
-        # An effect is reported as detected only if 0 not in CI and |delta_hat| >= MDE (spec §5.3.4)
-        if (lo > 0.0 or hi < 0.0) and abs(delta_hat) >= mde:
+        sim_contrast = evaluate_contrast(
+            unit_sums_a=tk0,
+            unit_counts_a=n_vec,
+            unit_sums_b=tk1,
+            unit_counts_b=n_vec,
+            metric_name="score",
+            B=b_sim,
+            seed=int(rng.integers(0, 1_000_000)),
+        )
+        if sim_contrast.detected_and_powered:
             rejections += 1
 
     fpr = rejections / float(n_simulations)
@@ -327,7 +213,7 @@ def run_control_2_negative_null_campaign(
 
 def run_control_3_vectorized_bootstrap_parity(
     rng: np.random.Generator, B: int = 2000
-) -> Tuple[bool, Dict[str, Any]]:
+) -> tuple[bool, dict[str, Any]]:
     """Verification Control 3: Vectorized cluster ratio bootstrap parity (spec §7.3).
 
     Criteria:
@@ -373,7 +259,7 @@ def run_control_3_vectorized_bootstrap_parity(
     return passed, details
 
 
-def run_control_4_storage_format_parity() -> Tuple[bool, Dict[str, Any]]:
+def run_control_4_storage_format_parity() -> tuple[bool, dict[str, Any]]:
     """Verification Control 4: Storage format parity (loose == packed read) (spec §7.4).
 
     Criteria:
@@ -384,8 +270,16 @@ def run_control_4_storage_format_parity() -> Tuple[bool, Dict[str, Any]]:
         loose_dir = os.path.join(temp_dir, "loose_unit")
         os.makedirs(loose_dir, exist_ok=True)
 
-        payload_meta = {"unit_id": "test_unit_001", "arm": "proteinmpnn", "seed": 1001, "temp": 0.3}
-        payload_data = {"sequences": ["MQIFVKTLTGKTITLEVE", "MQIFVKTLTGKTITLEVD"], "scores": [1.234, 1.456]}
+        payload_meta = {
+            "unit_id": "test_unit_001",
+            "arm": "proteinmpnn",
+            "seed": 1001,
+            "temp": 0.3,
+        }
+        payload_data = {
+            "sequences": ["MQIFVKTLTGKTITLEVE", "MQIFVKTLTGKTITLEVD"],
+            "scores": [1.234, 1.456],
+        }
 
         meta_path = os.path.join(loose_dir, "metadata.json")
         data_path = os.path.join(loose_dir, "data.json")
@@ -439,9 +333,9 @@ def run_control_4_storage_format_parity() -> Tuple[bool, Dict[str, Any]]:
         packed_meta_sha = hashlib.sha256(extracted_meta_bytes).hexdigest()
         packed_data_sha = hashlib.sha256(extracted_data_bytes).hexdigest()
 
-        meta_match = (loose_meta_sha == packed_meta_sha)
-        data_match = (loose_data_sha == packed_data_sha)
-        parsed_match = (json.loads(extracted_data_bytes.decode("utf-8")) == payload_data)
+        meta_match = loose_meta_sha == packed_meta_sha
+        data_match = loose_data_sha == packed_data_sha
+        parsed_match = json.loads(extracted_data_bytes.decode("utf-8")) == payload_data
 
         passed = meta_match and data_match and parsed_match
         details = {
@@ -455,7 +349,7 @@ def run_control_4_storage_format_parity() -> Tuple[bool, Dict[str, Any]]:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def run_control_5_uncommitted_unit_refusal() -> Tuple[bool, Dict[str, Any]]:
+def run_control_5_uncommitted_unit_refusal() -> tuple[bool, dict[str, Any]]:
     """Verification Control 5: Uncommitted unit refusal and explicit bannering (spec §7.5).
 
     Criteria:
@@ -502,7 +396,7 @@ def run_control_5_uncommitted_unit_refusal() -> Tuple[bool, Dict[str, Any]]:
                 classified_status[uid] = "PARTIAL"
                 banners.append(f"Unit {uid}: in progress (active lock/staging)")
             elif os.path.exists(os.path.join(p, "done.json")):
-                with open(os.path.join(p, "done.json"), "r", encoding="utf-8") as f:
+                with open(os.path.join(p, "done.json"), encoding="utf-8") as f:
                     dj = json.load(f)
                 if dj.get("status") == "committed":
                     classified_status[uid] = "COMMITTED"
@@ -513,7 +407,7 @@ def run_control_5_uncommitted_unit_refusal() -> Tuple[bool, Dict[str, Any]]:
             else:
                 classified_status[uid] = "MISSING"
 
-        only_committed_pooled = (pooled_units == ["u1"])
+        only_committed_pooled = pooled_units == ["u1"]
         correct_classification = (
             classified_status.get("u1") == "COMMITTED"
             and classified_status.get("u2") == "PARTIAL"
@@ -534,43 +428,43 @@ def run_control_5_uncommitted_unit_refusal() -> Tuple[bool, Dict[str, Any]]:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def run_control_6_small_sample_guard(rng: np.random.Generator) -> Tuple[bool, Dict[str, Any]]:
+def run_control_6_small_sample_guard(rng: np.random.Generator) -> tuple[bool, dict[str, Any]]:
     """Verification Control 6: Small-sample guard (U < 3) (spec §7.6).
 
+    Uses canonical evaluate_cluster_bootstrap_condition from xtrax.eda.campaign.stats.
     Criteria:
     1. U < 3 sets descriptive_only = True
     2. Confidence interval bounds are suppressed to None / null
     3. Diagnostic warning banner is emitted
     4. U >= 3 evaluates full confidence intervals
     """
-    def evaluate_condition_stats(unit_values: List[float]) -> Dict[str, Any]:
-        U = len(unit_values)
-        point_est = float(np.mean(unit_values))
-        if U < 3:
-            return {
-                "U": U,
-                "point_estimate": point_est,
-                "ci_95": None,
-                "descriptive_only": True,
-                "warning": "Warning: Replicate count U < 3; reporting descriptive point estimates only.",
-            }
-        else:
-            std_err = float(np.std(unit_values, ddof=1) / math.sqrt(U))
-            return {
-                "U": U,
-                "point_estimate": point_est,
-                "ci_95": [point_est - 1.96 * std_err, point_est + 1.96 * std_err],
-                "descriptive_only": False,
-                "warning": None,
-            }
+    res_u1 = evaluate_cluster_bootstrap_condition(
+        unit_sums=np.array([[1.5]]),
+        unit_counts=np.array([1]),
+        metric_names=["score"],
+        B=200,
+        seed=42,
+    )["score"]
+    res_u2 = evaluate_cluster_bootstrap_condition(
+        unit_sums=np.array([[1.4], [1.6]]),
+        unit_counts=np.array([1, 1]),
+        metric_names=["score"],
+        B=200,
+        seed=42,
+    )["score"]
+    res_u3 = evaluate_cluster_bootstrap_condition(
+        unit_sums=np.array([[1.4], [1.5], [1.6]]),
+        unit_counts=np.array([1, 1, 1]),
+        metric_names=["score"],
+        B=200,
+        seed=42,
+    )["score"]
 
-    res_u1 = evaluate_condition_stats([1.5])
-    res_u2 = evaluate_condition_stats([1.4, 1.6])
-    res_u3 = evaluate_condition_stats([1.4, 1.5, 1.6])
-
-    u1_guarded = res_u1["descriptive_only"] and res_u1["ci_95"] is None and res_u1["warning"] is not None
-    u2_guarded = res_u2["descriptive_only"] and res_u2["ci_95"] is None and res_u2["warning"] is not None
-    u3_active = (not res_u3["descriptive_only"]) and res_u3["ci_95"] is not None and res_u3["warning"] is None
+    u1_guarded = res_u1.descriptive_only and res_u1.ci_95 is None and res_u1.warning is not None
+    u2_guarded = res_u2.descriptive_only and res_u2.ci_95 is None and res_u2.warning is not None
+    u3_active = (
+        (not res_u3.descriptive_only) and res_u3.ci_95 is not None and res_u3.warning is None
+    )
 
     passed = u1_guarded and u2_guarded and u3_active
     details = {
@@ -587,18 +481,17 @@ def run_control_6_small_sample_guard(rng: np.random.Generator) -> Tuple[bool, Di
 
 UBIQUITIN_WT = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
 
+
 def simulate_ubiquitin_sequence(
     rng: np.random.Generator,
     arm: str,
     temp: float,
 ) -> str:
-    """Generate realistic model sequences conditioned on wild-type ubiquitin, arm, and temperature."""
+    """Simulate sequence conditioned on wild-type ubiquitin, arm, and temperature."""
     aa_alphabet = list("ACDEFGHIKLMNPQRSTVWY")
     seq_len = len(UBIQUITIN_WT)
-    # Mutation probability increases with temperature
     base_mutation_rate = 0.05 + 0.35 * temp
     if arm == "solublempnn":
-        # SolubleMPNN biases toward polar/charged residues
         soluble_alphabet = list("DEGHKNQRST")
         weights = [1.5 if aa in soluble_alphabet else 0.8 for aa in aa_alphabet]
         pvals = np.array(weights) / sum(weights)
@@ -612,40 +505,50 @@ def simulate_ubiquitin_sequence(
     return "".join(seq_chars)
 
 
-def run_ubiquitin_demo_campaign(
-    rng: np.random.Generator, B: int = 2000
-) -> Tuple[bool, Dict[str, Any]]:
-    """Execute end-to-end Ubiquitin demo campaign answering Q1-Q5 (spec §8).
+def generate_and_run_ubiquitin_demo(
+    campaign_dir: Path | str,
+    rng: np.random.Generator,
+    B: int = 2000,
+) -> tuple[bool, dict[str, Any]]:
+    """Generate the full 18-unit demo campaign, persist to campaign_dir, and run campaign EDA.
 
-    Configuration:
-    - Target: Ubiquitin (76 residues)
-    - Arms: 2 arms ('proteinmpnn', 'solublempnn')
-    - Temperatures: 3 levels (0.1, 0.3, 0.5)
-    - Seeds: 3 independent replication seeds (1001, 1002, 1003; U=3 >= 3)
-    - Total units = 2 x 3 x 3 = 18 committed units
-    - Samples per unit = 16 sequences -> 288 sequences total
+    Answers all five scientific questions:
+    - Q1: Library Composition (diversity, entropy, recovery, duplicate rates)
+    - Q2: Scores & Energetics (distributions, best-of-N curves, Pareto frontier)
+    - Q3: Honest Uncertainty (cluster ratio bootstrap across replication seeds)
+    - Q4: Coverage Reconciliation (18/18 planned rows committed, 0 missing/partial)
+    - Q5: Secondary Run Telemetry (wall time, reuse trail, pack telemetry seam banner)
+    Persists neutral reviewable deliverables in <campaign_dir>/eda/.
     """
     start_time = time.time()
+    c_dir = Path(campaign_dir).resolve()
+    units_dir = c_dir / "units"
+    units_dir.mkdir(parents=True, exist_ok=True)
 
     arms = ["proteinmpnn", "solublempnn"]
     temperatures = [0.1, 0.3, 0.5]
     seeds = [1001, 1002, 1003]
     samples_per_unit = 16
 
-    units = []
-    unit_id_counter = 0
+    manifest_rows: list[ManifestRow] = []
+    unit_idx = 0
+    all_seqs_list: list[str] = []
+    all_scores_list: list[float] = []
+    unit_records: list[dict[str, Any]] = []
 
-    # Execute unit simulation & sink population
     for arm in arms:
         for temp in temperatures:
             for seed in seeds:
-                unit_id_counter += 1
+                unit_idx += 1
+                row_hash = f"ubq_unit_{unit_idx:03d}_{arm}_t{temp}_s{seed}"
+                unit_dir = units_dir / row_hash
+                unit_dir.mkdir(parents=True, exist_ok=True)
+
                 unit_rng = np.random.default_rng(seed + int(temp * 1000))
                 sequences = [
                     simulate_ubiquitin_sequence(unit_rng, arm, temp)
                     for _ in range(samples_per_unit)
                 ]
-                # Simulate realistic Negative Log-Likelihood scores
                 base_nll = 1.20 if arm == "proteinmpnn" else 1.35
                 scores = unit_rng.normal(
                     loc=base_nll + 0.6 * temp,
@@ -654,127 +557,208 @@ def run_ubiquitin_demo_campaign(
                 )
                 duration_s = float(unit_rng.uniform(0.8, 1.8))
 
-                units.append({
-                    "unit_id": f"unit_{unit_id_counter:03d}",
-                    "arm": arm,
-                    "temp": temp,
-                    "seed": seed,
-                    "sequences": sequences,
-                    "scores": scores,
+                all_seqs_list.extend(sequences)
+                all_scores_list.extend(scores.tolist())
+
+                # Save unit artifacts
+                np.save(unit_dir / "sequences.npy", np.array(sequences))
+                np.save(unit_dir / "scores.npy", scores)
+                done_marker = {
+                    "schema_version": "campaign_done_marker_v3",
+                    "manifest_row_hash": row_hash,
+                    "input_hash": row_hash,
+                    "status": "committed",
                     "duration_s": duration_s,
-                    "status": "COMMITTED",
-                })
+                    "completed_at_utc": "2026-11-06T20:30:00Z",
+                }
+                with open(unit_dir / "done.json", "w", encoding="utf-8") as f:
+                    json.dump(done_marker, f, indent=2)
 
-    committed_count = len(units)
+                # Pack alternate units to exercise storage format parity on real demo data
+                if unit_idx % 2 == 0:
+                    pack_unit(unit_dir, record_name="done.json", check=lambda u, r, d: None)
 
-    # --------------------------------------------------------------------------
-    # Q1: Library Composition
-    # --------------------------------------------------------------------------
-    diversities = []
-    entropies = []
-    recoveries = []
-    duplicate_counts = 0
-    all_seqs = []
+                manifest_rows.append(
+                    ManifestRow(
+                        manifest_row_hash=row_hash,
+                        input_hash=row_hash,
+                        campaign_id="demo_ubq_campaign",
+                        job_id=f"job_{unit_idx:03d}",
+                        chunk_id=0,
+                        sample_start=0,
+                        sample_count=samples_per_unit,
+                        target_input=UBIQUITIN_WT,
+                        arm_id=arm,
+                        arm_backend="cpu",
+                        checkpoint_id=f"{arm}_v_48_020",
+                        fixed_policy="none",
+                        state_weight_profile="uniform",
+                        seed=seed,
+                        parameters={"temperature": temp},
+                        output_locator=str(unit_dir),
+                        resource_requirements=ResourceRequirements(gpu_memory_bytes=0),
+                    )
+                )
 
-    for u in units:
-        seqs = u["sequences"]
-        all_seqs.extend(seqs)
-        div = calculate_pairwise_diversity(seqs)
-        diversities.append(div)
+                unit_records.append(
+                    {
+                        "unit_id": row_hash,
+                        "arm": arm,
+                        "temp": temp,
+                        "seed": seed,
+                        "sequences": sequences,
+                        "scores": scores,
+                        "duration_s": duration_s,
+                    }
+                )
 
-        # Positional composition & entropy across positions
-        L = len(UBIQUITIN_WT)
-        col_entropies = []
-        for pos in range(L):
-            col_aas = [s[pos] for s in seqs]
-            counts = [col_aas.count(aa) for aa in set(col_aas)]
-            probs = np.array(counts, dtype=np.float64) / len(col_aas)
-            col_entropies.append(safe_shannon_entropy(probs))
-        entropies.append(float(np.mean(col_entropies)))
-
-        # Native recovery
-        unit_recs = [
-            sum(1 for a, b in zip(s, UBIQUITIN_WT) if a == b) / L
-            for s in seqs
-        ]
-        recoveries.append(float(np.mean(unit_recs)))
-
-    duplicate_counts = len(all_seqs) - len(set(all_seqs))
-    q1_diversity_calculated = (
-        len(diversities) == 18
-        and all(d >= 0.0 for d in diversities)
-        and all(h >= 0.0 for h in entropies)
-        and all(0.0 <= r <= 1.0 for r in recoveries)
+    manifest = CampaignManifest(
+        schema_version="campaign_manifest_v1",
+        metadata=ManifestMetadata(
+            campaign_id="demo_ubq_campaign",
+            planner_version="1.1.0",
+            spec_sha256="ubq_demo_spec_sha256",
+            total_rows=len(manifest_rows),
+            created_at_utc="2026-11-06T20:30:00Z",
+        ),
+        rows=manifest_rows,
     )
 
-    # --------------------------------------------------------------------------
-    # Q2: Scores & Energetics
-    # --------------------------------------------------------------------------
-    all_scores = np.concatenate([u["scores"] for u in units])
-    candidate_grid = [1, 2, 4, 8, 16]
-    best_of_n_curve = compute_best_of_n(all_scores, candidate_grid)
+    manifest_path = c_dir / "manifest.json"
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest.to_dict(), f, indent=2)
 
-    # Condition Pareto frontiers
-    pareto_points = []
-    for u in units:
-        mean_score = float(np.mean(u["scores"]))
-        div = calculate_pairwise_diversity(u["sequences"])
-        # PID is 1 - div
-        pid = 1.0 - div
-        pareto_points.append((mean_score, pid, f"{u['arm']}_T{u['temp']}"))
-    pareto_frontier = compute_pareto_frontier_2d(pareto_points)
-
-    q2_scores_calculated = (
-        len(all_scores) == 288
-        and len(best_of_n_curve) == len(candidate_grid)
-        and len(pareto_frontier) >= 1
-    )
-
-    # --------------------------------------------------------------------------
-    # Q3: Honest Uncertainty
-    # --------------------------------------------------------------------------
-    # Check cluster ratio bootstrap across the 3 seeds (U=3 >= 3)
-    condition_cis = {}
-    for arm in arms:
-        for temp in temperatures:
-            cond_units = [u for u in units if u["arm"] == arm and u["temp"] == temp]
-            U_cond = len(cond_units)  # U = 3
-            unit_sums = np.array([[float(np.sum(u["scores"]))] for u in cond_units])
-            unit_counts = np.array([len(u["scores"]) for u in cond_units])
-
-            weights = generate_multinomial_cluster_weights(U_cond, B, rng)
-            boot_vals = vectorized_cluster_ratio_bootstrap(unit_sums, unit_counts, weights)
-            ci = np.percentile(boot_vals, [2.5, 97.5]).tolist()
-            condition_cis[f"{arm}_{temp}"] = ci
-
-    q3_honest_uncertainty_calculated = (
-        len(condition_cis) == 6
-        and all(ci[0] < ci[1] for ci in condition_cis.values())
-    )
-
-    # --------------------------------------------------------------------------
-    # Q4: Coverage Reconciliation
-    # --------------------------------------------------------------------------
-    # Planned sweep grid: 2 arms x 3 temps x 3 seeds = 18 cells
-    planned_rows = [f"{arm}_{temp}_{seed}" for arm in arms for temp in temperatures for seed in seeds]
-    committed_rows = [f"{u['arm']}_{u['temp']}_{u['seed']}" for u in units]
-
-    unreconciled = set(planned_rows) ^ set(committed_rows)
-    q4_coverage_reconciled = (len(unreconciled) == 0 and committed_count == 18)
-
-    # --------------------------------------------------------------------------
-    # Q5: Secondary Run Telemetry
-    # --------------------------------------------------------------------------
-    durations = [u["duration_s"] for u in units]
-    total_wall_s = sum(durations)
-    pack_banner = "Pack Telemetry: not instrumented (debt #3300)"
-    q5_secondary_telemetry_rendered = (
-        len(durations) == 18
-        and total_wall_s > 0.0
-        and pack_banner == "Pack Telemetry: not instrumented (debt #3300)"
+    # Directly execute full Campaign EDA pipeline via runner
+    results = run_campaign_eda(
+        campaign_dir=c_dir,
+        manifest=manifest,
+        domain_name="aminx",
+        export_artifacts=True,
+        B=B,
+        seed=42,
     )
 
     elapsed_time = time.time() - start_time
+
+    # --------------------------------------------------------------------------
+    # Exercise and verify canonical stats functions directly on demo data
+    # --------------------------------------------------------------------------
+    divs = [calculate_pairwise_diversity(u["sequences"]) for u in unit_records]
+    pos_entropies = [compute_positional_entropy(u["sequences"]) for u in unit_records]
+    comp_entropies = [compute_composition_entropy(u["sequences"]) for u in unit_records]
+    recovs = [compute_target_recovery(u["sequences"], UBIQUITIN_WT) for u in unit_records]
+    dup_rates = [compute_duplicate_rates(u["sequences"]) for u in unit_records]
+    assert all(h >= 0.0 for h in comp_entropies)
+    assert all(0.0 <= r[0] <= 1.0 for r in dup_rates)
+
+    # Verify best_of_n and pareto frontier
+    all_scores_np = np.array(all_scores_list)
+    candidate_grid = [1, 2, 4, 8, 16]
+    best_of_n_curve = compute_best_of_n(all_scores_np, candidate_grid)
+    pareto_pts = [
+        (
+            float(np.mean(u["scores"])),
+            1.0 - calculate_pairwise_diversity(u["sequences"]),
+            u["arm"],
+        )
+        for u in unit_records
+    ]
+    pareto_front = compute_pareto_frontier_2d(pareto_pts)
+
+    # --------------------------------------------------------------------------
+    # Verify Q1 to Q5 from runner results
+    # --------------------------------------------------------------------------
+    q1_rows = results["q1_composition"]["rows"]
+    q1_diversity_calculated = (
+        len(q1_rows) == 18
+        and all(r["diversity"] >= 0.0 for r in q1_rows)
+        and all(r["positional_entropy"] >= 0.0 for r in q1_rows)
+        and all(r["composition_entropy"] >= 0.0 for r in q1_rows)
+        and all(0.0 <= r["recovery"] <= 1.0 for r in q1_rows)
+        and len(divs) == 18
+        and all(d >= 0.0 for d in divs)
+    )
+
+    q2_rows = results["q2_scores"]["rows"]
+    q2_scores_calculated = (
+        len(q2_rows) == 18
+        and all(r["nll"] > 0.0 for r in q2_rows)
+        and len(results["q2_scores"]["best_of_n_curve"]) > 0
+        and len(results["q2_scores"]["pareto_frontier"]) > 0
+        and len(best_of_n_curve) == len(candidate_grid)
+        and len(pareto_front) > 0
+    )
+
+    q3_rows = results["q3_uncertainty"]["rows"]
+    q3_honest_uncertainty_calculated = (
+        len(q3_rows) == 6
+        and all(r["U"] == 3 for r in q3_rows)
+        and all(not r["descriptive_only"] for r in q3_rows)
+        and all(r["ci_lower"] is not None and r["ci_upper"] is not None for r in q3_rows)
+        and all(r["ci_lower"] < r["ci_upper"] for r in q3_rows)
+    )
+
+    q4 = results["q4_coverage"]
+    q4_coverage_reconciled = (
+        q4["total_planned_rows"] == 18
+        and q4["committed_rows"] == 18
+        and q4["partial_rows"] == 0
+        and q4["failed_rows"] == 0
+        and q4["missing_rows"] == 0
+        and q4["is_complete"] is True
+    )
+
+    q5 = results["q5_telemetry"]
+    pack_banner = q5.get("pack_telemetry_banner", "")
+    q5_secondary_telemetry_rendered = (
+        q5["total_wall_seconds"] > 0.0
+        and pack_banner == "Pack Telemetry: not instrumented (debt #3300)"
+        and q5["packed_units"] == 9
+        and q5["loose_units"] == 9
+    )
+
+    # --------------------------------------------------------------------------
+    # Verify persisted artifacts in <campaign_dir>/eda/
+    # --------------------------------------------------------------------------
+    eda_dir = c_dir / "eda"
+    assert (eda_dir / "index.html").exists() and (eda_dir / "index.html").stat().st_size > 0
+    assert (eda_dir / "summary.json").exists() and (eda_dir / "summary.json").stat().st_size > 0
+    assert (eda_dir / "manifest.json").exists() and (eda_dir / "manifest.json").stat().st_size > 0
+
+    # Static SVGs
+    svg_panels = list((eda_dir / "static").glob("*.svg"))
+    assert len(svg_panels) >= 5, f"Expected at least 5 static SVGs, found {len(svg_panels)}"
+    for svg_file in svg_panels:
+        assert svg_file.stat().st_size > 0, f"Empty SVG: {svg_file}"
+        with open(svg_file, encoding="utf-8") as f:
+            content = f.read()
+            assert "<svg" in content and "</svg>" in content, f"Invalid SVG format in {svg_file}"
+
+    # Vega-Lite specs
+    vl_specs = list((eda_dir / "specs").glob("*.vl.json"))
+    assert len(vl_specs) >= 5, f"Expected at least 5 Vega-Lite specs, found {len(vl_specs)}"
+    for spec_file in vl_specs:
+        assert spec_file.stat().st_size > 0, f"Empty spec: {spec_file}"
+        with open(spec_file, encoding="utf-8") as f:
+            spec_data = json.load(f)
+            assert "$schema" in spec_data, f"Missing $schema in {spec_file}"
+
+    # Tables (Parquet or JSON fallback)
+    parquet_tables = list((eda_dir / "tables").glob("*.parquet"))
+    json_tables = list((eda_dir / "tables").glob("*.json"))
+    assert len(parquet_tables) >= 3 or len(json_tables) >= 3, (
+        f"Expected at least 3 tables, found {len(parquet_tables)} parquet, {len(json_tables)} json"
+    )
+    for table_file in parquet_tables + json_tables:
+        assert table_file.stat().st_size > 0, f"Empty table: {table_file}"
+
+    # Verify cryptographic SHA-256 manifest
+    with open(eda_dir / "manifest.json", encoding="utf-8") as f:
+        artifact_manifest = json.load(f)
+    assert "artifacts" in artifact_manifest
+    assert len(artifact_manifest["artifacts"]) >= 14
+
+    committed_count = len(unit_records)
     passed = (
         committed_count == 18
         and elapsed_time <= 60.0
@@ -785,6 +769,7 @@ def run_ubiquitin_demo_campaign(
         and q5_secondary_telemetry_rendered
     )
 
+    duplicate_counts = len(all_seqs_list) - len(set(all_seqs_list))
     details = {
         "demo_units_committed": committed_count,
         "demo_runtime_seconds": elapsed_time,
@@ -793,13 +778,14 @@ def run_ubiquitin_demo_campaign(
         "q3_honest_uncertainty_calculated": q3_honest_uncertainty_calculated,
         "q4_coverage_reconciled": q4_coverage_reconciled,
         "q5_secondary_telemetry_rendered": q5_secondary_telemetry_rendered,
-        "mean_diversity": float(np.mean(diversities)),
-        "mean_entropy": float(np.mean(entropies)),
-        "mean_recovery": float(np.mean(recoveries)),
+        "mean_diversity": float(np.mean(divs)),
+        "mean_entropy": float(np.mean([h[0] for h in pos_entropies])),
+        "mean_recovery": float(np.mean([r[0] for r in recovs])),
         "duplicate_sequences": duplicate_counts,
-        "best_of_n_curve": best_of_n_curve,
-        "pareto_points_count": len(pareto_frontier),
+        "best_of_n_curve": {int(k): float(v) for k, v in best_of_n_curve.items()},
+        "pareto_points_count": len(pareto_front),
         "pack_telemetry_seam_banner": pack_banner,
+        "persisted_eda_dir": str(eda_dir),
     }
     return passed, details
 
@@ -808,11 +794,13 @@ def run_ubiquitin_demo_campaign(
 # Benchmark Orchestration Main
 # ==============================================================================
 
+
 def run_benchmark(
     seed: int = 42,
     smoke: bool = False,
-    out_path: Optional[str] = None,
-) -> Dict[str, Any]:
+    out_path: str | None = None,
+    demo_dir: str = "outputs/demo_ubq_campaign",
+) -> dict[str, Any]:
     """Execute all 6 verification controls and the Ubiquitin demonstration campaign."""
     master_start = time.time()
     rng = np.random.default_rng(seed)
@@ -835,7 +823,7 @@ def run_benchmark(
     c4_pass, c4_details = run_control_4_storage_format_parity()
     logger.info(f"Control 4 passed: {c4_pass}")
 
-    logger.info("Executing Verification Control 5: Uncommitted unit refusal and explicit bannering...")
+    logger.info("Executing Verification Control 5: Uncommitted unit refusal...")
     c5_pass, c5_details = run_control_5_uncommitted_unit_refusal()
     logger.info(f"Control 5 passed: {c5_pass}")
 
@@ -843,8 +831,12 @@ def run_benchmark(
     c6_pass, c6_details = run_control_6_small_sample_guard(rng)
     logger.info(f"Control 6 passed: {c6_pass}")
 
-    logger.info("Executing End-to-End Ubiquitin demo campaign (18 committed units answering Q1-Q5)...")
-    demo_pass, demo_details = run_ubiquitin_demo_campaign(rng, B=B)
+    logger.info("Executing Ubiquitin demo campaign (18 committed units answering Q1-Q5)...")
+    demo_pass, demo_details = generate_and_run_ubiquitin_demo(
+        campaign_dir=demo_dir,
+        rng=rng,
+        B=500 if smoke else 2000,
+    )
     logger.info(f"Ubiquitin demo passed: {demo_pass}")
 
     total_duration = time.time() - master_start
@@ -880,18 +872,19 @@ def run_benchmark(
     }
 
     # Write results to output paths
-    # 1. Designated output path
     if out_path:
-        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as f:
+        out_p = Path(out_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_p, "w", encoding="utf-8") as f:
             json.dump(result_payload, f, indent=2)
         logger.info(f"Wrote result payload to {out_path}")
 
-    # 2. $BTH_RESULTS_PATH (bathos environment channel)
+    # BTH_RESULTS_PATH (bathos environment channel)
     bth_results_path = os.environ.get("BTH_RESULTS_PATH")
     if bth_results_path:
-        os.makedirs(os.path.dirname(os.path.abspath(bth_results_path)), exist_ok=True)
-        with open(bth_results_path, "w", encoding="utf-8") as f:
+        bth_p = Path(bth_results_path)
+        bth_p.parent.mkdir(parents=True, exist_ok=True)
+        with open(bth_p, "w", encoding="utf-8") as f:
             json.dump(result_payload, f, indent=2)
         logger.info(f"Wrote result payload to BTH_RESULTS_PATH: {bth_results_path}")
 
@@ -919,9 +912,20 @@ def main() -> int:
         action="store_true",
         help="Execute in smoke-test mode with reduced iterations",
     )
+    parser.add_argument(
+        "--demo-dir",
+        type=str,
+        default="outputs/demo_ubq_campaign",
+        help="Directory to generate and persist the demo Ubiquitin campaign",
+    )
     args = parser.parse_args()
 
-    results = run_benchmark(seed=args.seed, smoke=args.smoke, out_path=args.out)
+    results = run_benchmark(
+        seed=args.seed,
+        smoke=args.smoke,
+        out_path=args.out,
+        demo_dir=args.demo_dir,
+    )
 
     all_passed = (
         results["positive_control_detected"]
@@ -940,7 +944,7 @@ def main() -> int:
     )
 
     if all_passed:
-        logger.info("All 6 verification controls and end-to-end Ubiquitin demo passed successfully!")
+        logger.info("All 6 controls and end-to-end Ubiquitin demo passed successfully!")
         return 0
     else:
         logger.error("Benchmark failed; one or more verification controls did not pass.")

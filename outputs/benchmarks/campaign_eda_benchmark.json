@@ -1,0 +1,99 @@
+{
+  "positive_control_detected": true,
+  "negative_control_null": true,
+  "vectorized_bootstrap_parity": true,
+  "storage_format_parity": true,
+  "uncommitted_units_refused": true,
+  "small_sample_guard_active": true,
+  "demo_units_committed": 18,
+  "demo_runtime_seconds": 6.553575754165649,
+  "q1_diversity_calculated": true,
+  "q2_scores_calculated": true,
+  "q3_honest_uncertainty_calculated": true,
+  "q4_coverage_reconciled": true,
+  "q5_secondary_telemetry_rendered": true,
+  "timestamp": "2026-11-07T01:39:48Z",
+  "git_sha": "feat/eda-redesign",
+  "controls_summary": {
+    "control_1_positive": {
+      "delta_hat": 1.5151044802681013,
+      "ci_95": [
+        1.48479488016744,
+        1.5447407952085288
+      ],
+      "se": 0.014960831260122747,
+      "mde_080": 0.041913965641734684,
+      "in_range": true,
+      "detected": true,
+      "powered": true
+    },
+    "control_2_negative": {
+      "single_ci_95": [
+        -0.15886843866786912,
+        0.0740636524856996
+      ],
+      "single_null_contained": true,
+      "false_positive_rejections": 2,
+      "n_simulations": 100,
+      "false_positive_rate": 0.02,
+      "fpr_controlled": true
+    },
+    "control_3_bootstrap_parity": {
+      "max_diff_unequal": 0.0,
+      "unequal_parity": true,
+      "max_diff_equal": 2.6645352591003757e-15,
+      "equal_parity": true
+    },
+    "control_4_storage_parity": {
+      "meta_sha_match": true,
+      "data_sha_match": true,
+      "parsed_match": true,
+      "archive_type": "tar"
+    },
+    "control_5_uncommitted_refusal": {
+      "only_committed_pooled": true,
+      "correct_classification": true,
+      "banners_emitted": true,
+      "classified_status": {
+        "u1": "COMMITTED",
+        "u2": "PARTIAL",
+        "u3": "FAILED"
+      },
+      "banners": [
+        "Unit u2: in progress (active lock/staging)",
+        "Unit u3: failed (killed_incomplete)"
+      ]
+    },
+    "control_6_small_sample_guard": {
+      "u1_guarded": true,
+      "u2_guarded": true,
+      "u3_active": true
+    }
+  },
+  "demo_summary": {
+    "demo_units_committed": 18,
+    "demo_runtime_seconds": 6.553575754165649,
+    "q1_diversity_calculated": true,
+    "q2_scores_calculated": true,
+    "q3_honest_uncertainty_calculated": true,
+    "q4_coverage_reconciled": true,
+    "q5_secondary_telemetry_rendered": true,
+    "mean_diversity": 0.2650097465886939,
+    "mean_entropy": 0.7441637859888979,
+    "mean_recovery": 0.8556743421052632,
+    "duplicate_sequences": 10,
+    "best_of_n_curve": {
+      "1": 1.473110287850802,
+      "2": 1.3715261005598913,
+      "4": 1.287123754530345,
+      "8": 1.2155423485260322,
+      "16": 1.1545302792187424
+    },
+    "pareto_points_count": 5,
+    "pack_telemetry_seam_banner": "Pack Telemetry: not instrumented (debt #3300)",
+    "persisted_eda_dir": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/eda"
+  },
+  "timing": {
+    "total_benchmark_seconds": 6.668725490570068
+  }
+}

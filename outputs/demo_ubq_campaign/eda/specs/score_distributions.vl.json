@@ -1,0 +1,179 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "data": {
+    "values": [
+      {
+        "arm": "proteinmpnn",
+        "condition": "proteinmpnn_T0.1",
+        "manifest_row_hash": "ubq_unit_001_proteinmpnn_t0.1_s1001",
+        "nll": 1.2775642219629637,
+        "perplexity": 3.587889770319153,
+        "seed": 1001
+      },
+      {
+        "arm": "proteinmpnn",
+        "condition": "proteinmpnn_T0.1",
+        "manifest_row_hash": "ubq_unit_002_proteinmpnn_t0.1_s1002",
+        "nll": 1.257679499132988,
+        "perplexity": 3.5172502281211133,
+        "seed": 1002
+      },
+      {
+        "arm": "proteinmpnn",
+        "condition": "proteinmpnn_T0.1",
+        "manifest_row_hash": "ubq_unit_003_proteinmpnn_t0.1_s1003",
+        "nll": 1.33058288733235,
+        "perplexity": 3.7832479523064717,
+        "seed": 1003
+      },
+      {
+        "arm": "proteinmpnn",
+        "condition": "proteinmpnn_T0.3",
+        "manifest_row_hash": "ubq_unit_004_proteinmpnn_t0.3_s1001",
+        "nll": 1.424262063727617,
+        "perplexity": 4.1547907404406335,
+        "seed": 1001
+      },
+      {
+        "arm": "proteinmpnn",
+        "condition": "proteinmpnn_T0.3",
+        "manifest_row_hash": "ubq_unit_005_proteinmpnn_t0.3_s1002",
+        "nll": 1.3914522896268593,
+        "perplexity": 4.020685014080725,
+        "seed": 1002
+      },
+      {
+        "arm": "proteinmpnn",
+        "condition": "proteinmpnn_T0.3",
+        "manifest_row_hash": "ubq_unit_006_proteinmpnn_t0.3_s1003",
+        "nll": 1.3862719011057896,
+        "perplexity": 3.9999101609524925,
+        "seed": 1003
+      },
+      {
+        "arm": "proteinmpnn",
+        "condition": "proteinmpnn_T0.5",
+        "manifest_row_hash": "ubq_unit_007_proteinmpnn_t0.5_s1001",
+        "nll": 1.4805124079160532,
+        "perplexity": 4.395197237868989,
+        "seed": 1001
+      },
+      {
+        "arm": "proteinmpnn",
+        "condition": "proteinmpnn_T0.5",
+        "manifest_row_hash": "ubq_unit_008_proteinmpnn_t0.5_s1002",
+        "nll": 1.507353561908999,
+        "perplexity": 4.514766919322269,
+        "seed": 1002
+      },
+      {
+        "arm": "proteinmpnn",
+        "condition": "proteinmpnn_T0.5",
+        "manifest_row_hash": "ubq_unit_009_proteinmpnn_t0.5_s1003",
+        "nll": 1.527313757943598,
+        "perplexity": 4.605787928729036,
+        "seed": 1003
+      },
+      {
+        "arm": "solublempnn",
+        "condition": "solublempnn_T0.1",
+        "manifest_row_hash": "ubq_unit_010_solublempnn_t0.1_s1001",
+        "nll": 1.4275642219629638,
+        "perplexity": 4.1685331942913075,
+        "seed": 1001
+      },
+      {
+        "arm": "solublempnn",
+        "condition": "solublempnn_T0.1",
+        "manifest_row_hash": "ubq_unit_011_solublempnn_t0.1_s1002",
+        "nll": 1.4076794991329884,
+        "perplexity": 4.086461755274976,
+        "seed": 1002
+      },
+      {
+        "arm": "solublempnn",
+        "condition": "solublempnn_T0.1",
+        "manifest_row_hash": "ubq_unit_012_solublempnn_t0.1_s1003",
+        "nll": 1.4805828873323499,
+        "perplexity": 4.395507019721316,
+        "seed": 1003
+      },
+      {
+        "arm": "solublempnn",
+        "condition": "solublempnn_T0.3",
+        "manifest_row_hash": "ubq_unit_013_solublempnn_t0.3_s1001",
+        "nll": 1.574262063727617,
+        "perplexity": 4.827178153614326,
+        "seed": 1001
+      },
+      {
+        "arm": "solublempnn",
+        "condition": "solublempnn_T0.3",
+        "manifest_row_hash": "ubq_unit_014_solublempnn_t0.3_s1002",
+        "nll": 1.5414522896268594,
+        "perplexity": 4.671369528583437,
+        "seed": 1002
+      },
+      {
+        "arm": "solublempnn",
+        "condition": "solublempnn_T0.3",
+        "manifest_row_hash": "ubq_unit_015_solublempnn_t0.3_s1003",
+        "nll": 1.5362719011057897,
+        "perplexity": 4.647232592831405,
+        "seed": 1003
+      },
+      {
+        "arm": "solublempnn",
+        "condition": "solublempnn_T0.5",
+        "manifest_row_hash": "ubq_unit_016_solublempnn_t0.5_s1001",
+        "nll": 1.6305124079160531,
+        "perplexity": 5.106490654500958,
+        "seed": 1001
+      },
+      {
+        "arm": "solublempnn",
+        "condition": "solublempnn_T0.5",
+        "manifest_row_hash": "ubq_unit_017_solublempnn_t0.5_s1002",
+        "nll": 1.6573535619089992,
+        "perplexity": 5.245410804805493,
+        "seed": 1002
+      },
+      {
+        "arm": "solublempnn",
+        "condition": "solublempnn_T0.5",
+        "manifest_row_hash": "ubq_unit_018_solublempnn_t0.5_s1003",
+        "nll": 1.677313757943598,
+        "perplexity": 5.351162130341967,
+        "seed": 1003
+      }
+    ]
+  },
+  "description": "Per-sample NLL distributions, Best-of-N curves, and Pareto trade-offs.",
+  "encoding": {
+    "color": {
+      "field": "arm",
+      "type": "nominal"
+    },
+    "x": {
+      "field": "condition",
+      "title": "Condition",
+      "type": "nominal"
+    },
+    "y": {
+      "field": "nll",
+      "title": "Negative Log-Likelihood (NLL)",
+      "type": "quantitative"
+    }
+  },
+  "mark": {
+    "extent": "min-max",
+    "tooltip": true,
+    "type": "boxplot"
+  },
+  "title": "Question 2: Scores and Negative Log-Likelihood Distributions",
+  "transform": [
+    {
+      "filter": "isValid(datum.nll) && datum.nll != null"
+    }
+  ]
+}

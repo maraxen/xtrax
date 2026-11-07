@@ -1,0 +1,140 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "data": {
+    "values": [
+      {
+        "U": 3,
+        "ci_lower": 1.257679499132988,
+        "ci_upper": 1.33058288733235,
+        "condition": "proteinmpnn_T0.1",
+        "descriptive_only": false,
+        "mde_080": 0.05061914773275963,
+        "metric": "nll",
+        "point_estimate": 1.2886088694761006,
+        "se": 0.01806807149278608,
+        "warning": null
+      },
+      {
+        "U": 3,
+        "ci_lower": 1.3862719011057896,
+        "ci_upper": 1.4242620637276169,
+        "condition": "proteinmpnn_T0.3",
+        "descriptive_only": false,
+        "mde_080": 0.027739234624251624,
+        "metric": "nll",
+        "point_estimate": 1.4006620848200886,
+        "se": 0.009901282356474427,
+        "warning": null
+      },
+      {
+        "U": 3,
+        "ci_lower": 1.4805124079160532,
+        "ci_upper": 1.527313757943598,
+        "condition": "proteinmpnn_T0.5",
+        "descriptive_only": false,
+        "mde_080": 0.0318142875565995,
+        "metric": "nll",
+        "point_estimate": 1.505059909256217,
+        "se": 0.01135583761898625,
+        "warning": null
+      },
+      {
+        "U": 3,
+        "ci_lower": 1.4076794991329884,
+        "ci_upper": 1.4805828873323499,
+        "condition": "solublempnn_T0.1",
+        "descriptive_only": false,
+        "mde_080": 0.05061914773275952,
+        "metric": "nll",
+        "point_estimate": 1.4386088694761006,
+        "se": 0.018068071492786043,
+        "warning": null
+      },
+      {
+        "U": 3,
+        "ci_lower": 1.5362719011057895,
+        "ci_upper": 1.574262063727617,
+        "condition": "solublempnn_T0.3",
+        "descriptive_only": false,
+        "mde_080": 0.027739234624251402,
+        "metric": "nll",
+        "point_estimate": 1.5506620848200887,
+        "se": 0.009901282356474347,
+        "warning": null
+      },
+      {
+        "U": 3,
+        "ci_lower": 1.6305124079160531,
+        "ci_upper": 1.6773137579435982,
+        "condition": "solublempnn_T0.5",
+        "descriptive_only": false,
+        "mde_080": 0.0318142875565996,
+        "metric": "nll",
+        "point_estimate": 1.6550599092562166,
+        "se": 0.011355837618986288,
+        "warning": null
+      }
+    ]
+  },
+  "description": "Point estimates with cluster bootstrap CIs, guarded when U < 3.",
+  "layer": [
+    {
+      "encoding": {
+        "color": {
+          "field": "metric",
+          "type": "nominal"
+        },
+        "x": {
+          "field": "condition",
+          "title": "Condition",
+          "type": "nominal"
+        },
+        "y": {
+          "field": "point_estimate",
+          "title": "Estimate",
+          "type": "quantitative"
+        }
+      },
+      "mark": {
+        "filled": true,
+        "size": 80,
+        "tooltip": true,
+        "type": "point"
+      }
+    },
+    {
+      "encoding": {
+        "color": {
+          "field": "metric",
+          "type": "nominal"
+        },
+        "x": {
+          "field": "condition",
+          "type": "nominal"
+        },
+        "y": {
+          "field": "ci_lower",
+          "type": "quantitative"
+        },
+        "y2": {
+          "field": "ci_upper"
+        }
+      },
+      "mark": {
+        "ticks": true,
+        "type": "errorbar"
+      },
+      "transform": [
+        {
+          "filter": "datum.descriptive_only == false && isValid(datum.ci_lower) && datum.ci_lower != null"
+        }
+      ]
+    }
+  ],
+  "title": "Question 3: Knob Effects with Vectorized Cluster Ratio Bootstrap (95% CI)",
+  "transform": [
+    {
+      "filter": "isValid(datum.point_estimate) && datum.point_estimate != null"
+    }
+  ]
+}

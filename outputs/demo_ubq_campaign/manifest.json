@@ -1,0 +1,462 @@
+{
+  "schema_version": "campaign_manifest_v1",
+  "metadata": {
+    "campaign_id": "demo_ubq_campaign",
+    "created_at_utc": "2026-11-06T20:30:00Z",
+    "planner_version": "1.1.0",
+    "spec_sha256": "ubq_demo_spec_sha256",
+    "total_rows": 18
+  },
+  "rows": [
+    {
+      "manifest_row_hash": "ubq_unit_001_proteinmpnn_t0.1_s1001",
+      "input_hash": "ubq_unit_001_proteinmpnn_t0.1_s1001",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_001",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "proteinmpnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "proteinmpnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1001,
+      "parameters": {
+        "temperature": 0.1
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_001_proteinmpnn_t0.1_s1001",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_002_proteinmpnn_t0.1_s1002",
+      "input_hash": "ubq_unit_002_proteinmpnn_t0.1_s1002",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_002",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "proteinmpnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "proteinmpnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1002,
+      "parameters": {
+        "temperature": 0.1
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_002_proteinmpnn_t0.1_s1002",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_003_proteinmpnn_t0.1_s1003",
+      "input_hash": "ubq_unit_003_proteinmpnn_t0.1_s1003",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_003",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "proteinmpnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "proteinmpnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1003,
+      "parameters": {
+        "temperature": 0.1
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_003_proteinmpnn_t0.1_s1003",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_004_proteinmpnn_t0.3_s1001",
+      "input_hash": "ubq_unit_004_proteinmpnn_t0.3_s1001",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_004",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "proteinmpnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "proteinmpnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1001,
+      "parameters": {
+        "temperature": 0.3
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_004_proteinmpnn_t0.3_s1001",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_005_proteinmpnn_t0.3_s1002",
+      "input_hash": "ubq_unit_005_proteinmpnn_t0.3_s1002",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_005",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "proteinmpnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "proteinmpnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1002,
+      "parameters": {
+        "temperature": 0.3
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_005_proteinmpnn_t0.3_s1002",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_006_proteinmpnn_t0.3_s1003",
+      "input_hash": "ubq_unit_006_proteinmpnn_t0.3_s1003",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_006",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "proteinmpnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "proteinmpnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1003,
+      "parameters": {
+        "temperature": 0.3
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_006_proteinmpnn_t0.3_s1003",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_007_proteinmpnn_t0.5_s1001",
+      "input_hash": "ubq_unit_007_proteinmpnn_t0.5_s1001",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_007",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "proteinmpnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "proteinmpnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1001,
+      "parameters": {
+        "temperature": 0.5
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_007_proteinmpnn_t0.5_s1001",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_008_proteinmpnn_t0.5_s1002",
+      "input_hash": "ubq_unit_008_proteinmpnn_t0.5_s1002",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_008",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "proteinmpnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "proteinmpnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1002,
+      "parameters": {
+        "temperature": 0.5
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_008_proteinmpnn_t0.5_s1002",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_009_proteinmpnn_t0.5_s1003",
+      "input_hash": "ubq_unit_009_proteinmpnn_t0.5_s1003",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_009",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "proteinmpnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "proteinmpnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1003,
+      "parameters": {
+        "temperature": 0.5
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_009_proteinmpnn_t0.5_s1003",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_010_solublempnn_t0.1_s1001",
+      "input_hash": "ubq_unit_010_solublempnn_t0.1_s1001",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_010",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "solublempnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "solublempnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1001,
+      "parameters": {
+        "temperature": 0.1
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_010_solublempnn_t0.1_s1001",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_011_solublempnn_t0.1_s1002",
+      "input_hash": "ubq_unit_011_solublempnn_t0.1_s1002",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_011",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "solublempnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "solublempnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1002,
+      "parameters": {
+        "temperature": 0.1
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_011_solublempnn_t0.1_s1002",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_012_solublempnn_t0.1_s1003",
+      "input_hash": "ubq_unit_012_solublempnn_t0.1_s1003",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_012",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "solublempnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "solublempnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1003,
+      "parameters": {
+        "temperature": 0.1
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_012_solublempnn_t0.1_s1003",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_013_solublempnn_t0.3_s1001",
+      "input_hash": "ubq_unit_013_solublempnn_t0.3_s1001",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_013",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "solublempnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "solublempnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1001,
+      "parameters": {
+        "temperature": 0.3
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_013_solublempnn_t0.3_s1001",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_014_solublempnn_t0.3_s1002",
+      "input_hash": "ubq_unit_014_solublempnn_t0.3_s1002",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_014",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "solublempnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "solublempnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1002,
+      "parameters": {
+        "temperature": 0.3
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_014_solublempnn_t0.3_s1002",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_015_solublempnn_t0.3_s1003",
+      "input_hash": "ubq_unit_015_solublempnn_t0.3_s1003",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_015",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "solublempnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "solublempnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1003,
+      "parameters": {
+        "temperature": 0.3
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_015_solublempnn_t0.3_s1003",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_016_solublempnn_t0.5_s1001",
+      "input_hash": "ubq_unit_016_solublempnn_t0.5_s1001",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_016",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "solublempnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "solublempnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1001,
+      "parameters": {
+        "temperature": 0.5
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_016_solublempnn_t0.5_s1001",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_017_solublempnn_t0.5_s1002",
+      "input_hash": "ubq_unit_017_solublempnn_t0.5_s1002",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_017",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "solublempnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "solublempnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1002,
+      "parameters": {
+        "temperature": 0.5
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_017_solublempnn_t0.5_s1002",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    },
+    {
+      "manifest_row_hash": "ubq_unit_018_solublempnn_t0.5_s1003",
+      "input_hash": "ubq_unit_018_solublempnn_t0.5_s1003",
+      "campaign_id": "demo_ubq_campaign",
+      "job_id": "job_018",
+      "chunk_id": 0,
+      "sample_start": 0,
+      "sample_count": 16,
+      "target_input": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+      "arm_id": "solublempnn",
+      "arm_backend": "cpu",
+      "checkpoint_id": "solublempnn_v_48_020",
+      "fixed_policy": "none",
+      "state_weight_profile": "uniform",
+      "seed": 1003,
+      "parameters": {
+        "temperature": 0.5
+      },
+      "output_locator": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/units/ubq_unit_018_solublempnn_t0.5_s1003",
+      "resource_requirements": {
+        "gpu_memory_bytes": 0,
+        "cpu_cores": 1,
+        "timeout_seconds": 3600
+      }
+    }
+  ]
+}

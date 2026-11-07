@@ -1,0 +1,18 @@
+{
+ "completed_at_utc": "2026-11-06T20:30:00Z",
+ "duration_s": 0.9550881399680788,
+ "input_hash": "ubq_unit_016_solublempnn_t0.5_s1001",
+ "manifest_row_hash": "ubq_unit_016_solublempnn_t0.5_s1001",
+ "schema_version": "campaign_done_marker_v3",
+ "status": "committed",
+ "storage": {
+  "codec": "zstd",
+  "format": "tar.zst+frame-index/1",
+  "index": "members.idx.json",
+  "index_sha256": "8283ec40b2abee51e8a8748e941548f405b7cba3528023b27be784780cd13833",
+  "n_members": 2,
+  "pack": "members.tar.zst",
+  "pack_sha256": "4f945946dcfa7223d5109db725161d3c116920ff3cfab23ac5c49b3da6f442cc",
+  "schema": "xtrax.unit_pack/1"
+ }
+}

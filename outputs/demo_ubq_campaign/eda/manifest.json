@@ -1,0 +1,22 @@
+{
+  "artifacts": {
+    "index.html": "ed4a438046c75e8b55f9b8011b151e9fcfae81ed7ee676628d357b8424ad619b",
+    "specs/library_composition.vl.json": "909035399dc03be6943e6e16e9aa4f9f17de34e96b0aa25cc5c331f445e0cda5",
+    "specs/run_telemetry.vl.json": "248b4fcc12a2efb4aaca42ff85d604c48be361de3ed6d8bfef9b9ce56ea16465",
+    "specs/score_distributions.vl.json": "fd43abd869c82a448ee57fd6c285ba22977212bf6a9a82b71f70bbcf26f9ceda",
+    "specs/sweep_coverage.vl.json": "76ceae67c18b81d4da338839a5871bff59341dc848e56eed3550cf6dcc51762c",
+    "specs/uncertainty_contrasts.vl.json": "e0eb2b24b1b6952e3f81770abc42a886ffd5264730dcab7f1171fbc5124911ac",
+    "static/library_composition.svg": "45fe144e25e79b7f6116c167f6ca55bb84ab00789bbf649b56fb3f50e9b4f1d4",
+    "static/run_telemetry.svg": "e853b9a30d9d4cce2375d0a8a793348724811ff32d0937abf051fca1374045ad",
+    "static/score_distributions.svg": "bc180adc7d29f6862809d2b0506f77f2d4975575f18aabcd7c4f54d0f9535988",
+    "static/sweep_coverage.svg": "39f99b36a6c73b9adf2b9a9a597f503e835a064b8a853c088b9e4beb9e6036b3",
+    "static/uncertainty_contrasts.svg": "5470ab7de014207c73fa22eb36d24be6f7f40ad14a7ca510691e903e43499943",
+    "summary.json": "3dc1c447b16a624410e9de810113d759286de0e380b9469b306f9c70fce33f64",
+    "tables/coverage_grid.parquet": "b7347c3dc98fd4dd3838084979dc77bcb28ece00c4269a0606517d56768137d9",
+    "tables/library_metrics.parquet": "bfbe4928a7f79b41430eac8c07f044aad8fe6dab74ea8cb26e13c5170e4d05e6",
+    "tables/run_telemetry.parquet": "a366db9df2da79bc0f909d0dae2e781508db6b442757d0fab30a274ea79f11cb"
+  },
+  "campaign_id": "demo_ubq_campaign",
+  "engine_version": "0.4.1b7",
+  "schema_version": "xtrax_eda_manifest_v1"
+}
