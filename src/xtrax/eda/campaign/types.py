@@ -61,17 +61,29 @@ class DomainMetricResult:
     tracks: Mapping[str, np.ndarray]
 
     def validate_schema(self) -> None:
-        """Validate that all metric values are strictly numeric and finite (MAJ-02).
+        """Validate that all metric values and flags strictly adhere to schema (MAJ-02).
 
-        Enforces that every value in `metrics` satisfies `isinstance(v, (int, float))` and
-        `np.isfinite(v)` (non-NaN and non-Inf). Violations trigger immediate unit quarantine,
-        guaranteeing that downstream PyArrow Parquet table conversion never fails with ArrowInvalid.
+        Enforces that:
+        - Every key in `metrics` is a string.
+        - Every value in `metrics` is a strictly finite float or int (non-NaN and non-Inf).
+        - Every key in `flags` is a string and every value is a boolean.
+
+        Violations trigger immediate unit quarantine, guaranteeing that downstream PyArrow
+        Parquet table conversion never fails with ArrowInvalid.
         """
         for k, v in self.metrics.items():
+            if not isinstance(k, str):
+                raise TypeError(f"Metric key {k!r} must be str, got {type(k).__name__}")
             if not isinstance(v, (int, float)) or not np.isfinite(v):
                 raise TypeError(
                     f"Domain metric {k!r} has invalid value {v!r} (type {type(v).__name__}); "
                     "metrics must be strictly finite floats or ints."
+                )
+        for k, v in self.flags.items():
+            if not isinstance(k, str) or not isinstance(v, bool):
+                raise TypeError(
+                    f"Flag {k!r}={v!r} invalid; keys must be str and values must be bool (got "
+                    f"key type {type(k).__name__}, value type {type(v).__name__})"
                 )
 
 

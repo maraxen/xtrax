@@ -136,6 +136,16 @@ def run_campaign_eda(
     quarantined_keys = [q.unit_key for q in get_quarantined_units()]
     committed_units = reader.get_committed_units(manifest, quarantined_keys=quarantined_keys)
 
+    # Propagate any existing quarantined units to coverage banners (MAJ-02, MAJ-04)
+    for q_rec in get_quarantined_units():
+        banner_record = {
+            "unit_id": q_rec.unit_key,
+            "type": "quarantined",
+            "reason": q_rec.reason,
+        }
+        if banner_record not in q4_coverage.setdefault("banners", []):
+            q4_coverage["banners"].append(banner_record)
+
     # 4. Process committed units via domain plugin within quarantine boundary
     cells_and_metrics: list[
         tuple[LibraryCell, DomainMetricResult, ManifestRow, dict[str, Any]]
@@ -143,7 +153,17 @@ def run_campaign_eda(
     default_schema = SinkSchema(arrays={})
 
     for row, unit_dir, marker_data in committed_units:
+        before_q_count = len(get_quarantined_units())
         extracted = execute_domain_plugin(plugin, unit_dir, row, default_schema)
+        after_q = get_quarantined_units()
+        if len(after_q) > before_q_count:
+            for new_rec in after_q[before_q_count:]:
+                banner_record = {
+                    "unit_id": new_rec.unit_key,
+                    "type": "quarantined",
+                    "reason": new_rec.reason,
+                }
+                q4_coverage.setdefault("banners", []).append(banner_record)
         for cell, metric_res in extracted:
             cells_and_metrics.append((cell, metric_res, row, marker_data))
 
