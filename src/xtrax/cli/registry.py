@@ -28,6 +28,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from xtrax.cli.campaign_verb import CampaignArgs, run_campaign
 from xtrax.cli.explain import ExplainArgs, run_explain
 from xtrax.cli.export import ExportArgs, run_export
 from xtrax.cli.graph_author_verb import GraphAuthorArgs, run_graph_author
@@ -47,6 +48,7 @@ REGISTRY: dict[str, tuple[type[Any], Callable[..., None]]] = {
     "run": (RunArgs, run_run),
     "resume": (ResumeArgs, run_resume),
     "sweep": (SweepArgs, run_sweep),
+    "campaign": (CampaignArgs, run_campaign),
     "graph-validate": (GraphValidateArgs, run_graph_validate),
     "graph-plan": (GraphPlanArgs, run_graph_plan),
     "graph-author": (GraphAuthorArgs, run_graph_author),

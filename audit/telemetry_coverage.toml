@@ -19,6 +19,10 @@ run = "records"
 resume = "records"
 export = "records"
 sweep = "records"
+# `campaign run` executes unit functions and writes one row per run (kind "eval",
+# context.verb = "campaign"). Its plan/status/verify actions execute nothing, and its
+# SLURM executor only writes a script; each array task records its own row.
+campaign = "records"
 
 # plan/explain compute a batching plan from a spec. They neither execute nor
 # lower user code, so there is no computation to attest to.
