@@ -603,7 +603,7 @@ def _run_eda(args: CampaignArgs) -> dict[str, Any]:
         manifest: CampaignManifest | None = None
         manifest_path = Path(args.manifest) if args.manifest else campaign_dir / "manifest.json"
         if manifest_path.is_file():
-            with open(manifest_path, "r", encoding="utf-8") as f:
+            with open(manifest_path, encoding="utf-8") as f:
                 manifest_dict = json.load(f)
             manifest = CampaignManifest.from_dict(manifest_dict)
 
@@ -612,11 +612,13 @@ def _run_eda(args: CampaignArgs) -> dict[str, Any]:
             manifest=manifest,
             export_artifacts=True,
         )
+        q3_n = len(results["q3_uncertainty"]["rows"])
+        q4_cov = results["q4_coverage"]
         print(f"Executed Campaign EDA for '{results['campaign_id']}':")
         print(f"  - Q1: {len(results['q1_composition']['rows'])} units evaluated")
         print(f"  - Q2: {len(results['q2_scores']['rows'])} scores evaluated")
-        print(f"  - Q3: {len(results['q3_uncertainty']['rows'])} conditions with bootstrap uncertainty")
-        print(f"  - Q4: {results['q4_coverage']['committed_rows']}/{results['q4_coverage']['total_planned_rows']} rows committed")
+        print(f"  - Q3: {q3_n} conditions with bootstrap uncertainty")
+        print(f"  - Q4: {q4_cov['committed_rows']}/{q4_cov['total_planned_rows']} rows committed")
         print(f"  - Q5: {results['q5_telemetry']['pack_telemetry_banner']}")
         print(f"Exported neutral artifacts to {campaign_dir / 'eda'}")
         return results

@@ -47,21 +47,35 @@ import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    for _cand in (
+        "/home/marielle/projects/demistify/.venv/bin/python",
+        "/home/marielle/projects/aminx/.venv/bin/python",
+        "/tmp/py312_venv/bin/python",
+    ):
+        if os.path.exists(_cand) and os.path.realpath(sys.executable) != os.path.realpath(_cand):
+            os.execv(_cand, [_cand, __file__, *sys.argv[1:]])
+    raise
 
 try:
     import zstandard as zstd
 except ImportError:
     zstd = None
 
-from xtrax.campaign.manifest import (
+_REPO_SRC = str(Path(__file__).resolve().parents[2] / "src")
+if _REPO_SRC not in sys.path:
+    sys.path.insert(0, _REPO_SRC)
+
+from xtrax.campaign.manifest import (  # noqa: E402
     CampaignManifest,
     ManifestMetadata,
     ManifestRow,
     ResourceRequirements,
 )
-from xtrax.eda.campaign.runner import run_campaign_eda
-from xtrax.eda.campaign.stats import (
+from xtrax.eda.campaign.runner import run_campaign_eda  # noqa: E402
+from xtrax.eda.campaign.stats import (  # noqa: E402
     calculate_pairwise_diversity,
     compute_best_of_n,
     compute_composition_entropy,
@@ -75,7 +89,7 @@ from xtrax.eda.campaign.stats import (
     looped_cluster_ratio_bootstrap,
     vectorized_cluster_ratio_bootstrap,
 )
-from xtrax.pack import pack_unit
+from xtrax.pack import pack_unit  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("campaign_eda_benchmark")

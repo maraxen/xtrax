@@ -10,6 +10,7 @@ Answers five foundational scientific questions across experimental campaigns:
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -106,13 +107,8 @@ def run_campaign_eda(
         if not manifest_path.exists():
             raise FileNotFoundError(f"Campaign manifest not found at {manifest_path}")
         with open(manifest_path, encoding="utf-8") as f:
-            manifest_dict = sanitize_for_rfc8259(f.read())
-        # Parse manifest or use reader reconciliation
-        manifest = (
-            CampaignManifest.from_json(manifest_dict)
-            if hasattr(CampaignManifest, "from_json")
-            else None
-        )
+            manifest_raw = json.load(f)
+        manifest = CampaignManifest.from_dict(manifest_raw)
 
     # Discover and select domain plugin
     plugins = discover_domain_plugins()
