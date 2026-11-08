@@ -5,9 +5,10 @@ Zero imports of controller/ or bathos.
 """
 
 import os
+import re
 import shlex
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -133,6 +134,19 @@ def _sbatch_log_path(log_path: str, base_dir: str) -> str:
     return str(Path(base_dir.replace("%", "%%")) / log_path)
 
 
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _check_directive_value(name: str, value: str) -> None:
+    """Refuse a resource value an ``#SBATCH`` directive cannot carry intact."""
+    if not value or any(ch.isspace() or ch in "\"'#" for ch in value):
+        msg = (
+            f"SLURM {name} {value!r} is empty or contains whitespace, a quote or '#', "
+            "which an #SBATCH directive cannot carry"
+        )
+        raise ValueError(msg)
+
+
 def _anchor_log_path(log_path: str, base_dir: str) -> str:
     """Return an absolute SLURM log path: absolute input is kept, relative is under ``base_dir``."""
     if Path(log_path).is_absolute():
@@ -155,10 +169,11 @@ class SlurmArrayExecutor:
         *,
         job_name: str = "xtrax_campaign",
         cpus_per_task: int = 4,
-        gpus: int = 1,
+        gpus: int = 0,
         time_limit: str = "02:00:00",
         max_concurrent: int | None = None,
         partition: str | None = None,
+        mem: str | None = None,
         output_log: str = "logs/slurm_%A_%a.out",
         error_log: str = "logs/slurm_%A_%a.err",
         job_id: str | None = None,
@@ -167,16 +182,69 @@ class SlurmArrayExecutor:
         fn_spec: str | None = None,
         max_array_size: int = DEFAULT_MAX_ARRAY_SIZE,
         resume_verify: str = "deep",
+        launcher: Sequence[str] = ("xtrax",),
+        pythonpath: Sequence[str] = (),
+        env: Mapping[str, str] | None = None,
+        env_comments: Sequence[str] = (),
     ) -> None:
+        """Configure the array script.
+
+        Args:
+            gpus: GPUs per array task; 0 (the default) emits no ``--gres`` line.
+            partition: ``--partition`` value (one name or a comma-separated list).
+            mem: ``--mem`` value (e.g. ``"4G"``); None emits no ``--mem`` line.
+            launcher: Command words that run the xtrax CLI in each task. The CLI passes
+                the absolute console script of the generating environment, so tasks do
+                not depend on ``PATH`` or on sbatch exporting the submitting shell.
+            pythonpath: Directories prepended to ``PYTHONPATH`` in each task, for a
+                ``--fn`` module that is importable only from a source tree.
+            env: Variables exported in each task (after every ``#SBATCH`` line).
+            env_comments: Comment lines written above the exports, e.g. which layer
+                decided a baked value.
+
+        Raises:
+            ValueError: If a resource value would break an ``#SBATCH`` directive, a
+                count is out of range, an env name is not a shell identifier, or a
+                ``pythonpath`` entry contains ``:``.
+        """
         from xtrax.campaign.executors.local import _validate_resume_verify
 
         self.resume_verify = _validate_resume_verify(resume_verify)
+        if gpus < 0:
+            raise ValueError(f"gpus must be >= 0, got {gpus}")
+        if cpus_per_task < 1:
+            raise ValueError(f"cpus_per_task must be >= 1, got {cpus_per_task}")
+        if max_concurrent is not None and max_concurrent < 1:
+            raise ValueError(f"max_concurrent must be >= 1, got {max_concurrent}")
+        for name, value in (
+            ("job_name", job_name),
+            ("time_limit", time_limit),
+            ("partition", partition),
+            ("mem", mem),
+        ):
+            if value is not None:
+                _check_directive_value(name, value)
+        if not launcher:
+            raise ValueError("launcher must name at least one command word")
+        for entry in pythonpath:
+            if not entry or ":" in entry or "\n" in entry:
+                raise ValueError(f"pythonpath entry {entry!r} is empty or contains ':'")
+        for key, value in (env or {}).items():
+            if not _ENV_NAME.fullmatch(key):
+                raise ValueError(f"env name {key!r} is not a shell identifier")
+            if "\n" in value or "\x00" in value:
+                raise ValueError(f"env value for {key} contains a newline or NUL")
         self.job_name = job_name
         self.cpus_per_task = cpus_per_task
         self.gpus = gpus
         self.time_limit = time_limit
         self.max_concurrent = max_concurrent
         self.partition = partition
+        self.mem = mem
+        self.launcher = tuple(launcher)
+        self.pythonpath = tuple(pythonpath)
+        self.env = dict(env or {})
+        self.env_comments = tuple(line for c in env_comments for line in c.splitlines())
         self.output_log = output_log
         self.error_log = error_log
         self.job_id = job_id
@@ -306,20 +374,33 @@ class SlurmArrayExecutor:
         directives.append(f"#SBATCH --time={self.time_limit}")
         if self.partition:
             directives.append(f"#SBATCH --partition={self.partition}")
+        if self.mem:
+            directives.append(f"#SBATCH --mem={self.mem}")
         directives.append(f"#SBATCH --output={out_directive}")
         directives.append(f"#SBATCH --error={err_directive}")
+
+        # sbatch stops reading directives at the first command, so every export comes
+        # after the last #SBATCH line.
+        env_lines: list[str] = [f"# {line}" for line in self.env_comments]
+        env_lines += [f"export {key}={shlex.quote(val)}" for key, val in self.env.items()]
+        if self.pythonpath:
+            joined = shlex.quote(":".join(self.pythonpath))
+            env_lines.append(f"export PYTHONPATH={joined}" + "${PYTHONPATH:+:${PYTHONPATH}}")
+        launcher = " ".join(shlex.quote(word) for word in self.launcher)
 
         script_lines = directives + [
             "",
             "set -euo pipefail",
             "",
+            *env_lines,
+            *([""] if env_lines else []),
             f"MANIFEST_PATH={shlex.quote(abs_manifest)}",
             f"OUTPUT_DIR={shlex.quote(abs_output_dir)}",
             f"UNIT_FN={shlex.quote(resolved_fn)}",
             "ROW_INDEX=${SLURM_ARRAY_TASK_ID}",
             "",
             'echo "Executing task ${SLURM_ARRAY_TASK_ID} on $(hostname)"',
-            "xtrax campaign run \\",
+            f"{launcher} campaign run \\",
             '  --manifest "${MANIFEST_PATH}" \\',
             '  --output-dir "${OUTPUT_DIR}" \\',
             '  --fn "${UNIT_FN}" \\',

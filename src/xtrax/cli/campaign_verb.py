@@ -7,6 +7,8 @@ verification.
 
 import contextlib
 import json
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -72,6 +74,33 @@ class CampaignArgs:
     #: 'run' resume check: 'deep' (default) recomputes each completed store's content digest
     #: before reusing it; 'tier1' trusts the done marker and root metadata only (fast path).
     resume_verify: str = "deep"
+    # SLURM array resources (executor 'slurm' only; refused with a local executor).
+    #: --partition for each array task (one name or a comma-separated list).
+    slurm_partition: str | None = None
+    #: GPUs per array task; 0 emits no --gres line.
+    slurm_gpus: int = 0
+    #: --time per array task (HH:MM:SS or D-HH:MM:SS).
+    slurm_time: str = "02:00:00"
+    #: --cpus-per-task per array task.
+    slurm_cpus: int = 4
+    #: --mem per array task (e.g. 4G); unset leaves the partition default.
+    slurm_mem: str | None = None
+    #: --job-name of the array.
+    slurm_job_name: str = "xtrax_campaign"
+    #: Throttle: at most this many array tasks run at once (%N).
+    slurm_max_concurrent: int | None = None
+
+
+#: CampaignArgs fields that only the SLURM executor reads, with their defaults.
+_SLURM_FIELDS = {
+    "slurm_partition": None,
+    "slurm_gpus": 0,
+    "slurm_time": "02:00:00",
+    "slurm_cpus": 4,
+    "slurm_mem": None,
+    "slurm_job_name": "xtrax_campaign",
+    "slurm_max_concurrent": None,
+}
 
 
 def _iter_campaign_files(out_dir: Path, pattern: str) -> list[Path]:
@@ -173,6 +202,84 @@ def _record_campaign_outcome(ledger: Any, summary: Any) -> None:
         )
 
 
+def _fn_import_roots(fn_spec: str) -> list[str]:
+    """Directories an array task must put on ``PYTHONPATH`` to import ``fn_spec``.
+
+    ``load_fn`` has already imported the module, so its top-level package says where it
+    was found. A location inside the running environment or the base interpreter
+    (``sys.prefix``, ``sys.exec_prefix``, ``sys.base_prefix``) is importable in every
+    task already; anything else (a source tree found through the cwd or ``PYTHONPATH``)
+    is returned so the task does not depend on the submitting shell's environment.
+    """
+    top = fn_spec.rsplit(":", 1)[0].split(".")[0]
+    mod = sys.modules.get(top)
+    if mod is None:
+        return []
+    locations = list(getattr(mod, "__path__", None) or [])
+    if locations:
+        parents = [Path(loc).absolute().parent for loc in locations]
+    elif getattr(mod, "__file__", None):
+        parents = [Path(str(mod.__file__)).absolute().parent]
+    else:
+        return []
+    prefixes = {Path(p).absolute() for p in (sys.prefix, sys.exec_prefix, sys.base_prefix)}
+    roots: list[str] = []
+    for parent in parents:
+        if any(parent == pre or pre in parent.parents for pre in prefixes):
+            continue
+        if str(parent) not in roots:
+            roots.append(str(parent))
+    return roots
+
+
+def _slurm_task_environment(
+    fn_spec: str,
+) -> tuple[list[str], list[str], dict[str, str], list[str]]:
+    """What each array task needs to run as this process would, baked at generation.
+
+    Returns the launcher (the absolute ``xtrax`` console script of the running
+    environment), the ``PYTHONPATH`` roots for ``fn_spec``, the exported variables (the
+    resolved, absolute run-ledger root and the telemetry opt-out) and comment lines that
+    name the layer each value came from. Array tasks start in sbatch's working directory,
+    possibly with no exported environment (``--export=NONE``), so nothing here may
+    depend on ``PATH``, the cwd or the submitting shell.
+
+    Raises:
+        CLIError: If the running environment has no ``xtrax`` console script.
+    """
+    from xtrax.telemetry.ledger import DEFAULT_LEDGER_ROOT, resolve_root
+    from xtrax.telemetry.record import telemetry_opted_out
+
+    # Not .resolve(): a venv's bin/python is a symlink to the base interpreter, whose
+    # directory has no xtrax script and cannot import this environment's packages.
+    script = Path(sys.executable).absolute().parent / "xtrax"
+    if not script.is_file():
+        raise CLIError(
+            f"Cannot generate a SLURM script: no xtrax console script next to "
+            f"{sys.executable} (looked for {script}). Run `xtrax campaign run --executor "
+            "slurm` from the environment the array tasks should use."
+        )
+    pythonpath = _fn_import_roots(fn_spec)
+    ledger_root = resolve_root().absolute()
+    if (os.environ.get("XTRAX_LEDGER_ROOT") or "").strip():
+        ledger_source = "XTRAX_LEDGER_ROOT at generation"
+    else:
+        ledger_source = f"the default {DEFAULT_LEDGER_ROOT} under the generating directory"
+    env = {"XTRAX_LEDGER_ROOT": str(ledger_root)}
+    comments = [
+        "Baked by `xtrax campaign run --executor slurm`; tasks need no PATH, cwd or",
+        "exported shell (works with sbatch --export=NONE).",
+        f"xtrax: console script of the generating environment ({script.parent.parent})",
+        f"XTRAX_LEDGER_ROOT: decided by {ledger_source}",
+    ]
+    if pythonpath:
+        comments.append(f"PYTHONPATH: import root of --fn {fn_spec}, outside the environment")
+    if telemetry_opted_out():
+        env["XTRAX_TELEMETRY_OPTOUT"] = "1"
+        comments.append("XTRAX_TELEMETRY_OPTOUT: set at generation")
+    return [str(script)], pythonpath, env, comments
+
+
 def _run_run(args: CampaignArgs) -> Any:
     """Execute 'xtrax campaign run'."""
     try:
@@ -232,16 +339,41 @@ def _run_run(args: CampaignArgs) -> Any:
     elif executor_kind in ("local-pool", "local_pool", "pool"):
         executor = LocalProcessPoolExecutor(resume_verify=resume_mode)
     elif executor_kind in ("slurm", "slurm-array"):
-        executor = SlurmArrayExecutor(
-            manifest_path=manifest_path.resolve(),
-            fn_spec=args.fn,
-            resume_verify=resume_mode,
-        )
+        launcher, pythonpath, env, env_comments = _slurm_task_environment(args.fn)
+        try:
+            executor = SlurmArrayExecutor(
+                manifest_path=manifest_path.resolve(),
+                fn_spec=args.fn,
+                resume_verify=resume_mode,
+                job_name=args.slurm_job_name,
+                cpus_per_task=args.slurm_cpus,
+                gpus=args.slurm_gpus,
+                time_limit=args.slurm_time,
+                partition=args.slurm_partition,
+                mem=args.slurm_mem,
+                max_concurrent=args.slurm_max_concurrent,
+                launcher=launcher,
+                pythonpath=pythonpath,
+                env=env,
+                env_comments=env_comments,
+            )
+        except ValueError as exc:
+            raise CLIError(str(exc)) from exc
     else:
         raise CLIError(
             f"Unknown executor: {args.executor!r}. "
             "Expected one of 'local-seq', 'local-pool', 'slurm'"
         )
+    if not isinstance(executor, SlurmArrayExecutor):
+        set_flags = [
+            "--" + name.replace("_", "-")
+            for name, default in _SLURM_FIELDS.items()
+            if getattr(args, name) != default
+        ]
+        if set_flags:
+            raise CLIError(
+                f"{', '.join(set_flags)} only apply to --executor slurm, not {args.executor!r}"
+            )
 
     # A run that executes unit functions writes one run-ledger row (telemetry contract:
     # audit/telemetry_coverage.toml). The SLURM executor only writes a script; each
