@@ -72,6 +72,35 @@ class CampaignArgs:
     #: 'run' resume check: 'deep' (default) recomputes each completed store's content digest
     #: before reusing it; 'tier1' trusts the done marker and root metadata only (fast path).
     resume_verify: str = "deep"
+    # SLURM array resources (executor 'slurm' only; any of them with a local executor is
+    # refused). Unset means the SlurmArrayExecutor default, shown in brackets.
+    #: --partition for each array task (one name or a comma-separated list) [none].
+    slurm_partition: str | None = None
+    #: GPUs per array task; 0 emits no --gres line [0].
+    slurm_gpus: int | None = None
+    #: --time per array task (HH:MM:SS or D-HH:MM:SS) [02:00:00].
+    slurm_time: str | None = None
+    #: --cpus-per-task per array task [4].
+    slurm_cpus: int | None = None
+    #: --mem per array task (e.g. 4G) [partition default].
+    slurm_mem: str | None = None
+    #: --job-name of the array [xtrax_campaign].
+    slurm_job_name: str | None = None
+    #: Throttle: at most this many array tasks run at once (%N) [no limit].
+    slurm_max_concurrent: int | None = None
+
+
+#: CampaignArgs SLURM field -> SlurmArrayExecutor keyword. Only fields that were set are
+#: passed, so the executor's defaults are the only copy.
+_SLURM_FIELDS = {
+    "slurm_partition": "partition",
+    "slurm_gpus": "gpus",
+    "slurm_time": "time_limit",
+    "slurm_cpus": "cpus_per_task",
+    "slurm_mem": "mem",
+    "slurm_job_name": "job_name",
+    "slurm_max_concurrent": "max_concurrent",
+}
 
 
 def _iter_campaign_files(out_dir: Path, pattern: str) -> list[Path]:
@@ -232,16 +261,35 @@ def _run_run(args: CampaignArgs) -> Any:
     elif executor_kind in ("local-pool", "local_pool", "pool"):
         executor = LocalProcessPoolExecutor(resume_verify=resume_mode)
     elif executor_kind in ("slurm", "slurm-array"):
-        executor = SlurmArrayExecutor(
-            manifest_path=manifest_path.resolve(),
-            fn_spec=args.fn,
-            resume_verify=resume_mode,
-        )
+        resources = {
+            kw: getattr(args, name)
+            for name, kw in _SLURM_FIELDS.items()
+            if getattr(args, name) is not None
+        }
+        try:
+            executor = SlurmArrayExecutor(
+                manifest_path=manifest_path.resolve(),
+                fn_spec=args.fn,
+                resume_verify=resume_mode,
+                **resources,
+            )
+        except ValueError as exc:
+            raise CLIError(str(exc)) from exc
     else:
         raise CLIError(
             f"Unknown executor: {args.executor!r}. "
             "Expected one of 'local-seq', 'local-pool', 'slurm'"
         )
+    if not isinstance(executor, SlurmArrayExecutor):
+        set_flags = [
+            "--" + name.replace("_", "-")
+            for name in _SLURM_FIELDS
+            if getattr(args, name) is not None
+        ]
+        if set_flags:
+            raise CLIError(
+                f"{', '.join(set_flags)} only apply to --executor slurm, not {args.executor!r}"
+            )
 
     # A run that executes unit functions writes one run-ledger row (telemetry contract:
     # audit/telemetry_coverage.toml). The SLURM executor only writes a script; each

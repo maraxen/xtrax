@@ -18,6 +18,9 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [261108_campaign-lease-fencing-token](specs/261108_campaign-lease-fencing-token.md) — Spec for a fencing token on xtrax campaign leases so a stalled holder cannot clobber a stealer's commit, abort cleanup or lock.
+- [261108_campaign-row-hash-output-locator](specs/261108_campaign-row-hash-output-locator.md) — Spec to bind a manifest row's output_locator to its hash without touching input_hash, so aminx parity (GATE-11) is unaffected.
+- [261030_ledger-pack-fileguard](specs/261030_ledger-pack-fileguard.md)
 - [261028_xtrax-eda-redesign](specs/261028_xtrax-eda-redesign.md) — Specification for redesigning xtrax.eda into a compiler-plan inspection engine using Vega-Lite canonical interchange, entry-point panel plugins, bitwise-deterministic JSON exports, progressive offline HTML dashboards, and strict isolation from maraxiom.eda
 - [261023_equinox-decoupling](specs/261023_equinox-decoupling.md) — Make xtrax depend only on jax/optax for its pytree layer, with one implementation and Equinox models and downstream eqx.field subclasses still working (Part 1 of the equinox/Pallas plan)
 - [261023_kernel-seam-xtrax-op](specs/261023_kernel-seam-xtrax-op.md) — Part 2 of the equinox-decouple-pallas epic: xtrax.op(reference, kernels) as a custom_jvp whose primal is a backend kernel and whose derivative is the reference's JVP; consumers write reference+kernel pairs now; first GPU target is demistify's pairwise joint histogram
