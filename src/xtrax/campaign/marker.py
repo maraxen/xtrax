@@ -94,9 +94,14 @@ class CampaignDoneMarker:
     completed_at_utc: str
     completed_at_unix_s: float
     duration_s: float
+    #: Fence and owner of the lease that committed the unit (#3312). Optional and
+    #: informational: a marker older than the unit's ``.fence`` high-water mark was written
+    #: by a holder that had been superseded. Absent from markers written before #3312.
+    lease_fence: int | None = None
+    owner_token: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "schema_version": self.schema_version,
             "manifest_row_hash": self.manifest_row_hash,
             "input_hash": self.input_hash,
@@ -107,6 +112,11 @@ class CampaignDoneMarker:
             "completed_at_unix_s": self.completed_at_unix_s,
             "duration_s": self.duration_s,
         }
+        if self.lease_fence is not None:
+            data["lease_fence"] = self.lease_fence
+        if self.owner_token is not None:
+            data["owner_token"] = self.owner_token
+        return data
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2)
@@ -127,6 +137,8 @@ class CampaignDoneMarker:
             completed_at_utc=str(data.get("completed_at_utc", "")),
             completed_at_unix_s=float(data.get("completed_at_unix_s", 0.0)),
             duration_s=float(data.get("duration_s", 0.0)),
+            lease_fence=None if data.get("lease_fence") is None else int(data["lease_fence"]),
+            owner_token=None if data.get("owner_token") is None else str(data["owner_token"]),
         )
 
     @classmethod

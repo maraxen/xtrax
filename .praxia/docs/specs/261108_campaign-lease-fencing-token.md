@@ -1,7 +1,7 @@
 ---
 title: Campaign lease fencing token (#3312)
 description: Spec for a fencing token on xtrax campaign leases so a stalled holder cannot clobber a stealer's commit, abort cleanup or lock.
-status: reviewed
+status: implemented
 task_id: 261108_campaign-debt-specs
 date: '261108'
 backlog_ids: ''
@@ -181,4 +181,16 @@ Round 1, 261109. Challenger: Antigravity headless via `surface_dispatch` (dispat
 | 11 | minor | Test 2 cannot produce a stealer `.commit` with the holder parked after step 7 | accepted; test 2 split |
 
 Open decision carried to implementation: assumption 13 (mixed-version fleets). Default: unsupported, documented in the changelog; old-format locks still acquire and steal (test 6).
+
+## 8. Implementation notes (261109)
+
+Implemented on branch `feat/campaign-3312-3308` (PR #270). Tests: `tests/campaign/test_lease_fencing_3312.py`, 15 tests.
+
+- Red first: the nine race tests (1-4, 7, 12, 13 and the split test 2) were committed in 85a990f and each failed on b14a5a4 for the intended reason. Each parks one worker through a narrow hook (`abort_event.is_set`, a thread-filtered `os.fsync`/`fsync_file`, a patched `_check_resume_done`, a parking unit function) and expires its lease by rewriting the lock, so no sleeps stand in for a stall.
+- Tests 9 and 10 were mutation-checked: each fails when its mechanism (renewal-advanced deadline; holder-checked, rise-only `.fence` write) is removed.
+- The injectable clock is the module function `lease._boottime`, monkeypatched in tests, rather than new constructor parameters (R2 avoided).
+- `FileLock.assert_holder()` is public: the executor calls it at `_set_aside_orphaned_output`, `_stage_unit_output` and abort cleanup.
+- `commit_output` now returns the marker as written (with `lease_fence`, `owner_token`); two tests that compared it to the input marker were updated. Two stress tests that build a "holder" by setting `is_locked = True` on a fresh `FileLock` now adopt the on-disk lock's `acquired_at` and `fence`, since the check compares the whole triple.
+- The steal token now holds the stealer's owner token; the steal re-checks it and the lock bytes before `os.replace`, and removes the token on exit only if it is still ours.
+- `tests/campaign` + `tests/cli`: 520 passed, 1 skipped. gate_07 (50 units) runs in 36 s against 43 s before the change, so the extra lock reads cost nothing visible.
 

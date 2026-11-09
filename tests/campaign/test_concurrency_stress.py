@@ -117,7 +117,11 @@ def _worker_commit_only(
         manifest_row_hash=row_hash,
         lease_seconds=300,
     )
-    # Mark as locked locally to attempt commit
+    # Adopt the lease held on disk (same owner) so this worker reaches the commit phase;
+    # the lease check compares owner, acquired_at and fence (#3312).
+    held = json.loads(lock.lock_path.read_text(encoding="utf-8"))
+    lock.acquired_at_unix_s = held["acquired_at_unix_s"]
+    lock.fence = held["fence"]
     lock.is_locked = True
 
     partial_dir = out_path.with_name(f"{out_path.name}.partial.{attempt_uuid}")

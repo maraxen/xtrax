@@ -491,3 +491,148 @@ def test_reclaim_stops_when_lock_is_rewritten_mid_removal(
     assert reclaimed == []
     assert _owner(lock_path) == "other:9:zzzz"
     assert len(list(out.parent.glob(f"{out.name}.partial.*"))) == 1
+
+
+# --- fence mechanics ------------------------------------------------------------------
+
+
+def _stale_lock(lock_path: Path, extra: dict) -> None:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    old = time.time() - 100_000
+    body = {
+        "schema_version": "campaign_lock_v1",
+        "owner_token": "dead:1:dddd",
+        "manifest_row_hash": ROW.manifest_row_hash,
+        "acquired_at_unix_s": old,
+        "lease_expires_at_unix_s": old,
+        "lease_seconds": LEASE,
+        "heartbeat_count": 0,
+        **extra,
+    }
+    lock_path.write_text(json.dumps(body), encoding="utf-8")
+    os.utime(lock_path, (old, old))
+
+
+def test_fence_rises_across_release_and_steal(tmp_path: Path) -> None:
+    _, out = _paths(tmp_path)
+    fence_file = out.with_name(f"{out.name}.fence")
+    first = FileLock(out, "w1:1:aaaa", ROW.manifest_row_hash, lease_seconds=LEASE)
+    assert first.acquire()
+    assert first.fence == 1
+    first.release()
+    second = FileLock(out, "w2:1:bbbb", ROW.manifest_row_hash, lease_seconds=LEASE)
+    assert second.acquire()
+    assert second.fence == 2
+    assert int(fence_file.read_text()) == 2
+    second.release()
+
+    _stale_lock(second.lock_path, {"fence": 7})
+    stealer = FileLock(out, "w3:1:cccc", ROW.manifest_row_hash, lease_seconds=LEASE)
+    assert stealer.acquire()
+    assert stealer.fence == 8
+    assert int(fence_file.read_text()) == 8
+    assert json.loads(stealer.lock_path.read_text())["fence"] == 8
+    stealer.release()
+
+
+def test_old_format_lock_and_marker_accepted(tmp_path: Path) -> None:
+    """Locks without ``fence`` and markers without ``lease_fence`` still work."""
+    output_dir, out = _paths(tmp_path)
+    _stale_lock(out.with_name(f"{out.name}.lock"), {})  # no "fence" key
+    stealer = FileLock(out, "new:1:aaaa", ROW.manifest_row_hash, lease_seconds=LEASE)
+    assert stealer.acquire()
+    assert stealer.fence == 1
+    stealer.release()
+
+    assert _execute_single_unit(ROW, array_unit, output_dir) == UNIT_COMMITTED
+    marker_path = out.with_name(f"{out.name}.done.json")
+    data = json.loads(marker_path.read_text())
+    assert data["lease_fence"] >= 1
+    assert data["owner_token"].startswith("local:")
+    for key in ("lease_fence", "owner_token"):
+        data.pop(key)
+    marker_path.write_text(json.dumps(data), encoding="utf-8")
+    assert local_module._check_resume_done(output_dir, ROW, resume_verify="deep")
+
+
+def test_renewing_holder_passes_assert_holder_past_lease_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(lease_module, "_boottime", lambda: clock[0])
+    holder, out, partial, marker = _holder_with_staged_partial(tmp_path)
+    try:
+        assert holder.heartbeat is not None
+        assert holder.current_local_deadline() == 1000.0 + LEASE
+        clock[0] = 1000.0 + LEASE - 10
+        assert holder.heartbeat._renew_lease_cas()
+        clock[0] = 1000.0 + LEASE + 400  # past an acquire-time deadline, inside the renewed one
+        holder.assert_holder()
+        result = holder.commit_output(
+            partial_path=partial, output_path=out, done_marker=marker, attempt_uuid="h1"
+        )
+        assert result.lease_fence == holder.fence
+    finally:
+        holder.release()
+
+
+def test_lapsed_local_deadline_fails_assert_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(lease_module, "_boottime", lambda: clock[0])
+    holder, *_ = _holder_with_staged_partial(tmp_path)
+    try:
+        clock[0] = 1000.0 + LEASE  # no renewal happened (e.g. the heartbeat thread stalled)
+        with pytest.raises(LeaseLostError, match="local lease deadline"):
+            holder.assert_holder()
+    finally:
+        holder.release()
+
+
+def test_stale_holder_cannot_roll_back_fence(tmp_path: Path) -> None:
+    _, out = _paths(tmp_path)
+    holder = FileLock(out, "holder:1:aaaa", ROW.manifest_row_hash, lease_seconds=LEASE)
+    park = _Park()
+    real_raise = holder._raise_fence_file
+
+    def parked_raise() -> None:
+        park()
+        real_raise()
+
+    holder._raise_fence_file = parked_raise  # ty: ignore[invalid-assignment]
+    thread, box = _run_in_thread("holder", holder.acquire)
+    stealer = FileLock(out, "stealer:1:bbbb", ROW.manifest_row_hash, lease_seconds=LEASE)
+    try:
+        assert park.parked.wait(5.0)
+        _expire_lock(holder.lock_path)
+        assert stealer.acquire()
+        assert stealer.fence == 2
+        park.resume.set()
+        thread.join(10.0)
+        assert box.get("result") is True
+        assert int(out.with_name(f"{out.name}.fence").read_text()) == 2
+        with pytest.raises(LeaseLostError):
+            holder.assert_holder()
+    finally:
+        park.resume.set()
+        stealer.release()
+        holder.release()
+
+
+def test_clobbering_heartbeat_fails_assert_holder(tmp_path: Path) -> None:
+    """In the residual window a stale renewal can land over a stolen lock; .fence catches it."""
+    _, out = _paths(tmp_path)
+    holder = FileLock(out, "holder:1:aaaa", ROW.manifest_row_hash, lease_seconds=LEASE)
+    assert holder.acquire()
+    holder_body = holder.lock_path.read_text(encoding="utf-8")
+    stealer = FileLock(out, "stealer:1:bbbb", ROW.manifest_row_hash, lease_seconds=LEASE)
+    try:
+        _expire_lock(holder.lock_path)
+        assert stealer.acquire()
+        holder.lock_path.write_text(holder_body, encoding="utf-8")  # the clobbering replace
+        with pytest.raises(LeaseLostError, match="superseded"):
+            holder.assert_holder()
+    finally:
+        stealer.release()
+        holder.release()

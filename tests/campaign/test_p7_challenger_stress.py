@@ -268,6 +268,10 @@ def test_concurrent_commit_singleton_token_mutual_exclusion(tmp_path: Path) -> N
             manifest_row_hash=row_hash,
             lease_seconds=300,
         )
+        # Adopt the lease held on disk (#3312: the check compares owner, epoch and fence).
+        held = json.loads(t_lock.lock_path.read_text(encoding="utf-8"))
+        t_lock.acquired_at_unix_s = held["acquired_at_unix_s"]
+        t_lock.fence = held["fence"]
         t_lock.is_locked = True
         try:
             res = t_lock.commit_output(
