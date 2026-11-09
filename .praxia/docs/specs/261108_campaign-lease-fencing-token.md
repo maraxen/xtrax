@@ -1,11 +1,11 @@
 ---
 title: Campaign lease fencing token (#3312)
 description: Spec for a fencing token on xtrax campaign leases so a stalled holder cannot clobber a stealer's commit, abort cleanup or lock.
-status: draft
+status: reviewed
 task_id: 261108_campaign-debt-specs
 date: '261108'
 backlog_ids: ''
-adversarial_review: ''
+adversarial_review: 'round 1 (261109): Antigravity challenger, surface_dispatch f1e7eb4e, SOUND_WITH_FIXES; 11 findings, all verified against code and folded in (section 7)'
 ---
 # Campaign lease fencing token (#3312)
 
@@ -51,35 +51,45 @@ Bumping. A persistent high-water file `<out>.fence` (plain integer, never unlink
 
 - Fresh acquire (`lease.py:295`, serialized by `O_EXCL` on `.lock`): `fence = read(.fence, default 0) + 1`, written into the lock body, then the holder writes `.fence = fence` by tmp plus `os.replace`. Only the lock holder writes `.fence`.
 - Steal (`lease.py:353-389`, serialized by the `.steal` token plus byte-CAS): `fence = max(read(.fence), stolen_lock.fence) + 1`.
+- `.fence` only rises (finding 2). The write is: re-read the lock and confirm it is still ours (owner, fence, acquired_at); re-read `.fence`; replace only if our fence is greater. A holder that stalled between creating the lock and writing `.fence` therefore cannot roll back a stealer's higher value. The read-compare-replace is itself check-then-act, so `.fence` can still lag in the R1 window; it never moves backward through this path except in that window.
 
-If a holder dies between writing the lock and `.fence`, the next acquirer can reuse the same fence value. That is acceptable because every check compares the whole triple including `owner_token`. The fence supplies ordering where order is needed (markers, forensics); owner uniqueness supplies identity.
+If a holder dies between writing the lock and `.fence`, the next acquirer can reuse the same fence value. That is acceptable because every check compares the whole triple including `owner_token`. The fence supplies ordering where order is needed (markers, forensics, the `.fence` check in `_assert_holder`); owner uniqueness supplies identity.
 
 ### Check before each destructive step
 
-One helper, `FileLock._assert_holder()`: read the lock; require `owner_token`, `fence`, `acquired_at` equal to ours, no `abort_event`, and a local lease deadline not passed (`time.monotonic()` against the acquire-time deadline, so a wall-clock step cannot extend it). Raise `LeaseLostError` otherwise. Call it immediately before:
+One helper, `FileLock._assert_holder()`: read the lock; require `owner_token`, `fence`, `acquired_at` equal to ours; require our fence >= `read(.fence)` (finding 8: catches a stale heartbeat that clobbered a stealer's lock, since the stealer raised `.fence`); no `abort_event`; and the local lease deadline not passed. Raise `LeaseLostError` otherwise.
+
+Local deadline (finding 1). It is NOT fixed at acquire. It starts at `boottime_at_acquire + lease_seconds` and each successful heartbeat renewal advances it to `boottime_sampled_before_the_renewal_write + lease_seconds`, set only after the post-verify passes (`lease.py:246-254`). Sampling before the write keeps it conservative. `boottime` is `time.clock_gettime(time.CLOCK_BOOTTIME)` on Linux and `time.monotonic()` elsewhere, so neither a wall-clock step nor a suspend extends it. A healthy holder whose heartbeat renews keeps passing however long the unit runs (test 9).
+
+Call `_assert_holder()` immediately before:
 
 | Step | Site | Change |
 |---|---|---|
+| steal replace | `lease.py:382` | re-read our `.steal` token body (owner) and redo the lock byte-CAS immediately before `os.replace`; abort the steal otherwise (finding 6: a stealer stalled past the token-reclaim age must not clobber a later stealer) |
+| lost-lease `.commit` unlink | `lease.py:563-565` | unlink only if the token body's `owner_token` and `fence` are ours (finding 3) |
 | quarantine of orphan | `lease.py:574-577` | check first |
 | promote store | `lease.py:578` | check first |
 | marker replace | `lease.py:584` | check first |
 | `.commit` unlink | `lease.py:592` | unlink only if the token body's `owner_token` and `fence` are ours |
 | `.lock` unlink | `lease.py:600-602`, `463-468` | unlink only if the body matches the triple |
+| orphan set-aside before the unit runs | `local.py:246` (`_set_aside_orphaned_output` → `quarantine_output`) | pass the lock in; check first (finding 4) |
+| staging move of a unit-written store | `local.py:337` (`os.replace(output_path, partial_path)` in `_stage_unit_output`) | pass the lock in; check first (finding 5: otherwise a stale holder moves the stealer's store into its own partial and abort cleanup deletes it) |
 | abort cleanup | `local.py:490-498` | skip quarantine unless `_assert_holder()` passes |
 | heartbeat replace | `lease.py:242` | re-read and compare the triple immediately before `os.replace` |
-| reclaim | `local.py:734-740` | move the lock re-read before the partial removal |
+| reclaim | `local.py:734-740` | compare the lock bytes before removing partials AND again immediately before the lock unlink (finding 7; the existing re-read at `:740` stays) |
 
 `.commit` bodies gain `fence` (written at `lease.py:532-536`). `_clear_stale_commit_token` (`lease.py:439`) keeps its owner test.
 
 ### Make the residual harmless where possible
 
-1. The done marker gains optional `lease_fence: int | None` and `owner_token: str | None`, written in `commit_output`. The marker schema version is NOT bumped: `validate_unit_done` requires the exact schema string (`marker.py:427-428`), so a bump would invalidate every existing marker.
+1. The done marker gains optional `lease_fence: int | None` and `owner_token: str | None` fields on `CampaignDoneMarker` (frozen, slots: `marker.py:82-109`), set in `commit_output` with `dataclasses.replace` before serializing (finding 9). `from_dict` drops unknown keys (`marker.py:114-130`), so the fields must be declared there too. The marker schema version is NOT bumped: `validate_unit_done` requires the exact schema string (`marker.py:427-428`), so a bump would invalidate every existing marker.
 2. After step 7 the finisher re-reads the lock; if it is no longer the holder it logs `lease_lost_after_commit` with both fences and raises `LeaseLostError` instead of reporting success. Store and marker stay for the next resume to verify with `deep`.
 3. `StolenAttemptDiscarded` on the stealer's side stays as is.
 
 ### What the token does and does not guarantee
 
-- Does: close every window except the gap between a check and the following `rename`/`unlink`. Today the windows are lease + 300 s wide; after this they are one syscall pair wide.
+- Does: close every window except the gap between a check and the following `rename`/`unlink`. Today the windows are lease + 300 s wide; after this they are one syscall pair wide, except step 6, where `quarantine_output` is several syscalls (`marker.py:288-312`), so its window is that whole call (finding 10).
+- Relies on NFS close-to-open consistency: each check opens and reads the lock file, which revalidates cached attributes on open. A mount with `nocto` or a long `actimeo` can serve a stale lock without any stall; such mounts are unsupported for campaign output (finding 10).
 - Does not: make check-then-act atomic. POSIX has no conditional rename on NFS or Lustre, and `flock` is unreliable there. A stall in exactly the check-to-rename gap, longer than lease + 300 s, still reproduces interleaving A step 5. This is residual risk R1: detectable (marker `lease_fence` older than the current `.fence`, or a `deep` digest mismatch) but not preventable without per-attempt final paths.
 - Does not: fence the unit function. It protects the commit steps only; a unit that writes outside `.partial.<uuid>` or straight to `output_path` is unprotected until commit.
 - Gives no cross-host clock guarantee. `time.monotonic()` bounds the local deadline; the stealer's wall-clock test is unchanged.
@@ -106,15 +116,20 @@ No on-disk campaign needs migration.
 Fixtures reuse the park-in-`fsync_file` pattern (`test_heartbeat.py:20-57`) and the hand-written lock payloads of `test_lease.py:273-362` and `test_commit_protocol.py:187-229`. No sleeps: events plus an injectable clock (`clock`/`monotonic` callables on `FileLock` and `HeartbeatThread`, defaults unchanged).
 
 1. `test_stalled_holder_cannot_quarantine_stealer_store` (A). Holder acquires, stages a partial, parks (event) at the start of step 6 via a monkeypatched hook. Advance the injected clock past lease + 300 s and age the lock mtime with `os.utime`. Stealer acquires and commits fully. Release the holder. Assert: holder raises `LeaseLostError`; stealer's store and marker digest are unchanged; no quarantine directory exists. Red today: store and marker are quarantined.
-2. `test_stalled_holder_does_not_unlink_stealer_lock_or_commit_token` (B). Holder parks before step 8. Stealer holds a live lock and a `.commit`. After resume both files still carry the stealer's body.
+2. `test_stalled_holder_does_not_unlink_stealer_lock_or_commit_token` (B, finding 3). Two cases, because a holder parked after step 7 has already stamped `.done.json`, so a stealer discards at step 1 and never creates `.commit` (finding 11). (a) `.lock`: holder parks before step 8; stealer holds a live lock; after resume `.lock` still carries the stealer's body. (b) `.commit`: holder parks between step 4 and step 5; stealer steals and creates its own `.commit`; holder resumes, takes the lost-lease path (`lease.py:563-565`); the stealer's `.commit` survives.
 3. `test_abort_cleanup_does_not_quarantine_stealer_output` (C). Drive `_execute_single_unit` with a unit function that parks; steal meanwhile; stealer writes a partial output at `output_path`; holder raises. Assert the stealer's directory is untouched.
 4. `test_heartbeat_replace_after_steal_is_refused` (D). Extend the parked-fsync test: steal while the renewal is parked, resume, assert the lock still carries the stealer's owner and fence.
 5. `test_fence_monotonic_across_release_and_steal`. acquire, release, acquire gives fence 1 then 2. Steal from a fence-7 lock gives at least 8. Lock without `fence` gives 1.
 6. `test_old_format_lock_and_marker_accepted`. Locks and markers without the new fields acquire, steal, validate and resume.
-7. `test_reclaim_rereads_lock_before_removing_partials`. Rewrite the lock between read and partial removal; the other owner's partials survive.
-8. Regression: `test_heartbeat.py`, `test_lease.py`, `test_r3_lease.py`, `test_commit_protocol.py`, `test_concurrency_stress.py` stay green. Narrow files only; never the whole suite on this box.
+7. `test_reclaim_rereads_lock_before_removing_partials`. Rewrite the lock between read and partial removal; the other owner's partials survive. Also rewrite it during partial removal; the lock is not unlinked.
+9. `test_renewing_holder_passes_assert_holder_past_lease_seconds` (finding 1). Injected clock: acquire with a short lease, run renewals past `lease_seconds`, then commit succeeds. Red against an acquire-time deadline.
+10. `test_stale_holder_cannot_roll_back_fence` (finding 2). Holder parks between lock create and `.fence` write; stealer raises `.fence`; holder resumes; `.fence` keeps the stealer's value and the holder's next `_assert_holder` fails.
+11. `test_clobbering_heartbeat_fails_assert_holder` (finding 8). Force the residual: holder's heartbeat replace lands over a stealer's lock (bypassing the replace-time check via a hook); the holder's next `_assert_holder` raises because its fence < `.fence`.
+12. `test_stalled_holder_cannot_set_aside_or_stage_stealer_store` (findings 4, 5). Park the holder after acquire before `_set_aside_orphaned_output`, and separately after `unit_fn` returns before `_stage_unit_output`; stealer writes its store at `output_path`; the store survives both.
+13. `test_stalled_stealer_cannot_clobber_later_stealer` (finding 6). Stealer S1 parks before the steal `os.replace`; age its `.steal` token past the reclaim age; S2 steals; S1 resumes and aborts; the lock carries S2.
+14. Regression: `test_heartbeat.py`, `test_lease.py`, `test_r3_lease.py`, `test_commit_protocol.py`, `test_concurrency_stress.py` stay green. Narrow files only; never the whole suite on this box.
 
-For 1-4, commit each test against unmodified code and show the failing assertion before the fix.
+For 1-4 and 12-13, commit each test against unmodified code and show the failing assertion before the fix. 9-11 test new mechanisms and are red against a naive implementation of the first draft.
 
 ## 5. Assumptions
 
@@ -131,7 +146,7 @@ For 1-4, commit each test against unmodified code and show the failing assertion
 | 9 | Nothing outside `local.py`/`lease.py` globs `<out>.*` and would pick up `.fence` | verified 261109 for xtrax: `cli/campaign_verb.py:113` rglobs `*.done.json`/`*.lock`, `:417`/`:422` `.quarantine`/`*.corrupt.*`; `local.py:734` `.partial.*`; `pack/_node.py:316,744` walk the unit dir only. aminx/alynxr globs not audited | no |
 | 10 | `os.replace` is atomic within one directory on Lustre and NFS | unverified (inherited from the existing protocol) | no |
 | 11 | `time.monotonic()` advances across SIGSTOP (CLOCK_MONOTONIC does; VM suspend may not) | verified (Linux semantics): `time.monotonic()` is CLOCK_MONOTONIC, which advances across SIGSTOP and stops during system suspend; CLOCK_BOOTTIME advances across both | yes: the local deadline uses `time.clock_gettime(time.CLOCK_BOOTTIME)` on Linux, `monotonic()` elsewhere |
-| 12 | A stalled process freezes its heartbeat thread too | unverified | yes: if only the heartbeat thread stalls, D is the primary window |
+| 12 | A stalled process freezes its heartbeat thread too | no longer load-bearing (261109): with the renewal-advanced local deadline, a heartbeat-only stall stops renewals, the deadline lapses and the main thread's next `_assert_holder` fails; a main-thread-only stall keeps the lease renewed, so nothing is stolen | no |
 | 13 | Mixed-version fleets mid-campaign are not a supported mode | unverified | yes: otherwise add a lock schema version |
 | 14 | `executors/slurm.py` takes locks only through `FileLock` | verified 261109: array tasks run `campaign run --executor local-seq --row-index` (`slurm.py:504-510`) into `_execute_single_unit`; the only `FileLock(` and `.lock` O_EXCL sites are `lease.py:295` and `local.py:413` | no |
 
@@ -145,5 +160,25 @@ Risks:
 - R3: `_assert_holder` adds 3-5 small reads per commit on NFS; negligible against unit runtime.
 - R4: a `.fence` write failure after the lock create; handled by the triple compare, covered by test 5.
 
-Size: about 150-200 lines in `lease.py` and `local.py`, about 10 in `marker.py`, about 350 lines of tests. One PR, one session. No bathos pre-registration: a correctness fix with deterministic tests, no finding.
+Size (revised 261109): about 250-300 lines in `lease.py` and `local.py`, about 15 in `marker.py`, about 550 lines of tests. One PR. No bathos pre-registration: a correctness fix with deterministic tests, no finding.
+
+## 7. Adversarial review log
+
+Round 1, 261109. Challenger: Antigravity headless via `surface_dispatch` (dispatch `f1e7eb4e-de6a-4941-bc88-b72b3cf15cad`, role reviewer, document mode, admitted, containment `agent_sandbox`), on commit d23f195. Verdict SOUND_WITH_FIXES. Each finding was checked against the code at the cited lines by the orchestrator before it was accepted. No defender round: no blocker was disputed.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| 1 | blocker | Acquire-time local deadline fails a healthy renewing holder | accepted; deadline advances on each verified renewal (section 2), test 9 |
+| 2 | blocker | Stalled fresh acquirer rolls `.fence` back after a steal | accepted; rise-only, holder-checked `.fence` write, test 10 |
+| 3 | blocker | Lost-lease path unlinks `.commit` unconditionally (`lease.py:563-565`) | accepted; owner+fence-checked unlink, test 2(b) |
+| 4 | major | `_set_aside_orphaned_output` quarantines with no holder check (`local.py:246`) | accepted; table row, test 12 |
+| 5 | major | `_stage_unit_output` moves a unit-written store with no holder check (`local.py:337`) | accepted; table row, test 12 |
+| 6 | major | Stalled stealer clobbers a later stealer at `lease.py:382` | accepted; steal-token and byte-CAS recheck before replace, test 13 |
+| 7 | major | Reclaim wording left the lock unlink unguarded | accepted as a wording fix: check before removal and before unlink, test 7 |
+| 8 | major | `_assert_holder` never reads `.fence` | accepted; fence >= `.fence` check, test 11 |
+| 9 | minor | `CampaignDoneMarker` is frozen | accepted; `dataclasses.replace` |
+| 10 | minor | R1 wider than one syscall pair at step 6; NFS attribute caching | accepted; stated in section 2 |
+| 11 | minor | Test 2 cannot produce a stealer `.commit` with the holder parked after step 7 | accepted; test 2 split |
+
+Open decision carried to implementation: assumption 13 (mixed-version fleets). Default: unsupported, documented in the changelog; old-format locks still acquire and steal (test 6).
 
