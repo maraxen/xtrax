@@ -10,6 +10,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -444,7 +445,8 @@ def build_manifest_row(
     _check_no_callables(clean_params, path=f"ManifestRow({job_id}).parameters")
     normalized_params = normalize_json_value(clean_params)
 
-    input_hash, manifest_row_hash = _compute_unit_hashes(
+    hashes = partial(
+        _compute_unit_hashes,
         campaign_id=campaign_id,
         job_id=job_id,
         chunk_id=chunk_id,
@@ -459,27 +461,13 @@ def build_manifest_row(
         seed=seed,
         parameters=normalized_params,
     )
+    input_hash, manifest_row_hash = hashes()
 
     default_locator = default_output_locator(campaign_id, manifest_row_hash)
     if output_locator is None or output_locator == default_locator:
         output_locator = default_locator
     else:
-        _, manifest_row_hash = _compute_unit_hashes(
-            campaign_id=campaign_id,
-            job_id=job_id,
-            chunk_id=chunk_id,
-            sample_start=sample_start,
-            sample_count=sample_count,
-            target_input=target_input,
-            arm_id=arm_id,
-            arm_backend=arm_backend,
-            checkpoint_id=checkpoint_id,
-            fixed_policy=fixed_policy,
-            state_weight_profile=state_weight_profile,
-            seed=seed,
-            parameters=normalized_params,
-            output_locator=output_locator,
-        )
+        _, manifest_row_hash = hashes(output_locator=output_locator)
 
     if resource_requirements is None:
         resource_requirements = ResourceRequirements(

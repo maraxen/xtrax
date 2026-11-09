@@ -37,7 +37,12 @@ from xtrax.campaign.lease import (
     LeaseLostError,
     LockUnavailableError,
 )
-from xtrax.campaign.manifest import ManifestRow, build_manifest_row
+from xtrax.campaign.manifest import (
+    CampaignManifest,
+    ManifestMetadata,
+    ManifestRow,
+    build_manifest_row,
+)
 from xtrax.campaign.marker import compute_content_digest, create_done_marker
 
 ROW = build_manifest_row(
@@ -319,7 +324,8 @@ def test_stalled_holder_cannot_set_aside_stealer_store(
     monkeypatch.setattr(local_module, "_check_resume_done", parking_check)
     out, box, stealer = _run_parked_unit(tmp_path, array_unit, park)
     try:
-        assert isinstance(box.get("error"), LeaseLostError), box
+        # A lost lease is reported as lock-held, not a unit failure (review finding 5).
+        assert box.get("result") == local_module.UNIT_LOCK_HELD, box
         assert _unit_snapshot(out) == box["stealer_before"]
         assert not (out.parent / ".quarantine").exists()
     finally:
@@ -336,7 +342,7 @@ def test_stalled_holder_cannot_stage_away_stealer_store(tmp_path: Path) -> None:
 
     out, box, stealer = _run_parked_unit(tmp_path, unit_fn, park)
     try:
-        assert isinstance(box.get("error"), LeaseLostError), box
+        assert box.get("result") == local_module.UNIT_LOCK_HELD, box
         assert _unit_snapshot(out) == box["stealer_before"]
     finally:
         stealer.release()
@@ -564,7 +570,8 @@ def test_renewing_holder_passes_assert_holder_past_lease_seconds(
     try:
         assert holder.heartbeat is not None
         assert holder.current_local_deadline() == 1000.0 + LEASE
-        clock[0] = 1000.0 + LEASE - 10
+        # Renew outside the guard margin (min(60, LEASE/6)): inside it renewal is refused.
+        clock[0] = 1000.0 + LEASE - 100
         assert holder.heartbeat._renew_lease_cas()
         clock[0] = 1000.0 + LEASE + 400  # past an acquire-time deadline, inside the renewed one
         holder.assert_holder()
@@ -636,3 +643,105 @@ def test_clobbering_heartbeat_fails_assert_holder(tmp_path: Path) -> None:
     finally:
         stealer.release()
         holder.release()
+
+
+# --- code-review fixes ------------------------------------------------------------------
+
+
+def test_malformed_fence_is_lease_lost_not_typeerror(tmp_path: Path) -> None:
+    _, out = _paths(tmp_path)
+    holder = FileLock(out, "holder:1:aaaa", ROW.manifest_row_hash, lease_seconds=LEASE)
+    assert holder.acquire()
+    try:
+        data = json.loads(holder.lock_path.read_text(encoding="utf-8"))
+        data["fence"] = "not-a-number"
+        holder.lock_path.write_text(json.dumps(data), encoding="utf-8")
+        with pytest.raises(LeaseLostError):
+            holder.assert_holder()
+    finally:
+        holder.release()
+
+
+def test_stale_lower_fence_commit_token_does_not_block_current_holder(tmp_path: Path) -> None:
+    _, out = _paths(tmp_path)
+    holder = FileLock(out, "holder:1:aaaa", ROW.manifest_row_hash, lease_seconds=LEASE)
+    assert holder.acquire()
+    partial = out.with_name(f"{out.name}.partial.h1")
+    _stage_unit_output(array_unit(ROW), out, partial)
+    marker = create_done_marker(
+        manifest_row_hash=ROW.manifest_row_hash,
+        input_hash=ROW.input_hash,
+        output_locator=str(out),
+        content_digest_sha256=compute_content_digest(partial),
+        duration_s=1.0,
+    )
+    token = out.with_name(f"{out.name}.commit")
+    token.write_text(
+        json.dumps({"owner_token": "dead:1:dddd", "fence": holder.fence - 1}), encoding="utf-8"
+    )
+    try:
+        result = holder.commit_output(
+            partial_path=partial, output_path=out, done_marker=marker, attempt_uuid="h1"
+        )
+        assert result.lease_fence == holder.fence
+        assert not token.exists()
+    finally:
+        holder.release()
+
+
+def test_heartbeat_does_not_renew_past_local_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(lease_module, "_boottime", lambda: clock[0])
+    holder, *_ = _holder_with_staged_partial(tmp_path)
+    try:
+        assert holder.heartbeat is not None
+        clock[0] = 1000.0 + LEASE + 1  # the thread stalled past its deadline; lock still ours
+        assert not holder.heartbeat._renew_lease_cas()
+    finally:
+        holder.release()
+
+
+def test_heartbeat_does_not_renew_when_higher_fence_recorded(tmp_path: Path) -> None:
+    holder, out, *_ = _holder_with_staged_partial(tmp_path)
+    try:
+        assert holder.heartbeat is not None
+        out.with_name(f"{out.name}.fence").write_text(str(holder.fence + 1), encoding="utf-8")
+        assert not holder.heartbeat._renew_lease_cas()
+    finally:
+        holder.release()
+
+
+def test_check_output_paths_refuses_bad_rows_before_any_unit_runs(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from xtrax.campaign.executors.local import LocalSequentialExecutor, check_output_paths
+
+    output_dir = tmp_path / "out"
+    twin = replace(ROW, job_id="j1", output_locator=ROW.output_locator)
+    with pytest.raises(ValueError, match="both resolve to"):
+        check_output_paths(output_dir, [ROW, twin])
+    for bad in (".", "../elsewhere.zarr"):
+        with pytest.raises(ValueError, match="strictly inside"):
+            check_output_paths(output_dir, [replace(ROW, output_locator=bad)])
+
+    ran: list[str] = []
+
+    def unit_fn(row: ManifestRow) -> Any:
+        ran.append(row.job_id)
+        return array_unit(row)
+
+    meta = ManifestMetadata(
+        campaign_id="fence",
+        created_at_utc="2026-11-09T00:00:00Z",
+        planner_version="xtrax@test",
+        spec_sha256="0" * 64,
+        total_rows=2,
+    )
+    manifest = CampaignManifest(
+        schema_version="campaign_manifest_v1", metadata=meta, rows=[ROW, twin]
+    )
+    with pytest.raises(ValueError, match="both resolve to"):
+        LocalSequentialExecutor().run(manifest, unit_fn, output_dir=str(output_dir))
+    assert ran == []

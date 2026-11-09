@@ -39,6 +39,31 @@ def _boottime() -> float:
     return time.monotonic()
 
 
+def _fence_of(body: dict[str, Any], default: int = 0) -> int:
+    """The ``fence`` field of a lock or commit-token body; -1 when malformed.
+
+    -1 never equals a real fence (they start at 1), so a corrupt body reads as "not ours"
+    instead of raising out of a lease check.
+    """
+    try:
+        return int(body.get("fence", default))
+    except (TypeError, ValueError):
+        return -1
+
+
+def _fence_path_for(lock_path: Path) -> Path:
+    """``<unit>.fence`` next to ``<unit>.lock``."""
+    return lock_path.with_name(f"{lock_path.name.removesuffix('.lock')}.fence")
+
+
+def _read_fence_value(fence_path: Path) -> int:
+    """A unit's fence high-water mark; 0 when absent or unreadable."""
+    try:
+        return int(fence_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0
+
+
 #: Schema version for lock files.
 CAMPAIGN_LOCK_SCHEMA_VERSION = "campaign_lock_v1"
 
@@ -226,17 +251,28 @@ class HeartbeatThread(threading.Thread):
         with self._renew_lock:
             return self._renew_lease_cas_locked()
 
-    def _lock_is_ours(self) -> bool:
-        """Re-read the lock: same owner, epoch, fence and heartbeat count as this thread's."""
+    def _lock_is_ours(self, expected_count: int | None = None) -> bool:
+        """True while this holder may still renew.
+
+        The lock carries our owner, epoch, fence and heartbeat count; no later fence is
+        recorded in ``.fence``; and the boot-clock local deadline has not passed (#3312), so
+        a wall-clock step backward cannot revive a lapsed holder.
+        """
+        if _boottime() >= self.local_deadline - self.expiry_guard_margin:
+            return False
+        if self.fence < _read_fence_value(_fence_path_for(self.lock_path)):
+            return False
         try:
             current = json.loads(self.lock_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return False
+        count = self.heartbeat_count if expected_count is None else expected_count
         return (
-            current.get("owner_token") == self.owner_token
+            isinstance(current, dict)
+            and current.get("owner_token") == self.owner_token
             and current.get("acquired_at_unix_s") == self.acquired_at_unix_s
-            and int(current.get("fence", 0)) == self.fence
-            and current.get("heartbeat_count") == self.heartbeat_count
+            and _fence_of(current) == self.fence
+            and current.get("heartbeat_count") == count
         )
 
     def _renew_lease_cas_locked(self) -> bool:
@@ -282,13 +318,7 @@ class HeartbeatThread(threading.Thread):
             fsync_directory(self.lock_path.parent)
 
             # 5. CAS Post-Verification: Confirm our write held
-            post_check = json.loads(self.lock_path.read_text(encoding="utf-8"))
-            if (
-                post_check.get("owner_token") == self.owner_token
-                and post_check.get("heartbeat_count") == next_count
-                and post_check.get("acquired_at_unix_s") == self.acquired_at_unix_s
-                and int(post_check.get("fence", 0)) == self.fence
-            ):
+            if self._lock_is_ours(expected_count=next_count):
                 self.heartbeat_count = next_count
                 self.current_lease_expires_at = new_expires
                 self.local_deadline = boot_at_start + self.lease_seconds
@@ -333,16 +363,13 @@ class FileLock:
 
     def _read_fence_file(self) -> int:
         """The unit's fence high-water mark; 0 when absent or unreadable."""
-        try:
-            return int(self.fence_path.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            return 0
+        return _read_fence_value(self.fence_path)
 
     def _lock_body_is_ours(self, data: dict[str, Any]) -> bool:
         return (
             data.get("owner_token") == self.owner_token
             and data.get("acquired_at_unix_s") == self.acquired_at_unix_s
-            and int(data.get("fence", 0)) == self.fence
+            and _fence_of(data) == self.fence
         )
 
     def _read_lock_body(self) -> dict[str, Any] | None:
@@ -353,24 +380,35 @@ class FileLock:
         return data if isinstance(data, dict) else None
 
     def _raise_fence_file(self) -> None:
-        """Record this holder's fence as the high-water mark, never lowering it.
+        """Record this holder's fence as the high-water mark.
 
         Written only while the lock is still ours, and only when our fence exceeds the
-        value on disk, so a holder that stalled between creating its lock and this write
-        cannot roll back a later stealer's fence. A failed write is tolerated: identity
-        checks compare the whole (owner, fence, acquired_at) triple.
+        value on disk, so a holder that stalled before this write cannot roll back a later
+        stealer's fence. The read-compare-replace is not atomic: a stall between the checks
+        and the replace (the residual window R1) can still lower the file. If the lock
+        changed hands meanwhile, the stealer's fence is written back right after, which
+        narrows that window further. A failed write is tolerated: identity checks compare
+        the whole (owner, fence, acquired_at) triple.
         """
         body = self._read_lock_body()
         if body is None or not self._lock_body_is_ours(body):
             return
         if self.fence <= self._read_fence_file():
             return
+        self._write_fence_file(self.fence)
+        after = self._read_lock_body()
+        if after is not None and not self._lock_body_is_ours(after):
+            newer = _fence_of(after)
+            if newer > self._read_fence_file():
+                self._write_fence_file(newer)
+
+    def _write_fence_file(self, value: int) -> None:
         tmp = self.fence_path.with_name(f"{self.fence_path.name}.tmp.{uuid.uuid4().hex[:8]}")
         try:
-            tmp.write_text(f"{self.fence}\n", encoding="utf-8")
+            tmp.write_text(f"{value}\n", encoding="utf-8")
             os.replace(tmp, self.fence_path)
         except OSError as exc:
-            logger.warning("could not record fence %d at %s: %s", self.fence, self.fence_path, exc)
+            logger.warning("could not record fence %d at %s: %s", value, self.fence_path, exc)
             with suppress(OSError):
                 tmp.unlink()
 
@@ -413,10 +451,45 @@ class FileLock:
             return
         if not isinstance(body, dict) or body.get("owner_token") != self.owner_token:
             return
-        if int(body.get("fence", self.fence)) != self.fence:
+        if _fence_of(body, default=self.fence) != self.fence:
             return
         with suppress(OSError):
             commit_token_path.unlink()
+
+    def _create_commit_token(self, commit_token_path: Path) -> int:
+        """O_EXCL-create ``.commit``, removing one left by a superseded holder first.
+
+        A token from another owner with a lower fence than ours was created by a holder
+        whose lease we have since taken (#3312); it would otherwise fail this commit with
+        ``FileExistsError``. Any other existing token (ours, or not provably older) still
+        raises ``FileExistsError``.
+        """
+        for attempt in range(2):
+            try:
+                return os.open(commit_token_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError as exists:
+                if attempt == 1:
+                    raise
+                try:
+                    body = json.loads(commit_token_path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    continue
+                except (OSError, ValueError):
+                    raise exists from None
+                # Only a token that carries a fence lower than ours is provably older; one
+                # without a fence (unknown writer) keeps blocking.
+                stale = (
+                    isinstance(body, dict)
+                    and "fence" in body
+                    and body.get("owner_token") != self.owner_token
+                    and 0 <= _fence_of(body) < self.fence
+                )
+                if not stale:
+                    raise
+                self.assert_holder()
+                with suppress(FileNotFoundError):
+                    commit_token_path.unlink()
+        raise FileExistsError(errno.EEXIST, "commit token exists", str(commit_token_path))
 
     def _unlink_lock_if_ours(self) -> bool:
         """Remove ``.lock`` only when its body matches this holder's triple."""
@@ -704,7 +777,13 @@ class FileLock:
         # 3. Singleton Commit Token Creation (GATE-03)
         commit_token_path = output_path.with_name(f"{output_path.name}.commit")
         try:
-            fd = os.open(commit_token_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            # A superseded holder must not create a token that blocks the current one.
+            self.assert_holder()
+        except LeaseLostError:
+            _clean_scratch(partial_path)
+            raise
+        try:
+            fd = self._create_commit_token(commit_token_path)
         except FileExistsError:
             _clean_scratch(partial_path)
             raise
