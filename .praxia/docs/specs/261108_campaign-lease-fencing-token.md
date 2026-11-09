@@ -39,7 +39,7 @@ The renewal checks its time guard (`lease.py:205`), reads and CAS-checks the loc
 
 ### Related: reclaim
 
-`_reclaim_dead_worker_leases` deletes all `<out>.partial.*` (`local.py:733-737`) before re-reading the lock bytes (`local.py:739`). The re-read guards only the lock unlink. The window is tiny and it runs after the pool has shut down, but it is a destructive step with no fence.
+`_reclaim_dead_worker_leases` deletes all `<out>.partial.*` (`local.py:734-738`) before re-reading the lock bytes (`local.py:740`). The re-read guards only the lock unlink. The window is tiny and it runs after the pool has shut down, but it is a destructive step with no fence.
 
 ## 2. Design
 
@@ -67,7 +67,7 @@ One helper, `FileLock._assert_holder()`: read the lock; require `owner_token`, `
 | `.lock` unlink | `lease.py:600-602`, `463-468` | unlink only if the body matches the triple |
 | abort cleanup | `local.py:490-498` | skip quarantine unless `_assert_holder()` passes |
 | heartbeat replace | `lease.py:242` | re-read and compare the triple immediately before `os.replace` |
-| reclaim | `local.py:733-739` | move the lock re-read before the partial removal |
+| reclaim | `local.py:734-740` | move the lock re-read before the partial removal |
 
 `.commit` bodies gain `fence` (written at `lease.py:532-536`). `_clear_stale_commit_token` (`lease.py:439`) keeps its owner test.
 
@@ -97,7 +97,7 @@ Promote to `<out>.attempt.<fence>` and make readers resolve through a pointer. A
 | Old code renews a new lock | old `HeartbeatThread` rewrites the dict without `fence` (`lease.py:222-230`). New code reads 0 and compares `fence` only when both sides carry one. Documented mixed-fleet gap. |
 | Marker without `lease_fence` | `from_dict` default None; `validate_unit_done` ignores the field. Schema string unchanged. |
 | No `.fence` file | treated as 0 |
-| `.fence` visible to old code | new sibling name; the only `<out>.*` glob in `local.py`/`lease.py` is `.partial.*` (`local.py:733`) |
+| `.fence` visible to old code | new sibling name; the only `<out>.*` glob in `local.py`/`lease.py` is `.partial.*` (`local.py:734`) |
 
 No on-disk campaign needs migration.
 
@@ -127,13 +127,13 @@ For 1-4, commit each test against unmodified code and show the failing assertion
 | 5 | Heartbeat replace follows the CAS read with no recheck | verified (`lease.py:209-242`) | no |
 | 6 | `validate_unit_done` requires the exact schema string | verified (`marker.py:427-428`) | yes: no bump |
 | 7 | No fencing code to reuse | verified by grep of `~/projects`, `~/repos` (`*.py`, `*.rs`): only unrelated "context fencing" in hermes-agent and pydantic-ai | no |
-| 8 | Marker consumers (aminx/alynxr adapters, `xtrax.pack`) tolerate extra marker keys | unverified (`AminxDoneMarkerAdapter`, `marker.py:211`, not read) | yes: if strict, put the fence in a sidecar |
-| 9 | Nothing outside `local.py`/`lease.py` globs `<out>.*` and would pick up `.fence` | unverified (`xtrax.pack`, controller not grepped) | maybe: rename to a dotfile |
+| 8 | Marker consumers (aminx/alynxr adapters, `xtrax.pack`) tolerate extra marker keys | verified 261109: `CampaignDoneMarker.from_dict` reads named keys with `.get` and drops the rest (`marker.py:114-130`); `run/unit_index_adapters.py:106-147` and aminx `host/campaign.py:969-1010` likewise; no strict parse in `xtrax.pack` (Haiku recon). alynxr `unit_pack.py` not read | no; new fields must be added to `CampaignDoneMarker` or they are dropped on read |
+| 9 | Nothing outside `local.py`/`lease.py` globs `<out>.*` and would pick up `.fence` | verified 261109 for xtrax: `cli/campaign_verb.py:113` rglobs `*.done.json`/`*.lock`, `:417`/`:422` `.quarantine`/`*.corrupt.*`; `local.py:734` `.partial.*`; `pack/_node.py:316,744` walk the unit dir only. aminx/alynxr globs not audited | no |
 | 10 | `os.replace` is atomic within one directory on Lustre and NFS | unverified (inherited from the existing protocol) | no |
-| 11 | `time.monotonic()` advances across SIGSTOP (CLOCK_MONOTONIC does; VM suspend may not) | unverified | yes: use CLOCK_BOOTTIME if suspend matters |
+| 11 | `time.monotonic()` advances across SIGSTOP (CLOCK_MONOTONIC does; VM suspend may not) | verified (Linux semantics): `time.monotonic()` is CLOCK_MONOTONIC, which advances across SIGSTOP and stops during system suspend; CLOCK_BOOTTIME advances across both | yes: the local deadline uses `time.clock_gettime(time.CLOCK_BOOTTIME)` on Linux, `monotonic()` elsewhere |
 | 12 | A stalled process freezes its heartbeat thread too | unverified | yes: if only the heartbeat thread stalls, D is the primary window |
 | 13 | Mixed-version fleets mid-campaign are not a supported mode | unverified | yes: otherwise add a lock schema version |
-| 14 | `executors/slurm.py` takes locks only through `FileLock` | unverified (not read) | maybe: fence sites would grow |
+| 14 | `executors/slurm.py` takes locks only through `FileLock` | verified 261109: array tasks run `campaign run --executor local-seq --row-index` (`slurm.py:504-510`) into `_execute_single_unit`; the only `FileLock(` and `.lock` O_EXCL sites are `lease.py:295` and `local.py:413` | no |
 
 ## 6. Out of scope, risks, size
 
