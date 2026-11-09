@@ -146,8 +146,17 @@ def _resolve_output_path(output_dir: Path, row: "ManifestRow") -> Path:
         if loc_path.is_absolute():
             return loc_path
         if len(loc_path.parts) > 1 and resolved_dir.name == loc_path.parts[0]:
-            return resolved_dir / Path(*loc_path.parts[1:])
-        return resolved_dir / loc_path
+            target = resolved_dir / Path(*loc_path.parts[1:])
+        else:
+            target = resolved_dir / loc_path
+        # An absolute locator is allowed (the row hash covers it, #3308); a relative one
+        # must stay under output_dir.
+        if not Path(os.path.normpath(target)).is_relative_to(resolved_dir):
+            raise ValueError(
+                f"output_locator {row.output_locator!r} of job_id={row.job_id!r} escapes "
+                f"output_dir {resolved_dir}; use an absolute locator for a store elsewhere"
+            )
+        return target
     return resolved_dir / f"{row.manifest_row_hash}.zarr"
 
 

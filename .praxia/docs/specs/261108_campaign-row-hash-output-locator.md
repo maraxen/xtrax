@@ -1,7 +1,7 @@
 ---
 title: Campaign row hash covers output_locator (#3308)
 description: Spec to bind a manifest row's output_locator to its hash without touching input_hash, so aminx parity (GATE-11) is unaffected.
-status: draft
+status: implemented
 task_id: 261108_campaign-debt-specs
 date: '261108'
 backlog_ids: ''
@@ -80,3 +80,13 @@ Parity: GATE-11 file unchanged; add one assertion that `input_hash` is independe
 - Out of scope: changing `input_hash`; marker schema bump; aminx changes; locator policy for non-zarr sinks.
 - Risks: the (i)/(ii) verification must run in one shared function for planning and loading (as `_compute_unit_hashes` does today) so they cannot drift; containment hardening could break a user with a legitimate absolute locator, so gate it on hash coverage.
 - Size: ~40 lines in manifest.py, ~10 in local.py, ~120 lines of tests. One xtrax PR. No aminx PR required.
+
+## 7. Implementation notes (261109)
+
+Implemented as option (c) on branch `feat/campaign-3312-3308`, tests in `tests/campaign/test_locator_hash_3308.py`. No adversarial review: the user chose test-first implementation, given the small size and that the red tests check the core claim.
+
+- Exploit A executed on ad643f5 (not just read): after redirecting row A to B's store, `campaign run` quarantined B's store twice, recomputed it and reported "2/2 completed, 0 failed". With the fix the run refuses at manifest load and the output tree is byte-identical.
+- Planner-row hashes match the pre-change golden values (two rows, pinned in the test).
+- Containment: every locator is now hash-covered (default or hashed), so the containment check refuses only a relative locator that escapes `output_dir`; absolute locators stay allowed (they are used in `tests/campaign/test_cli.py:300` and `test_concurrency_stress.py:88`).
+- Correction to section 5: not every CLI path goes through `from_dict`. `verify`'s marker scan builds synthetic rows from markers (`cli/campaign_verb.py:541-559`) with `quarantine_on_failure=False`; it never resolves a manifest locator and is read-only, so #3308 does not reach it.
+- The hash is unkeyed: it catches stale or accidental edits, not a writer who recomputes it. Stated in `verify_manifest_row_hashes`.
