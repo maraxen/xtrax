@@ -202,7 +202,10 @@ def test_ubiquitin_demo_campaign_e2e(tmp_path):
     # --------------------------------------------------------------------------
     q5 = results["q5_telemetry"]
     assert q5["total_wall_seconds"] > 0.0
-    assert q5["pack_telemetry_banner"] == "Pack Telemetry: not instrumented (debt #3300)"
+    assert q5["pack_telemetry_status"] == "instrumented"
+    assert "Pack Telemetry: instrumented (9 units" in q5["pack_telemetry_banner"]
+    assert q5["pack_telemetry"]["total_raw_bytes"] > 0
+    assert q5["pack_telemetry"]["overall_compression_ratio"] > 1.0
     assert q5["packed_units"] == 9
     assert q5["loose_units"] == 9
 

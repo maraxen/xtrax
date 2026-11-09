@@ -1135,3 +1135,23 @@ def test_lock_false_is_the_explicit_opt_out(
     assert sorted(p.name for p in unit.iterdir()) == THREE_FILES
     for rel, data in files.items():
         assert pack.read_unit_member(unit, rel) == data
+
+
+def test_pack_telemetry_emission_and_schema(tmp_path: Path) -> None:
+    """Verify producer-side telemetry emission and schema conformance (debt #3300 §2.3, §2.4)."""
+    unit = tmp_path / "u_telem"
+    make_unit(unit)
+    record = pack.pack_unit(unit)
+    assert "pack_telemetry" in record
+    telemetry = record["pack_telemetry"]
+    assert telemetry["schema"] == pack.PACK_TELEMETRY_SCHEMA
+    assert isinstance(telemetry["pack_wall_ms"], float)
+    assert telemetry["pack_wall_ms"] > 0.0
+    assert isinstance(telemetry["raw_bytes"], int)
+    assert isinstance(telemetry["compressed_bytes"], int)
+    assert telemetry["raw_bytes"] >= telemetry["compressed_bytes"] > 0
+    assert isinstance(telemetry["compression_ratio"], float)
+    assert telemetry["compression_ratio"] > 0.0
+    assert isinstance(telemetry["member_count"], int)
+    assert telemetry["member_count"] >= 1
+    assert telemetry["backend"] in ("zstandard", "zstd-cli", "stdlib")

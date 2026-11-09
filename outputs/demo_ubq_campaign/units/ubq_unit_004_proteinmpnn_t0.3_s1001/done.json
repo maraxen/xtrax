@@ -3,16 +3,25 @@
  "duration_s": 1.1035375756870094,
  "input_hash": "ubq_unit_004_proteinmpnn_t0.3_s1001",
  "manifest_row_hash": "ubq_unit_004_proteinmpnn_t0.3_s1001",
+ "pack_telemetry": {
+  "backend": "zstandard",
+  "compressed_bytes": 1131,
+  "compression_ratio": 4.6401,
+  "member_count": 2,
+  "pack_wall_ms": 8.800365962088108,
+  "raw_bytes": 5248,
+  "schema": "xtrax.pack_telemetry/1"
+ },
  "schema_version": "campaign_done_marker_v3",
  "status": "committed",
  "storage": {
   "codec": "zstd",
   "format": "tar.zst+frame-index/1",
   "index": "members.idx.json",
-  "index_sha256": "2477d749e6516af61a8fd37ed1a813ca59a4033c3983983d3206f4b9ed0856f0",
+  "index_sha256": "21dba1c44c61811b037fd40e70c2dddcc3d19ef4a1e624f23ca0f68622e9f985",
   "n_members": 2,
   "pack": "members.tar.zst",
-  "pack_sha256": "ef2a2326185baccb11b90caa773bea17f205e3bec869d563cfadb314f43bdbf7",
+  "pack_sha256": "07a4af0e4495f236e1748492d372fc7eca868b04b44c1cf33b2ef6049ad1732a",
   "schema": "xtrax.unit_pack/1"
  }
 }

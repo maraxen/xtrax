@@ -17,6 +17,7 @@ import numpy as np
 
 from xtrax.campaign.manifest import ManifestRow
 from xtrax.eda.campaign.reader import read_campaign_unit_member
+from xtrax.eda.campaign.stats.composition import compute_positional_entropy
 from xtrax.eda.campaign.types import (
     DomainMetricResult,
     LibraryCell,
@@ -83,8 +84,10 @@ class AminxDomainPlugin:
                 pass
 
         if not sequences_list:
-            # Fallback for synthetic / demo units
-            sequences_list = ["MQIFVKTLTGKTITLEVE"]
+            raise ValueError(
+                f"No valid sequences found in unit {store_path} "
+                f"(manifest_row_hash={manifest_row.manifest_row_hash})"
+            )
 
         try:
             raw_scores = read_campaign_unit_member(store_path, "scores.npy")
@@ -135,23 +138,23 @@ class AminxDomainPlugin:
         )
 
         if scores_arr is None and logits_arr is not None:
-            # Derive NLL from logits
+            # Derive NLL from logits (vectorized across N and L, F-XTX-03 / F-MAJ-03)
             # NLL_der = 1/|M| sum_l (LSE(Z_l) - Z_{l, s_l})
             M_count = max(1, int(np.sum(designable_mask)))
-            scores_list = []
-            for i in range(N):
-                sample_nll = 0.0
-                for pos in range(L):
-                    if designable_mask[pos]:
-                        z_pos = logits_arr[i, pos]
-                        # LogSumExp
-                        max_z = np.max(z_pos)
-                        lse = max_z + np.log(np.sum(np.exp(z_pos - max_z)))
-                        s_idx = tokens[i, pos]
-                        z_token = z_pos[s_idx] if s_idx < len(z_pos) else 0.0
-                        sample_nll += lse - z_token
-                scores_list.append(sample_nll / M_count)
-            scores_arr = np.array(scores_list, dtype=np.float64)
+            if N > 0 and L > 0 and logits_arr.ndim >= 3:
+                max_z = np.max(logits_arr, axis=-1, keepdims=True)
+                exp_z = np.exp(logits_arr - max_z)
+                lse = (max_z + np.log(np.sum(exp_z, axis=-1, keepdims=True)))[..., 0]
+                v_size = logits_arr.shape[-1]
+                valid_tok = (tokens >= 0) & (tokens < v_size)
+                safe_tok = np.where(valid_tok, tokens, 0)[..., None]
+                gathered = np.take_along_axis(logits_arr, safe_tok, axis=-1)[..., 0]
+                tok_logits = np.where(valid_tok, gathered, 0.0)
+                res_nll = lse - tok_logits
+                masked_nll = res_nll * designable_mask[None, :]
+                scores_arr = np.sum(masked_nll, axis=1) / float(M_count)
+            else:
+                scores_arr = np.zeros(N, dtype=np.float64)
             is_score_derived = True
         elif scores_arr is None:
             scores_arr = np.zeros(N, dtype=np.float64)
@@ -199,17 +202,13 @@ class AminxDomainPlugin:
 
         metrics["diversity"] = mean_diversity
 
-        # 2. Positional and composition Shannon entropy (MAJ-07)
-        pos_entropies = np.zeros(L, dtype=np.float64)
+        # 2. Positional and composition Shannon entropy (MAJ-07, F-MAJ-03)
         if N > 0 and L > 0:
-            for pos in range(L):
-                if M[pos]:
-                    col_tokens = cell.tokens[:, pos]
-                    counts = np.bincount(col_tokens[col_tokens < 20], minlength=20)
-                    probs = counts.astype(np.float64) / N
-                    pos_entropies[pos] = safe_shannon_entropy(probs)
+            mean_pos_entropy, pos_entropies = compute_positional_entropy(cell.sequences, M)
+        else:
+            mean_pos_entropy = 0.0
+            pos_entropies = np.zeros(L, dtype=np.float64)
 
-        mean_pos_entropy = float(np.mean(pos_entropies[M])) if M_count > 0 else 0.0
         metrics["positional_entropy"] = mean_pos_entropy
         tracks["positional_entropy"] = pos_entropies
 

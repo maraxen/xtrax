@@ -4,15 +4,15 @@
  "members": {
   "scores.npy": {
    "header_length": 512,
-   "length": 286,
+   "length": 279,
    "offset": 0,
    "sha256": "8b3345e0b8440a0bb9a899deac1592931b97a6c10f5581f200dce7cead1de83d",
    "size": 256
   },
   "sequences.npy": {
    "header_length": 512,
-   "length": 790,
-   "offset": 286,
+   "length": 827,
+   "offset": 279,
    "sha256": "49f11ce3d8ac252b28e3c9489c1307c5b5105d5d0b74e0a6d2fd13a9abda1486",
    "size": 4992
   }

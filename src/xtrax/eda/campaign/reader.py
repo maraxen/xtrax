@@ -297,6 +297,10 @@ class CampaignReader:
             )
 
         # All checks passed: unit is COMMITTED
+        pack_telem = marker_data.get("pack_telemetry")
+        if not isinstance(pack_telem, dict):
+            pack_telem = None
+
         return ReconciliationRecord(
             manifest_row_hash=row.manifest_row_hash,
             input_hash=row.input_hash,
@@ -306,6 +310,7 @@ class CampaignReader:
             is_packed=is_packed,
             duration_s=marker_data.get("duration_s"),
             completed_at_utc=marker_data.get("completed_at_utc"),
+            pack_telemetry=pack_telem,
         )
 
     def reconcile_campaign(

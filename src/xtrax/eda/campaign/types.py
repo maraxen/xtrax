@@ -85,6 +85,13 @@ class DomainMetricResult:
                     f"Flag {k!r}={v!r} invalid; keys must be str and values must be bool (got "
                     f"key type {type(k).__name__}, value type {type(v).__name__})"
                 )
+        for k, v in self.tracks.items():
+            if not isinstance(k, str):
+                raise TypeError(f"Track key {k!r} must be str, got {type(k).__name__}")
+            if not isinstance(v, np.ndarray):
+                raise TypeError(f"Track {k!r} must be np.ndarray, got {type(v).__name__}")
+            if v.dtype.kind in ("f", "c") and not np.all(np.isfinite(v)):
+                raise ValueError(f"Track {k!r} contains non-finite values (NaN or Inf)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +135,7 @@ class ReconciliationRecord:
     is_packed: bool = False
     duration_s: float | None = None
     completed_at_utc: str | None = None
+    pack_telemetry: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

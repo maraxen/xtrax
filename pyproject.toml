@@ -194,6 +194,9 @@ select = [ "E", "F", "I", "UP", "S110"] # includes S110 (try-except-pass), added
 "tests/eda/test_render.py" = ["E402", "F841"]
 "tests/eda/test_render_errors.py" = ["E402"]
 "port/reference/**/*.py" = ["UP047"]
+"src/xtrax/fileguard/_node.py" = ["UP"]
+"src/xtrax/pack/_node.py" = ["UP"]
+"src/xtrax/run/writer_liveness.py" = ["UP"]
 
 [tool.jaxlint]
 # N0.4 foundation: performance sensors gate via `just audit-jaxlint` (--no-doc).
@@ -202,6 +205,7 @@ ignore = []
 
 [tool.importlinter]
 root_package = "xtrax"
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "Core packages must not import EDA (optional extra)"
@@ -281,6 +285,10 @@ forbidden_modules = [
     "maraxiom",
     "bathos",
     "cisternal",
+    "aminx",
+    "demistify",
+    "adaptyv",
+    "plegadx",
 ]
 
 [[tool.importlinter.contracts]]

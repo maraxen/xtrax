@@ -3,16 +3,25 @@
  "duration_s": 1.6550084815876427,
  "input_hash": "ubq_unit_012_solublempnn_t0.1_s1003",
  "manifest_row_hash": "ubq_unit_012_solublempnn_t0.1_s1003",
+ "pack_telemetry": {
+  "backend": "zstandard",
+  "compressed_bytes": 874,
+  "compression_ratio": 6.0046,
+  "member_count": 2,
+  "pack_wall_ms": 10.803263634443283,
+  "raw_bytes": 5248,
+  "schema": "xtrax.pack_telemetry/1"
+ },
  "schema_version": "campaign_done_marker_v3",
  "status": "committed",
  "storage": {
   "codec": "zstd",
   "format": "tar.zst+frame-index/1",
   "index": "members.idx.json",
-  "index_sha256": "f01ad33fffdfd142f33c3ca1d2a8ea8c0b2cfa37f30b68c49d1e1524a6ce7c7d",
+  "index_sha256": "5c15f064231bf03e61e1ad37e708db62e669b03c358631d416e198a1f90d64f4",
   "n_members": 2,
   "pack": "members.tar.zst",
-  "pack_sha256": "b0065ed71f608bd82a624a9645daa75048eaf5283af5b247fbe41a835494677e",
+  "pack_sha256": "413c1f671e8d4f569798e72827c7aff006bd38258a07897a6eba75b0f705d75d",
   "schema": "xtrax.unit_pack/1"
  }
 }

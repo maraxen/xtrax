@@ -76,6 +76,15 @@ PACK_FORMAT = "tar.zst+frame-index/1"
 PACK_FILE = "members.tar.zst"
 PACK_INDEX = "members.idx.json"
 PACK_LOCK = "members.tar.zst.lock"
+PACK_TELEMETRY_SCHEMA = "xtrax.pack_telemetry/1"
+
+_TELEMETRY_HOOKS: List[Callable[[Dict[str, Any]], None]] = []
+
+
+def register_telemetry_hook(callback: Callable[[Dict[str, Any]], None]) -> None:
+    """Register a listener callable for pack telemetry records."""
+    _TELEMETRY_HOOKS.append(callback)
+
 
 _PARTIAL = PACK_FILE + ".partial"
 _ARTEFACTS = frozenset({PACK_FILE, _PARTIAL, PACK_INDEX, PACK_LOCK})
@@ -928,6 +937,7 @@ def _pack_locked(
     check: Optional[Callable[[PathLike, Dict[str, Any], str], None]],
     crash_after: Optional[str],
 ) -> Dict[str, Any]:
+    start_time = time.perf_counter()
     partial_path = os.path.join(unit_dir, _PARTIAL)
     pack_path = os.path.join(unit_dir, PACK_FILE)
     idx_path = os.path.join(unit_dir, PACK_INDEX)
@@ -993,8 +1003,27 @@ def _pack_locked(
         "index_sha256": sha256_bytes(index_bytes),
         "n_members": len(members),
     }
+    raw_bytes = sum(entry["size"] for entry in members.values())
+    compressed_bytes = os.path.getsize(pack_path)
+    compression_ratio = round(raw_bytes / compressed_bytes, 4) if compressed_bytes > 0 else 1.0
+    pack_wall_ms = max((time.perf_counter() - start_time) * 1000.0, 0.001)
+    kind, _ = _codec()
+    backend = "zstandard" if kind == "zstandard" else ("zstd-cli" if kind == "cli" else kind)
+    telemetry_record = {
+        "schema": PACK_TELEMETRY_SCHEMA,
+        "pack_wall_ms": float(pack_wall_ms),
+        "raw_bytes": int(raw_bytes),
+        "compressed_bytes": int(compressed_bytes),
+        "compression_ratio": float(compression_ratio),
+        "member_count": int(len(members)),
+        "backend": str(backend),
+    }
+    new_record["pack_telemetry"] = telemetry_record
     write_json_atomic(os.path.join(unit_dir, record_name), new_record)
     _hook("stamp_rewritten", crash_after)
+    for hook in _TELEMETRY_HOOKS:
+        with contextlib.suppress(Exception):
+            hook(telemetry_record)
 
     # Step 5: delete the loose files.
     return pack_sweep(unit_dir, record_name=record_name, _verified=True, _crash_after=crash_after)

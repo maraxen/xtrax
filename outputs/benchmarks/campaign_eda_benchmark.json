@@ -5,14 +5,15 @@
   "storage_format_parity": true,
   "uncommitted_units_refused": true,
   "small_sample_guard_active": true,
+  "control_7_pack_telemetry_seam": true,
   "demo_units_committed": 18,
-  "demo_runtime_seconds": 6.553575754165649,
+  "demo_runtime_seconds": 0.7511050701141357,
   "q1_diversity_calculated": true,
   "q2_scores_calculated": true,
   "q3_honest_uncertainty_calculated": true,
   "q4_coverage_reconciled": true,
   "q5_secondary_telemetry_rendered": true,
-  "timestamp": "2026-11-07T01:39:48Z",
+  "timestamp": "2026-11-09T21:18:05Z",
   "git_sha": "feat/eda-redesign",
   "controls_summary": {
     "control_1_positive": {
@@ -45,10 +46,12 @@
       "equal_parity": true
     },
     "control_4_storage_parity": {
-      "meta_sha_match": true,
+      "is_packed": true,
+      "scores_sha_match": true,
       "data_sha_match": true,
+      "array_equal": true,
       "parsed_match": true,
-      "archive_type": "tar"
+      "storage_codec": "zstd"
     },
     "control_5_uncommitted_refusal": {
       "only_committed_pooled": true,
@@ -68,11 +71,25 @@
       "u1_guarded": true,
       "u2_guarded": true,
       "u3_active": true
+    },
+    "control_7_pack_telemetry_seam": {
+      "producer_telemetry_valid": true,
+      "consumer_aggregation_valid": true,
+      "producer_record": {
+        "backend": "zstandard",
+        "compressed_bytes": 127,
+        "compression_ratio": 47.2441,
+        "member_count": 1,
+        "pack_wall_ms": 8.93637677654624,
+        "raw_bytes": 6000,
+        "schema": "xtrax.pack_telemetry/1"
+      },
+      "campaign_banner": "Pack Telemetry: instrumented (1 units, 47.24x compression, mean 8.9ms, zstandard)"
     }
   },
   "demo_summary": {
     "demo_units_committed": 18,
-    "demo_runtime_seconds": 6.553575754165649,
+    "demo_runtime_seconds": 0.7511050701141357,
     "q1_diversity_calculated": true,
     "q2_scores_calculated": true,
     "q3_honest_uncertainty_calculated": true,
@@ -90,10 +107,10 @@
       "16": 1.1545302792187424
     },
     "pareto_points_count": 5,
-    "pack_telemetry_seam_banner": "Pack Telemetry: not instrumented (debt #3300)",
+    "pack_telemetry_seam_banner": "Pack Telemetry: instrumented (9 units, 4.76x compression, mean 9.0ms, zstandard)",
     "persisted_eda_dir": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/eda"
   },
   "timing": {
-    "total_benchmark_seconds": 6.668725490570068
+    "total_benchmark_seconds": 0.8424649238586426
   }
 }

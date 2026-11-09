@@ -507,3 +507,364 @@ def test_runtime_quarantined_units_append_coverage_banners(tmp_path):
     assert len(q_banners) == 1
     assert q_banners[0]["type"] == "quarantined"
     assert "Corrupt weights in unit" in q_banners[0]["reason"]
+
+
+def test_zero_copy_track_immutability(tmp_path):
+    """Verify that execute_domain_plugin enforces writeable=False on tracks (F-LENB-06)."""
+
+    class TrackPlugin:
+        @property
+        def domain_name(self) -> str:
+            return "track_plugin"
+
+        @property
+        def version(self) -> str:
+            return "1.0.0"
+
+        def extract_cell(self, store_path, manifest_row, sink_schema):
+            return [_make_dummy_cell()]
+
+        def compute_metrics(self, cell):
+            track_arr = np.ones(10, dtype=np.float64)
+            return DomainMetricResult(
+                metrics={"diversity": 0.5},
+                flags={},
+                tracks={"res_track": track_arr},
+            )
+
+    row = ManifestRow(
+        manifest_row_hash="track001" * 8,
+        input_hash="feedface" * 8,
+        campaign_id="test_camp",
+        job_id="job_01",
+        chunk_id=0,
+        sample_start=0,
+        sample_count=4,
+        target_input="dummy",
+        arm_id="track_arm",
+        arm_backend="local",
+        checkpoint_id="chk_0",
+        fixed_policy="none",
+        state_weight_profile="uniform",
+        seed=1001,
+        parameters={},
+        output_locator=str(tmp_path),
+        resource_requirements=ResourceRequirements(gpu_memory_bytes=0),
+    )
+
+    results = execute_domain_plugin(TrackPlugin(), tmp_path, row, SinkSchema(arrays={}))
+    assert len(results) == 1
+    _, metric_res = results[0]
+    track = metric_res.tracks["res_track"]
+    assert not track.flags.writeable
+    with pytest.raises(ValueError, match="read-only"):
+        track[0] = 99.0
+
+
+def test_domain_metric_result_validate_schema_tracks():
+    """Verify track schema validation in DomainMetricResult (F-MAJ-07)."""
+    # Valid track
+    res = DomainMetricResult(
+        metrics={"score": 1.0},
+        flags={"valid": True},
+        tracks={"t1": np.zeros(5, dtype=np.float64)},
+    )
+    res.validate_schema()
+
+    # Non-string key
+    obj_bad_key = object.__new__(DomainMetricResult)
+    object.__setattr__(obj_bad_key, "metrics", {"score": 1.0})
+    object.__setattr__(obj_bad_key, "flags", {})
+    object.__setattr__(obj_bad_key, "tracks", {123: np.zeros(5)})
+    with pytest.raises(TypeError, match="Track key 123 must be str"):
+        obj_bad_key.validate_schema()
+
+    # Non-ndarray value
+    obj_bad_val = object.__new__(DomainMetricResult)
+    object.__setattr__(obj_bad_val, "metrics", {"score": 1.0})
+    object.__setattr__(obj_bad_val, "flags", {})
+    object.__setattr__(obj_bad_val, "tracks", {"t1": [1.0, 2.0]})
+    with pytest.raises(TypeError, match="must be np.ndarray"):
+        obj_bad_val.validate_schema()
+
+    # NaN in track
+    with pytest.raises(ValueError, match="non-finite values"):
+        DomainMetricResult(
+            metrics={"score": 1.0},
+            flags={},
+            tracks={"t1": np.array([1.0, np.nan, 2.0])},
+        ).validate_schema()
+
+
+def test_builtin_aminx_missing_sequences_raises_and_quarantines(tmp_path):
+    """Verify F-LENB-15: missing sequences raises ValueError and unit is quarantined."""
+    clear_quarantined_units()
+    plugin = AminxDomainPlugin()
+    empty_unit_dir = tmp_path / "empty_unit"
+    empty_unit_dir.mkdir()
+
+    row = ManifestRow(
+        manifest_row_hash="empty_hash" * 6 + "0000",
+        input_hash="feedface" * 8,
+        campaign_id="test_camp",
+        job_id="job_01",
+        chunk_id=0,
+        sample_start=0,
+        sample_count=4,
+        target_input="dummy",
+        arm_id="aminx_arm",
+        arm_backend="local",
+        checkpoint_id="chk_0",
+        fixed_policy="none",
+        state_weight_profile="uniform",
+        seed=1001,
+        parameters={},
+        output_locator=str(empty_unit_dir),
+        resource_requirements=ResourceRequirements(gpu_memory_bytes=0),
+    )
+
+    # extract_cell must raise ValueError
+    with pytest.raises(ValueError, match="No valid sequences found in unit"):
+        plugin.extract_cell(empty_unit_dir, row, SinkSchema(arrays={}))
+
+    # execute_domain_plugin must catch it and quarantine
+    results = execute_domain_plugin(plugin, empty_unit_dir, row, SinkSchema(arrays={}))
+    assert results == []
+    quarantined = get_quarantined_units()
+    assert any(q.unit_key == row.manifest_row_hash for q in quarantined)
+
+
+def test_quarantine_on_empty_cells_returned(tmp_path):
+    """Verify that extract_cell returning [] triggers quarantine (F-MAJ-06)."""
+    clear_quarantined_units()
+
+    class EmptyPlugin:
+        @property
+        def domain_name(self) -> str:
+            return "empty_plugin"
+
+        @property
+        def version(self) -> str:
+            return "1.0.0"
+
+        def extract_cell(self, store_path, manifest_row, sink_schema):
+            return []
+
+        def compute_metrics(self, cell):
+            return DomainMetricResult(metrics={}, flags={}, tracks={})
+
+    row = ManifestRow(
+        manifest_row_hash="empty000" * 8,
+        input_hash="feedface" * 8,
+        campaign_id="test_camp",
+        job_id="job_01",
+        chunk_id=0,
+        sample_start=0,
+        sample_count=4,
+        target_input="dummy",
+        arm_id="empty_arm",
+        arm_backend="local",
+        checkpoint_id="chk_0",
+        fixed_policy="none",
+        state_weight_profile="uniform",
+        seed=1001,
+        parameters={},
+        output_locator=str(tmp_path),
+        resource_requirements=ResourceRequirements(gpu_memory_bytes=0),
+    )
+
+    results = execute_domain_plugin(EmptyPlugin(), tmp_path, row, SinkSchema(arrays={}))
+    assert results == []
+    quarantined = get_quarantined_units()
+    assert any("EmptyCells" in q.reason for q in quarantined)
+
+
+def test_quarantine_with_exploding_domain_name(tmp_path):
+    """Verify that if plugin.domain_name raises, quarantine handles it safely (F-LENB-09)."""
+    clear_quarantined_units()
+
+    class ExplodingNamePlugin:
+        @property
+        def domain_name(self) -> str:
+            raise RuntimeError("Exploding property")
+
+        @property
+        def version(self) -> str:
+            return "1.0.0"
+
+        def extract_cell(self, store_path, manifest_row, sink_schema):
+            raise ValueError("Extraction failure")
+
+        def compute_metrics(self, cell):
+            return DomainMetricResult(metrics={}, flags={}, tracks={})
+
+    row = ManifestRow(
+        manifest_row_hash="explode0" * 8,
+        input_hash="feedface" * 8,
+        campaign_id="test_camp",
+        job_id="job_01",
+        chunk_id=0,
+        sample_start=0,
+        sample_count=4,
+        target_input="dummy",
+        arm_id="explode_arm",
+        arm_backend="local",
+        checkpoint_id="chk_0",
+        fixed_policy="none",
+        state_weight_profile="uniform",
+        seed=1001,
+        parameters={},
+        output_locator=str(tmp_path),
+        resource_requirements=ResourceRequirements(gpu_memory_bytes=0),
+    )
+
+    results = execute_domain_plugin(ExplodingNamePlugin(), tmp_path, row, SinkSchema(arrays={}))
+    assert results == []
+    quarantined = get_quarantined_units()
+    assert any(q.unit_key == row.manifest_row_hash for q in quarantined)
+
+
+def test_non_generative_physical_simulation_domain_agnosticism(tmp_path):
+    """Verify F-BLK-07 / F-XTX-02: physical simulation observables (total_entropy, hub_score@1)
+    are accurately ingested and evaluated under Q1-Q3 without being zeroed out.
+    """
+    campaign_dir = tmp_path / "sim_camp"
+    units_dir = campaign_dir / "units"
+    units_dir.mkdir(parents=True)
+
+    rows: list[ManifestRow] = []
+    for i, seed in enumerate([2001, 2002, 2003]):
+        h = f"sim_unit_{i:03d}"
+        u_dir = units_dir / h
+        u_dir.mkdir()
+        with open(u_dir / "done.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "schema_version": "campaign_done_marker_v3",
+                    "status": "committed",
+                    "duration_s": 1.0,
+                },
+                f,
+            )
+        rows.append(
+            ManifestRow(
+                manifest_row_hash=h,
+                input_hash=h,
+                campaign_id="sim_camp",
+                job_id=f"job_{i}",
+                chunk_id=0,
+                sample_start=0,
+                sample_count=1000,
+                target_input="target_sim",
+                arm_id="amber_ff14sb",
+                arm_backend="gpu",
+                checkpoint_id="none",
+                fixed_policy="none",
+                state_weight_profile="uniform",
+                seed=seed,
+                parameters={"temperature_k": 300},
+                output_locator=str(u_dir),
+                resource_requirements=ResourceRequirements(gpu_memory_bytes=0),
+            )
+        )
+
+    manifest = CampaignManifest(
+        schema_version="campaign_manifest_v1",
+        metadata=ManifestMetadata(
+            campaign_id="sim_camp",
+            planner_version="1.0",
+            spec_sha256="sim_spec",
+            total_rows=3,
+            created_at_utc="2026-11-06T20:30:00Z",
+        ),
+        rows=rows,
+    )
+    with open(campaign_dir / "manifest.json", "w", encoding="utf-8") as f:
+        json.dump(manifest.to_dict(), f, indent=2)
+
+    class DemistifyLikeDomainPlugin:
+        @property
+        def domain_name(self) -> str:
+            return "sim_plugin"
+
+        @property
+        def version(self) -> str:
+            return "1.0.0"
+
+        def primary_observable(self) -> str:
+            return "total_entropy"
+
+        def extract_cell(self, store_path, manifest_row, sink_schema):
+            # MD simulation with 500 frames, 20 residues
+            T = 500
+            L = 20
+            tokens = np.zeros((T, L), dtype=np.int64)
+            mask = np.ones(L, dtype=bool)
+            residues = ResidueTable(
+                native_tokens="A" * L,
+                chain_ids=tuple(["A"] * L),
+                res_numbers=tuple(range(1, L + 1)),
+                insertion_codes=tuple([""] * L),
+                real_mask=mask,
+                parser_name="sim",
+                parser_version="1.0",
+            )
+            return [
+                LibraryCell(
+                    knobs=dict(manifest_row.parameters),
+                    seed=manifest_row.seed,
+                    target="target_sim",
+                    tokens=tokens,
+                    sequences=(),  # No amino acid sequences
+                    logits=None,
+                    scores=None,
+                    is_score_derived=False,
+                    residues=residues,
+                    mask=mask,
+                )
+            ]
+
+        def compute_metrics(self, cell):
+            # True observables from physical trajectory
+            return DomainMetricResult(
+                metrics={
+                    "total_entropy": 42.5 + (cell.seed % 10) * 0.1,
+                    "mean_residue_entropy": 2.125,
+                    "hub_score@1": 0.85,
+                },
+                flags={"allosteric_coupling_detected": True},
+                tracks={"per_residue_entropy": np.full(20, 2.125)},
+            )
+
+    sim_plugin = DemistifyLikeDomainPlugin()
+    PluginRegistry.register(sim_plugin)
+
+    results = run_campaign_eda(
+        campaign_dir=campaign_dir,
+        manifest=manifest,
+        domain_name="sim_plugin",
+        export_artifacts=False,
+        B=100,
+    )
+
+    # 1. Q1 rows must contain total_entropy and hub_score@1
+    q1_rows = results["q1_composition"]["rows"]
+    assert len(q1_rows) == 3
+    assert all("total_entropy" in r and r["total_entropy"] > 40.0 for r in q1_rows)
+    assert all("hub_score@1" in r and r["hub_score@1"] == 0.85 for r in q1_rows)
+
+    # 2. Q2 rows must map primary metric total_entropy
+    q2_rows = results["q2_scores"]["rows"]
+    assert len(q2_rows) == 3
+    assert all(r["primary_metric"] == "total_entropy" for r in q2_rows)
+    assert all(r["primary_value"] > 40.0 for r in q2_rows)
+    assert all(r["nll"] > 40.0 for r in q2_rows)
+
+    # 3. Q3 uncertainty must evaluate total_entropy with non-zero point estimate and CIs
+    q3_rows = results["q3_uncertainty"]["rows"]
+    assert len(q3_rows) == 1
+    q3_est = q3_rows[0]
+    assert q3_est["metric"] == "total_entropy"
+    assert q3_est["U"] == 3
+    assert q3_est["point_estimate"] > 40.0
+    assert q3_est["ci_lower"] is not None and q3_est["ci_lower"] > 40.0

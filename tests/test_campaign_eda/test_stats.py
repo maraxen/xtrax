@@ -7,7 +7,10 @@ from xtrax.eda.campaign.stats import (
     compute_best_of_n,
     compute_cross_knob_collisions,
     compute_pareto_frontier_2d,
+    evaluate_cluster_bootstrap_condition,
+    evaluate_contrast,
     safe_shannon_entropy,
+    vectorized_cluster_ratio_bootstrap,
 )
 
 
@@ -107,3 +110,44 @@ def test_cross_knob_collision_table():
 
     # A and C share 0: overlap = 0.0
     assert col[("cond_A", "cond_C")] == 0.0
+
+
+def test_bootstrap_zero_sample_guard():
+    """Verify zero-count units do not trigger ZeroDivisionError or NaN leaks (F-XTX-04)."""
+    # 1. Total count is zero
+    unit_sums = np.array([[0.0], [0.0], [0.0], [0.0]])
+    unit_counts = np.array([[0], [0], [0], [0]])
+    estimates = evaluate_cluster_bootstrap_condition(
+        unit_sums=unit_sums,
+        unit_counts=unit_counts,
+        metric_names=["score"],
+        B=50,
+    )
+    assert "score" in estimates
+    est = estimates["score"]
+    assert est.descriptive_only is True
+    assert est.point_estimate == 0.0
+    assert est.ci_95 is None
+
+    # 2. Resampled zero units in vectorized_cluster_ratio_bootstrap
+    weights = np.array([[1, 0, 0], [0, 1, 0]])
+    # All counts zero
+    res = vectorized_cluster_ratio_bootstrap(
+        unit_sums=np.zeros((3, 1)),
+        unit_counts=np.zeros(3),
+        weights=weights,
+    )
+    # Must not crash, safe_denominator makes it NaN without ZeroDivisionError
+    assert np.isnan(res).all()
+
+    # 3. evaluate_contrast with zero counts
+    contrast = evaluate_contrast(
+        unit_sums_a=np.zeros((3, 1)),
+        unit_counts_a=np.zeros(3),
+        unit_sums_b=np.zeros((3, 1)),
+        unit_counts_b=np.zeros(3),
+        metric_name="score",
+        B=50,
+    )
+    assert contrast.descriptive_only is True
+    assert contrast.ci_95 is None

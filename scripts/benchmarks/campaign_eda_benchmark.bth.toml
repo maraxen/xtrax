@@ -41,15 +41,15 @@ reasoning = "A statistical engine that fails to detect a planted knob effect or 
 is_residual = false
 
 [outcomes.statistical_regression]
-condition = "vectorized_bootstrap_parity = false OR storage_format_parity = false OR uncommitted_units_refused = false OR small_sample_guard_active = false"
-decision = "Reject implementation; mathematical parity, storage parity, uncommitted unit refusal, or small-sample guard violated."
-reasoning = "Numerical divergence between batched and looped bootstrap, loose/packed storage divergence, pooling of uncommitted units, or failure to guard small sample sizes violates core architectural contracts."
+condition = "vectorized_bootstrap_parity = false OR storage_format_parity = false OR uncommitted_units_refused = false OR small_sample_guard_active = false OR control_7_pack_telemetry_seam = false"
+decision = "Reject implementation; mathematical parity, storage parity, uncommitted unit refusal, small-sample guard, or pack telemetry seam violated."
+reasoning = "Numerical divergence between batched and looped bootstrap, loose/packed storage divergence, pooling of uncommitted units, failure to guard small sample sizes, or regression of the pack telemetry seam violates core architectural contracts."
 is_residual = false
 
 [outcomes.pass]
-condition = "positive_control_detected = true AND negative_control_null = true AND vectorized_bootstrap_parity = true AND storage_format_parity = true AND uncommitted_units_refused = true AND small_sample_guard_active = true AND demo_units_committed = 18 AND demo_runtime_seconds <= 60.0 AND q1_diversity_calculated = true AND q2_scores_calculated = true AND q3_honest_uncertainty_calculated = true AND q4_coverage_reconciled = true AND q5_secondary_telemetry_rendered = true"
+condition = "positive_control_detected = true AND negative_control_null = true AND vectorized_bootstrap_parity = true AND storage_format_parity = true AND uncommitted_units_refused = true AND small_sample_guard_active = true AND control_7_pack_telemetry_seam = true AND demo_units_committed = 18 AND demo_runtime_seconds <= 60.0 AND q1_diversity_calculated = true AND q2_scores_calculated = true AND q3_honest_uncertainty_calculated = true AND q4_coverage_reconciled = true AND q5_secondary_telemetry_rendered = true"
 decision = "Accept Campaign EDA implementation and statistical controls."
-reasoning = "All 6 synthetic verification controls and all 5 scientific questions on 18-unit ubiquitin demo campaign evaluated successfully within 60s walltime budget."
+reasoning = "All 7 synthetic verification controls and all 5 scientific questions on 18-unit ubiquitin demo campaign evaluated successfully within 60s walltime budget."
 is_residual = false
 
 [outcomes.fail]
@@ -65,6 +65,7 @@ vectorized_bootstrap_parity = "bool"
 storage_format_parity = "bool"
 uncommitted_units_refused = "bool"
 small_sample_guard_active = "bool"
+control_7_pack_telemetry_seam = "bool"
 demo_units_committed = "int"
 demo_runtime_seconds = "float"
 q1_diversity_calculated = "bool"

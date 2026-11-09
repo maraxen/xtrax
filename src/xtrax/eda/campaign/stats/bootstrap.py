@@ -51,7 +51,8 @@ def vectorized_cluster_ratio_bootstrap(
 
     numerator = w_mat @ t_mat  # shape (B, D)
     denominator = w_mat @ n_vec  # shape (B, 1)
-    return numerator / denominator  # shape (B, D)
+    safe_denominator = np.where(denominator == 0.0, np.nan, denominator)
+    return numerator / safe_denominator  # shape (B, D)
 
 
 def looped_cluster_ratio_bootstrap(
@@ -73,7 +74,7 @@ def looped_cluster_ratio_bootstrap(
             w = weights[b, u]
             num_b += w * t_mat[u]
             den_b += w * n_vec[u]
-        theta_loop[b] = num_b / den_b
+        theta_loop[b] = num_b / den_b if den_b > 0.0 else np.nan
     return theta_loop
 
 
@@ -94,9 +95,9 @@ def evaluate_cluster_bootstrap_condition(
 ) -> dict[str, BootstrapEstimate]:
     """Evaluate cluster ratio bootstrap estimates with Small-Sample Guard for U < 3 (BLK-02).
 
-    When replicate count U < 3:
-        Sets descriptive_only = True, ci_95 = None, and emits warning.
-    When U >= 3:
+    When replicate count U < 3 or total sample count is zero:
+        Sets descriptive_only = True, ci_95 = None, and emits warning (F-XTX-04 / F-MAJ-04).
+    When U >= 3 and total sample count > 0:
         Computes 95% empirical percentile CIs via vectorized cluster ratio estimator.
     """
     U = len(unit_counts)
@@ -104,10 +105,26 @@ def evaluate_cluster_bootstrap_condition(
     t_mat = np.asarray(unit_sums, dtype=np.float64).reshape(U, D)
     n_vec = np.asarray(unit_counts, dtype=np.float64).reshape(U, 1)
 
-    # Point estimates
-    point_estimates = np.sum(t_mat, axis=0) / float(np.sum(n_vec))
-
+    total_n = float(np.sum(n_vec))
     estimates: dict[str, BootstrapEstimate] = {}
+
+    # Zero-sample guard (F-XTX-04 / F-MAJ-04)
+    if total_n == 0.0 or U == 0:
+        warning_msg = "Warning: Total sample count is zero; reporting zero point estimates only."
+        for d, name in enumerate(metric_names):
+            estimates[name] = BootstrapEstimate(
+                metric_name=name,
+                point_estimate=0.0,
+                ci_95=None,
+                se=0.0,
+                mde_080=0.0,
+                descriptive_only=True,
+                warning=warning_msg,
+            )
+        return estimates
+
+    # Point estimates
+    point_estimates = np.sum(t_mat, axis=0) / total_n
 
     # Small-sample guard (spec §5.3.3)
     if U < 3:
@@ -130,9 +147,22 @@ def evaluate_cluster_bootstrap_condition(
 
     for d, name in enumerate(metric_names):
         col_thetas = boot_thetas[:, d]
-        ci_lower = float(np.percentile(col_thetas, 2.5))
-        ci_upper = float(np.percentile(col_thetas, 97.5))
-        se = float(np.std(col_thetas, ddof=1))
+        finite_thetas = col_thetas[np.isfinite(col_thetas)]
+        if len(finite_thetas) < 3:
+            estimates[name] = BootstrapEstimate(
+                metric_name=name,
+                point_estimate=float(point_estimates[d]),
+                ci_95=None,
+                se=0.0,
+                mde_080=0.0,
+                descriptive_only=True,
+                warning="Warning: Insufficient finite bootstrap replications due to zero counts.",
+            )
+            continue
+
+        ci_lower = float(np.percentile(finite_thetas, 2.5))
+        ci_upper = float(np.percentile(finite_thetas, 97.5))
+        se = float(np.std(finite_thetas, ddof=1)) if len(finite_thetas) > 1 else 0.0
         mde = compute_mde_080(se)
 
         estimates[name] = BootstrapEstimate(
@@ -161,11 +191,19 @@ def evaluate_contrast(
     u_a = len(unit_counts_a)
     u_b = len(unit_counts_b)
 
-    mean_a = float(np.sum(unit_sums_a) / np.sum(unit_counts_a))
-    mean_b = float(np.sum(unit_sums_b) / np.sum(unit_counts_b))
+    total_n_a = float(np.sum(unit_counts_a))
+    total_n_b = float(np.sum(unit_counts_b))
+
+    mean_a = float(np.sum(unit_sums_a) / total_n_a) if total_n_a > 0.0 else 0.0
+    mean_b = float(np.sum(unit_sums_b) / total_n_b) if total_n_b > 0.0 else 0.0
     delta_hat = mean_b - mean_a
 
-    if u_a < 3 or u_b < 3:
+    if u_a < 3 or u_b < 3 or total_n_a == 0.0 or total_n_b == 0.0:
+        warning = (
+            "Warning: Contrast with total sample count of zero."
+            if (total_n_a == 0.0 or total_n_b == 0.0)
+            else "Warning: Contrast with U < 3; reporting descriptive delta only."
+        )
         return ContrastEstimate(
             contrast_name="contrast",
             metric_name=metric_name,
@@ -175,7 +213,7 @@ def evaluate_contrast(
             mde_080=0.0,
             detected_and_powered=False,
             descriptive_only=True,
-            warning="Warning: Contrast with U < 3; reporting descriptive delta only.",
+            warning=warning,
         )
 
     rng = np.random.default_rng(seed)
@@ -190,10 +228,24 @@ def evaluate_contrast(
     boot_a = vectorized_cluster_ratio_bootstrap(t_a, n_a, w_a).flatten()
     boot_b = vectorized_cluster_ratio_bootstrap(t_b, n_b, w_b).flatten()
     boot_delta = boot_b - boot_a
+    finite_delta = boot_delta[np.isfinite(boot_delta)]
 
-    ci_lower = float(np.percentile(boot_delta, 2.5))
-    ci_upper = float(np.percentile(boot_delta, 97.5))
-    se = float(np.std(boot_delta, ddof=1))
+    if len(finite_delta) < 3:
+        return ContrastEstimate(
+            contrast_name="contrast",
+            metric_name=metric_name,
+            delta_hat=delta_hat,
+            ci_95=None,
+            se=0.0,
+            mde_080=0.0,
+            detected_and_powered=False,
+            descriptive_only=True,
+            warning="Warning: Insufficient finite bootstrap delta replications.",
+        )
+
+    ci_lower = float(np.percentile(finite_delta, 2.5))
+    ci_upper = float(np.percentile(finite_delta, 97.5))
+    se = float(np.std(finite_delta, ddof=1)) if len(finite_delta) > 1 else 0.0
     mde = compute_mde_080(se)
 
     # Power discipline check

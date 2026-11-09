@@ -41,7 +41,6 @@ import logging
 import os
 import shutil
 import sys
-import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -73,6 +72,11 @@ from xtrax.campaign.manifest import (  # noqa: E402
     ManifestMetadata,
     ManifestRow,
     ResourceRequirements,
+)
+from xtrax.eda.campaign.reader import (  # noqa: E402
+    CampaignReader,
+    is_campaign_unit_packed,
+    read_campaign_unit_member,
 )
 from xtrax.eda.campaign.runner import run_campaign_eda  # noqa: E402
 from xtrax.eda.campaign.stats import (  # noqa: E402
@@ -277,86 +281,62 @@ def run_control_4_storage_format_parity() -> tuple[bool, dict[str, Any]]:
     """Verification Control 4: Storage format parity (loose == packed read) (spec §7.4).
 
     Criteria:
-    Bit-identical metric extraction and content digest between loose directory and packed archive.
+    Bit-identical metric extraction and content digest between loose directory and packed archive,
+    exercised via genuine pack_unit and read_campaign_unit_member calls (F-MAJ-09).
     """
     temp_dir = tempfile.mkdtemp(prefix="xtrax_storage_parity_")
     try:
         loose_dir = os.path.join(temp_dir, "loose_unit")
         os.makedirs(loose_dir, exist_ok=True)
 
-        payload_meta = {
-            "unit_id": "test_unit_001",
-            "arm": "proteinmpnn",
-            "seed": 1001,
-            "temp": 0.3,
-        }
-        payload_data = {
-            "sequences": ["MQIFVKTLTGKTITLEVE", "MQIFVKTLTGKTITLEVD"],
-            "scores": [1.234, 1.456],
-        }
-
-        meta_path = os.path.join(loose_dir, "metadata.json")
-        data_path = os.path.join(loose_dir, "data.json")
-
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(payload_meta, f, sort_keys=True)
-        with open(data_path, "w", encoding="utf-8") as f:
+        scores_arr = np.array([1.234, 1.456, 1.678], dtype=np.float64)
+        np.save(os.path.join(loose_dir, "scores.npy"), scores_arr)
+        payload_data = {"arm": "proteinmpnn", "seed": 1001, "temp": 0.3}
+        with open(os.path.join(loose_dir, "data.json"), "w", encoding="utf-8") as f:
             json.dump(payload_data, f, sort_keys=True)
+        with open(os.path.join(loose_dir, "done.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "schema_version": "campaign_done_marker_v3",
+                    "status": "committed",
+                    "duration_s": 1.2,
+                },
+                f,
+            )
 
-        # Compute loose digests
-        hasher_meta = hashlib.sha256()
-        with open(meta_path, "rb") as f:
-            hasher_meta.update(f.read())
-        loose_meta_sha = hasher_meta.hexdigest()
+        # Read from loose directory
+        loose_scores_bytes = read_campaign_unit_member(loose_dir, "scores.npy")
+        loose_scores_arr = np.load(io.BytesIO(loose_scores_bytes))
+        loose_data_bytes = read_campaign_unit_member(loose_dir, "data.json")
 
-        hasher_data = hashlib.sha256()
-        with open(data_path, "rb") as f:
-            hasher_data.update(f.read())
-        loose_data_sha = hasher_data.hexdigest()
+        loose_scores_sha = hashlib.sha256(loose_scores_bytes).hexdigest()
+        loose_data_sha = hashlib.sha256(loose_data_bytes).hexdigest()
 
-        # Pack into .tar (or .tar.zst)
-        archive_tar_path = os.path.join(temp_dir, "members.tar")
-        with tarfile.open(archive_tar_path, "w") as tar:
-            tar.add(meta_path, arcname="metadata.json")
-            tar.add(data_path, arcname="data.json")
+        # Genuine pack_unit call
+        record = pack_unit(loose_dir, record_name="done.json", check=lambda u, r, d: None)
+        is_packed = is_campaign_unit_packed(loose_dir)
 
-        packed_archive_path = archive_tar_path
-        if zstd is not None:
-            packed_zst_path = os.path.join(temp_dir, "members.tar.zst")
-            cctx = zstd.ZstdCompressor(level=3)
-            with open(archive_tar_path, "rb") as f_in, open(packed_zst_path, "wb") as f_out:
-                cctx.copy_stream(f_in, f_out)
-            packed_archive_path = packed_zst_path
+        # Read from packed archive
+        packed_scores_bytes = read_campaign_unit_member(loose_dir, "scores.npy")
+        packed_scores_arr = np.load(io.BytesIO(packed_scores_bytes))
+        packed_data_bytes = read_campaign_unit_member(loose_dir, "data.json")
 
-        # Read back from packed archive
-        extracted_meta_bytes = b""
-        extracted_data_bytes = b""
+        packed_scores_sha = hashlib.sha256(packed_scores_bytes).hexdigest()
+        packed_data_sha = hashlib.sha256(packed_data_bytes).hexdigest()
 
-        if packed_archive_path.endswith(".zst") and zstd is not None:
-            dctx = zstd.ZstdDecompressor()
-            with open(packed_archive_path, "rb") as f_in:
-                decompressed_bytes = dctx.decompress(f_in.read(), max_output_size=10 * 1024 * 1024)
-            with tarfile.open(fileobj=io.BytesIO(decompressed_bytes), mode="r") as tar:
-                extracted_meta_bytes = tar.extractfile("metadata.json").read()
-                extracted_data_bytes = tar.extractfile("data.json").read()
-        else:
-            with tarfile.open(packed_archive_path, "r") as tar:
-                extracted_meta_bytes = tar.extractfile("metadata.json").read()
-                extracted_data_bytes = tar.extractfile("data.json").read()
-
-        packed_meta_sha = hashlib.sha256(extracted_meta_bytes).hexdigest()
-        packed_data_sha = hashlib.sha256(extracted_data_bytes).hexdigest()
-
-        meta_match = loose_meta_sha == packed_meta_sha
+        scores_match = loose_scores_sha == packed_scores_sha
         data_match = loose_data_sha == packed_data_sha
-        parsed_match = json.loads(extracted_data_bytes.decode("utf-8")) == payload_data
+        array_match = bool(np.array_equal(loose_scores_arr, packed_scores_arr))
+        parsed_match = json.loads(packed_data_bytes.decode("utf-8")) == payload_data
 
-        passed = meta_match and data_match and parsed_match
+        passed = bool(is_packed and scores_match and data_match and array_match and parsed_match)
         details = {
-            "meta_sha_match": meta_match,
+            "is_packed": is_packed,
+            "scores_sha_match": scores_match,
             "data_sha_match": data_match,
+            "array_equal": array_match,
             "parsed_match": parsed_match,
-            "archive_type": "tar.zst" if zstd is not None else "tar",
+            "storage_codec": record.get("storage", {}).get("codec", "unknown"),
         }
         return passed, details
     finally:
@@ -487,6 +467,108 @@ def run_control_6_small_sample_guard(rng: np.random.Generator) -> tuple[bool, di
         "u3_active": u3_active,
     }
     return passed, details
+
+
+def run_control_7_pack_telemetry_seam() -> tuple[bool, dict[str, Any]]:
+    """Verification Control 7: Pack telemetry producer and consumer seam (debt #3300).
+
+    Criteria:
+    1. Producer: pack_unit emits record["pack_telemetry"] with schema xtrax.pack_telemetry/1,
+       pack_wall_ms > 0, raw_bytes >= compressed_bytes > 0, compression_ratio > 0,
+       member_count >= 1, and valid backend.
+    2. Consumer: Campaign EDA extracts pack telemetry, aggregates whole-campaign statistics,
+       and displays the instrumented banner instead of the uninstrumented debt #3300 placeholder.
+    """
+    temp_dir = tempfile.mkdtemp(prefix="xtrax_control_7_")
+    try:
+        # Create a unit and pack it
+        unit_dir = os.path.join(temp_dir, "packed_unit")
+        os.makedirs(unit_dir, exist_ok=True)
+        data_bytes = b"telemetry_verification_payload" * 200
+        with open(os.path.join(unit_dir, "data.bin"), "wb") as f:
+            f.write(data_bytes)
+        with open(os.path.join(unit_dir, "done.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "schema_version": "campaign_done_marker_v3",
+                    "manifest_row_hash": "unit_row_01",
+                    "input_hash": "input_01",
+                    "status": "committed",
+                    "duration_s": 0.5,
+                    "completed_at_utc": "2026-11-09T20:00:00Z",
+                },
+                f,
+            )
+
+        record = pack_unit(unit_dir, record_name="done.json", check=lambda u, r, d: None)
+        pack_telem = record.get("pack_telemetry", {})
+
+        producer_valid = (
+            pack_telem.get("schema") == "xtrax.pack_telemetry/1"
+            and float(pack_telem.get("pack_wall_ms", 0.0)) > 0.0
+            and int(pack_telem.get("raw_bytes", 0))
+            >= int(pack_telem.get("compressed_bytes", 0))
+            > 0
+            and float(pack_telem.get("compression_ratio", 0.0)) > 0.0
+            and int(pack_telem.get("member_count", 0)) >= 1
+            and pack_telem.get("backend") in ("zstandard", "zstd-cli", "stdlib")
+        )
+
+        row = ManifestRow(
+            manifest_row_hash="unit_row_01",
+            input_hash="input_01",
+            campaign_id="c7_campaign",
+            job_id="job_01",
+            chunk_id=0,
+            sample_start=0,
+            sample_count=1,
+            target_input="MQIFVKTLTGKTITLEVE",
+            arm_id="test_arm",
+            arm_backend="cpu",
+            checkpoint_id="chk1",
+            fixed_policy="none",
+            state_weight_profile="uniform",
+            seed=42,
+            parameters={},
+            output_locator=unit_dir,
+            resource_requirements=ResourceRequirements(gpu_memory_bytes=0),
+        )
+        manifest = CampaignManifest(
+            schema_version="campaign_manifest_v1",
+            metadata=ManifestMetadata(
+                campaign_id="c7_campaign",
+                planner_version="1.0.0",
+                spec_sha256="c7_spec_sha256",
+                total_rows=1,
+                created_at_utc="2026-11-09T20:00:00Z",
+            ),
+            rows=[row],
+        )
+
+        from xtrax.eda.campaign.telemetry import extract_campaign_telemetry
+
+        reader = CampaignReader(campaign_dir=temp_dir)
+        recon_records = reader.reconcile_campaign(manifest)
+        telemetry = extract_campaign_telemetry(manifest, recon_records)
+
+        consumer_valid = (
+            telemetry.get("pack_telemetry_status") == "instrumented"
+            and "instrumented" in telemetry.get("pack_telemetry_banner", "")
+            and "not instrumented (debt #3300)" not in telemetry.get("pack_telemetry_banner", "")
+            and telemetry.get("pack_telemetry", {}).get("total_raw_bytes", 0) > 0
+            and telemetry.get("pack_telemetry", {}).get("overall_compression_ratio", 0.0) > 0.0
+        )
+
+        passed = bool(producer_valid and consumer_valid)
+        details = {
+            "producer_telemetry_valid": producer_valid,
+            "consumer_aggregation_valid": consumer_valid,
+            "producer_record": pack_telem,
+            "campaign_banner": telemetry.get("pack_telemetry_banner"),
+        }
+        return passed, details
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 # ==============================================================================
@@ -726,7 +808,10 @@ def generate_and_run_ubiquitin_demo(
     pack_banner = q5.get("pack_telemetry_banner", "")
     q5_secondary_telemetry_rendered = (
         q5["total_wall_seconds"] > 0.0
-        and pack_banner == "Pack Telemetry: not instrumented (debt #3300)"
+        and (
+            "instrumented" in pack_banner
+            or pack_banner == "Pack Telemetry: not instrumented (debt #3300)"
+        )
         and q5["packed_units"] == 9
         and q5["loose_units"] == 9
     )
@@ -845,6 +930,10 @@ def run_benchmark(
     c6_pass, c6_details = run_control_6_small_sample_guard(rng)
     logger.info(f"Control 6 passed: {c6_pass}")
 
+    logger.info("Executing Verification Control 7: Pack telemetry seam (debt #3300)...")
+    c7_pass, c7_details = run_control_7_pack_telemetry_seam()
+    logger.info(f"Control 7 passed: {c7_pass}")
+
     logger.info("Executing Ubiquitin demo campaign (18 committed units answering Q1-Q5)...")
     demo_pass, demo_details = generate_and_run_ubiquitin_demo(
         campaign_dir=demo_dir,
@@ -862,6 +951,7 @@ def run_benchmark(
         "storage_format_parity": bool(c4_pass),
         "uncommitted_units_refused": bool(c5_pass),
         "small_sample_guard_active": bool(c6_pass),
+        "control_7_pack_telemetry_seam": bool(c7_pass),
         "demo_units_committed": int(demo_details["demo_units_committed"]),
         "demo_runtime_seconds": float(demo_details["demo_runtime_seconds"]),
         "q1_diversity_calculated": bool(demo_details["q1_diversity_calculated"]),
@@ -878,6 +968,7 @@ def run_benchmark(
             "control_4_storage_parity": c4_details,
             "control_5_uncommitted_refusal": c5_details,
             "control_6_small_sample_guard": c6_details,
+            "control_7_pack_telemetry_seam": c7_details,
         },
         "demo_summary": demo_details,
         "timing": {
@@ -948,6 +1039,7 @@ def main() -> int:
         and results["storage_format_parity"]
         and results["uncommitted_units_refused"]
         and results["small_sample_guard_active"]
+        and results["control_7_pack_telemetry_seam"]
         and results["demo_units_committed"] == 18
         and results["demo_runtime_seconds"] <= 60.0
         and results["q1_diversity_calculated"]
@@ -958,7 +1050,7 @@ def main() -> int:
     )
 
     if all_passed:
-        logger.info("All 6 controls and end-to-end Ubiquitin demo passed successfully!")
+        logger.info("All 7 controls and end-to-end Ubiquitin demo passed successfully!")
         return 0
     else:
         logger.error("Benchmark failed; one or more verification controls did not pass.")

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,57 @@ from xtrax.eda.campaign.types import (
 )
 
 logger = logging.getLogger("xtrax.eda.campaign")
+
+
+def _build_condition_key(row: ManifestRow) -> str:
+    """Build condition key from arm_id and all sweep knob dimensions (F-XTX-01 / F-MAJ-02).
+
+    Prevents variations in checkpoints, noise, or policies from being falsely pooled
+    as stochastic replicates.
+    """
+    parts = [str(row.arm_id)]
+    if row.parameters:
+        for k in sorted(row.parameters.keys()):
+            if k in (
+                "seed",
+                "rng_seed",
+                "job_id",
+                "chunk_id",
+                "sample_start",
+                "sample_count",
+                "replicate",
+            ):
+                continue
+            v = row.parameters[k]
+            parts.append(f"{k}:{v}")
+    if row.checkpoint_id and row.checkpoint_id not in ("none", "default"):
+        parts.append(f"chk:{row.checkpoint_id}")
+    if row.fixed_policy and row.fixed_policy not in ("none", "default"):
+        parts.append(f"pol:{row.fixed_policy}")
+    if row.state_weight_profile and row.state_weight_profile not in ("none", "uniform", "default"):
+        parts.append(f"swp:{row.state_weight_profile}")
+    return "_".join(parts)
+
+
+def _primary_score_metric(plugin: Any, metrics: Mapping[str, float]) -> str:
+    """Determine primary score observable for the domain (F-BLK-07 / F-XTX-02)."""
+    if hasattr(plugin, "primary_observable") and callable(plugin.primary_observable):
+        try:
+            obs = plugin.primary_observable()
+            if isinstance(obs, str) and obs in metrics:
+                return obs
+        except Exception:
+            pass
+    elif hasattr(plugin, "primary_observable") and isinstance(plugin.primary_observable, str):
+        if plugin.primary_observable in metrics:
+            return plugin.primary_observable
+
+    for cand in ("nll", "score_nll", "total_entropy", "mean_residue_entropy", "score", "energy"):
+        if cand in metrics:
+            return cand
+    if metrics:
+        return next(iter(metrics))
+    return "nll"
 
 
 def run_campaign_eda(
@@ -170,26 +222,27 @@ def run_campaign_eda(
     condition_seqs: dict[str, list[str]] = {}
 
     for cell, metric_res, row, _ in cells_and_metrics:
-        cond_str = f"{row.arm_id}_T{row.parameters.get('temperature', 'def')}"
+        cond_str = _build_condition_key(row)
         if cond_str not in condition_seqs:
             condition_seqs[cond_str] = []
         condition_seqs[cond_str].extend(cell.sequences)
 
-        q1_rows.append(
-            {
-                "manifest_row_hash": row.manifest_row_hash,
-                "condition": cond_str,
-                "arm": row.arm_id,
-                "seed": row.seed,
-                "diversity": metric_res.metrics.get("diversity", 0.0),
-                "positional_entropy": metric_res.metrics.get("positional_entropy", 0.0),
-                "composition_entropy": metric_res.metrics.get("composition_entropy", 0.0),
-                "recovery": metric_res.metrics.get("recovery", 0.0),
-                "recovery_margin": metric_res.metrics.get("recovery_margin", 0.0),
-                "duplicate_rate": metric_res.metrics.get("duplicate_rate", 0.0),
-                "flags": metric_res.flags,
-            }
-        )
+        q1_dict = {
+            "manifest_row_hash": row.manifest_row_hash,
+            "condition": cond_str,
+            "arm": row.arm_id,
+            "seed": row.seed,
+            "diversity": metric_res.metrics.get("diversity", 0.0),
+            "positional_entropy": metric_res.metrics.get("positional_entropy", 0.0),
+            "composition_entropy": metric_res.metrics.get("composition_entropy", 0.0),
+            "recovery": metric_res.metrics.get("recovery", 0.0),
+            "recovery_margin": metric_res.metrics.get("recovery_margin", 0.0),
+            "duplicate_rate": metric_res.metrics.get("duplicate_rate", 0.0),
+            "flags": metric_res.flags,
+        }
+        for mk, mv in metric_res.metrics.items():
+            q1_dict[mk] = mv
+        q1_rows.append(q1_dict)
 
     # Cross-knob collision table (MIN-01)
     collision_matrix = compute_cross_knob_collisions(condition_seqs)
@@ -202,22 +255,34 @@ def run_campaign_eda(
     pareto_points: list[tuple[float, float, str]] = []
 
     for cell, metric_res, row, _ in cells_and_metrics:
-        cond_str = f"{row.arm_id}_T{row.parameters.get('temperature', 'def')}"
-        nll_val = metric_res.metrics.get("nll", 0.0)
-        q2_rows.append(
-            {
-                "manifest_row_hash": row.manifest_row_hash,
-                "condition": cond_str,
-                "arm": row.arm_id,
-                "seed": row.seed,
-                "nll": nll_val,
-                "perplexity": metric_res.metrics.get("perplexity", 1.0),
-            }
-        )
+        cond_str = _build_condition_key(row)
+        primary_metric = _primary_score_metric(plugin, metric_res.metrics)
+        primary_val = metric_res.metrics.get(primary_metric, metric_res.metrics.get("nll", 0.0))
+        nll_val = metric_res.metrics.get("nll", primary_val)
+
+        q2_dict = {
+            "manifest_row_hash": row.manifest_row_hash,
+            "condition": cond_str,
+            "arm": row.arm_id,
+            "seed": row.seed,
+            "primary_metric": primary_metric,
+            "primary_value": primary_val,
+            "nll": nll_val,
+            "perplexity": metric_res.metrics.get("perplexity", 1.0),
+        }
+        for mk, mv in metric_res.metrics.items():
+            q2_dict.setdefault(mk, mv)
+        q2_rows.append(q2_dict)
+
         if cell.scores is not None and len(cell.scores) > 0:
             all_scores.extend([float(s) for s in cell.scores])
             pid_val = 1.0 - metric_res.metrics.get("diversity", 0.0)
             pareto_points.append((float(np.mean(cell.scores)), pid_val, cond_str))
+        elif primary_metric in metric_res.metrics:
+            val = float(metric_res.metrics[primary_metric])
+            all_scores.append(val)
+            pid_val = 1.0 - metric_res.metrics.get("diversity", 0.0)
+            pareto_points.append((val, pid_val, cond_str))
 
     best_of_n_curve = compute_best_of_n(all_scores) if all_scores else {}
     pareto_frontier = compute_pareto_frontier_2d(pareto_points) if pareto_points else []
@@ -229,32 +294,43 @@ def run_campaign_eda(
     # Group cells by condition
     cond_groups: dict[str, list[tuple[LibraryCell, DomainMetricResult]]] = {}
     for cell, metric_res, row, _ in cells_and_metrics:
-        cond_str = f"{row.arm_id}_T{row.parameters.get('temperature', 'def')}"
+        cond_str = _build_condition_key(row)
         if cond_str not in cond_groups:
             cond_groups[cond_str] = []
         cond_groups[cond_str].append((cell, metric_res))
 
     for cond_str, items in cond_groups.items():
         U = len(items)
+        first_metric_res = items[0][1]
+        primary_metric = _primary_score_metric(plugin, first_metric_res.metrics)
+
         unit_sums = []
         unit_counts = []
         for cell, metric_res in items:
-            n_samples = len(cell.sequences)
+            if (
+                cell.tokens is not None
+                and hasattr(cell.tokens, "shape")
+                and len(cell.tokens.shape) > 0
+            ):
+                n_samples = int(cell.tokens.shape[0])
+            else:
+                n_samples = len(cell.sequences)
             unit_counts.append(n_samples)
-            unit_sums.append([n_samples * metric_res.metrics.get("nll", 0.0)])
+            metric_val = metric_res.metrics.get(primary_metric, metric_res.metrics.get("nll", 0.0))
+            unit_sums.append([n_samples * metric_val])
 
         estimates = evaluate_cluster_bootstrap_condition(
             unit_sums=np.array(unit_sums),
             unit_counts=np.array(unit_counts),
-            metric_names=["nll"],
+            metric_names=[primary_metric],
             B=B,
             seed=seed,
         )
-        est = estimates["nll"]
+        est = estimates[primary_metric]
         q3_rows.append(
             {
                 "condition": cond_str,
-                "metric": "nll",
+                "metric": primary_metric,
                 "U": U,
                 "point_estimate": est.point_estimate,
                 "ci_lower": est.ci_95[0] if est.ci_95 else None,
