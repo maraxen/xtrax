@@ -4,10 +4,13 @@ Covering [T3-04], GATE-08, GATE-09, and Section 6.3.3 of SPEC-261105-CAMPAIGN-RU
 Zero imports of controller/ or bathos.
 """
 
+import importlib.util
 import os
 import re
 import shlex
+import site
 import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -147,6 +150,94 @@ def _check_directive_value(name: str, value: str) -> None:
         raise ValueError(msg)
 
 
+#: Runs this environment's xtrax CLI with the generating interpreter. ``-P`` keeps the
+#: task's working directory (sbatch's cwd) off ``sys.path``, as a console script would.
+_CLI_BOOTSTRAP = "import sys; from xtrax.cli import main; sys.exit(main())"
+
+
+def fn_import_roots(fn_spec: str) -> list[str]:
+    """Directories an array task must put on ``PYTHONPATH`` to import ``fn_spec``.
+
+    The top-level package of ``fn_spec`` (imported, or located without importing) says
+    where it was found. A location inside the running environment or the base
+    interpreter (``sys.prefix``, ``sys.exec_prefix``, ``sys.base_prefix``) or a site
+    directory (including user site-packages) is importable in every task already;
+    anything else, such as a source tree found through the cwd or ``PYTHONPATH``, is
+    returned so the task does not depend on the submitting shell's environment.
+    """
+    top = fn_spec.rsplit(":", 1)[0].split(".")[0]
+    mod = sys.modules.get(top)
+    if mod is not None:
+        locations = list(getattr(mod, "__path__", None) or [])
+        origin = getattr(mod, "__file__", None)
+    else:
+        try:
+            spec = importlib.util.find_spec(top)
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
+            return []
+        locations = list(spec.submodule_search_locations or [])
+        origin = spec.origin if spec.has_location else None
+    if locations:
+        parents = [Path(loc).absolute().parent for loc in locations]
+    elif origin:
+        parents = [Path(str(origin)).absolute().parent]
+    else:
+        return []
+    covered = {Path(p).absolute() for p in (sys.prefix, sys.exec_prefix, sys.base_prefix)}
+    covered |= {Path(p).absolute() for p in site.getsitepackages()}
+    user_site = site.getusersitepackages()
+    if user_site:
+        covered.add(Path(user_site).absolute())
+    roots: list[str] = []
+    for parent in parents:
+        if any(parent == c or c in parent.parents for c in covered):
+            continue
+        if str(parent) not in roots:
+            roots.append(str(parent))
+    return roots
+
+
+def task_environment(
+    fn_spec: str,
+) -> tuple[list[str], list[str], dict[str, str], list[str]]:
+    """What each array task needs to run as the generating process would.
+
+    Returns the launcher (the generating interpreter, by absolute path, running the
+    xtrax CLI), the ``PYTHONPATH`` roots for ``fn_spec``, the exported variables (the
+    resolved, absolute run-ledger root and the telemetry opt-out) and comment lines that
+    name the layer each value came from. Array tasks start in sbatch's working
+    directory, possibly with no exported environment (``--export=NONE``), so nothing
+    here may depend on ``PATH``, the cwd or the submitting shell.
+    """
+    from xtrax.telemetry.ledger import DEFAULT_LEDGER_ROOT, resolve_root
+    from xtrax.telemetry.record import telemetry_opted_out
+
+    # Not .resolve(): a venv's bin/python is a symlink to the base interpreter, which
+    # cannot import this environment's packages.
+    python = str(Path(sys.executable).absolute())
+    pythonpath = fn_import_roots(fn_spec)
+    ledger_root = resolve_root().absolute()
+    if (os.environ.get("XTRAX_LEDGER_ROOT") or "").strip():
+        ledger_source = "XTRAX_LEDGER_ROOT at generation"
+    else:
+        ledger_source = f"the default {DEFAULT_LEDGER_ROOT} under the generating directory"
+    env = {"XTRAX_LEDGER_ROOT": str(ledger_root)}
+    comments = [
+        "Baked at generation; tasks need no PATH, cwd or exported shell",
+        "(works with sbatch --export=NONE).",
+        f"python: interpreter of the generating environment ({sys.prefix})",
+        f"XTRAX_LEDGER_ROOT: decided by {ledger_source}",
+    ]
+    if pythonpath:
+        comments.append(f"PYTHONPATH: import root of {fn_spec}, outside the environment")
+    if telemetry_opted_out():
+        env["XTRAX_TELEMETRY_OPTOUT"] = "1"
+        comments.append("XTRAX_TELEMETRY_OPTOUT: set at generation")
+    return [python, "-P", "-c", _CLI_BOOTSTRAP], pythonpath, env, comments
+
+
 def _anchor_log_path(log_path: str, base_dir: str) -> str:
     """Return an absolute SLURM log path: absolute input is kept, relative is under ``base_dir``."""
     if Path(log_path).is_absolute():
@@ -182,8 +273,8 @@ class SlurmArrayExecutor:
         fn_spec: str | None = None,
         max_array_size: int = DEFAULT_MAX_ARRAY_SIZE,
         resume_verify: str = "deep",
-        launcher: Sequence[str] = ("xtrax",),
-        pythonpath: Sequence[str] = (),
+        launcher: Sequence[str] | None = None,
+        pythonpath: Sequence[str] | None = None,
         env: Mapping[str, str] | None = None,
         env_comments: Sequence[str] = (),
     ) -> None:
@@ -193,12 +284,15 @@ class SlurmArrayExecutor:
             gpus: GPUs per array task; 0 (the default) emits no ``--gres`` line.
             partition: ``--partition`` value (one name or a comma-separated list).
             mem: ``--mem`` value (e.g. ``"4G"``); None emits no ``--mem`` line.
-            launcher: Command words that run the xtrax CLI in each task. The CLI passes
-                the absolute console script of the generating environment, so tasks do
-                not depend on ``PATH`` or on sbatch exporting the submitting shell.
-            pythonpath: Directories prepended to ``PYTHONPATH`` in each task, for a
-                ``--fn`` module that is importable only from a source tree.
-            env: Variables exported in each task (after every ``#SBATCH`` line).
+            launcher: Command words that run the xtrax CLI in each task. None (the
+                default) uses the generating interpreter by absolute path (see
+                :func:`task_environment`), so tasks do not depend on ``PATH`` or on
+                sbatch exporting the submitting shell.
+            pythonpath: Directories prepended to ``PYTHONPATH`` in each task. None (the
+                default) uses :func:`fn_import_roots` of the function spec.
+            env: Variables exported in each task (after every ``#SBATCH`` line). None
+                (the default) exports the resolved run-ledger root and the telemetry
+                opt-out of the generating process.
             env_comments: Comment lines written above the exports, e.g. which layer
                 decided a baked value.
 
@@ -224,9 +318,9 @@ class SlurmArrayExecutor:
         ):
             if value is not None:
                 _check_directive_value(name, value)
-        if not launcher:
+        if launcher is not None and not launcher:
             raise ValueError("launcher must name at least one command word")
-        for entry in pythonpath:
+        for entry in pythonpath or ():
             if not entry or ":" in entry or "\n" in entry:
                 raise ValueError(f"pythonpath entry {entry!r} is empty or contains ':'")
         for key, value in (env or {}).items():
@@ -241,9 +335,9 @@ class SlurmArrayExecutor:
         self.max_concurrent = max_concurrent
         self.partition = partition
         self.mem = mem
-        self.launcher = tuple(launcher)
-        self.pythonpath = tuple(pythonpath)
-        self.env = dict(env or {})
+        self.launcher = tuple(launcher) if launcher is not None else None
+        self.pythonpath = tuple(pythonpath) if pythonpath is not None else None
+        self.env = dict(env) if env is not None else None
         self.env_comments = tuple(line for c in env_comments for line in c.splitlines())
         self.output_log = output_log
         self.error_log = error_log
@@ -381,12 +475,19 @@ class SlurmArrayExecutor:
 
         # sbatch stops reading directives at the first command, so every export comes
         # after the last #SBATCH line.
-        env_lines: list[str] = [f"# {line}" for line in self.env_comments]
-        env_lines += [f"export {key}={shlex.quote(val)}" for key, val in self.env.items()]
-        if self.pythonpath:
-            joined = shlex.quote(":".join(self.pythonpath))
+        launcher_words, pythonpath, env = self.launcher, self.pythonpath, self.env
+        comments: list[str] = []
+        if launcher_words is None or pythonpath is None or env is None:
+            d_launcher, d_pythonpath, d_env, comments = task_environment(resolved_fn)
+            launcher_words = d_launcher if launcher_words is None else launcher_words
+            pythonpath = d_pythonpath if pythonpath is None else pythonpath
+            env = d_env if env is None else env
+        env_lines: list[str] = [f"# {line}" for line in [*comments, *self.env_comments]]
+        env_lines += [f"export {key}={shlex.quote(val)}" for key, val in env.items()]
+        if pythonpath:
+            joined = shlex.quote(":".join(pythonpath))
             env_lines.append(f"export PYTHONPATH={joined}" + "${PYTHONPATH:+:${PYTHONPATH}}")
-        launcher = " ".join(shlex.quote(word) for word in self.launcher)
+        launcher = " ".join(shlex.quote(word) for word in launcher_words)
 
         script_lines = directives + [
             "",

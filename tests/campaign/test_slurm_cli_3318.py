@@ -7,8 +7,11 @@ venv ``PATH`` and ``PYTHONPATH`` from the submitting shell.
 """
 
 import os
+import shlex
+import site
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -17,9 +20,9 @@ from tests.campaign.executors.test_local import _create_mock_manifest
 from tests.campaign.test_r3_cli_slurm import _write_manifest
 from tests.campaign.unit_fns import ARRAY_UNIT_FN
 from xtrax.campaign.executors.local import _resolve_output_path
-from xtrax.campaign.executors.slurm import SlurmArrayExecutor
+from xtrax.campaign.executors.slurm import SlurmArrayExecutor, fn_import_roots
 from xtrax.campaign.marker import validate_unit_done
-from xtrax.cli.campaign_verb import CampaignArgs, _fn_import_roots, run_campaign
+from xtrax.cli.campaign_verb import CampaignArgs, run_campaign
 from xtrax.cli.errors import CLIError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -59,7 +62,9 @@ def test_generated_script_runs_with_no_exported_environment(
 
     script = _generate(tmp_path, "camp_3318_env", num_rows=2)
     elsewhere = tmp_path / "submit_dir"
-    elsewhere.mkdir()
+    # A package in the task's cwd must not shadow the environment's xtrax.
+    (elsewhere / "xtrax").mkdir(parents=True)
+    (elsewhere / "xtrax" / "__init__.py").write_text("raise SystemExit('cwd shadowed xtrax')\n")
     proc = subprocess.run(
         [
             "env",
@@ -151,17 +156,25 @@ def test_out_of_range_count_is_refused(tmp_path: Path, field: str, value: int) -
         _generate(tmp_path, f"camp_3318_range_{field}", **{field: value})
 
 
-def test_slurm_flag_with_local_executor_is_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    # A value equal to the executor default is still a flag the user passed.
+    [("slurm_partition", "mit_quicktest"), ("slurm_gpus", 0), ("slurm_time", "02:00:00")],
+)
+def test_slurm_flag_with_local_executor_is_refused(
+    tmp_path: Path, field: str, value: object
+) -> None:
     manifest = _create_mock_manifest(num_rows=1, campaign_id="camp_3318_local")
     manifest_path = _write_manifest(tmp_path / "manifest.json", manifest)
-    with pytest.raises(CLIError, match="--slurm-partition only apply to --executor slurm"):
+    flag = "--" + field.replace("_", "-")
+    with pytest.raises(CLIError, match=f"{flag} only apply to --executor slurm"):
         run_campaign(
             CampaignArgs(
                 action="run",
                 fn=ARRAY_UNIT_FN,
                 manifest=str(manifest_path),
                 executor="local-seq",
-                slurm_partition="mit_quicktest",
+                **{field: value},  # type: ignore[arg-type]
             )
         )
     assert not list(tmp_path.rglob("*.done.json")), "units ran despite the refused flag"
@@ -172,18 +185,46 @@ def test_slurm_flag_with_local_executor_is_refused(tmp_path: Path) -> None:
 # ==============================================================================
 
 
-def test_launcher_is_the_generating_environments_console_script(tmp_path: Path) -> None:
-    text = _generate(tmp_path, "camp_3318_launcher").read_text()
-    expected = Path(sys.executable).absolute().parent / "xtrax"
-    assert f"{expected} campaign run \\" in text
+def _launcher_line(text: str) -> str:
+    return next(ln for ln in text.splitlines() if ln.endswith(" campaign run \\"))
 
 
-def test_missing_console_script_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_bin = tmp_path / "fakeenv" / "bin"
-    fake_bin.mkdir(parents=True)
-    monkeypatch.setattr(sys, "executable", str(fake_bin / "python"))
-    with pytest.raises(CLIError, match="no xtrax console script"):
-        _generate(tmp_path, "camp_3318_noscript")
+def test_launcher_is_the_generating_interpreter(tmp_path: Path) -> None:
+    """No console-script lookup: any install whose interpreter imports xtrax works."""
+    line = _launcher_line(_generate(tmp_path, "camp_3318_launcher").read_text())
+    words = shlex.split(line.removesuffix(" \\"))
+    assert words[:3] == [str(Path(sys.executable).absolute()), "-P", "-c"]
+    assert words[-2:] == ["campaign", "run"]
+
+
+def test_library_executor_bakes_the_same_environment(
+    tmp_path: Path, _isolated_run_ledger: Path
+) -> None:
+    """The Python API, not only the CLI, gets the baked launcher and ledger root."""
+    manifest = _create_mock_manifest(num_rows=1, campaign_id="camp_3318_lib")
+    manifest_path = _write_manifest(tmp_path / "manifest.json", manifest)
+    text = SlurmArrayExecutor(manifest_path=manifest_path, fn_spec=ARRAY_UNIT_FN).generate_script(
+        manifest, tmp_path / "out"
+    )
+    assert text is not None
+    launcher = shlex.split(_launcher_line(text).removesuffix(" \\"))
+    assert launcher[0] == str(Path(sys.executable).absolute())
+    assert f"export XTRAX_LEDGER_ROOT={_isolated_run_ledger}" in text
+
+
+def test_explicit_launcher_and_env_override_the_baked_ones(tmp_path: Path) -> None:
+    manifest = _create_mock_manifest(num_rows=1, campaign_id="camp_3318_override")
+    manifest_path = _write_manifest(tmp_path / "manifest.json", manifest)
+    text = SlurmArrayExecutor(
+        manifest_path=manifest_path,
+        fn_spec=ARRAY_UNIT_FN,
+        launcher=["xtrax"],
+        pythonpath=[],
+        env={},
+    ).generate_script(manifest, tmp_path / "out")
+    assert text is not None
+    assert _launcher_line(text) == "xtrax campaign run \\"
+    assert "export " not in text
 
 
 def test_ledger_root_default_is_baked_absolute_with_its_source(
@@ -214,11 +255,25 @@ def test_telemetry_optout_is_baked_only_when_set(
 
 
 def test_fn_import_roots() -> None:
-    assert _fn_import_roots(ARRAY_UNIT_FN) == [str(REPO_ROOT)]
+    # resolve() both sides: a symlinked checkout reports its unresolved path.
+    assert [Path(r).resolve() for r in fn_import_roots(ARRAY_UNIT_FN)] == [REPO_ROOT]
     import json  # noqa: F401  (stdlib: inside the base interpreter)
 
-    assert _fn_import_roots("json:dumps") == []
-    assert _fn_import_roots("never_imported_module_3318:fn") == []
+    assert fn_import_roots("json:dumps") == []
+    assert fn_import_roots("never_imported_module_3318:fn") == []
+
+
+def test_fn_import_roots_skips_user_site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """User site-packages is importable already; prepending it would shadow the env."""
+    user_site = tmp_path / "usersite"
+    user_site.mkdir()
+    fake = types.ModuleType("fakemod_3318")
+    fake.__file__ = str(user_site / "fakemod_3318.py")
+    monkeypatch.setitem(sys.modules, "fakemod_3318", fake)
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(tmp_path / "elsewhere"))
+    assert fn_import_roots("fakemod_3318:fn") == [str(user_site)]
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(user_site))
+    assert fn_import_roots("fakemod_3318:fn") == []
 
 
 def test_executor_refuses_bad_env_and_pythonpath() -> None:
