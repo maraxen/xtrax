@@ -6,6 +6,7 @@ Zero imports of controller/ or bathos.
 
 import gc
 import json
+import logging
 import multiprocessing
 import os
 import signal
@@ -20,7 +21,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from xtrax.campaign.executors.protocol import CampaignSummary
-from xtrax.campaign.lease import FileLock, LockUnavailableError, StolenAttemptDiscarded
+from xtrax.campaign.lease import (
+    FileLock,
+    LeaseLostError,
+    LockUnavailableError,
+    StolenAttemptDiscarded,
+)
 from xtrax.campaign.marker import (
     CampaignDoneMarker,
     compute_content_digest,
@@ -28,6 +34,8 @@ from xtrax.campaign.marker import (
     quarantine_output,
     validate_unit_done,
 )
+
+logger = logging.getLogger(__name__)
 
 #: ``_execute_single_unit`` outcomes.
 UNIT_COMMITTED = "committed"
@@ -144,11 +152,63 @@ def _resolve_output_path(output_dir: Path, row: "ManifestRow") -> Path:
     if row.output_locator:
         loc_path = Path(row.output_locator)
         if loc_path.is_absolute():
-            return loc_path
+            target = loc_path
+            if Path(os.path.normpath(target)) == resolved_dir:
+                raise ValueError(
+                    f"output_locator {row.output_locator!r} of job_id={row.job_id!r} is "
+                    f"output_dir itself; a unit store must be a path inside or outside it"
+                )
+            return target
         if len(loc_path.parts) > 1 and resolved_dir.name == loc_path.parts[0]:
-            return resolved_dir / Path(*loc_path.parts[1:])
-        return resolved_dir / loc_path
+            target = resolved_dir / Path(*loc_path.parts[1:])
+        else:
+            target = resolved_dir / loc_path
+        # An absolute locator is allowed (the row hash covers it, #3308); a relative one
+        # must resolve strictly inside output_dir. output_dir itself is refused: set aside
+        # as a unit store, it would take every unit with it.
+        normalized = Path(os.path.normpath(target))
+        if normalized == resolved_dir or not normalized.is_relative_to(resolved_dir):
+            raise ValueError(
+                f"output_locator {row.output_locator!r} of job_id={row.job_id!r} does not "
+                f"resolve strictly inside output_dir {resolved_dir} (it escapes or names "
+                f"output_dir itself); use an absolute locator for a store elsewhere"
+            )
+        return target
     return resolved_dir / f"{row.manifest_row_hash}.zarr"
+
+
+def check_output_paths(output_dir: Path, rows: "list[ManifestRow]") -> None:
+    """Refuse a manifest whose rows do not each resolve to their own unit store.
+
+    Raises ``ValueError`` before any unit runs when a locator escapes or names
+    ``output_dir`` (see ``_resolve_output_path``), or when two rows resolve to the same
+    path. Two rows sharing a store would each set the other's output aside as an orphan
+    whose marker hash does not match, the cross-row clobber #3308 guards against.
+
+    Args:
+        output_dir: The campaign output directory locators resolve against.
+        rows: Every row of the manifest (collisions matter across all rows, not just
+            the ones scheduled now).
+
+    Returns:
+        None. Raises ``ValueError`` listing every bad row.
+    """
+    seen: dict[Path, int] = {}
+    problems: list[str] = []
+    for idx, row in enumerate(rows):
+        try:
+            path = Path(os.path.normpath(_resolve_output_path(output_dir, row)))
+        except ValueError as exc:
+            problems.append(str(exc))
+            continue
+        first = seen.setdefault(path, idx)
+        if first != idx:
+            problems.append(
+                f"rows {first} (job_id={rows[first].job_id!r}) and {idx} "
+                f"(job_id={row.job_id!r}) both resolve to {path}"
+            )
+    if problems:
+        raise ValueError("campaign manifest output paths are invalid: " + "; ".join(problems))
 
 
 def _check_resume_done(
@@ -221,6 +281,7 @@ def _set_aside_orphaned_output(
     output_path: Path,
     row: "ManifestRow",
     resume_verify: ResumeVerify = "deep",
+    lock: FileLock | None = None,
 ) -> None:
     """Quarantine a store or done marker that does not form a valid completed unit.
 
@@ -232,6 +293,9 @@ def _set_aside_orphaned_output(
     set aside too, so the recomputed output replaces it rather than being promoted over
     it. After this call neither exists, so whatever appears at ``output_path`` is this
     attempt's.
+
+    With ``lock``, the lease is re-checked right before the quarantine (#3312): a holder
+    that stalled after acquiring must not set aside the store of the worker that stole it.
     """
     marker_path = output_path.with_name(f"{output_path.name}.done.json")
     if not output_path.exists() and not marker_path.exists():
@@ -243,6 +307,8 @@ def _set_aside_orphaned_output(
         quarantine_on_failure=False,
     )
     if not val.is_valid:
+        if lock is not None:
+            lock.assert_holder()
         quarantine_output(output_path, reason="orphaned_uncommitted_output")
 
 
@@ -319,12 +385,16 @@ def _require_group_store(output_path: Path) -> None:
         raise UnitOutputNotAGroupError(msg)
 
 
-def _stage_unit_output(state: Any, output_path: Path, partial_path: Path) -> None:
+def _stage_unit_output(
+    state: Any, output_path: Path, partial_path: Path, lock: FileLock | None = None
+) -> None:
     """Put this attempt's output at ``partial_path`` for the commit protocol.
 
     In order of precedence:
 
     1. The unit function wrote its own store at ``output_path``: move it to the partial.
+       With ``lock``, the lease is re-checked first (#3312), so a stale holder never moves
+       a stealer's store into its own partial, where abort cleanup would delete it.
     2. The unit function returned a ``Mapping``: write it as a zarr v3 group.
     3. Otherwise the unit fails. Stamping a done marker on missing output would record
        the unit as complete and resume would skip it forever.
@@ -334,6 +404,8 @@ def _stage_unit_output(state: Any, output_path: Path, partial_path: Path) -> Non
     done_marker_path = output_path.with_name(f"{output_path.name}.done.json")
     if output_path.exists() and not done_marker_path.exists():
         _require_group_store(output_path)
+        if lock is not None:
+            lock.assert_holder()
         os.replace(output_path, partial_path)
         return
     if isinstance(state, Mapping):
@@ -348,6 +420,15 @@ def _stage_unit_output(state: Any, output_path: Path, partial_path: Path) -> Non
         f"(got {type(state).__name__}); refusing to stamp a done marker on missing output"
     )
     raise UnitProducedNoOutputError(msg)
+
+
+def _still_holds(lock: FileLock) -> bool:
+    """True when ``lock`` still holds its lease (see ``FileLock.assert_holder``)."""
+    try:
+        lock.assert_holder()
+    except LeaseLostError:
+        return False
+    return True
 
 
 def _discard_partial(partial_path: Path) -> None:
@@ -399,7 +480,8 @@ def _execute_single_unit(
 
     Returns one of ``UNIT_COMMITTED`` (this attempt stamped the done marker),
     ``UNIT_LOCK_HELD`` (another worker holds the lease; nothing ran) or
-    ``UNIT_DISCARDED`` (another worker finished the unit first). Raises on failure.
+    ``UNIT_DISCARDED`` (another worker finished the unit first). A lease lost mid-attempt
+    (stolen after a stall) is reported as ``UNIT_LOCK_HELD``, not a failure. Raises on failure.
 
     Any exception, including ``UnitInterruptedError`` from SIGTERM, discards this attempt's
     ``.partial.<uuid>`` path and releases the lease, so a killed worker neither keeps a
@@ -432,7 +514,7 @@ def _execute_single_unit(
         if _check_resume_done(output_dir, row, resume_verify=mode):
             _record_reuse(output_dir, row, output_path, mode, reused_by="lease_recheck")
             return UNIT_DISCARDED
-        _set_aside_orphaned_output(output_path, row, resume_verify=mode)
+        _set_aside_orphaned_output(output_path, row, resume_verify=mode, lock=lock)
         if validate_unit_done(
             output_path,
             row,
@@ -457,7 +539,7 @@ def _execute_single_unit(
                 quarantine_on_failure=False,
             ).is_valid:
                 return UNIT_DISCARDED
-            _stage_unit_output(state, output_path, partial_path)
+            _stage_unit_output(state, output_path, partial_path, lock=lock)
             staged = True
         finally:
             # Memory hygiene: device tensor blocking & garbage collection
@@ -481,6 +563,11 @@ def _execute_single_unit(
         if isinstance(commit_res, StolenAttemptDiscarded):
             return UNIT_DISCARDED
         return UNIT_COMMITTED
+    except LeaseLostError as exc:
+        # Another worker stole the unit; it owns the output now. Not this unit's failure,
+        # so it must not count toward ``max_failures`` (#3312).
+        logger.warning("lease lost on %s: %s", row.manifest_row_hash[:12], exc)
+        return UNIT_LOCK_HELD
     finally:
         try:
             # After a successful commit the partial has been promoted, so this is a no-op.
@@ -494,7 +581,9 @@ def _execute_single_unit(
                     deep_verify=mode == "deep",
                     quarantine_on_failure=False,
                 )
-                if not val.is_valid:
+                # Only a current holder may set the store aside (#3312): after a steal it
+                # is the stealer's in-progress output.
+                if not val.is_valid and _still_holds(lock):
                     quarantine_output(output_path, reason="aborted_unit_output")
         finally:
             if lock.is_locked:
@@ -616,6 +705,7 @@ class LocalSequentialExecutor:
         start_time = time.time()
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        check_output_paths(out_dir, manifest.rows)
 
         target_indices = (
             list(row_indices) if row_indices is not None else list(range(len(manifest.rows)))
@@ -731,14 +821,28 @@ def _reclaim_dead_worker_leases(
             continue
         if not isinstance(owner, str) or not owner.startswith(token_prefix):
             continue
-        for partial in output_path.parent.glob(f"{output_path.name}.partial.*"):
+
+        def lock_unchanged(lock_path: Path = lock_path, raw: bytes = raw) -> bool:
+            """True while the lock still has the bytes read above."""
+            try:
+                return lock_path.read_bytes() == raw
+            except OSError:
+                return False
+
+        # Re-check the lock before each removal and before the unlink (#3312): if another
+        # run steals the unit mid-way, its partials and lock are left alone.
+        intact = True
+        for partial in sorted(output_path.parent.glob(f"{output_path.name}.partial.*")):
+            if not lock_unchanged():
+                intact = False
+                break
             if partial.is_dir():
                 shutil.rmtree(partial, ignore_errors=True)
             else:
                 partial.unlink(missing_ok=True)
+        if not intact or not lock_unchanged():
+            continue
         try:
-            if lock_path.read_bytes() != raw:
-                continue
             lock_path.unlink()
         except OSError:
             continue
@@ -822,6 +926,7 @@ class LocalProcessPoolExecutor:
         start_time = time.time()
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        check_output_paths(out_dir, manifest.rows)
 
         target_indices = (
             list(row_indices) if row_indices is not None else list(range(len(manifest.rows)))

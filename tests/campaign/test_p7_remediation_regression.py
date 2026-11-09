@@ -1,7 +1,7 @@
 """P7 Code Review Remediation Regression Tests.
 
 Verifies:
-1. Zombie worker whose lock was stolen is denied commitment and raises LeaseLostError.
+1. Zombie worker whose lock was stolen is denied commitment and reports UNIT_LOCK_HELD.
 2. In-memory unit_fn creates output via lock.commit_output with valid done marker.
 3. CLI 'xtrax campaign run --manifest <path>' without '--output-dir' places outputs
    in manifest parent without path doubling.
@@ -22,11 +22,12 @@ import pytest
 
 from tests.campaign.unit_fns import ARRAY_UNIT_FN
 from xtrax.campaign.executors.local import (
+    UNIT_LOCK_HELD,
     LocalProcessPoolExecutor,
     _execute_single_unit,
     _resolve_output_path,
 )
-from xtrax.campaign.lease import FileLock, LeaseLostError
+from xtrax.campaign.lease import FileLock
 from xtrax.campaign.manifest import (
     CampaignManifest,
     ManifestMetadata,
@@ -87,14 +88,16 @@ def test_zombie_worker_lock_stolen_denied_commitment(tmp_path: Path) -> None:
         lock_path.write_text(json.dumps(lock_data), encoding="utf-8")
         return {"data": "zombie_result"}
 
-    with pytest.raises(LeaseLostError, match="lost, stolen, or expired"):
-        _execute_single_unit(
-            row=row,
-            unit_fn=unit_fn_stolen_while_running,
-            output_dir=output_dir,
-            lease_seconds=300,
-            heartbeat_interval=10.0,
-        )
+    # A lost lease is reported as lock-held, not raised: the unit now belongs to the thief,
+    # so it must not count as this worker's failure (#3312 review finding 5).
+    outcome = _execute_single_unit(
+        row=row,
+        unit_fn=unit_fn_stolen_while_running,
+        output_dir=output_dir,
+        lease_seconds=300,
+        heartbeat_interval=10.0,
+    )
+    assert outcome == UNIT_LOCK_HELD
 
     # Verify that zombie output was NOT committed to output_path
     done_marker_path = output_path.with_name(f"{output_path.name}.done.json")

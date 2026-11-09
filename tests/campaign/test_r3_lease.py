@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 import uuid
@@ -67,7 +68,9 @@ def test_file_lock_12s_lease_held_10s_renews_and_commits(tmp_path: Path) -> None
         done_marker=marker,
         attempt_uuid=attempt_uuid,
     )
-    assert result == marker
+    assert result == dataclasses.replace(
+        marker, lease_fence=lock.fence, owner_token=lock.owner_token
+    )
     assert output_path.exists()
     assert not lock_path.exists()
 

@@ -4,8 +4,10 @@ Covering [T2-01], [T2-02], [T2-03], Section 3.3, and Section 5 of SPEC-261105-CA
 Zero imports of controller/ or bathos.
 """
 
+import dataclasses
 import errno
 import json
+import logging
 import os
 import shutil
 import threading
@@ -19,8 +21,48 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from xtrax.campaign.marker import CampaignDoneMarker
 
+logger = logging.getLogger(__name__)
+
 #: Clock drift safety margin against heterogeneous cluster node clock skew (5 minutes).
 CLOCK_DRIFT_GRACE_PERIOD_S: int = 300
+
+
+def _boottime() -> float:
+    """Seconds on a clock that a wall-clock step cannot move and that runs through suspend.
+
+    ``CLOCK_BOOTTIME`` on Linux; ``time.monotonic()`` elsewhere. It bounds a holder's local
+    view of its own lease (#3312), so a stalled or suspended holder sees its lease lapse.
+    """
+    clock = getattr(time, "CLOCK_BOOTTIME", None)
+    if clock is not None:
+        return time.clock_gettime(clock)
+    return time.monotonic()
+
+
+def _fence_of(body: dict[str, Any], default: int = 0) -> int:
+    """The ``fence`` field of a lock or commit-token body; -1 when malformed.
+
+    -1 never equals a real fence (they start at 1), so a corrupt body reads as "not ours"
+    instead of raising out of a lease check.
+    """
+    try:
+        return int(body.get("fence", default))
+    except (TypeError, ValueError):
+        return -1
+
+
+def _fence_path_for(lock_path: Path) -> Path:
+    """``<unit>.fence`` next to ``<unit>.lock``."""
+    return lock_path.with_name(f"{lock_path.name.removesuffix('.lock')}.fence")
+
+
+def _read_fence_value(fence_path: Path) -> int:
+    """A unit's fence high-water mark; 0 when absent or unreadable."""
+    try:
+        return int(fence_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0
+
 
 #: Schema version for lock files.
 CAMPAIGN_LOCK_SCHEMA_VERSION = "campaign_lock_v1"
@@ -62,6 +104,9 @@ class CampaignLock:
     lease_expires_at_unix_s: float
     lease_seconds: int = 1800
     heartbeat_count: int = 0
+    #: Fencing token (#3312): raised on every acquire and steal, never reused while the
+    #: unit's ``.fence`` high-water file exists. 0 in locks written before #3312.
+    fence: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +117,7 @@ class CampaignLock:
             "lease_expires_at_unix_s": self.lease_expires_at_unix_s,
             "lease_seconds": self.lease_seconds,
             "heartbeat_count": self.heartbeat_count,
+            "fence": self.fence,
         }
 
     def to_json(self) -> str:
@@ -87,6 +133,7 @@ class CampaignLock:
             lease_expires_at_unix_s=float(data.get("lease_expires_at_unix_s", 0.0)),
             lease_seconds=int(data.get("lease_seconds", 1800)),
             heartbeat_count=int(data.get("heartbeat_count", 0)),
+            fence=int(data.get("fence", 0)),
         )
 
     @classmethod
@@ -148,6 +195,8 @@ class HeartbeatThread(threading.Thread):
         interval_seconds: float = 60.0,
         initial_acquired_at: float | None = None,
         expiry_guard_margin: float | None = None,
+        fence: int = 0,
+        local_deadline: float | None = None,
     ) -> None:
         if lease_seconds < 10:
             msg = f"lease_seconds must be >= 10, got {lease_seconds}"
@@ -157,6 +206,12 @@ class HeartbeatThread(threading.Thread):
         self.owner_token = owner_token
         self.manifest_row_hash = manifest_row_hash
         self.lease_seconds = lease_seconds
+        self.fence = fence
+        #: Boot-clock deadline of this holder's own view of the lease (#3312). Advanced
+        #: only after a renewal's post-verify passes, from a time sampled before the write.
+        self.local_deadline = (
+            local_deadline if local_deadline is not None else _boottime() + lease_seconds
+        )
         self.interval_seconds = min(float(interval_seconds), lease_seconds / 3.0)
         self.acquired_at_unix_s = (
             initial_acquired_at if initial_acquired_at is not None else time.time()
@@ -196,24 +251,42 @@ class HeartbeatThread(threading.Thread):
         with self._renew_lock:
             return self._renew_lease_cas_locked()
 
+    def _lock_is_ours(self, expected_count: int | None = None) -> bool:
+        """True while this holder may still renew.
+
+        The lock carries our owner, epoch, fence and heartbeat count; no later fence is
+        recorded in ``.fence``; and the boot-clock local deadline has not passed (#3312), so
+        a wall-clock step backward cannot revive a lapsed holder.
+        """
+        if _boottime() >= self.local_deadline - self.expiry_guard_margin:
+            return False
+        if self.fence < _read_fence_value(_fence_path_for(self.lock_path)):
+            return False
+        try:
+            current = json.loads(self.lock_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        count = self.heartbeat_count if expected_count is None else expected_count
+        return (
+            isinstance(current, dict)
+            and current.get("owner_token") == self.owner_token
+            and current.get("acquired_at_unix_s") == self.acquired_at_unix_s
+            and _fence_of(current) == self.fence
+            and current.get("heartbeat_count") == count
+        )
+
     def _renew_lease_cas_locked(self) -> bool:
         """Renewal body. Caller must hold self._renew_lock."""
         try:
+            boot_at_start = _boottime()
             now = time.time()
             # 1. Expiration Guard: Never attempt renewal if lease is within
             # expiry_guard_margin of expiring or expired
             if now >= self.current_lease_expires_at - self.expiry_guard_margin:
                 return False
 
-            # 2. CAS Pre-Check: verify active ownership, immutable epoch, and expected count
-            if not self.lock_path.exists():
-                return False
-            current = json.loads(self.lock_path.read_text(encoding="utf-8"))
-            if current.get("owner_token") != self.owner_token:
-                return False
-            if current.get("acquired_at_unix_s") != self.acquired_at_unix_s:
-                return False
-            if current.get("heartbeat_count") != self.heartbeat_count:
+            # 2. CAS Pre-Check: verify active ownership, immutable epoch, fence and count
+            if not self._lock_is_ours():
                 return False
 
             # 3. Stage updated lease
@@ -227,15 +300,17 @@ class HeartbeatThread(threading.Thread):
                 "lease_expires_at_unix_s": new_expires,
                 "lease_seconds": self.lease_seconds,
                 "heartbeat_count": next_count,
+                "fence": self.fence,
             }
             tmp_path = self.lock_path.with_name(f"{self.lock_path.name}.tmp.{uuid.uuid4().hex[:8]}")
             tmp_path.write_text(json.dumps(updated_lock, indent=2), encoding="utf-8")
             fsync_file(tmp_path)
 
-            # 4. Atomically replace lock file, unless stop() has been decided. The lock is
-            # held here, so stop() cannot set the event mid-renewal; this check is the
-            # last guard before the replace.
-            if self.stop_event.is_set():
+            # 4. Atomically replace lock file, unless stop() has been decided or the lock
+            # changed while the tmp file was written (#3312: a stall there must not let
+            # this renewal overwrite a stealer's lock). The lock is held here, so stop()
+            # cannot set the event mid-renewal.
+            if self.stop_event.is_set() or not self._lock_is_ours():
                 with suppress(OSError):
                     tmp_path.unlink()
                 return False
@@ -243,14 +318,10 @@ class HeartbeatThread(threading.Thread):
             fsync_directory(self.lock_path.parent)
 
             # 5. CAS Post-Verification: Confirm our write held
-            post_check = json.loads(self.lock_path.read_text(encoding="utf-8"))
-            if (
-                post_check.get("owner_token") == self.owner_token
-                and post_check.get("heartbeat_count") == next_count
-                and post_check.get("acquired_at_unix_s") == self.acquired_at_unix_s
-            ):
+            if self._lock_is_ours(expected_count=next_count):
                 self.heartbeat_count = next_count
                 self.current_lease_expires_at = new_expires
+                self.local_deadline = boot_at_start + self.lease_seconds
                 return True
             return False
         except Exception:
@@ -281,19 +352,177 @@ class FileLock:
         self.lease_seconds = lease_seconds
         self.heartbeat_interval = min(float(heartbeat_interval), lease_seconds / 3.0)
         self.expiry_guard_margin = min(60.0, lease_seconds / 6.0)
+        self.fence_path = self.output_path.with_name(f"{self.output_path.name}.fence")
         self.acquired_at_unix_s: float | None = None
+        self.fence: int = 0
+        self.local_deadline: float | None = None
         self.heartbeat: HeartbeatThread | None = None
         self.is_locked: bool = False
+
+    # --- fencing (#3312) -------------------------------------------------------------
+
+    def _read_fence_file(self) -> int:
+        """The unit's fence high-water mark; 0 when absent or unreadable."""
+        return _read_fence_value(self.fence_path)
+
+    def _lock_body_is_ours(self, data: dict[str, Any]) -> bool:
+        return (
+            data.get("owner_token") == self.owner_token
+            and data.get("acquired_at_unix_s") == self.acquired_at_unix_s
+            and _fence_of(data) == self.fence
+        )
+
+    def _read_lock_body(self) -> dict[str, Any] | None:
+        try:
+            data = json.loads(self.lock_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _raise_fence_file(self) -> None:
+        """Record this holder's fence as the high-water mark.
+
+        Written only while the lock is still ours, and only when our fence exceeds the
+        value on disk, so a holder that stalled before this write cannot roll back a later
+        stealer's fence. The read-compare-replace is not atomic: a stall between the checks
+        and the replace (the residual window R1) can still lower the file. If the lock
+        changed hands meanwhile, the stealer's fence is written back right after, which
+        narrows that window further. A failed write is tolerated: identity checks compare
+        the whole (owner, fence, acquired_at) triple.
+        """
+        body = self._read_lock_body()
+        if body is None or not self._lock_body_is_ours(body):
+            return
+        if self.fence <= self._read_fence_file():
+            return
+        self._write_fence_file(self.fence)
+        after = self._read_lock_body()
+        if after is not None and not self._lock_body_is_ours(after):
+            newer = _fence_of(after)
+            if newer > self._read_fence_file():
+                self._write_fence_file(newer)
+
+    def _write_fence_file(self, value: int) -> None:
+        tmp = self.fence_path.with_name(f"{self.fence_path.name}.tmp.{uuid.uuid4().hex[:8]}")
+        try:
+            tmp.write_text(f"{value}\n", encoding="utf-8")
+            os.replace(tmp, self.fence_path)
+        except OSError as exc:
+            logger.warning("could not record fence %d at %s: %s", value, self.fence_path, exc)
+            with suppress(OSError):
+                tmp.unlink()
+
+    def current_local_deadline(self) -> float | None:
+        """Boot-clock deadline of this holder's lease, advanced by heartbeat renewals."""
+        if self.heartbeat is not None:
+            return self.heartbeat.local_deadline
+        return self.local_deadline
+
+    def assert_holder(self) -> None:
+        """Raise ``LeaseLostError`` unless this worker still holds the lease.
+
+        Called immediately before every destructive step (#3312). Holds when the lock
+        carries our owner, acquired_at and fence; our fence is at least the unit's
+        ``.fence`` high-water mark; the heartbeat has not aborted; the wall-clock lease in
+        the lock has not expired; and the boot-clock local deadline has not passed.
+        Closes the stall windows down to the gap between this check and the step after it.
+        """
+        msg = f"Lease for {self.output_path} was lost, stolen, or expired"
+        if not self.is_locked or self.acquired_at_unix_s is None:
+            raise LeaseLostError(msg)
+        body = self._read_lock_body()
+        if body is None or not self._lock_body_is_ours(body):
+            raise LeaseLostError(msg)
+        if self.fence < self._read_fence_file():
+            raise LeaseLostError(f"{msg} (fence {self.fence} superseded)")
+        if self.heartbeat is not None and self.heartbeat.abort_event.is_set():
+            raise LeaseLostError(msg)
+        if time.time() >= float(body.get("lease_expires_at_unix_s", 0.0)):
+            raise LeaseLostError(msg)
+        deadline = self.current_local_deadline()
+        if deadline is not None and _boottime() >= deadline:
+            raise LeaseLostError(f"{msg} (local lease deadline passed)")
+
+    def _unlink_commit_token_if_ours(self, commit_token_path: Path) -> None:
+        """Remove ``.commit`` only when its body names this owner and fence."""
+        try:
+            body = json.loads(commit_token_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(body, dict) or body.get("owner_token") != self.owner_token:
+            return
+        if _fence_of(body, default=self.fence) != self.fence:
+            return
+        with suppress(OSError):
+            commit_token_path.unlink()
+
+    def _create_commit_token(self, commit_token_path: Path) -> int:
+        """O_EXCL-create ``.commit``, removing one left by a superseded holder first.
+
+        A token from another owner with a lower fence than ours was created by a holder
+        whose lease we have since taken (#3312); it would otherwise fail this commit with
+        ``FileExistsError``. Any other existing token (ours, or not provably older) still
+        raises ``FileExistsError``.
+        """
+        for attempt in range(2):
+            try:
+                return os.open(commit_token_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError as exists:
+                if attempt == 1:
+                    raise
+                try:
+                    body = json.loads(commit_token_path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    continue
+                except (OSError, ValueError):
+                    raise exists from None
+                # Only a token that carries a fence lower than ours is provably older; one
+                # without a fence (unknown writer) keeps blocking.
+                stale = (
+                    isinstance(body, dict)
+                    and "fence" in body
+                    and body.get("owner_token") != self.owner_token
+                    and 0 <= _fence_of(body) < self.fence
+                )
+                if not stale:
+                    raise
+                self.assert_holder()
+                with suppress(FileNotFoundError):
+                    commit_token_path.unlink()
+        raise FileExistsError(errno.EEXIST, "commit token exists", str(commit_token_path))
+
+    def _unlink_lock_if_ours(self) -> bool:
+        """Remove ``.lock`` only when its body matches this holder's triple."""
+        body = self._read_lock_body()
+        if body is None or not self._lock_body_is_ours(body):
+            return False
+        try:
+            self.lock_path.unlink()
+        except OSError:
+            return False
+        fsync_directory(self.lock_path.parent)
+        return True
+
+    def _stop_heartbeat(self) -> None:
+        if self.heartbeat is not None:
+            self.heartbeat.stop()
+            self.heartbeat.join(timeout=1.0)
+            self.local_deadline = self.heartbeat.local_deadline
+            self.heartbeat = None
+
+    # --- acquire ------------------------------------------------------------------
 
     def acquire(self) -> bool:
         """Atomically acquire the lease or steal if stale past 300s clock drift margin."""
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         now = time.time()
+        boot_now = _boottime()
 
         # Step 1: Try atomic creation via O_CREAT | O_EXCL
         try:
             fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
             self.acquired_at_unix_s = now
+            self.fence = self._read_fence_file() + 1
             initial_lock = CampaignLock(
                 schema_version=CAMPAIGN_LOCK_SCHEMA_VERSION,
                 owner_token=self.owner_token,
@@ -302,12 +531,15 @@ class FileLock:
                 lease_expires_at_unix_s=now + self.lease_seconds,
                 lease_seconds=self.lease_seconds,
                 heartbeat_count=0,
+                fence=self.fence,
             )
             os.write(fd, initial_lock.to_json().encode("utf-8"))
             os.fsync(fd)
             os.close(fd)
             fsync_directory(self.lock_path.parent)
 
+            self.local_deadline = boot_now + self.lease_seconds
+            self._raise_fence_file()
             self._clear_stale_commit_token()
             self._start_heartbeat(now)
             self.is_locked = True
@@ -353,18 +585,33 @@ class FileLock:
         # Step 3: Stale Lease Stealing with Atomic Steal Token
         steal_token = self.lock_path.with_name(f"{self.lock_path.name}.steal")
         steal_fd = self._open_steal_token(steal_token, now)
+        token_body = self.owner_token.encode("utf-8")
+        steal_tmp: Path | None = None
+
+        def still_stealing() -> bool:
+            """Our steal token is still in place and the lock is still the stale one."""
+            try:
+                if steal_token.read_bytes() != token_body:
+                    return False
+            except OSError:
+                return False
+            try:
+                return self.lock_path.read_bytes() == raw_lock
+            except OSError:
+                return False
 
         try:
+            os.write(steal_fd, token_body)
+            os.fsync(steal_fd)
+
             # Re-verify lock is still the same stale lock (byte-for-byte CAS)
-            try:
-                curr_raw = self.lock_path.read_bytes()
-            except FileNotFoundError:
-                curr_raw = None
-            if curr_raw != raw_lock:
+            if not still_stealing():
                 msg = f"Lock on {self.lock_path} was modified before steal could complete"
                 raise LockUnavailableError(msg)
 
             steal_acquired = now
+            stolen_fence = lock_obj.fence if lock_obj is not None else 0
+            fence = max(self._read_fence_file(), stolen_fence) + 1
             stolen_lock = CampaignLock(
                 schema_version=CAMPAIGN_LOCK_SCHEMA_VERSION,
                 owner_token=self.owner_token,
@@ -373,16 +620,26 @@ class FileLock:
                 lease_expires_at_unix_s=now + self.lease_seconds,
                 lease_seconds=self.lease_seconds,
                 heartbeat_count=0,
+                fence=fence,
             )
             steal_suffix = f"steal.{uuid.uuid4().hex[:8]}.tmp"
             steal_tmp = self.lock_path.with_name(f"{self.lock_path.name}.{steal_suffix}")
             steal_tmp.write_text(stolen_lock.to_json(), encoding="utf-8")
             fsync_file(steal_tmp)
 
+            # A stealer that stalled here past the token-reclaim age may have been
+            # superseded by a later stealer (#3312); re-check right before the replace.
+            if not still_stealing():
+                msg = f"Steal of {self.lock_path} was superseded by another stealer"
+                raise LockUnavailableError(msg)
             os.replace(steal_tmp, self.lock_path)
+            steal_tmp = None
             fsync_directory(self.lock_path.parent)
 
             self.acquired_at_unix_s = steal_acquired
+            self.fence = fence
+            self.local_deadline = boot_now + self.lease_seconds
+            self._raise_fence_file()
             self._clear_stale_commit_token()
             self._start_heartbeat(steal_acquired)
             self.is_locked = True
@@ -390,8 +647,14 @@ class FileLock:
         finally:
             with suppress(OSError):
                 os.close(steal_fd)
+            if steal_tmp is not None:
+                with suppress(OSError):
+                    steal_tmp.unlink()
+            # Remove the token only if it is still ours: a later stealer may have
+            # reclaimed it, and deleting theirs would let a third stealer in.
             with suppress(OSError):
-                steal_token.unlink()
+                if steal_token.read_bytes() == token_body:
+                    steal_token.unlink()
 
     def _open_steal_token(self, steal_token: Path, now: float) -> int:
         """Create the singleton steal token, reclaiming one orphaned by a dead stealer.
@@ -450,25 +713,17 @@ class FileLock:
             interval_seconds=self.heartbeat_interval,
             initial_acquired_at=acquired_at,
             expiry_guard_margin=self.expiry_guard_margin,
+            fence=self.fence,
+            local_deadline=self.local_deadline,
         )
         self.heartbeat.start()
 
     def release(self) -> None:
-        """Stop heartbeat and unlink lock file if owned."""
-        if self.heartbeat is not None:
-            self.heartbeat.stop()
-            self.heartbeat.join(timeout=1.0)
-            self.heartbeat = None
-
-        if self.is_locked and self.lock_path.exists():
-            try:
-                curr = json.loads(self.lock_path.read_text(encoding="utf-8"))
-                if curr.get("owner_token") == self.owner_token:
-                    self.lock_path.unlink()
-                    fsync_directory(self.lock_path.parent)
-            except Exception:
-                pass
-
+        """Stop heartbeat and unlink the lock file if it still carries this holder's triple."""
+        self._stop_heartbeat()
+        if self.is_locked:
+            with suppress(Exception):
+                self._unlink_lock_if_ours()
         self.is_locked = False
 
     def __enter__(self) -> "FileLock":
@@ -522,7 +777,13 @@ class FileLock:
         # 3. Singleton Commit Token Creation (GATE-03)
         commit_token_path = output_path.with_name(f"{output_path.name}.commit")
         try:
-            fd = os.open(commit_token_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            # A superseded holder must not create a token that blocks the current one.
+            self.assert_holder()
+        except LeaseLostError:
+            _clean_scratch(partial_path)
+            raise
+        try:
+            fd = self._create_commit_token(commit_token_path)
         except FileExistsError:
             _clean_scratch(partial_path)
             raise
@@ -532,6 +793,7 @@ class FileLock:
             commit_meta = {
                 "attempt_uuid": attempt_uuid,
                 "owner_token": self.owner_token,
+                "fence": self.fence,
                 "committed_at_unix_s": time.time(),
             }
             os.write(fd, json.dumps(commit_meta, indent=2).encode("utf-8"))
@@ -540,67 +802,75 @@ class FileLock:
             os.close(fd)
 
         # 5. Lock Ownership Re-Verification (Zombie Worker Protection)
-        lost = False
         try:
-            if not self.lock_path.exists():
-                lost = True
-            else:
-                curr_lock = json.loads(self.lock_path.read_text(encoding="utf-8"))
-                if (
-                    curr_lock.get("owner_token") != self.owner_token
-                    or (
-                        self.acquired_at_unix_s is not None
-                        and curr_lock.get("acquired_at_unix_s") != self.acquired_at_unix_s
-                    )
-                    or time.time() >= float(curr_lock.get("lease_expires_at_unix_s", 0.0))
-                    or (self.heartbeat is not None and self.heartbeat.abort_event.is_set())
-                ):
-                    lost = True
-        except Exception:
-            lost = True
-
-        if lost:
-            if commit_token_path.exists():
-                with suppress(OSError):
-                    commit_token_path.unlink()
+            self.assert_holder()
+        except LeaseLostError:
+            # The token may already be a stealer's (they clear ours on steal); remove it
+            # only if it is still ours (#3312).
+            self._unlink_commit_token_if_ours(commit_token_path)
             _clean_scratch(partial_path)
             msg = f"Lease for {output_path} was lost, stolen, or expired before commit"
-            raise LeaseLostError(msg)
+            raise LeaseLostError(msg) from None
 
+        marker = dataclasses.replace(
+            done_marker, lease_fence=self.fence, owner_token=self.owner_token
+        )
+        tmp_done = output_path.with_name(f"{output_path.name}.done.json.tmp.{attempt_uuid}")
         try:
             # 6. Output Promotion. An existing store with no done marker (step 1 found
             # none) is an orphan from a holder that crashed between steps 6 and 7; set
-            # it aside so os.replace does not fail with ENOTEMPTY on every retry.
+            # it aside so os.replace does not fail with ENOTEMPTY on every retry. Each
+            # destructive step re-checks the lease first (#3312).
             if output_path.exists():
                 from xtrax.campaign.marker import quarantine_output
 
+                self.assert_holder()
                 quarantine_output(output_path, reason="orphaned_uncommitted_output")
+            self.assert_holder()
             os.replace(partial_path, output_path)
 
             # 7. Write and Rename Done Marker
-            tmp_done = output_path.with_name(f"{output_path.name}.done.json.tmp.{attempt_uuid}")
-            tmp_done.write_text(done_marker.to_json(), encoding="utf-8")
+            tmp_done.write_text(marker.to_json(), encoding="utf-8")
             fsync_file(tmp_done)
+            self.assert_holder()
             os.replace(tmp_done, done_marker_path)
 
             # 8. Directory Durabilization & Release
             fsync_directory(output_path.parent)
+        except LeaseLostError:
+            # Nothing of ours is promoted past the failed check; a promoted store with no
+            # marker is set aside by the next holder's orphan handling.
+            _clean_scratch(partial_path)
+            _clean_scratch(tmp_done)
+            raise
         finally:
             # The token must not outlive this attempt, success or failure; a stale token
-            # blocks every later commit of this unit.
-            with suppress(OSError):
-                commit_token_path.unlink()
+            # blocks every later commit of this unit. Remove it only if it is still ours.
+            self._unlink_commit_token_if_ours(commit_token_path)
+
+        # A holder superseded between its last check and the marker rename (residual
+        # window R1) reports a lost lease rather than success; the next resume verifies
+        # the store against the marker.
+        try:
+            self.assert_holder()
+            lost_after_commit = False
+        except LeaseLostError:
+            lost_after_commit = True
+            logger.warning(
+                "lease_lost_after_commit: %s committed under fence %d, unit .fence is now %d",
+                output_path,
+                self.fence,
+                self._read_fence_file(),
+            )
 
         # Stop the heartbeat before unlinking the lock. stop() waits out any renewal in
         # progress and bars later ones, so no renewal can recreate the lock afterwards.
-        if self.heartbeat is not None:
-            self.heartbeat.stop()
-            self.heartbeat.join(timeout=1.0)
-            self.heartbeat = None
-        if self.lock_path.exists():
-            with suppress(OSError):
-                self.lock_path.unlink()
+        self._stop_heartbeat()
+        self._unlink_lock_if_ours()
         fsync_directory(output_path.parent)
         self.is_locked = False
 
-        return done_marker
+        if lost_after_commit:
+            msg = f"Lease for {output_path} was lost during commit; resume will verify it"
+            raise LeaseLostError(msg)
+        return marker

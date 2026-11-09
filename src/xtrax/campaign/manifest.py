@@ -10,6 +10,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -316,12 +317,17 @@ def _compute_unit_hashes(
     state_weight_profile: str,
     seed: int,
     parameters: dict[str, Any],
+    output_locator: str | None = None,
 ) -> tuple[str, str]:
     """Return (input_hash, manifest_row_hash) for a unit.
 
     Single code path shared by build_manifest_row (planning) and verify_manifest_row_hashes
     (loading), so the two cannot drift. Normalization is idempotent, so callers may pass
     either raw or already-normalized parameters.
+
+    ``output_locator`` is passed only for a row whose locator is not the default
+    (:func:`default_output_locator`); it then enters ``manifest_row_hash`` but never
+    ``input_hash``, which aminx parity (GATE-11) pins.
     """
     normalized_params = normalize_json_value(parameters)
 
@@ -353,7 +359,14 @@ def _compute_unit_hashes(
         "seed": seed,
         "parameters": normalized_params,
     }
+    if output_locator is not None:
+        row_identity_payload["output_locator"] = output_locator
     return input_hash, compute_manifest_row_hash(row_identity_payload)
+
+
+def default_output_locator(campaign_id: str, manifest_row_hash: str) -> str:
+    """Return the locator the planner gives a row: ``<campaign_id>/<manifest_row_hash>.zarr``."""
+    return f"{campaign_id}/{manifest_row_hash}.zarr"
 
 
 def verify_manifest_row_hashes(row: ManifestRow) -> None:
@@ -362,28 +375,45 @@ def verify_manifest_row_hashes(row: ManifestRow) -> None:
     Tier-1 resume matches done markers by these hashes, so a row whose parameters or
     identity fields were edited while keeping stale hashes would serve outputs computed
     for the old parameters.
+
+    The row hash also binds ``output_locator`` (#3308): a row verifies if its locator is
+    the default for its stored hash and the hash matches without the locator, or if the
+    hash matches with the locator included. Pointing one row at another row's store fails
+    both, so the executor never resolves it there and quarantines that store. The hash is
+    an unkeyed integrity check against stale or accidental edits, not an authenticator: a
+    writer who recomputes it can still forge a row.
     """
-    input_hash, manifest_row_hash = _compute_unit_hashes(
-        campaign_id=row.campaign_id,
-        job_id=row.job_id,
-        chunk_id=row.chunk_id,
-        sample_start=row.sample_start,
-        sample_count=row.sample_count,
-        target_input=row.target_input,
-        arm_id=row.arm_id,
-        arm_backend=row.arm_backend,
-        checkpoint_id=row.checkpoint_id,
-        fixed_policy=row.fixed_policy,
-        state_weight_profile=row.state_weight_profile,
-        seed=row.seed,
-        parameters=row.parameters,
+
+    def recompute(output_locator: str | None) -> tuple[str, str]:
+        return _compute_unit_hashes(
+            campaign_id=row.campaign_id,
+            job_id=row.job_id,
+            chunk_id=row.chunk_id,
+            sample_start=row.sample_start,
+            sample_count=row.sample_count,
+            target_input=row.target_input,
+            arm_id=row.arm_id,
+            arm_backend=row.arm_backend,
+            checkpoint_id=row.checkpoint_id,
+            fixed_policy=row.fixed_policy,
+            state_weight_profile=row.state_weight_profile,
+            seed=row.seed,
+            parameters=row.parameters,
+            output_locator=output_locator,
+        )
+
+    default_form = row.output_locator == default_output_locator(
+        row.campaign_id, row.manifest_row_hash
     )
+    input_hash, manifest_row_hash = recompute(None if default_form else row.output_locator)
     mismatches: list[str] = []
     if row.input_hash != input_hash:
         mismatches.append(f"input_hash (stored {row.input_hash}, recomputed {input_hash})")
     if row.manifest_row_hash != manifest_row_hash:
+        covered = "default, not hashed" if default_form else "hashed"
         mismatches.append(
-            f"manifest_row_hash (stored {row.manifest_row_hash}, recomputed {manifest_row_hash})"
+            f"manifest_row_hash (stored {row.manifest_row_hash}, recomputed "
+            f"{manifest_row_hash} with output_locator {row.output_locator!r} {covered})"
         )
     if mismatches:
         raise ManifestIntegrityError(
@@ -415,7 +445,8 @@ def build_manifest_row(
     _check_no_callables(clean_params, path=f"ManifestRow({job_id}).parameters")
     normalized_params = normalize_json_value(clean_params)
 
-    input_hash, manifest_row_hash = _compute_unit_hashes(
+    hashes = partial(
+        _compute_unit_hashes,
         campaign_id=campaign_id,
         job_id=job_id,
         chunk_id=chunk_id,
@@ -430,9 +461,13 @@ def build_manifest_row(
         seed=seed,
         parameters=normalized_params,
     )
+    input_hash, manifest_row_hash = hashes()
 
-    if output_locator is None:
-        output_locator = f"{campaign_id}/{manifest_row_hash}.zarr"
+    default_locator = default_output_locator(campaign_id, manifest_row_hash)
+    if output_locator is None or output_locator == default_locator:
+        output_locator = default_locator
+    else:
+        _, manifest_row_hash = hashes(output_locator=output_locator)
 
     if resource_requirements is None:
         resource_requirements = ResourceRequirements(

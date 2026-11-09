@@ -63,11 +63,13 @@ def get_pending_row_indices(
         _record_reuse,
         _resolve_output_path,
         _validate_resume_verify,
+        check_output_paths,
     )
 
     mode = _validate_resume_verify(resume_verify)
     candidate_indices = _validate_row_indices(manifest, row_indices)
     out_dir = Path(output_dir)
+    check_output_paths(out_dir, manifest.rows)
     pending: list[int] = []
     for idx in candidate_indices:
         row = manifest.rows[idx]

@@ -5,6 +5,7 @@ Covering [T2-03], GATE-03, and AC-07 from SPEC-261105-CAMPAIGN-RUNNER.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import time
@@ -61,7 +62,11 @@ def test_commit_protocol_successful_promotion_and_cleanup(tmp_path: Path):
         done_marker=marker,
         attempt_uuid=attempt_uuid,
     )
-    assert commit_res == marker
+    # The returned marker is the one written: stamped with the lease fence and owner (#3312).
+    assert commit_res == dataclasses.replace(
+        marker, lease_fence=lock.fence, owner_token=lock.owner_token
+    )
+    assert lock.fence >= 1
 
     # 1. Partial directory should no longer exist
     assert not partial_path.exists()
