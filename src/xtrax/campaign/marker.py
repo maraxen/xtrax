@@ -179,6 +179,8 @@ def create_done_marker(
     version: str | None = None,
     git_sha: str | None = None,
     hostname: str | None = None,
+    lease_fence: int | None = None,
+    owner_token: str | None = None,
 ) -> CampaignDoneMarker:
     """Create a new CampaignDoneMarker stamped with current environment and timestamps.
 
@@ -204,6 +206,8 @@ def create_done_marker(
         completed_at_utc=now_utc,
         completed_at_unix_s=now_unix,
         duration_s=duration_s,
+        lease_fence=lease_fence,
+        owner_token=owner_token,
     )
 
 
