@@ -53,7 +53,7 @@ def _python39() -> str | None:
         [uv, "python", "find", "3.9"], capture_output=True, text=True, check=False
     )
     path = proc.stdout.strip()
-    return path if proc.returncode == 0 and path else None
+    return path if proc.returncode == 0 and path and Path(path).is_file() else None
 
 
 # Runs from the source text alone: a whole commit, pack, read and sweep cycle, as a node does it.

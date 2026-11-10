@@ -1,0 +1,260 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "data": {
+    "values": [
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.559529790546347,
+        "failure_reason": null,
+        "is_packed": false,
+        "manifest_row_hash": "ubq_unit_001_proteinmpnn_t0.1_s1001",
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.7367692502714767,
+        "failure_reason": null,
+        "is_packed": true,
+        "manifest_row_hash": "ubq_unit_002_proteinmpnn_t0.1_s1002",
+        "pack_telemetry": {
+          "backend": "zstandard",
+          "compressed_bytes": 927,
+          "compression_ratio": 5.6613,
+          "member_count": 2,
+          "pack_wall_ms": 8.428200148046017,
+          "raw_bytes": 5248,
+          "schema": "xtrax.pack_telemetry/1"
+        },
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.6550084815876427,
+        "failure_reason": null,
+        "is_packed": false,
+        "manifest_row_hash": "ubq_unit_003_proteinmpnn_t0.1_s1003",
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.1035375756870094,
+        "failure_reason": null,
+        "is_packed": true,
+        "manifest_row_hash": "ubq_unit_004_proteinmpnn_t0.3_s1001",
+        "pack_telemetry": {
+          "backend": "zstandard",
+          "compressed_bytes": 1131,
+          "compression_ratio": 4.6401,
+          "member_count": 2,
+          "pack_wall_ms": 8.800365962088108,
+          "raw_bytes": 5248,
+          "schema": "xtrax.pack_telemetry/1"
+        },
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.1519714175878897,
+        "failure_reason": null,
+        "is_packed": false,
+        "manifest_row_hash": "ubq_unit_005_proteinmpnn_t0.3_s1002",
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.0660378657811638,
+        "failure_reason": null,
+        "is_packed": true,
+        "manifest_row_hash": "ubq_unit_006_proteinmpnn_t0.3_s1003",
+        "pack_telemetry": {
+          "backend": "zstandard",
+          "compressed_bytes": 1125,
+          "compression_ratio": 4.6649,
+          "member_count": 2,
+          "pack_wall_ms": 7.784602697938681,
+          "raw_bytes": 5248,
+          "schema": "xtrax.pack_telemetry/1"
+        },
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 0.9550881399680788,
+        "failure_reason": null,
+        "is_packed": false,
+        "manifest_row_hash": "ubq_unit_007_proteinmpnn_t0.5_s1001",
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.0233983900679497,
+        "failure_reason": null,
+        "is_packed": true,
+        "manifest_row_hash": "ubq_unit_008_proteinmpnn_t0.5_s1002",
+        "pack_telemetry": {
+          "backend": "zstandard",
+          "compressed_bytes": 1210,
+          "compression_ratio": 4.3372,
+          "member_count": 2,
+          "pack_wall_ms": 8.428493980318308,
+          "raw_bytes": 5248,
+          "schema": "xtrax.pack_telemetry/1"
+        },
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.6908723789354778,
+        "failure_reason": null,
+        "is_packed": false,
+        "manifest_row_hash": "ubq_unit_009_proteinmpnn_t0.5_s1003",
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.559529790546347,
+        "failure_reason": null,
+        "is_packed": true,
+        "manifest_row_hash": "ubq_unit_010_solublempnn_t0.1_s1001",
+        "pack_telemetry": {
+          "backend": "zstandard",
+          "compressed_bytes": 888,
+          "compression_ratio": 5.9099,
+          "member_count": 2,
+          "pack_wall_ms": 8.455559611320496,
+          "raw_bytes": 5248,
+          "schema": "xtrax.pack_telemetry/1"
+        },
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.7367692502714767,
+        "failure_reason": null,
+        "is_packed": false,
+        "manifest_row_hash": "ubq_unit_011_solublempnn_t0.1_s1002",
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.6550084815876427,
+        "failure_reason": null,
+        "is_packed": true,
+        "manifest_row_hash": "ubq_unit_012_solublempnn_t0.1_s1003",
+        "pack_telemetry": {
+          "backend": "zstandard",
+          "compressed_bytes": 874,
+          "compression_ratio": 6.0046,
+          "member_count": 2,
+          "pack_wall_ms": 10.803263634443283,
+          "raw_bytes": 5248,
+          "schema": "xtrax.pack_telemetry/1"
+        },
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.1035375756870094,
+        "failure_reason": null,
+        "is_packed": false,
+        "manifest_row_hash": "ubq_unit_013_solublempnn_t0.3_s1001",
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.1519714175878897,
+        "failure_reason": null,
+        "is_packed": true,
+        "manifest_row_hash": "ubq_unit_014_solublempnn_t0.3_s1002",
+        "pack_telemetry": {
+          "backend": "zstandard",
+          "compressed_bytes": 1137,
+          "compression_ratio": 4.6157,
+          "member_count": 2,
+          "pack_wall_ms": 8.71918024495244,
+          "raw_bytes": 5248,
+          "schema": "xtrax.pack_telemetry/1"
+        },
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.0660378657811638,
+        "failure_reason": null,
+        "is_packed": false,
+        "manifest_row_hash": "ubq_unit_015_solublempnn_t0.3_s1003",
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 0.9550881399680788,
+        "failure_reason": null,
+        "is_packed": true,
+        "manifest_row_hash": "ubq_unit_016_solublempnn_t0.5_s1001",
+        "pack_telemetry": {
+          "backend": "zstandard",
+          "compressed_bytes": 1323,
+          "compression_ratio": 3.9667,
+          "member_count": 2,
+          "pack_wall_ms": 9.532674681395292,
+          "raw_bytes": 5248,
+          "schema": "xtrax.pack_telemetry/1"
+        },
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.0233983900679497,
+        "failure_reason": null,
+        "is_packed": false,
+        "manifest_row_hash": "ubq_unit_017_solublempnn_t0.5_s1002",
+        "status": "COMMITTED"
+      },
+      {
+        "completed_at_utc": "2026-11-06T20:30:00Z",
+        "duration_s": 1.6908723789354778,
+        "failure_reason": null,
+        "is_packed": true,
+        "manifest_row_hash": "ubq_unit_018_solublempnn_t0.5_s1003",
+        "pack_telemetry": {
+          "backend": "zstandard",
+          "compressed_bytes": 1304,
+          "compression_ratio": 4.0245,
+          "member_count": 2,
+          "pack_wall_ms": 10.455641895532608,
+          "raw_bytes": 5248,
+          "schema": "xtrax.pack_telemetry/1"
+        },
+        "status": "COMMITTED"
+      }
+    ]
+  },
+  "description": "Duration distributions and transparent debt #3300 pack seam.",
+  "encoding": {
+    "color": {
+      "field": "is_packed",
+      "title": "Packed Archive (.tar.zst)",
+      "type": "nominal"
+    },
+    "x": {
+      "field": "manifest_row_hash",
+      "title": "Execution Unit",
+      "type": "nominal"
+    },
+    "y": {
+      "field": "duration_s",
+      "title": "Compute Wall Time (s)",
+      "type": "quantitative"
+    }
+  },
+  "mark": {
+    "tooltip": true,
+    "type": "bar"
+  },
+  "title": "Question 5: Secondary Run Telemetry (Wall Time and Debt #3300 Seam)",
+  "transform": [
+    {
+      "filter": "isValid(datum.duration_s) && datum.duration_s != null"
+    }
+  ]
+}

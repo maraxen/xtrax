@@ -1,0 +1,27 @@
+{
+ "completed_at_utc": "2026-11-06T20:30:00Z",
+ "duration_s": 1.559529790546347,
+ "input_hash": "ubq_unit_010_solublempnn_t0.1_s1001",
+ "manifest_row_hash": "ubq_unit_010_solublempnn_t0.1_s1001",
+ "pack_telemetry": {
+  "backend": "zstandard",
+  "compressed_bytes": 888,
+  "compression_ratio": 5.9099,
+  "member_count": 2,
+  "pack_wall_ms": 8.455559611320496,
+  "raw_bytes": 5248,
+  "schema": "xtrax.pack_telemetry/1"
+ },
+ "schema_version": "campaign_done_marker_v3",
+ "status": "committed",
+ "storage": {
+  "codec": "zstd",
+  "format": "tar.zst+frame-index/1",
+  "index": "members.idx.json",
+  "index_sha256": "d60fe4b3b4b24402e1f9b7a7d38653a6a7476e62989b054e931a75d97e140aaa",
+  "n_members": 2,
+  "pack": "members.tar.zst",
+  "pack_sha256": "6b3e479e2b1bb7dd11641ed23e9765784d2fc8bdbf19d666c399a301e792887f",
+  "schema": "xtrax.unit_pack/1"
+ }
+}

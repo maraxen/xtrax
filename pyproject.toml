@@ -68,6 +68,9 @@ eda-vega = [ "vl-convert-python>=1.0.0",]
 # the project hygiene gate can resolve the import.
 eda-parquet = [ "pyarrow>=14.0",]
 eda = [ "xtrax[eda-matplotlib]", "xtrax[eda-vega]", "xtrax[eda-parquet]",]
+eda-campaign = [ "duckdb>=1.0.0", "pyarrow>=14.0.0",]
+eda-viz = [ "altair>=5.0.0", "vl-convert-python>=1.3.0",]
+eda-all = [ "xtrax[eda-campaign]", "xtrax[eda-viz]",]
 cli = [ "tyro>=0.9.1,<2", "flatbuffers>=2",]
 io = [ "zarr>=3.0.8",]
 # Read-only DuckDB view over the unit index (xtrax.run.unit_index.duckdb_view). Never a writer,
@@ -191,6 +194,9 @@ select = [ "E", "F", "I", "UP", "S110"] # includes S110 (try-except-pass), added
 "tests/eda/test_render.py" = ["E402", "F841"]
 "tests/eda/test_render_errors.py" = ["E402"]
 "port/reference/**/*.py" = ["UP047"]
+"src/xtrax/fileguard/_node.py" = ["UP"]
+"src/xtrax/pack/_node.py" = ["UP"]
+"src/xtrax/run/writer_liveness.py" = ["UP"]
 
 [tool.jaxlint]
 # N0.4 foundation: performance sensors gate via `just audit-jaxlint` (--no-doc).
@@ -199,6 +205,7 @@ ignore = []
 
 [tool.importlinter]
 root_package = "xtrax"
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "Core packages must not import EDA (optional extra)"
@@ -271,6 +278,20 @@ source_modules = ["xtrax.tiling", "xtrax.stages", "xtrax.transforms"]
 forbidden_modules = ["xtrax.export"]
 
 [[tool.importlinter.contracts]]
+name = "Campaign EDA isolation from external frameworks"
+type = "forbidden"
+source_modules = ["xtrax.eda"]
+forbidden_modules = [
+    "maraxiom",
+    "bathos",
+    "cisternal",
+    "aminx",
+    "demistify",
+    "adaptyv",
+    "plegadx",
+]
+
+[[tool.importlinter.contracts]]
 name = "tiling must not import inference"
 type = "forbidden"
 source_modules = ["xtrax.tiling"]
@@ -299,3 +320,5 @@ include = ["src/**/*.py"]
 [project.entry-points."xtrax.eda.backends"]
 vega = "xtrax.eda.backends.vega:VegaBackend"
 matplotlib = "xtrax.eda.backends.matplotlib:MatplotlibBackend"
+
+[project.entry-points."xtrax.eda.domains"]

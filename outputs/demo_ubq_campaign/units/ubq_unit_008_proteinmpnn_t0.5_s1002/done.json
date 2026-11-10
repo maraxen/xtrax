@@ -1,0 +1,27 @@
+{
+ "completed_at_utc": "2026-11-06T20:30:00Z",
+ "duration_s": 1.0233983900679497,
+ "input_hash": "ubq_unit_008_proteinmpnn_t0.5_s1002",
+ "manifest_row_hash": "ubq_unit_008_proteinmpnn_t0.5_s1002",
+ "pack_telemetry": {
+  "backend": "zstandard",
+  "compressed_bytes": 1210,
+  "compression_ratio": 4.3372,
+  "member_count": 2,
+  "pack_wall_ms": 8.428493980318308,
+  "raw_bytes": 5248,
+  "schema": "xtrax.pack_telemetry/1"
+ },
+ "schema_version": "campaign_done_marker_v3",
+ "status": "committed",
+ "storage": {
+  "codec": "zstd",
+  "format": "tar.zst+frame-index/1",
+  "index": "members.idx.json",
+  "index_sha256": "a2cbfddffead3292a016035a9f37f523fab1d640e45ec0777ec5a3a1769e6b74",
+  "n_members": 2,
+  "pack": "members.tar.zst",
+  "pack_sha256": "a1c51e72c49958d68ea99fc559f020eab207af0f2ac04be5733c5b47305c53f4",
+  "schema": "xtrax.unit_pack/1"
+ }
+}
