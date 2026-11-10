@@ -1,7 +1,5 @@
 """Context-driven numerical safety checking via checkify (#3042)."""
 
-from __future__ import annotations
-
 import functools
 from collections.abc import Callable
 from dataclasses import dataclass

@@ -94,6 +94,12 @@ def validate_carry_transition(init_carry: Any, next_carry: Any) -> None:
     next_leaves = jax.tree_util.tree_leaves(next_carry)
 
     for i, (in_leaf, out_leaf) in enumerate(zip(init_leaves, next_leaves, strict=True)):
+        if hasattr(in_leaf, "shape") != hasattr(out_leaf, "shape"):
+            raise CarryCanonicalizationError(
+                f"WhileCarry leaf {i} array status mismatch: "
+                f"init has shape ({hasattr(in_leaf, 'shape')}) != "
+                f"returned has shape ({hasattr(out_leaf, 'shape')})"
+            )
         if hasattr(in_leaf, "shape") and hasattr(out_leaf, "shape"):
             if in_leaf.shape != out_leaf.shape:
                 raise CarryCanonicalizationError(

@@ -5,8 +5,6 @@ Guarantees zero-copy array immutability (MAJ-01), defensive quarantine over (Exc
 (BLK-06), and strict schema validation (MAJ-02).
 """
 
-from __future__ import annotations
-
 import datetime
 import importlib.metadata
 import logging

@@ -126,13 +126,13 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install core + io + cli at their floors
+      - name: Install core + io + cli + training at their floors
         run: |
           uv venv .venv-floors
-          uv pip install --python .venv-floors/bin/python --resolution lowest-direct -e ".[io,cli]"
+          uv pip install --python .venv-floors/bin/python --resolution lowest-direct -e ".[io,cli,training]"
 
       - name: Every declared floor is exactly what got installed
-        run: .venv-floors/bin/python scripts/check_dependency_floors.py --extra io --extra cli
+        run: .venv-floors/bin/python scripts/check_dependency_floors.py --extra io --extra cli --extra training
 
       - name: Add test tooling without moving any floored package
         run: |

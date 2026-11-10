@@ -4,8 +4,6 @@ Implements P5-01 per approved specification 261106_campaign-eda-redesign.md (Rev
 Dependencies: strictly stdlib + numpy.
 """
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum

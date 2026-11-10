@@ -51,6 +51,7 @@ from xtrax.tiling.estimators import (
     estimate_memory_theoretical,
     lowered_memory_estimate,
 )
+from xtrax.tiling.grid import make_2d_grid_specs
 from xtrax.tiling.plan import (
     AxisDecision,
     AxisSpec,
@@ -112,6 +113,7 @@ __all__ = [
     "BudgetInfeasibleError",
     "device_memory_budget",
     "lowered_memory_estimate",
+    "make_2d_grid_specs",
     "estimate_memory_theoretical",
     "plan_axis",
     "VmapIterator",

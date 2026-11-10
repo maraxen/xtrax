@@ -1,7 +1,5 @@
 """Declarative sparsity specification for tensors and axes (#3044)."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Literal
 

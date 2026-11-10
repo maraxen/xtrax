@@ -6,8 +6,6 @@ entropy (MAJ-07), recovery margin vs shuffled native, and cross-knob collision t
 Fully vectorized with zero Python loops over positions (L) or sequence pairs (N*(N-1)/2).
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Mapping, Sequence
 

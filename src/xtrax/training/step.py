@@ -13,11 +13,16 @@ from typing import Any
 
 import jax
 import jax.experimental.checkify as checkify
-import optax
+
+try:
+    import optax
+except ImportError:
+    optax = None  # type: ignore
 
 from xtrax._renamed import Deprecated, deprecated_getattr, warn_deprecated
 from xtrax._tree import Struct, model_jit
 from xtrax.safety.manager import _SafetyManager
+from xtrax.training.optim import GradientTransformation, require_optax
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import LossFunction, ResumableState
 
@@ -86,8 +91,11 @@ class SafetyTrainStep(Struct):
         return new_state, metrics
 
 
+_SafetyTrainStep = SafetyTrainStep
+
+
 @model_jit
-def _checkified_step(step: SafetyTrainStep, state: ResumableState, batch: Any):
+def _checkified_step(step: _SafetyTrainStep, state: ResumableState, batch: Any):
     """The jitted body of :meth:`SafetyTrainStep._step_jit`."""
     # Wrap trainer.step with checkify to detect NaN/Inf
     # In a jit-in-jit context, the inner trainer.step's jit is
@@ -98,13 +106,13 @@ def _checkified_step(step: SafetyTrainStep, state: ResumableState, batch: Any):
 
 def create_train_step(
     loss_fn: LossFunction,
-    optimizer: optax.GradientTransformation,
+    optimizer: GradientTransformation,
     safety: bool = False,
     safety_manager: _SafetyManager | None = None,
     *,
     has_aux: bool = False,
     takes_key: bool = False,
-) -> Trainer | SafetyTrainStep:
+) -> Trainer | _SafetyTrainStep:
     """Factory for training step: returns Trainer or SafetyTrainStep.
 
     Args:
@@ -126,6 +134,7 @@ def create_train_step(
         Trainer if safety=False.
         SafetyTrainStep if safety=True.
     """
+    require_optax()
     trainer = Trainer(
         loss_fn=loss_fn,
         optimizer=optimizer,
@@ -157,6 +166,5 @@ _NOTE = (
     "xtrax debt #3042 tracks a Context-driven rebuild."
 )
 _DEPRECATED = {"SafetyTrainStep": Deprecated(SafetyTrainStep, _REPLACEMENT, _NOTE)}
-_SafetyTrainStep = SafetyTrainStep
 del SafetyTrainStep
 __getattr__ = deprecated_getattr(__name__, _DEPRECATED)

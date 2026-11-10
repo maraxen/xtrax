@@ -206,7 +206,7 @@ def assemble(text: str, fragments: list[Fragment], version: str, date: str) -> s
 def check_new_modules(
     repo_root: Path = ROOT,
     base_ref: str = "origin/main",
-    fragments_dir: Path = FRAGMENTS_DIR,
+    fragments_dir: Path | None = None,
 ) -> list[str]:
     """Verify that if new Python modules are added under src/xtrax/, a fragment is present."""
     import subprocess
@@ -259,6 +259,22 @@ def check_new_modules(
 
     # Check for added changelog fragments in this branch
     try:
+        if fragments_dir is None or (
+            fragments_dir == FRAGMENTS_DIR and repo_root.resolve() != ROOT.resolve()
+        ):
+            resolved_frag_dir = repo_root / "changelog.d"
+        else:
+            resolved_frag_dir = (
+                repo_root / fragments_dir if not fragments_dir.is_absolute() else fragments_dir
+            )
+
+        try:
+            rel_frag_dir = str(resolved_frag_dir.resolve().relative_to(repo_root.resolve()))
+        except ValueError:
+            rel_frag_dir = str(resolved_frag_dir)
+        if not rel_frag_dir.endswith("/"):
+            rel_frag_dir = f"{rel_frag_dir}/"
+
         frag_output = subprocess.check_output(
             [
                 "git",
@@ -267,7 +283,7 @@ def check_new_modules(
                 "--diff-filter=A",
                 f"{resolved_base}...HEAD",
                 "--",
-                "changelog.d/",
+                rel_frag_dir,
             ],
             cwd=repo_root,
             text=True,

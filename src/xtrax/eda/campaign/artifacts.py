@@ -5,8 +5,6 @@ Exports canonical RFC 8259 JSON (BLK-05), tidy Parquet tables, Vega-Lite specs w
 static SVG reviewed objects via vl-convert, and progressive airgapped HTML dashboards (MAJ-08).
 """
 
-from __future__ import annotations
-
 import hashlib
 import json
 import logging

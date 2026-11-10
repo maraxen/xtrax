@@ -5,8 +5,6 @@ Calculates pairwise diversity with boundary guards (BLK-04), positive-support Sh
 entropy (MAJ-07), native recovery, shuffled margin degeneracy check, and derived NLL.
 """
 
-from __future__ import annotations
-
 import io
 import json
 import logging

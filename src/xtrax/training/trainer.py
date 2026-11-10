@@ -5,9 +5,14 @@ from collections.abc import Callable
 from typing import Any
 
 import jax
-import optax
+
+try:
+    import optax
+except ImportError:
+    optax = None  # type: ignore
 
 from xtrax._tree import Struct, combine, field, model_jit, partition, value_and_grad
+from xtrax.training.optim import GradientTransformation, require_optax
 from xtrax.training.types import ResumableState
 
 
@@ -55,7 +60,7 @@ class Trainer(Struct):
     """
 
     loss_fn: Callable[..., Any]
-    optimizer: optax.GradientTransformation
+    optimizer: GradientTransformation
     has_aux: bool = field(static=True, default=False)
     takes_key: bool = field(static=True, default=False)
 
@@ -78,6 +83,7 @@ class Trainer(Struct):
               - metrics: dict[str, Array] with at minimum {"loss": scalar}.
                 When ``has_aux`` is True, the aux dict's entries are included.
         """
+        require_optax()
         return _trainer_step(self, state, batch)
 
 

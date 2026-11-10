@@ -120,3 +120,59 @@ class TestSymbolicZerosVJP:
 
         np.testing.assert_allclose(out, 13.0)
         np.testing.assert_allclose(grads[0], jnp.array([4.0, 6.0]))
+
+    def test_fused_primal_and_grad_with_caller_cotangent(self):
+        """Op.fused_primal_and_grad forwards caller-supplied cotangent."""
+
+        def ref_fn(x):
+            return x * 3.0
+
+        def custom_fused(x, cotangent=None):
+            out = x * 3.0
+            ct = 1.0 if cotangent is None else cotangent
+            grad = ct * 3.0
+            return out, (grad,)
+
+        vk = VjpKernel(
+            fwd=lambda x: (ref_fn(x), x),
+            bwd=lambda res, ct: (ct * 3.0,),
+            fused_primal_and_grad=custom_fused,
+        )
+        custom_op = op(
+            ref_fn,
+            vjp_kernels={"cpu": vk},
+            context=Context(kernels=True, backend="cpu"),
+        )
+        x = jnp.array([1.0, 2.0], dtype=jnp.float32)
+        ct = jnp.array([0.5, 2.0], dtype=jnp.float32)
+        out, grads = custom_op.fused_primal_and_grad(x, cotangent=ct)
+        np.testing.assert_allclose(out, jnp.array([3.0, 6.0]))
+        np.testing.assert_allclose(grads[0], jnp.array([1.5, 6.0]))
+
+    def test_pytree_symbolic_zeros_backward(self):
+        """All-SymbolicZero backward correctly returns PyTree structure."""
+
+        def ref_fn(tree):
+            return tree["a"] * 2.0 + tree["b"] * 3.0
+
+        def kernel_fwd(tree):
+            return ref_fn(tree), tree
+
+        def kernel_bwd(res, ct):
+            return ({"a": ct * 2.0, "b": ct * 3.0},)
+
+        vk = VjpKernel(fwd=kernel_fwd, bwd=kernel_bwd)
+        custom_op = op(
+            ref_fn,
+            vjp_kernels={"cpu": vk},
+            context=Context(kernels=True, backend="cpu"),
+        )
+
+        def loss_fn(tree):
+            _ = custom_op(tree)
+            return 42.0
+
+        tree_val = {"a": jnp.array([1.0, 2.0]), "b": jnp.array([3.0, 4.0])}
+        grad_val = jax.grad(loss_fn)(tree_val)
+        np.testing.assert_allclose(grad_val["a"], jnp.zeros(2))
+        np.testing.assert_allclose(grad_val["b"], jnp.zeros(2))

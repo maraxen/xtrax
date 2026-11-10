@@ -3,7 +3,7 @@
 import pytest
 from jax.experimental import pallas as pl
 
-from xtrax.op.grid import make_2d_grid_specs
+from xtrax.tiling.grid import make_2d_grid_specs
 
 
 class TestPallasGridBatching:

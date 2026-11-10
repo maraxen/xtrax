@@ -1,7 +1,5 @@
 """Report rendering utilities for xtrax.eda (#3126)."""
 
-from __future__ import annotations
-
 from typing import Any
 
 from xtrax.eda.render_core import render

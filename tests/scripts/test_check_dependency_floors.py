@@ -54,10 +54,15 @@ def test_missing_distribution_fails() -> None:
 
 
 def test_repo_floors_parse() -> None:
-    """The real pyproject's core + io + cli floors parse and include the pinned core."""
+    """The real pyproject's core + io + cli + training floors parse and include the pinned core."""
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    floors = declared_floors(data, ["io", "cli"])
+    floors = declared_floors(data, ["io", "cli", "training"])
     assert {"jax", "jaxlib", "jaxtyping", "optax", "orbax-checkpoint", "numpy", "zarr"} <= set(
         floors
     )
     assert "equinox" not in floors  # dev-only since the equinox decoupling (step 5)
+
+    # Core + io + cli alone does not include training-only dependencies (#3116)
+    core_floors = declared_floors(data, ["io", "cli"])
+    assert "optax" not in core_floors
+    assert "orbax-checkpoint" not in core_floors

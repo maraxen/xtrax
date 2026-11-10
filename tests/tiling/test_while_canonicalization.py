@@ -57,6 +57,15 @@ class TestWhileCanonicalization:
         with pytest.raises(CarryCanonicalizationError, match="dtype mismatch"):
             validate_carry_transition(init, bad_dtype)
 
+    def test_array_status_mismatch_raises_canonicalization_error(self):
+        """Transition mutating leaf from array to scalar raises CarryCanonicalizationError."""
+        init = (jnp.zeros((4,), dtype=jnp.float32),)
+        bad_leaf = (1.0,)
+        with pytest.raises(CarryCanonicalizationError, match="array status mismatch"):
+            validate_carry_transition(init, bad_leaf)
+        with pytest.raises(CarryCanonicalizationError, match="array status mismatch"):
+            validate_carry_transition(bad_leaf, init)
+
     def test_while_loop_iterator_enforces_validation(self):
         """WhileLoopIterator detects and rejects invalid carry transitions during execution."""
 

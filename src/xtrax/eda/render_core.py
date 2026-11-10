@@ -85,9 +85,9 @@ def render(
         panels: Optional set of panel names to render. Valid names are
                "strategy", "cardinality", "dedup", "bucket", "memory", "reasoning".
                If None, all available panels are rendered. Default None.
-        bundle_js: Not implemented. Passing True raises NotImplementedError,
-               because vendored Vega JS is not shipped. Use offline=True for the
-               static SVG fallback.
+        bundle_js: Whether to inline vendored Vega/Vega-Lite/Vega-Embed JS scripts
+               directly into the generated HTML. Only supported when backend="vega".
+               Default False (uses CDN links).
 
     Returns:
         bytes for PNG/SVG format with no path, str for HTML with no path, or None if
@@ -97,7 +97,6 @@ def render(
         ValueError: If fmt is not "png", "svg" or "html", if metadata=True but
             path is None, or if panels contains unknown names.
         TypeError: If stats_transform returns a dict missing required keys.
-        NotImplementedError: If bundle_js=True.
     """
     # Validation
     if fmt not in ("png", "svg", "html"):

@@ -567,6 +567,15 @@ class Op:
             _, tangent_out = jax.jvp(reference_bwd, (args, ct), (t_args, t_ct))
             return bwd_apply(*primals), tangent_out
 
+        def _unwrap_custom_vjp_primal(tree: Any) -> Any:
+            return jax.tree_util.tree_map(
+                lambda leaf: (
+                    leaf.value if isinstance(leaf, jax.custom_derivatives.CustomVJPPrimal) else leaf
+                ),
+                tree,
+                is_leaf=lambda leaf: isinstance(leaf, jax.custom_derivatives.CustomVJPPrimal),
+            )
+
         @jax.custom_vjp
         def fn(*args):
             """Run the forward kernel, dropping residuals."""
@@ -574,11 +583,8 @@ class Op:
 
         def fn_fwd(*args):
             """Forward pass saving arguments and kernel residuals."""
-            unwrapped_args = tuple(
-                a.value if isinstance(a, jax.custom_derivatives.CustomVJPPrimal) else a
-                for a in args
-            )
-            out, residuals = vk.fwd(*unwrapped_args)
+            unwrapped_args = _unwrap_custom_vjp_primal(args)
+            out, residuals = fwd_pair(*unwrapped_args)
             return out, (unwrapped_args, residuals)
 
         def fn_bwd(saved, ct):
@@ -586,15 +592,27 @@ class Op:
             args, residuals = saved
             leaves = jax.tree_util.tree_leaves(ct)
             if all(isinstance(leaf, jax.custom_derivatives.SymbolicZero) for leaf in leaves):
-                return tuple(
-                    jax.custom_derivatives.SymbolicZero(
-                        jax.core.ShapedArray(
-                            getattr(a, "shape", getattr(getattr(a, "value", None), "shape", ())),
-                            getattr(a, "dtype", getattr(getattr(a, "value", None), "dtype", None)),
-                        )
+
+                def _to_symbolic_zero(leaf: Any) -> Any:
+                    val = (
+                        leaf.value
+                        if isinstance(leaf, jax.custom_derivatives.CustomVJPPrimal)
+                        else leaf
                     )
-                    if (hasattr(a, "shape") or hasattr(getattr(a, "value", None), "shape"))
-                    else None
+                    if hasattr(val, "shape") and hasattr(val, "dtype"):
+                        return jax.custom_derivatives.SymbolicZero(
+                            jax.core.ShapedArray(val.shape, val.dtype)
+                        )
+                    return None
+
+                return tuple(
+                    jax.tree_util.tree_map(
+                        _to_symbolic_zero,
+                        a,
+                        is_leaf=lambda leaf: isinstance(
+                            leaf, jax.custom_derivatives.CustomVJPPrimal
+                        ),
+                    )
                     for a in args
                 )
 
@@ -604,10 +622,7 @@ class Op:
                 return leaf
 
             resolved_ct = jax.tree_util.tree_map(_resolve_ct_leaf, ct)
-            unwrapped_args = tuple(
-                a.value if isinstance(a, jax.custom_derivatives.CustomVJPPrimal) else a
-                for a in args
-            )
+            unwrapped_args = _unwrap_custom_vjp_primal(args)
             return bwd_apply(unwrapped_args, residuals, resolved_ct)
 
         fn.defvjp(fn_fwd, fn_bwd, symbolic_zeros=True)
@@ -621,7 +636,11 @@ class Op:
         if sel.form == "vjp_kernel" and sel.backend is not None:
             vk = self.vjp_kernels.get(sel.backend)
             if vk is not None and vk.fused_primal_and_grad is not None:
-                return vk.fused_primal_and_grad(*args)
+                try:
+                    return vk.fused_primal_and_grad(*args, cotangent=cotangent)
+                except TypeError:
+                    if cotangent is None:
+                        return vk.fused_primal_and_grad(*args)
         out, vjp_fn = jax.vjp(self.reference, *args)
         if cotangent is None:
             cotangent = jax.tree_util.tree_map(

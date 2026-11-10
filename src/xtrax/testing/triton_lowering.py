@@ -1,7 +1,5 @@
 """Offline CPU-only CUDA Triton lowering verifier using abstract meshes (Debt #3197)."""
 
-from __future__ import annotations
-
 import re
 from collections.abc import Callable
 from dataclasses import dataclass

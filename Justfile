@@ -380,4 +380,4 @@ dry-run-plugin:
 # Regenerate the packaged plugin snapshot. Release PR only: feature PRs do not
 # commit src/xtrax/agent_plugin.json (see CONTRIBUTING.md, release checklist).
 plugin-snapshot:
-    uv run python scripts/generate_plugin_snapshot.py
+    uv run --extra plugin python scripts/generate_plugin_snapshot.py
