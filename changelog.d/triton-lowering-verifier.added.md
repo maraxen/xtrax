@@ -1,0 +1,1 @@
+- `xtrax.testing.verify_triton_lowering` verifies offline CUDA Triton lowering on CPU using an abstract device mesh without physical GPU hardware (#3197).
