@@ -1,0 +1,1 @@
+- `xtrax.data.zarr_commit`: added module exposing `write_staged_group` and `commit_key` with explicit `chunks` configuration and dual quarantine on duplicate content divergence (#3117).

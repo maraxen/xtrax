@@ -65,4 +65,7 @@ if [ -n "$NEW_DIAGNOSTICS" ]; then
   exit 1
 fi
 
+echo "[pre-push] changelog fragment check for new modules"
+uv run python scripts/assemble_changelog.py --check-new-modules --base-ref origin/main
+
 echo "[pre-push] all cheap CI checks passed"

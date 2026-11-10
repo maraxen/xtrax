@@ -1,0 +1,1 @@
+- `scripts/generate_plugin_snapshot.py`: restored deterministic plugin snapshot generator using `cisternal.cli.app` to eliminate Unicode escaping drift and ensure byte-level freshness (#3144).
