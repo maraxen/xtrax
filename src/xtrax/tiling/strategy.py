@@ -162,6 +162,8 @@ def fixed_step_count_cond(n_steps: int | jax.Array | Any) -> WhileCondFn:
 
     def _cond(carry: Any) -> Any:
         step_i = carry[0] if isinstance(carry, tuple) else carry.step_i
+        if not hasattr(step_i, "shape") and not hasattr(scalar_steps, "shape"):
+            return step_i < scalar_steps
         return jnp.less(step_i, scalar_steps)
 
     return _cond
