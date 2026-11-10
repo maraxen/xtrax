@@ -30,6 +30,11 @@ from xtrax.testing.lanes import (
     teacher_forced_lane,
 )
 from xtrax.testing.randomness import InjectedSource, order_from_randn
+from xtrax.testing.triton_lowering import (
+    TritonLoweringError,
+    TritonLoweringResult,
+    verify_triton_lowering,
+)
 
 __all__ = [
     "CollapsedSamplerResult",
@@ -43,6 +48,8 @@ __all__ = [
     "StepDistribution",
     "TeacherForcedResult",
     "TieRecord",
+    "TritonLoweringError",
+    "TritonLoweringResult",
     "align_logits",
     "assert_distinct_callables",
     "collapsed_sampler_lane",
@@ -53,4 +60,5 @@ __all__ = [
     "order_from_randn",
     "require_negative_control",
     "teacher_forced_lane",
+    "verify_triton_lowering",
 ]

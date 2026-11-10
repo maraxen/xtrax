@@ -73,6 +73,7 @@ class LoopBody:
     trip_count: int | None
     iteration_work: int
     max_dot_output_elements: int
+    has_pallas_call: bool = False
 
     @property
     def total_work(self) -> int | None:
@@ -97,6 +98,8 @@ class ScalingFinding:
     flagged: bool
     trip_count_at_extent: int | None = None
     trip_count_at_double_extent: int | None = None
+    has_pallas_call: bool = False
+    vmap_induced_pallas_scan: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +118,11 @@ class ExtentScalingReport:
             The flagged findings, in the report's (outermost-first) order.
         """
         return tuple(f for f in self.findings if f.flagged)
+
+    @property
+    def pallas_scan_findings(self) -> tuple[ScalingFinding, ...]:
+        """Findings where a scan or while loop wraps a Pallas or custom call."""
+        return tuple(f for f in self.findings if f.has_pallas_call)
 
 
 class LoopStructureMismatchError(ValueError):
@@ -135,6 +143,17 @@ def _dot_work(eqn: Any) -> tuple[int, int]:  # noqa: ANN401
     return 2 * out * contracted, out
 
 
+def _contains_pallas_call(jaxpr: Any) -> bool:
+    """Check if a jaxpr or any of its nested sub-jaxprs contains a pallas_call or custom_call."""
+    for eqn in jaxpr.eqns:
+        if eqn.primitive.name in ("pallas_call", "custom_call"):
+            return True
+        for sub in sub_jaxprs(eqn.params):
+            if _contains_pallas_call(sub):
+                return True
+    return False
+
+
 def _jaxpr_work(jaxpr: Any, path: str, found: list[LoopBody]) -> tuple[int, int]:  # noqa: ANN401
     """Work of one execution of ``jaxpr``; appends every loop body found to ``found``.
 
@@ -150,7 +169,18 @@ def _jaxpr_work(jaxpr: Any, path: str, found: list[LoopBody]) -> tuple[int, int]
             before = len(found)
             body_work, body_dot = _jaxpr_work(body, here, found)
             trips = int(eqn.params["length"]) if name == "scan" else None
-            found.insert(before, LoopBody(here, name, trips, body_work, body_dot))
+            has_pallas = _contains_pallas_call(body)
+            found.insert(
+                before,
+                LoopBody(
+                    here,
+                    name,
+                    trips,
+                    body_work,
+                    body_dot,
+                    has_pallas_call=has_pallas,
+                ),
+            )
             work += body_work * (trips if trips is not None else 1)
             max_dot = max(max_dot, body_dot)
         elif name == "dot_general":
@@ -253,7 +283,7 @@ def _measure_while_trips(fn: Callable[..., Any], args: tuple[Any, ...]) -> list[
             first[key] = trips
         return result
 
-    jax.lax.while_loop = wrapped  # ty: ignore[invalid-assignment] -- counting shim, same call shape
+    jax.lax.while_loop = wrapped
     try:
         with jax.disable_jit():
             fn(*args)
@@ -343,6 +373,8 @@ def extent_scaling_report(
     ):
         ratio = large.iteration_work / small.iteration_work if small.iteration_work else math.inf
         trips_scale = _trip_growth_scales(small_trips, large_trips, threshold)
+        has_pallas = small.has_pallas_call or large.has_pallas_call
+        vmap_induced = small.primitive == "scan" and has_pallas
         findings.append(
             ScalingFinding(
                 path=small.path,
@@ -353,6 +385,8 @@ def extent_scaling_report(
                 flagged=ratio >= threshold and trips_scale,
                 trip_count_at_extent=small_trips,
                 trip_count_at_double_extent=large_trips,
+                has_pallas_call=has_pallas,
+                vmap_induced_pallas_scan=vmap_induced,
             )
         )
     return ExtentScalingReport(extent=extent, threshold=threshold, findings=tuple(findings))

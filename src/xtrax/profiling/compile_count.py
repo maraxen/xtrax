@@ -11,10 +11,143 @@ jax is imported lazily, inside the functions, so importing this module (and
 """
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Any
 
 BACKEND_COMPILE_EVENT = "/jax/core/compile/backend_compile_duration"
+
+
+@dataclass(frozen=True, slots=True)
+class LeafSignature:
+    """Signature of a single leaf argument in a JIT call."""
+
+    path: str
+    is_array: bool
+    shape: tuple[int, ...] | None = None
+    dtype: str | None = None
+    static_value: Any = None
+    type_name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CallSignature:
+    """Extracted signature of positional arguments for JIT caching."""
+
+    treedef: Any
+    leaves: tuple[LeafSignature, ...]
+
+
+def extract_jit_signature(args: tuple[Any, ...]) -> CallSignature:
+    """Extract PyTree structure, leaf shapes, dtypes, and static values."""
+    import jax
+
+    leaves, treedef = jax.tree_util.tree_flatten_with_path(args)
+    leaf_sigs: list[LeafSignature] = []
+    for path, leaf in leaves:
+        path_str = jax.tree_util.keystr(path)
+        if hasattr(leaf, "shape") and hasattr(leaf, "dtype"):
+            leaf_sigs.append(
+                LeafSignature(
+                    path=path_str,
+                    is_array=True,
+                    shape=tuple(int(d) for d in leaf.shape),
+                    dtype=str(leaf.dtype),
+                    type_name=type(leaf).__name__,
+                )
+            )
+        else:
+            leaf_sigs.append(
+                LeafSignature(
+                    path=path_str,
+                    is_array=False,
+                    static_value=leaf,
+                    type_name=type(leaf).__name__,
+                )
+            )
+    return CallSignature(treedef=treedef, leaves=tuple(leaf_sigs))
+
+
+extract_signature = extract_jit_signature
+
+
+def diff_jit_signature(
+    warmup_args: tuple[Any, ...],
+    failing_args: tuple[Any, ...],
+) -> list[str]:
+    """Diff two argument tuples and report discrepancies that trigger XLA recompile.
+
+    Returns:
+        A list of human-readable divergence descriptions.
+    """
+    sig_warmup = extract_jit_signature(warmup_args)
+    sig_failing = extract_jit_signature(failing_args)
+    diffs: list[str] = []
+
+    # 1. PyTree Structure Check
+    if sig_warmup.treedef != sig_failing.treedef:
+        diffs.append(
+            f"PyTree structure mismatch: warmup={sig_warmup.treedef} "
+            f"vs current={sig_failing.treedef}"
+        )
+        return diffs
+
+    # 2. Leaf-by-Leaf Comparison
+    for idx, (lw, lf) in enumerate(zip(sig_warmup.leaves, sig_failing.leaves, strict=True)):
+        if lw.is_array != lf.is_array:
+            diffs.append(
+                f"Leaf [{idx}] '{lw.path}': array status changed from is_array={lw.is_array} "
+                f"({lw.type_name}) to is_array={lf.is_array} ({lf.type_name})"
+            )
+            continue
+
+        if lw.is_array:
+            if lw.shape != lf.shape:
+                diffs.append(
+                    f"Leaf [{idx}] '{lw.path}': shape changed from {lw.shape} to {lf.shape}"
+                )
+            if lw.dtype != lf.dtype:
+                diffs.append(
+                    f"Leaf [{idx}] '{lw.path}': dtype changed from {lw.dtype} to {lf.dtype}"
+                )
+        else:
+            # Finding C6: Guard against uncomparable objects or array comparisons
+            try:
+                is_diff = bool(lw.static_value != lf.static_value)
+            except Exception:
+                is_diff = repr(lw.static_value) != repr(lf.static_value)
+
+            if is_diff:
+                diffs.append(
+                    f"Leaf [{idx}] '{lw.path}': static value changed from "
+                    f"{lw.static_value!r} to {lf.static_value!r}"
+                )
+            elif type(lw.static_value) is not type(lf.static_value):
+                diffs.append(
+                    f"Leaf [{idx}] '{lw.path}': static type changed from "
+                    f"{lw.type_name} to {lf.type_name}"
+                )
+    return diffs
+
+
+def explain_cache_miss(
+    warmup_args: tuple[Any, ...],
+    failing_args: tuple[Any, ...],
+    step_index: int | None = None,
+) -> str:
+    """Format an actionable diagnostic explanation of an XLA cache miss."""
+    diffs = diff_jit_signature(warmup_args, failing_args)
+    step_prefix = f" at step {step_index}" if step_index is not None else ""
+    if not diffs:
+        return (
+            f"XLA cache miss detected{step_prefix}, but no PyTree, shape, dtype, "
+            "or static leaf mismatch was found. Possible cause: internal compilation "
+            "cache eviction, non-deterministic hash, or closure variable mutation."
+        )
+    formatted_diffs = "\n  - ".join(diffs)
+    return (
+        f"XLA cache miss detected{step_prefix} due to signature divergence:\n  - {formatted_diffs}"
+    )
 
 
 class BackendCompileCount:
@@ -128,7 +261,7 @@ def assert_no_recompile_after(
     args_iter: Iterable[tuple[Any, ...]],
     warmup: int = 1,
 ) -> None:
-    """Assert ``step_fn`` does not backend-compile after ``warmup`` calls.
+    """Assert ``step_fn`` does not backend-compile after ``warmup`` calls, with rich diagnostics.
 
     Each item of ``args_iter`` is a tuple of positional arguments. The first
     ``warmup`` calls (default 1) may compile; every later call must hit the
@@ -149,19 +282,54 @@ def assert_no_recompile_after(
     import jax
 
     iterator = iter(args_iter)
+    last_warmup_args: tuple[Any, ...] | None = None
     for i in range(warmup):
         try:
             args = next(iterator)
         except StopIteration:
             raise ValueError(f"args_iter ended during warmup ({i} of {warmup} calls)") from None
+        last_warmup_args = args
         jax.block_until_ready(step_fn(*args))
-    with count_backend_compiles() as recorded:
-        n_steps = 0
-        for args in iterator:
+
+    step_idx = 0
+    total_recompiles = 0
+    total_seconds = 0.0
+    first_args: tuple[Any, ...] | None = None
+    first_failure_step: int | None = None
+    first_failure_args: tuple[Any, ...] | None = None
+
+    for args in iterator:
+        step_idx += 1
+        if first_args is None:
+            first_args = args
+        with count_backend_compiles() as recorded:
             jax.block_until_ready(step_fn(*args))
-            n_steps += 1
-    if recorded.count != 0:
+        if recorded.count > 0:
+            total_recompiles += recorded.count
+            total_seconds += recorded.seconds
+            if first_failure_step is None:
+                first_failure_step = step_idx
+                first_failure_args = args
+
+    if total_recompiles != 0:
+        diag = ""
+        baseline_args = last_warmup_args if warmup > 0 else first_args
+        if baseline_args is not None and first_failure_args is not None:
+            if warmup == 0 and first_failure_step == 1:
+                diag = (
+                    f"\nFunction compiled at step 1 with warmup=0 (expected pre-warmed cache). "
+                    f"Initial invocation signature: {extract_jit_signature(first_failure_args)}"
+                )
+            else:
+                diag = "\n" + explain_cache_miss(
+                    baseline_args, first_failure_args, step_index=first_failure_step
+                )
+        elif warmup == 0 and first_failure_step is not None:
+            diag = (
+                f"\nFunction compiled at step {first_failure_step} with warmup=0 "
+                "(expected pre-warmed cache)."
+            )
         raise AssertionError(
-            f"{recorded.count} backend compile(s) ({recorded.seconds:.3f}s) "
-            f"across {n_steps} step(s) after {warmup} warmup call(s)"
+            f"{total_recompiles} backend compile(s) ({total_seconds:.3f}s) "
+            f"across {step_idx} step(s) after {warmup} warmup call(s).{diag}"
         )

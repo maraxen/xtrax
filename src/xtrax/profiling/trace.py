@@ -67,6 +67,8 @@ _CLOSE_RE = re.compile(r"^\}\s*$")
 _INSTR_NAME_RE = re.compile(r"^\s*(ROOT\s+)?%([\w.\-]+)\s*=")
 _OP_NAME_RE = re.compile(r'op_name="([^"]*)"')
 _CALLS_RE = re.compile(r"(?:calls|to_apply)=%([\w.\-]+)")
+_CUSTOM_CALL_TARGET_RE = re.compile(r'custom_call_target="([^"]+)"')
+_BACKEND_CONFIG_NAME_RE = re.compile(r'name\s*=\s*"([^"]+)"')
 
 
 def _split_computations(hlo_text: str) -> dict[str, list[str]]:
@@ -156,7 +158,25 @@ def _resolve_scope(
         return None
     op_name_match = _OP_NAME_RE.search(line)
     if op_name_match:
-        return _deepest_known_label(op_name_match.group(1), known_labels)
+        label = _deepest_known_label(op_name_match.group(1), known_labels)
+        if label is not None:
+            return label
+    # Custom-call auto-attribution (#3196)
+    target_match = _CUSTOM_CALL_TARGET_RE.search(line)
+    if target_match:
+        target = target_match.group(1)
+        name_match = _BACKEND_CONFIG_NAME_RE.search(line)
+        kernel_name = name_match.group(1) if name_match else None
+        if kernel_name:
+            if kernel_name in known_labels:
+                return kernel_name
+            for label in known_labels:
+                if label in kernel_name.split("_") or label in kernel_name:
+                    return label
+        prefix = "triton" if "triton" in target else target.replace("__gpu$xla.gpu.", "")
+        if kernel_name:
+            return f"{prefix}:{kernel_name}"
+        return f"custom_call:{prefix}"
     calls_match = _CALLS_RE.search(line)
     if calls_match:
         callee = calls_match.group(1)
