@@ -53,7 +53,9 @@ class VegaBackend(BaseBackend):
     ) -> bytes | str:
         """Render Vega-Lite specification to PNG, SVG, or progressive HTML."""
         opts = options or {}
-        reject_bundle_js(opts.get("bundle_js", False))
+        bundle_js = opts.get("bundle_js", False)
+        if bundle_js and fmt != "html":
+            reject_bundle_js(bundle_js, self.name)
 
         if fmt == "png":
             try:
@@ -80,6 +82,16 @@ class VegaBackend(BaseBackend):
                 ) from err
 
         if fmt == "html":
+            if bundle_js:
+                try:
+                    import vl_convert as vlc
+                except ImportError as err:
+                    raise ImportError(
+                        "VegaBackend bundle_js=True requires vl-convert-python. "
+                        "Install it with `pip install xtrax[eda-vega]`."
+                    ) from err
+                return vlc.vegalite_to_html(spec, bundle=True)
+
             fallback_svg = self._render_fallback_svg(spec, stats)
             spec_json = json.dumps(spec).replace("</", "<\\/")
             offline = opts.get("offline", False)

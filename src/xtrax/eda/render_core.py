@@ -104,7 +104,6 @@ def render(
         raise ValueError(f"Unknown fmt {fmt!r}; expected 'png', 'svg' or 'html'")
     if metadata and path is None:
         raise ValueError("metadata=True requires path to be set")
-    reject_bundle_js(bundle_js)
 
     if panels is not None:
         unknown = panels - _VALID_PANELS
@@ -149,9 +148,11 @@ def render(
             vl_spec,
             fmt=fmt,
             stats=stats,
-            options={"offline": offline},
+            options={"offline": offline, "bundle_js": bundle_js},
         )
     elif selected_backend == "matplotlib":
+        if bundle_js:
+            reject_bundle_js(bundle_js, "matplotlib")
         from xtrax.eda.viz import _render_matplotlib
 
         result = _render_matplotlib(stats, panels, fmt)
@@ -168,7 +169,7 @@ def render(
             vl_spec,
             fmt=fmt,
             stats=stats,
-            options={"offline": offline},
+            options={"offline": offline, "bundle_js": bundle_js},
         )
 
     if path is not None:
