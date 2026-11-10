@@ -347,15 +347,19 @@ def quarantine_output(
 
 
 def compute_content_digest(path: Path) -> str:
-    """Compute the content digest of a zarr store directory or a single file.
+    """Compute the content digest of a zarr store directory, packed unit, or single file.
 
-    A directory is digested with :func:`xtrax.run.zarr_integrity.zarr_content_digest`
-    (the logical array digest). There is no fallback to a raw byte hash: the producer
-    and the verifier must use the same algorithm, and a directory zarr cannot open is
-    an error to surface, not a store to hash differently. A file is digested by streaming
-    its bytes with a bounded 64 MB buffer.
+    If path is a directory containing a packed unit or unit record ('members.tar.zst'
+    or 'unit.json'), uses :func:`xtrax.pack.unit_content_digest` to verify and digest
+    uncompressed members. Otherwise, if path is a directory, it is digested with
+    :func:`xtrax.run.zarr_integrity.zarr_content_digest` (the logical array digest).
+    A single file is digested by streaming its bytes with a bounded 64 MB buffer.
     """
     if path.is_dir():
+        if (path / "members.tar.zst").exists() or (path / "unit.json").exists():
+            from xtrax.pack import unit_content_digest
+
+            return unit_content_digest(path)
         from xtrax.run.zarr_integrity import zarr_content_digest
 
         return zarr_content_digest(path, include_provenance=True)
@@ -509,45 +513,109 @@ def validate_unit_done(
             quarantine_path=q_path,
         )
 
-    # 4. Check Zarr root metadata (Tier 1: < 5 ms, NO chunk reading). zarr v3 writes
-    # zarr.json; v2 writes .zgroup or .zarray.
+    # 4. Check store root metadata (Tier 1: < 5 ms, NO chunk reading).
     if path.is_dir():
-        meta_file = next(
-            (path / name for name in ZARR_ROOT_METADATA_FILES if (path / name).exists()),
-            None,
-        )
-        if meta_file is None:
-            q_path = None
-            if quarantine_on_failure:
-                q_path = quarantine_output(path, reason="missing_zarr_root_metadata")
-            return UnitValidationResult(
-                is_valid=False,
-                tier=1,
-                manifest_row_hash=expected_row.manifest_row_hash,
-                input_hash=expected_row.input_hash,
-                error_message=(
-                    "Zarr store has no root metadata (expected one of "
-                    f"{', '.join(ZARR_ROOT_METADATA_FILES)})"
-                ),
-                error_type="StoreMissingError",
-                quarantine_path=q_path,
+        unit_record_path = path / "unit.json"
+        is_packed_unit = (path / "members.tar.zst").exists() or unit_record_path.exists()
+        if is_packed_unit:
+            from xtrax.pack import is_packed, record_problem
+
+            if not unit_record_path.exists():
+                q_path = None
+                if quarantine_on_failure:
+                    q_path = quarantine_output(path, reason="missing_unit_record")
+                return UnitValidationResult(
+                    is_valid=False,
+                    tier=1,
+                    manifest_row_hash=expected_row.manifest_row_hash,
+                    input_hash=expected_row.input_hash,
+                    error_message=f"Packed unit has no unit.json record at {unit_record_path}",
+                    error_type="StoreMissingError",
+                    quarantine_path=q_path,
+                )
+            try:
+                record_data = json.loads(unit_record_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                q_path = None
+                if quarantine_on_failure:
+                    q_path = quarantine_output(path, reason="corrupt_unit_record", exc=exc)
+                return UnitValidationResult(
+                    is_valid=False,
+                    tier=1,
+                    manifest_row_hash=expected_row.manifest_row_hash,
+                    input_hash=expected_row.input_hash,
+                    error_message=f"Corrupt unit.json in {unit_record_path}: {exc}",
+                    error_type="DoneMarkerCorruptError",
+                    quarantine_path=q_path,
+                )
+            problem = record_problem(record_data)
+            if problem is not None:
+                q_path = None
+                if quarantine_on_failure:
+                    q_path = quarantine_output(path, reason=f"invalid_unit_record_{problem}")
+                return UnitValidationResult(
+                    is_valid=False,
+                    tier=1,
+                    manifest_row_hash=expected_row.manifest_row_hash,
+                    input_hash=expected_row.input_hash,
+                    error_message=f"Invalid unit record in {unit_record_path}: {problem}",
+                    error_type="DoneMarkerCorruptError",
+                    quarantine_path=q_path,
+                )
+            if is_packed(path, record_data):
+                pack_file = path / "members.tar.zst"
+                if not pack_file.exists():
+                    q_path = None
+                    if quarantine_on_failure:
+                        q_path = quarantine_output(path, reason="missing_pack_file")
+                    return UnitValidationResult(
+                        is_valid=False,
+                        tier=1,
+                        manifest_row_hash=expected_row.manifest_row_hash,
+                        input_hash=expected_row.input_hash,
+                        error_message=(
+                            f"Packed unit specifies pack storage but {pack_file} is missing"
+                        ),
+                        error_type="StoreMissingError",
+                        quarantine_path=q_path,
+                    )
+        else:
+            meta_file = next(
+                (path / name for name in ZARR_ROOT_METADATA_FILES if (path / name).exists()),
+                None,
             )
-        # Verify metadata is valid JSON
-        try:
-            json.loads(meta_file.read_text(encoding="utf-8"))
-        except Exception as exc:
-            q_path = None
-            if quarantine_on_failure:
-                q_path = quarantine_output(path, reason="corrupt_zarr_metadata", exc=exc)
-            return UnitValidationResult(
-                is_valid=False,
-                tier=1,
-                manifest_row_hash=expected_row.manifest_row_hash,
-                input_hash=expected_row.input_hash,
-                error_message=f"Corrupt Zarr metadata in {meta_file}: {exc}",
-                error_type="DoneMarkerCorruptError",
-                quarantine_path=q_path,
-            )
+            if meta_file is None:
+                q_path = None
+                if quarantine_on_failure:
+                    q_path = quarantine_output(path, reason="missing_zarr_root_metadata")
+                return UnitValidationResult(
+                    is_valid=False,
+                    tier=1,
+                    manifest_row_hash=expected_row.manifest_row_hash,
+                    input_hash=expected_row.input_hash,
+                    error_message=(
+                        "Zarr store has no root metadata (expected one of "
+                        f"{', '.join(ZARR_ROOT_METADATA_FILES)})"
+                    ),
+                    error_type="StoreMissingError",
+                    quarantine_path=q_path,
+                )
+            # Verify metadata is valid JSON
+            try:
+                json.loads(meta_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                q_path = None
+                if quarantine_on_failure:
+                    q_path = quarantine_output(path, reason="corrupt_zarr_metadata", exc=exc)
+                return UnitValidationResult(
+                    is_valid=False,
+                    tier=1,
+                    manifest_row_hash=expected_row.manifest_row_hash,
+                    input_hash=expected_row.input_hash,
+                    error_message=f"Corrupt Zarr metadata in {meta_file}: {exc}",
+                    error_type="DoneMarkerCorruptError",
+                    quarantine_path=q_path,
+                )
 
     # If Tier-1 only, we are done and valid
     if not deep_verify:
