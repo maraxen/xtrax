@@ -1,0 +1,1 @@
+- `scripts/git-hooks/pretool-git-reset-guard.sh`: pre-tool hook intercepting destructive `git reset --hard` commands, stashing working tree state with `-u` to prevent orchestrator and review checkout clobbers (#2962).
