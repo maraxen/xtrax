@@ -176,14 +176,106 @@ def get_hardware_mesh_profile() -> dict[str, Any]:
         }
 
 
+class ShardingPlannerError(ValueError):
+    """Raised when tensor shapes are incompatible with device mesh placement."""
+
+
+class ShardingPlanner:
+    """Active placement planner resolving PartitionSpecs into NamedShardings across a device Mesh.
+
+    Attributes
+    ----------
+    mesh : jax.sharding.Mesh
+        Active device Mesh instance.
+    policy : ShardingPolicy
+        ShardingPolicy containing path matching rules.
+    """
+
+    mesh: jax.sharding.Mesh
+    policy: ShardingPolicy
+
+    def __init__(self, mesh: jax.sharding.Mesh, policy: ShardingPolicy) -> None:
+        self.mesh = mesh
+        self.policy = policy
+
+    def plan_sharding(self, pytree: Any) -> Any:
+        """Derive concrete NamedSharding for each PyTree leaf, verifying divisibility.
+
+        Parameters
+        ----------
+        pytree : Any
+            Target PyTree containing arrays and static values.
+
+        Returns
+        -------
+        Any
+            PyTree of NamedSharding instances matching the structure of pytree.
+
+        Raises
+        ------
+        ShardingPlannerError
+            If a tensor dimension is not divisible by mesh axis, or mesh axis is unknown,
+            or PartitionSpec rank exceeds leaf rank.
+        """
+
+        def _plan_leaf(path: tuple, leaf: Any) -> jax.sharding.NamedSharding:
+            if not hasattr(leaf, "shape") or leaf.shape is None or len(leaf.shape) == 0:
+                return jax.sharding.NamedSharding(self.mesh, jax.sharding.PartitionSpec())
+
+            path_str = self.policy._path_to_string(path)
+            pspec = self.policy.get_partition_spec(path_str)
+
+            # Validate rank compatibility (Debt #3043 Finding M2)
+            if len(pspec) > len(leaf.shape):
+                raise ShardingPlannerError(
+                    f"ShardingPlanner: PartitionSpec for '{path_str}' has rank {len(pspec)} "
+                    f"exceeding leaf rank {len(leaf.shape)} (shape {leaf.shape})."
+                )
+
+            # Validate divisibility across single and tuple mesh axes (Debt #3043 Finding M2)
+            mesh_shape_dict = dict(self.mesh.shape)
+            for dim_idx, axis_name in enumerate(pspec):
+                if axis_name is None:
+                    continue
+                dim_size = leaf.shape[dim_idx]
+                if isinstance(axis_name, (tuple, list)):
+                    total_axis_size = 1
+                    for sub_axis in axis_name:
+                        if sub_axis not in mesh_shape_dict:
+                            raise ShardingPlannerError(
+                                f"ShardingPlanner: PartitionSpec for '{path_str}' "
+                                f"references unknown mesh axis '{sub_axis}'. "
+                                f"Available: {list(mesh_shape_dict.keys())}"
+                            )
+                        total_axis_size *= mesh_shape_dict[sub_axis]
+                    if dim_size % total_axis_size != 0:
+                        raise ShardingPlannerError(
+                            f"ShardingPlanner: Incompatible placement for '{path_str}'. "
+                            f"Dimension {dim_idx} (size {dim_size}) is not divisible by "
+                            f"combined mesh axes {axis_name} (product {total_axis_size})."
+                        )
+                else:
+                    if axis_name not in mesh_shape_dict:
+                        raise ShardingPlannerError(
+                            f"ShardingPlanner: PartitionSpec for '{path_str}' references unknown "
+                            f"mesh axis '{axis_name}'. Available: {list(mesh_shape_dict.keys())}"
+                        )
+                    axis_size = mesh_shape_dict[axis_name]
+                    if dim_size % axis_size != 0:
+                        raise ShardingPlannerError(
+                            f"ShardingPlanner: Incompatible placement for '{path_str}'. "
+                            f"Dimension {dim_idx} (size {dim_size}) is not divisible by "
+                            f"mesh axis '{axis_name}' (size {axis_size})."
+                        )
+
+            return jax.sharding.NamedSharding(self.mesh, pspec)
+
+        return jax.tree_util.tree_map_with_path(_plan_leaf, pytree)
+
+
 # Deprecated in the #6107 probe release: all three names warn on access and are otherwise
 # unchanged.
 _DEPRECATED = {
-    "ShardingPolicy": Deprecated(
-        ShardingPolicy,
-        "jax.tree_util.tree_map_with_path with your own path-to-PartitionSpec rules",
-        "xtrax debt #3043 tracks a planner-based rebuild.",
-    ),
     "get_device_mesh": Deprecated(
         get_device_mesh,
         "jax.make_mesh(shape, axis_names)",
@@ -194,5 +286,5 @@ _DEPRECATED = {
         "one data-parallel axis over all devices",
     ),
 }
-del ShardingPolicy, get_device_mesh, get_hardware_mesh_profile
+del get_device_mesh, get_hardware_mesh_profile
 __getattr__ = deprecated_getattr(__name__, _DEPRECATED)

@@ -26,9 +26,12 @@ Typical use::
 from __future__ import annotations
 
 import bisect
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 # Fixed length buckets. Owned here so runtime tiling does not import the export
@@ -241,3 +244,175 @@ def bucketize(xs: Any, bucket_size: int) -> tuple[Any, np.ndarray]:
     padded_xs = jax.tree_util.tree_unflatten(treedef, padded_leaves)
     mask = np.arange(bucket_size) < seq_len
     return padded_xs, mask
+
+
+class BucketDispatcher:
+    """Host-side batch coordinator for variable-length inputs across fixed bucket rungs.
+
+    Attributes:
+        boundaries: Strictly ascending sequence of bucket capacity thresholds.
+        fn: Core device computation to apply to each bucketed batch.
+        axis: The variable-length axis to bucket (default: 0).
+        pad_value: Value used to pad unused slots (default: 0).
+    """
+
+    boundaries: tuple[int, ...]
+    fn: Callable[[Any], Any]
+    axis: int
+    pad_value: Any
+    _cached_runners: dict[int, Callable[[Any], Any]]
+
+    def __init__(
+        self,
+        fn: Callable[[Any], Any],
+        boundaries: Sequence[int] = BUCKET_LADDER,
+        axis: int = 0,
+        pad_value: Any = 0,
+    ) -> None:
+        if not boundaries:
+            raise ValueError("BucketDispatcher: boundaries must not be empty.")
+        if any(boundaries[i] >= boundaries[i + 1] for i in range(len(boundaries) - 1)):
+            raise ValueError(
+                f"BucketDispatcher: boundaries must be strictly ascending, got {boundaries}"
+            )
+        self.boundaries = tuple(boundaries)
+        self.fn = fn
+        self.axis = axis
+        self.pad_value = pad_value
+        self._cached_runners = {}
+
+    def _get_runner(self, bucket_size: int) -> Callable[[Any], Any]:
+        """Retrieve or compile the JIT runner for a specific bucket size."""
+        if bucket_size not in self._cached_runners:
+            self._cached_runners[bucket_size] = jax.jit(jax.vmap(self.fn))
+        return self._cached_runners[bucket_size]
+
+    def dispatch_batch(self, items: Sequence[Any]) -> list[Any]:
+        """Dispatch a heterogeneous sequence of PyTree items through bucketed device execution.
+
+        Args:
+            items: Sequence of PyTree inputs, each sharing leaf structure but differing in length.
+
+        Returns:
+            List of unpadded PyTree results in exact 1:1 correspondence with `items`.
+
+        Raises:
+            ValueError: If any item exceeds the largest bucket boundary or has no array leaves.
+        """
+        if not items:
+            return []
+
+        item_lengths = []
+        bucket_assignments: dict[int, list[int]] = {b: [] for b in self.boundaries}
+
+        for idx, item in enumerate(items):
+            leaves = jax.tree_util.tree_leaves(item)
+            if not leaves:
+                raise ValueError(f"BucketDispatcher: item {idx} contains no array leaves.")
+            length = int(leaves[0].shape[self.axis])
+            item_lengths.append(length)
+
+            bucket = select_bucket(length, self.boundaries)
+            bucket_assignments[bucket].append(idx)
+
+        results: list[Any | None] = [None] * len(items)
+
+        for bucket, indices in bucket_assignments.items():
+            if not indices:
+                continue
+
+            runner = self._get_runner(bucket)
+
+            bucket_items = [items[i] for i in indices]
+            padded_batch = []
+
+            for item in bucket_items:
+                padded = jax.tree_util.tree_map(
+                    lambda leaf: pad_axis(
+                        np.asarray(leaf), bucket, axis=self.axis, fill=self.pad_value
+                    ),
+                    item,
+                )
+                padded_batch.append(padded)
+
+            stacked_batch = jax.tree_util.tree_map(
+                lambda *leaves: np.stack(leaves, axis=0),
+                *padded_batch,
+            )
+
+            device_out = runner(stacked_batch)
+
+            for local_idx, global_idx in enumerate(indices):
+                orig_len = item_lengths[global_idx]
+                single_out = jax.tree_util.tree_map(
+                    lambda leaf, l_idx=local_idx: leaf[l_idx],
+                    device_out,
+                )
+
+                def _trim_leaf(leaf: Any, trim_len: int = orig_len) -> Any:
+                    if (
+                        hasattr(leaf, "ndim")
+                        and leaf.ndim > self.axis
+                        and leaf.shape[self.axis] == bucket
+                    ):
+                        return trim_axis(leaf, trim_len, axis=self.axis)
+                    return leaf
+
+                trimmed_out = jax.tree_util.tree_map(_trim_leaf, single_out)
+                results[global_idx] = trimmed_out
+
+        return [r for r in results if r is not None]
+
+
+@dataclass(frozen=True)
+class BatchedCapacityState:
+    """Immutable state tracking capacity and occupancy for batched memory structures.
+
+    Attributes:
+        allocated_capacity: Static integer capacity currently allocated per batch lane.
+        active_counts: JAX array of shape (B,) with integer active element counts.
+        headroom_threshold: Minimum headroom before reallocation is required.
+    """
+
+    allocated_capacity: int
+    active_counts: jax.Array
+    headroom_threshold: int = 0
+
+    def __post_init__(self) -> None:
+        if self.allocated_capacity < 0:
+            raise ValueError(
+                "BatchedCapacityState: allocated_capacity must be >= 0, "
+                f"got {self.allocated_capacity}"
+            )
+
+    @property
+    def headroom(self) -> jax.Array:
+        """Remaining capacity per batch item: (allocated_capacity - active_counts)."""
+        return self.allocated_capacity - self.active_counts
+
+    @property
+    def needs_reallocation(self) -> jax.Array:
+        """Scalar boolean indicating if any batch item has headroom <= threshold."""
+        return jnp.any(self.headroom <= self.headroom_threshold)
+
+    def suggest_next_rung(self, ladder: Sequence[int] = BUCKET_LADDER) -> int:
+        """Compute the next bucket rung from a ladder that accommodates max occupancy.
+
+        Host-Side Allocation Coordinator:
+            This method concretizes active occupancy via `int(jnp.max(self.active_counts))`
+            to select the next discrete capacity rung from the ladder. Must be called
+            outside the `@jax.jit` boundary.
+        """
+        max_active = int(jnp.max(self.active_counts))
+        return select_bucket(max_active + 1, ladder)
+
+
+jax.tree_util.register_pytree_node(
+    BatchedCapacityState,
+    lambda s: ((s.active_counts,), (s.allocated_capacity, s.headroom_threshold)),
+    lambda aux, children: BatchedCapacityState(
+        allocated_capacity=aux[0],
+        active_counts=children[0],
+        headroom_threshold=aux[1],
+    ),
+)

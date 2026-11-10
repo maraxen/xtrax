@@ -39,6 +39,7 @@ from functools import update_wrapper
 from typing import Any, Literal, NamedTuple
 
 import jax
+import jax.core
 import jax.numpy as jnp
 import numpy as np
 from jax.interpreters import ad as _ad
@@ -76,10 +77,13 @@ class VjpKernel(NamedTuple):
         argument (a tuple). ``cotangent`` has the structure of ``out``, with
         ``float0`` leaves for integer and bool outputs. Entries for integer and
         bool arguments are ignored.
+    fused_primal_and_grad : Callable or None
+        Optional fused evaluation of primal output and gradient in a single pass.
     """
 
     fwd: Callable[..., tuple[Any, Any]]
     bwd: Callable[[Any, Any], tuple[Any, ...]]
+    fused_primal_and_grad: Callable[..., tuple[Any, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -570,16 +574,62 @@ class Op:
 
         def fn_fwd(*args):
             """Forward pass saving arguments and kernel residuals."""
-            out, residuals = fwd_pair(*args)
-            return out, (args, residuals)
+            unwrapped_args = tuple(
+                a.value if isinstance(a, jax.custom_derivatives.CustomVJPPrimal) else a
+                for a in args
+            )
+            out, residuals = vk.fwd(*unwrapped_args)
+            return out, (unwrapped_args, residuals)
 
         def fn_bwd(saved, ct):
-            """Backward pass through the kernel."""
+            """Backward pass through the kernel with symbolic_zeros handling."""
             args, residuals = saved
-            return bwd_apply(args, residuals, ct)
+            leaves = jax.tree_util.tree_leaves(ct)
+            if all(isinstance(leaf, jax.custom_derivatives.SymbolicZero) for leaf in leaves):
+                return tuple(
+                    jax.custom_derivatives.SymbolicZero(
+                        jax.core.ShapedArray(
+                            getattr(a, "shape", getattr(getattr(a, "value", None), "shape", ())),
+                            getattr(a, "dtype", getattr(getattr(a, "value", None), "dtype", None)),
+                        )
+                    )
+                    if (hasattr(a, "shape") or hasattr(getattr(a, "value", None), "shape"))
+                    else None
+                    for a in args
+                )
 
-        fn.defvjp(fn_fwd, fn_bwd)
+            def _resolve_ct_leaf(leaf):
+                if isinstance(leaf, jax.custom_derivatives.SymbolicZero):
+                    return jnp.zeros(leaf.aval.shape, leaf.aval.dtype)
+                return leaf
+
+            resolved_ct = jax.tree_util.tree_map(_resolve_ct_leaf, ct)
+            unwrapped_args = tuple(
+                a.value if isinstance(a, jax.custom_derivatives.CustomVJPPrimal) else a
+                for a in args
+            )
+            return bwd_apply(unwrapped_args, residuals, resolved_ct)
+
+        fn.defvjp(fn_fwd, fn_bwd, symbolic_zeros=True)
         return fn
+
+    def fused_primal_and_grad(
+        self, *args: Any, cotangent: Any = None
+    ) -> tuple[Any, tuple[Any, ...]]:
+        """Evaluate both primal output and gradient with fused computation where available."""
+        sel = self.select()
+        if sel.form == "vjp_kernel" and sel.backend is not None:
+            vk = self.vjp_kernels.get(sel.backend)
+            if vk is not None and vk.fused_primal_and_grad is not None:
+                return vk.fused_primal_and_grad(*args)
+        out, vjp_fn = jax.vjp(self.reference, *args)
+        if cotangent is None:
+            cotangent = jax.tree_util.tree_map(
+                lambda leaf: jnp.ones_like(leaf) if hasattr(leaf, "shape") else 1.0,
+                out,
+            )
+        grads = vjp_fn(cotangent)
+        return out, grads
 
 
 def op(

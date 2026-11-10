@@ -16,6 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import jax
+import jax.numpy as jnp
+import numpy as np
+
 from xtrax.tiling.strategy import ScanTransition, WhileBodyFn, WhileCondFn
 
 
@@ -54,4 +58,58 @@ class CarrySpec:
     cond: WhileCondFn | None = None
 
 
-__all__ = ["CarrySpec"]
+class CarryCanonicalizationError(TypeError):
+    """Raised when carry leaves deviate in structure, shape, or dtype."""
+
+    pass
+
+
+def canonicalize_carry(carry: Any) -> Any:
+    """Canonicalize all array-like leaves of a carry PyTree to immutable JAX arrays."""
+
+    def _canonicalize_leaf(leaf: Any) -> Any:
+        if isinstance(leaf, (int, float, bool, np.ndarray, np.number)):
+            return jnp.asarray(leaf)
+        return leaf
+
+    return jax.tree_util.tree_map(_canonicalize_leaf, carry)
+
+
+def validate_carry_transition(init_carry: Any, next_carry: Any) -> None:
+    """Validate that next_carry matches init_carry in PyTree structure, shape, and dtype.
+
+    Raises:
+        CarryCanonicalizationError: On structure or leaf shape/dtype divergence.
+    """
+    init_treedef = jax.tree_util.tree_structure(init_carry)
+    next_treedef = jax.tree_util.tree_structure(next_carry)
+
+    if init_treedef != next_treedef:
+        raise CarryCanonicalizationError(
+            f"WhileCarry structure mismatch: init treedef {init_treedef} != "
+            f"body return treedef {next_treedef}"
+        )
+
+    init_leaves = jax.tree_util.tree_leaves(init_carry)
+    next_leaves = jax.tree_util.tree_leaves(next_carry)
+
+    for i, (in_leaf, out_leaf) in enumerate(zip(init_leaves, next_leaves, strict=True)):
+        if hasattr(in_leaf, "shape") and hasattr(out_leaf, "shape"):
+            if in_leaf.shape != out_leaf.shape:
+                raise CarryCanonicalizationError(
+                    f"WhileCarry leaf {i} shape mismatch: init shape {in_leaf.shape} != "
+                    f"returned shape {out_leaf.shape}"
+                )
+            if in_leaf.dtype != out_leaf.dtype:
+                raise CarryCanonicalizationError(
+                    f"WhileCarry leaf {i} dtype mismatch: init dtype {in_leaf.dtype} != "
+                    f"returned dtype {out_leaf.dtype}"
+                )
+
+
+__all__ = [
+    "CarryCanonicalizationError",
+    "CarrySpec",
+    "canonicalize_carry",
+    "validate_carry_transition",
+]

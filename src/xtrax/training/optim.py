@@ -2,11 +2,27 @@ from collections.abc import Callable
 from typing import Any
 
 import jax
-import optax
+
+try:
+    import optax
+except ImportError:
+    optax = None  # type: ignore
 
 from xtrax._renamed import Deprecated, deprecated_getattr
 
 PyTree = Any
+
+
+def require_optax() -> Any:
+    """Import optax or raise actionable ImportError pointing to xtrax[training]."""
+    try:
+        import optax
+
+        return optax
+    except ImportError as err:
+        raise ImportError(
+            "xtrax.training requires 'optax'. Install it with: pip install 'xtrax[training]'"
+        ) from err
 
 
 def no_bias_wd_mask(params: PyTree) -> PyTree:

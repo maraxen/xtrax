@@ -4,7 +4,7 @@ dynamic = [ "version",]
 description = "High-performance composable JAX library"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = [ "jax>=0.10.2,<0.12", "jaxlib>=0.10.2,<0.12", "jaxtyping>=0.3.3", "optax>=0.2.3", "orbax-checkpoint>=0.11.17", "numpy>=2.1",]
+dependencies = [ "jax>=0.10.2,<0.12", "jaxlib>=0.10.2,<0.12", "jaxtyping>=0.3.3", "numpy>=2.1",]
 license = "Apache-2.0"
 keywords = [ "jax", "pytree", "training", "distributed",]
 classifiers = [ "Development Status :: 4 - Beta", "Programming Language :: Python :: 3.13", "Intended Audience :: Science/Research", "License :: OSI Approved :: Apache Software License", "Typing :: Typed",]
@@ -30,6 +30,7 @@ docs = [ "sphinx>=7", "furo", "sphinx-autodoc-typehints", "myst-parser",]
 eda = [ "xtrax[eda]",]
 
 [project.optional-dependencies]
+training = [ "optax>=0.2.3", "orbax-checkpoint>=0.11.17",]
 # Floors here are the union of what this extra and the former
 # [dependency-groups].dev each asserted. That group carried TIGHTER floors on
 # pytest-cov, pytest-benchmark, ruff and ty; before #4969 both constraint sets
@@ -39,6 +40,7 @@ eda = [ "xtrax[eda]",]
 # versions, so a resolve free to pick an old ruff quietly weakens what the lint
 # gate enforces.
 dev = [
+ "xtrax[training]",
  "complexipy>=5.6.1",
  "pytest>=8.0",
  "pytest-asyncio>=0.23",
@@ -137,6 +139,18 @@ authoring-smoke = [ "outlines>=1.0", "transformers>=4.40", "torch>=2.0",]
 # uncapped alpha means an unrelated bathos release can turn the board red, and
 # this repo already treats that as debt (#3641 makes the same argument for jax).
 controller = [ "bathos>=0.13.0a7,<0.14",]
+all = [
+  "xtrax[training]",
+  "xtrax[dev]",
+  "xtrax[eda]",
+  "xtrax[cli]",
+  "xtrax[io]",
+  "xtrax[index]",
+  "xtrax[pack]",
+  "xtrax[data]",
+  "xtrax[export]",
+  "xtrax[plugin]",
+]
 
 [project.scripts]
 xtrax = "xtrax.cli:main"

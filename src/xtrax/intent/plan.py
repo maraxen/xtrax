@@ -188,6 +188,7 @@ class SiteDecision:
     primal_reason: str
     diff_reason: str
     warnings: tuple[str, ...] = ()
+    safety: str | None = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +214,7 @@ class Plan:
     context: Context
     decisions: tuple[SiteDecision, ...]
     warnings: tuple[str, ...] = ()
+    safety: str | None = None
 
     def by_key(self) -> Mapping[SiteKey, SiteDecision]:
         """Index decisions by site key.

@@ -10,15 +10,31 @@ through the legacy kwargs by earlier xtrax releases restore as before.
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import orbax.checkpoint as ocp
+try:
+    import orbax.checkpoint as ocp
+except ImportError:
+    ocp = None  # type: ignore
 
 if TYPE_CHECKING:
     from xtrax.training.types import ResumableState
 
 #: Name of the single PyTree item each checkpoint step holds (its subdirectory name).
 _ITEM = "state"
+
+
+def require_orbax() -> Any:
+    """Import orbax.checkpoint or raise actionable ImportError pointing to xtrax[training]."""
+    try:
+        import orbax.checkpoint as ocp_mod
+
+        return ocp_mod
+    except ImportError as err:
+        raise ImportError(
+            "xtrax.checkpoint requires 'orbax-checkpoint'. "
+            "Install it with: pip install 'xtrax[training]'"
+        ) from err
 
 
 def get_checkpoint_manager(
