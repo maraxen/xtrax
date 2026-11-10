@@ -68,11 +68,13 @@ def test_negative_control_verify_duplicate_different_content_raises(tmp_path):
     with pytest.raises(zc.CommitConflictError, match="different content") as exc:
         _commit(store, np.zeros(5), name="b", verify_duplicate=True)
     assert exc.value.stored_record == first.record
-    # The committed key is untouched and the staged group is gone.
+    # Both the committed key and the staged group are preserved into quarantine (#3117).
     found = zc.lookup(store, KEY, "d1")
-    assert isinstance(found, zc.Reuse)
-    assert found.record == first.record
+    assert isinstance(found, zc.Missing)
     assert not (zc.staging_root(store) / "w" / "b").exists()
+    assert (zc.quarantine_root(store) / "chunks").is_dir()
+    quarantined = list((zc.quarantine_root(store) / "chunks").iterdir())
+    assert len(quarantined) == 2
 
 
 def test_verify_duplicate_different_input_still_raises_as_before(tmp_path):

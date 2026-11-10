@@ -819,7 +819,7 @@ class ZarrStagingSink:
                 {"run_id": self._provenance["run_id"], "git_sha": self._provenance["git_sha"]}
             )
             try:
-                zc.write_staged_group(staged_dir, arrays, attrs)
+                zc.write_staged_group(staged_dir, arrays, attrs, chunks=self._spec.chunks)
             except Exception as e:
                 context = (
                     f"ZarrStagingSink.drain: failed staging arrays {sorted(arrays)} "

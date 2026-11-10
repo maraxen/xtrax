@@ -93,6 +93,7 @@ class SinkSpec:
     append: bool = False
     level_schemas: Mapping[int, Mapping[str, Any]] | None = None
     verify_duplicate: bool = False
+    chunks: tuple[int, ...] | Mapping[str, tuple[int, ...]] | None = None
 
     def __post_init__(self) -> None:
         # Plain-Python backstop: beartype/jaxtyping wrapping is test-env-only
