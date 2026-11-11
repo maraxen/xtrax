@@ -29,7 +29,10 @@ _YAML_BARE_KEY_RE = re.compile(r"^\$schema\s*:")
 # That is an external visualization format, not a second xtrax IR schema, so it is exempt --
 # but only in these files, and only on a line that names the Vega-Lite URL.
 VEGA_LITE_SCHEMA_URL = "https://vega.github.io/schema/vega-lite/"
-EXTERNAL_SCHEMA_FILES = (DEFAULT_SRC_DIR / "eda" / "spec.py",)
+EXTERNAL_SCHEMA_FILES = (
+    DEFAULT_SRC_DIR / "eda" / "spec.py",
+    DEFAULT_SRC_DIR / "eda" / "campaign" / "artifacts.py",
+)
 
 
 def _line_has_schema_marker(line: str) -> bool:

@@ -255,15 +255,16 @@ class ProbeRecord:
     # enforced in __post_init__.
     attribution_method: dict[str, str] | None = None
 
+    contract_version: str = CONTRACT_VERSION
+
     # Multi-replica & Bucketing Observability (#3196)
+    # Declared after contract_version so existing field positions are unchanged.
     # Annotated Any to allow __post_init__ to reject invalid types with ClaimValidityError
     # under beartype import hooks.
     num_replicas: Any = 1
     replica_id: Any = None
     bucket_index: Any = None
     bucket_capacity: Any = None
-
-    contract_version: str = CONTRACT_VERSION
 
     def __post_init__(self) -> None:
         if isinstance(self.stage, bool) or self.stage not in (0, 1, 2, 3):

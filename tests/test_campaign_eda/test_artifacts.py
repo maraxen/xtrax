@@ -1,15 +1,22 @@
 """Unit tests for Campaign EDA artifact export and visual renderers."""
 
 import json
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
+from xtrax.eda.campaign import runner, schema
 from xtrax.eda.campaign.artifacts import (
+    compile_static_svg,
     dumps_canonical_json,
+    export_campaign_eda,
     generate_library_composition_spec,
     render_airgapped_html_dashboard,
+    render_fallback_svg,
     sanitize_for_rfc8259,
 )
+from xtrax.eda.campaign.telemetry import parse_reuse_log
 
 
 def test_rfc8259_sanitization():
@@ -86,3 +93,63 @@ def test_airgapped_html_dashboard_dom_ids_and_script_defer():
 
     # Must contain debt #3300 seam banner
     assert "Pack Telemetry: not instrumented (debt #3300)" in html
+
+
+def test_render_fallback_svg_and_compile_fallback():
+    """Verify standalone SVG renderer across status colors and vl_convert fallback."""
+    values = [
+        {"condition": "A", "value": 1.2, "status": "COMMITTED"},
+        {"arm": "B", "diversity": 0.5, "status": "PARTIAL"},
+        {"cell_key": "C", "nll": 2.1, "status": "FAILED"},
+        {"duration_s": 0.8, "status": "MISSING"},
+        {"value": 0.3, "status": "OTHER"},
+    ]
+    svg = render_fallback_svg("Title", "Subtitle", values)
+    assert "<svg" in svg
+    assert "#16a34a" in svg
+    assert "#ea580c" in svg
+    assert "#dc2626" in svg
+    assert "#9ca3af" in svg
+    assert "#2563eb" in svg
+
+    with patch.dict("sys.modules", {"vl_convert": None}):
+        fallback = compile_static_svg({"title": "T", "description": "D"}, "panel", values)
+        assert "<svg" in fallback
+
+
+def test_sanitize_custom_object_and_reexports(tmp_path: Path):
+    """Verify sanitize_for_rfc8259 on custom objects/scalars and re-export modules."""
+
+    class Custom:
+        def __init__(self) -> None:
+            self.x = float("nan")
+
+    assert sanitize_for_rfc8259(Custom()) == {"x": None}
+    assert sanitize_for_rfc8259(complex(1, 2)) == "(1+2j)"
+    assert callable(runner.run_campaign_eda)
+    assert "BootstrapEstimate" in schema.__all__
+
+    # parse_reuse_log with valid, invalid, and missing JSONL
+    assert parse_reuse_log(None) == []
+    assert parse_reuse_log(tmp_path / "missing.jsonl") == []
+    log_file = tmp_path / "reuse.jsonl"
+    log_file.write_text('{"unit": "u1"}\nnot-json\n\n{"unit": "u2"}\n', encoding="utf-8")
+    assert parse_reuse_log(log_file) == [{"unit": "u1"}, {"unit": "u2"}]
+    assert parse_reuse_log(tmp_path) == []
+
+
+def test_export_campaign_eda_json_fallback(tmp_path: Path):
+    """Verify JSON table fallback when pyarrow is unavailable."""
+    with patch.dict("sys.modules", {"pyarrow": None, "pyarrow.parquet": None}):
+        artifacts = export_campaign_eda(
+            campaign_dir=tmp_path / "eda_out",
+            campaign_id="camp_fallback",
+            q1_data=[{"condition": "A", "diversity": 0.5}],
+            q2_data=[],
+            q3_data=[],
+            q4_coverage={"cells": [{"cell_key": "c1", "status": "COMMITTED"}], "banners": []},
+            q5_telemetry={"units": [{"manifest_row_hash": "h1", "duration_s": 1.0}]},
+        )
+    assert "tables/library_metrics.json" in artifacts
+    assert "tables/coverage_grid.json" in artifacts
+    assert "tables/run_telemetry.json" in artifacts
