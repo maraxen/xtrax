@@ -1,1 +1,0 @@
-- `xtrax.campaign`: implemented attempt-scoped staging paths (`<output>.attempt-<fence>`), output redirection in executor manifest rows, and lease-fence validation before promotion to protect against orphaned concurrent writes (#3338).

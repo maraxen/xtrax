@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- new entries: add a file under changelog.d/ -->
 
+## [0.4.1b8] - 2026-11-11
+
+### Added
+
+Verify `CarrySpec.transition` execution contract end-to-end through `BatchPlanner` and `axis_dispatch` for scan and while loops.
+
+Support context-driven numerical safety checking via `Context(safety=True)`, `SafetyContext`, and `check_numerical_safety` using JAX checkify.
+
+Re-build active `ShardingPlanner` with `ShardingPolicy` validating multi-device mesh placement, tuple mesh axes, and tensor divisibility.
+
+Support opt-in sparsity specification via `SparseSpec`, `AxisSpec.sparsity`, and `Context.sparsity`, with result-changing memory scaling in `BatchPlanner`.
+
+- `xtrax.data.zarr_commit`: added module exposing `write_staged_group` and `commit_key` with explicit `chunks` configuration and dual quarantine on duplicate content divergence (#3117).
+- `xtrax.eda.report`: added `render_report` with configurable `bundle_js: bool = True` for self-contained, offline-ready Vega-Lite HTML reports without external CDN dependencies (#3126).
+
+Support `symbolic_zeros=True` in VJP seams, primal+grad fusion in `Op.fused_primal_and_grad`, and 2D Pallas grid specs.
+
+Support dynamic scalar `n_steps`, carry-leaf canonicalization, and transition validation in `WhileCarry` and `WhileLoopIterator`.
+
+Add host-side `BucketDispatcher`, `vmap_any_cond` amortized batch conditioning, and `BatchedCapacityState` in `xtrax.tiling`.
+
+Add `num_replicas`, `replica_id`, `bucket_index` and `bucket_capacity` fields (validated in `__post_init__`) plus `to_dict`/`from_dict` to `ProbeRecord`; the new fields follow `contract_version`, so existing field positions are unchanged.
+
+- `scripts/assemble_changelog.py`: added `--check-new-modules` gate enforcing changelog fragment presence when new Python modules are introduced under `src/xtrax/` (#3265).
+- `xtrax.campaign` and `xtrax campaign plan|run|status|verify` (#267): a resumable work-item runner. `plan` expands a `CampaignSpec` TOML into a manifest of hashed rows; `run` executes a `--fn module:function` per row with the `local-seq`, `local-pool` or `slurm` executor. Each unit is a zarr group committed under a lease with a done marker and content digest; resume reuses a unit only when its marker and (by default) its digest match, and records the reuse in `reuse_log.jsonl`. `verify --deep` recomputes digests and quarantines bad units. A local `campaign run` writes one run-ledger row (kind `eval`, `context.verb = "campaign"`).
+- `xtrax campaign run --executor slurm` writes an array script for the pending rows and queues nothing. `--slurm-partition`, `--slurm-gpus` (default 0), `--slurm-time`, `--slurm-cpus`, `--slurm-mem`, `--slurm-job-name` and `--slurm-max-concurrent` set its resources; any of them with a local executor is refused (#3318). The script runs the xtrax CLI with the generating interpreter by absolute path (`python -P`, so the task's working directory is not importable), puts the `--fn` module's source root on `PYTHONPATH` when it lies outside that environment and its site directories, and exports the resolved, absolute run-ledger root, so array tasks work under `sbatch --export=NONE` and from any working directory. `SlurmArrayExecutor` bakes the same environment by default (`xtrax.campaign.executors.slurm.task_environment`); its `launcher`, `pythonpath`, `env` and `env_comments` arguments override it, it takes `mem`, and its `gpus` default is 0.
+- A manifest row's `output_locator` is bound to its `manifest_row_hash` (#3308). Planner rows keep the default locator `<campaign_id>/<row_hash>.zarr` and an unchanged hash; a row built with any other locator hashes the locator too. Loading refuses a row whose locator was edited, so a manifest that points one row at another row's store fails instead of quarantining that store. `input_hash` never covers the locator. A relative locator that resolves outside the output directory is refused; use an absolute locator for a store elsewhere.
+- Campaign leases carry a fencing token (#3312). Each acquire and steal raises a per-unit `fence` number, recorded in the lock and in a `<unit>.fence` high-water file. Before every destructive step (quarantine, store promotion, marker write, staging move, abort cleanup, `.commit`/`.lock` removal, steal, heartbeat renewal, dead-worker reclaim) the worker re-checks that the lock still carries its owner, epoch and fence, that no later fence exists, and that its own boot-clock lease deadline (advanced by each heartbeat renewal) has not passed. A worker that stalls past its lease therefore cannot destroy or overwrite the output, marker, lock or commit token of the worker that stole it. Done markers record `lease_fence` and `owner_token`. Locks and markers written before this change are still accepted; running old and new xtrax workers on one campaign at the same time is not supported.
+- `xtrax-optimizing` skill: new `references/tier3-pallas-megakernels-and-ragged-buckets.md`, a Tier-3 playbook for Pallas megakernels, ragged-bucket ghost compaction and multi-GPU execution (MK-01..MK-35).
+- `xtrax.testing.verify_triton_lowering` verifies offline CUDA Triton lowering on CPU using an abstract device mesh without physical GPU hardware (#3197).
+- `xtrax-consumer-adoption` skill: the procedure an agent swarm follows to move a dependent project onto `xtrax.pack`, `xtrax.eda` or campaign tooling, from spec through adversarial review, PR and review cycles. It records which campaign code ships in the wheel and what bio projects do with py2Dmol.
+
+### Changed
+
+Decouple training dependencies (`optax`, `orbax-checkpoint`) into an optional extra `[project.optional-dependencies].training` while preserving composite `dev` and `all` extras.
+
+### Fixed
+
+- `scripts/git-hooks/pretool-git-reset-guard.sh`: pre-tool hook intercepting destructive `git reset --hard` commands, stashing working tree state with `-u` to prevent orchestrator and review checkout clobbers (#2962).
+- `scripts/generate_plugin_snapshot.py`: restored deterministic plugin snapshot generator using `cisternal.cli.app` to eliminate Unicode escaping drift and ensure byte-level freshness (#3144).
+- `xtrax.campaign`: implemented attempt-scoped staging paths (`<output>.attempt-<fence>`), output redirection in executor manifest rows, and lease-fence validation before promotion to protect against orphaned concurrent writes (#3338).
+
 ## [0.4.1b7] - 2026-11-04
 
 This section was assembled from changelog fragments, and #260/#261 (unit index) and #256-#258 (writer liveness) had none; their two entries under `### Added` were added after the release was published, so the 0.4.1b7 sdist's CHANGELOG lacks them.
