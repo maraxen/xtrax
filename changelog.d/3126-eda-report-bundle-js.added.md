@@ -1,1 +1,0 @@
-- `xtrax.eda.report`: added `render_report` with configurable `bundle_js: bool = True` for self-contained, offline-ready Vega-Lite HTML reports without external CDN dependencies (#3126).
