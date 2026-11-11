@@ -1,0 +1,1 @@
+- `scripts/assemble_changelog.py`: added `--check-new-modules` gate enforcing changelog fragment presence when new Python modules are introduced under `src/xtrax/` (#3265).

@@ -203,6 +203,110 @@ def assemble(text: str, fragments: list[Fragment], version: str, date: str) -> s
     return text[:start] + new_unreleased + "\n".join(section) + "\n" + text[end:]
 
 
+def check_new_modules(
+    repo_root: Path = ROOT,
+    base_ref: str = "origin/main",
+    fragments_dir: Path | None = None,
+) -> list[str]:
+    """Verify that if new Python modules are added under src/xtrax/, a fragment is present."""
+    import subprocess
+
+    problems: list[str] = []
+    diff_output: str | None = None
+    resolved_base: str | None = None
+
+    # Attempt to resolve git diff against base_ref, then fallback to HEAD~1
+    for candidate_base in (base_ref, "HEAD~1"):
+        try:
+            diff_output = subprocess.check_output(
+                [
+                    "git",
+                    "diff",
+                    "--name-only",
+                    "--diff-filter=A",
+                    f"{candidate_base}...HEAD",
+                    "--",
+                    "src/xtrax/",
+                ],
+                cwd=repo_root,
+                text=True,
+                stderr=subprocess.PIPE,
+            )
+            resolved_base = candidate_base
+            break
+        except subprocess.CalledProcessError:
+            continue
+
+    if diff_output is None or resolved_base is None:
+        raise RuntimeError(
+            f"Failed to determine git diff against comparison base "
+            f"(tried '{base_ref}' and 'HEAD~1'). "
+            "In CI, ensure git checkout has sufficient depth "
+            "(e.g. actions/checkout with 'fetch-depth: 0' "
+            "or fetch origin/main). Refusing to silently fail open."
+        )
+
+    # Restrict __init__.py exclusion strictly to root src/xtrax/__init__.py;
+    # new subpackages require changelogs
+    new_modules = [
+        line.strip()
+        for line in diff_output.splitlines()
+        if line.strip().endswith(".py") and line.strip() != "src/xtrax/__init__.py"
+    ]
+
+    if not new_modules:
+        return []
+
+    # Check for added changelog fragments in this branch
+    try:
+        if fragments_dir is None or (
+            fragments_dir == FRAGMENTS_DIR and repo_root.resolve() != ROOT.resolve()
+        ):
+            resolved_frag_dir = repo_root / "changelog.d"
+        else:
+            resolved_frag_dir = (
+                repo_root / fragments_dir if not fragments_dir.is_absolute() else fragments_dir
+            )
+
+        try:
+            rel_frag_dir = str(resolved_frag_dir.resolve().relative_to(repo_root.resolve()))
+        except ValueError:
+            rel_frag_dir = str(resolved_frag_dir)
+        if not rel_frag_dir.endswith("/"):
+            rel_frag_dir = f"{rel_frag_dir}/"
+
+        frag_output = subprocess.check_output(
+            [
+                "git",
+                "diff",
+                "--name-only",
+                "--diff-filter=A",
+                f"{resolved_base}...HEAD",
+                "--",
+                rel_frag_dir,
+            ],
+            cwd=repo_root,
+            text=True,
+            stderr=subprocess.PIPE,
+        )
+        added_fragments = [
+            f for f in frag_output.splitlines() if f.endswith(".md") and not f.endswith("README.md")
+        ]
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Failed to query git diff for changelog fragments against {resolved_base}: {exc}"
+        ) from exc
+
+    if not added_fragments:
+        problems.append(
+            f"Pull request adds new module(s) under src/xtrax/ ({', '.join(new_modules)}), "
+            "but no changelog fragment was added under changelog.d/. "
+            "Please create changelog.d/<slug>.added.md documenting the new module."
+        )
+
+    return problems
+
+
 def run_assemble(
     changelog: Path, fragments_dir: Path, version: str, date: str
 ) -> tuple[str, list[Fragment]]:
@@ -219,6 +323,22 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--check", action="store_true", help="validate fragments only")
+    parser.add_argument(
+        "--check-new-modules",
+        action="store_true",
+        help="verify changelog fragments exist for newly added modules under src/xtrax/",
+    )
+    parser.add_argument(
+        "--base-ref",
+        default="origin/main",
+        help="git base ref to compare against (default: origin/main)",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="repository root path (default: current working directory or repo root)",
+    )
     parser.add_argument("--version", help="release version for the new section")
     parser.add_argument("--date", help="release date, YYYY-MM-DD")
     parser.add_argument("--changelog", type=Path, default=CHANGELOG)
@@ -228,6 +348,25 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(message)s"
     )
+
+    repo_root = args.repo_root or (Path.cwd() if (Path.cwd() / ".git").exists() else ROOT)
+
+    if args.check_new_modules:
+        try:
+            problems = check_new_modules(
+                repo_root=repo_root,
+                base_ref=args.base_ref,
+                fragments_dir=args.fragments_dir,
+            )
+        except RuntimeError as exc:
+            logger.error("%s", exc)
+            return 1
+        for problem in problems:
+            logger.error("%s", problem)
+        if problems:
+            return 1
+        logger.info("new modules changelog check OK")
+        return 0
 
     if args.check:
         if args.version or args.date:
@@ -240,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("changelog fragments OK")
         return 0
     if not (args.version and args.date):
-        parser.error("give --check, or both --version and --date")
+        parser.error("give --check, --check-new-modules, or both --version and --date")
     try:
         _, fragments = run_assemble(args.changelog, args.fragments_dir, args.version, args.date)
     except ChangelogError as exc:

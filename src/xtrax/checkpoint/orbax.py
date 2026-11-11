@@ -10,22 +10,45 @@ through the legacy kwargs by earlier xtrax releases restore as before.
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import orbax.checkpoint as ocp
+try:
+    import orbax.checkpoint as ocp
+
+    CheckpointManager = ocp.CheckpointManager
+    PreservationPolicy = ocp.checkpoint_managers.PreservationPolicy
+except ImportError:
+    ocp = None  # type: ignore
+    CheckpointManager = Any
+    PreservationPolicy = Any
 
 if TYPE_CHECKING:
     from xtrax.training.types import ResumableState
+else:
+    ResumableState = Any
 
 #: Name of the single PyTree item each checkpoint step holds (its subdirectory name).
 _ITEM = "state"
+
+
+def require_orbax() -> Any:
+    """Import orbax.checkpoint or raise actionable ImportError pointing to xtrax[training]."""
+    try:
+        import orbax.checkpoint as ocp_mod
+
+        return ocp_mod
+    except ImportError as err:
+        raise ImportError(
+            "xtrax.checkpoint requires 'orbax-checkpoint'. "
+            "Install it with: pip install 'xtrax[training]'"
+        ) from err
 
 
 def get_checkpoint_manager(
     directory: str | Path,
     max_to_keep: int | None = 5,
     keep_period: int | None = None,
-) -> ocp.CheckpointManager:
+) -> CheckpointManager:
     """Create and return a CheckpointManager for the given directory.
 
     Args:
@@ -38,6 +61,7 @@ def get_checkpoint_manager(
         keeps the latest ``max_to_keep`` steps plus every multiple of
         ``keep_period`` (their union), matching orbax's legacy semantics.
     """
+    ocp_mod = require_orbax()
     directory = Path(directory).resolve()
     # Resolve to absolute: orbax CheckpointManager rejects relative paths at
     # save/load time ("Checkpoint path should be absolute"), and both CLI verbs
@@ -45,24 +69,22 @@ def get_checkpoint_manager(
     # Resolving here fixes save AND resume without changing the manifest's
     # durable relative-path contract.
 
-    policies: list[ocp.checkpoint_managers.PreservationPolicy] = [
-        ocp.checkpoint_managers.LatestN(n=max_to_keep)
-    ]
+    policies: list[PreservationPolicy] = [ocp_mod.checkpoint_managers.LatestN(n=max_to_keep)]
     if keep_period is not None:
-        policies.append(ocp.checkpoint_managers.EveryNSteps(interval_steps=keep_period))
-    options = ocp.CheckpointManagerOptions(
-        preservation_policy=ocp.checkpoint_managers.AnyPreservationPolicy(policies=policies),
+        policies.append(ocp_mod.checkpoint_managers.EveryNSteps(interval_steps=keep_period))
+    options = ocp_mod.CheckpointManagerOptions(
+        preservation_policy=ocp_mod.checkpoint_managers.AnyPreservationPolicy(policies=policies),
     )
 
-    registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
-    registry.add(_ITEM, ocp.args.PyTreeSave, ocp.PyTreeCheckpointHandler())
-    registry.add(_ITEM, ocp.args.PyTreeRestore, ocp.PyTreeCheckpointHandler())
-    return ocp.CheckpointManager(directory, options=options, handler_registry=registry)
+    registry = ocp_mod.handlers.DefaultCheckpointHandlerRegistry()
+    registry.add(_ITEM, ocp_mod.args.PyTreeSave, ocp_mod.PyTreeCheckpointHandler())
+    registry.add(_ITEM, ocp_mod.args.PyTreeRestore, ocp_mod.PyTreeCheckpointHandler())
+    return ocp_mod.CheckpointManager(directory, options=options, handler_registry=registry)
 
 
 def save_checkpoint(
-    manager: ocp.CheckpointManager,
-    state: "ResumableState",
+    manager: CheckpointManager,
+    state: ResumableState,
     step: int | None = None,
 ) -> None:
     """Save a checkpoint to the manager.
@@ -76,21 +98,22 @@ def save_checkpoint(
         This function must be called outside JAX-traced contexts.
         Calls manager.wait_until_finished() after saving.
     """
+    ocp_mod = require_orbax()
     # Extract step: use provided step or convert state.step to int
     step_int = step if step is not None else int(state.step)
 
     # Save the checkpoint
-    manager.save(step_int, args=ocp.args.Composite(**{_ITEM: ocp.args.PyTreeSave(state)}))
+    manager.save(step_int, args=ocp_mod.args.Composite(**{_ITEM: ocp_mod.args.PyTreeSave(state)}))
 
     # Wait for save to complete
     manager.wait_until_finished()
 
 
 def load_checkpoint(
-    manager: ocp.CheckpointManager,
-    state_template: "ResumableState",
+    manager: CheckpointManager,
+    state_template: ResumableState,
     step: int | None = None,
-) -> "ResumableState":
+) -> ResumableState:
     """Load a checkpoint from the manager.
 
     Args:
@@ -105,6 +128,7 @@ def load_checkpoint(
     Raises:
         FileNotFoundError: If checkpoint doesn't exist or directory is empty.
     """
+    ocp_mod = require_orbax()
     # Determine which step to load
     if step is None:
         step = manager.latest_step()
@@ -113,6 +137,6 @@ def load_checkpoint(
 
     # Restore the checkpoint
     loaded = manager.restore(
-        step, args=ocp.args.Composite(**{_ITEM: ocp.args.PyTreeRestore(state_template)})
+        step, args=ocp_mod.args.Composite(**{_ITEM: ocp_mod.args.PyTreeRestore(state_template)})
     )
     return loaded[_ITEM]

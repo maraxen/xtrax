@@ -7,13 +7,13 @@
   "small_sample_guard_active": true,
   "control_7_pack_telemetry_seam": true,
   "demo_units_committed": 18,
-  "demo_runtime_seconds": 0.7511050701141357,
+  "demo_runtime_seconds": 1.4736287593841553,
   "q1_diversity_calculated": true,
   "q2_scores_calculated": true,
   "q3_honest_uncertainty_calculated": true,
   "q4_coverage_reconciled": true,
   "q5_secondary_telemetry_rendered": true,
-  "timestamp": "2026-11-09T21:18:05Z",
+  "timestamp": "2026-11-10T19:25:30Z",
   "git_sha": "feat/eda-redesign",
   "controls_summary": {
     "control_1_positive": {
@@ -80,16 +80,16 @@
         "compressed_bytes": 127,
         "compression_ratio": 47.2441,
         "member_count": 1,
-        "pack_wall_ms": 8.93637677654624,
+        "pack_wall_ms": 10.747938882559538,
         "raw_bytes": 6000,
         "schema": "xtrax.pack_telemetry/1"
       },
-      "campaign_banner": "Pack Telemetry: instrumented (1 units, 47.24x compression, mean 8.9ms, zstandard)"
+      "campaign_banner": "Pack Telemetry: instrumented (1 units, 47.24x compression, mean 10.7ms, zstandard)"
     }
   },
   "demo_summary": {
     "demo_units_committed": 18,
-    "demo_runtime_seconds": 0.7511050701141357,
+    "demo_runtime_seconds": 1.4736287593841553,
     "q1_diversity_calculated": true,
     "q2_scores_calculated": true,
     "q3_honest_uncertainty_calculated": true,
@@ -107,10 +107,10 @@
       "16": 1.1545302792187424
     },
     "pareto_points_count": 5,
-    "pack_telemetry_seam_banner": "Pack Telemetry: instrumented (9 units, 4.76x compression, mean 9.0ms, zstandard)",
+    "pack_telemetry_seam_banner": "Pack Telemetry: instrumented (9 units, 4.76x compression, mean 11.5ms, zstandard)",
     "persisted_eda_dir": "/home/marielle/projects/xtrax/outputs/demo_ubq_campaign/eda"
   },
   "timing": {
-    "total_benchmark_seconds": 0.8424649238586426
+    "total_benchmark_seconds": 1.57895827293396
   }
 }

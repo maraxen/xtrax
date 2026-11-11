@@ -103,19 +103,21 @@ class TestRenderRouting:
 
 
 class TestBundleJsRejected:
-    """Finding: bundle_js was accepted and silently ignored."""
+    """Finding: bundle_js is supported for vega html, but rejected for matplotlib / non-html."""
 
-    def test_render_rejects_bundle_js(self, two_axis_plan):
-        with pytest.raises(NotImplementedError, match="bundle_js"):
-            render(two_axis_plan, fmt="html", backend="vega", bundle_js=True)
+    def test_render_bundle_js_supported_on_vega(self, two_axis_plan):
+        pytest.importorskip("vl_convert")
+        res = render(two_axis_plan, fmt="html", backend="vega", bundle_js=True)
+        assert isinstance(res, str)
+        assert "cdn.jsdelivr.net" not in res
 
     def test_matplotlib_rejects_bundle_js(self, two_axis_plan):
         with pytest.raises(NotImplementedError, match="bundle_js"):
             render(two_axis_plan, fmt="svg", backend="matplotlib", bundle_js=True)
 
-    def test_backend_rejects_bundle_js(self):
+    def test_backend_rejects_bundle_js_for_non_html(self):
         with pytest.raises(NotImplementedError, match="bundle_js"):
-            VegaBackend().render_spec({}, fmt="html", stats=_stats([]), options={"bundle_js": True})
+            VegaBackend().render_spec({}, fmt="svg", stats=_stats([]), options={"bundle_js": True})
 
 
 class TestAggregateOverflow:

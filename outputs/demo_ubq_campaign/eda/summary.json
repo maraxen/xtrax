@@ -768,13 +768,13 @@
         "zstandard"
       ],
       "instrumented_units": 9,
-      "mean_pack_wall_ms": 9.045331428448359,
+      "mean_pack_wall_ms": 11.47962977281875,
       "overall_compression_ratio": 4.7618,
       "status": "instrumented",
       "total_compressed_bytes": 9919,
       "total_raw_bytes": 47232
     },
-    "pack_telemetry_banner": "Pack Telemetry: instrumented (9 units, 4.76x compression, mean 9.0ms, zstandard)",
+    "pack_telemetry_banner": "Pack Telemetry: instrumented (9 units, 4.76x compression, mean 11.5ms, zstandard)",
     "pack_telemetry_status": "instrumented",
     "packed_units": 9,
     "reuse_log_entries": [],
@@ -799,7 +799,7 @@
           "compressed_bytes": 927,
           "compression_ratio": 5.6613,
           "member_count": 2,
-          "pack_wall_ms": 8.428200148046017,
+          "pack_wall_ms": 12.727295979857445,
           "raw_bytes": 5248,
           "schema": "xtrax.pack_telemetry/1"
         },
@@ -824,7 +824,7 @@
           "compressed_bytes": 1131,
           "compression_ratio": 4.6401,
           "member_count": 2,
-          "pack_wall_ms": 8.800365962088108,
+          "pack_wall_ms": 8.570006117224693,
           "raw_bytes": 5248,
           "schema": "xtrax.pack_telemetry/1"
         },
@@ -849,7 +849,7 @@
           "compressed_bytes": 1125,
           "compression_ratio": 4.6649,
           "member_count": 2,
-          "pack_wall_ms": 7.784602697938681,
+          "pack_wall_ms": 16.614386346191168,
           "raw_bytes": 5248,
           "schema": "xtrax.pack_telemetry/1"
         },
@@ -874,7 +874,7 @@
           "compressed_bytes": 1210,
           "compression_ratio": 4.3372,
           "member_count": 2,
-          "pack_wall_ms": 8.428493980318308,
+          "pack_wall_ms": 9.100919123739004,
           "raw_bytes": 5248,
           "schema": "xtrax.pack_telemetry/1"
         },
@@ -899,7 +899,7 @@
           "compressed_bytes": 888,
           "compression_ratio": 5.9099,
           "member_count": 2,
-          "pack_wall_ms": 8.455559611320496,
+          "pack_wall_ms": 16.25704485923052,
           "raw_bytes": 5248,
           "schema": "xtrax.pack_telemetry/1"
         },
@@ -924,7 +924,7 @@
           "compressed_bytes": 874,
           "compression_ratio": 6.0046,
           "member_count": 2,
-          "pack_wall_ms": 10.803263634443283,
+          "pack_wall_ms": 13.444968033581972,
           "raw_bytes": 5248,
           "schema": "xtrax.pack_telemetry/1"
         },
@@ -949,7 +949,7 @@
           "compressed_bytes": 1137,
           "compression_ratio": 4.6157,
           "member_count": 2,
-          "pack_wall_ms": 8.71918024495244,
+          "pack_wall_ms": 9.160054847598076,
           "raw_bytes": 5248,
           "schema": "xtrax.pack_telemetry/1"
         },
@@ -974,7 +974,7 @@
           "compressed_bytes": 1323,
           "compression_ratio": 3.9667,
           "member_count": 2,
-          "pack_wall_ms": 9.532674681395292,
+          "pack_wall_ms": 8.478777948766947,
           "raw_bytes": 5248,
           "schema": "xtrax.pack_telemetry/1"
         },
@@ -999,7 +999,7 @@
           "compressed_bytes": 1304,
           "compression_ratio": 4.0245,
           "member_count": 2,
-          "pack_wall_ms": 10.455641895532608,
+          "pack_wall_ms": 8.963214699178934,
           "raw_bytes": 5248,
           "schema": "xtrax.pack_telemetry/1"
         },

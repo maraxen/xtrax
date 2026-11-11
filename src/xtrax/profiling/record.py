@@ -257,6 +257,15 @@ class ProbeRecord:
 
     contract_version: str = CONTRACT_VERSION
 
+    # Multi-replica & Bucketing Observability (#3196)
+    # Declared after contract_version so existing field positions are unchanged.
+    # Annotated Any to allow __post_init__ to reject invalid types with ClaimValidityError
+    # under beartype import hooks.
+    num_replicas: Any = 1
+    replica_id: Any = None
+    bucket_index: Any = None
+    bucket_capacity: Any = None
+
     def __post_init__(self) -> None:
         if isinstance(self.stage, bool) or self.stage not in (0, 1, 2, 3):
             raise ClaimValidityError(f"stage must be in {{0,1,2,3}}, got {self.stage!r}")
@@ -353,6 +362,61 @@ class ProbeRecord:
                     f"attribution_method values must be 'named_scope' or "
                     f"'op_name', got {sorted(bad)}"
                 )
+
+        # Multi-replica & Bucketing invariants (#3196)
+        if (
+            isinstance(self.num_replicas, bool)
+            or not isinstance(self.num_replicas, int)
+            or self.num_replicas < 1
+        ):
+            raise ClaimValidityError(f"num_replicas must be int >= 1, got {self.num_replicas!r}")
+
+        if self.replica_id is not None:
+            if isinstance(self.replica_id, bool) or not isinstance(self.replica_id, int):
+                raise ClaimValidityError(f"replica_id must be int or None, got {self.replica_id!r}")
+            if not (0 <= self.replica_id < self.num_replicas):
+                raise ClaimValidityError(
+                    f"replica_id must satisfy 0 <= replica_id < num_replicas "
+                    f"({self.num_replicas}), got {self.replica_id}"
+                )
+            if self.num_replicas == 1 and self.replica_id not in (None, 0):
+                raise ClaimValidityError(
+                    f"replica_id must be None or 0 when num_replicas == 1, got {self.replica_id}"
+                )
+
+        if self.bucket_index is not None:
+            if (
+                isinstance(self.bucket_index, bool)
+                or not isinstance(self.bucket_index, int)
+                or self.bucket_index < 0
+            ):
+                raise ClaimValidityError(
+                    f"bucket_index must be int >= 0, got {self.bucket_index!r}"
+                )
+
+        if self.bucket_capacity is not None:
+            if (
+                isinstance(self.bucket_capacity, bool)
+                or not isinstance(self.bucket_capacity, int)
+                or self.bucket_capacity < 1
+            ):
+                raise ClaimValidityError(
+                    f"bucket_capacity must be int >= 1, got {self.bucket_capacity!r}"
+                )
+
+        if self.bucket_index is not None and self.bucket_capacity is not None:
+            if self.bucket_index > self.bucket_capacity:
+                raise ClaimValidityError(
+                    f"bucket_index ({self.bucket_index}) exceeds "
+                    f"bucket_capacity ({self.bucket_capacity})"
+                )
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ProbeRecord":
+        return cls.from_json(json.dumps(d))
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=2, sort_keys=True)

@@ -6,7 +6,7 @@ CORE exports (stable, always available):
     BUCKET_LADDER, valid_span, select_rung, trim_axis, pad_axis
     WhileCarry, StaticWhile, WhileBodyFn, WhileCondFn, fixed_step_count_cond
     make_axis_dispatch, axis_dispatch, DispatchRejected
-    CarrySpec, CarryShape
+    CarrySpec, CarryShape, DedupSpec
     MemoryBudget, BudgetInfeasibleError, device_memory_budget, lowered_memory_estimate,
     estimate_memory_theoretical, plan_axis
     VmapIterator, ChunkedMapIterator, JaxScanIterator, WhileLoopIterator,
@@ -15,7 +15,7 @@ CORE exports (stable, always available):
 
 OPTIONAL (dedup/gather machinery — import from submodules):
     xtrax.tiling.strategy: DedupGather, DedupFn, GatherFn
-    xtrax.tiling.dedup:    DedupSpec, get_k_bucket
+    xtrax.tiling.dedup:    get_k_bucket
 """
 
 from typing import TYPE_CHECKING, Any
@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 from xtrax.tiling._plan_wrapper import _BatchPlanWrapper
 from xtrax.tiling.bucket import (
     BUCKET_LADDER,
+    BatchedCapacityState,
+    BucketDispatcher,
     bucketize,
     pad_axis,
     select_bucket,
@@ -31,14 +33,26 @@ from xtrax.tiling.bucket import (
     valid_span,
 )
 from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
-from xtrax.tiling.carry import CarrySpec
+from xtrax.tiling.carry import (
+    CarryCanonicalizationError,
+    CarrySpec,
+    canonicalize_carry,
+    validate_carry_transition,
+)
 from xtrax.tiling.carry_shape import CarryShape
-from xtrax.tiling.dispatch import DispatchRejected, axis_dispatch, make_axis_dispatch
+from xtrax.tiling.dedup import DedupSpec
+from xtrax.tiling.dispatch import (
+    DispatchRejected,
+    axis_dispatch,
+    make_axis_dispatch,
+    vmap_any_cond,
+)
 from xtrax.tiling.estimators import (
     device_memory_budget,
     estimate_memory_theoretical,
     lowered_memory_estimate,
 )
+from xtrax.tiling.grid import make_2d_grid_specs
 from xtrax.tiling.plan import (
     AxisDecision,
     AxisSpec,
@@ -47,6 +61,7 @@ from xtrax.tiling.plan import (
     declare_varying_inputs,
     plan_axis,
 )
+from xtrax.tiling.sparse_spec import SparseSpec
 from xtrax.tiling.strategy import (
     Bucket,
     ChunkedMap,
@@ -65,11 +80,15 @@ __all__ = [
     "AxisDecision",
     "BatchPlan",
     "BatchPlanner",
+    "SparseSpec",
     "declare_varying_inputs",
     "Vmap",
     "ChunkedMap",
     "Scan",
     "Bucket",
+    "BucketDispatcher",
+    "BatchedCapacityState",
+    "vmap_any_cond",
     "BUCKET_LADDER",
     "select_bucket",
     "bucketize",
@@ -87,11 +106,16 @@ __all__ = [
     "axis_dispatch",
     "DispatchRejected",
     "CarrySpec",
+    "CarryCanonicalizationError",
+    "canonicalize_carry",
+    "validate_carry_transition",
     "CarryShape",
+    "DedupSpec",
     "MemoryBudget",
     "BudgetInfeasibleError",
     "device_memory_budget",
     "lowered_memory_estimate",
+    "make_2d_grid_specs",
     "estimate_memory_theoretical",
     "plan_axis",
     "VmapIterator",

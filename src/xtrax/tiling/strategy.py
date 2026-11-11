@@ -1,11 +1,11 @@
 """AxisStrategy sealed union and variants for composable tiling strategies."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 import jax
+import jax.numpy as jnp
+from jaxtyping import Array, Integer
 
 
 @runtime_checkable
@@ -151,16 +151,19 @@ class StaticWhile:
     length: int
 
 
-def fixed_step_count_cond(n_steps: int) -> WhileCondFn:
-    """cond=fixed_step_count_cond(200) for `run exactly 200 steps`.
+def fixed_step_count_cond(n_steps: int | Integer[Array, "..."] | Any) -> WhileCondFn:
+    """Continuation predicate for running exactly n_steps iterations.
 
-    Assumes the carry is a 2-tuple (step_i, state) or exposes a `.step_i`
-    field -- see WhileLoopIterator's carry-shape contract.
+    Accepts either a static Python integer or a dynamic JAX scalar array/tracer.
+    Assumes carry is a tuple where element 0 is step_i, or carry exposes a .step_i field.
     """
+    scalar_steps = jnp.squeeze(n_steps) if hasattr(n_steps, "shape") else n_steps
 
     def _cond(carry: Any) -> Any:
         step_i = carry[0] if isinstance(carry, tuple) else carry.step_i
-        return step_i < n_steps
+        if not hasattr(step_i, "shape") and not hasattr(scalar_steps, "shape"):
+            return step_i < scalar_steps
+        return jnp.less(step_i, scalar_steps)
 
     return _cond
 

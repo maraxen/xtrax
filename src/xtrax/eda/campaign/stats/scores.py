@@ -5,8 +5,6 @@ Includes numerically stable Best-of-N order statistics ratio recurrence avoiding
 overflow (BLK-03), bounded candidate grid (n <= N), and 2D Pareto non-dominated sorting (MIN-02).
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Sequence
 

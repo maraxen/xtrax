@@ -4,8 +4,6 @@ Provides core domain plugin interfaces, registry management, schema validation
 result structures, and builtin reference plugins.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any
 

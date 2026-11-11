@@ -43,6 +43,13 @@ def render(*args, **kwargs):
     return _render(*args, **kwargs)
 
 
+def render_report(*args, **kwargs):
+    """Render an interactive HTML report for a plan with bundled JavaScript by default (#3126)."""
+    from xtrax.eda.report import render_report as _render_report
+
+    return _render_report(*args, **kwargs)
+
+
 def plan_to_dataframe(*args, **kwargs):
     """Convert PlanStatsDict to DataFrame.
 
@@ -59,6 +66,7 @@ __all__ = [
     "analyze_bucket",
     "explain_plan",
     "render",
+    "render_report",
     "plan_to_dataframe",
     "generate_vega_spec",
     "export_canonical_json",

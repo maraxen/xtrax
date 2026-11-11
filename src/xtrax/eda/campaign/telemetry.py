@@ -5,8 +5,6 @@ Surfaces unit compute wall-time distributions, reuse log audit trails, tiling pl
 and explicitly banners uninstrumented pack telemetry seams (debt #3300).
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from collections.abc import Sequence

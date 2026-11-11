@@ -659,6 +659,9 @@ def _plan(
     )
     if diff_available and reason:
         plan = _annotate_partial_diff(plan, reason)
+    if getattr(ctx, "safety", False):
+        decisions = tuple(replace(d, safety="checkified") for d in plan.decisions)
+        plan = replace(plan, decisions=decisions, safety="checkified")
     return plan, records
 
 
@@ -722,6 +725,28 @@ def _execute(
                 constraint="site sequence differs",
             )
         return out
+
+    if getattr(ctx, "safety", False):
+        import jax.experimental.checkify as checkify
+
+        errors = frozenset()
+        safety_checks = getattr(ctx, "safety_checks", ("nan", "div"))
+        if "nan" in safety_checks:
+            errors |= checkify.nan_checks
+        if "div" in safety_checks:
+            errors |= checkify.div_checks
+        if "inf" in safety_checks:
+            errors |= checkify.nan_checks | checkify.div_checks
+
+        checked_wrapper = checkify.checkify(wrapper, errors=errors)
+        jitted_checked = jax.jit(checked_wrapper)
+
+        def safe_jitted(*args: Any, **kwargs: Any) -> Any:
+            err, result = jitted_checked(*args, **kwargs)
+            err.throw()
+            return result
+
+        return safe_jitted
 
     return jax.jit(wrapper)
 

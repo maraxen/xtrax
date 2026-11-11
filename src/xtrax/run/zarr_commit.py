@@ -276,8 +276,32 @@ def _compute_record_digest(d: dict[str, Any]) -> str:
     return canonical_digest(filtered)
 
 
+def _resolve_array_chunks(
+    chunks: tuple[int, ...] | Mapping[str, tuple[int, ...]] | None,
+    name: str,
+    arr_shape: tuple[int, ...],
+    arr_ndim: int,
+) -> tuple[int, ...]:
+    if chunks is None:
+        return tuple(max(d, 1) for d in arr_shape)
+    if isinstance(chunks, tuple):
+        if len(chunks) != arr_ndim:
+            msg = f"Chunk shape {chunks} rank does not match array {name!r} rank {arr_ndim}"
+            raise ValueError(msg)
+        return tuple(int(x) for x in chunks)
+    if isinstance(chunks, Mapping):
+        if name in chunks:
+            return tuple(int(x) for x in chunks[name])
+        return tuple(max(d, 1) for d in arr_shape)
+    msg = f"Invalid chunks parameter of type {type(chunks).__name__}"
+    raise TypeError(msg)
+
+
 def write_staged_group(
-    staged_dir: Path, arrays: Mapping[str, Any], attrs: Mapping[str, Any] | None = None
+    staged_dir: Path,
+    arrays: Mapping[str, Any],
+    attrs: Mapping[str, Any] | None = None,
+    chunks: tuple[int, ...] | Mapping[str, tuple[int, ...]] | None = None,
 ) -> None:
     """Write arrays and attrs to a staged zarr group.
 
@@ -285,6 +309,8 @@ def write_staged_group(
         staged_dir: Path to the staging directory (will be created as a new zarr root).
         arrays: Named arrays to write.
         attrs: Optional attrs dict to stamp on the group.
+        chunks: Optional chunk shape tuple or mapping from array name to chunk tuple.
+            When None, defaults to full array shape (tuple(max(d, 1) for d in arr.shape)).
     """
     try:
         import zarr
@@ -299,11 +325,13 @@ def write_staged_group(
 
     for name, array in arrays.items():
         arr = np.asarray(array)
+        arr_chunks = _resolve_array_chunks(chunks, name, arr.shape, arr.ndim)
+
         group.create_array(
             name=name,
             shape=arr.shape,
             dtype=arr.dtype,
-            chunks=tuple(max(d, 1) for d in arr.shape),
+            chunks=arr_chunks,
         )
         # Ellipsis indexing works for 0-d, multi-d, and everything else.
         zarr_array = group[name]
@@ -327,6 +355,7 @@ def commit_key(
     run_id: str,
     env: Mapping[str, Any],
     verify_duplicate: bool = False,
+    chunks: tuple[int, ...] | Mapping[str, tuple[int, ...]] | None = None,
 ) -> Committed | Duplicate:
     """Atomically commit a staged group into the store under the given key.
 
@@ -429,29 +458,42 @@ def commit_key(
     except OSError as e:
         if e.errno in (errno.ENOTEMPTY, errno.EEXIST):
             existing = read_record(target)
-            shutil.rmtree(staged_dir)
             if existing is None:
+                shutil.rmtree(staged_dir)
                 raise CommitConflictError(
                     key, None, input_digest, "uncommitted or tampered group already at target"
                 ) from e
             if existing.record_digest != _compute_record_digest(existing.to_dict()):
+                shutil.rmtree(staged_dir)
                 raise CommitConflictError(
                     key, existing, input_digest, "uncommitted or tampered group already at target"
                 ) from e
             if existing.input_digest == input_digest:
                 if verify_duplicate and existing.content_digest != content_digest:
+                    # Content divergence detected! Preserve staged_dir and quarantine BOTH versions.
+                    quarantined_target = quarantine(store, key, force=True)
+
+                    dest_parent = quarantine_root(store).joinpath(*key[:-1])
+                    dest_parent.mkdir(parents=True, exist_ok=True)
+                    quarantined_staged = dest_parent / f"{key[-1]}-staged-{uuid.uuid4().hex[:8]}"
+                    os.rename(str(staged_dir), str(quarantined_staged))
+                    fsync_directory(dest_parent)
+
                     raise CommitConflictError(
                         key,
                         existing,
                         input_digest,
                         "same input_digest, different content "
-                        f"(committed {existing.content_digest[:12]}, "
-                        f"staged {content_digest[:12]}): a nondeterministic producer, "
-                        "tampering, or a damaged committed key",
+                        f"(committed {existing.content_digest[:12]} "
+                        f"quarantined at {quarantined_target}, "
+                        f"staged {content_digest[:12]} "
+                        f"quarantined at {quarantined_staged}): "
+                        "a nondeterministic producer, tampering, or a damaged committed key",
                     ) from e
                 if verify_duplicate and not _group_is_valid(target):
                     # The record agrees with the staged bytes, but the committed bytes on
                     # disk no longer match their own record: the key is damaged.
+                    shutil.rmtree(staged_dir)
                     raise CommitConflictError(
                         key,
                         existing,
@@ -459,7 +501,9 @@ def commit_key(
                         "same input_digest and content as the staged group, but the committed "
                         "key on disk no longer matches its own record: a damaged committed key",
                     ) from e
+                shutil.rmtree(staged_dir)
                 return Duplicate(existing)
+            shutil.rmtree(staged_dir)
             raise CommitConflictError(
                 key, existing, input_digest, "different input_digest already committed"
             ) from e
@@ -649,7 +693,11 @@ def _group_is_valid(group_dir: Path) -> bool:
 
 
 def quarantine(
-    store: Path, key: tuple[str, ...], *, expected_input_digest: str | None = None
+    store: Path,
+    key: tuple[str, ...],
+    *,
+    expected_input_digest: str | None = None,
+    force: bool = False,
 ) -> Path | None:
     """Move a damaged, stale or uncommitted key out of the store; never deletes it.
 
@@ -697,6 +745,11 @@ def quarantine(
         return None
     fsync_directory(target.parent)
     fsync_directory(dest_parent)
+
+    # When force=True, caller explicitly mandates quarantine (e.g. content divergence)
+    if force:
+        return dest
+
     if not _group_is_valid(dest):
         return dest
     if expected_input_digest is not None:

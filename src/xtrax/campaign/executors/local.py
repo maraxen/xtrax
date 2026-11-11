@@ -4,6 +4,7 @@ Covering [T3-02], [T3-03], GATE-07, and Sections 6.3.1, 6.3.2 of SPEC-261105-CAM
 Zero imports of controller/ or bathos.
 """
 
+import dataclasses
 import gc
 import json
 import logging
@@ -151,6 +152,11 @@ def _resolve_output_path(output_dir: Path, row: "ManifestRow") -> Path:
     resolved_dir = Path(output_dir).resolve()
     if row.output_locator:
         loc_path = Path(row.output_locator)
+        import re
+
+        if re.search(r"\.attempt-\d+$", loc_path.name):
+            canonical_name = re.sub(r"\.attempt-\d+$", "", loc_path.name)
+            loc_path = loc_path.with_name(canonical_name)
         if loc_path.is_absolute():
             target = loc_path
             if Path(os.path.normpath(target)) == resolved_dir:
@@ -385,6 +391,15 @@ def _require_group_store(output_path: Path) -> None:
         raise UnitOutputNotAGroupError(msg)
 
 
+def resolve_attempt_output_path(output_path: Path, fence: int) -> Path:
+    """Return the isolated sibling staging directory for attempt with given lease fence.
+
+    Always returns a sibling directory (<output_path>.attempt-<fence>) to ensure
+    output_path does not exist on disk while the unit writes, avoiding quarantine collisions.
+    """
+    return output_path.with_name(f"{output_path.name}.attempt-{fence}")
+
+
 def _stage_unit_output(
     state: Any, output_path: Path, partial_path: Path, lock: FileLock | None = None
 ) -> None:
@@ -392,15 +407,28 @@ def _stage_unit_output(
 
     In order of precedence:
 
-    1. The unit function wrote its own store at ``output_path``: move it to the partial.
-       With ``lock``, the lease is re-checked first (#3312), so a stale holder never moves
-       a stealer's store into its own partial, where abort cleanup would delete it.
-    2. The unit function returned a ``Mapping``: write it as a zarr v3 group.
-    3. Otherwise the unit fails. Stamping a done marker on missing output would record
+    1. The unit function wrote to its attempt-scoped staging directory
+       (<output_path>.attempt-<fence>): move it to the partial. The lease is
+       re-checked first (#3338), so a stale holder never moves a stealer's
+       store into its own partial.
+    2. Legacy direct write: the unit function wrote directly to ``output_path``:
+       move it to the partial. With ``lock``, the lease is re-checked first (#3312).
+    3. The unit function returned a ``Mapping``: write it as a zarr v3 group.
+    4. Otherwise the unit fails. Stamping a done marker on missing output would record
        the unit as complete and resume would skip it forever.
     """
     if partial_path.exists():
         return
+
+    fence = lock.fence if lock is not None else 0
+    attempt_dir = resolve_attempt_output_path(output_path, fence)
+    if attempt_dir.exists():
+        _require_group_store(attempt_dir)
+        if lock is not None:
+            lock.assert_holder()
+        os.replace(attempt_dir, partial_path)
+        return
+
     done_marker_path = output_path.with_name(f"{output_path.name}.done.json")
     if output_path.exists() and not done_marker_path.exists():
         _require_group_store(output_path)
@@ -416,8 +444,9 @@ def _stage_unit_output(
             raise
         return
     msg = (
-        f"Unit function neither wrote a store at {output_path} nor returned a mapping "
-        f"(got {type(state).__name__}); refusing to stamp a done marker on missing output"
+        f"Unit function neither wrote a store at {attempt_dir} / {output_path} "
+        f"nor returned a mapping (got {type(state).__name__}); "
+        "refusing to stamp a done marker on missing output"
     )
     raise UnitProducedNoOutputError(msg)
 
@@ -507,6 +536,7 @@ def _execute_single_unit(
 
     previous_sigterm = _install_sigterm_interrupt()
     partial_path: Path | None = None
+    attempt_dir: Path | None = None
     staged = False
     try:
         # Another worker may have committed between the resume check and our acquire,
@@ -527,8 +557,19 @@ def _execute_single_unit(
         start_time = time.time()
         attempt_uuid = uuid.uuid4().hex[:8]
         partial_path = output_path.with_name(f"{output_path.name}.partial.{attempt_uuid}")
+        attempt_dir = resolve_attempt_output_path(output_path, lock.fence)
 
-        state = unit_fn(row)
+        # Redirect row locator and environment for direct-write units (#3338)
+        row = dataclasses.replace(row, output_locator=str(attempt_dir))
+        old_env = os.environ.get("XTRAX_CAMPAIGN_ATTEMPT_DIR")
+        os.environ["XTRAX_CAMPAIGN_ATTEMPT_DIR"] = str(attempt_dir)
+        try:
+            state = unit_fn(row)
+        finally:
+            if old_env is not None:
+                os.environ["XTRAX_CAMPAIGN_ATTEMPT_DIR"] = old_env
+            else:
+                os.environ.pop("XTRAX_CAMPAIGN_ATTEMPT_DIR", None)
         duration_s = max(0.001, time.time() - start_time)
 
         try:
@@ -553,6 +594,8 @@ def _execute_single_unit(
             output_locator=str(output_path),
             content_digest_sha256=digest,
             duration_s=duration_s,
+            lease_fence=lock.fence,
+            owner_token=lock.owner_token,
         )
         commit_res = lock.commit_output(
             partial_path=partial_path,
@@ -574,6 +617,8 @@ def _execute_single_unit(
             # On any failure it removes this attempt's output while the lease is still held.
             if partial_path is not None:
                 _discard_partial(partial_path)
+            if attempt_dir is not None and attempt_dir.exists():
+                _discard_partial(attempt_dir)
             if partial_path is not None and not staged and output_path.exists():
                 val = validate_unit_done(
                     output_path,

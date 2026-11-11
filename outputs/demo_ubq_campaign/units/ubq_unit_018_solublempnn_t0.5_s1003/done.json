@@ -8,7 +8,7 @@
   "compressed_bytes": 1304,
   "compression_ratio": 4.0245,
   "member_count": 2,
-  "pack_wall_ms": 10.455641895532608,
+  "pack_wall_ms": 8.963214699178934,
   "raw_bytes": 5248,
   "schema": "xtrax.pack_telemetry/1"
  },

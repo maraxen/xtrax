@@ -13,7 +13,9 @@ from collections.abc import Callable
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 
+from xtrax.tiling.iterator import WhileLoopIterator
 from xtrax.tiling.strategy import AxisStrategy, ChunkedMap, Scan, Vmap, WhileCarry
 from xtrax.transforms.map import _apply_size1, _is_size1_axis, chunked_map
 from xtrax.transforms.scan import safe_scan
@@ -200,7 +202,7 @@ def axis_dispatch(
                 "axis_dispatch: WhileCarry strategy requires a non-None init carry. "
                 "Provide via WhileCarry.init field or init parameter."
             )
-        return jax.lax.while_loop(strategy.cond, strategy.body, carry_init)
+        return WhileLoopIterator()(strategy.cond, strategy.body, carry_init)
 
     elif isinstance(strategy, Bucket):
         # Bucket is host-side: bucketing pads variable-length inputs *before* the
@@ -214,3 +216,37 @@ def axis_dispatch(
 
     else:
         raise TypeError(f"Unknown strategy type: {type(strategy)}")
+
+
+def vmap_any_cond(
+    pred_fn: Callable[[Any], jax.Array],
+    work_fn: Callable[[Any], Any],
+    default_fn: Callable[[Any], Any],
+    xs: Any,
+) -> Any:
+    """Execute expensive work_fn across xs if ANY item in xs satisfies pred_fn.
+
+    If jnp.any(vmap(pred_fn)(xs)) is True, executes vmap(work_fn)(xs).
+    Otherwise, executes vmap(default_fn)(xs).
+
+    This amortizes expensive synchronization/recomputation (e.g. neighbor-list
+    updates, allocation checks) without branch divergence across batch lanes.
+
+    Args:
+        pred_fn: Callable(x) -> scalar bool JAX array.
+        work_fn: Callable(x) -> y, executed when predicate fires for any item.
+        default_fn: Callable(x) -> y, executed when predicate is false for all items.
+        xs: Batched PyTree input.
+
+    Returns:
+        Batched PyTree result matching the structure of work_fn/default_fn outputs.
+    """
+    preds = jax.vmap(pred_fn)(xs)
+    need_work = jnp.any(preds)
+
+    return jax.lax.cond(
+        need_work,
+        lambda operands: jax.vmap(work_fn)(operands),
+        lambda operands: jax.vmap(default_fn)(operands),
+        xs,
+    )

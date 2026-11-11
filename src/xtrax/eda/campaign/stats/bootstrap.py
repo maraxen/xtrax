@@ -5,8 +5,6 @@ Includes vectorized cluster ratio estimator (BLK-01), Small-Sample Guard for U <
 and Minimum Detectable Effect (MDE_0.80) power checks under global MD-replicas rule.
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Sequence
 

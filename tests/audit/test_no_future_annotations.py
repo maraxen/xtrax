@@ -60,7 +60,6 @@ LEGACY_ALLOWLIST = {
     "src/xtrax/run/sink.py",
     "src/xtrax/run/spec.py",
     "src/xtrax/stages/boundaries.py",
-    "src/xtrax/tiling/bucket.py",
     "src/xtrax/tiling/carry.py",
     "src/xtrax/tiling/carry_shape.py",
     "src/xtrax/tiling/dedup.py",
@@ -69,7 +68,6 @@ LEGACY_ALLOWLIST = {
     "src/xtrax/tiling/iterator.py",
     "src/xtrax/tiling/plan.py",
     "src/xtrax/tiling/roles.py",
-    "src/xtrax/tiling/strategy.py",
 }
 
 

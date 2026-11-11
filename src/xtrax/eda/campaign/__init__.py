@@ -8,8 +8,6 @@ Answers five foundational scientific questions across experimental campaigns:
 5. Secondary Run Telemetry (wall times, reuse audit trail, pack telemetry seam banner)
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from collections.abc import Mapping

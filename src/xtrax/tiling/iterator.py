@@ -25,6 +25,7 @@ import jax.lax
 import jax.numpy as jnp
 
 from xtrax._tree import Struct, field
+from xtrax.tiling.carry import canonicalize_carry, validate_carry_transition
 from xtrax.transforms.map import _apply_size1, _is_size1_axis, chunked_map
 
 
@@ -187,7 +188,7 @@ class WhileLoopIterator(Struct):
     """
 
     def __call__(self, cond: Any, body: Any, init: Any) -> Any:
-        """Apply fn using jax.lax.while_loop.
+        """Apply fn using jax.lax.while_loop with carry canonicalization and validation.
 
         Args:
             cond: Callable(carry) -> bool (traced scalar continuation predicate).
@@ -198,7 +199,14 @@ class WhileLoopIterator(Struct):
             final_carry: The carry after the loop's condition first fails.
 
         """
-        return jax.lax.while_loop(cond, body, init)
+        canonical_init = canonicalize_carry(init)
+
+        def safe_body(carry: Any) -> Any:
+            new_carry = body(carry)
+            validate_carry_transition(carry, new_carry)
+            return new_carry
+
+        return jax.lax.while_loop(cond, safe_body, canonical_init)
 
 
 class WhileLoopWithYsIterator(Struct):

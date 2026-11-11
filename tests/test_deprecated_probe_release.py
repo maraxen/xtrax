@@ -45,8 +45,6 @@ DEPRECATED = [
     ("xtrax.distributed", "get_device_mesh", "jax.make_mesh(shape, axis_names)"),
     ("xtrax.distributed.sharding", "get_device_mesh", "jax.make_mesh(shape, axis_names)"),
     ("xtrax.distributed", "get_hardware_mesh_profile", "jax.make_mesh("),
-    ("xtrax.distributed", "ShardingPolicy", "debt #3043"),
-    ("xtrax.distributed.sharding", "ShardingPolicy", "debt #3043"),
     ("xtrax.io", "BoundedCallbackHandler", "xtrax.engine.io.BoundedCallbackHandler"),
     ("xtrax.io", "async_indexed_stream", "xtrax.engine.io.async_indexed_stream"),
     # The root re-exports go through the home package's hook.

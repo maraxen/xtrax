@@ -85,9 +85,9 @@ def render(
         panels: Optional set of panel names to render. Valid names are
                "strategy", "cardinality", "dedup", "bucket", "memory", "reasoning".
                If None, all available panels are rendered. Default None.
-        bundle_js: Not implemented. Passing True raises NotImplementedError,
-               because vendored Vega JS is not shipped. Use offline=True for the
-               static SVG fallback.
+        bundle_js: Whether to inline vendored Vega/Vega-Lite/Vega-Embed JS scripts
+               directly into the generated HTML. Only supported when backend="vega".
+               Default False (uses CDN links).
 
     Returns:
         bytes for PNG/SVG format with no path, str for HTML with no path, or None if
@@ -97,14 +97,12 @@ def render(
         ValueError: If fmt is not "png", "svg" or "html", if metadata=True but
             path is None, or if panels contains unknown names.
         TypeError: If stats_transform returns a dict missing required keys.
-        NotImplementedError: If bundle_js=True.
     """
     # Validation
     if fmt not in ("png", "svg", "html"):
         raise ValueError(f"Unknown fmt {fmt!r}; expected 'png', 'svg' or 'html'")
     if metadata and path is None:
         raise ValueError("metadata=True requires path to be set")
-    reject_bundle_js(bundle_js)
 
     if panels is not None:
         unknown = panels - _VALID_PANELS
@@ -149,9 +147,11 @@ def render(
             vl_spec,
             fmt=fmt,
             stats=stats,
-            options={"offline": offline},
+            options={"offline": offline, "bundle_js": bundle_js},
         )
     elif selected_backend == "matplotlib":
+        if bundle_js:
+            reject_bundle_js(bundle_js, "matplotlib")
         from xtrax.eda.viz import _render_matplotlib
 
         result = _render_matplotlib(stats, panels, fmt)
@@ -168,7 +168,7 @@ def render(
             vl_spec,
             fmt=fmt,
             stats=stats,
-            options={"offline": offline},
+            options={"offline": offline, "bundle_js": bundle_js},
         )
 
     if path is not None:

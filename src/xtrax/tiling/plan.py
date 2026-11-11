@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from xtrax.tiling.budget import BudgetInfeasibleError, MemoryBudget
 from xtrax.tiling.estimators import lowered_memory_estimate
 from xtrax.tiling.roles import AmbiguousAxisError, AxisRole
+from xtrax.tiling.sparse_spec import SparseSpec
 from xtrax.tiling.strategy import (
     AxisStrategy,
     Bucket,
@@ -93,9 +94,22 @@ class AxisSpec:
     role: AxisRole = AxisRole.KNOWN
     element_input_bytes: int | None = None
     varying_inputs: tuple[str, ...] | list[str] | str = ()
+    sparsity: float | SparseSpec | None = None
 
     def __post_init__(self) -> None:
         """Validate element_input_bytes and varying_inputs; normalize bucket_boundaries."""
+        if self.sparsity is not None:
+            if isinstance(self.sparsity, (int, float)):
+                if not (0.0 < float(self.sparsity) <= 1.0):
+                    raise ValueError(
+                        f"AxisSpec(name={self.name!r}): sparsity must be in (0.0, 1.0], "
+                        f"got {self.sparsity}."
+                    )
+            elif not isinstance(self.sparsity, SparseSpec):
+                raise TypeError(
+                    f"AxisSpec(name={self.name!r}): sparsity must be float, SparseSpec, or None, "
+                    f"got {type(self.sparsity).__name__}."
+                )
         if self.element_input_bytes is not None:
             value = self.element_input_bytes
             if isinstance(value, bool) or value < 0:
@@ -202,12 +216,22 @@ class AxisDecision:
         batch_size: Final batch size used (from spec).
         reasoning: Human-readable explanation of the decision.
         strategy: Selected AxisStrategy (Bucket, Vmap, ChunkedMap, or DedupGather).
+        is_sparse: Whether the axis strategy is specialized for sparse execution.
     """
 
     spec: AxisSpec
     batch_size: int
     reasoning: str
     strategy: AxisStrategy
+    is_sparse: bool = False
+
+    def __post_init__(self) -> None:
+        """Derive is_sparse when not explicitly True if spec declares sparsity density < 0.2."""
+        sp = getattr(self.spec, "sparsity", None)
+        if not self.is_sparse and sp is not None:
+            density: float = float(sp.density) if hasattr(sp, "density") else float(sp)
+            if density < 0.2:
+                object.__setattr__(self, "is_sparse", True)
 
 
 @dataclass(frozen=True)

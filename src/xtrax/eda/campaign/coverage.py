@@ -5,8 +5,6 @@ Differentiates COMMITTED, PARTIAL, FAILED (killed_incomplete), and MISSING cells
 the 100% committed visual aggregation rollup rule (MAJ-04) without silent omission.
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Sequence
 from typing import Any

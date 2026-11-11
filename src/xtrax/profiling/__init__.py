@@ -39,8 +39,13 @@ from xtrax.profiling.claims import (
     select_sources,
 )
 from xtrax.profiling.compile_count import (
+    CallSignature,
+    LeafSignature,
     assert_no_recompile_after,
     count_backend_compiles,
+    diff_jit_signature,
+    explain_cache_miss,
+    extract_jit_signature,
 )
 from xtrax.profiling.jaxpr import iter_jaxpr_eqns, sub_jaxprs
 from xtrax.profiling.record import ProbeRecord
@@ -49,6 +54,8 @@ from xtrax.profiling.unit_probe import UnitProbeResult, probe_unit
 
 __all__ = [
     "CONTRACT_VERSION",
+    "CallSignature",
+    "LeafSignature",
     "SCALE_EXTRAPOLATION_LIMIT",
     "ClaimClass",
     "ClaimValidityError",
@@ -57,6 +64,9 @@ __all__ = [
     "assert_claim_supported",
     "assert_no_recompile_after",
     "count_backend_compiles",
+    "diff_jit_signature",
+    "explain_cache_miss",
+    "extract_jit_signature",
     "hlo_text_for",
     "iter_jaxpr_eqns",
     "load_trace_events",

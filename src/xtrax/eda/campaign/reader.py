@@ -5,8 +5,6 @@ Guarantees bit-identical reads across loose filesystem directories and compresse
 packed archives (members.tar.zst) via dual-marker support (done.json and unit.json).
 """
 
-from __future__ import annotations
-
 import io
 import json
 import logging
