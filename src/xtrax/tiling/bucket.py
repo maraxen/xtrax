@@ -23,8 +23,6 @@ Typical use::
     out = out[mask]                                 # drop padding
 """
 
-from __future__ import annotations
-
 import bisect
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -376,7 +374,7 @@ class BatchedCapacityState:
     """
 
     allocated_capacity: int
-    active_counts: Int[Array, ...]
+    active_counts: Int[Array, "..."]
     headroom_threshold: int = 0
 
     def __post_init__(self) -> None:
@@ -387,12 +385,12 @@ class BatchedCapacityState:
             )
 
     @property
-    def headroom(self) -> Int[Array, ...]:
+    def headroom(self) -> Int[Array, "..."]:
         """Remaining capacity per batch item: (allocated_capacity - active_counts)."""
         return self.allocated_capacity - self.active_counts
 
     @property
-    def needs_reallocation(self) -> Bool[Array, ...]:
+    def needs_reallocation(self) -> Bool[Array, "..."]:
         """Scalar boolean indicating if any batch item has headroom <= threshold."""
         return jnp.any(self.headroom <= self.headroom_threshold)
 

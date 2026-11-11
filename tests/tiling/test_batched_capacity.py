@@ -1,11 +1,14 @@
 """Tests for BatchedCapacityState (#3194)."""
 
+import typing
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from xtrax.tiling.bucket import BatchedCapacityState
+from xtrax.tiling.strategy import fixed_step_count_cond
 
 
 class TestBatchedCapacityState:
@@ -66,3 +69,10 @@ class TestBatchedCapacityState:
         """Negative allocated_capacity raises ValueError."""
         with pytest.raises(ValueError, match="allocated_capacity must be >= 0"):
             BatchedCapacityState(allocated_capacity=-10, active_counts=jnp.array([1, 2]))
+
+    def test_jaxtyping_type_hints_resolve_at_runtime(self):
+        """get_type_hints resolves jaxtyping annotations at runtime."""
+        hints_state = typing.get_type_hints(BatchedCapacityState)
+        assert "active_counts" in hints_state
+        hints_cond = typing.get_type_hints(fixed_step_count_cond)
+        assert "n_steps" in hints_cond

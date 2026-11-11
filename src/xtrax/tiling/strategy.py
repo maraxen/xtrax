@@ -1,7 +1,5 @@
 """AxisStrategy sealed union and variants for composable tiling strategies."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -153,7 +151,7 @@ class StaticWhile:
     length: int
 
 
-def fixed_step_count_cond(n_steps: int | Integer[Array, ...] | Any) -> WhileCondFn:
+def fixed_step_count_cond(n_steps: int | Integer[Array, "..."] | Any) -> WhileCondFn:
     """Continuation predicate for running exactly n_steps iterations.
 
     Accepts either a static Python integer or a dynamic JAX scalar array/tracer.
