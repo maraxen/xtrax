@@ -6,7 +6,7 @@ CORE exports (stable, always available):
     BUCKET_LADDER, valid_span, select_rung, trim_axis, pad_axis
     WhileCarry, StaticWhile, WhileBodyFn, WhileCondFn, fixed_step_count_cond
     make_axis_dispatch, axis_dispatch, DispatchRejected
-    CarrySpec, CarryShape
+    CarrySpec, CarryShape, DedupSpec
     MemoryBudget, BudgetInfeasibleError, device_memory_budget, lowered_memory_estimate,
     estimate_memory_theoretical, plan_axis
     VmapIterator, ChunkedMapIterator, JaxScanIterator, WhileLoopIterator,
@@ -15,7 +15,7 @@ CORE exports (stable, always available):
 
 OPTIONAL (dedup/gather machinery — import from submodules):
     xtrax.tiling.strategy: DedupGather, DedupFn, GatherFn
-    xtrax.tiling.dedup:    DedupSpec, get_k_bucket
+    xtrax.tiling.dedup:    get_k_bucket
 """
 
 from typing import TYPE_CHECKING, Any
@@ -40,6 +40,7 @@ from xtrax.tiling.carry import (
     validate_carry_transition,
 )
 from xtrax.tiling.carry_shape import CarryShape
+from xtrax.tiling.dedup import DedupSpec
 from xtrax.tiling.dispatch import (
     DispatchRejected,
     axis_dispatch,
@@ -109,6 +110,7 @@ __all__ = [
     "canonicalize_carry",
     "validate_carry_transition",
     "CarryShape",
+    "DedupSpec",
     "MemoryBudget",
     "BudgetInfeasibleError",
     "device_memory_budget",

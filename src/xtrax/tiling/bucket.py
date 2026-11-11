@@ -33,6 +33,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jaxtyping import Array, Bool, Int
 
 # Fixed length buckets. Owned here so runtime tiling does not import the export
 # stack. ``xtrax.export.rings`` re-exports this same object.
@@ -375,7 +376,7 @@ class BatchedCapacityState:
     """
 
     allocated_capacity: int
-    active_counts: jax.Array
+    active_counts: Int[Array, ...]
     headroom_threshold: int = 0
 
     def __post_init__(self) -> None:
@@ -386,12 +387,12 @@ class BatchedCapacityState:
             )
 
     @property
-    def headroom(self) -> jax.Array:
+    def headroom(self) -> Int[Array, ...]:
         """Remaining capacity per batch item: (allocated_capacity - active_counts)."""
         return self.allocated_capacity - self.active_counts
 
     @property
-    def needs_reallocation(self) -> jax.Array:
+    def needs_reallocation(self) -> Bool[Array, ...]:
         """Scalar boolean indicating if any batch item has headroom <= threshold."""
         return jnp.any(self.headroom <= self.headroom_threshold)
 

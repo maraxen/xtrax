@@ -48,6 +48,7 @@ from xtrax.inference.config import AxisOverride
 from xtrax.inference.schema import BundleSchema
 from xtrax.stages.boundaries import Fuse, Sink, Tap
 from xtrax.tiling.plan import AxisSpec
+from xtrax.tiling.sparse_spec import SparseSpec
 
 if typing.TYPE_CHECKING:
     # Structurally identical to _typeshed.DataclassInstance, defined locally instead of imported:
@@ -113,9 +114,14 @@ def _type_to_json_schema(tp: Any) -> dict[str, Any]:
         }
     if isinstance(tp, type) and issubclass(tp, enum.Enum):
         return {"type": "string", "enum": [member.value for member in tp]}
+    if tp is SparseSpec:
+        return {"$ref": "#/$defs/SparseSpec"}
 
     origin = typing.get_origin(tp)
     args = typing.get_args(tp)
+
+    if origin is typing.Literal:
+        return {"type": "string", "enum": list(args)}
 
     if origin is typing.Union or isinstance(tp, types.UnionType):
         non_none = [a for a in args if a is not type(None)]
@@ -264,6 +270,7 @@ def emit_ir_schema() -> dict[str, Any]:
             "NodeMetadata": _node_metadata_json_schema(),
             "BundleSchema": _dataclass_to_json_schema(BundleSchema),
             "AxisSpec": _dataclass_to_json_schema(AxisSpec),
+            "SparseSpec": _dataclass_to_json_schema(SparseSpec),
             "AxisOverride": _dataclass_to_json_schema(AxisOverride),
             "AxisBoundary": _axis_boundary_json_schema(),
             "Fuse": _protocol_to_json_schema(Fuse),

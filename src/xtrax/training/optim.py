@@ -9,7 +9,7 @@ try:
     GradientTransformation = optax.GradientTransformation
 except ImportError:
     optax = None  # type: ignore
-    GradientTransformation = Any  # type: ignore
+    GradientTransformation = Any
 
 from xtrax._renamed import Deprecated, deprecated_getattr
 

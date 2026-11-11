@@ -10,7 +10,7 @@ through the legacy kwargs by earlier xtrax releases restore as before.
 """
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 try:
     import orbax.checkpoint as ocp
@@ -19,10 +19,13 @@ try:
     PreservationPolicy = ocp.checkpoint_managers.PreservationPolicy
 except ImportError:
     ocp = None  # type: ignore
-    CheckpointManager = Any  # type: ignore
-    PreservationPolicy = Any  # type: ignore
+    CheckpointManager = Any
+    PreservationPolicy = Any
 
-from xtrax.training.types import ResumableState
+if TYPE_CHECKING:
+    from xtrax.training.types import ResumableState
+else:
+    ResumableState = Any
 
 #: Name of the single PyTree item each checkpoint step holds (its subdirectory name).
 _ITEM = "state"

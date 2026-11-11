@@ -283,12 +283,12 @@ def _measure_while_trips(fn: Callable[..., Any], args: tuple[Any, ...]) -> list[
             first[key] = trips
         return result
 
-    jax.lax.while_loop = wrapped
+    setattr(jax.lax, "while_loop", wrapped)
     try:
         with jax.disable_jit():
             fn(*args)
     finally:
-        jax.lax.while_loop = real
+        setattr(jax.lax, "while_loop", real)
     return [first[key] for key in order]
 
 

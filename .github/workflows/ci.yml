@@ -168,7 +168,7 @@ jobs:
       - name: Install the package without the dev extra
         run: |
           uv venv .venv-noeqx
-          uv pip install --python .venv-noeqx/bin/python -e . pytest pytest-asyncio beartype
+          uv pip install --python .venv-noeqx/bin/python -e ".[training]" pytest pytest-asyncio beartype
 
       - name: Equinox is absent from the environment
         run: |
