@@ -41,6 +41,10 @@ for decision in plan.decisions:
 
 The result is a `BatchPlan` — an executable schedule that can be dispatched via `make_axis_dispatch()`.
 
+:::{note}
+`safe_scan` (`xtrax.safe_scan`, `xtrax.transforms.safe_scan`) is deprecated in the probe release (xtrax #6107): it warns on access, names `jax.lax.scan` / `axis_dispatch(Scan(...), ...)` as its replacement, and otherwise behaves as before. `codemods/thin-wrappers-to-jax/` rewrites call sites.
+:::
+
 ## Distributed Training with Mesh Sharding
 
 xtrax builds on JAX's multi-process SPMD sharding. Start the processes with `jax.distributed.initialize()` and build the device mesh with `jax.make_mesh`:

@@ -7,6 +7,7 @@ Replace a local copy with the primitive below. Import paths are the ones the pac
 | Local copy | xtrax |
 |---|---|
 | Hand-rolled `safe_map` / `lax.map` chunking | `chunked_map(fn, xs, batch_size=...)` in `xtrax.transforms.map`; strategy `ChunkedMap(batch_size=...)` in `xtrax.tiling` |
+| Hand-rolled `safe_scan` or `xtrax.safe_scan` | `jax.lax.scan(fn, init, xs)` directly (`xtrax.safe_scan` is deprecated, #6107; guard `length == 0` at your entry boundary if empty schedules are invalid), or `axis_dispatch(Scan(...), ...)` / `make_axis_dispatch(Scan(...))` when strategy-dispatched |
 | Private length ladder | `BUCKET_LADDER` from `xtrax.export.rings`, then `select_bucket` / `bucketize` (`references/length-bucketing.md`) |
 | Hand-rolled scan or while carry | `CarrySpec` (`xtrax.tiling.carry`). `collect_outputs=True` plans `Scan`. `collect_outputs=False` plans `WhileCarry` |
 | Private device-budget / compile-memory math | `device_memory_budget` and `lowered_memory_estimate` in `xtrax.tiling.estimators` |
@@ -39,6 +40,8 @@ Verify: `src/xtrax/transforms/map.py:9-34`, `src/xtrax/tiling/strategy.py:66-69`
 Migrate with the ast-grep rules in `codemods/safemap-to-chunkedmap/` (`rules.yml` for Python, `rename_markdown.py` for Markdown). See that directory's README and the CHANGELOG `[0.4.0a12]` Removed entry.
 
 Name-based strategy matching in `xtrax.stages.topology` and `xtrax.export.composer` still accepts the class name `"SafeMap"`, for a consumer's own duck-typed class of that name.
+
+`safe_scan` (`xtrax.safe_scan`, `xtrax.transforms.safe_scan`) is deprecated (`DeprecationWarning`, #6107): it neither chunked nor dispatched, only validating `length != 0` before `jax.lax.scan`. Call `jax.lax.scan(fn, init, xs)` directly (rewritten by `codemods/thin-wrappers-to-jax/rules.yml`), or use `axis_dispatch(Scan(...), ...)` / `make_axis_dispatch(Scan(...))` when strategy-dispatched.
 
 ## Per-unit outputs: `unit.json` and packs
 

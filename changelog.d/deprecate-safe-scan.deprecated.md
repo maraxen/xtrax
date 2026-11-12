@@ -1,0 +1,1 @@
+- `safe_scan` (`xtrax.safe_scan`, `xtrax.transforms.safe_scan`) -> `jax.lax.scan(fn, init, xs)` directly, or `xtrax.tiling.axis_dispatch(Scan(...), ...)` / `make_axis_dispatch(Scan(...))` when strategy-dispatched. `"safe"` was a misnomer for a zero-length guard that neither chunks nor dispatches; `codemods/thin-wrappers-to-jax/` rewrites call sites (#6107).

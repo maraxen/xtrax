@@ -9,7 +9,7 @@ xtrax provides a composable set of subpackages organized by functionality:
 - **Checkpoint**: Model checkpointing and serialization
 - **IO**: Input/output operations
 - **Distributed**: Multi-device and multi-node coordination
-- **Transforms**: JAX transformations with safety guarantees
+- **Transforms**: Chunked JAX map transformations (`chunked_map`; `safe_scan` is deprecated, #6107)
 - **Safety**: Numerically safe operations
 - **Stages**: Training stage management and fusion
 

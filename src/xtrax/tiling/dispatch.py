@@ -18,7 +18,6 @@ import jax.numpy as jnp
 from xtrax.tiling.iterator import WhileLoopIterator
 from xtrax.tiling.strategy import AxisStrategy, ChunkedMap, Scan, Vmap, WhileCarry
 from xtrax.transforms.map import _apply_size1, _is_size1_axis, chunked_map
-from xtrax.transforms.scan import safe_scan
 
 
 class DispatchRejected(Exception):
@@ -169,7 +168,7 @@ def axis_dispatch(
                 "axis_dispatch: Scan strategy requires a non-None init carry. "
                 "Provide via Scan.init field or init parameter."
             )
-        return safe_scan(strategy.transition, carry_init, xs)
+        return jax.lax.scan(strategy.transition, carry_init, xs)
 
     elif isinstance(strategy, DedupGather):
         # DedupGather: three-phase dedup -> map -> gather

@@ -13,6 +13,27 @@ rule:
   pattern: init_dist($$$ARGS)
 fix: jax.distributed.initialize($$$ARGS)
 ---
+id: safe-scan-to-jax-lax-scan
+language: python
+message: 'safe_scan(...) is jax.lax.scan(...) (xtrax #6107); see README for length-0 behaviour and axis_dispatch'
+rule:
+  pattern: safe_scan($$$ARGS)
+fix: jax.lax.scan($$$ARGS)
+---
+id: xtrax-safe-scan-to-jax-lax-scan
+language: python
+message: 'xtrax.safe_scan(...) is jax.lax.scan(...) (xtrax #6107); see README for length-0 behaviour and axis_dispatch'
+rule:
+  pattern: xtrax.safe_scan($$$ARGS)
+fix: jax.lax.scan($$$ARGS)
+---
+id: xtrax-transforms-safe-scan-to-jax-lax-scan
+language: python
+message: 'xtrax.transforms.safe_scan(...) is jax.lax.scan(...) (xtrax #6107); see README for length-0 behaviour and axis_dispatch'
+rule:
+  pattern: xtrax.transforms.safe_scan($$$ARGS)
+fix: jax.lax.scan($$$ARGS)
+---
 id: get-device-mesh-positional-to-make-mesh
 language: python
 message: 'get_device_mesh(shape, names) is jax.make_mesh(shape, names) (xtrax #6107)'

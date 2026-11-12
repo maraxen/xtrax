@@ -6,7 +6,7 @@ xtrax is organized into eleven composable subpackages, each with a single respon
 
 ```
 xtrax/
-  transforms/    — Low-level JAX wrappers: chunked_map, safe_scan
+  transforms/    — Low-level JAX wrappers: chunked_map (safe_scan is deprecated, #6107)
   tiling/        — Axis strategies and batching: AxisSpec, BatchPlanner, dispatch
   stages/        — Generic pipeline protocols and bundles
   training/      — Training loop: Trainer, ResumableState, losses, optimizers, callbacks
@@ -73,10 +73,10 @@ xtrax provides a **composable glue layer** that makes these libraries work toget
 
 **Module**: `xtrax.transforms`
 
-Provides safe wrappers around JAX's map and scan operations:
+Provides chunked map execution over JAX primitives:
 
 - `chunked_map(fn, xs, batch_size)`: Vmap if xs is small; chunk and loop otherwise. A leading dimension that is not a multiple of batch_size is fine: the last chunk is simply smaller.
-- `safe_scan(fn, init, xs)`: Identical to `jax.lax.scan`; wrapper validates pre-trace.
+- `safe_scan(fn, init, xs)`: Deprecated (#6107); use `jax.lax.scan` directly or `axis_dispatch(Scan(...), ...)` when strategy-dispatched.
 
 These are low-level building blocks used by the tiling layer.
 
