@@ -47,12 +47,15 @@ DEPRECATED = [
     ("xtrax.distributed", "get_hardware_mesh_profile", "jax.make_mesh("),
     ("xtrax.io", "BoundedCallbackHandler", "xtrax.engine.io.BoundedCallbackHandler"),
     ("xtrax.io", "async_indexed_stream", "xtrax.engine.io.async_indexed_stream"),
+    ("xtrax.transforms", "safe_scan", "jax.lax.scan(fn, init, xs)"),
+    ("xtrax.transforms.scan", "safe_scan", "jax.lax.scan(fn, init, xs)"),
     # The root re-exports go through the home package's hook.
     ("xtrax", "SafetyTrainStep", "debt #3042"),
     ("xtrax", "WeightedLoss", "ComposedLoss"),
     ("xtrax", "MultiTaskLoss", "ComposedLoss"),
     ("xtrax", "init_dist", "jax.distributed.initialize()"),
     ("xtrax", "is_distributed", "jax.distributed.is_initialized()"),
+    ("xtrax", "safe_scan", "jax.lax.scan(fn, init, xs)"),
 ]
 
 
@@ -88,6 +91,7 @@ def test_every_import_path_returns_the_same_unchanged_object(
             "get_device_mesh": "xtrax.distributed.sharding",
             "get_hardware_mesh_profile": "xtrax.distributed.sharding",
             "ShardingPolicy": "xtrax.distributed.sharding",
+            "safe_scan": "xtrax.transforms.scan",
         }.get(name)
         if home is not None:
             assert obj is getattr(importlib.import_module(home), name)
@@ -111,6 +115,8 @@ def test_from_import_of_a_deprecated_name_warns():
         "xtrax.distributed.init",
         "xtrax.distributed.sharding",
         "xtrax.io",
+        "xtrax.transforms",
+        "xtrax.transforms.scan",
     ],
 )
 def test_unknown_names_still_raise_attribute_error(module: str):
@@ -243,6 +249,7 @@ def test_xtrax_own_import_raises_no_deprecation_warning():
     code = (
         "import xtrax, xtrax.training, xtrax.engine, xtrax.data, xtrax.safety, "
         "xtrax.safety.manager, xtrax.loop.checkified_execution, xtrax.tiling, "
+        "xtrax.tiling.dispatch, xtrax.stages.executor, xtrax.transforms, "
         "xtrax.distributed, xtrax.io, xtrax.io.callbacks"
     )
     result = subprocess.run(
@@ -254,7 +261,14 @@ def test_xtrax_own_import_raises_no_deprecation_warning():
 
 
 def test_every_non_deprecated_public_name_resolves_without_a_warning():
-    deprecated = {"SafetyTrainStep", "WeightedLoss", "MultiTaskLoss", "init_dist", "is_distributed"}
+    deprecated = {
+        "SafetyTrainStep",
+        "WeightedLoss",
+        "MultiTaskLoss",
+        "init_dist",
+        "is_distributed",
+        "safe_scan",
+    }
     names = [n for n in xtrax.__all__ if n not in deprecated]
     code = f"import xtrax\nfor n in {names!r}:\n    getattr(xtrax, n)\n"
     result = subprocess.run(

@@ -326,7 +326,7 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | Signature Inference | `references/inference.md` | — | xtrax.inference: derive AxisSpecs + BundleSchema from a typed function |
 | Export (AOT) | `references/export.md` | — | xtrax.export: export_pipeline, Target/VerificationLevel, native + wasm32 + SPIR-V codegen, dtype envelope, load_hf_weights, materialize stripping, multi-axis composition |
 | Length bucketing | `references/length-bucketing.md` | — | AxisSpec.bucket_boundaries, Bucket, host select_bucket/bucketize, BUCKET_LADDER, one compile per rung |
-| Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives, per-unit `unit.json` records and packs (xtrax.pack), file-count guard |
+| Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, safe_scan deprecation (#6107), limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives, per-unit `unit.json` records and packs (xtrax.pack), file-count guard |
 | Standalone ONNX | `references/onnx-standalone.md` | — | convert_to_onnx vs jax2onnx, find_onnx_rng_ops, verify_native_parity, rings, divergence |
 | Intent | `references/intent.md` | — | xtrax.intent: Context, compile, loop, map, Plan, overrides, hazards, errors |
 | Kernel seam | `references/op.md` | — | xtrax.op: reference + per-backend kernels, selection rules, static args by closure, custom_jvp/custom_vjp derivatives, kernel_parity tests, interpret-mode GPU hazards |

@@ -7,6 +7,7 @@ migrate, or tell us the name is in use.
 
 | Deprecated | Replacement | Rewritten by the rules |
 |---|---|---|
+| `safe_scan(fn, init, xs, ...)` | `jax.lax.scan(fn, init, xs, ...)` (or `axis_dispatch(Scan(...), ...)` when strategy-dispatched) | yes (see length-0 note) |
 | `init_dist(...)` | `jax.distributed.initialize(...)` | yes (see the one-process note) |
 | `get_device_mesh(shape, names)` | `jax.make_mesh(shape, names)` | yes |
 | `partition_labels(model, f)` | `jax.tree.map(lambda leaf: "frozen" if f(leaf) else "train", model)` | yes |
@@ -36,6 +37,12 @@ nothing.
 
 ## Differences the rewrite cannot see
 
+- **`safe_scan` with length-0 inputs.** `safe_scan` neither chunked nor dispatched — it only
+  checked that `length != 0` before calling `jax.lax.scan`. `jax.lax.scan` treats a length-0
+  leading axis as a legal no-op returning `(init, empty_ys)` without raising `ValueError`. Add
+  an explicit `if n == 0: raise ValueError(...)` at your entry boundary if empty sequences are
+  invalid in your domain, or dispatch via `xtrax.tiling.axis_dispatch` / `make_axis_dispatch`
+  when choosing between `Vmap`, `ChunkedMap`, and `Scan`.
 - **`init_dist` with one process.** `init_dist(num_processes=1)` skipped the JAX call and only
   recorded the arguments. `jax.distributed.initialize()` with one process starts a coordinator
   (and with no arguments and no cluster environment it raises). Keep a `num_processes > 1`

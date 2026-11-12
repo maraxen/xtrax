@@ -195,6 +195,9 @@ strategy = Scan(transition=transition, init=0.0)
 
 Declare a Scan axis via `CarrySpec` (see below).
 
+⚠ WARN: `xtrax.safe_scan` / `xtrax.transforms.safe_scan` is **deprecated** (#6107) — `"safe"` was a misnomer (it neither chunked nor dispatched). Use `jax.lax.scan` directly, or `make_axis_dispatch(Scan(...))` (`JaxScanIterator`) / `axis_dispatch(Scan(...), ...)` when strategy-dispatched.  
+Enforcement: `DeprecationWarning` from `src/xtrax/transforms/scan.py`
+
 **4. DedupGather** — Deduplication for repeated elements.  
 Selected when: `dedup_eligible=True` and `DedupSpec` identifies repeated elements.  
 Behavior: (Phase 0) Extract unique indices; (Phase 1) vmap over K unique; (Phase 2) gather back to N.  
@@ -279,8 +282,8 @@ vmap_iter = VmapIterator()
 results = vmap_iter(fn, inputs, in_axes=0)  # fn applied in parallel
 
 # ChunkedMapIterator: chunked vmap
-safemap_iter = ChunkedMapIterator(tile=32)
-results = safemap_iter(fn, inputs, in_axes=0)  # fn applied in chunks of 32
+chunked_iter = ChunkedMapIterator(tile=32)
+results = chunked_iter(fn, inputs, in_axes=0)  # fn applied in chunks of 32
 ```
 
 Verify: `src/xtrax/tiling/iterator.py:28-59`
