@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -571,7 +572,7 @@ def test_prune_corrupt_removes_truncated_and_empty_entries_only(tmp_path) -> Non
     assert len(entries) >= 2
     truncated, intact = entries[0], entries[1:]
     truncated.write_bytes(truncated.read_bytes()[: truncated.stat().st_size // 2])
-    empty = Path(cold["dir"]) / "jit_dead-beef-cache"
+    empty = Path(cold["dir"]) / f"jit_dead-{'ab' * 32}-cache"
     empty.write_bytes(b"")
     assert jax_cache.prune_corrupt(cache, min_age_secs=0, dry_run=True) == sorted(
         [truncated, empty]
@@ -589,6 +590,108 @@ def test_prune_corrupt_removes_truncated_and_empty_entries_only(tmp_path) -> Non
 def test_prune_corrupt_without_a_configured_cache_raises(proj) -> None:
     with pytest.raises(JaxCacheConfigError, match="no JAX compilation cache"):
         jax_cache.prune_corrupt()
+
+
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def _entry(directory: Path, name: str, data: bytes) -> Path:
+    path = directory / f"{name}-{'cd' * 32}-cache"
+    path.write_bytes(data)
+    return path
+
+
+def _good_zlib() -> bytes:
+    return zlib.compress(b"\0\0\0\1" + b"executable" * 20)
+
+
+def test_prune_accepts_a_zlib_entry_when_a_zstd_decoder_is_present(tmp_path, monkeypatch) -> None:
+    """Writer used zlib, pruner has zstd: the entry is valid, not corrupt (B1)."""
+    monkeypatch.setattr(jax_cache, "_zstd_decoder", lambda: lambda data: b"unused")
+    good = _entry(tmp_path, "jit_f", _good_zlib())
+    bad = _entry(tmp_path, "jit_g", _good_zlib()[:10])
+    assert jax_cache.prune_corrupt(tmp_path, min_age_secs=0) == [bad]
+    assert good.exists() and not bad.exists()
+
+
+def test_prune_accepts_a_zstd_entry_when_a_zstd_decoder_is_present(tmp_path, monkeypatch) -> None:
+    """Writer used zstd, pruner has a zstd decoder: valid entries stay, bad streams go."""
+
+    def fake_decode(data: bytes) -> bytes:
+        if data.endswith(b"TRUNCATED"):
+            raise ValueError("bad frame")
+        return b"\0\0\0\1" + b"executable" * 20
+
+    monkeypatch.setattr(jax_cache, "_zstd_decoder", lambda: fake_decode)
+    good = _entry(tmp_path, "jit_f", _ZSTD_MAGIC + b"frame")
+    bad = _entry(tmp_path, "jit_g", _ZSTD_MAGIC + b"TRUNCATED")
+    assert jax_cache.prune_corrupt(tmp_path, min_age_secs=0) == [bad]
+    assert good.exists()
+
+
+def test_prune_refuses_zstd_entries_without_a_decoder_and_deletes_nothing(
+    tmp_path, monkeypatch
+) -> None:
+    """Writer used zstd, pruner has no zstd package: refuse rather than guess (B1)."""
+    monkeypatch.setattr(jax_cache, "_zstd_decoder", lambda: None)
+    zstd_entry = _entry(tmp_path, "jit_f", _ZSTD_MAGIC + b"frame")
+    corrupt_zlib = _entry(tmp_path, "jit_g", b"\x78\x9cgarbage")  # would be deleted alone
+    with pytest.raises(jax_cache.JaxCachePruneError, match="zstd"):
+        jax_cache.prune_corrupt(tmp_path, min_age_secs=0)
+    assert zstd_entry.exists() and corrupt_zlib.exists()  # nothing deleted, even the corrupt one
+
+
+def test_prune_dry_run_never_deletes_and_listing_matches_a_real_run(tmp_path) -> None:
+    bad = _entry(tmp_path, "jit_g", b"")
+    assert jax_cache.prune_corrupt(tmp_path, min_age_secs=0, dry_run=True) == [bad]
+    assert bad.exists()
+
+
+def test_prune_ignores_files_that_are_not_jax_keys(tmp_path) -> None:
+    """A non-JAX ``*-cache`` file is never examined or deleted (B2)."""
+    jax_entry = _entry(tmp_path, "jit_f", _good_zlib())
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    stray = [
+        notes / "release-cache",
+        tmp_path / "pip-cache",
+        tmp_path / f"short-{'ab' * 31}-cache",  # 62 hex digits, not a key
+        tmp_path / f"upper-{'AB' * 32}-cache",
+    ]
+    for path in stray:
+        path.write_text("user data, not a compressed stream")
+    assert jax_cache.prune_corrupt(tmp_path, min_age_secs=0) == []
+    assert all(path.exists() for path in [jax_entry, *stray])
+
+
+def test_prune_refuses_a_directory_that_is_not_a_jax_cache(tmp_path) -> None:
+    (tmp_path / "release-cache").write_text("user data")
+    with pytest.raises(JaxCacheConfigError, match="does not look like a JAX"):
+        jax_cache.prune_corrupt(tmp_path, min_age_secs=0)
+    assert (tmp_path / "release-cache").exists()
+
+
+def test_prune_scan_is_bounded_and_skips_symlinks(tmp_path) -> None:
+    deep = tmp_path / "a" / "b" / "c" / "d"
+    deep.mkdir(parents=True)
+    _entry(tmp_path, "jit_ok", _good_zlib())
+    too_deep = _entry(deep, "jit_deep", b"")  # four levels down: outside the scan
+    outside = tmp_path.parent / f"outside_{tmp_path.name}"
+    outside.mkdir()
+    victim = _entry(outside, "jit_victim", b"")
+    link = tmp_path / f"jit_link-{'cd' * 32}-cache"
+    link.symlink_to(victim)
+    assert jax_cache.prune_corrupt(tmp_path, min_age_secs=0) == []
+    assert too_deep.exists() and victim.exists()
+
+
+def test_jax_env_none_is_a_directory_name_not_a_disable_word(proj, monkeypatch) -> None:
+    monkeypatch.setenv("JAX_COMPILATION_CACHE_DIR", "none")
+    directory, source = cache_dir_source(start=proj)
+    assert source == "$JAX_COMPILATION_CACHE_DIR"
+    assert directory == Path.cwd() / "none"  # as JAX itself reads it
+    monkeypatch.setenv(ENV_DIR, "none")  # xtrax's own variable still disables
+    assert cache_dir_source(start=proj)[0] is None
 
 
 def test_disabled_cache_gives_no_reuse(tmp_path) -> None:

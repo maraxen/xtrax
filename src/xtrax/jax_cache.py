@@ -15,7 +15,9 @@ first match wins (the rule of ``isochore.traj_cache.cache_root_source``):
 1. ``path``, the explicit argument (``"none"`` or ``""`` disables);
 2. ``$XTRAX_JAX_CACHE_DIR`` if set at all (``none`` or empty disables and overrides files);
 3. ``$JAX_COMPILATION_CACHE_DIR`` if set and non-empty (JAX's own variable: an environment
-   variable beats a file);
+   variable beats a file). The value is taken as JAX takes it, so ``none`` there is a
+   directory named ``none``, not a disable word. xtrax applies its namespace under it, so an
+   existing flat JAX directory goes cold once;
 4. ``jax_compilation_cache_dir`` under ``[tool.xtrax]`` in the NEAREST ``pyproject.toml``
    that has an ``[tool.xtrax]`` table at or above ``start`` (default: the current
    directory);
@@ -85,9 +87,11 @@ growth.
 Write safety: JAX writes each entry with a plain ``write_bytes`` (no temporary file, no
 rename; ``jax/_src/lru_cache.py``), and skips a key whose file already exists. A process
 preempted mid-write therefore leaves a truncated entry that is a permanent miss (JAX turns
-the failed read into a warning and recompiles). ``prune_corrupt()`` finds entries that do not
-decompress and deletes them; run it between campaign attempts, never while writers are
-active (a file younger than ``min_age_secs`` is skipped for that reason).
+the failed read into a warning and recompiles). ``prune_corrupt()`` deletes JAX-key-named
+entries that do not decode under zlib or zstd (JAX picks the codec in the writing process,
+so the pruner accepts either and refuses, deleting nothing, when an entry needs a zstd
+decoder it cannot import). Run it between campaign attempts, never while writers are active
+(a file younger than ``min_age_secs`` is skipped for that reason).
 
 Limits not handled here: ``configure()`` probes the directory by writing 4 KiB, which passes
 on a setgid directory whose group is at its byte quota, after which JAX logs a failed ``put``
@@ -113,6 +117,7 @@ import re
 import stat
 import tempfile
 import threading
+import zlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -243,7 +248,7 @@ def cache_dir_source(
         raise JaxCacheConfigError(
             f'{source}: {KEY_DIR!r} must be a string path or "none", got {raw!r}'
         )
-    if _is_disabled(raw):
+    if _is_disabled(raw) and source != f"${ENV_JAX_DIR}":  # JAX reads its own "none" as a path
         return None, f"{source} (disabled)"
     return _absolute(raw, source, origin.parent if origin is not None else None), source
 
@@ -572,22 +577,80 @@ def _apply_to_jax(setting: CacheSetting) -> None:
         jax.config.update("jax_compilation_cache_max_size", setting.max_size_bytes)
 
 
-_ENTRY_SUFFIX = "-cache"  # jax/_src/lru_cache.py: one "<key>-cache" file per executable
-_TIME_PREFIX_BYTES = 4  # jax/_src/compilation_cache.py: big-endian compile time before the payload
+class JaxCachePruneError(RuntimeError):
+    """``prune_corrupt`` refused to run; nothing was deleted."""
 
 
-def _entry_is_valid(path: Path) -> bool:
-    """True when ``path`` decompresses to a payload JAX could load (not proof it deserialises)."""
-    from jax._src import compilation_cache
+# jax/_src/lru_cache.py names an entry "<key>-cache" (and, with eviction, "<key>-atime");
+# jax/_src/cache_key.py builds the key as "<module name>-<64 hex digits of sha256>".
+_ENTRY_NAME = re.compile(r"^.+-[0-9a-f]{64}-cache$")
+_ENTRY_SUFFIX = "-cache"
+_ATIME_SUFFIX = "-atime"
+_TIME_PREFIX_BYTES = 4  # jax/_src/compilation_cache.py: big-endian compile time before payload
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+_SCAN_DEPTH = 3  # <dir>/jaxlib-<ver>/cpu-<hash>/<entry>
 
-    data = path.read_bytes()  # an unreadable file raises; only a bad stream counts as corrupt
+
+def _zstd_decoder() -> Callable[[bytes], bytes] | None:
+    """A zstd decompress function from whatever this process has, or None.
+
+    JAX writes zstd when ``zstandard`` (or Python 3.14's ``compression.zstd``) is importable
+    in the WRITING process and zlib otherwise, and the filename does not say which, so the
+    pruner must not assume its own codec matches the writer's.
+    """
+    try:
+        from compression import zstd  # Python 3.14+
+
+        return zstd.decompress
+    except ImportError:
+        pass
+    try:
+        import zstandard
+
+        return zstandard.ZstdDecompressor().decompress
+    except ImportError:
+        return None
+
+
+def _classify_entry(data: bytes, zstd_decode: Callable[[bytes], bytes] | None) -> bool:
+    """True when ``data`` decodes under any codec JAX could have used, False when it is corrupt.
+
+    Raises:
+        JaxCachePruneError: the entry has the zstd magic but no zstd decoder is importable, so
+            its validity cannot be judged here. Deleting it would be a guess.
+    """
     if not data:
         return False
-    try:
-        payload = compilation_cache.decompress_executable(data)
-    except Exception:  # truncated or garbled stream: each codec raises its own error type
-        return False
+    if data.startswith(_ZSTD_MAGIC):
+        if zstd_decode is None:
+            raise JaxCachePruneError(
+                "found zstd-compressed cache entries but neither 'zstandard' nor "
+                "compression.zstd is importable here; run prune_corrupt in an environment with "
+                "the writer's codec. Nothing was deleted."
+            )
+        try:
+            payload = zstd_decode(data)
+        except Exception:  # zstandard.ZstdError or compression.zstd.ZstdError: a bad stream
+            return False
+    else:
+        try:
+            payload = zlib.decompress(data)
+        except zlib.error:
+            return False
     return len(payload) > _TIME_PREFIX_BYTES
+
+
+def _entries(root: Path) -> list[Path]:
+    """JAX-key-named ``*-cache`` files at most ``_SCAN_DEPTH`` levels below ``root``."""
+    found: list[Path] = []
+    for depth in range(_SCAN_DEPTH):
+        pattern = "/".join(["*"] * depth + [f"*{_ENTRY_SUFFIX}"])
+        found.extend(
+            p
+            for p in root.glob(pattern)
+            if _ENTRY_NAME.match(p.name) and p.is_file() and not p.is_symlink()
+        )
+    return sorted(found)
 
 
 def prune_corrupt(
@@ -596,17 +659,24 @@ def prune_corrupt(
     min_age_secs: float = 600.0,
     dry_run: bool = False,
 ) -> list[Path]:
-    """Delete cache entries that do not decompress (a writer preempted mid-write), return them.
+    """Delete cache entries that do not decode (a writer preempted mid-write), return them.
 
     JAX writes entries non-atomically and never rewrites an existing key, so a truncated entry
     is a permanent miss that logs a warning in every process. Run this between campaign
     attempts, not while processes are writing: a file modified less than ``min_age_secs``
-    ago is skipped because it may still be in flight. The matching ``-atime`` file is removed
-    with the entry. Only ``*-cache`` files below ``directory`` are examined.
+    ago is skipped because it may still be in flight.
+
+    Only files named like JAX keys (``<name>-<64 hex>-cache``, at most three levels below
+    ``directory``, symlinks skipped) are examined, and the matching ``-atime`` file is removed
+    with a deleted entry. An entry counts as valid if the zlib decoder or, for the zstd magic,
+    a zstd decoder accepts it; JAX picks the codec in the writing process, so one that this
+    process cannot decode (zstd entries, no zstd package) makes the call refuse before it
+    deletes anything. The scan runs to completion before any file is removed.
 
     Args:
-        directory: A cache directory to scan, recursively. ``None`` uses the directory the
-            current configuration resolves to (namespace included).
+        directory: A JAX cache directory. ``None`` uses the directory the current
+            configuration resolves to (namespace included). An explicit directory must
+            contain JAX-key-named entries or a ``jaxlib-*`` subdirectory.
         min_age_secs: Skip entries newer than this; 0 examines everything.
         dry_run: Report without deleting.
 
@@ -614,7 +684,9 @@ def prune_corrupt(
         The corrupt entry paths found (deleted unless ``dry_run``).
 
     Raises:
-        JaxCacheConfigError: ``directory`` is ``None`` and no cache is configured.
+        JaxCacheConfigError: ``directory`` is ``None`` and no cache is configured, or the
+            given directory does not look like a JAX cache.
+        JaxCachePruneError: an entry needs a zstd decoder that is not importable.
     """
     import time
 
@@ -625,20 +697,27 @@ def prune_corrupt(
                 f"no JAX compilation cache is configured ({setting.source}); pass a directory"
             )
         root = setting.dir
+        trusted = True
     else:
         root = Path(directory)
+        trusted = False
+    entries = _entries(root)
+    if not trusted and not entries and not any(root.glob("jaxlib-*")):
+        raise JaxCacheConfigError(
+            f"{root} does not look like a JAX compilation cache (no '<name>-<64 hex>-cache' "
+            "entries and no jaxlib-* subdirectory); refusing to prune it"
+        )
     now = time.time()
-    found: list[Path] = []
-    for entry in sorted(root.rglob(f"*{_ENTRY_SUFFIX}")):
-        if not entry.is_file():
-            continue
-        if min_age_secs > 0 and now - entry.stat().st_mtime < min_age_secs:
-            continue
-        if _entry_is_valid(entry):
-            continue
-        found.append(entry)
-        if not dry_run:
+    zstd_decode = _zstd_decoder()
+    corrupt = [
+        entry
+        for entry in entries
+        if not (min_age_secs > 0 and now - entry.stat().st_mtime < min_age_secs)
+        and not _classify_entry(entry.read_bytes(), zstd_decode)
+    ]
+    if not dry_run:
+        for entry in corrupt:
             entry.unlink(missing_ok=True)
-            atime = entry.with_name(entry.name.removesuffix(_ENTRY_SUFFIX) + "-atime")
+            atime = entry.with_name(entry.name.removesuffix(_ENTRY_SUFFIX) + _ATIME_SUFFIX)
             atime.unlink(missing_ok=True)
-    return found
+    return corrupt
