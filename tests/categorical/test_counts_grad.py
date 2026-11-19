@@ -15,7 +15,15 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from xtrax.categorical import CategoricalCodes, cooccurrence_counts, encode_codes
+from xtrax.categorical import (
+    STATUS_CODES_A,
+    STATUS_NEGATIVE_WEIGHT,
+    STATUS_NONINTEGRAL_WEIGHT,
+    STATUS_TOTAL_OVERFLOW,
+    CategoricalCodes,
+    cooccurrence_counts,
+    encode_codes,
+)
 from xtrax.categorical.plan import CooccurrencePlan, plan_cooccurrence
 
 R = 3
@@ -434,15 +442,18 @@ def test_float_strategy_rejects_scatter_and_budget() -> None:
         _run(case, _weights(), strategy="float", byte_budget=10**9)
 
 
-# --- S1-G3 variant under jit(grad): check=True raises under trace ------------------------
+# --- S1-G3 variant under jit(grad): check=True sets status bits under trace ---------------
 
 
 def _grad_under_jit(ca, cb, w, *, check: bool = True, **kwargs):
-    def loss(w_: jax.Array) -> jax.Array:
-        out = cooccurrence_counts(ca, cb, weights=w_, check=check, method="matmul", **kwargs)
-        return jnp.sum(out.joint) + jnp.sum(out.total)
+    """Return ``(grad, status)`` from ``jit(grad)``; status rides out as an aux output."""
 
-    return jax.block_until_ready(jax.jit(jax.grad(loss))(jnp.asarray(w)))
+    def loss(w_: jax.Array) -> tuple[jax.Array, jax.Array]:
+        out = cooccurrence_counts(ca, cb, weights=w_, check=check, method="matmul", **kwargs)
+        return jnp.sum(out.joint) + jnp.sum(out.total), out.status
+
+    grad, status = jax.jit(jax.grad(loss, has_aux=True))(jnp.asarray(w))
+    return jax.block_until_ready(grad), int(np.bitwise_or.reduce(np.asarray(status)))
 
 
 def test_jit_grad_clean_inputs_match_eager() -> None:
@@ -462,42 +473,50 @@ def test_jit_grad_clean_inputs_match_eager() -> None:
     assert np.array_equal(eager, jitted)
 
 
-def test_jit_grad_out_of_range_code_raises_c1() -> None:
+def test_jit_grad_out_of_range_code_sets_c1() -> None:
     xa = np.zeros((2, 4), dtype=np.int64)
     xa[1, 2] = 3  # K=3, so code 3 is out of range
     ca = _raw_codes(xa, 3)
     cb = encode_codes(np.zeros((1, 4), dtype=np.int64), 3)
-    with pytest.raises(jax.errors.JaxRuntimeError, match="C1 failed"):
-        _grad_under_jit(ca, cb, np.ones((1, 4), dtype=np.float32), differentiable=True)
+    _, status = _grad_under_jit(ca, cb, np.ones((1, 4), dtype=np.float32), differentiable=True)
+    assert status == STATUS_CODES_A
 
 
-def test_jit_grad_negative_weight_raises_c2() -> None:
+def test_jit_grad_negative_weight_sets_c2() -> None:
     ca = encode_codes(np.zeros((1, 4), dtype=np.int64), 2)
     w = np.array([[1.0, -1.0, 1.0, 1.0]], dtype=np.float32)
-    with pytest.raises(jax.errors.JaxRuntimeError, match="C2 failed: weights must be >= 0"):
-        _grad_under_jit(ca, ca, w, differentiable=True)
+    _, status = _grad_under_jit(ca, ca, w, differentiable=True)
+    assert status & STATUS_NEGATIVE_WEIGHT
 
 
-def test_jit_grad_non_integer_float_weight_raises_c2() -> None:
+def test_eager_grad_negative_weight_raises_c2() -> None:
+    """An eager differentiable call with concrete weights raises before the kernel runs."""
+    ca = encode_codes(np.zeros((1, 4), dtype=np.int64), 2)
+    w = np.array([[1.0, -1.0, 1.0, 1.0]], dtype=np.float32)
+    with pytest.raises(ValueError, match="C2 failed: weights must be >= 0"):
+        cooccurrence_counts(ca, ca, weights=w, differentiable=True, method="matmul")
+
+
+def test_jit_grad_non_integer_float_weight_sets_c2() -> None:
     ca = encode_codes(np.zeros((1, 4), dtype=np.int64), 2)
     w = np.array([[1.0, 1.5, 1.0, 1.0]], dtype=np.float32)
-    with pytest.raises(jax.errors.JaxRuntimeError, match="C2 failed"):
-        _grad_under_jit(ca, ca, w, differentiable=True)
+    _, status = _grad_under_jit(ca, ca, w, differentiable=True)
+    assert status == STATUS_NONINTEGRAL_WEIGHT
 
 
-def test_jit_grad_total_two_to_the_24_plus_one_raises_c3() -> None:
+def test_jit_grad_total_two_to_the_24_plus_one_sets_c3() -> None:
     """Two frames summing to 2**24 + 1; each is below 2**24, so only the running total trips."""
     ca = encode_codes(np.zeros((1, 2), dtype=np.int64), 2)
     w = np.array([[2.0**23, 2.0**23 + 1.0]], dtype=np.float32)
-    with pytest.raises(jax.errors.JaxRuntimeError, match="C3 failed"):
-        _grad_under_jit(ca, ca, w, differentiable=True)
+    _, status = _grad_under_jit(ca, ca, w, differentiable=True)
+    assert status == STATUS_TOTAL_OVERFLOW
 
 
-def test_jit_grad_float_strategy_total_two_to_the_24_plus_one_raises_c3() -> None:
+def test_jit_grad_float_strategy_total_two_to_the_24_plus_one_sets_c3() -> None:
     ca = encode_codes(np.zeros((1, 2), dtype=np.int64), 2)
     w = np.array([[2.0**23, 2.0**23 + 1.0]], dtype=np.float32)
-    with pytest.raises(jax.errors.JaxRuntimeError, match="C3 failed"):
-        _grad_under_jit(ca, ca, w, strategy="float")
+    _, status = _grad_under_jit(ca, ca, w, strategy="float")
+    assert status == STATUS_TOTAL_OVERFLOW
 
 
 def test_jit_grad_non_integer_float_strategy_has_no_total_bound() -> None:
@@ -505,15 +524,17 @@ def test_jit_grad_non_integer_float_strategy_has_no_total_bound() -> None:
     ca = encode_codes(np.zeros((1, 4), dtype=np.int64), 2)
     # 2**22 + 0.5 is exact in float32, and four of them total 2**24 + 2 (above the bound).
     w = np.full((1, 4), 2.0**22 + 0.5, dtype=np.float32)
-    grad = _grad_under_jit(ca, ca, w, strategy="float")
+    grad, status = _grad_under_jit(ca, ca, w, strategy="float")
     assert np.all(np.isfinite(grad))
+    assert status == 0
 
 
 def test_jit_grad_negative_weight_is_silent_when_check_is_off() -> None:
-    """C4: check=False skips the traced checks, so no error is raised (results undefined)."""
+    """C4: check=False skips the checks, so status stays 0 (results undefined)."""
     ca = encode_codes(np.zeros((1, 4), dtype=np.int64), 2)
     w = np.array([[1.0, -1.0, 1.0, 1.0]], dtype=np.float32)
-    _grad_under_jit(ca, ca, w, check=False, differentiable=True)
+    _, status = _grad_under_jit(ca, ca, w, check=False, differentiable=True)
+    assert status == 0
 
 
 def test_jit_forward_float_weight_300_is_exact() -> None:

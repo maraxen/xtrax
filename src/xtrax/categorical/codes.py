@@ -7,12 +7,13 @@ Arithmetic never happens in that storage dtype: callers cast to int32 first
 Spec: .praxia/docs/specs/261015_exact-categorical-cooccurrence.md (§3, §3.1)
 """
 
-import equinox as eqx
 import jax
 import jax.core
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, ArrayLike, Int32, Shaped, UInt
+
+from xtrax._tree import Struct, field
 
 _INT32_MAX = 2**31 - 1
 _INT8_MAX = 127
@@ -81,7 +82,7 @@ def weight_dtype(max_weight: int) -> jnp.dtype:
     raise ValueError(f"max_weight={w} exceeds the int32 range")
 
 
-class CategoricalCodes(eqx.Module):
+class CategoricalCodes(Struct):
     """Hard categorical codes for ``P`` variables over ``T`` frames.
 
     Attributes:
@@ -91,7 +92,7 @@ class CategoricalCodes(eqx.Module):
     """
 
     codes: UInt[Array, "P T"] | Int32[Array, "P T"]  # noqa: F722 (jaxtyping shape string)
-    n_categories: int = eqx.field(static=True)
+    n_categories: int = field(static=True)
 
 
 def encode_codes(codes: Shaped[ArrayLike, "P T"], n_categories: int) -> CategoricalCodes:  # noqa: F722

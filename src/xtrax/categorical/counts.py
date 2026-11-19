@@ -22,7 +22,6 @@ from collections.abc import Iterator
 from functools import partial
 from typing import Any, Literal
 
-import equinox as eqx
 import jax
 import jax.core
 import jax.numpy as jnp
@@ -30,6 +29,7 @@ import numpy as np
 from jax import lax
 from jaxtyping import Array, ArrayLike, Int, Shaped
 
+from xtrax._tree import Struct, field
 from xtrax.categorical.codes import CategoricalCodes
 from xtrax.categorical.plan import (
     KK_CROSSOVER_CPU,
@@ -41,8 +41,41 @@ from xtrax.categorical.plan import (
 
 _INT31 = 2**31
 
+# Precondition status bits (spec §3.2). ``CooccurrenceCounts.status`` ORs together
+# the bits of every precondition that failed for that replicate; 0 means all held.
+STATUS_CODES_A = 1 << 0
+STATUS_CODES_B = 1 << 1
+STATUS_NEGATIVE_WEIGHT = 1 << 2
+STATUS_NONINTEGRAL_WEIGHT = 1 << 3
+STATUS_TOTAL_OVERFLOW = 1 << 4
+STATUS_PAIRS_RANGE = 1 << 5
 
-class CooccurrenceCounts(eqx.Module):
+_STATUS_MESSAGES = (
+    (STATUS_CODES_A, "C1 failed: codes_a outside [0, Ka)"),
+    (STATUS_CODES_B, "C1 failed: codes_b outside [0, Kb)"),
+    (STATUS_NEGATIVE_WEIGHT, "C2 failed: weights must be >= 0"),
+    (STATUS_NONINTEGRAL_WEIGHT, "C2 failed: float32 exact weights must be integer-valued"),
+    (
+        STATUS_TOTAL_OVERFLOW,
+        "C3 failed: total exceeds the exact bound (2**31 for int32, 2**24 for float32)",
+    ),
+    (STATUS_PAIRS_RANGE, "pairs index out of range"),
+)
+
+
+def status_messages(bits: int) -> list[str]:
+    """Return the precondition messages for a ``status`` bit set, in bit order.
+
+    Args:
+        bits: OR of ``STATUS_*`` bits, e.g. one replicate's ``status`` value.
+
+    Returns:
+        One message per set bit; empty when ``bits`` is 0.
+    """
+    return [msg for bit, msg in _STATUS_MESSAGES if bits & bit]
+
+
+class CooccurrenceCounts(Struct):
     """Exact co-occurrence counts for one call of ``cooccurrence_counts``.
 
     Attributes:
@@ -52,6 +85,9 @@ class CooccurrenceCounts(eqx.Module):
         marginal_a: Shape ``(R, Pa, Ka)``; same dtype as ``joint``.
         marginal_b: Shape ``(R, Pb, Kb)``; same dtype as ``joint``.
         total: Shape ``(R,)``; the summed weight per replicate, same dtype.
+        status: int32 ``(R,)`` precondition bits (``STATUS_*``); 0 means C1-C3
+            held for that replicate. Always 0 with ``check=False``. A nonzero
+            replicate's counts are undefined.
         layout: ``"dense"`` (all ``Pa*Pb`` variable pairs) or ``"pairs"``
             (only the requested rows).
         method: Method actually run, ``"matmul"`` or ``"scatter"``.
@@ -63,9 +99,31 @@ class CooccurrenceCounts(eqx.Module):
     marginal_a: jax.Array
     marginal_b: jax.Array
     total: jax.Array
-    layout: str = eqx.field(static=True)
-    method: str = eqx.field(static=True)
-    method_rule: str = eqx.field(static=True)
+    status: jax.Array
+    layout: str = field(static=True)
+    method: str = field(static=True)
+    method_rule: str = field(static=True)
+
+    def raise_if_invalid(self) -> None:
+        """Raise ``ValueError`` if any replicate failed a precondition (reads ``status``).
+
+        Host-side: this syncs on ``status``. Call it outside ``jit``, typically where
+        the counts are read back anyway.
+
+        Returns:
+            None when every replicate's ``status`` is 0.
+
+        Raises:
+            ValueError: Naming each failed precondition, if any ``status`` bit is set.
+        """
+        _raise_for_status(self.status)
+
+
+def _raise_for_status(status: jax.Array) -> None:
+    """Raise ``ValueError`` naming every failed precondition in a concrete ``status``."""
+    bits = int(np.bitwise_or.reduce(np.asarray(status).ravel(), initial=0))
+    if bits:
+        raise ValueError("; ".join(status_messages(bits)))
 
 
 def _prepare_weights(weights: ArrayLike | None, n_frames: int) -> jax.Array:
@@ -329,8 +387,7 @@ def _prepare_pairs(pairs: ArrayLike, pa: int, pb: int) -> tuple[jax.Array, jax.A
     """Validate ``(n_pairs, 2)`` pair rows and return int32 ``(a, b)`` columns.
 
     Concrete pairs are range-checked here. Traced pairs get shape and dtype
-    checks only; their range is checked under trace by ``_check_pairs`` when
-    ``check=True``.
+    checks only; with ``check=True`` their range sets ``STATUS_PAIRS_RANGE``.
 
     Args:
         pairs: Integer rows ``(a, b)`` with ``0 <= a < Pa`` and ``0 <= b < Pb``.
@@ -373,44 +430,48 @@ def _check_static_sizes(pa: int, ka: int, pb: int, kb: int) -> None:
             raise ValueError(f"{name}={size} must be < 2**31 for int32 index arithmetic")
 
 
-def _check_preconditions(
-    xa: jax.Array, ka: int, xb: jax.Array, kb: int, w: jax.Array
-) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """Enforce C1-C3 under trace with ``eqx.error_if`` (spec §3.2).
+def _bit(cond: jax.Array, bit: int) -> jax.Array:
+    """``bit`` as int32 where ``cond`` holds, else 0 (elementwise)."""
+    return jnp.where(cond, jnp.int32(bit), jnp.int32(0))
 
-    The returned arrays must be the ones the kernel consumes, so the check is
-    not dead-code eliminated.
 
-    C1 codes in ``[0, K)``. C2 weights ``>= 0``. C3 total ``< 2**31``. The total
-    check uses a running int32 sum. Each weight is in ``[0, 2**31)``, so the
-    first partial sum that reaches ``2**31`` wraps negative, and any total of
-    ``2**31`` or more is detected exactly.
+def _codes_status(x: jax.Array, k: int, bit: int) -> jax.Array:
+    """C1 (``0 <= x < k``) for one hard code array, as a scalar int32 status bit.
 
     Args:
-        xa: int32 codes ``(Pa, T)``.
-        ka: Categories of ``a``.
-        xb: int32 codes ``(Pb, T)``.
-        kb: Categories of ``b``.
+        x: Integer codes ``(P, T)``.
+        k: Number of categories.
+        bit: ``STATUS_CODES_A`` or ``STATUS_CODES_B``.
+
+    Returns:
+        ``bit`` if any code is out of range, else 0.
+    """
+    xi = x.astype(jnp.int32)
+    return _bit(jnp.any((xi < 0) | (xi >= k)), bit)
+
+
+def _int_weight_status(w: jax.Array) -> jax.Array:
+    """C2 and C3 for integer weights, per replicate (spec §3.2).
+
+    C2 weights ``>= 0``. C3 total ``< 2**31``. The total check uses a running
+    int32 sum. Each weight is in ``[0, 2**31)``, so the first partial sum that
+    reaches ``2**31`` wraps negative, and any total of ``2**31`` or more is
+    detected exactly.
+
+    Args:
         w: Integer weights ``(R, T)``.
 
     Returns:
-        ``(xa, xb, w)`` with the checks attached.
+        int32 ``(R,)`` status bits.
     """
-    xa = eqx.error_if(xa, jnp.any((xa < 0) | (xa >= ka)), "C1 failed: codes_a outside [0, Ka)")
-    xb = eqx.error_if(xb, jnp.any((xb < 0) | (xb >= kb)), "C1 failed: codes_b outside [0, Kb)")
-    w = eqx.error_if(w, jnp.any(w < 0), "C2 failed: weights must be >= 0")
     running = jnp.cumsum(w, axis=1, dtype=jnp.int32)
-    w = eqx.error_if(w, jnp.any(running < 0), "C3 failed: total >= 2**31 overflows int32")
-    return xa, xb, w
+    return _bit(jnp.any(w < 0, axis=1), STATUS_NEGATIVE_WEIGHT) | _bit(
+        jnp.any(running < 0, axis=1), STATUS_TOTAL_OVERFLOW
+    )
 
 
 _FLOAT32_EXACT_TOTAL = 2**24
 _HIGHEST = lax.Precision.HIGHEST
-
-
-def _check_codes(x: jax.Array, k: int, message: str) -> jax.Array:
-    """Enforce C1 (``0 <= x < k``) for one code array under trace; returns the checked array."""
-    return eqx.error_if(x, jnp.any((x < 0) | (x >= k)), message)
 
 
 def _prepare_float_weights(weights: ArrayLike | None, n_frames: int) -> jax.Array:
@@ -432,8 +493,10 @@ def _prepare_float_weights(weights: ArrayLike | None, n_frames: int) -> jax.Arra
     return w.astype(jnp.float32)
 
 
-def _check_float_weights(w: jax.Array, *, require_integral: bool, exact_bound: bool) -> jax.Array:
-    """Enforce C2 and C3 on float32 weights under trace (spec §3.2).
+def _float_weight_status(
+    w: jax.Array, *, require_integral: bool, exact_bound: bool
+) -> jax.Array:
+    """C2 and C3 for float32 weights, per replicate (spec §3.2).
 
     C2: ``w >= 0``, and with ``require_integral`` also ``w == round(w)``.
 
@@ -450,38 +513,21 @@ def _check_float_weights(w: jax.Array, *, require_integral: bool, exact_bound: b
         exact_bound: Assert ``total < 2**24`` for integer-valued weights.
 
     Returns:
-        ``w`` with the checks attached.
+        int32 ``(R,)`` status bits.
     """
+    w = lax.stop_gradient(w)
     integral = w == jnp.round(w)
-    w = eqx.error_if(w, jnp.any(w < 0), "C2 failed: weights must be >= 0")
+    status = _bit(jnp.any(w < 0, axis=1), STATUS_NEGATIVE_WEIGHT)
     if require_integral:
-        w = eqx.error_if(
-            w, jnp.any(~integral), "C2 failed: float32 exact weights must be integer-valued"
-        )
+        status = status | _bit(jnp.any(~integral, axis=1), STATUS_NONINTEGRAL_WEIGHT)
     if exact_bound:
         capped = jnp.clip(w, 0.0, float(_FLOAT32_EXACT_TOTAL)).astype(jnp.int32)
         running = jnp.cumsum(capped, axis=1, dtype=jnp.int32)
-        over = jnp.any(w >= _FLOAT32_EXACT_TOTAL) | jnp.any(running >= _FLOAT32_EXACT_TOTAL)
-        w = eqx.error_if(
-            w,
-            jnp.all(integral) & over,
-            "C3 failed: total >= 2**24 is not exact in float32",
+        over = jnp.any(w >= _FLOAT32_EXACT_TOTAL, axis=1) | jnp.any(
+            running >= _FLOAT32_EXACT_TOTAL, axis=1
         )
-    return w
-
-
-def _anchor_checks(w: jax.Array) -> jax.Array:
-    """Return ``w`` with an exactly-zero self-dependence, so its checks survive ``grad``.
-
-    ``eqx.error_if`` is a ``pure_callback``, which JAX dead-code-eliminates when no
-    later value reads the checked array. A function linear in the weights has a
-    gradient that never reads them, so under ``jit(grad)`` the weight checks
-    would otherwise be dropped (spec S1-G3). The term ``0 * w * w`` is exactly
-    zero for finite weights, and so is its derivative ``0 * 2w``, so values and
-    gradients are unchanged. Non-finite weights are rejected by C2/C3 when
-    ``check=True``, and this is applied only then.
-    """
-    return w + 0.0 * (w * w)
+        status = status | _bit(jnp.all(integral, axis=1) & over, STATUS_TOTAL_OVERFLOW)
+    return status
 
 
 def _float_operand(codes: object, name: str) -> tuple[jax.Array, int, bool]:
@@ -568,13 +614,20 @@ def _float_counts(
     return lax.map(one, (w, sa, sb))
 
 
-def _check_pairs(
-    pair_a: jax.Array, pair_b: jax.Array, pa: int, pb: int
-) -> tuple[jax.Array, jax.Array]:
-    """Enforce the pair index range under trace with ``eqx.error_if``."""
+def _pairs_status(pair_a: jax.Array, pair_b: jax.Array, pa: int, pb: int) -> jax.Array:
+    """Pair index range as a scalar int32 status bit (``STATUS_PAIRS_RANGE`` or 0).
+
+    Args:
+        pair_a: int32 ``a`` index per pair.
+        pair_b: int32 ``b`` index per pair.
+        pa: Number of ``a`` variables.
+        pb: Number of ``b`` variables.
+
+    Returns:
+        ``STATUS_PAIRS_RANGE`` if any index is out of range, else 0.
+    """
     bad = (pair_a < 0) | (pair_a >= pa) | (pair_b < 0) | (pair_b >= pb)
-    pair_a = eqx.error_if(pair_a, jnp.any(bad), "pairs index out of range")
-    return pair_a, pair_b
+    return _bit(jnp.any(bad), STATUS_PAIRS_RANGE)
 
 
 def _validate_plan(
@@ -756,9 +809,13 @@ def cooccurrence_counts(
             allocator limit. The budget is soft; see ``plan_cooccurrence``.
         plan: A ``CooccurrencePlan`` from ``plan_cooccurrence`` for the same
             shapes. Mutually exclusive with ``byte_budget``.
-        check: Enforce C1-C3 (and traced pair range) under trace with
-            ``eqx.error_if``. ``False`` skips them, for benchmarks only: results
-            are then undefined if a precondition fails.
+        check: Evaluate C1-C3 (and the pair range) on device into
+            ``CooccurrenceCounts.status``, with no host callback. When no input is
+            traced, a failure raises ``ValueError`` before the kernel runs. Under a
+            trace (``jit``, ``grad``, ``vmap``) nothing is raised: inspect
+            ``status`` or call ``raise_if_invalid()`` on the result outside the
+            trace. ``False`` skips the checks (``status`` is all 0), for
+            benchmarks only: results are then undefined if a precondition fails.
         mesh: Must be None in Stage 1 (sharding is Stage 1b).
 
     Returns:
@@ -774,7 +831,8 @@ def cooccurrence_counts(
         ValueError: If shapes disagree, the self layout gets ``shifts_b``, a
             static index-size guard fails, pairs are out of range, a plan does
             not match this call, or ``strategy="float"`` gets a method other than
-            ``auto``/``matmul`` or a ``byte_budget``/``plan``.
+            ``auto``/``matmul`` or a ``byte_budget``/``plan``. Also, with
+            ``check=True`` and no traced input, if a precondition C1-C3 fails.
         BudgetInfeasibleError: If ``byte_budget`` cannot hold the result or any tile plan.
         NotImplementedError: If ``mesh`` is given (sharding is Stage 1b).
     """
@@ -835,18 +893,18 @@ def cooccurrence_counts(
         w = _prepare_weights(weights, n_frames)
     else:
         w = _prepare_float_weights(weights, n_frames)
+    status: jax.Array | None = None
     if check:
+        status = jnp.int32(0)
+        if hard_a:
+            status = status | _codes_status(xa, ka, STATUS_CODES_A)
+        if hard_b:
+            status = status | _codes_status(xb, kb, STATUS_CODES_B)
         if exact and not diff:
-            xa, xb, w = _check_preconditions(xa, ka, xb, kb, w)
+            status = status | _int_weight_status(w)
         else:
-            if hard_a:
-                xa = _check_codes(xa, ka, "C1 failed: codes_a outside [0, Ka)")
-            if hard_b:
-                xb = _check_codes(xb, kb, "C1 failed: codes_b outside [0, Kb)")
-            w = _anchor_checks(
-                _check_float_weights(
-                    w, require_integral=diff, exact_bound=diff or (hard_a and hard_b)
-                )
+            status = status | _float_weight_status(
+                w, require_integral=diff, exact_bound=diff or (hard_a and hard_b)
             )
     n_rep = _common_replicates(
         [("weights", w.shape[0])]
@@ -861,9 +919,21 @@ def cooccurrence_counts(
     pair_b: jax.Array | None = None
     if pairs is not None:
         pair_a, pair_b = _prepare_pairs(pairs, pa, pb)
-        if check:
-            pair_a, pair_b = _check_pairs(pair_a, pair_b, pa, pb)
+        if status is not None:
+            status = status | _pairs_status(pair_a, pair_b, pa, pb)
     n_pairs = pa * pb if pair_a is None else int(pair_a.shape[0])
+
+    if status is None:
+        status = jnp.zeros((n_rep,), dtype=jnp.int32)
+    else:
+        status = jnp.broadcast_to(status, (n_rep,))
+        traced = any(
+            isinstance(v, jax.core.Tracer) for v in (xa, xb, w, sa, sb, pair_a, pair_b)
+        )
+        if not traced:
+            # Eager call: fail fast before launching the kernel. This reads back only
+            # the input reductions above, not the counts.
+            _raise_for_status(status)
 
     if not exact:
         joint, ma, mb, tot = _float_counts(
@@ -882,6 +952,7 @@ def cooccurrence_counts(
             marginal_a=ma,
             marginal_b=mb,
             total=tot,
+            status=status,
             layout=layout,
             method="matmul",
             method_rule="explicit",
@@ -936,6 +1007,7 @@ def cooccurrence_counts(
         marginal_a=ma,
         marginal_b=mb,
         total=tot,
+        status=status,
         layout=layout,
         method=chosen,
         method_rule=rule,

@@ -13,17 +13,31 @@ from xtrax.categorical.codes import (
     weight_dtype,
 )
 from xtrax.categorical.counts import (
+    STATUS_CODES_A,
+    STATUS_CODES_B,
+    STATUS_NEGATIVE_WEIGHT,
+    STATUS_NONINTEGRAL_WEIGHT,
+    STATUS_PAIRS_RANGE,
+    STATUS_TOTAL_OVERFLOW,
     CooccurrenceCounts,
     cooccurrence_counts,
     iter_cooccurrence_row_blocks,
+    status_messages,
 )
 
 __all__ = [
+    "STATUS_CODES_A",
+    "STATUS_CODES_B",
+    "STATUS_NEGATIVE_WEIGHT",
+    "STATUS_NONINTEGRAL_WEIGHT",
+    "STATUS_PAIRS_RANGE",
+    "STATUS_TOTAL_OVERFLOW",
     "CategoricalCodes",
     "CooccurrenceCounts",
     "code_dtype",
     "cooccurrence_counts",
     "encode_codes",
     "iter_cooccurrence_row_blocks",
+    "status_messages",
     "weight_dtype",
 ]
