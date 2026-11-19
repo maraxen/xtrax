@@ -5,7 +5,7 @@ status: draft
 task_id: 261119_compilation-cache-resolver
 date: '261119'
 backlog_ids: ''
-adversarial_review: 'spec-challenger (sonnet) 261119 NEEDS_WORK -> B1-B3, S1-S7, N1 folded in; S5 resolved by descoping max size'
+adversarial_review: 'spec-challenger (sonnet) 261119 NEEDS_WORK -> B1-B3, S1-S7, N1 folded in; S5 resolved by descoping max size. Rev 3 (placement/policy split, myxcel [env] contract, shared jax_cache) not yet re-reviewed'
 ---
 # xtrax compilation-cache resolver
 
@@ -63,17 +63,21 @@ import `xtrax.config`; the campaign executor and CLI import it).
 
 ```python
 APP = "xtrax"
-KEY_DIR = "compilation_cache_dir"
+KEY_DIR = "compilation_cache_dir"          # placement: user config only
+KEY_POLICY = "compilation_cache"           # policy: "on" | "off"; pyproject and user config
 KEY_MIN_SECS = "compilation_cache_min_compile_secs"
 ENV_VAR = "XTRAX_COMPILATION_CACHE_DIR"
+POLICY_ENV_VAR = "XTRAX_COMPILATION_CACHE"
 JAX_ENV_VAR = "JAX_COMPILATION_CACHE_DIR"
 OFF = "off"   # explicit-off sentinel accepted by `explicit=`
 
 @dataclass(frozen=True)
 class CacheDecision:
     directory: Path | None      # None = caching off
-    source: CacheSource         # Literal: "arg" | "env_xtrax" | "env_jax" | "pyproject" | "user_config" | "off"
-    source_path: Path | None    # file that decided (pyproject / user config), else None
+    source: CacheSource         # placement layer: "arg" | "env_xtrax" | "env_jax" | "user_config" | "none"
+    source_path: Path | None    # user-config file that decided, else None
+    policy: Literal["on", "off"]
+    policy_source: PolicySource # "arg" | "env_xtrax" | "pyproject" | "user_config" | "default"
     min_compile_secs: float
     min_compile_secs_source: str
 
@@ -85,29 +89,53 @@ def apply_decision(decision: CacheDecision, *, on_conflict="raise") -> CacheDeci
 `source` values are a `Literal[...]` type, not free strings; the file path for the pyproject and
 user-config layers goes in a separate `source_path: Path | None` field.
 
-### Resolution order (first match wins)
+### Two axes: placement (where) and policy (whether)
 
-1. `explicit` argument. `None` = not given. `""`, `"none"`, or `OFF` = off. A relative path resolves
-   against cwd (it came from the caller, as in `profile_dir`).
-2. `XTRAX_COMPILATION_CACHE_DIR` if **set at all**: empty/`none` = off (stops the search).
+User decision 261119: **a committed `pyproject.toml` never holds a machine path.** myxcel pushes
+the project tree to remotes, so an absolute path written on the laptop names the wrong place on
+Engaging. Placement is a fact about the machine; policy is a fact about the project. They resolve
+independently, and the cache is on only when policy is `on` **and** a placement exists.
+
+**Placement (first match wins):**
+
+1. `explicit` argument. `None` = not given. `""`, `"none"`, or `OFF` = off (this is also a policy-off;
+   see below). A relative path resolves against cwd (it came from the caller, as in `profile_dir`).
+2. `XTRAX_COMPILATION_CACHE_DIR` if **set at all**: empty/`none`/`off` = off (stops the search).
 3. `JAX_COMPILATION_CACHE_DIR` if set at all: same. Kept as a layer because JAX already honours it
-   (V-env); ignoring it would make xtrax and JAX disagree.
-4. `compilation_cache_dir` under `[tool.xtrax]` in the nearest `pyproject.toml`.
-5. `compilation_cache_dir` in `${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml`.
-6. Off.
+   (V-env); this is the variable myxcel's profile `[env]` injects on remotes (see "myxcel contract").
+4. `compilation_cache_dir` in `${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml` (one per machine:
+   laptop, titanix, Engaging login node).
+5. None.
 
-Env beats pyproject (user decision, 261119): env is the per-job override, pyproject the project
-default. Layers 2-3 are handled by hand, **not** by `resolve_layered`'s env layer, because
-`resolve_layered` treats an env `none` as "skip this layer and keep searching"
-(`src/xtrax/config.py:188-191`), which would let `[tool.xtrax]` re-enable a cache the job switched
-off. Layers 4-5 call `resolve_layered(APP, KEY_DIR, env_var=None, start=start, parse=_parse_dir)`
-(same split as `src/xtrax/cli/profile_dir.py:80-87`).
+A `compilation_cache_dir` key found under `[tool.xtrax]` in `pyproject.toml` is **refused** with a
+`ValueError` that names the file and points at the user config / myxcel profile.
+
+Layers 2-3 are handled by hand, **not** by `resolve_layered`'s env layer, because `resolve_layered`
+treats an env `none` as "skip this layer and keep searching" (`src/xtrax/config.py:188-191`), which
+would let a lower layer re-enable a cache the job switched off. Layer 4 reads the user config file
+directly with `xtrax.config`'s TOML helpers (`_user_config_path`, `_read_toml`), not through
+`resolve_layered`, whose pyproject walk would otherwise supply placement.
+
+**Policy (first match wins):**
+
+1. `explicit`: `OFF`/`none`/`""` → off; any path → on.
+2. `XTRAX_COMPILATION_CACHE` = `on` | `off` (a job-level override in either direction).
+3. `compilation_cache = "on" | "off"` under `[tool.xtrax]` in the nearest `pyproject.toml`
+   (via `resolve_layered`, `env_var=None`).
+4. `compilation_cache` in the user config.
+5. Default `on` (so a machine placement alone turns the cache on for every project, which is the
+   point of a shared machine cache).
+
+Consequence: a project that sets `compilation_cache = "off"` stays off on every machine, including
+under a myxcel-injected `JAX_COMPILATION_CACHE_DIR`. Since JAX reads that variable at import, "off"
+must actively clear the flag (already required below). Env still beats pyproject for a single run
+via `XTRAX_COMPILATION_CACHE=on`.
 
 **Off sentinels, every layer:** `""`, `none`, `off` (any case, stripped) mean off, via one
 `_parse_dir` used for all layers (arg, both env vars, pyproject, user config). `explicit=Path("")`
 is off, not cwd.
 
-**Relative paths:** `XTRAX_COMPILATION_CACHE_DIR` and both config files must be absolute or
+**Relative paths:** `XTRAX_COMPILATION_CACHE_DIR` and the user config must be absolute or
 `~`-prefixed (`$VARS` expanded); a relative value raises `ValueError` naming the variable or file.
 `JAX_COMPILATION_CACHE_DIR` keeps JAX's own semantics for compatibility (the current executor passes
 relative values through, `local.py:100-103`): a relative value resolves against cwd at resolution
@@ -202,6 +230,90 @@ tests. Entries are keyed by JAX on jax/jaxlib version, backend and
 device kind, so one directory shared across projects on one machine is safe. Sharing a directory
 across machines with different GPUs is also safe but gives no reuse.
 
+**Layout (user decision 261119): one shared directory per machine, named `jax_cache`.**
+
+| Machine | Directory | Set by |
+|---|---|---|
+| Engaging | `/orcd/compute/so3/002/maarxaru/jax_cache` (beside `uv-cache`) | myxcel profile `[env]` for jobs; `~/.config/xtrax/config.toml` on the login node for non-myxcel runs |
+| titanix | a local-disk path in `titanix.toml` `[env]` | same split |
+| laptop (WSL) | `~/.cache/jax_cache` | `~/.config/xtrax/config.toml` |
+
+The basename must be exactly `jax_cache`: myxcel's disk triage classifies JIT caches by basename
+(`myxcel/src/myxcel/disk_triage_worker.py:50-51` matches `jax_cache` / `.jax_cache`, not
+`jax-cache`), so the shared cache shows up as `jit-cache`, which is regenerable and safe to delete.
+Pruning is all-or-nothing (delete the directory) until a size cap lands.
+
+**Shared-filesystem safety (A14, A16).** One directory shared by concurrent array tasks is safe to
+*run*: entries are written in place without a lock, but a reader that sees a partly written entry
+gets a warning and recompiles. The one lasting hazard is a task **preempted or killed mid-write**. It
+leaves a truncated `*-cache` file, and `put` never replaces an existing key (`lru_cache.py:146-147`),
+so that kernel warns and recompiles on every later run until someone deletes the file. The window is
+the duration of one `write_bytes` call, so this is rare, but `pi_so3` / preemptible partitions make
+it plausible. Mitigations, in order:
+
+1. Document it: `Error reading persistent compilation cache entry` in a job log means "delete the
+   named entry" (or the whole `jax_cache` directory; it is regenerable).
+2. Follow-up (not this PR): an `xtrax` maintenance helper that tries to deserialize each entry and
+   removes the ones that fail, run occasionally as a myxcel job. It is file-count heavy, so it runs
+   in a job, never on the login node.
+3. Not adopted: per-node or per-job subdirectories. They avoid the hazard but give up the cross-job
+   reuse that is the reason for a shared cache.
+
+### myxcel contract: a generic profile `[env]` table
+
+**Current state (verified):** myxcel has no machine-level env. `Profile`
+(`myxcel/src/myxcel/config.py:63-105`) carries typed tables such as `[uv]`, which
+`uv_placement.py` turns into job exports. Per-project env lives in `myxcel.toml` `[env_catalog]`
+(`project_config.py:288-300`) and is merged into the preset by `resolve_preset`
+(`submit.py:121-131`). Preset env wins over computed placement (`slurm.py:760-790`).
+
+**Proposal (lands in myxcel, own spec/PR):** a profile `[env]` table holding machine facts, exported
+into every job script that profile generates.
+
+```toml
+# ~/.config/myxcel/engaging.toml
+[env]
+JAX_COMPILATION_CACHE_DIR = "/orcd/compute/so3/002/maarxaru/jax_cache"
+TRITON_CACHE_DIR = "/orcd/compute/so3/002/maarxaru/triton_cache"
+HF_HOME = "/orcd/compute/so3/002/maarxaru/hf"
+```
+
+- **Precedence, lowest to highest:** profile `[env]` < project `[env_catalog]` < preset `env` <
+  invocation overrides. This follows the existing convention that the profile owns machine facts and
+  the project owns policy.
+- **One owner per name:** a name that a typed table also sets, such as `UV_CACHE_DIR` from `[uv]`,
+  raises `ConfigError` at profile load.
+- **Reserved names:** the reserved set, currently `XLA_FLAGS` (`slurm.py:172`), and every `MYXCEL_*`
+  name raise `ConfigError`.
+- **Values:**
+  - Strings only.
+  - A leading `~` expands through `remote_home`, the same as `uv_placement._expand_remote`; it raises
+    if `remote_home` is unset.
+  - Values are exported `shlex`-quoted. There is no `$VAR` expansion, so a profile cannot smuggle in
+    shell code.
+- **Provenance:**
+  - `MYXCEL_ENV_SOURCE=NAME=profile|project|preset,...` lists every name that came from or competed
+    with profile `[env]`, the same shape as `MYXCEL_UV_SOURCE`.
+  - xtrax's `CacheDecision.source == "env_jax"` plus that variable together say which file decided.
+- **Byte-identical when unset:** a profile without `[env]` produces exactly today's script, the same
+  guarantee `[uv]` makes.
+- **Login shells:** `myxcel env-catalog <remote> <project> --shell` also emits the profile `[env]`
+  lines, so a remote `.bashrc` can source the same values. Runs outside myxcel on that host then
+  agree with myxcel jobs. Alternatively, `~/.config/xtrax/config.toml` on the remote does this for
+  xtrax only.
+- **Colab:** out of scope. VMs are ephemeral and the cache would not outlive the session.
+
+**Why generic and not `[jax]`:** the JAX cache is one of several machine-level relocations the
+triage reference already lists (JAX, Triton, HF, torch hub, pip). `[uv]` stays a typed table because
+it computes values (lock-keyed venvs, link mode); plain "this variable is this path on this machine"
+facts need no code of their own.
+
+**How xtrax consumes it:** `JAX_COMPILATION_CACHE_DIR` is placement layer 3, and JAX itself also
+reads it, so non-xtrax consumers (alynxr, tev_design, plain scripts) get the same cache with no code.
+A project opts out with `[tool.xtrax] compilation_cache = "off"`, which beats the injected path
+because policy and placement are separate axes. (Non-xtrax consumers opt out by preset `env`
+`JAX_COMPILATION_CACHE_DIR=""`.)
+
 ## Assumptions
 
 | # | Assumption | Tag |
@@ -217,13 +329,22 @@ across machines with different GPUs is also safe but gives no reuse.
 | A9 | Spawned pool workers re-import jax and re-read env | verified (`local.py:1015`, spawn context) |
 | A11 | Clearing the flag after init does not stop writes | verified by code (`compilation_cache.py:245-246`); T6b tests it |
 | A10 | jax lower bound of xtrax exposes A5's module | **unverified**; check `pyproject.toml` floor during implementation |
+| A12 | myxcel has no machine-level env table today | verified (`myxcel/src/myxcel/config.py:63-105`) |
+| A13 | myxcel disk triage recognises `jax_cache` by basename only | verified (`disk_triage_worker.py:40-54`) |
+| A14 | JAX's file cache writes entries atomically | **false** (verified by code): `LRUCache.put` writes in place with `write_bytes`, no temp+rename, and takes no lock unless `jax_compilation_cache_max_size` is set (`lru_cache.py:121-161`; default `-1`, `config.py:1657-1658`). See "Shared-filesystem safety" |
+| A15 | Treating `JAX_COMPILATION_CACHE_DIR=""` as off holds in JAX too (empty flag = no cache) | verified by code (`compilation_cache.py:250-251`: `if not path: return`) |
+| A16 | A torn or corrupt entry makes JAX warn and recompile, not crash | verified by code (`compiler.py:808-818`; `jax_raise_persistent_cache_errors` default False, `config.py:1490-1492`) |
 
 ## Tests (write red first where marked)
 
-- T1 resolution order: each layer wins over the ones below; source string correct; tmp `pyproject.toml`
-  and `XDG_CONFIG_HOME`.
-- T2 env `none`/empty/`off` in either env var stops the search even when `[tool.xtrax]` sets a dir;
-  `none`/`off` in pyproject and user config mean off; `explicit=Path("")` is off.
+- T1 placement order and policy order, each independently: every layer wins over the ones below;
+  source strings correct; tmp `pyproject.toml` and `XDG_CONFIG_HOME`.
+- T2 env `none`/empty/`off` in either placement env var stops the placement search even when the user
+  config sets a dir; `none`/`off` in the user config mean off; `explicit=Path("")` is off.
+- T10 a `compilation_cache_dir` key under `[tool.xtrax]` raises `ValueError` naming the file.
+- T11 policy beats placement: `[tool.xtrax] compilation_cache = "off"` with `JAX_COMPILATION_CACHE_DIR`
+  set → decision off, JAX flag cleared, no entries (subprocess); `XTRAX_COMPILATION_CACHE=on` then
+  re-enables it for that run.
 - T3 relative path in `XTRAX_…` or a config file raises naming the source; relative
   `JAX_COMPILATION_CACHE_DIR` resolves against cwd with a WARNING; malformed TOML raises; path that is
   a file raises.
