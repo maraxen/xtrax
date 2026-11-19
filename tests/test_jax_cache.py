@@ -7,6 +7,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax
 import pytest
@@ -31,6 +32,7 @@ _ALL_ENV = (
     ENV_MAX_BYTES,
     ENV_NAMESPACE,
     "XTRAX_JAX_CACHE_MIN_ENTRY_BYTES",
+    "JAX_COMPILATION_CACHE_DIR",
 )
 
 
@@ -237,13 +239,11 @@ def test_bad_namespace_is_rejected(proj) -> None:
 # ---------------------------------------------------------------- namespace
 
 
-def test_default_namespace_partitions_by_jaxlib_and_host_cpu(proj) -> None:
+def test_default_namespace_is_the_jaxlib_version_only(proj) -> None:
     setting = resolve(tmp := proj / "base", start=proj)
     assert setting.base_dir == tmp
-    assert (
-        setting.dir
-        == tmp / f"jaxlib-{jax_cache._jaxlib_version()}" / f"cpu-{host_cpu_fingerprint()}"
-    )
+    assert setting.dir == tmp / f"jaxlib-{jax_cache._jaxlib_version()}"
+    assert "cpu-" not in str(setting.dir)
 
 
 def test_namespace_none_uses_the_directory_as_given(proj) -> None:
@@ -251,23 +251,46 @@ def test_namespace_none_uses_the_directory_as_given(proj) -> None:
     assert setting.dir == proj / "base"
 
 
-def test_cpu_fingerprint_is_stable_and_changes_with_flags(monkeypatch, tmp_path) -> None:
-    assert host_cpu_fingerprint() == host_cpu_fingerprint()
-    first = tmp_path / "cpuinfo_a"
-    first.write_text("flags\t\t: sse avx avx2\n")
-    second = tmp_path / "cpuinfo_b"
-    second.write_text("flags\t\t: sse avx avx2 avx512f\n")
+def test_namespace_cpu_flags_is_opt_in(proj) -> None:
+    setting = resolve(proj / "base", start=proj, namespace="cpu-flags")
+    assert setting.dir == (
+        proj / "base" / f"jaxlib-{jax_cache._jaxlib_version()}" / f"cpu-{host_cpu_fingerprint()}"
+    )
+
+
+def _fake_cpuinfo(monkeypatch, tmp_path, text: str | None) -> None:
+    """Make ``open('/proc/cpuinfo')`` read ``text`` (None: raise OSError)."""
+    fixture = tmp_path / "cpuinfo"
     real_open = open
 
     def fake_open(path, *args, **kwargs):
-        return real_open(fixture if path == "/proc/cpuinfo" else path, *args, **kwargs)
+        if path == "/proc/cpuinfo":
+            if text is None:
+                raise OSError("masked")
+            fixture.write_text(text)
+            return real_open(fixture, *args, **kwargs)
+        return real_open(path, *args, **kwargs)
 
     monkeypatch.setattr("builtins.open", fake_open)
-    fixture = first
-    a = host_cpu_fingerprint()
-    fixture = second
-    b = host_cpu_fingerprint()
-    assert a != b and len(a) == len(b) == 8
+
+
+def test_cpu_fingerprint_tracks_isa_flags_not_mitigation_flags(monkeypatch, tmp_path) -> None:
+    _fake_cpuinfo(monkeypatch, tmp_path, "flags\t\t: sse avx avx2\n")
+    base = host_cpu_fingerprint()
+    _fake_cpuinfo(monkeypatch, tmp_path, "flags\t\t: sse avx avx2 md_clear ibpb stibp\n")
+    assert host_cpu_fingerprint() == base  # kernel/microcode mitigation drift must not split
+    _fake_cpuinfo(monkeypatch, tmp_path, "flags\t\t: sse avx avx2 avx512f\n")
+    other = host_cpu_fingerprint()
+    assert other != base and len(other) == len(base) == 8
+
+
+def test_cpu_flags_namespace_fails_loudly_when_flags_are_unreadable(monkeypatch, tmp_path) -> None:
+    _fake_cpuinfo(monkeypatch, tmp_path, None)
+    with pytest.raises(JaxCacheConfigError, match="cpu-flags"):
+        host_cpu_fingerprint()
+    _fake_cpuinfo(monkeypatch, tmp_path, "model name\t: something\n")
+    with pytest.raises(JaxCacheConfigError, match="cpu-flags"):
+        host_cpu_fingerprint()
 
 
 def test_resolve_never_imports_or_initialises_jax_backends(proj) -> None:
@@ -329,12 +352,60 @@ def test_configure_is_idempotent(proj, restore_jax_state, monkeypatch) -> None:
     assert len(calls) == 1
 
 
-def test_configure_switches_directory_with_a_warning(proj, restore_jax_state, caplog) -> None:
+def _pretend_cache_started(monkeypatch) -> list[str]:
+    """Make JAX look as if a compile already initialised its cache; record reset_cache calls."""
+    from jax._src import compilation_cache
+
+    resets: list[str] = []
+    monkeypatch.setattr(compilation_cache, "_cache", SimpleNamespace(_path="dummy"))
+    monkeypatch.setattr(compilation_cache, "reset_cache", lambda: resets.append("reset"))
+    return resets
+
+
+def test_configure_switches_directory_with_a_warning(
+    proj, restore_jax_state, caplog, monkeypatch
+) -> None:
     configure(proj / "a", start=proj, namespace="none")
+    resets = _pretend_cache_started(monkeypatch)
     caplog.set_level(logging.WARNING, logger="xtrax.jax_cache")
     configure(proj / "b", start=proj, namespace="none")
     assert jax.config.jax_compilation_cache_dir == str(proj / "b")
-    assert "already pointed at" in caplog.text
+    assert "already in use" in caplog.text
+    assert resets == ["reset"]
+
+
+def test_switch_before_any_compile_warns_nothing_and_does_not_reset(
+    proj, restore_jax_state, caplog, monkeypatch
+) -> None:
+    from jax._src import compilation_cache
+
+    monkeypatch.setattr(compilation_cache, "_cache", None)
+    configure(proj / "a", start=proj, namespace="none")
+    caplog.set_level(logging.WARNING, logger="xtrax.jax_cache")
+    configure(proj / "b", start=proj, namespace="none")
+    assert caplog.text == ""
+
+
+def test_changing_only_max_size_after_start_resets_and_warns(
+    proj, restore_jax_state, caplog, monkeypatch
+) -> None:
+    monkeypatch.setattr(jax_cache.importlib.util, "find_spec", lambda name: object())
+    configure(proj / "a", start=proj, namespace="none", max_size_bytes=1_000_000)
+    resets = _pretend_cache_started(monkeypatch)
+    caplog.set_level(logging.WARNING, logger="xtrax.jax_cache")
+    configure(proj / "a", start=proj, namespace="none", max_size_bytes=2_000_000)
+    assert resets == ["reset"]
+    assert "max_size_bytes=2000000" in caplog.text
+    assert jax.config.jax_compilation_cache_max_size == 2_000_000
+
+
+def test_idempotent_call_reapplies_when_jax_config_was_changed_elsewhere(
+    proj, restore_jax_state
+) -> None:
+    configure(proj / "a", start=proj, namespace="none")
+    jax.config.update("jax_compilation_cache_dir", str(proj / "elsewhere"))
+    configure(proj / "a", start=proj, namespace="none")
+    assert jax.config.jax_compilation_cache_dir == str(proj / "a")
 
 
 def test_off_leaves_jaxs_own_setting_untouched(proj, restore_jax_state) -> None:
@@ -363,10 +434,72 @@ def test_world_writable_directory_warns(proj, restore_jax_state, caplog) -> None
     assert "world-writable" in caplog.text
 
 
-def test_max_size_without_filelock_is_refused(proj, restore_jax_state, monkeypatch) -> None:
+@pytest.mark.parametrize("size", [10_000_000, 0])
+def test_max_size_without_filelock_is_refused(proj, restore_jax_state, monkeypatch, size) -> None:
     monkeypatch.setattr(jax_cache.importlib.util, "find_spec", lambda name: None)
     with pytest.raises(JaxCacheConfigError, match="filelock"):
-        configure(proj / "cache", start=proj, max_size_bytes=10_000_000)
+        configure(proj / "cache", start=proj, max_size_bytes=size)
+
+
+def test_unlimited_max_size_needs_no_filelock(proj, restore_jax_state, monkeypatch) -> None:
+    monkeypatch.setattr(jax_cache.importlib.util, "find_spec", lambda name: None)
+    assert configure(proj / "cache", start=proj, max_size_bytes=-1).enabled
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_unexpanded_variable_raises_naming_the_layer(proj, monkeypatch) -> None:
+    monkeypatch.delenv("XTRAX_TEST_UNSET_SCRATCH", raising=False)
+    config = _user_config('jax_compilation_cache_dir = "$XTRAX_TEST_UNSET_SCRATCH/jax_cache"\n')
+    with pytest.raises(JaxCacheConfigError, match="unexpanded") as excinfo:
+        cache_dir_source(start=proj)
+    assert str(config) in str(excinfo.value)
+    monkeypatch.setenv(ENV_DIR, "$XTRAX_TEST_UNSET_SCRATCH/jax_cache")
+    with pytest.raises(JaxCacheConfigError, match=ENV_DIR):
+        cache_dir_source(start=proj)
+    with pytest.raises(JaxCacheConfigError, match="explicit argument"):
+        cache_dir_source("~nosuchuser_xtrax/jax", start=proj)
+
+
+def test_unexpanded_project_variable_names_the_pyproject(proj) -> None:
+    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = "$XTRAX_TEST_UNSET/c"\n')
+    with pytest.raises(JaxCacheConfigError, match="pyproject.toml"):
+        resolve(start=proj)
+
+
+def test_jax_env_variable_beats_project_and_user_files(proj, monkeypatch, tmp_path) -> None:
+    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = "proj-cache"\n')
+    _user_config(f'jax_compilation_cache_dir = "{tmp_path / "user"}"\n')
+    monkeypatch.setenv("JAX_COMPILATION_CACHE_DIR", str(tmp_path / "jaxenv"))
+    assert cache_dir_source(start=proj) == (tmp_path / "jaxenv", "$JAX_COMPILATION_CACHE_DIR")
+    monkeypatch.setenv(ENV_DIR, str(tmp_path / "xtraxenv"))
+    assert cache_dir_source(start=proj)[1] == f"${ENV_DIR}"  # xtrax's own variable is stronger
+    monkeypatch.delenv(ENV_DIR)
+    monkeypatch.setenv("JAX_COMPILATION_CACHE_DIR", "")  # empty means unset, not disabled
+    assert cache_dir_source(start=proj)[1].startswith("project config")
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-inf"])
+def test_non_finite_float_knob_is_rejected(proj, monkeypatch, bad) -> None:
+    monkeypatch.setenv(ENV_MIN_COMPILE_SECS, bad)
+    with pytest.raises(JaxCacheConfigError, match=ENV_MIN_COMPILE_SECS):
+        resolve(start=proj)
+
+
+def test_configure_does_not_initialise_a_jax_backend(tmp_path) -> None:
+    code = (
+        "from xtrax import jax_cache; import jax; "
+        f"jax_cache.configure({str(tmp_path / 'c')!r}); "
+        "from jax._src import xla_bridge; "
+        "assert not xla_bridge._backends, 'configure() initialised a backend'"
+    )
+    env = {k: v for k, v in os.environ.items() if k not in _ALL_ENV}
+    env["JAX_PLATFORMS"] = "cpu"
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=tmp_path, env=env
+    )
+    assert result.returncode == 0, result.stderr
 
 
 # ---------------------------------------------------------------- cross-process reuse
@@ -424,6 +557,38 @@ def test_second_process_reuses_executables_from_the_shared_directory(tmp_path) -
     assert warm["hits"] >= cold["misses"], (cold, warm)
     assert warm["misses"] == 0, (cold, warm)
     assert cold["source"] == f"${ENV_DIR}"
+
+
+def _cache_files(directory: Path) -> list[Path]:
+    return sorted(directory.rglob("*-cache"))
+
+
+def test_prune_corrupt_removes_truncated_and_empty_entries_only(tmp_path) -> None:
+    cache = tmp_path / "cache"
+    env = {ENV_DIR: str(cache), ENV_MIN_COMPILE_SECS: "0"}
+    cold = _run_child(tmp_path, **env)
+    entries = _cache_files(Path(cold["dir"]))
+    assert len(entries) >= 2
+    truncated, intact = entries[0], entries[1:]
+    truncated.write_bytes(truncated.read_bytes()[: truncated.stat().st_size // 2])
+    empty = Path(cold["dir"]) / "jit_dead-beef-cache"
+    empty.write_bytes(b"")
+    assert jax_cache.prune_corrupt(cache, min_age_secs=0, dry_run=True) == sorted(
+        [truncated, empty]
+    )
+    assert truncated.exists() and empty.exists()  # dry run deletes nothing
+    assert jax_cache.prune_corrupt(cache, min_age_secs=3600) == []  # too young: skipped
+    assert jax_cache.prune_corrupt(cache, min_age_secs=0) == sorted([truncated, empty])
+    assert not truncated.exists() and not empty.exists()
+    assert all(path.exists() for path in intact)
+    assert jax_cache.prune_corrupt(cache, min_age_secs=0) == []
+    warm = _run_child(tmp_path, **env)
+    assert warm["hits"] >= len(intact)
+
+
+def test_prune_corrupt_without_a_configured_cache_raises(proj) -> None:
+    with pytest.raises(JaxCacheConfigError, match="no JAX compilation cache"):
+        jax_cache.prune_corrupt()
 
 
 def test_disabled_cache_gives_no_reuse(tmp_path) -> None:

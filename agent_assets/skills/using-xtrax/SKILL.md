@@ -310,7 +310,7 @@ Choose your task:
    → Use the `xtrax-consumer-adoption` skill
 
 16. **Make every process of a campaign reuse compiled JAX executables (persistent compilation cache)**  
-   → Call `xtrax.jax_cache.configure()` at process entry, before the first jit; never hand-roll `jax.config.update("jax_compilation_cache_dir", ...)`. The directory is config, not code: argument, then `$XTRAX_JAX_CACHE_DIR` (`none` disables), then `[tool.xtrax] jax_compilation_cache_dir` in the nearest `pyproject.toml`, then `~/.config/xtrax/config.toml`, else off. `setting.source` says which layer decided; knobs and file-count caveats are in the `xtrax.jax_cache` docstring.
+   → Call `xtrax.jax_cache.configure()` at process entry, before the first jit; never hand-roll `jax.config.update("jax_compilation_cache_dir", ...)`. The directory is config, not code: argument, then `$XTRAX_JAX_CACHE_DIR` (`none` disables), then `$JAX_COMPILATION_CACHE_DIR`, then `[tool.xtrax] jax_compilation_cache_dir` in the nearest `pyproject.toml`, then `~/.config/xtrax/config.toml`, else off. `setting.source` says which layer decided; an unset `$VAR` in a path raises. JAX writes entries non-atomically: after a preempted run call `jax_cache.prune_corrupt()` (never while writers are active). Knobs, namespaces (`auto` = `jaxlib-<ver>`, opt-in `cpu-flags`) and file-count caveats are in the `xtrax.jax_cache` docstring.
 
 ---
 

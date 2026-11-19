@@ -156,9 +156,14 @@ from xtrax import jax_cache
 setting = jax_cache.configure()   # CacheSetting(dir, source, enabled, ...)
 ```
 
-`setting.source` names the deciding layer. Entries are namespaced by jaxlib version and a
-hash of the host CPU flags, because JAX's cache key does not carry the CPU feature set. See
-the `xtrax.jax_cache` docstring for the knobs and file-count caveats.
+`setting.source` names the deciding layer; `$JAX_COMPILATION_CACHE_DIR` also counts as an
+environment layer and beats the files. Entries go under `jaxlib-<version>/` inside the
+directory (JAX's key already includes the version, so this only makes pruning easy);
+`jax_cache_namespace = "cpu-flags"` adds a host-CPU-ISA segment for CPU executables shared
+across mixed nodes, and `"none"` uses the directory as given. JAX writes entries
+non-atomically, so a preempted write can leave a truncated entry; run
+`jax_cache.prune_corrupt()` between attempts. See the `xtrax.jax_cache` docstring for the
+knobs and file-count caveats.
 
 ## Documentation
 
