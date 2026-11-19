@@ -607,7 +607,7 @@ def _good_zlib() -> bytes:
 
 def test_prune_accepts_a_zlib_entry_when_a_zstd_decoder_is_present(tmp_path, monkeypatch) -> None:
     """Writer used zlib, pruner has zstd: the entry is valid, not corrupt (B1)."""
-    monkeypatch.setattr(jax_cache, "_zstd_decoder", lambda: lambda data: b"unused")
+    monkeypatch.setattr(jax_cache, "_zstd_decoder", lambda: (lambda data: b"unused", (ValueError,)))
     good = _entry(tmp_path, "jit_f", _good_zlib())
     bad = _entry(tmp_path, "jit_g", _good_zlib()[:10])
     assert jax_cache.prune_corrupt(tmp_path, min_age_secs=0) == [bad]
@@ -622,7 +622,7 @@ def test_prune_accepts_a_zstd_entry_when_a_zstd_decoder_is_present(tmp_path, mon
             raise ValueError("bad frame")
         return b"\0\0\0\1" + b"executable" * 20
 
-    monkeypatch.setattr(jax_cache, "_zstd_decoder", lambda: fake_decode)
+    monkeypatch.setattr(jax_cache, "_zstd_decoder", lambda: (fake_decode, (ValueError,)))
     good = _entry(tmp_path, "jit_f", _ZSTD_MAGIC + b"frame")
     bad = _entry(tmp_path, "jit_g", _ZSTD_MAGIC + b"TRUNCATED")
     assert jax_cache.prune_corrupt(tmp_path, min_age_secs=0) == [bad]
@@ -639,6 +639,47 @@ def test_prune_refuses_zstd_entries_without_a_decoder_and_deletes_nothing(
     with pytest.raises(jax_cache.JaxCachePruneError, match="zstd"):
         jax_cache.prune_corrupt(tmp_path, min_age_secs=0)
     assert zstd_entry.exists() and corrupt_zlib.exists()  # nothing deleted, even the corrupt one
+
+
+def test_prune_aborts_on_a_non_codec_error_and_deletes_nothing(tmp_path, monkeypatch) -> None:
+    """MemoryError while decoding a valid entry must not make it look corrupt (M5)."""
+
+    def memory_starved(data: bytes) -> bytes:
+        raise MemoryError
+
+    monkeypatch.setattr(jax_cache, "_zstd_decoder", lambda: (memory_starved, (ValueError,)))
+    valid = _entry(tmp_path, "jit_f", _ZSTD_MAGIC + b"frame")
+    corrupt = _entry(tmp_path, "jit_g", b"")
+    with pytest.raises(MemoryError):
+        jax_cache.prune_corrupt(tmp_path, min_age_secs=0)
+    assert valid.exists() and corrupt.exists()
+
+
+def test_prune_round_trips_real_zstd_entries(tmp_path) -> None:
+    zstandard = pytest.importorskip("zstandard")
+    payload = b"\0\0\0\1" + b"executable" * 50
+    good = _entry(tmp_path, "jit_f", zstandard.ZstdCompressor().compress(payload))
+    full = zstandard.ZstdCompressor().compress(payload)
+    bad = _entry(tmp_path, "jit_g", full[: len(full) // 2])
+    assert jax_cache.prune_corrupt(tmp_path, min_age_secs=0) == [bad]
+    assert good.exists() and not bad.exists()
+
+
+def test_prune_does_not_follow_a_symlinked_directory_out_of_the_cache(tmp_path) -> None:
+    """A symlinked subdirectory pointing outside the root is never read or deleted (m10)."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    _entry(cache, "jit_ok", _good_zlib())
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    victim = _entry(outside, "jit_victim", b"")  # would look corrupt
+    (cache / "linked").symlink_to(outside, target_is_directory=True)
+    assert jax_cache.prune_corrupt(cache, min_age_secs=0) == []
+    assert victim.exists()
+    inside = cache / "real"
+    inside.mkdir()
+    bad = _entry(inside, "jit_bad", b"")  # a real subdirectory is still scanned
+    assert jax_cache.prune_corrupt(cache, min_age_secs=0, dry_run=True) == [bad]
 
 
 def test_prune_dry_run_never_deletes_and_listing_matches_a_real_run(tmp_path) -> None:

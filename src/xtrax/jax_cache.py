@@ -591,24 +591,30 @@ _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 _SCAN_DEPTH = 3  # <dir>/jaxlib-<ver>/cpu-<hash>/<entry>
 
 
-def _zstd_decoder() -> Callable[[bytes], bytes] | None:
-    """A zstd decompress function from whatever this process has, or None.
+_ZstdDecoder = tuple[Callable[[bytes], bytes], tuple[type[BaseException], ...]]
+
+
+def _zstd_decoder() -> _ZstdDecoder | None:
+    """``(decompress, bad-stream error classes)`` from whatever zstd this process has, or None.
 
     JAX writes zstd when ``zstandard`` (or Python 3.14's ``compression.zstd``) is importable
     in the WRITING process and zlib otherwise, and the filename does not say which, so the
-    pruner must not assume its own codec matches the writer's.
+    pruner must not assume its own codec matches the writer's. Only the returned error
+    classes mean "this stream is corrupt"; anything else (MemoryError, ...) propagates.
     """
     try:  # optional modules, resolved by name so type checkers need not know them
-        return importlib.import_module("compression.zstd").decompress  # Python 3.14+
+        module = importlib.import_module("compression.zstd")  # Python 3.14+
+        return module.decompress, (module.ZstdError,)
     except ImportError:
         pass
     try:
-        return importlib.import_module("zstandard").ZstdDecompressor().decompress
+        module = importlib.import_module("zstandard")
+        return module.ZstdDecompressor().decompress, (module.ZstdError,)
     except ImportError:
         return None
 
 
-def _classify_entry(data: bytes, zstd_decode: Callable[[bytes], bytes] | None) -> bool:
+def _classify_entry(data: bytes, zstd_decode: _ZstdDecoder | None) -> bool:
     """True when ``data`` decodes under any codec JAX could have used, False when it is corrupt.
 
     Raises:
@@ -624,9 +630,10 @@ def _classify_entry(data: bytes, zstd_decode: Callable[[bytes], bytes] | None) -
                 "compression.zstd is importable here; run prune_corrupt in an environment with "
                 "the writer's codec. Nothing was deleted."
             )
+        decode, bad_stream_errors = zstd_decode
         try:
-            payload = zstd_decode(data)
-        except Exception:  # zstandard.ZstdError or compression.zstd.ZstdError: a bad stream
+            payload = decode(data)
+        except bad_stream_errors:  # MemoryError and other failures propagate: nothing deleted
             return False
     else:
         try:
@@ -637,14 +644,22 @@ def _classify_entry(data: bytes, zstd_decode: Callable[[bytes], bytes] | None) -
 
 
 def _entries(root: Path) -> list[Path]:
-    """JAX-key-named ``*-cache`` files at most ``_SCAN_DEPTH`` levels below ``root``."""
+    """JAX-key-named ``*-cache`` files at most ``_SCAN_DEPTH`` levels below ``root``.
+
+    A file that is a symlink, or that sits under a symlinked directory resolving outside
+    ``root``, is skipped, so nothing outside the cache directory can be read or deleted.
+    """
+    real_root = root.resolve()
     found: list[Path] = []
     for depth in range(_SCAN_DEPTH):
         pattern = "/".join(["*"] * depth + [f"*{_ENTRY_SUFFIX}"])
         found.extend(
             p
             for p in root.glob(pattern)
-            if _ENTRY_NAME.match(p.name) and p.is_file() and not p.is_symlink()
+            if _ENTRY_NAME.match(p.name)
+            and p.is_file()
+            and not p.is_symlink()
+            and p.resolve().is_relative_to(real_root)
         )
     return sorted(found)
 
