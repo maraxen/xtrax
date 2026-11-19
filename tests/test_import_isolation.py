@@ -24,6 +24,7 @@ _PACKAGES = [
     "xtrax.fileguard",
     "xtrax.inference",
     "xtrax.inference.errors",
+    "xtrax.jax_cache",
     "xtrax.kernel_seam",
     "xtrax.loop",
     "xtrax.loop.admission",

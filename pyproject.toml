@@ -176,6 +176,11 @@ Changelog = "https://github.com/maraxen/xtrax/blob/main/CHANGELOG.md"
 # jax2onnx's upper cap; the lock still resolves 0.12.1.
 override-dependencies = ["orbax-checkpoint>=0.11.17"]
 
+[tool.xtrax]
+# xtrax's own project setting for the persistent JAX compilation cache (xtrax.jax_cache). The path is
+# relative to this file; `.xtrax/` is gitignored. Library code carries no default of its own.
+jax_compilation_cache_dir = ".xtrax/jax_cache"
+
 [tool.ruff]
 target-version = "py313"
 line-length = 100
@@ -274,6 +279,7 @@ source_modules = [
   "xtrax.eda",
   "xtrax.config",
   "xtrax.findings",
+  "xtrax.jax_cache",
   "xtrax.jaxlint_runner",
   "xtrax.tombstone",
   "xtrax.telemetry",

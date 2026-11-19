@@ -128,6 +128,38 @@ model = restored_state.model
 predictions = model(test_inputs)
 ```
 
+## Persistent Compilation Cache
+
+Call `xtrax.jax_cache.configure()` once at process entry, before the first `jax.jit`, so
+every process of a campaign reuses executables an earlier one compiled. xtrax carries no
+default path; the directory comes from configuration, first match wins: the `path` argument,
+`$XTRAX_JAX_CACHE_DIR` (`none` or empty disables), `[tool.xtrax]` in the nearest
+`pyproject.toml`, then `${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml`. With none of them
+set the cache stays off.
+
+```toml
+# the consuming project's pyproject.toml
+[tool.xtrax]
+jax_compilation_cache_dir = ".xtrax/jax_cache"   # relative to this file; gitignore it
+jax_cache_min_compile_time_secs = 2.0            # store only compiles that cost something
+jax_cache_max_size_bytes = 5_000_000_000         # LRU eviction (needs filelock)
+```
+
+```toml
+# or once per machine: ~/.config/xtrax/config.toml
+jax_compilation_cache_dir = "/path/to/scratch/jax_cache"
+```
+
+```python
+from xtrax import jax_cache
+
+setting = jax_cache.configure()   # CacheSetting(dir, source, enabled, ...)
+```
+
+`setting.source` names the deciding layer. Entries are namespaced by jaxlib version and a
+hash of the host CPU flags, because JAX's cache key does not carry the CPU feature set. See
+the `xtrax.jax_cache` docstring for the knobs and file-count caveats.
+
 ## Documentation
 
 Full API docs, architecture guides, and advanced examples at [xtrax.readthedocs.io](https://xtrax.readthedocs.io).

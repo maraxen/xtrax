@@ -309,6 +309,9 @@ Choose your task:
 15. **Migrate a dependent project onto xtrax.pack, xtrax.eda or campaign tooling with an agent swarm**  
    → Use the `xtrax-consumer-adoption` skill
 
+16. **Make every process of a campaign reuse compiled JAX executables (persistent compilation cache)**  
+   → Call `xtrax.jax_cache.configure()` at process entry, before the first jit; never hand-roll `jax.config.update("jax_compilation_cache_dir", ...)`. The directory is config, not code: argument, then `$XTRAX_JAX_CACHE_DIR` (`none` disables), then `[tool.xtrax] jax_compilation_cache_dir` in the nearest `pyproject.toml`, then `~/.config/xtrax/config.toml`, else off. `setting.source` says which layer decided; knobs and file-count caveats are in the `xtrax.jax_cache` docstring.
+
 ---
 
 ## TIER-2: Deep Reference
