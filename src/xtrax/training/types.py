@@ -2,8 +2,9 @@
 
 from typing import Any, Protocol, runtime_checkable
 
-import equinox as eqx
 import jax
+
+from xtrax._tree import Struct, field
 
 PyTree = Any
 Array = jax.Array
@@ -38,18 +39,18 @@ class Callback(Protocol):
     def on_step_end(self, state: "ResumableState", metrics: dict[str, Array]) -> None: ...
 
 
-class ResumableState(eqx.Module):
+class ResumableState(Struct):
     """Immutable training state for resumable training.
 
     step: Current training step as jnp.int32 scalar (dynamic leaf).
     key: JAX random key for reproducibility.
-    model: The trainable model (eqx.Module).
+    model: The trainable model (any pytree, including an ``equinox.Module``).
     opt_state: Optimizer state (arbitrary PyTree).
     extras: Optional extra state dict (default: empty dict).
     """
 
     step: Array
     key: Array
-    model: eqx.Module
+    model: PyTree
     opt_state: PyTree
-    extras: dict[str, PyTree] = eqx.field(default_factory=dict)
+    extras: dict[str, PyTree] = field(default_factory=dict)

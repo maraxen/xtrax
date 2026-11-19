@@ -4,6 +4,7 @@ Each lane compares a candidate to an oracle. The distributional lane reports
 PASS only after a negative control has rejected a perturbed knob.
 """
 
+import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
@@ -424,7 +425,7 @@ class NegativeControl:
     Issued only by :func:`require_negative_control`. Calling the constructor
     raises ``TypeError``. ``n`` and ``alpha`` are the draw count and tail
     threshold of that run; :func:`distributional_lane` accepts the control only
-    when both match the lane.
+    when both match the lane, and when ``oracle_probs`` hash to ``oracle_digest``.
 
     Attributes:
         knob: Name of the knob that was perturbed.
@@ -433,6 +434,7 @@ class NegativeControl:
         tv: Largest step-wise total variation on the perturbed run.
         n: Draws per step in the control run.
         alpha: Tail threshold of the control run.
+        oracle_digest: SHA-256 of the oracle probabilities the control was issued against.
     """
 
     knob: str
@@ -441,6 +443,7 @@ class NegativeControl:
     tv: float
     n: int
     alpha: float
+    oracle_digest: str
     _token: object = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -628,7 +631,7 @@ def distributional_lane(
         replace(step, rejected=flag) for step, flag in zip(provisional, flags, strict=True)
     )
     if negative_control is not None:
-        _require_matching_control(negative_control, n, alpha_value)
+        _require_matching_control(negative_control, n, alpha_value, _oracle_digest(oracle_probs))
     stats_ok = all(not step.rejected for step in steps)
     control_ok = (
         negative_control is not None
@@ -669,8 +672,19 @@ def _holm_rejections(p_values: Sequence[float], alpha: float) -> list[bool]:
     return rejected
 
 
-def _require_matching_control(control: NegativeControl, n: int, alpha: float) -> None:
-    """Refuse a control that was not issued for this lane's ``n`` and ``alpha``."""
+def _oracle_digest(oracle_probs: ArrayLike) -> str:
+    """SHA-256 over the float64 bytes and shape of ``oracle_probs``."""
+    probs = np.ascontiguousarray(np.asarray(oracle_probs, dtype=np.float64))
+    hasher = hashlib.sha256()
+    hasher.update(repr(probs.shape).encode("ascii"))
+    hasher.update(probs.tobytes())
+    return hasher.hexdigest()
+
+
+def _require_matching_control(
+    control: NegativeControl, n: int, alpha: float, oracle_digest: str
+) -> None:
+    """Refuse a control not issued for this lane's ``n``, ``alpha`` and oracle."""
     if control._token is not _CONTROL_TOKEN:
         raise TypeError("NegativeControl is issued only by require_negative_control")
     if control.n != n:
@@ -678,6 +692,11 @@ def _require_matching_control(control: NegativeControl, n: int, alpha: float) ->
     if control.alpha != alpha:
         raise ValueError(
             f"negative control alpha={control.alpha} does not match the lane's alpha={alpha}"
+        )
+    if control.oracle_digest != oracle_digest:
+        raise ValueError(
+            "negative control was issued against a different oracle than this lane's "
+            "oracle_probs; rerun require_negative_control with the same oracle"
         )
 
 
@@ -689,6 +708,7 @@ def _issue_negative_control(
     tv: float,
     n: int,
     alpha: float,
+    oracle_digest: str,
 ) -> NegativeControl:
     """Build a control without going through the refused public constructor."""
     control = NegativeControl.__new__(NegativeControl)
@@ -698,6 +718,7 @@ def _issue_negative_control(
     object.__setattr__(control, "tv", float(tv))
     object.__setattr__(control, "n", int(n))
     object.__setattr__(control, "alpha", float(alpha))
+    object.__setattr__(control, "oracle_digest", oracle_digest)
     object.__setattr__(control, "_token", _CONTROL_TOKEN)
     return control
 
@@ -756,6 +777,7 @@ def require_negative_control(
         tv=max_tv,
         n=scored.n,
         alpha=float(alpha),
+        oracle_digest=_oracle_digest(oracle_probs),
     )
 
 

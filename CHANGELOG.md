@@ -7,27 +7,375 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0a13] - 2026-10-15
+<!-- new entries: add a file under changelog.d/ -->
+
+## [0.4.1b8] - 2026-11-11
 
 ### Added
 
-- **`xtrax.categorical`: exact categorical co-occurrence counts** (Stage 1 of
-  spec `261015_exact-categorical-cooccurrence`, debt #2750). `cooccurrence_counts`
-  returns exact int32 weighted contingency tables (joint, marginals, total) over
-  compact categorical codes, with batched replicates (`(R, T)` weights), circular
-  per-variable shifts that follow `np.roll`, a dense, pairs or self layout, and
-  frame-tiled `matmul` and `scatter` methods. Totals above 2**24 stay exact on
-  the integer path. `differentiable=True` adds a `custom_vjp` over float32
-  weights, with reverse mode only. `strategy="float"` is the float path.
-  `check=True` enforces code range, weight sign and integrality, and total
-  bounds under trace with `eqx.error_if`. `plan_cooccurrence` returns the tile
-  plan the kernel executes. `iter_cooccurrence_row_blocks` streams row blocks.
-  The package imports only jax, equinox, jaxtyping, numpy and
-  `xtrax.tiling.budget`; an import-linter contract forbids inference, export,
-  eda and devtools imports. Method selection on CPU is measured: `auto` picks
-  matmul when `Ka*Kb <= 256` and scatter above it (`KK_CROSSOVER_CPU = 256`, from
-  bathos run `e1f92621-7f8f-41d9-85f2-a16209f3345f`, which replaced the
-  provisional value 64). GPU selection is still provisional.
+Verify `CarrySpec.transition` execution contract end-to-end through `BatchPlanner` and `axis_dispatch` for scan and while loops.
+
+Support context-driven numerical safety checking via `Context(safety=True)`, `SafetyContext`, and `check_numerical_safety` using JAX checkify.
+
+Re-build active `ShardingPlanner` with `ShardingPolicy` validating multi-device mesh placement, tuple mesh axes, and tensor divisibility.
+
+Support opt-in sparsity specification via `SparseSpec`, `AxisSpec.sparsity`, and `Context.sparsity`, with result-changing memory scaling in `BatchPlanner`.
+
+- `xtrax.data.zarr_commit`: added module exposing `write_staged_group` and `commit_key` with explicit `chunks` configuration and dual quarantine on duplicate content divergence (#3117).
+- `xtrax.eda.report`: added `render_report` with configurable `bundle_js: bool = True` for self-contained, offline-ready Vega-Lite HTML reports without external CDN dependencies (#3126).
+
+Support `symbolic_zeros=True` in VJP seams, primal+grad fusion in `Op.fused_primal_and_grad`, and 2D Pallas grid specs.
+
+Support dynamic scalar `n_steps`, carry-leaf canonicalization, and transition validation in `WhileCarry` and `WhileLoopIterator`.
+
+Add host-side `BucketDispatcher`, `vmap_any_cond` amortized batch conditioning, and `BatchedCapacityState` in `xtrax.tiling`.
+
+Add `num_replicas`, `replica_id`, `bucket_index` and `bucket_capacity` fields (validated in `__post_init__`) plus `to_dict`/`from_dict` to `ProbeRecord`; the new fields follow `contract_version`, so existing field positions are unchanged.
+
+- `scripts/assemble_changelog.py`: added `--check-new-modules` gate enforcing changelog fragment presence when new Python modules are introduced under `src/xtrax/` (#3265).
+- `xtrax.campaign` and `xtrax campaign plan|run|status|verify` (#267): a resumable work-item runner. `plan` expands a `CampaignSpec` TOML into a manifest of hashed rows; `run` executes a `--fn module:function` per row with the `local-seq`, `local-pool` or `slurm` executor. Each unit is a zarr group committed under a lease with a done marker and content digest; resume reuses a unit only when its marker and (by default) its digest match, and records the reuse in `reuse_log.jsonl`. `verify --deep` recomputes digests and quarantines bad units. A local `campaign run` writes one run-ledger row (kind `eval`, `context.verb = "campaign"`).
+- `xtrax campaign run --executor slurm` writes an array script for the pending rows and queues nothing. `--slurm-partition`, `--slurm-gpus` (default 0), `--slurm-time`, `--slurm-cpus`, `--slurm-mem`, `--slurm-job-name` and `--slurm-max-concurrent` set its resources; any of them with a local executor is refused (#3318). The script runs the xtrax CLI with the generating interpreter by absolute path (`python -P`, so the task's working directory is not importable), puts the `--fn` module's source root on `PYTHONPATH` when it lies outside that environment and its site directories, and exports the resolved, absolute run-ledger root, so array tasks work under `sbatch --export=NONE` and from any working directory. `SlurmArrayExecutor` bakes the same environment by default (`xtrax.campaign.executors.slurm.task_environment`); its `launcher`, `pythonpath`, `env` and `env_comments` arguments override it, it takes `mem`, and its `gpus` default is 0.
+- A manifest row's `output_locator` is bound to its `manifest_row_hash` (#3308). Planner rows keep the default locator `<campaign_id>/<row_hash>.zarr` and an unchanged hash; a row built with any other locator hashes the locator too. Loading refuses a row whose locator was edited, so a manifest that points one row at another row's store fails instead of quarantining that store. `input_hash` never covers the locator. A relative locator that resolves outside the output directory is refused; use an absolute locator for a store elsewhere.
+- Campaign leases carry a fencing token (#3312). Each acquire and steal raises a per-unit `fence` number, recorded in the lock and in a `<unit>.fence` high-water file. Before every destructive step (quarantine, store promotion, marker write, staging move, abort cleanup, `.commit`/`.lock` removal, steal, heartbeat renewal, dead-worker reclaim) the worker re-checks that the lock still carries its owner, epoch and fence, that no later fence exists, and that its own boot-clock lease deadline (advanced by each heartbeat renewal) has not passed. A worker that stalls past its lease therefore cannot destroy or overwrite the output, marker, lock or commit token of the worker that stole it. Done markers record `lease_fence` and `owner_token`. Locks and markers written before this change are still accepted; running old and new xtrax workers on one campaign at the same time is not supported.
+- `xtrax-optimizing` skill: new `references/tier3-pallas-megakernels-and-ragged-buckets.md`, a Tier-3 playbook for Pallas megakernels, ragged-bucket ghost compaction and multi-GPU execution (MK-01..MK-35).
+- `xtrax.testing.verify_triton_lowering` verifies offline CUDA Triton lowering on CPU using an abstract device mesh without physical GPU hardware (#3197).
+- `xtrax-consumer-adoption` skill: the procedure an agent swarm follows to move a dependent project onto `xtrax.pack`, `xtrax.eda` or campaign tooling, from spec through adversarial review, PR and review cycles. It records which campaign code ships in the wheel and what bio projects do with py2Dmol.
+
+### Changed
+
+Decouple training dependencies (`optax`, `orbax-checkpoint`) into an optional extra `[project.optional-dependencies].training` while preserving composite `dev` and `all` extras.
+
+### Fixed
+
+- `scripts/git-hooks/pretool-git-reset-guard.sh`: pre-tool hook intercepting destructive `git reset --hard` commands, stashing working tree state with `-u` to prevent orchestrator and review checkout clobbers (#2962).
+- `scripts/generate_plugin_snapshot.py`: restored deterministic plugin snapshot generator using `cisternal.cli.app` to eliminate Unicode escaping drift and ensure byte-level freshness (#3144).
+- `xtrax.campaign`: implemented attempt-scoped staging paths (`<output>.attempt-<fence>`), output redirection in executor manifest rows, and lease-fence validation before promotion to protect against orphaned concurrent writes (#3338).
+
+## [0.4.1b7] - 2026-11-04
+
+This section was assembled from changelog fragments, and #260/#261 (unit index) and #256-#258 (writer liveness) had none; their two entries under `### Added` were added after the release was published, so the 0.4.1b7 sdist's CHANGELOG lacks them.
+
+### Added
+
+- `xtrax.fileguard`: file-count (inode) guard for shared scratch, lifted from alynxr's `storage.py`. `FileCapGuard` reads the real quota and refuses a write whose projected count exceeds `cap_fraction` (default 0.95) of the limit, re-reading every `reread_every` files. On Lustre it uses `lfs quota` and refuses rather than fall back to a filesystem-wide `df -i`. Elsewhere (NFS, ext4) it enforces the per-user `quota -w` row for the path's device alongside the `df -i` filesystem reading, and emits `quota_limit_unknown` when no per-user row exists (on a shared NFS server `df -i` is the whole server, never the user's cap). On MIT ORCD clusters (Engaging) it reads the root-written `~/orcd/.quota` report for the per-user HOME, SCRATCH and POOL file counts, refusing a stale or unparseable report. On a setgid directory it also enforces the owning group's quota. `check_concurrency_slack` refuses at plan time when N concurrent guards could jointly overshoot. Events go through an injectable emitter (`cisternal.emit_event` when installed, else logging). The core is stdlib-only and Python 3.9 compatible; `node_source()` returns it for embedding in cluster scripts run under a registered Python >= 3.9.
+- `using-xtrax` skill: `references/adoption.md` gains a "Per-unit outputs" section (`write_unit_record`, `pack_unit`, `read_unit_member`, consumer stamps via `record_name=` and `check=`, the lock and `lock=False`, `node_source()`) and symptom rows for local stamps, unit packers, unit scans and file-count guards. `xtrax-io-on-shared-filesystems` gains "Writes: the file-count budget" (`FileCapGuard`, commit-then-pack, node-local lock mounts, Engaging node facts). Both skills trigger on file-count caps and per-unit output directories.
+- `xtrax.pack`: packs a completed loose-file unit into `members.tar.zst` + `members.idx.json` + its `unit.json` record, with random access to each member. The format is alynxr's `unit_pack` (one zstd frame per USTAR member, plus a frame index), so packs read across both. `write_unit_record` commits a unit (the `CommitRecord` fields; `record_digest` equals `zarr_commit`'s over the same core) and `content_digest` is the same loose or packed. Packing is a five-step crash-safe commit under a per-unit lock, finished by `pack_sweep`; index keys are not trusted, and a loose file is deleted only when byte-identical to its packed copy. zstd comes from `compression.zstd` (3.14), `zstandard` (the new `xtrax[pack]` extra), or the `zstd` CLI, one process per member; with none, `CodecUnavailable` (an `OSError`) is raised. The core is stdlib-only and Python 3.9 compatible; `node_source()` returns it for embedding. `xtrax.run.unit_index_adapters.UnitJsonAdapter` indexes these records.
+- `xtrax.run.commit_key(..., verify_duplicate=False)`: with `verify_duplicate=True`, a key already committed with the same `input_digest` but different content raises `CommitConflictError` instead of returning `Duplicate`. Off by default in this minor and on by default in the next; a nondeterministic producer that relied on `Duplicate` will then raise. `SinkSpec.verify_duplicate` passes it through durable `ZarrStagingSink` drains.
+- `xtrax.run.quarantine(store, key)` and `quarantine_root(store)`: move a damaged or uncommitted key to `<store>.quarantine/`, never deleting it; a key that turns out to be valid (a racing writer) is restored and `QuarantineRaceError` is raised. Lifted from alynxr's fold-stats array commit.
+- `xtrax.run.unit_index` (internal for now: import from the module, nothing is re-exported from `xtrax.run`): a derived index over per-unit commit records (spec 261030 §3.1, #260, #261). `SegmentWriter` / `open_writer` append rows to one lock-free, fsynced `segments/<writer_id>.jsonl` per writer. `iter_rows` reads segments, sealed and rebuilt files and dedups; torn or unreadable lines are skipped, and listed if you pass `report=`. `compact` seals closed or dead-writer segments and archives its inputs later, never deleting; it raises `UnitIndexError` on an unreadable sealed file. `lookup` classifies a `(unit_key, input_digest)` as `IndexReuse`, `Corrupt`, `SchemaMismatch`, `IndexStale` or `Missing` by opening each candidate's own record through an adapter (`default_adapters()`: `zarr_commit`, plus the aminx, alynxr and, from #262, `unit.json` adapters in `unit_index_adapters`). `rebuild(root, stores)` adds one `rebuilt/` file derived from `(store, adapter)` pairs and removes nothing. `duckdb_view` exposes the rows to DuckDB and needs the new `xtrax[index]` extra. The root resolves as argument > `$XTRAX_UNIT_INDEX_ROOT` > `unit_index_root` in `[tool.xtrax]` of the nearest `pyproject.toml` > `${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml` > off (`root_source` says which); `none` or empty disables at any layer, and a config-file path must be absolute.
+- `xtrax.run.writer_liveness` (internal for now): `segment_writer_dead` decides whether a unit-index segment's writer is dead. A `{"closed": true}` trailer means dead. Otherwise it uses the writer id (`<host>-<pid>-<SLURM_JOB_ID or nojob>-<restart>-<uuid8>`; `nojob` without a trailer is never dead), a three-state SLURM lookup (`job_state`: present, absent, unknown; unknown is never dead) and the server clock (`server_now`). Stdlib-only and Python 3.9 compatible (#256, #257, #258).
+
+## [0.4.1b6] - 2026-10-29
+
+### Added
+
+- `using-xtrax` skill: new `references/op.md` for `xtrax.op`, covering selection rules, static configuration by closure, derivative forms, `xtrax.testing.kernel_parity` tests, and the interpret-mode GPU hazards. `using-xtrax` and `xtrax-optimizing` route kernel work to it.
+
+## [0.4.1b5] - 2026-10-26
+
+### Added
+
+- `xtrax.Struct`, `xtrax.field`, and `xtrax.model_jit`, with the pytree helpers
+  `partition`, `combine`, `is_array`, and `inference_mode` (plain JAX, no Equinox).
+  `Struct` is a frozen-dataclass pytree base whose subclasses need no decorator;
+  `field(static=True)` marks a field as pytree metadata; `model_jit` is `jax.jit`
+  for arguments that mix array leaves with Python values, tracing the arrays and
+  keying the compile cache on everything else.
+- `xtrax.op(reference, kernels=...)` (with `Op` and `VjpKernel`): one callable that runs a
+  per-backend kernel (for example Pallas) where its bound `Context` allows kernels, and
+  the plain-JAX reference otherwise. An unbound op runs the reference. Derivatives come
+  from the reference (`custom_jvp` with `jax.jvp(reference)`); `vjp_kernels` opts into a
+  backward kernel (`custom_vjp`, reverse mode only). Inside `xtrax.intent.compile` an op
+  call is an intent site of kind `"op"`: the compile's context decides, and the plan
+  records `kernel:<backend>` or `reference` with the reason. `xtrax.testing.kernel_parity`
+  checks a kernel against its reference.
+
+### Changed
+
+- The performance gate's trace probe moved off `xtrax.sparse`: the kernel
+  `sparse_filter_jit_kernel` is now `filter_jit_linear_kernel`, an
+  `eqx.filter_jit` kernel over an `eqx.nn.Linear` that must trace once across
+  two stable calls (`audit/performance_targets.toml`). The transform under the
+  gate and the thresholds (`max_traces = 1`, zero steady-state compiles) are
+  unchanged; the probe no longer passes a BCOO-sparsified model.
+- `DataModule(distributed=True)` requires `jax.process_count() > 1` and raises
+  `RuntimeError` otherwise. A one-process `init_dist()` no longer satisfies it.
+- `xtrax.loop.checkified_execution` calls `checkify` directly instead of going
+  through `SafetyManager`.
+- **Equinox is no longer a runtime dependency.** It moved to the `dev` extra, where
+  xtrax's own tests use it as a fixture; no module under `src/xtrax` imports it. A
+  static AST sweep (`tests/test_no_equinox_sweep.py`) and a subprocess gate that blocks
+  the import (`tests/test_no_equinox_training.py`) enforce this, and a `no-equinox` CI
+  job runs both in an environment without it. `jaxtyping`, which `equinox` used to
+  bring in, is now a declared dependency (`>=0.3.3`: older releases fail to import
+  equinox 0.13.8, evaluate `hashlib._Hash`, or resolve string annotations under beartype
+  on Python 3.13).
+- Training classes (`Trainer`, `SafetyTrainStep`, `ResumableState`, `ComposedLoss`,
+  `Engine`, `DataModule`), `RunSpec`, the tiling iterators and the `stages` classes
+  (`AxisBoundary`, `StageBundle`, ...) are `xtrax.Struct` pytrees instead of
+  `eqx.Module`s. Field names, defaults and static/array splits are unchanged.
+  Equinox models still work as plain pytrees: you pass one in and get the same
+  `eqx.Module` type back, `eqx.tree_at` works on a `ResumableState`, and a downstream
+  subclass may declare static fields with `eqx.field(static=True)` or
+  `xtrax.field(static=True)`. Checkpoints saved from the `eqx.Module` classes restore
+  into the `Struct` ones. `isinstance(x, eqx.Module)` is now `False` for these xtrax
+  classes.
+- `xtrax.model_jit` replaces `eqx.filter_jit` inside xtrax (`Trainer.step`, the
+  performance gate's probe kernels). `Engine.eval` still switches an Equinox model to
+  inference mode when `equinox` is loaded, without importing it.
+- `xtrax.telemetry.ir` StableHLO capture text no longer carries source locations (it is
+  printed without debug info, as `Lowered.as_text()` is), so the text is a function of
+  the computation alone. Digests of captures made by earlier releases will not match
+  captures of the same function made now.
+- **Migration.** If your code relied on `pip install xtrax` installing Equinox (for
+  `import equinox` in your own models), declare `equinox` in your own project's
+  dependencies; xtrax no longer provides it. There is no `xtrax[equinox]` extra.
+- `xtrax.inference` memoization refuses the Pallas TPU hardware-PRNG primitives
+  (`prng_seed`, `prng_random_bits`, `prng_split`, `prng_join`), as it refuses other draws:
+  a memoized draw would return the same sample on every call.
+- Changelog entries now go in `changelog.d/<slug>.<category>.md` fragments that the release PR assembles with `scripts/assemble_changelog.py`; the public-export registries (`xtrax.__all__`, `_LAZY`, `distribution/public_api.toml`) are kept in sorted order; and `src/xtrax/agent_plugin.json` is regenerated in the release PR only (`just plugin-snapshot`), not in feature PRs. The dataclass-shape gate accepts a `changelog.d/` fragment naming the class as its acknowledgement. These remove the three lines every parallel PR conflicted on.
+
+### Deprecated
+
+Probe release for xtrax #6107. Each name below warns with `DeprecationWarning` on
+access, names its replacement, and is attributed to the calling file; behaviour and
+object identity are unchanged and nothing is removed. If a warning reaches you and
+the name is in use, report it. Names with a one-line replacement are rewritten by
+`codemods/thin-wrappers-to-jax/` (ast-grep); the rest are reported.
+
+- `init_dist` -> `jax.distributed.initialize`; `is_distributed` ->
+  `jax.distributed.is_initialized`; `get_device_mesh` and `get_hardware_mesh_profile`
+  -> `jax.make_mesh`; `ShardingPolicy` (debt #3043).
+- `SafetyManager`, `with_safety`, `SafetyTrainStep`, and
+  `create_train_step(..., safety=True)` -> `jax.jit(checkify.checkify(fn,
+  errors=checkify.float_checks))` then `err.throw()` (debt #3042).
+  `safety=False` is not deprecated. `float_checks` covers NaN and division by zero,
+  not an `Inf` from overflow.
+- `WeightedLoss`, `MultiTaskLoss` -> `xtrax.ComposedLoss`, which returns
+  `(loss, aux)` for `Trainer(has_aux=True)`.
+- `partition_labels` -> one `jax.tree.map` that feeds `optax.partition`.
+- `xtrax.io` (`BoundedCallbackHandler`, `async_indexed_stream`) -> `xtrax.engine.io`.
+
+### Removed
+
+- `xtrax.sparse` and its root re-exports (`SparseConfig`, `SparsePolicy`,
+  `SparseMaskManager`, `sparsify_model`, `make_sparse_forward_fn`,
+  `sparse_filter_jit`), with `docs/api/sparse.md`, `tests/sparse`, and the
+  `using-xtrax` skill's sparsification section. A search of consumer
+  repositories found no import of it (aminx's audit artifacts list it as unused).
+  To recover it, install `xtrax==0.4.1b4` or copy
+  `src/xtrax/sparse/` from the `v0.4.1b4` tag. `sparse_filter_jit` was
+  `eqx.filter_jit` unchanged. `xtrax.export.find_bcoo_leaves` stays; it inspects
+  any BCOO leaf.
+- The `using-xtrax` reference `sparse-distributed.md` is now
+  `distributed-checkpoint.md`.
+
+### Fixed
+
+- `xtrax.model_jit` keeps at most 256 output static parts per function (least recently
+  used first) instead of one per trace signature forever. An evicted entry is rebuilt by an
+  abstract retrace (`jax.eval_shape`, no compile) when it is needed again.
+- An `xtrax.Struct` subclass that is also decorated with `@dataclass` raises `TypeError` at
+  construction. The second decorator made the class mutable and gave it a field-wise `==`
+  that returns an array for array fields. (`@dataclass(frozen=True)` was already refused by
+  `dataclasses` at class definition.)
+
+## [0.4.1b4] - 2026-10-26
+
+### Added
+
+- Experimental `xtrax.intent`: frozen `Context`, plus `IntentError`,
+  `SiteMismatchError`, and `UnsatisfiableContextError`. `Context` stores a
+  memory budget (a `MemoryBudget`, a byte count, or none), target, export
+  format, backend, chunk size, and kernel preference. `Plan` records
+  `SiteKey` / `SiteDecision` rows (primal and diff strategies, reasons,
+  warnings) and round-trips through JSON at `PLAN_SCHEMA_VERSION`.
+  `loop`, `map`, `resolve`, and `compile` plan and run those sites.
+  `xtrax.tiling` iterator classes load lazily, so `import xtrax.intent` no
+  longer loads equinox.
+- `xtrax.tiling.StaticWhile`: a frozen strategy with a static `length` for a
+  bounded `while_loop` that may collect outputs.
+
+### Changed
+
+- `xtrax.intent`: an unnamed site is labelled `module:line` from its caller
+  (for example `models.encoder.layers:42`), no longer `file.py:LINE` (#6160).
+  An `overrides=` key written as `file.py:LINE` names no site and raises
+  `ValueError`; rewrite it as `module:line`, or pass `name=` at the call site.
+  Two files that give one such label in a session raise `IntentError`.
+- `xtrax.intent` implementation modules are private (`_loop`, `_map`,
+  `_compile`, `_resolve`), so `xtrax.intent.loop` and `xtrax.intent.map` are the
+  functions (#6159). The `xtrax.intent` names are unchanged.
+- `Plan` carries plan-level `warnings`; a "not differentiable w.r.t." note is
+  recorded once there instead of on loop sites only (#6165). JSON without the
+  field still loads; `PLAN_SCHEMA_VERSION` stays 1.
+- The intent module docstrings no longer open with "Experimental." (#6171).
+
+### Fixed
+
+- `chunked_map` no longer divides by zero when an output leaf has size zero
+  (#6151).
+- `scan_around_while` switches are judged against the joint memory budget left
+  after earlier switches and overrides, not each alone (#6157).
+- A `Vmap` decision uses one `batch_size` in the planner and both re-checks
+  (#6158).
+- Unnamed sites carry their module and call-site labels no longer collide
+  across files (#6160).
+
+## [0.4.1b3] - 2026-10-23
+
+### Added
+
+- `xtrax.provenance.resolve_distribution(name, *, module=None)` (debt #2947):
+  a flat `str -> str` record of the installed distribution a package runs
+  from. It gives the version, install kind (`index`, `vcs`, `archive`,
+  `editable`, `directory`, `not_installed`), the PEP 610 VCS commit, the wheel
+  sha256 when `direct_url.json` records one for a `.whl`, the sha256 of the
+  installed `RECORD`, the resolved module file, and `module_in_dist`, which
+  is `"false"` when a source or vendored copy shadows the installed one.
+  Values the metadata does not state are `"unknown"`. It reads installed
+  metadata only, with no subprocess or network.
+- `RunProvenance.distributions` and `RunLedger.open(..., distributions=...)`:
+  a run-ledger row records a configured package list. When no list is passed,
+  `XTRAX_LEDGER_DISTRIBUTIONS` (comma-separated; empty or `none` records
+  nothing) supplies it. Entries must carry exactly the resolver's fields as
+  strings, or construction and reading raise `LedgerRecordError`.
+- `xtrax ledger show` prints the recorded distributions.
+
+### Changed
+
+- Run-ledger `SCHEMA_VERSION` is 2. The v1 to v2 migration adds an empty
+  `provenance.distributions`. `iter_rows` (and so `find_run` and
+  `compact_ledger`) now upgrades older rows on read instead of skipping them,
+  and compaction rewrites them at v2. `RunLedgerRecord.from_dict` still
+  accepts only the running version. An xtrax older than this release skips v2
+  rows with a warning.
+- `compact_ledger` refuses to seal while any row is unreadable (corrupt, or
+  written by a newer schema). It raises `LedgerRecordError` and leaves the
+  segments in place; before, such a row was archived out of view.
+- The `RECORD` hash in `resolve_distribution` is taken over the file's raw
+  bytes, so CRLF metadata hashes as installed.
+
+## [0.4.1b2] - 2026-10-20
+
+### Added
+
+- `xtrax.inference.hoisted_map`, `make_hoisted` and `HoistedMap` (debt #2600):
+  run a shared stage once per call, then map the per-element stage over an axis.
+  An optional `memoize_jaxpr` cache is owned by the instance. An axis declaration
+  refuses shared inputs that vary along the axis (`HoistVaryingInputError`), and
+  `check_elements` probes the first elements against a monolithic reference
+  (`HoistParityError`).
+- `xtrax.profiling.probe_unit` and `UnitProbeResult`: a measurement core that
+  runs one unit of work at its real shape (warm-up, untraced median wall, then
+  traced steady calls) and reports recompiles per steady call, XLA executions
+  per unit, and a device-versus-host+Python time split. The device time is the
+  interval union of `hlo_op` events, computed by the new
+  `xtrax.profiling.trace.interval_union_seconds`. Spec 261016 X1.
+- `xtrax.cli.profile_dir.resolve_profile_dir`: resolves where a profile record
+  is written and reports the layer that decided. Order: explicit argument,
+  `XTRAX_PROFILE_DIR`, `profile_dir` under `[tool.xtrax]` in the nearest
+  `pyproject.toml`, `profile_dir` in `~/.config/xtrax/config.toml`,
+  `RunSpec.output_root`, then off (print-only). An empty value or `none`
+  disables output. An explicit `--out` relative path resolves against the current
+  directory; a relative value in `XTRAX_PROFILE_DIR` or a config file, and a
+  malformed file, fail loudly. Spec 261016 X3.
+- `xtrax profile` verb (`xtrax.cli.profile_verb`): measures a callable given as
+  `--fn module:symbol` with zero-filled `--shapes` or a `--inputs module:factory`,
+  and prints a markdown report of recompiles, executions per element, the
+  device/host split, compile seconds, and wall time per unit. Exit 0 pass, 1
+  flagged (steady recompiles, or executions per element at or above 0.5), 2 could
+  not measure. Any failure in the measure path, including an allocation error at
+  a huge `--shapes`, exits 2 rather than 1. A stage-1 `ProbeRecord` is written
+  when a directory resolves. Spec 261016 X4.
+- `xtrax.profiling.fit.fit_precheck`: compiles a unit on shape structs and
+  compares `memory_analysis()` with the device `bytes_limit`, without
+  allocating inputs. Where the device reports no limit (CPU) it returns
+  unknown without compiling. `xtrax profile` prints the fit row, exits 2 on a
+  unit that does not fit at the measured extent, even with `--target-extent N`.
+  With `--target-extent N` it also checks the fit at N (`fits at target extent`)
+  and withholds the linear wall estimate at N when the unit does not fit there
+  ("does not fit at target extent") or when `assert_claim_supported(END_TO_END)`
+  rejects it ("wall estimate withheld"). Spec 261016 X6.
+- `xtrax.profiling.controls`: shipped negative controls. `run_negative_controls`
+  probes a host loop and its vmapped twin at each batch size and reports
+  whether the probe still flags the first and passes the second on this
+  platform and JAX version. Spec 261016 X7.
+- `xtrax.profiling.rules`: the dispatch-ratio rule (`EXEC_PER_ELEMENT_FLAG =
+  0.5`, `steady_state_flags`) shared by `xtrax profile`, `--check` and the
+  controls. The threshold is calibrated on CPU by the pre-registered
+  `scripts/experiments/prof_calibrate_dispatch_ratio.py`: host loops measured
+  at least 3.0 executions per element and 15 batched units at most 0.129. The
+  performance gate gains an optional per-kernel `max_executions` ceiling.
+  Spec 261016 X5.
+- `xtrax profile --check PATH --sha REV`: re-checks a written `ProbeRecord`
+  for a launch gate. Exit 0 only when its provenance is clean, its sha matches
+  REV (short shas are resolved in the repository) and its flags pass; 1 when
+  stale or flagged; 2 when unreadable, missing or negative metrics, zero
+  executions, internally inconsistent (`exec_per_element` must equal
+  `n_executions / n_atoms`), carrying an unverifiable or unresolvable sha, or
+  when `--sha` is omitted and no flag was raised ("pass --sha <rev> to check
+  freshness"). A flagged record without `--sha` still exits 1. Spec 261016 X9.
+
+### Changed
+
+- The performance gate's dispatch probe measures through `probe_unit`.
+  `UnitProbeResult.dispatch_counts` carries the raw trace totals the gate
+  compares against its ceilings, so gate counts are unchanged. Spec 261016 X8.
+
+### Fixed
+
+- `ProbeRecord.git_sha` now resolves from the caller's repository (the cwd's
+  git top-level, or an explicit `repo_root`) instead of the xtrax install, so
+  a downstream measurement carries its own commit. `emit_probe_record` gains
+  keyword-only `git_sha` and `repo_root` parameters. Spec 261016 X2.
+- `DataModule` on the Grain path (`use_grain_pipeline=True`) no longer
+  repeats epochs internally. **Behaviour change:** `train_iter()` now yields
+  exactly one epoch per call, and `Engine.fit`'s `num_epochs` sets the number
+  of passes. `DataModule.num_epochs` is no longer consulted by the iterators.
+  Call `k` shuffles with `seed + k`, so successive epochs differ (previously
+  every call replayed the same order). **Behaviour change:** `eval_iter()` is
+  always one unshuffled pass, so `Engine.evaluate` terminates when
+  `num_epochs=None` and no longer repeats the eval set. `eval_iter()` also
+  keeps the final partial batch instead of dropping it.
+- `DataModule.collate_fn` is passed to Grain as the batch function on the
+  Grain path. It was previously ignored.
+- `create_distributed_pipeline` batches `global_batch_size //
+  jax.process_count()` per process. It raises `ValueError` when the global
+  batch is not divisible by the process count, or the per-process batch is not
+  divisible by `num_devices`. The old per-device batch was wrong when one
+  process drove several devices.
+- `sink_session` drains pending ordered callbacks with `jax.effects_barrier()`
+  before `finalize` on a clean exit, and before `close` on every exit, so late
+  callbacks from asynchronously dispatched computations no longer reach a
+  finalized sink.
+- `distributional_lane` rejects a `NegativeControl` issued for a different
+  `oracle_probs`. The control stores a SHA-256 digest of the oracle, and a
+  mismatch raises `ValueError`. Previously a rejecting control for one oracle
+  could unlock PASS against another.
+- The provenance reader accepts an annotated `__provenance__: Provenance = ...`
+  declaration (`ast.AnnAssign` with a value), so the audit no longer fails it.
+- Axis-invariance checker (`verify_axis_invariance`) no longer misses
+  dependence that reaches a `scan` carry only on a later iteration: the loop
+  body is iterated to a carry fixed point. `while` loops no longer crash with
+  a `zip` length error, and every carry output of a `while` depends on the
+  inputs its predicate reads. Input names now map to the flattened pytree
+  leaves of each argument, so a dict argument's other leaves no longer make
+  a varying name look like it covers the wrong output.
+
+## [0.4.1b1] - 2026-10-16
+
+### Added
+
+- **EDA Redesign: Vega-Lite canonical interchange, pluggable visualization backends, and deterministic artifacts**:
+  Redesigned `xtrax.eda` into a decoupled, declarative plan inspection engine:
+  - `xtrax.eda.spec.generate_vega_spec`: compiles `PlanStatsDict` into valid Vega-Lite v5 specifications without graphics libraries.
+  - Pluggable visualization backends (`xtrax.eda.backends`): headless Vega-Lite renderer via `vl-convert-python` (`xtrax[eda-vega]`) alongside legacy Matplotlib/Seaborn (`xtrax[eda-matplotlib]`).
+  - Extensible panel registry (`xtrax.eda.panels`) with `copy.deepcopy` immutability quarantine and error placeholders.
+  - Deterministic hashed exports (`xtrax.eda.export`): `export_canonical_json` with IEEE-754 float stabilization and sort keys, `export_axes_csv`, and `export_plan_artifacts` producing SHA-256 manifests with opaque context passthrough.
+  - Fixed deduplication efficiency y-axis label to `"Dedup Reduction Ratio (1 - unique/total)"`.
+  - Added `memory_warnings` and `memory_estimate_bytes` float sanitization per RFC 8259.
+  - Maintained full backward compatibility for `render()` and `plan_to_dataframe()`.
 - **Per-axis input invariance** (#2598, #2599): `AxisSpec.varying_inputs`
   names the inputs that vary along a mapped axis; every other named input is
   invariant along it. `declare_varying_inputs` rejects an unknown axis or
@@ -128,19 +476,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`xtrax.export.rings.make_input_class(generator, ..., label=)`** (debt #2526):
   input classes are built from a caller-supplied generator callable.
 
-### Fixed
-
-- **BatchPlanner per-axis `memory_estimator`** (#2593, #2594): an estimator
-  that raises fails `plan()` with `RuntimeError` naming the axis, instead of
-  falling back to the cardinality rules and selecting Vmap. A missing device
-  `bytes_limit` is still logged once and compared against the documented 4 GiB
-  default. `memory_estimator=None` keeps those cardinality rules; when they pick
-  Vmap without an estimate, the planner logs a warning once per planner and
-  axis. When `AxisSpec.element_input_bytes` is
-  set, an estimate below that per-element input size raises `ValueError`
-  naming the axis, the estimate, and the bound. Specs that omit it have no
-  element shape or dtype, so that check is skipped.
-
 ### Changed
 
 - **`extent_scaling_report`** flags a loop only when both per-iteration work and
@@ -148,34 +483,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scan of `ceil(log2(n))` steps; a vector of queries makes each step's work
   grow, but the trip count does not, so that loop is no longer flagged. A
   `while` with no static length is run once per extent to count its iterations.
-
-### Deprecated
-
-- **`xtrax.export.rings.symmetric_geometry` and `sub_k_neighbours`** (debt #2526):
-  protein/MPNN input generators. They emit `DeprecationWarning` and will be
-  removed in the next release. Callers pass their own generator to
-  `make_input_class`. `BUCKET_LADDER` is unchanged.
-- **`xtrax.run` output contract** (debt #2523): `make_sink` accepts `format="memory"`
-  and returns a `MemorySink` with the same stage/drain/finalize protocol as
-  `ZarrStagingSink`, including read-back. `ZarrStagingSink` appends along the
-  leading axis across drains when `SinkSpec.append=True` (the default remains
-  overwrite). `finalize()` consolidates, fsyncs, and digests the store, returning
-  a `SinkReceipt` (`path`, `digest`, `digest_algo_version`, `run_id`, `seed`).
-  `derive_sink_spec` copies `RunSpec.seed` and, when `output_dir` is omitted,
-  `RunSpec.output_root`. `RunSpec` gains optional static fields `output_root`,
-  `device_count`, `precision`, and `shard_lineage`. `SinkSpec.provenance` injects
-  precomputed git state or a path to capture from; the default no longer shells
-  out from `Path.cwd()`. Exclusive store roots record `producer` and `xtrax_version`;
-  durable roots keep those fields inside the `xtrax.store` record so the root
-  attr set stays exactly that record.
-  `level_schemas` supplies a JSON schema per key depth. `DIGEST_ALGO_VERSION`
-  labels the zarr content digest. `canonical_hash`
-  (`CANONICAL_HASH_ALGO_VERSION`) is the sha256-of-canonical-JSON helper used by
-  run-layer document digests. `atomic_write_bytes` / `atomic_write_text` write
-  via temp file, fsync, replace, and directory fsync. `xtrax run` writes
-  `manifest.json` with `atomic_write_text`.
-
-### Changed
 
 - **Reserved sink attr names** (debt #2523): `producer` and `xtrax_version` are
   now reserved, alongside the existing provenance names. Staging an attr with
@@ -224,7 +531,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from both `jax.jit` and `eqx.filter_jit`. `hlo_text_for` raises `TypeError` when
   the compiled object has no HLO text, instead of returning `None`.
 
+- **`BatchPlanner` memory-limit fallback is no longer silent** (#2524): the
+  per-axis `memory_estimator` path reads the device limit via
+  `device_memory_budget(fraction=1.0)`, so a reported `bytes_limit` is still
+  compared in full. When the device does not report `bytes_limit`, the planner
+  logs once and uses the documented 4 GiB default
+  (`xtrax.tiling.estimators.DEFAULT_DEVICE_MEMORY_BYTES`) instead of
+  substituting that figure with no record. Planning decisions on devices that
+  do not report a limit are unchanged. `device_memory_budget` itself still
+  raises when the runtime cannot answer.
+- **using-xtrax skill**: end-to-end length bucketing (`AxisSpec.bucket_boundaries`,
+  host `select_bucket`/`bucketize`, `BUCKET_LADDER`, one compile per rung; #2497),
+  a local-copy replacement table and the 0.4.0a12 `SafeMap` alias removal pointing
+  at `codemods/safemap-to-chunkedmap/` (#2498), standalone `convert_to_onnx` versus
+  raw jax2onnx plus rings/divergence (#2499), limits and telemetry fail-closed
+  (`LedgerUnavailableError`; #2500), duplicated primitives including
+  `synthesize_dedup_spec` (#2501), `WhileCarry` for inference-only loops (#2103),
+  and the `ChunkedMap`/`lax.map` scan-of-while compile hazard (#2105).
+
+### Deprecated
+
+- **`xtrax.export.rings.symmetric_geometry` and `sub_k_neighbours`** (debt #2526):
+  protein/MPNN input generators. They emit `DeprecationWarning` and will be
+  removed in the next release. Callers pass their own generator to
+  `make_input_class`. `BUCKET_LADDER` is unchanged.
+- **`xtrax.run` output contract** (debt #2523): `make_sink` accepts `format="memory"`
+  and returns a `MemorySink` with the same stage/drain/finalize protocol as
+  `ZarrStagingSink`, including read-back. `ZarrStagingSink` appends along the
+  leading axis across drains when `SinkSpec.append=True` (the default remains
+  overwrite). `finalize()` consolidates, fsyncs, and digests the store, returning
+  a `SinkReceipt` (`path`, `digest`, `digest_algo_version`, `run_id`, `seed`).
+  `derive_sink_spec` copies `RunSpec.seed` and, when `output_dir` is omitted,
+  `RunSpec.output_root`. `RunSpec` gains optional static fields `output_root`,
+  `device_count`, `precision`, and `shard_lineage`. `SinkSpec.provenance` injects
+  precomputed git state or a path to capture from; the default no longer shells
+  out from `Path.cwd()`. Exclusive store roots record `producer` and `xtrax_version`;
+  durable roots keep those fields inside the `xtrax.store` record so the root
+  attr set stays exactly that record.
+  `level_schemas` supplies a JSON schema per key depth. `DIGEST_ALGO_VERSION`
+  labels the zarr content digest. `canonical_hash`
+  (`CANONICAL_HASH_ALGO_VERSION`) is the sha256-of-canonical-JSON helper used by
+  run-layer document digests. `atomic_write_bytes` / `atomic_write_text` write
+  via temp file, fsync, replace, and directory fsync. `xtrax run` writes
+  `manifest.json` with `atomic_write_text`.
+
 ### Fixed
+
+- **BatchPlanner per-axis `memory_estimator`** (#2593, #2594): an estimator
+  that raises fails `plan()` with `RuntimeError` naming the axis, instead of
+  falling back to the cardinality rules and selecting Vmap. A missing device
+  `bytes_limit` is still logged once and compared against the documented 4 GiB
+  default. `memory_estimator=None` keeps those cardinality rules; when they pick
+  Vmap without an estimate, the planner logs a warning once per planner and
+  axis. When `AxisSpec.element_input_bytes` is
+  set, an estimate below that per-element input size raises `ValueError`
+  naming the axis, the estimate, and the bound. Specs that omit it have no
+  element shape or dtype, so that check is skipped.
 
 - **CPU fusion scope attribution** (#2084): `scope_map_from_hlo_text` maps each
   fusion instruction (the `hlo_op` a CPU trace executes, e.g. `add_add_fusion.3`)
@@ -256,27 +618,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   absolute byte counts; otherwise it uses `device_memory_budget` (source
   `device`) and, when the device reports no `bytes_limit`, a logged 4 GiB
   default scaled by `headroom`.
-
-### Changed
-
-- **`BatchPlanner` memory-limit fallback is no longer silent** (#2524): the
-  per-axis `memory_estimator` path reads the device limit via
-  `device_memory_budget(fraction=1.0)`, so a reported `bytes_limit` is still
-  compared in full. When the device does not report `bytes_limit`, the planner
-  logs once and uses the documented 4 GiB default
-  (`xtrax.tiling.estimators.DEFAULT_DEVICE_MEMORY_BYTES`) instead of
-  substituting that figure with no record. Planning decisions on devices that
-  do not report a limit are unchanged. `device_memory_budget` itself still
-  raises when the runtime cannot answer.
-- **using-xtrax skill**: end-to-end length bucketing (`AxisSpec.bucket_boundaries`,
-  host `select_bucket`/`bucketize`, `BUCKET_LADDER`, one compile per rung; #2497),
-  a local-copy replacement table and the 0.4.0a12 `SafeMap` alias removal pointing
-  at `codemods/safemap-to-chunkedmap/` (#2498), standalone `convert_to_onnx` versus
-  raw jax2onnx plus rings/divergence (#2499), limits and telemetry fail-closed
-  (`LedgerUnavailableError`; #2500), duplicated primitives including
-  `synthesize_dedup_spec` (#2501), `WhileCarry` for inference-only loops (#2103),
-  and the `ChunkedMap`/`lax.map` scan-of-while compile hazard (#2105).
-### Fixed
 
 - **Skill examples match installed call signatures** (`agent_assets/skills`, #2496).
   Copy-paste blocks for `select_bucket` / `bucketize`, `SafetyTrainStep`, `Engine.fit`,

@@ -6,40 +6,36 @@ from collections.abc import Callable
 from typing import Any
 
 import chex
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from xtrax.sparse.config import SparseConfig
-from xtrax.sparse.inference import sparse_filter_jit, sparsify_model
-from xtrax.sparse.policy import SparsePolicy
+from xtrax._tree import model_jit
 
 
-def _make_policy(budget: int) -> SparsePolicy:
-    return SparsePolicy(
-        config=SparseConfig(
-            nse_budget=budget,
-            update_schedule=lambda _step: True,
-            fallback_mode="dense_mask",
-        )
-    )
-
-
-@sparse_filter_jit
+# `filter_jit_linear_kernel` replaced `sparse_filter_jit_kernel` when xtrax.sparse was removed
+# (#6107). The name is kept for audit/performance_targets.toml. The transform under the gate is
+# now `xtrax.model_jit`, the one place xtrax models enter a trace, over a two-array MLP held as a
+# plain dict (a non-array leaf, the activation tag, rides along as a static compile key).
+@model_jit
 @chex.assert_max_traces(n=1)
-def sparse_filter_jit_kernel(m: eqx.nn.Linear, x: jnp.ndarray) -> tuple[int, ...]:
-    """Representative sparse_filter_jit kernel for trace-count gate."""
-    return m.weight.shape
+def filter_jit_linear_kernel(m: dict[str, Any], x: jnp.ndarray) -> tuple[int, ...]:
+    """Representative `model_jit` kernel over a plain-dict MLP for the trace-count gate."""
+    h = jnp.tanh(x @ m["w1"] + m["b1"]) if m["act"] == "tanh" else x @ m["w1"] + m["b1"]
+    return (h @ m["w2"]).shape
 
 
-def probe_sparse_filter_jit_kernel(guarded: Callable[..., Any]) -> None:
-    """Exercise sparse_filter_jit kernel with stable inputs."""
-    key = jax.random.PRNGKey(0)
-    model = eqx.nn.Linear(4, 4, key=key)
-    sparse_model = sparsify_model(model, _make_policy(budget=8))
+def probe_filter_jit_linear_kernel(guarded: Callable[..., Any]) -> None:
+    """Exercise the `model_jit` kernel twice with stable inputs."""
+    k1, k2 = jax.random.split(jax.random.PRNGKey(0))
+    model = {
+        "w1": jax.random.normal(k1, (4, 4)),
+        "b1": jnp.zeros((4,)),
+        "w2": jax.random.normal(k2, (4, 2)),
+        "act": "tanh",
+    }
     x = jnp.ones((4,))
-    guarded(sparse_model, x)
-    guarded(sparse_model, x)
+    guarded(model, x)
+    guarded(model, x)
 
 
 def probe_stable_jnp_kernel(guarded: Callable[..., Any]) -> None:

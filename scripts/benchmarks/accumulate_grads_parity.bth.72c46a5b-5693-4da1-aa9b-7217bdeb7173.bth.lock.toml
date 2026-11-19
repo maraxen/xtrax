@@ -1,0 +1,8 @@
+# accumulate_grads_parity.bth.72c46a5b-5693-4da1-aa9b-7217bdeb7173.bth.lock.toml — written at run time, never modified
+[manifest]
+written_at = "2026-10-26T15:31:22.290879+00:00"
+sidecar_sha256 = "a5aa61b96ec0631d95c95049c205e04f6bb795f8abab2b31b2092f12075c120b"
+sidecar_path = "/tmp/claude-1000/e261026/xtrax-accum/scripts/benchmarks/accumulate_grads_parity.bth.toml"
+git_sha = "4b00dfb7d2b4da044d3093c63260bb1441361255"
+script_sha256 = "878e8627228c21e84a9e7ef1fac22997586a5aa599a7b1ad6f83dea589dce15f"
+run_id = "72c46a5b-5693-4da1-aa9b-7217bdeb7173"

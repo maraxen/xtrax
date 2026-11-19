@@ -1,10 +1,14 @@
-"""Tests for safe_scan transform."""
+"""Tests for deprecated safe_scan transform (behaviour preserved during #6107 probe release)."""
+
+import warnings
 
 import jax
 import jax.numpy as jnp
 import pytest
 
-from xtrax.transforms import safe_scan
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    from xtrax.transforms import safe_scan
 
 
 class TestSafeScanBasic:

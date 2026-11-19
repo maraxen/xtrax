@@ -3,31 +3,26 @@
 Phase C of .praxia/docs/specs/
 260824_upstream-profiling-probe-tooling-from-prolix.md: profiler-backed probe
 kinds for the performance gate, alongside (not replacing) the chex
-trace-count probes. The counters come from xtrax.profiling.trace's
-parse_dispatch_counts over a jax.profiler.trace capture of ONE guarded
-invocation -- warm-up happens OUTSIDE the traced window, so steady-state
-n_compilations is expected to be 0 (D9 spike: backend_compile_and_load only
-appears if compilation occurs inside the window).
+trace-count probes. The measurement itself is delegated to
+xtrax.profiling.unit_probe.probe_unit: one warm-up call OUTSIDE the traced
+window, then one traced steady call. The counters are the raw
+parse_dispatch_counts totals over that window (exposed as
+UnitProbeResult.dispatch_counts), so steady-state n_compilations is expected
+to be 0 (D9 spike: backend_compile_and_load only appears if compilation
+occurs inside the window).
 
 Event-name fragility: see xtrax.profiling.trace's docstring and the scope
 doc's D9 result. Re-spike on any JAX upgrade before trusting new ceilings.
 """
 
-import gzip
-import json
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
-
-import jax
 
 from xtrax.devtools.gates._trace_probe import (
     _guard_for_trace_count,
     import_probe,
     import_qualname,
 )
-from xtrax.profiling.trace import parse_dispatch_counts
+from xtrax.profiling.unit_probe import probe_unit
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,20 +32,6 @@ class DispatchResult:
     passed: bool
     skipped: bool = False
     reason: str = ""
-
-
-def _load_newest_events(trace_dir: Path) -> list[dict[str, Any]]:
-    trace_files = sorted(trace_dir.rglob("*.trace.json.gz"))
-    if not trace_files:
-        msg = f"jax.profiler.trace wrote no *.trace.json.gz under {trace_dir}"
-        raise RuntimeError(msg)
-    with gzip.open(trace_files[-1], "rt") as fh:
-        data = json.load(fh)
-    events = data.get("traceEvents")
-    if not isinstance(events, list):
-        msg = f"{trace_files[-1]} has no traceEvents list"
-        raise RuntimeError(msg)
-    return events
 
 
 def measure_dispatch_counts(qualname: str, trace_probe: str | None) -> DispatchResult:
@@ -70,23 +51,16 @@ def measure_dispatch_counts(qualname: str, trace_probe: str | None) -> DispatchR
     target = import_qualname(qualname)
     probe_runner = import_probe(trace_probe)
 
-    # One guarded callable, built ONCE and reused for both the warm-up call
-    # and the traced call. run_trace_gate() re-wraps per invocation, which
-    # would recompile INSIDE the trace window and poison n_compilations --
+    # One guarded callable, built ONCE and reused for the warm-up call and the
+    # traced call. run_trace_gate() re-wraps per invocation, which would
+    # recompile INSIDE the trace window and poison n_compilations --
     # steady-state counting needs the windowed call to hit an already-
     # compiled executable.
     guarded = _guard_for_trace_count(target, max_traces=10**6)
-    probe_runner(guarded)  # warm-up + compile OUTSIDE the window
+    unit = probe_unit(lambda: probe_runner(guarded), (), n_steady=1, n_wall=1)
 
-    with tempfile.TemporaryDirectory(prefix="xtrax-dispatch-probe-") as tmp:
-        trace_dir = Path(tmp)
-        with jax.profiler.trace(str(trace_dir), create_perfetto_trace=True):
-            probe_runner(guarded)
-        events = _load_newest_events(trace_dir)
-
-    counts = parse_dispatch_counts(events)
     return DispatchResult(
         qualname=qualname,
-        counts=counts,
+        counts=dict(unit.dispatch_counts),
         passed=True,
     )

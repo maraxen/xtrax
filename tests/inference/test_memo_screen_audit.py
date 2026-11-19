@@ -20,6 +20,12 @@ def _registered_primitive_names() -> set[str]:
     # every lazily created one exists before the scan.
     jax.make_jaxpr(lambda k: jax.random.normal(k, (2,)))(jax.random.key(0))
     jax.make_jaxpr(lambda k: jax.random.gamma(k, 1.0))(jax.random.key(0))
+    # Pallas backends register their own primitives (xtrax.op kernels import them), so
+    # import both here; otherwise the scan depends on which tests ran first.
+    import importlib
+
+    for backend in ("jax.experimental.pallas.tpu", "jax.experimental.pallas.triton"):
+        importlib.import_module(backend)
     from jax._src.core import Primitive
 
     return {o.name for o in gc.get_objects() if isinstance(o, Primitive)}
@@ -51,7 +57,13 @@ def test_every_registered_draw_or_callback_primitive_is_classified() -> None:
     import re
 
     family = re.compile(r"random|rng|threefry|philox|callback|debug")
-    registered = {n for n in _registered_primitive_names() if family.search(n)}
+    # Names the family pattern matches that are neither draws nor host callbacks.
+    # debug_barrier_p: Pallas Triton thread barrier inside a kernel, registered once any
+    # test imports Pallas (xtrax.op kernels); it has no host effect and draws nothing.
+    not_draw_or_callback = {"debug_barrier_p"}
+    registered = {
+        n for n in _registered_primitive_names() if family.search(n)
+    } - not_draw_or_callback
     unclassified = sorted(registered - memo._BANNED_PRIMITIVES - memo._ADMITTED_KEY_PRIMITIVES)
     assert unclassified == [], f"classify these (jax {jax.__version__}): {unclassified}"
 
@@ -97,6 +109,75 @@ def test_a_draw_on_a_key_argument_is_still_rejected() -> None:
     """Control for the admission above: drawing, not key plumbing, is what is banned."""
     with pytest.raises(MemoImpurityError, match="random_bits"):
         memoize_jaxpr(lambda k: jax.random.normal(k, (2,)))(jax.random.PRNGKey(0))
+
+
+def _io_cb(x):  # noqa: ANN001, ANN202
+    return jax.experimental.io_callback(lambda a: a, jax.ShapeDtypeStruct(x.shape, x.dtype), x)
+
+
+def _io_cb_ordered(x):  # noqa: ANN001, ANN202
+    return jax.experimental.io_callback(
+        lambda a: a, jax.ShapeDtypeStruct(x.shape, x.dtype), x, ordered=True
+    )
+
+
+def _pure_cb(x):  # noqa: ANN001, ANN202
+    return jax.pure_callback(lambda a: a, jax.ShapeDtypeStruct(x.shape, x.dtype), x)
+
+
+# Each banned family end to end (the registry tests above pin only that a name exists).
+_REJECTED = [
+    ("io_callback", _io_cb),
+    ("io_callback", _io_cb_ordered),
+    ("pure_callback", _pure_cb),
+    # Key creation with no draw, so `random_seed` alone is what rejects it.
+    ("random_seed", lambda x: jax.random.key_data(jax.random.key(0)) + x[0]),
+    ("random_seed", lambda x: jax.random.PRNGKey(0) + x[0]),
+    ("rng_uniform", lambda x: jax.lax.rng_uniform(0.0, 1.0, x.shape) + x),
+    (
+        "rng_bit_generator",
+        lambda x: jax.lax.rng_bit_generator(jnp.zeros(4, jnp.uint32), x.shape)[1] + x,
+    ),
+    ("random_gamma", lambda x: jax.random.gamma(jax.random.key(1), x)),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "fn"),
+    _REJECTED,
+    ids=[
+        "io",
+        "io_ordered",
+        "pure_cb",
+        "key_inside",
+        "PRNGKey_inside",
+        "rng_uniform",
+        "rbg",
+        "gamma",
+    ],
+)
+def test_every_banned_family_is_rejected_end_to_end(label: str, fn) -> None:  # noqa: ANN001
+    with pytest.raises(MemoImpurityError, match=label):
+        memoize_jaxpr(fn)(jnp.ones(3))
+
+
+@pytest.mark.parametrize("fn", [_io_cb, _io_cb_ordered, lambda x: (jax.debug.print("{}", x), x)[1]])
+def test_a_program_that_carries_a_jaxpr_effect_is_rejected(fn) -> None:  # noqa: ANN001
+    """Debug and io primitives carry a jaxpr effect in 0.11.1 (`pure_callback` carries
+    none). The screen reads names, not effects, so this pins the agreement: if JAX
+    renames one of these, the effect is still there and the program must still be
+    rejected, so the test goes red instead of the screen going quiet."""
+    assert jax.make_jaxpr(fn)(jnp.ones(3)).jaxpr.effects
+    with pytest.raises(MemoImpurityError):
+        memoize_jaxpr(fn)(jnp.ones(3))
+
+
+def test_effect_free_pure_program_is_admitted() -> None:
+    """Control for the effects test: no effects, no rejection."""
+    fn = lambda x: jnp.sin(x) * 2  # noqa: E731
+    assert not jax.make_jaxpr(fn)(jnp.ones(3)).jaxpr.effects
+    m = memoize_jaxpr(fn)
+    assert m(jnp.ones(3)) is not None
 
 
 # --- #5679: typed PRNG keys (jax.random.key) ------------------------------------------

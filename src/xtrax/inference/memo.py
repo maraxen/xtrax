@@ -489,6 +489,13 @@ _RANDOM_PRIMITIVES = frozenset(
         "threefry4x32",
         "philox2x32",
         "philox4x32",
+        # Pallas TPU hardware PRNG (registered by `jax.experimental.pallas.tpu`): seed
+        # sets per-core state that random_bits then reads. split/join act on that
+        # stateful key; banned too, since refusing to memoize a TPU kernel is the safe miss.
+        "prng_seed",
+        "prng_random_bits",
+        "prng_split",
+        "prng_join",
     }
 )
 # Key plumbing is deterministic in the key it is given and draws nothing, so it is

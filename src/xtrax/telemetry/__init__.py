@@ -83,6 +83,7 @@ from xtrax.telemetry.record import (
     RunLedgerRecord,
     RunProvenance,
     SchemaVersionMismatchError,
+    ledger_distributions,
     telemetry_opted_out,
 )
 from xtrax.telemetry.store import BlobStore, BlobStoreError, digest_of
@@ -130,6 +131,7 @@ __all__ = [
     "filter_citable",
     "find_run",
     "iter_rows",
+    "ledger_distributions",
     "migration_chain_is_complete",
     "resolve_capture_mode",
     "resolve_root",

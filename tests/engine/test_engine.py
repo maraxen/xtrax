@@ -9,10 +9,16 @@ import jax.numpy as jnp
 import optax
 import pytest
 
+from xtrax._tree import Struct
 from xtrax.engine.engine import Engine
-from xtrax.training.step import SafetyTrainStep
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import Callback, ResumableState
+
+# #6107 probe release: importing a deprecated name warns; these tests exercise the
+# unchanged behaviour, so the access is asserted once here.
+with pytest.deprecated_call(match="xtrax #6107"):
+    from xtrax.safety.manager import SafetyManager
+    from xtrax.training.step import SafetyTrainStep
 
 # ============================================================================
 # Test Helpers
@@ -175,12 +181,14 @@ def create_test_engine_with_multi_metrics(
 
 
 class TestEngineStructure:
-    """Tests for Engine as eqx.Module."""
+    """Tests for Engine as an xtrax.Struct."""
 
-    def test_engine_is_eqx_module(self):
-        """Engine must be an eqx.Module."""
+    def test_engine_is_a_struct_with_no_leaves(self):
+        """Engine is an xtrax.Struct (not an eqx.Module); every field is static."""
         engine = create_test_engine()
-        assert isinstance(engine, eqx.Module)
+        assert isinstance(engine, Struct)
+        assert not isinstance(engine, eqx.Module)
+        assert jax.tree_util.tree_leaves(engine) == []
 
     def test_engine_fields_static(self):
         """trainer, callbacks, validation_callbacks must be static fields."""
@@ -203,8 +211,6 @@ class TestEngineStructure:
 
     def test_engine_accepts_safetytrainstep(self):
         """Engine must accept SafetyTrainStep as trainer field."""
-        from xtrax.safety.manager import SafetyManager
-
         loss_fn = DummyLoss()
         optimizer = optax.adam(0.001)
         trainer = Trainer(loss_fn=loss_fn, optimizer=optimizer)
@@ -604,8 +610,6 @@ class TestEnginePolymorphism:
     @pytest.mark.asyncio
     async def test_fit_with_safetytrainstep(self):
         """Engine.fit should work with SafetyTrainStep trainer."""
-        from xtrax.safety.manager import SafetyManager
-
         loss_fn = DummyLoss()
         optimizer = optax.adam(0.001)
         trainer = Trainer(loss_fn=loss_fn, optimizer=optimizer)

@@ -1,8 +1,8 @@
 """Every shipped SKILL.md frontmatter must be valid YAML with a name and description.
 
-The version-marker gate (``scripts/audit_project_hygiene.py``) reads ``xtrax_version``
-with a regex, so it passes a frontmatter that no YAML loader can parse -- an unquoted
-``Covers: `` inside ``description`` shipped that way through 0.4.0a10.
+The hygiene gate (``scripts/audit_project_hygiene.py``) reads frontmatter with a regex,
+so it passes a frontmatter that no YAML loader can parse -- an unquoted ``Covers: ``
+inside ``description`` shipped that way through 0.4.0a10.
 """
 
 from __future__ import annotations
@@ -10,8 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-import xtrax
 
 yaml = pytest.importorskip("yaml")
 
@@ -34,6 +32,6 @@ def test_skill_frontmatter_parses(skill: Path) -> None:
     assert data.get("name") == skill.parent.name
     assert isinstance(data.get("description"), str)
     assert data["description"].strip()
-    # audit_project_hygiene also gates this marker. Pin it here so a skill
-    # can parse and still ship a version other than the package.
-    assert data.get("xtrax_version") == xtrax.__version__
+    # The version pin lives in .praxia/manifest.toml; audit_project_hygiene forbids
+    # a per-skill xtrax_version copy.
+    assert "xtrax_version" not in data

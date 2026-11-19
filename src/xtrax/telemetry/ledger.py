@@ -24,12 +24,14 @@ mid-line during a parallel sweep. That is a real corruption path for a
 newline-delimited format, and it is the local precedent worth *not* following.
 """
 
+import json
 import os
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from types import TracebackType
 
+from xtrax.telemetry.migrate import read_row_upgrading
 from xtrax.telemetry.record import (
     KIND_TRAIN,
     STATUS_COMPLETE,
@@ -40,6 +42,7 @@ from xtrax.telemetry.record import (
     RunLedgerRecord,
     RunProvenance,
     SchemaVersionMismatchError,
+    ledger_distributions,
     telemetry_opted_out,
 )
 
@@ -211,6 +214,7 @@ class RunLedger:
         derived_from: "str | None" = None,
         cwd: "Path | None" = None,
         context: "dict[str, str] | None" = None,
+        distributions: "Sequence[str] | None" = None,
     ) -> "RunLedger":
         """Open a ledger entry, failing closed if it cannot be written.
 
@@ -221,6 +225,11 @@ class RunLedger:
         Under XTRAX_TELEMETRY_OPTOUT the repository is left untouched (no
         pinning, no shellouts beyond the cheap ones) but a row is still written,
         marked ``opted_out`` and therefore non-citable.
+
+        ``distributions`` names third-party packages whose executing
+        distribution the row records (see ``xtrax.provenance.resolve_distribution``).
+        When omitted, ``XTRAX_LEDGER_DISTRIBUTIONS`` supplies a comma-separated
+        list; unset records none.
         """
         resolved = resolve_root(root)
         _assert_writable(resolved)
@@ -229,6 +238,7 @@ class RunLedger:
             run_id=run_id,
             cwd=cwd,
             pin=not opted_out,
+            distributions=ledger_distributions(distributions),
         )
         return cls(
             run_id=run_id,
@@ -358,6 +368,15 @@ class RunLedger:
         return False
 
 
+def _read_line(line: str) -> RunLedgerRecord:
+    """Decode one JSONL row, upgrading an older schema through the migration chain."""
+    try:
+        raw = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise LedgerRecordError(f"ledger row is not valid JSON: {exc}") from exc
+    return read_row_upgrading(raw)
+
+
 def iter_rows(
     root: "Path | str | None" = None,
     *,
@@ -365,6 +384,10 @@ def iter_rows(
     strict: bool = False,
 ) -> "Iterator[RunLedgerRecord]":
     """Yield every ledger row, sealed rows first, then live segments.
+
+    Rows written under an older schema are upgraded through
+    ``xtrax.telemetry.migrate`` on read, so a schema bump leaves history
+    readable and a later compaction rewrites it at the current version.
 
     ``strict=False`` (the default) skips rows this code cannot parse and warns,
     so one corrupt or version-skewed line cannot make an entire history
@@ -392,7 +415,7 @@ def iter_rows(
             if not line.strip():
                 continue
             try:
-                yield RunLedgerRecord.from_json_line(line)
+                yield _read_line(line)
             except (LedgerRecordError, SchemaVersionMismatchError):
                 if strict:
                     raise

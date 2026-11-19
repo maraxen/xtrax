@@ -176,6 +176,33 @@ class TestGrainPipeline:
         assert shard(1, drop_remainder=False, n=7) == [4, 5, 6]
 
     @requires_grain
+    def test_per_process_batch_is_global_over_process_count(self, monkeypatch):
+        """2 processes x 4 devices, global 64: each process batches 32, not 16."""
+        monkeypatch.setattr(jax, "process_index", lambda: 0)
+        monkeypatch.setattr(jax, "process_count", lambda: 2)
+        pipeline = create_distributed_pipeline(
+            _ints(64),
+            global_batch_size=64,
+            num_devices=4,
+            seed=0,
+            shuffle=False,
+        )
+        batches = list(pipeline)
+        assert [batch.shape for batch in batches] == [(32,)]
+        assert _flat(batches) == list(range(32))
+
+    def test_global_batch_must_divide_process_count(self, monkeypatch):
+        """A global batch that process_count does not divide is rejected."""
+        monkeypatch.setattr(jax, "process_count", lambda: 4)
+        with pytest.raises(ValueError, match="global_batch_size=6 must be divisible by"):
+            create_distributed_pipeline(
+                _ints(6),
+                global_batch_size=6,
+                num_devices=1,
+                seed=0,
+            )
+
+    @requires_grain
     def test_create_distributed_pipeline_shards_by_process(self, monkeypatch):
         """Process index/count select the shard; the batch is per-device."""
         monkeypatch.setattr(jax, "process_index", lambda: 1)

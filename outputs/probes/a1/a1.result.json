@@ -1,0 +1,303 @@
+{
+  "analyzer_selftest_ok": true,
+  "cells": [
+    {
+      "cell_ok": true,
+      "control_torn": 365133,
+      "fs": "scratch",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.00014901161194,
+        "node3112": 180.00037741661072
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 0,
+        "ok": 2757697,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 2757697,
+      "real_torn_all_tasks": 0,
+      "size": 4096
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 349527,
+      "fs": "scratch",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.00035667419434,
+        "node3112": 180.00003218650818
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 0,
+        "ok": 961410,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 961410,
+      "real_torn_all_tasks": 0,
+      "size": 262144
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 300649,
+      "fs": "scratch",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.00816440582275,
+        "node3112": 180.0018560886383
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 0,
+        "ok": 36733,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 36733,
+      "real_torn_all_tasks": 0,
+      "size": 4194304
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 308348,
+      "fs": "scratch",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.0108916759491,
+        "node3112": 180.01090908050537
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 0,
+        "ok": 11997,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 11997,
+      "real_torn_all_tasks": 0,
+      "size": 16777216
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 342477,
+      "fs": "pool",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.00006914138794,
+        "node3112": 180.0002944469452
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 3,
+        "ok": 2464825,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 2464825,
+      "real_torn_all_tasks": 0,
+      "size": 4096
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 335475,
+      "fs": "pool",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.0003137588501,
+        "node3112": 180.0004460811615
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 0,
+        "ok": 1035303,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 1035303,
+      "real_torn_all_tasks": 0,
+      "size": 262144
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 343012,
+      "fs": "pool",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.00436305999756,
+        "node3112": 180.00241470336914
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 0,
+        "ok": 81264,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 81264,
+      "real_torn_all_tasks": 0,
+      "size": 4194304
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 316416,
+      "fs": "pool",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.04916524887085,
+        "node3112": 180.05677437782288
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 0,
+        "ok": 10623,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 10623,
+      "real_torn_all_tasks": 0,
+      "size": 16777216
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 70426,
+      "fs": "home",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.00027179718018,
+        "node3112": 180.00073623657227
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 1,
+        "ok": 594584,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 594584,
+      "real_torn_all_tasks": 0,
+      "size": 4096
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 72162,
+      "fs": "home",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.00005197525024,
+        "node3112": 180.00033855438232
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 1,
+        "ok": 414867,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 414867,
+      "real_torn_all_tasks": 0,
+      "size": 262144
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 83302,
+      "fs": "home",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.00056505203247,
+        "node3112": 180.00283432006836
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 5,
+        "ok": 68989,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 68989,
+      "real_torn_all_tasks": 0,
+      "size": 4194304
+    },
+    {
+      "cell_ok": true,
+      "control_torn": 84096,
+      "fs": "home",
+      "n_reader_hosts_qualifying": 2,
+      "overlap_s_by_reader_host": {
+        "node1624": 180.0049967765808,
+        "node3112": 180.058744430542
+      },
+      "real_distinct_reader": {
+        "enoent": 0,
+        "estale_open": 0,
+        "estale_read": 67,
+        "ok": 6274,
+        "other": 0,
+        "torn": 0
+      },
+      "real_reads_qualifying": 6274,
+      "real_torn_all_tasks": 0,
+      "size": 16777216
+    }
+  ],
+  "control_torn_total": 2971023,
+  "enoent_total": 0,
+  "estale_total": 77,
+  "logs_dir": "outputs/probes/a1/raw_27708472",
+  "n_cells_expected": 12,
+  "n_cells_ok": 12,
+  "n_log_rows": 6675,
+  "n_reader_hosts": 2,
+  "other_error_total": 0,
+  "reader_hosts": [
+    "node1624",
+    "node3112"
+  ],
+  "real_torn_total": 0,
+  "vis_lag_median_s": 0.002022266387939453,
+  "visibility": {
+    "by_fs": {
+      "home": {
+        "max_s": 29.998351097106934,
+        "median_s": 0.0015473365783691406,
+        "min_s": -0.0014433860778808594,
+        "n": 30,
+        "p95_s": 14.2523672580719,
+        "timeouts": 0
+      },
+      "pool": {
+        "max_s": 0.004691123962402344,
+        "median_s": 0.00244295597076416,
+        "min_s": -8.940696716308594e-05,
+        "n": 30,
+        "p95_s": 0.004685401916503906,
+        "timeouts": 0
+      },
+      "scratch": {
+        "max_s": 27.11746907234192,
+        "median_s": 0.0017434358596801758,
+        "min_s": -0.0009951591491699219,
+        "n": 30,
+        "p95_s": 8.11824107170105,
+        "timeouts": 0
+      }
+    },
+    "median_s": 0.002022266387939453,
+    "note": "report only; cross-node clock skew enters directly (negative min_s means skew)"
+  },
+  "writer_host": "node1623"
+}

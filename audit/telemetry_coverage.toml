@@ -7,6 +7,9 @@
 #
 # Dispositions:
 #   records        Executes or lowers user code and MUST produce a ledger row.
+#   probes         Executes user code only to measure it (dispatches, compiles,
+#                  timing). Writes a ProbeRecord, not a ledger row: the output
+#                  describes the code, not a result to attest to.
 #   analysis_only  Reads or plans without executing user code; no row expected.
 #   ledger_admin   Operates on the ledger itself; recording its own run would be
 #                  circular.
@@ -16,6 +19,10 @@ run = "records"
 resume = "records"
 export = "records"
 sweep = "records"
+# `campaign run` executes unit functions and writes one row per run (kind "eval",
+# context.verb = "campaign"). Its plan/status/verify actions execute nothing, and its
+# SLURM executor only writes a script; each array task records its own row.
+campaign = "records"
 
 # plan/explain compute a batching plan from a spec. They neither execute nor
 # lower user code, so there is no computation to attest to.
@@ -26,6 +33,10 @@ explain = "analysis_only"
 graph-validate = "analysis_only"
 graph-plan = "analysis_only"
 graph-author = "analysis_only"
+
+# profile runs the callable under the unit probe to measure it and writes a
+# stage-1 ProbeRecord.
+profile = "probes"
 
 # Compaction and inspection of the ledger itself.
 ledger = "ledger_admin"

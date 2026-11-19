@@ -1,8 +1,14 @@
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import pytest
 
-from xtrax.safety.manager import SafetyManager, with_safety
+from xtrax._tree import Struct
+
+# #6107 probe release: importing a deprecated name warns; these tests exercise the
+# unchanged behaviour, so the access is asserted once here.
+with pytest.deprecated_call(match="xtrax #6107"):
+    from xtrax.safety.manager import SafetyManager, with_safety
 
 
 def test_safety_manager_disabled_returns_identity():
@@ -18,10 +24,12 @@ def test_safety_manager_disabled_returns_identity():
     assert wrapped is dummy_fn
 
 
-def test_safety_manager_is_eqx_module():
-    """SafetyManager is a valid equinox Module."""
+def test_safety_manager_is_a_static_only_struct():
+    """SafetyManager is an xtrax.Struct (not an eqx.Module) with no pytree leaves."""
     mgr = SafetyManager(enabled=True, check_nans=True, check_infs=True)
-    assert isinstance(mgr, eqx.Module)
+    assert isinstance(mgr, Struct)
+    assert not isinstance(mgr, eqx.Module)
+    assert jax.tree_util.tree_leaves(mgr) == []
 
 
 def test_safety_manager_enabled_detects_nan():

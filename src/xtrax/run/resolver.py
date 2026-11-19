@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, NewType, Protocol, runtime_checkable
 
-import equinox as eqx
-
 from xtrax.run.spec import RunSpec
 from xtrax.tiling import (
     BucketIterator,
@@ -36,7 +34,7 @@ class RuntimeBundle:
         | ScanIterator
         | None
     )
-    model: eqx.Module
+    model: Any  # any pytree (an equinox.Module, a dict of arrays, ...)
 
 
 @runtime_checkable

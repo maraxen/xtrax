@@ -1,0 +1,148 @@
+{
+  "env": "local",
+  "host": "DESKTOP-3DT37N4",
+  "python": "3.13.12",
+  "duckdb": "2.0.0",
+  "threads": 4,
+  "repeats": 3,
+  "rows": 1000000,
+  "slurm_job_id": null,
+  "root": "/home/marielle/scratch/a3_local",
+  "layouts": {
+    "steady": {
+      "fixture": {
+        "n_rows_unique": 1000000,
+        "n_dup_planted": 2000,
+        "n_torn": 10,
+        "n_segments": 100,
+        "n_sealed_files": 10,
+        "n_files": 111,
+        "bytes": 477121616,
+        "build_s": 7.888965995982289,
+        "build_host": "DESKTOP-3DT37N4",
+        "rows": 1000000,
+        "build_slurm_job_id": null,
+        "cross_node": false,
+        "visibility_wait_s": 0.00036830315366387367,
+        "files_visible": 111
+      },
+      "queries": {
+        "view_count_s": [
+          0.45657335594296455,
+          0.4754789317958057,
+          0.46451793098822236
+        ],
+        "lookup_s": [
+          0.31933420803397894,
+          0.3199600647203624,
+          0.3191763190552592
+        ],
+        "view_count": 1000000,
+        "lookup_rows": 1
+      },
+      "controls": {
+        "count_no_distinct": 1002000,
+        "strict_refused": true,
+        "strict_error": "InvalidInputException: Invalid Input Error: Malformed JSON in file \"/home/marielle/scratch/a3_local/steady/segments/node0000-1000-27000000-0-00000000.jsonl\", at byte 41 in line 113: unexpected end of data. ",
+        "strict_multi_threads": 4,
+        "strict_multi_refusals": 5,
+        "strict_multi_tries": 5
+      },
+      "stdlib": {
+        "count": 1000000,
+        "skipped_lines": 10,
+        "s": 5.41274293186143
+      }
+    },
+    "busy": {
+      "fixture": {
+        "n_rows_unique": 1000000,
+        "n_dup_planted": 2000,
+        "n_torn": 1000,
+        "n_segments": 10000,
+        "n_sealed_files": 9,
+        "n_files": 10010,
+        "bytes": 479752686,
+        "build_s": 9.389475435949862,
+        "build_host": "DESKTOP-3DT37N4",
+        "rows": 1000000,
+        "build_slurm_job_id": null,
+        "cross_node": false,
+        "visibility_wait_s": 0.023416615091264248,
+        "files_visible": 10010
+      },
+      "queries": {
+        "view_count_s": [
+          5.8169314451515675,
+          5.789624678902328,
+          5.7571713463403285
+        ],
+        "lookup_s": [
+          5.498012610711157,
+          5.357538999989629,
+          5.686699618585408
+        ],
+        "view_count": 1000000,
+        "lookup_rows": 1
+      },
+      "controls": {
+        "count_no_distinct": 1002000,
+        "strict_refused": true,
+        "strict_error": "InvalidInputException: Invalid Input Error: Malformed JSON in file \"/home/marielle/scratch/a3_local/busy/segments/node0000-1000-27000000-0-00000000.jsonl\", at byte 41 in line 14: unexpected end of data. ",
+        "strict_multi_threads": 4,
+        "strict_multi_refusals": 5,
+        "strict_multi_tries": 5
+      },
+      "stdlib": {
+        "count": 1000000,
+        "skipped_lines": 1000,
+        "s": 5.685871413908899
+      }
+    },
+    "uncompacted": {
+      "fixture": {
+        "n_rows_unique": 1000000,
+        "n_dup_planted": 1000,
+        "n_torn": 10000,
+        "n_segments": 100000,
+        "n_sealed_files": 0,
+        "n_files": 100001,
+        "bytes": 506223796,
+        "build_s": 23.518249825108796,
+        "build_host": "DESKTOP-3DT37N4",
+        "rows": 1000000,
+        "build_slurm_job_id": null,
+        "cross_node": false,
+        "visibility_wait_s": 0.27103901375085115,
+        "files_visible": 100001
+      },
+      "queries": {
+        "view_count_s": [
+          69.16479921480641,
+          65.69512865366414,
+          21.945647848770022
+        ],
+        "lookup_s": [
+          55.99240668816492,
+          86.27163572516292,
+          18.984802230261266
+        ],
+        "view_count": 1000000,
+        "lookup_rows": 1
+      },
+      "controls": {
+        "count_no_distinct": 1001000,
+        "strict_refused": true,
+        "strict_error": "InvalidInputException: Invalid Input Error: Malformed JSON in file \"/home/marielle/scratch/a3_local/uncompacted/segments/node0000-1000-27000000-0-00000000.jsonl\", at byte 41 in line 13: unexpected end of data. ",
+        "strict_multi_threads": 4,
+        "strict_multi_refusals": 5,
+        "strict_multi_tries": 5
+      },
+      "stdlib": {
+        "count": 1000000,
+        "skipped_lines": 10000,
+        "s": 4.501101673115045
+      }
+    }
+  }
+}

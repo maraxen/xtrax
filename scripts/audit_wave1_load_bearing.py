@@ -154,7 +154,7 @@ def check_certifying_tests_green(test_files: Sequence[str], root: Path) -> list[
             ["uv", "run", *extra_flags, "pytest", str(full_path), "-q", "--no-cov"],
             capture_output=True,
             text=True,
-            cwd=root,
+            cwd=ROOT,
         )
         if result.returncode != 0:
             hits.append(

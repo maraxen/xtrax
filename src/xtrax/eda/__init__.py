@@ -12,6 +12,13 @@ Visualization APIs (requires optional eda extras):
 """
 
 from xtrax.eda.explain import explain_plan
+from xtrax.eda.export import (
+    export_axes_csv,
+    export_canonical_json,
+    export_plan_artifacts,
+)
+from xtrax.eda.plugins import get_quarantined_plugins, reload_plugins
+from xtrax.eda.spec import generate_vega_spec
 from xtrax.eda.stats import (
     analyze_bucket,
     analyze_dedup,
@@ -27,11 +34,20 @@ from xtrax.eda.types import (
 def render(*args, **kwargs):
     """Render a BatchPlan to PNG, SVG, or HTML format.
 
-    Lazy import: requires pip install xtrax[eda]
+    Every backend goes through one pipeline (xtrax.eda.render_core), so the
+    keyword arguments and output handling match for vega and matplotlib.
+    The matplotlib drawing is imported only when that backend is selected.
     """
-    from xtrax.eda.viz import render as _render
+    from xtrax.eda.render_core import render as _render
 
     return _render(*args, **kwargs)
+
+
+def render_report(*args, **kwargs):
+    """Render an interactive HTML report for a plan with bundled JavaScript by default (#3126)."""
+    from xtrax.eda.report import render_report as _render_report
+
+    return _render_report(*args, **kwargs)
 
 
 def plan_to_dataframe(*args, **kwargs):
@@ -50,7 +66,14 @@ __all__ = [
     "analyze_bucket",
     "explain_plan",
     "render",
+    "render_report",
     "plan_to_dataframe",
+    "generate_vega_spec",
+    "export_canonical_json",
+    "export_axes_csv",
+    "export_plan_artifacts",
+    "reload_plugins",
+    "get_quarantined_plugins",
     "PlanStatsDict",
     "PlanLogger",
     "PanelName",

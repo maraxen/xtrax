@@ -1,0 +1,85 @@
+[metadata]
+title = "Does XLA hoist a truly key-invariant encoder out of vmap / chunked lax.map? (CPU and CUDA)"
+created = "261020"
+schema_version = "0.3"
+task_id = "261020_hoist-consumer-migrations"
+spec = ".praxia/docs/specs/261020_hoisted-map.md"
+
+[experiment]
+hypothesis = "With jax 0.11.1, a jitted map over N=64 elements whose per-element function calls an expensive encoder (L,3)->(L,L,C) (L=256, C=64, 32 chained transcendental passes) that does NOT read the mapped input runs within 1.25x the wall time of a hand-hoisted twin (encoder called once outside the map), on both paths (jax.vmap and xtrax chunked_map batch_size=4), on the platform the run executes on. Control: the same encoder made falsely dependent on a per-element PRNG key (noise scaled by 0.0 passed as an array) must run at least 4x slower than its hoisted twin on both paths, otherwise the instrument cannot see replication and nothing is concluded. Gating uses median wall time over 20 timed calls after warm-up with block_until_ready; compiled temp_size_in_bytes and the optimized-HLO count of the encoder's sine op are reported, not gated. The thresholds 1.25 / 2.0 / 4.0 are fixed here before any run."
+stage_name = "exploration"
+
+[observe]
+outputs = [
+  "inv_wall_ratio_vmap / inv_wall_ratio_chunked: median wall of the naive invariant arm divided by its hand-hoisted twin",
+  "fd_wall_ratio_vmap / fd_wall_ratio_chunked: same for the false-dependence control (encoder reads a per-element key, noise scale 0.0 as an array)",
+  "inv_temp_ratio_* / fd_temp_ratio_*: compiled temp_size_in_bytes naive / hoisted (reported, not gated: fusion can recompute without materializing)",
+  "platform / device_kind / jax_version: where it ran",
+]
+looking_for = """
+Whether the CPU observation from the throwaway probe of 261020 (XLA hoists truly
+invariant work out of lax.map, one sine op in optimized HLO either way) also holds
+on CUDA, and whether it holds for jax.vmap as well as chunked lax.map. The control
+is the decisive check on the instrument: a false-dependence encoder genuinely runs
+N times, so its ratio must be large; if it is not, the encoder is too cheap relative
+to the per-element work and the invariant ratios mean nothing. Run once on CPU (this
+box) and once on CUDA (titanix); each run is evaluated on its own platform.
+"""
+sanity = [
+  "n_failed >= 0",
+  "max_inv_wall_ratio > 0",
+  "min_fd_wall_ratio > 0",
+]
+planned_tests = 0
+
+[outcomes.measurement_failed]
+source = "provisional:any raised arm invalidates the table; no threshold involved"
+condition = "n_failed > 0"
+decision = "An arm raised (compile, OOM or runtime). No ratio is trusted; the result names the arm. Fix shapes or the script under a new sidecar revision; do not drop the arm."
+reasoning = "A missing arm is not evidence about hoisting."
+is_residual = false
+
+[outcomes.control_failed]
+source = "sesoi:4.0:a replicated encoder at N=64 should cost tens of x; 4x is a deliberately low floor for detectability"
+condition = "n_failed = 0 AND min_fd_wall_ratio < 4.0"
+decision = "The false-dependence control did not show replication cost, so the timing instrument cannot distinguish hoisted from replicated work at these shapes. Make the encoder heavier relative to the per-element work and re-run under a new revision. Nothing about XLA hoisting is concluded."
+reasoning = "A probe that cannot fail on a known-replicated case cannot certify a hoisted one."
+is_residual = false
+
+[outcomes.hoisted]
+source = "sesoi:1.25:within timing noise plus one extra broadcast/copy; smaller overhead is not worth a code change in consumers"
+condition = "n_failed = 0 AND min_fd_wall_ratio >= 4.0 AND max_inv_wall_ratio <= 1.25"
+decision = "XLA already removes truly invariant encoder work from both map paths on this platform. The consumer win from make_hoisted is the false-dependence case only; the xtrax-optimizing skill may state this platform as verified, citing this run."
+reasoning = "Invariant arms match the hand hoist while the control shows the instrument detects replication."
+is_residual = false
+
+[outcomes.not_hoisted]
+source = "sesoi:2.0:at least one extra encoder worth of work per call is a real cost worth hoisting by hand"
+condition = "n_failed = 0 AND min_fd_wall_ratio >= 4.0 AND max_inv_wall_ratio >= 2.0"
+decision = "On at least one path XLA does NOT hoist truly invariant work on this platform. make_hoisted is needed even without false dependence; the skill must say so for this platform and name the path."
+reasoning = "Control proves sensitivity; an invariant arm still pays replication cost."
+is_residual = false
+
+[outcomes.inconclusive]
+condition = "TRUE"
+decision = "Control passed but an invariant ratio sits between 1.25 and 2.0. Report the per-path table; claim nothing about hoisting on this platform."
+reasoning = "Partial overhead could be hoisting plus extra copies or partial replication; the thresholds were set to avoid deciding inside this band."
+is_residual = true
+
+[result_schema]
+n_failed = "int"
+failed_arms = "str"
+platform = "str"
+device_kind = "str"
+jax_version = "str"
+xtrax_file = "str"
+inv_wall_ratio_vmap = "float"
+inv_wall_ratio_chunked = "float"
+fd_wall_ratio_vmap = "float"
+fd_wall_ratio_chunked = "float"
+max_inv_wall_ratio = "float"
+min_fd_wall_ratio = "float"
+inv_temp_ratio_vmap = "float"
+inv_temp_ratio_chunked = "float"
+fd_temp_ratio_vmap = "float"
+fd_temp_ratio_chunked = "float"

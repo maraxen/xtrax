@@ -185,6 +185,127 @@ def _diagnostics_for(
     return tuple(notes)
 
 
+def _check_executed_inputs(
+    executed: Sequence[Target],
+    concrete_inputs: Sequence[Any] | None,
+    reference_fn: Callable[[Sequence[Any]], Any] | None,
+) -> None:
+    """Refuse EXECUTED targets that lack concrete inputs or an independent oracle."""
+    if executed and concrete_inputs is None:
+        names = ", ".join(t.name for t in executed)
+        msg = (
+            f"concrete_inputs is required because target(s) {names} are EXECUTED "
+            f"and must be run to be verified."
+        )
+        raise ValueError(msg)
+    if executed and reference_fn is None:
+        names = ", ".join(t.name for t in executed)
+        msg = (
+            f"reference_fn is required because target(s) {names} are EXECUTED. "
+            f"It must be an independently-computed oracle over concrete_inputs -- "
+            f"passing jax.jit(build_traceable_callable(...)) compares the composed "
+            f"callable against itself and verifies nothing."
+        )
+        raise ValueError(msg)
+
+
+def _refuse_validated_targets(targets: Sequence[Target]) -> None:
+    # SPIR-V extraction and shader validation are not wired in yet, so a
+    # VALIDATED target could only ever report verified=False -- a green-looking
+    # result establishing nothing. Refuse it rather than emit that.
+    validated = [t for t in targets if t.verification_level is VerificationLevel.VALIDATED]
+    if validated:
+        names = ", ".join(t.name for t in validated)
+        msg = (
+            f"target(s) {names} are VALIDATED, but SPIR-V extraction and shader "
+            f"validation are not wired into export_pipeline yet, so `verified` "
+            f"could only ever report False. Use a CODEGEN_ONLY target, or wait "
+            f"for the SPIR-V targets."
+        )
+        raise NotImplementedError(msg)
+
+
+def _compose_and_trace(
+    fn: Callable[..., Any],
+    plan: Any,
+    axis_boundaries: Mapping[str, AxisBoundary] | None,
+    abstract_inputs: Sequence[Any],
+    scan_init: Any,
+) -> tuple[Callable[..., Any] | None, Any, ComposerError | None]:
+    """Compose and trace the batched program once for every gate.
+
+    Returns ``(callable_, traced_jaxpr, composer_error)``. A composition error is
+    held rather than raised, so the gates run first and never hide a dtype or op
+    blocker. If the composed callable cannot be composed or traced, ``fn`` itself
+    is traced, once, for every gate.
+    """
+    # The composer never sees `materialize` itself.
+    boundaries = _boundaries_for_export(axis_boundaries)
+    # The composer can also raise while the callable is TRACED (e.g. a lane-dependent
+    # ordered sink under Vmap-over-Scan); that error is held the same way, so it
+    # surfaces as ComposerError rather than a later CompileError from conversion.
+    composer_error: ComposerError | None = None
+    callable_: Callable[..., Any] | None = None
+    traced: Any = None
+    try:
+        callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
+        traced = trace_for_export_safety(callable_, abstract_inputs, reraise=(ComposerError,))
+    except ComposerError as exc:
+        composer_error = exc
+    if traced is None:
+        traced = trace_for_export_safety(fn, abstract_inputs)
+    if traced is None:
+        traced = _NOT_TRACEABLE  # tried twice: the gates must not re-trace per target
+    return callable_, traced, composer_error
+
+
+def _export_one(
+    target: Target,
+    callable_: Callable[..., Any],
+    abstract_inputs: Sequence[Any],
+    concrete_inputs: Sequence[Any] | None,
+    expected: Any,
+    *,
+    model_name: str,
+    embed_external_data: bool,
+) -> ExportResult:
+    """Compile one target and, for EXECUTED targets, check parity against ``expected``."""
+    census: OnnxDtypeCensus | None = None
+    if target.backend is Backend.ONNX:
+        compiled, census = convert_to_onnx(
+            callable_,
+            abstract_inputs,
+            target,
+            model_name=model_name,
+            embed_external_data=embed_external_data,
+        )
+    else:
+        exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
+        compiled = compile_for_target(exported.mlir_module(), target)
+
+    parity: ParityResult | None = None
+    if target.verification_level is VerificationLevel.EXECUTED:
+        assert concrete_inputs is not None  # noqa: S101 - guarded above
+        if target.backend is Backend.ONNX:
+            parity = verify_onnx_parity(expected, compiled.path, concrete_inputs)
+        else:
+            parity = verify_native_parity(expected, compiled.path, concrete_inputs)
+
+    return ExportResult(
+        target=target,
+        path=compiled.path,
+        vmfb_bytes=compiled.path.read_bytes(),
+        size_bytes=compiled.size_bytes,
+        spirv_bytes=compiled.spirv_bytes,
+        verification_level=target.verification_level,
+        verified=_verified_for(target.verification_level, parity, None),
+        parity=parity,
+        spirv_validation=None,
+        diagnostics=_diagnostics_for(compiled, census),
+        onnx_census=census,
+    )
+
+
 def export_pipeline(
     fn: Callable[..., Any],
     plan: Any,
@@ -240,70 +361,19 @@ def export_pipeline(
     """
     targets = tuple(targets)
     executed = [t for t in targets if t.verification_level is VerificationLevel.EXECUTED]
-
-    if executed and concrete_inputs is None:
-        names = ", ".join(t.name for t in executed)
-        msg = (
-            f"concrete_inputs is required because target(s) {names} are EXECUTED "
-            f"and must be run to be verified."
-        )
-        raise ValueError(msg)
-    if executed and reference_fn is None:
-        names = ", ".join(t.name for t in executed)
-        msg = (
-            f"reference_fn is required because target(s) {names} are EXECUTED. "
-            f"It must be an independently-computed oracle over concrete_inputs -- "
-            f"passing jax.jit(build_traceable_callable(...)) compares the composed "
-            f"callable against itself and verifies nothing."
-        )
-        raise ValueError(msg)
-
-    # SPIR-V extraction and shader validation are not wired in yet, so a
-    # VALIDATED target could only ever report verified=False -- a green-looking
-    # result establishing nothing. Refuse it rather than emit that.
-    validated = [t for t in targets if t.verification_level is VerificationLevel.VALIDATED]
-    if validated:
-        names = ", ".join(t.name for t in validated)
-        msg = (
-            f"target(s) {names} are VALIDATED, but SPIR-V extraction and shader "
-            f"validation are not wired into export_pipeline yet, so `verified` "
-            f"could only ever report False. Use a CODEGEN_ONLY target, or wait "
-            f"for the SPIR-V targets."
-        )
-        raise NotImplementedError(msg)
+    _check_executed_inputs(executed, concrete_inputs, reference_fn)
+    _refuse_validated_targets(targets)
 
     decisions = list(plan.decisions)
-    results: dict[str, ExportResult] = {}
 
     # Topology first: stripping the materializing sinks (below) and composing are
     # only meaningful once every materializing axis is known to be well-formed.
     # validate_export_safe re-checks it per target; this call makes it come first.
     validate_plan_topology(decisions, axis_boundaries or {}, export_safe=True)
 
-    # The callable is composed once, and traced once, for every target: the gates
-    # judge the batched program actually exported (a per-element `fn` cannot be
-    # traced against the batched abstract inputs, which used to skip the op rules
-    # silently, #5690), and N targets no longer cost N traces and N compositions.
-    # The composer never sees `materialize` itself.
-    # A composition error (e.g. a Scan axis with no init) is held until the gates
-    # have run, so it never hides their dtype/op blockers. If the composed callable
-    # cannot be composed or traced, `fn` itself is traced, once, for every gate.
-    boundaries = _boundaries_for_export(axis_boundaries)
-    # The composer can also raise while the callable is TRACED (e.g. a lane-dependent
-    # ordered sink under Vmap-over-Scan); that error is held the same way, so it
-    # surfaces as ComposerError rather than a later CompileError from conversion.
-    composer_error: ComposerError | None = None
-    callable_: Callable[..., Any] | None = None
-    traced: Any = None
-    try:
-        callable_ = build_traceable_callable(fn, plan, boundaries, scan_init=scan_init)
-        traced = trace_for_export_safety(callable_, abstract_inputs, reraise=(ComposerError,))
-    except ComposerError as exc:
-        composer_error = exc
-    if traced is None:
-        traced = trace_for_export_safety(fn, abstract_inputs)
-    if traced is None:
-        traced = _NOT_TRACEABLE  # tried twice: the gates must not re-trace per target
+    callable_, traced, composer_error = _compose_and_trace(
+        fn, plan, axis_boundaries, abstract_inputs, scan_init
+    )
 
     # Every target's gate runs first, so a rejected export fails fast without
     # paying for the oracle (often an unbatched per-row loop), and a gate's error
@@ -334,40 +404,15 @@ def export_pipeline(
         assert reference_fn is not None  # noqa: S101 - guarded above
         expected = reference_fn(concrete_inputs)
 
-    for target in targets:
-        census: OnnxDtypeCensus | None = None
-        if target.backend is Backend.ONNX:
-            compiled, census = convert_to_onnx(
-                callable_,
-                abstract_inputs,
-                target,
-                model_name=model_name,
-                embed_external_data=embed_external_data,
-            )
-        else:
-            exported = jax.export.export(jax.jit(callable_))(*abstract_inputs)
-            compiled = compile_for_target(exported.mlir_module(), target)
-
-        parity: ParityResult | None = None
-        if target.verification_level is VerificationLevel.EXECUTED:
-            assert concrete_inputs is not None  # noqa: S101 - guarded above
-            if target.backend is Backend.ONNX:
-                parity = verify_onnx_parity(expected, compiled.path, concrete_inputs)
-            else:
-                parity = verify_native_parity(expected, compiled.path, concrete_inputs)
-
-        results[target.name] = ExportResult(
-            target=target,
-            path=compiled.path,
-            vmfb_bytes=compiled.path.read_bytes(),
-            size_bytes=compiled.size_bytes,
-            spirv_bytes=compiled.spirv_bytes,
-            verification_level=target.verification_level,
-            verified=_verified_for(target.verification_level, parity, None),
-            parity=parity,
-            spirv_validation=None,
-            diagnostics=_diagnostics_for(compiled, census),
-            onnx_census=census,
+    return {
+        target.name: _export_one(
+            target,
+            callable_,
+            abstract_inputs,
+            concrete_inputs,
+            expected,
+            model_name=model_name,
+            embed_external_data=embed_external_data,
         )
-
-    return results
+        for target in targets
+    }

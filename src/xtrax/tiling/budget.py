@@ -32,6 +32,27 @@ class BudgetInfeasibleError(Exception):
     """
 
 
+def _default_budget_estimator(decisions: Sequence["AxisDecision"]) -> int:
+    """Default memory estimator summing per-axis memory usage scaled by sparsity."""
+    from xtrax.tiling.strategy import ChunkedMap
+
+    total = 0
+    for d in decisions:
+        spec = d.spec
+        element_bytes = spec.element_input_bytes or 1
+        effective_density: float = 1.0
+        sp = getattr(spec, "sparsity", None)
+        if sp is not None:
+            effective_density = float(sp.density) if hasattr(sp, "density") else float(sp)
+
+        if isinstance(d.strategy, ChunkedMap):
+            batch_count = d.strategy.batch_size
+        else:
+            batch_count = spec.cardinality
+        total += int(batch_count * element_bytes * effective_density)
+    return total
+
+
 @dataclass(frozen=True)
 class MemoryBudget:
     """Total-plan memory budget with a joint estimator.
@@ -46,7 +67,7 @@ class MemoryBudget:
     """
 
     bytes: int
-    estimate: Callable[[Sequence["AxisDecision"]], int]
+    estimate: Callable[[Sequence["AxisDecision"]], int] = _default_budget_estimator
 
     def __post_init__(self) -> None:
         """Validate budget fields, failing loud at construction time."""

@@ -1,0 +1,9 @@
+# campaign_eda_benchmark.bth.441841f5-cd13-446f-b93e-929e3eb1fc81.bth.lock.toml — written at run time, never modified
+[manifest]
+written_at = "2026-11-10T19:25:27.986611+00:00"
+sidecar_sha256 = "3b692832bbd4224176373931e2d268b42c266e47a7543046befa926121f5d4a9"
+sidecar_path = "/home/marielle/projects/xtrax/scripts/benchmarks/campaign_eda_benchmark.bth.toml"
+git_sha = "e1cf340b89d91a2959c724571f2797590719d010"
+script_sha256 = "cab073bae8857e0fd1269cae2627247f55dae0ab45d531ec7d000deabf015201"
+run_id = "441841f5-cd13-446f-b93e-929e3eb1fc81"
+agent_id = null

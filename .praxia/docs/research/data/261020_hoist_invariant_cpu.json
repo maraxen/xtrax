@@ -1,0 +1,18 @@
+{
+  "n_failed": 0,
+  "failed_arms": "",
+  "platform": "cpu",
+  "device_kind": "cpu",
+  "jax_version": "0.11.1",
+  "xtrax_file": "/tmp/claude-1000/gpuprobe/src/xtrax/__init__.py",
+  "inv_wall_ratio_vmap": 0.9953752192648095,
+  "inv_wall_ratio_chunked": 1.0265836715189445,
+  "fd_wall_ratio_vmap": 70.82992387586792,
+  "fd_wall_ratio_chunked": 51.83947463905318,
+  "max_inv_wall_ratio": 1.0265836715189445,
+  "min_fd_wall_ratio": 51.83947463905318,
+  "inv_temp_ratio_vmap": 1.0,
+  "inv_temp_ratio_chunked": 1.0,
+  "fd_temp_ratio_vmap": 63.999879837265325,
+  "fd_temp_ratio_chunked": 3.9997885505485766
+}

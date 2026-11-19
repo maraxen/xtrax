@@ -1,23 +1,18 @@
 """Checkified-execution (T2-15, #2181, AC-5).
 
 AC-5's claim: a smoke-passing candidate (T2-14) must be executed under
-`SafetyManager(enabled=True)` checkify float_checks, with no NaN/Inf/overflow escaping to the
-host. `SafetyManager` (`xtrax.safety.manager`, commit 71f213c) already exists and predates this
-session's T2-1x work entirely -- this module is thin glue like T2-12/T2-13, not new infrastructure
-like T2-14: `SafetyManager.wrap(fn)` already builds `jax.jit(checkify.checkify(fn,
-errors=checkify.float_checks))` and calls `err.throw()` on the host, raising
+`jax.jit(checkify.checkify(fn, errors=checkify.float_checks))`, with no NaN/Inf/overflow
+escaping to the host. This module is thin glue like T2-12/T2-13, not new infrastructure like
+T2-14: it builds that expression itself and calls `err.throw()` on the host, raising
 `jax.experimental.checkify.JaxRuntimeError` (empirically confirmed: a subclass of `ValueError`,
 publicly importable from `jax.experimental.checkify`, not just the private `jax._src.checkify`
-module it's actually defined in) the moment a tracked violation fires.
+module it's actually defined in) the moment a tracked violation fires. It used to compose
+`xtrax.safety.manager.SafetyManager`, which is deprecated (#6107) and was exactly that
+expression.
 
-Known, pre-existing, out-of-scope gap in `SafetyManager` itself (not this module's to fix --
-`SafetyManager` predates this worktree and lives in a different package): its `check_nans`/
-`check_infs` fields are declared and documented ("Include NaN checks in float_checks" / "Include
-Inf checks in float_checks") but `.wrap()` never actually reads either field -- it unconditionally
-uses `checkify.float_checks` regardless of their values. This module still forwards `check_nans`/
-`check_infs` through to the `SafetyManager` it constructs (so the call site stays correct in
-intent, and needs no update if that gap is ever fixed upstream), but do not assume passing
-`check_nans=False` here actually disables NaN detection today -- it currently does not.
+`check_nans` / `check_infs` are accepted for call-site compatibility and never consulted: the
+check set is always `checkify.float_checks`. (`SafetyManager` declared the same two fields and
+never read them either, so passing `check_nans=False` has never disabled NaN detection.)
 
 Real gap in `checkify.float_checks` itself, closed rather than silently under-delivered on:
 `float_checks = nan_checks | div_checks` has no dedicated Inf/overflow detector -- an Inf arising
@@ -25,8 +20,8 @@ from something other than a literal division-by-zero (e.g. `jnp.exp(1000.0)`) pa
 `err.throw()` without raising (verified empirically: `checkify.float_checks` misses this case
 outright, `result` comes back as `inf` with no exception). AC-5's own text says "no
 NaN/Inf/overflow" -- broader than what `float_checks` alone enumerates -- so this module adds a
-manual post-call `jnp.isinf` walk over the result pytree, in addition to composing `SafetyManager`
-for the NaN/div-by-zero layer, to actually satisfy that claim rather than merely naming the DAG's
+manual post-call `jnp.isinf` walk over the result pytree, in addition to the checkify
+NaN/div-by-zero layer, to actually satisfy that claim rather than merely naming the DAG's
 cited mechanism.
 
 Extension seam (mirrors every other T2-0X module's stance): this module raises
@@ -45,7 +40,6 @@ import jax.tree_util
 from jax.experimental import checkify
 
 from xtrax.loop.schema_gate import resolve_candidate_callable
-from xtrax.safety.manager import SafetyManager
 
 
 class CheckifiedExecutionError(Exception):
@@ -64,19 +58,18 @@ def assert_checkified_execution(
     check_nans: bool = True,
     check_infs: bool = True,
 ) -> Any:
-    """The composed AC-5 gate: resolve, wrap under `SafetyManager(enabled=True)`, call once.
+    """The composed AC-5 gate: resolve, wrap under checkify `float_checks`, call once.
 
-    Always constructs `SafetyManager(enabled=True, ...)` -- this gate exists specifically to
-    exercise that path; the `enabled=False` "promoted best-lineage" case AC-5's parenthetical
-    describes is a different, later consumer's concern, not something this function checks.
+    Always checkifies -- this gate exists specifically to exercise that path; the checks-off
+    "promoted best-lineage" case AC-5's parenthetical describes is a different, later
+    consumer's concern, not something this function checks.
 
     Args:
         candidate_path: source file to resolve (same contract as T2-11/T2-12/T2-13/T2-14).
         callable_name: attribute on the resolved module to call.
         concrete_inputs: real arguments for the single execution.
-        check_nans: forwarded to `SafetyManager` (see module docstring: not currently consulted
-            by `SafetyManager.wrap()`, kept for call-site correctness regardless).
-        check_infs: forwarded to `SafetyManager` (same caveat as `check_nans`).
+        check_nans: accepted for call-site compatibility; not consulted (see module docstring).
+        check_infs: same caveat as `check_nans`.
 
     Returns:
         The candidate's result, once confirmed free of NaN/Inf/overflow -- useful for a caller to
@@ -90,11 +83,11 @@ def assert_checkified_execution(
             the post-call `isinf` sweep found an Inf `float_checks` itself missed.
     """
     fn = resolve_candidate_callable(candidate_path, callable_name)
-    manager = SafetyManager(enabled=True, check_nans=check_nans, check_infs=check_infs)
-    wrapped = manager.wrap(fn)
+    checked = jax.jit(checkify.checkify(fn, errors=checkify.float_checks))
 
     try:
-        result = wrapped(*concrete_inputs)
+        err, result = checked(*concrete_inputs)
+        err.throw()  # on the host, outside jit
     except checkify.JaxRuntimeError as exc:
         msg = f"checkify detected a NaN/division-by-zero violation: {exc}"
         raise CheckifiedExecutionError(msg) from exc

@@ -1,0 +1,116 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "data": {
+    "values": [
+      {
+        "cell_key": "arm_id:proteinmpnn-temperature:0.1",
+        "committed_rows": 3,
+        "coords": {
+          "arm_id": "proteinmpnn",
+          "temperature": 0.1
+        },
+        "failure_reasons": [],
+        "pct_committed": 1.0,
+        "status": "COMMITTED",
+        "total_rows": 3
+      },
+      {
+        "cell_key": "arm_id:proteinmpnn-temperature:0.3",
+        "committed_rows": 3,
+        "coords": {
+          "arm_id": "proteinmpnn",
+          "temperature": 0.3
+        },
+        "failure_reasons": [],
+        "pct_committed": 1.0,
+        "status": "COMMITTED",
+        "total_rows": 3
+      },
+      {
+        "cell_key": "arm_id:proteinmpnn-temperature:0.5",
+        "committed_rows": 3,
+        "coords": {
+          "arm_id": "proteinmpnn",
+          "temperature": 0.5
+        },
+        "failure_reasons": [],
+        "pct_committed": 1.0,
+        "status": "COMMITTED",
+        "total_rows": 3
+      },
+      {
+        "cell_key": "arm_id:solublempnn-temperature:0.1",
+        "committed_rows": 3,
+        "coords": {
+          "arm_id": "solublempnn",
+          "temperature": 0.1
+        },
+        "failure_reasons": [],
+        "pct_committed": 1.0,
+        "status": "COMMITTED",
+        "total_rows": 3
+      },
+      {
+        "cell_key": "arm_id:solublempnn-temperature:0.3",
+        "committed_rows": 3,
+        "coords": {
+          "arm_id": "solublempnn",
+          "temperature": 0.3
+        },
+        "failure_reasons": [],
+        "pct_committed": 1.0,
+        "status": "COMMITTED",
+        "total_rows": 3
+      },
+      {
+        "cell_key": "arm_id:solublempnn-temperature:0.5",
+        "committed_rows": 3,
+        "coords": {
+          "arm_id": "solublempnn",
+          "temperature": 0.5
+        },
+        "failure_reasons": [],
+        "pct_committed": 1.0,
+        "status": "COMMITTED",
+        "total_rows": 3
+      }
+    ]
+  },
+  "description": "Status for planned cells: COMMITTED, PARTIAL, FAILED, MISSING.",
+  "encoding": {
+    "color": {
+      "field": "status",
+      "scale": {
+        "domain": [
+          "COMMITTED",
+          "PARTIAL",
+          "FAILED",
+          "MISSING"
+        ],
+        "range": [
+          "#2ca02c",
+          "#ff7f0e",
+          "#d62728",
+          "#7f7f7f"
+        ]
+      },
+      "title": "Status",
+      "type": "nominal"
+    },
+    "x": {
+      "field": "cell_key",
+      "title": "Planned Sweep Cell",
+      "type": "nominal"
+    },
+    "y": {
+      "field": "status",
+      "title": "Rollup Status",
+      "type": "nominal"
+    }
+  },
+  "mark": {
+    "tooltip": true,
+    "type": "rect"
+  },
+  "title": "Question 4: Cartesian Sweep Grid Coverage Reconciliation"
+}

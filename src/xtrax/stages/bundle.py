@@ -1,11 +1,12 @@
 """StageBundle: Typed bag of optional callable stage slots."""
 
+import dataclasses
 import types
 import typing
 from collections.abc import Callable
 from typing import Union, get_args, get_origin
 
-import equinox as eqx
+from xtrax._tree import Struct
 
 
 def _is_callable_type(typ) -> bool:
@@ -54,7 +55,7 @@ def _is_callable_type(typ) -> bool:
     return False
 
 
-class StageBundle(eqx.Module):
+class StageBundle(Struct):
     """Typed bag of optional callable stage slots. Subclass and declare fields.
 
     Topology determined by non-None fields at Python dispatch level.
@@ -152,8 +153,16 @@ class StageBundle(eqx.Module):
                         )
 
     def active_stages(self) -> list[str]:
-        """Return field names with non-None callable values. Python-side only."""
-        return [name for name, val in vars(self).items() if val is not None and callable(val)]
+        """Return field names with non-None callable values, in declaration order.
+
+        Python-side only. Declaration order holds after a pytree round trip too:
+        unflatten sets static fields before traced ones, so ``vars(self)`` order does not.
+        """
+        return [
+            f.name
+            for f in dataclasses.fields(self)
+            if (val := getattr(self, f.name)) is not None and callable(val)
+        ]
 
     def has_stage(self, name: str) -> bool:
         """Return True if named field is a non-None callable. Python-side only."""

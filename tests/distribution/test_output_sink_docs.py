@@ -32,7 +32,7 @@ def _write_output_sink_files(repo_root: Path) -> None:
         Streaming Callbacks and Checkpoint Persistence.
 
         ```python
-        from xtrax.io import BoundedCallbackHandler, async_indexed_stream
+        from xtrax.engine.io import BoundedCallbackHandler, async_indexed_stream
         from xtrax.checkpoint import (
             get_checkpoint_manager,
             save_checkpoint,
@@ -43,10 +43,10 @@ def _write_output_sink_files(repo_root: Path) -> None:
         xtrax.engine.io implementation.
 
         ```{autosummary}
-        xtrax.io.BoundedCallbackHandler
+        xtrax.engine.io.BoundedCallbackHandler
         ```
 
-        ```{automodule} xtrax.io
+        ```{automodule} xtrax.engine.io
         ```
 
         ```{automodule} xtrax.checkpoint
@@ -78,7 +78,7 @@ def _write_output_sink_files(repo_root: Path) -> None:
             """
             \"\"\"Callbacks.
 
-            >>> from xtrax.io import BoundedCallbackHandler
+            >>> from xtrax.engine.io import BoundedCallbackHandler
             >>> import asyncio
             >>> async def test():
             ...     handler = BoundedCallbackHandler(max_concurrent=1)
@@ -128,7 +128,7 @@ def _write_output_sink_files(repo_root: Path) -> None:
             class BoundedCallbackHandlerDoc:
                 \"\"\"Example:
 
-                >>> from xtrax.io import BoundedCallbackHandler
+                >>> from xtrax.engine.io import BoundedCallbackHandler
                 >>> import asyncio
                 >>> async def example():
                 ...     handler = BoundedCallbackHandler(max_concurrent=1)

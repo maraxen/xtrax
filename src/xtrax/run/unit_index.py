@@ -1,0 +1,1433 @@
+"""Unit index: lock-free per-writer segments over per-unit commit records (spec 261030 §3.1).
+
+The index is derived (decision D1). A unit is complete when its artifact carries a verifying
+commit record; an index row only says where to look. Internal for now: nothing is exported from
+``xtrax.run``.
+
+Layout under the index root::
+
+    segments/<writer_id>.jsonl   one append-only file per writer; fsync after every row
+    sealed/<ns>-<uuid8>.jsonl    compaction output, written by temp + os.replace
+    sealed/<ns>-<uuid8>.inputs.json   that file's inputs and their sizes, until archived
+    rebuilt/index-<ts>.jsonl     rebuild output (not written here)
+    archive/                     compacted inputs, moved here and never deleted
+
+* **Writer.** :class:`SegmentWriter` opens its segment with ``O_EXCL``, fsyncs the directory
+  once, fsyncs after each row, and appends a ``{"closed": true}`` trailer on close (also when
+  the ``with`` body raises). An optional file guard is checked before the segment exists.
+* **Read.** :func:`iter_rows` covers ``segments/``, ``sealed/`` and ``rebuilt/`` and dedups on
+  ``(store, locator, record_digest)``. An unparseable line is *torn*: skipped and reported. A
+  parseable row this code cannot accept (unknown ``schema_version``, missing field) is
+  *unreadable*: skipped and reported. Every read and listing retries on ``ESTALE``; a file that
+  vanishes mid-scan (a compaction, or a stale NFS listing) restarts the scan after a backoff
+  longer than the NFS directory-cache window.
+* **Compact.** :func:`compact` takes closed segments, and segments whose writer is dead by
+  :func:`xtrax.run.writer_liveness.segment_writer_dead` (UNKNOWN is never dead). It writes one
+  new sealed file holding every row it read from the taken segments and the existing sealed
+  files, plus a manifest of those inputs. A later pass moves exactly those inputs to
+  ``archive/`` once the sealed file is ``archive_after_s`` old (decision D6), so a reader on a
+  host with a stale ``sealed/`` listing never misses a row. Rows collapse only when they agree on
+  ``(unit_key, input_digest, content_digest, store, locator)``: copies at other locations stay,
+  and one ``(unit_key, input_digest)`` with two content digests (R-S6) keeps both rows and is
+  listed, never resolved. A new ``input_digest`` for a ``unit_key`` is a recompute, a new key.
+
+There is no compaction lock. Two compactors at once are safe because every sealed and temp name
+is unique and each compactor archives only files it read into its own output: at worst rows are
+duplicated, and the read side removes duplicates. A crash at any step leaves every row readable.
+"""
+
+import dataclasses
+import errno
+import importlib
+import json
+import os
+import re
+import socket
+import subprocess
+import time
+import uuid
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from typing import Any, Protocol, runtime_checkable
+
+from xtrax.config import resolve_layered
+from xtrax.run import writer_liveness as _wl
+from xtrax.run import zarr_commit as _zc
+from xtrax.run.writer_liveness import (
+    DEFAULT_GRACE_S,
+    NOJOB,
+    Runner,
+    parse_writer_id,
+    segment_writer_dead,
+    server_now,
+)
+from xtrax.run.zarr_commit import FAULT_ENV, Corrupt, Missing
+
+SCHEMA_VERSION = 1
+ROOT_ENV = "XTRAX_UNIT_INDEX_ROOT"
+ROOT_KEY = "unit_index_root"
+SEGMENTS_DIRNAME = "segments"
+SEALED_DIRNAME = "sealed"
+REBUILT_DIRNAME = "rebuilt"
+ARCHIVE_DIRNAME = "archive"
+TRAILER = b'{"closed": true}\n'
+READ_DIRS = (SEGMENTS_DIRNAME, SEALED_DIRNAME, REBUILT_DIRNAME)
+ESTALE_TRIES = 6
+# Sleeps between read rescans. They sum past the NFS directory attribute cache ceiling (kernel
+# default acdirmax = 60 s; Engaging mounts set no actimeo/acdir* option, read 2026-11-03), so a
+# reader whose cached listing still names an archived segment waits until the listing refreshes.
+RESCAN_SLEEPS_S = (0.1, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
+MAX_RESCANS = len(RESCAN_SLEEPS_S) + 1
+# Compaction archives a sealed file's inputs only once that file is this old (NFS server time):
+# 3x acdirmax, so every host's sealed/ listing shows it before its inputs leave segments/.
+DEFAULT_ARCHIVE_AFTER_S = 180.0
+PARTIAL_MAX_AGE_S = 3600.0
+MANIFEST_SUFFIX = ".inputs.json"
+_ARCHIVE_PREFIX = {SEGMENTS_DIRNAME: "segment-", SEALED_DIRNAME: "sealed-"}
+# archive/segment-<id>.jsonl plus a ".<uuid8>" collision suffix must fit NAME_MAX (255 bytes).
+WRITER_ID_MAX_BYTES = 255 - len("segment-") - len(".jsonl") - 9
+
+_REQUIRED_STR = ("store", "locator", "unit_key", "input_digest", "content_digest", "record_digest")
+_STR = ("adapter", "writer_id", "run_id")
+ROW_FIELDS = (
+    "schema_version",
+    *_REQUIRED_STR,
+    *_STR,
+    "ts",
+    "reused_from",
+)
+
+
+class UnitIndexError(Exception):
+    """The index cannot be read or compacted safely; nothing was changed."""
+
+
+class RowError(ValueError):
+    """A parseable JSON line is not a valid index row."""
+
+
+class SchemaMismatchError(RowError):
+    """A row's ``schema_version`` is not the one this code writes."""
+
+
+@runtime_checkable
+class FileGuard(Protocol):
+    """What :class:`SegmentWriter` needs from :class:`xtrax.fileguard.FileCapGuard`."""
+
+    def check(self, n_new_files: int) -> int: ...
+
+
+# ---- rows ----------------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class IndexRow:
+    """One index row: where a unit's committed artifact is, and which commit it carries."""
+
+    store: str
+    locator: str
+    unit_key: str
+    input_digest: str
+    content_digest: str
+    record_digest: str
+    adapter: str
+    writer_id: str
+    run_id: str
+    ts: float
+    reused_from: tuple[str, str, str] | None = None
+    schema_version: int = SCHEMA_VERSION
+
+    @property
+    def read_key(self) -> tuple[str, str, str]:
+        """The read-side dedup key: ``(store, locator, record_digest)``."""
+        return (self.store, self.locator, self.record_digest)
+
+    @property
+    def unit_id(self) -> tuple[str, str]:
+        """The compaction key: ``(unit_key, input_digest)``."""
+        return (self.unit_key, self.input_digest)
+
+    def to_dict(self) -> dict[str, Any]:
+        d = {f: getattr(self, f) for f in ROW_FIELDS}
+        d["reused_from"] = list(self.reused_from) if self.reused_from is not None else None
+        return d
+
+    def to_json_line(self) -> str:
+        return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":")) + "\n"
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "IndexRow":
+        version = d.get("schema_version")
+        if isinstance(version, bool) or version != SCHEMA_VERSION:
+            raise SchemaMismatchError(f"schema_version {version!r}, expected {SCHEMA_VERSION}")
+        for f in _REQUIRED_STR:
+            v = d.get(f)
+            if not isinstance(v, str) or not v:
+                raise RowError(f"field {f!r} must be a non-empty string, got {v!r}")
+        for f in _STR:
+            if not isinstance(d.get(f), str):
+                raise RowError(f"field {f!r} must be a string, got {d.get(f)!r}")
+        ts = d.get("ts")
+        if isinstance(ts, bool) or not isinstance(ts, int | float):
+            raise RowError(f"field 'ts' must be a number, got {ts!r}")
+        reused = d.get("reused_from")
+        if reused is not None:
+            if not (
+                isinstance(reused, list)
+                and len(reused) == 3
+                and all(isinstance(x, str) and x for x in reused)
+            ):
+                raise RowError(f"field 'reused_from' must be null or 3 strings, got {reused!r}")
+            reused = (reused[0], reused[1], reused[2])
+        return cls(
+            store=d["store"],
+            locator=d["locator"],
+            unit_key=d["unit_key"],
+            input_digest=d["input_digest"],
+            content_digest=d["content_digest"],
+            record_digest=d["record_digest"],
+            adapter=d["adapter"],
+            writer_id=d["writer_id"],
+            run_id=d["run_id"],
+            ts=float(ts),
+            reused_from=reused,
+        )
+
+
+# ---- root ----------------------------------------------------------------------------------
+
+
+def _disabled(value: str) -> bool:
+    return value.strip().lower() in {"", "none"}
+
+
+def root_source(
+    root: Path | str | None = None, *, start: Path | str | None = None
+) -> tuple[Path | None, str]:
+    """``(root or None, which layer decided)``. No default path: unset means the index is off.
+
+    Order: ``root`` argument > ``$XTRAX_UNIT_INDEX_ROOT`` > ``unit_index_root`` in
+    ``[tool.xtrax]`` of the nearest ``pyproject.toml`` > ``unit_index_root`` in
+    ``${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml`` > off. ``none`` or empty in the argument
+    or the variable switches the index off. A config-file value must be an absolute path (``~``
+    and ``$VARS`` expand); a malformed config file raises ``ValueError`` naming it.
+    """
+    if root is not None:
+        if _disabled(str(root)):
+            return None, "arg (disabled)"
+        return Path(str(root).strip()).expanduser().absolute(), "arg"
+    if ROOT_ENV in os.environ:
+        value = os.environ[ROOT_ENV]
+        if _disabled(value):
+            return None, "env (disabled)"
+        return Path(value.strip()).expanduser().absolute(), "env"
+    value, source = resolve_layered("xtrax", ROOT_KEY, start=start)
+    if value is None:
+        return None, "off"
+    if not isinstance(value, str):
+        raise ValueError(f"{ROOT_KEY} from {source} must be a string path, got {value!r}")
+    if _disabled(value):
+        return None, f"{source} (disabled)"
+    path = Path(os.path.expandvars(value.strip())).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{ROOT_KEY} from {source} is relative ({value!r}); use an absolute path")
+    return path, source
+
+
+def resolve_root(root: Path | str | None = None, *, start: Path | str | None = None) -> Path | None:
+    """The index root, or None when the index is off. See :func:`root_source`."""
+    return root_source(root, start=start)[0]
+
+
+def canonical_store(store: Path | str) -> str:
+    """The one spelling of a store root that rows carry: ``os.path.realpath``.
+
+    Used when a row is written and when a lookup asks, so a store reached through a symlink
+    (``~/orcd/scratch`` on Engaging) finds the same rows under either spelling. ``~`` expands;
+    a relative path is refused (``ValueError``), since its meaning would depend on the cwd. Not
+    ``strict``: a lookup of a store that does not exist yet answers ``Missing``, not an error.
+    """
+    path = os.path.expanduser(os.fspath(store))
+    if not os.path.isabs(path):
+        raise ValueError(f"store {store!r} is relative; give the absolute path")
+    return os.path.realpath(path)
+
+
+# ---- low-level IO --------------------------------------------------------------------------
+
+
+def _fault(step: str) -> None:
+    """Crash here when ``XTRAX_FAULT_INJECT=unit_index:<step>`` (crash-injection tests)."""
+    if os.environ.get(FAULT_ENV) == f"unit_index:{step}":
+        os._exit(137)
+
+
+def _fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _ensure_dir(path: Path) -> None:
+    """mkdir -p, fsyncing the parent of every directory this call creates."""
+    missing = []
+    p = path
+    while not p.exists():
+        missing.append(p)
+        p = p.parent
+    for d in reversed(missing):
+        try:
+            d.mkdir()
+        except FileExistsError:
+            pass  # another process won the race; its parent fsync may not have happened yet
+        _fsync_dir(d.parent)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        view = view[n:]
+
+
+def _read_bytes(path: Path) -> bytes:
+    """Whole-file read; on ESTALE reopen and reread (never reuse the descriptor)."""
+    for attempt in range(ESTALE_TRIES):
+        try:
+            with open(path, "rb") as fh:
+                return fh.read()
+        except OSError as e:
+            if e.errno != errno.ESTALE or attempt == ESTALE_TRIES - 1:
+                raise
+            time.sleep(min(0.05 * 2**attempt, 1.0))
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+# ---- writer --------------------------------------------------------------------------------
+
+
+def new_writer_id(*, host: str | None = None, pid: int | None = None) -> str:
+    """``<host>-<pid>-<SLURM_JOB_ID|nojob>-<SLURM_RESTART_COUNT|0>-<uuid8>``."""
+    h = (host if host is not None else socket.gethostname()).split(".")[0]
+    h = re.sub(r"[^A-Za-z0-9-]", "_", h) or "host"
+    job = os.environ.get("SLURM_JOB_ID", "").strip()
+    restart = os.environ.get("SLURM_RESTART_COUNT", "").strip()
+    p = os.getpid() if pid is None else pid
+    j = job if job.isdigit() else NOJOB
+    r = restart if restart.isdigit() else "0"
+    return f"{h}-{p}-{j}-{r}-{uuid.uuid4().hex[:8]}"
+
+
+class SegmentWriter:
+    """This writer's append-only segment. Use as a context manager.
+
+    ``with SegmentWriter(root) as w: w.append(row)``. Commit the unit's record first, then
+    append its row: a crash in between leaves a record with no row, which rebuild restores.
+    """
+
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        writer_id: str | None = None,
+        guard: FileGuard | None = None,
+    ) -> None:
+        self.root = Path(root)
+        self.writer_id = writer_id if writer_id is not None else new_writer_id()
+        parse_writer_id(self.writer_id)  # ValueError on a malformed id
+        # The id is a file name in segments/: a "/" would nest the file outside the read glob.
+        if (
+            Path(self.writer_id).name != self.writer_id
+            or self.writer_id.startswith(".")
+            or "\0" in self.writer_id
+        ):
+            raise ValueError(f"writer_id {self.writer_id!r} is not a plain file name")
+        if len(self.writer_id.encode("utf-8")) > WRITER_ID_MAX_BYTES:
+            raise ValueError(
+                f"writer_id is {len(self.writer_id.encode('utf-8'))} bytes; the archived segment "
+                f"name needs it to be at most {WRITER_ID_MAX_BYTES}"
+            )
+        self.path = self.root / SEGMENTS_DIRNAME / f"{self.writer_id}.jsonl"
+        self.rows_written = 0
+        self._guard = guard
+        self._fd: int | None = None
+        self._closed = False
+        self._clean = True  # False while a write is in flight or after one failed part-way
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+    def open(self) -> "SegmentWriter":
+        if self._fd is not None or self._closed:
+            raise RuntimeError(f"segment {self.path} was already opened")
+        if self._guard is not None:
+            self._guard.check(1)  # refuses before the segment exists
+        seg_dir = self.path.parent
+        _ensure_dir(seg_dir)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND | os.O_CLOEXEC
+        self._fd = os.open(self.path, flags, 0o644)
+        _fsync_dir(seg_dir)
+        return self
+
+    def _write(self, data: bytes) -> None:
+        if self._fd is None:
+            raise RuntimeError(f"segment {self.path} is not open")
+        if not self._clean:
+            data = b"\n" + data  # end the fragment a failed write left, so this line is whole
+        self._clean = False
+        _write_all(self._fd, data)
+        os.fsync(self._fd)
+        self._clean = True
+
+    def append(self, row: IndexRow) -> None:
+        """Append one row and fsync it."""
+        if self._closed:
+            raise RuntimeError(f"segment {self.path} is closed")
+        if row.writer_id != self.writer_id:
+            raise ValueError(f"row writer_id {row.writer_id!r} is not {self.writer_id!r}")
+        store = canonical_store(row.store)
+        if store != row.store:
+            row = dataclasses.replace(row, store=store)
+        self._write(row.to_json_line().encode("utf-8"))
+        self.rows_written += 1
+
+    def close(self) -> None:
+        """Append the closed trailer and close. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._fd is None:
+            return
+        try:
+            self._write(TRAILER)
+        finally:
+            os.close(self._fd)
+            self._fd = None
+
+    def __enter__(self) -> "SegmentWriter":
+        return self.open()
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
+class DisabledWriter:
+    """Stand-in when the index is off: accepts rows and writes nothing."""
+
+    writer_id = ""
+    rows_written = 0
+    path = None
+
+    @property
+    def enabled(self) -> bool:
+        return False
+
+    def open(self) -> "DisabledWriter":
+        return self
+
+    def append(self, row: IndexRow) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def __enter__(self) -> "DisabledWriter":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+def open_writer(
+    root: Path | str | None = None,
+    *,
+    start: Path | str | None = None,
+    guard: FileGuard | None = None,
+    writer_id: str | None = None,
+) -> SegmentWriter | DisabledWriter:
+    """A writer for the resolved root (:func:`root_source`), or a no-op one when it is off."""
+    resolved = resolve_root(root, start=start)
+    if resolved is None:
+        return DisabledWriter()
+    return SegmentWriter(resolved, writer_id=writer_id, guard=guard)
+
+
+# ---- read ----------------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class BadLine:
+    """A line skipped on read: ``kind`` is ``torn`` or ``unreadable``."""
+
+    path: str
+    line: int
+    kind: str
+    reason: str
+    # (store, unit_key) when an unreadable line still names them (a schema mismatch), so a
+    # lookup can say SchemaMismatch instead of Missing.
+    key: tuple[str, str] | None = None
+
+
+@dataclasses.dataclass(slots=True)
+class _Parsed:
+    rows: list[IndexRow]
+    torn: list[BadLine]
+    unreadable: list[BadLine]
+    trailer: bool
+
+
+def _parse(path: Path, data: bytes) -> _Parsed:
+    out = _Parsed([], [], [], False)
+    for i, raw in enumerate(data.split(b"\n"), start=1):
+        if not raw.strip():
+            continue
+        try:
+            obj = json.loads(raw)
+        except ValueError as e:
+            out.torn.append(BadLine(str(path), i, "torn", f"not JSON: {type(e).__name__}"))
+            continue
+        if isinstance(obj, dict) and obj.get("closed") is True:
+            out.trailer = True
+            continue
+        if not isinstance(obj, dict):
+            out.unreadable.append(BadLine(str(path), i, "unreadable", "not a JSON object"))
+            continue
+        try:
+            out.rows.append(IndexRow.from_dict(obj))
+        except RowError as e:
+            key = None
+            store, unit_key = obj.get("store"), obj.get("unit_key")
+            if isinstance(e, SchemaMismatchError) and isinstance(store, str):
+                # Keyed by the spelling a lookup asks with; a relative store keeps its raw text.
+                if isinstance(unit_key, str):
+                    spelled = os.path.expanduser(store)
+                    canon = os.path.realpath(spelled) if os.path.isabs(spelled) else store
+                    key = (canon, unit_key)
+            out.unreadable.append(BadLine(str(path), i, "unreadable", str(e), key))
+    return out
+
+
+def _names(d: Path, suffix: str) -> list[Path]:
+    """Sorted non-hidden entries of ``d`` ending in ``suffix``; ``[]`` if ``d`` is missing.
+
+    ``os.listdir`` rather than ``Path.glob``: glob swallows ``scandir`` errors and would turn a
+    failed listing into an empty directory. ESTALE is retried; any other error raises.
+    """
+    for attempt in range(ESTALE_TRIES):
+        try:
+            names = os.listdir(d)
+        except FileNotFoundError:
+            return []
+        except OSError as e:
+            if e.errno != errno.ESTALE or attempt == ESTALE_TRIES - 1:
+                raise
+            time.sleep(min(0.05 * 2**attempt, 1.0))
+            continue
+        return sorted(d / n for n in names if n.endswith(suffix) and not n.startswith("."))
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _listing(root: Path, dirname: str) -> list[Path]:
+    return _names(root / dirname, ".jsonl")
+
+
+def _scan(root: Path) -> dict[Path, _Parsed]:
+    """Parse every readable file. Restart when a listed file vanishes or a sealed file appears.
+
+    ``segments/`` is listed before ``sealed/`` so a compaction that moves segments after this
+    listing is caught: the moved file vanishes, or a new sealed file appears. Rescans back off
+    (:data:`RESCAN_SLEEPS_S`) past the NFS listing-cache window: a segment is archived only
+    after the sealed file holding its rows is visible everywhere, so a vanished segment means a
+    stale listing, which a wait cures.
+    """
+    for attempt in range(MAX_RESCANS):
+        if attempt:
+            time.sleep(RESCAN_SLEEPS_S[attempt - 1])
+        listed = [p for d in READ_DIRS for p in _listing(root, d)]
+        sealed_before = {p for p in listed if p.parent.name == SEALED_DIRNAME}
+        parsed: dict[Path, _Parsed] = {}
+        vanished = False
+        for p in listed:
+            try:
+                parsed[p] = _parse(p, _read_bytes(p))
+            except FileNotFoundError:
+                vanished = True
+                break
+        if not vanished and set(_listing(root, SEALED_DIRNAME)) <= sealed_before:
+            return parsed
+    raise UnitIndexError(f"{root}: the index kept changing during {MAX_RESCANS} read attempts")
+
+
+@dataclasses.dataclass(slots=True)
+class ReadReport:
+    """Filled by :func:`iter_rows` when passed in."""
+
+    files: int = 0
+    rows_read: int = 0
+    duplicates: int = 0
+    torn: list[BadLine] = dataclasses.field(default_factory=list)
+    unreadable: list[BadLine] = dataclasses.field(default_factory=list)
+
+
+def iter_rows(root: Path | str, *, report: ReadReport | None = None) -> Iterator[IndexRow]:
+    """Every row in ``segments/``, ``sealed/`` and ``rebuilt/``, deduplicated on the read key."""
+    parsed = _scan(Path(root))
+    rep = report if report is not None else ReadReport()
+    rep.files = len(parsed)
+    seen: set[tuple[str, str, str]] = set()
+    for p in parsed.values():
+        rep.torn.extend(p.torn)
+        rep.unreadable.extend(p.unreadable)
+        for row in p.rows:
+            rep.rows_read += 1
+            if row.read_key in seen:
+                rep.duplicates += 1
+                continue
+            seen.add(row.read_key)
+            yield row
+
+
+# ---- records, lookup and rebuild -----------------------------------------------------------
+
+ZARR_COMMIT = "zarr_commit"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class CoreRecord:
+    """The immutable core of a unit's own record, as an adapter reads it (spec §3.1)."""
+
+    unit_key: str
+    input_digest: str
+    content_digest: str
+    record_digest: str
+    run_id: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class IndexReuse:
+    """Lookup: the artifact at ``store``/``locator`` holds a verifying record for the input."""
+
+    store: str
+    locator: str
+    core: CoreRecord
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class IndexStale:
+    """Lookup: the artifact's record is for another input digest."""
+
+    store: str
+    locator: str
+    core: CoreRecord
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SchemaMismatch:
+    """Lookup: the only rows for the unit have a ``schema_version`` this code does not read."""
+
+    reason: str
+
+
+Classified = IndexReuse | IndexStale | Missing | Corrupt
+LookupResult = IndexReuse | IndexStale | Missing | Corrupt | SchemaMismatch
+
+
+@runtime_checkable
+class RecordAdapter(Protocol):
+    """Reads one kind of per-unit record. The record, never the index row, is the truth."""
+
+    name: str
+
+    def find(self, store: Path) -> Iterator[tuple[str, CoreRecord]]:
+        """Every committed record in ``store``, as ``(locator, core)``."""
+        ...
+
+    def classify(self, store: Path, locator: str, input_digest: str, *, verify: bool) -> Any:
+        """Open the record at ``locator`` and classify it (a :data:`Classified` value)."""
+        ...
+
+
+def _core_from_commit(locator: str, rec: "_zc.CommitRecord") -> CoreRecord:
+    return CoreRecord(locator, rec.input_digest, rec.content_digest, rec.record_digest, rec.run_id)
+
+
+class ZarrCommitAdapter:
+    """``xtrax.commit`` records of a :mod:`xtrax.run.zarr_commit` durable store.
+
+    ``locator`` and ``unit_key`` are both the key path (``"chunks/k0"``). Classification is
+    :func:`xtrax.run.zarr_commit.lookup`, so an artifact that is not visible yet is ``Missing``.
+    """
+
+    name = ZARR_COMMIT
+
+    def find(self, store: Path) -> Iterator[tuple[str, CoreRecord]]:
+        for key in _zc.committed_keys(Path(store)):
+            locator = _zc.key_path(key)
+            rec = _zc.read_record(Path(store) / locator)
+            if rec is not None:
+                yield locator, _core_from_commit(locator, rec)
+
+    def classify(self, store: Path, locator: str, input_digest: str, *, verify: bool) -> Any:
+        try:
+            got = _zc.lookup(Path(store), tuple(locator.split("/")), input_digest, verify=verify)
+        except ValueError as e:  # an illegal key path: this copy is bad, other copies may not be
+            return Corrupt(f"illegal zarr_commit locator {locator!r}: {e}")
+        if isinstance(got, _zc.Reuse):
+            return IndexReuse(
+                canonical_store(store), locator, _core_from_commit(locator, got.record)
+            )
+        if isinstance(got, _zc.Stale):
+            return IndexStale(
+                canonical_store(store), locator, _core_from_commit(locator, got.record)
+            )
+        return got
+
+
+DEFAULT_ADAPTERS: dict[str, RecordAdapter] = {ZARR_COMMIT: ZarrCommitAdapter()}
+
+
+def default_adapters() -> dict[str, RecordAdapter]:
+    """Every built-in adapter by name: ``zarr_commit`` plus the consumer adapters in
+    :mod:`xtrax.run.unit_index_adapters` (imported here, lazily, to avoid an import cycle)."""
+    from xtrax.run.unit_index_adapters import ADAPTERS
+
+    return {**DEFAULT_ADAPTERS, **ADAPTERS}
+
+
+def make_row(
+    store: Path | str,
+    locator: str,
+    core: CoreRecord,
+    *,
+    adapter: str,
+    writer_id: str,
+    reused_from: tuple[str, str, str] | None = None,
+    ts: float | None = None,
+) -> IndexRow:
+    """The index row for one record, with the store in its canonical spelling.
+
+    Raises :class:`RowError` for a row :func:`iter_rows` would drop (an empty required field),
+    so no writer emits a row that no reader can see.
+    """
+    row = IndexRow(
+        store=canonical_store(store),
+        locator=locator,
+        unit_key=core.unit_key,
+        input_digest=core.input_digest,
+        content_digest=core.content_digest,
+        record_digest=core.record_digest,
+        adapter=adapter,
+        writer_id=writer_id,
+        run_id=core.run_id,
+        ts=time.time() if ts is None else ts,
+        reused_from=reused_from,
+    )
+    IndexRow.from_dict(row.to_dict())  # the reader's own validation
+    return row
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class IndexSnapshot:
+    """One read of the index, grouped for lookups. Build it once with :func:`load_index`."""
+
+    rows: dict[tuple[str, str], tuple[IndexRow, ...]]
+    schema_mismatch: dict[tuple[str, str], str]
+    report: ReadReport
+
+
+def load_index(root: Path | str) -> IndexSnapshot:
+    """Read the index once (:func:`iter_rows`) and group rows by ``(store, unit_key)``.
+
+    A lookup against a snapshot costs no index read, so a consumer resuming many units reads
+    the index once, not once per unit. The snapshot does not see rows appended after it.
+    """
+    report = ReadReport()
+    grouped: dict[tuple[str, str], list[IndexRow]] = {}
+    for row in iter_rows(root, report=report):
+        grouped.setdefault((row.store, row.unit_key), []).append(row)
+    mismatch = {b.key: b.reason for b in report.unreadable if b.key is not None}
+    return IndexSnapshot({k: tuple(v) for k, v in grouped.items()}, mismatch, report)
+
+
+def lookup(
+    index: "IndexSnapshot | Path | str",
+    store: Path | str,
+    unit_key: str,
+    input_digest: str,
+    *,
+    verify: bool = True,
+    adapters: dict[str, RecordAdapter] | None = None,
+) -> LookupResult:
+    """Classify a unit through its index rows, by opening the artifact's own record.
+
+    ``index`` is a snapshot from :func:`load_index` (use one for many lookups) or an index root
+    (read once for this call). Rows only say where to look: every candidate is classified by its
+    adapter from the record at its locator. Any reusable copy wins; otherwise ``Corrupt`` beats
+    :class:`SchemaMismatch` beats
+    :class:`IndexStale` beats ``Missing``. No row: ``Missing``, or :class:`SchemaMismatch` when
+    the unit's only rows have an unknown ``schema_version``. The result is a classification
+    only; what to do with it stays with the consumer.
+    """
+    snap = index if isinstance(index, IndexSnapshot) else load_index(index)
+    s = canonical_store(store)
+    rows = snap.rows.get((s, unit_key), ())
+    if not rows:
+        if (s, unit_key) in snap.schema_mismatch:
+            return SchemaMismatch(snap.schema_mismatch[(s, unit_key)])
+        return Missing()
+    table = default_adapters() if adapters is None else adapters
+    rank: dict[type, int] = {Corrupt: 0, SchemaMismatch: 1, IndexStale: 2, Missing: 3}
+    best: Any = None
+    seen: set[tuple[str, str]] = set()
+    for row in sorted(rows, key=lambda r: (r.input_digest != input_digest, -r.ts)):
+        if (row.adapter, row.locator) in seen:
+            continue
+        seen.add((row.adapter, row.locator))
+        adapter = table.get(row.adapter)
+        if adapter is None:
+            raise UnitIndexError(f"no record adapter named {row.adapter!r} for {s}:{row.locator}")
+        got: Any = adapter.classify(Path(row.store), row.locator, input_digest, verify=verify)
+        # The row only pointed here: the record must be this unit's (and, to reuse, this input's).
+        if isinstance(got, IndexReuse | IndexStale) and got.core.unit_key != unit_key:
+            got = Corrupt(
+                f"{row.locator} holds the record of unit {got.core.unit_key!r}, not {unit_key!r}"
+            )
+        elif isinstance(got, IndexReuse) and got.core.input_digest != input_digest:
+            got = Corrupt(f"{row.locator} reported reuse for input {got.core.input_digest!r}")
+        if isinstance(got, IndexReuse):
+            return got
+        if best is None or rank[type(got)] < rank[type(best)]:
+            best = got
+    return best
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class RebuildReport:
+    path: str | None
+    rows: int
+    stores: tuple[str, ...]
+    skipped: tuple[str, ...] = ()
+
+
+def rebuild(root: Path | str, stores: "list[tuple[Path | str, RecordAdapter]]") -> RebuildReport:
+    """Write one derived ``rebuilt/index-<ns>-<uuid8>.jsonl`` from the records themselves.
+
+    Idempotent: a record gives the same read key every time, so repeated rebuilds add one file
+    each and no rows. Nothing is moved or deleted (that would reopen the stale-listing window
+    D6 closes). Writes nothing when no store holds a record. A record whose row no reader would
+    accept (an empty required field) is not written; its ``store:locator`` is in ``skipped``.
+    """
+    root = Path(root)
+    writer_id = new_writer_id()
+    rows: list[IndexRow] = []
+    skipped: list[str] = []
+    for store, adapter in stores:
+        for locator, core in adapter.find(Path(store)):
+            try:
+                rows.append(
+                    make_row(store, locator, core, adapter=adapter.name, writer_id=writer_id)
+                )
+            except RowError:
+                skipped.append(f"{canonical_store(store)}:{locator}")
+    names = tuple(canonical_store(s) for s, _ in stores)
+    if not rows:
+        return RebuildReport(None, 0, names, tuple(skipped))
+    rebuilt = root / REBUILT_DIRNAME
+    _ensure_dir(rebuilt)
+    target = rebuilt / f"index-{time.time_ns():020d}-{uuid.uuid4().hex[:8]}.jsonl"
+    _write_atomic(target, "".join(r.to_json_line() for r in rows).encode("utf-8"), fault=None)
+    return RebuildReport(str(target), len(rows), names, tuple(skipped))
+
+
+# ---- DuckDB view (optional: xtrax[index]) -----------------------------------------------------
+
+_VIEW_COLUMNS = {
+    "schema_version": "BIGINT",
+    "store": "VARCHAR",
+    "locator": "VARCHAR",
+    "unit_key": "VARCHAR",
+    "input_digest": "VARCHAR",
+    "content_digest": "VARCHAR",
+    "record_digest": "VARCHAR",
+    "adapter": "VARCHAR",
+    "writer_id": "VARCHAR",
+    "run_id": "VARCHAR",
+    "ts": "DOUBLE",
+    "reused_from": "VARCHAR[]",
+}
+
+
+def _sql_str(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
+def duckdb_view(root: Path | str, con: Any = None, *, name: str = "unit_index") -> Any:
+    """A read-only DuckDB view ``name`` over the index, by :func:`iter_rows`'s rule.
+
+    ``read_json(..., ignore_errors=true)`` plus ``DISTINCT ON (store, locator, record_digest)``,
+    keeping only rows of this ``schema_version`` with every required field set. The view lists
+    the index files present now (a snapshot): create it again to see later files. Torn lines
+    are reported by :func:`iter_rows` only; DuckDB is not a torn-line detector (A3). The view
+    holds :func:`iter_rows`'s read keys; for a duplicate copy within one file whose ``ts`` went
+    backwards it may show another copy's non-key fields (no line number in DuckDB). Returns the
+    connection (a new in-memory one when ``con`` is None).
+    """
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(f"view name {name!r} is not a plain SQL identifier")
+    try:
+        # Optional extra: imported by name so type checks pass in environments without it.
+        duckdb = importlib.import_module("duckdb")
+    except ImportError as e:
+        raise ImportError("duckdb_view needs the optional extra: pip install 'xtrax[index]'") from e
+    root = Path(root)
+    files = [str(p) for d in READ_DIRS for p in _listing(root, d)]
+    if con is None:
+        con = duckdb.connect()
+    if not files:
+        con.execute(
+            f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM "
+            f"(SELECT {', '.join(f'NULL::{t} AS {c}' for c, t in _VIEW_COLUMNS.items())}) "
+            "WHERE false"
+        )
+        return con
+    # Every field is read as raw JSON and checked with IndexRow.from_dict's rules, so DuckDB's
+    # casts (true -> 1.0, "1.5" -> 1.5, 5 -> '5') cannot admit a row iter_rows drops.
+    columns = "{" + ", ".join(f"{_sql_str(c)}: 'JSON'" for c in _VIEW_COLUMNS) + "}"
+    file_list = "[" + ", ".join(_sql_str(f) for f in files) + "]"
+    source = (
+        f"read_json({file_list}, format='newline_delimited', ignore_errors=true, "
+        f"filename=true, columns={columns})"
+    )
+    num = "('BIGINT', 'UBIGINT', 'DOUBLE')"
+    where = " AND ".join(
+        [
+            f"json_type(schema_version) IN {num}",
+            f"CAST(schema_version AS DOUBLE) = {SCHEMA_VERSION}",
+            f"json_type(ts) IN {num}",
+            "(json_type(reused_from) IS NULL OR json_type(reused_from) = 'NULL' OR ("
+            "json_type(reused_from) = 'ARRAY' AND json_array_length(reused_from) = 3 AND "
+            + " AND ".join(
+                f"json_type(reused_from, '$[{i}]') = 'VARCHAR' AND reused_from->>'$[{i}]' <> ''"
+                for i in range(3)
+            )
+            + "))",
+        ]
+        + [f"json_type({c}) = 'VARCHAR' AND {c}->>'$' <> ''" for c in _REQUIRED_STR]
+        + [f"json_type({c}) = 'VARCHAR'" for c in _STR]
+    )
+    project = ", ".join(
+        "CAST(schema_version AS BIGINT) AS schema_version"
+        if c == "schema_version"
+        else "CAST(ts AS DOUBLE) AS ts"
+        if c == "ts"
+        else "CASE WHEN json_type(reused_from) = 'ARRAY' "
+        "THEN CAST(reused_from AS VARCHAR[]) END AS reused_from"
+        if c == "reused_from"
+        else f"{c}->>'$' AS {c}"
+        for c in _VIEW_COLUMNS
+    )
+    # iter_rows keeps the first copy of a read key in scan order (file order, then line order).
+    # DuckDB 2.0 exposes no line number (read_json/read_csv refuse file_row_number; read_text
+    # refuses a torn UTF-8 tail), so within one file the order is (ts, writer_id). That matches
+    # iter_rows while a file's ts never decreases; otherwise the read-key set still agrees, and
+    # only the non-key fields of a duplicate copy may differ (lookup never trusts those).
+    con.execute(
+        f"CREATE OR REPLACE VIEW {name} AS SELECT {', '.join(_VIEW_COLUMNS)} FROM ("
+        f"SELECT DISTINCT ON (store, locator, record_digest) *, "
+        f"list_position({file_list}, filename) AS _file_rank FROM ("
+        f"SELECT {project}, filename FROM {source} WHERE {where}) "
+        "ORDER BY store, locator, record_digest, _file_rank, ts, writer_id)"
+    )
+    return con
+
+
+# ---- compaction ----------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SegmentDecision:
+    name: str
+    taken: bool
+    reason: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Conflict:
+    """R-S6: one ``(unit_key, input_digest)`` with more than one content digest."""
+
+    unit_key: str
+    input_digest: str
+    content_digests: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class CompactReport:
+    """What one compaction pass did (or, with ``dry_run``, would do)."""
+
+    dry_run: bool
+    segments: tuple[SegmentDecision, ...] = ()
+    sealed_inputs: tuple[str, ...] = ()
+    rows_in: int = 0
+    rows_sealed: int = 0
+    collapsed: int = 0
+    copies: int = 0
+    conflicts: tuple[Conflict, ...] = ()
+    torn: tuple[BadLine, ...] = ()
+    left_unreadable: tuple[str, ...] = ()
+    sealed_path: str | None = None
+    archived: tuple[str, ...] = ()
+    pending_archive: tuple[str, ...] = ()
+    scheduler_calls: int = 0
+    partials_removed: int = 0
+
+    @property
+    def taken(self) -> tuple[str, ...]:
+        return tuple(d.name for d in self.segments if d.taken)
+
+
+class _PassRunner:
+    """One pass's scheduler runner: caches each query, and after the first failure answers
+    every later query with a failure (UNKNOWN, never dead) instead of waiting on a hung squeue."""
+
+    def __init__(self, inner: Runner | None) -> None:
+        self._inner = inner if inner is not None else _wl._subprocess_runner
+        self._cache: dict[tuple[str, ...], tuple[int, str, str]] = {}
+        self._broken: str | None = None
+        self.calls = 0
+
+    def __call__(self, argv: list[str], timeout: float) -> tuple[int, str, str]:
+        key = tuple(argv)
+        if key in self._cache:
+            return self._cache[key]
+        if self._broken is not None:
+            raise OSError(f"scheduler query skipped after an earlier {self._broken}")
+        self.calls += 1
+        try:
+            result = self._inner(argv, timeout)
+        except (OSError, subprocess.SubprocessError) as e:
+            self._broken = type(e).__name__
+            raise
+        self._cache[key] = result
+        return result
+
+
+def _decide(
+    segments: list[Path],
+    *,
+    grace_s: int | float,
+    now_server: float | None,
+    runner: _PassRunner,
+) -> list[SegmentDecision]:
+    out = []
+    now = now_server
+    for p in segments:
+        try:
+            if now is None and not _wl._has_trailer(p):
+                now = server_now(p.parent)  # once per pass, and only if a liveness test needs it
+            v = segment_writer_dead(p, grace_s=grace_s, now_server=now, runner=runner)
+        except FileNotFoundError:
+            out.append(SegmentDecision(p.name, False, "vanished (moved by another compactor)"))
+            continue
+        out.append(SegmentDecision(p.name, v.dead, v.reason))
+    return out
+
+
+def _collapse(rows: list[IndexRow]) -> tuple[list[IndexRow], int, int, list[Conflict]]:
+    """Group by unit_id; one row per (content_digest, store, locator), the latest by ts."""
+    by_place: dict[tuple[str, ...], IndexRow] = {}
+    collapsed = 0
+    for r in rows:
+        k = (*r.unit_id, r.content_digest, r.store, r.locator)
+        cur = by_place.get(k)
+        if cur is None:
+            by_place[k] = r
+            continue
+        collapsed += 1
+        if (r.ts, r.record_digest) > (cur.ts, cur.record_digest):
+            by_place[k] = r
+    kept = sorted(
+        by_place.values(), key=lambda r: (*r.unit_id, r.content_digest, r.store, r.locator)
+    )
+    contents: dict[tuple[str, str], set[str]] = {}
+    places: dict[tuple[str, str, str], int] = {}
+    for r in kept:
+        contents.setdefault(r.unit_id, set()).add(r.content_digest)
+        k3 = (*r.unit_id, r.content_digest)
+        places[k3] = places.get(k3, 0) + 1
+    conflicts = [
+        Conflict(uk, ind, tuple(sorted(cds)))
+        for (uk, ind), cds in sorted(contents.items())
+        if len(cds) > 1
+    ]
+    copies = sum(n - 1 for n in places.values())
+    return kept, collapsed, copies, conflicts
+
+
+# What identifies the file that was read: (size, inode, mtime_ns). All three come from the NFS
+# server, so another client sees the same values; st_dev is client-local and is left out.
+_Ident = tuple[int, int, int]
+
+
+def _ident(st: os.stat_result) -> _Ident:
+    return (st.st_size, st.st_ino, st.st_mtime_ns)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Manifest:
+    """``sealed/<stem>.inputs.json``: the inputs a sealed file holds, as identified when read."""
+
+    path: Path
+    sealed: Path
+    inputs: tuple[tuple[Path, _Ident], ...]
+
+
+def _load_manifest(root: Path, path: Path) -> _Manifest | None:
+    try:
+        raw = _read_bytes(path)
+    except FileNotFoundError:
+        return None  # removed by a concurrent compactor
+    try:
+        d = json.loads(raw)
+        sealed = root / SEALED_DIRNAME / d["sealed"]
+        inputs = []
+        for item in d["inputs"]:
+            rel = Path(item["path"])
+            if len(rel.parts) != 2 or rel.parts[0] not in _ARCHIVE_PREFIX:
+                raise ValueError(f"input path {item['path']!r} is outside segments/ and sealed/")
+            ident = (item["size"], item["ino"], item["mtime_ns"])
+            if rel.parts[1].startswith(".") or not all(type(x) is int for x in ident):
+                raise ValueError(f"bad input entry {item!r}")
+            inputs.append((root / rel, ident))
+        if Path(d["sealed"]).name != d["sealed"]:
+            raise ValueError(f"sealed name {d['sealed']!r} is not a plain file name")
+    except (ValueError, KeyError, TypeError) as e:
+        raise UnitIndexError(f"refusing to compact {root}: manifest {path.name} is malformed: {e}")
+    return _Manifest(path, sealed, tuple(inputs))
+
+
+def _manifests(root: Path, *, remove_orphans: bool = False) -> dict[Path, _Manifest]:
+    """Manifests whose sealed file exists, keyed by that sealed file.
+
+    A manifest whose sealed file is gone (archived by a concurrent compactor's later pass) is an
+    orphan: it is ignored, and removed when ``remove_orphans``. Ignoring or removing a manifest
+    can only make its inputs be sealed again (duplicates), never archive them.
+    """
+    out = {}
+    for p in _names(root / SEALED_DIRNAME, MANIFEST_SUFFIX):
+        m = _load_manifest(root, p)
+        if m is None:
+            continue
+        if m.sealed.exists():
+            out[m.sealed] = m
+        elif remove_orphans:
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+    return out
+
+
+def _write_atomic(path: Path, data: bytes, *, fault: str | None = None) -> None:
+    """temp (``O_EXCL``) + fsync + ``os.replace`` + fsync of the directory.
+
+    ``fault`` names the crash-injection step between the temp write and the replace.
+    """
+    tmp = path.with_name(f".{path.name}.partial")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o644)
+    try:
+        _write_all(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if fault is not None:
+        _fault(fault)
+    os.replace(tmp, path)
+    _fsync_dir(path.parent)
+
+
+def _archive_due(
+    root: Path,
+    manifests: dict[Path, _Manifest],
+    *,
+    archive_after_s: int | float,
+    archive_now: float | None,
+    still_dead: Callable[[Path], bool],
+) -> list[str]:
+    """Archive the inputs of every sealed file at least ``archive_after_s`` old (server time).
+
+    An input that is itself a sealed file with a manifest has its own inputs archived too: they
+    are inside it, and so inside the old-enough file. An input stays where it is when its
+    ``(size, inode, mtime_ns)`` differs from what the manifest recorded (it grew, or the path now
+    names another file), or when it is a segment without a trailer whose writer
+    ``still_dead`` no longer judges dead; once its manifest is gone it is taken again. The
+    manifest is removed last, after the moves are fsynced.
+    """
+    if not manifests:
+        return []
+    now = 0.0
+    if archive_after_s > 0:
+        now = archive_now if archive_now is not None else server_now(root / SEALED_DIRNAME)
+    due = []
+    for sealed, m in manifests.items():
+        if archive_after_s > 0:
+            try:
+                age = now - sealed.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if age < archive_after_s:
+                continue
+        due.append(m)
+    if not due:
+        return []
+    archive_dir = root / ARCHIVE_DIRNAME
+    _ensure_dir(archive_dir)
+    archived: list[str] = []
+    done: list[_Manifest] = []
+    stack = list(due)
+    seen: set[Path] = set()
+    while stack:
+        m = stack.pop()
+        if m.path in seen:
+            continue
+        seen.add(m.path)
+        done.append(m)
+        for p, ident in m.inputs:
+            try:
+                if _ident(p.stat()) != ident:
+                    continue  # not the file that was read: its rows may not be in the sealed file
+                inner = manifests.get(p)
+                if inner is not None:
+                    stack.append(inner)  # the file that was read, so its own inputs are inside
+                if p.parent.name == SEGMENTS_DIRNAME and not _wl._has_trailer(p):
+                    if not still_dead(p):
+                        continue  # an open descriptor would follow the rename out of view
+            except FileNotFoundError:
+                continue  # archived already, by this pass or a concurrent compactor
+            name = _ARCHIVE_PREFIX[p.parent.name] + p.name
+            dest = archive_dir / name
+            if dest.exists():  # never overwrite an archived file (a reused explicit writer_id)
+                dest = archive_dir / f"{name}.{uuid.uuid4().hex[:8]}"
+            try:
+                os.replace(p, dest)
+            except FileNotFoundError:
+                continue
+            archived.append(p.name)
+            if len(archived) == 1:
+                _fault("first_input_archived")
+    for d in (archive_dir, root / SEALED_DIRNAME, root / SEGMENTS_DIRNAME):
+        if d.is_dir():
+            _fsync_dir(d)
+    for m in done:
+        try:
+            m.path.unlink()
+        except FileNotFoundError:
+            pass
+    _fsync_dir(root / SEALED_DIRNAME)
+    return archived
+
+
+def compact(
+    root: Path | str,
+    *,
+    grace_s: int | float = DEFAULT_GRACE_S,
+    dry_run: bool = False,
+    runner: Runner | None = None,
+    now_server: float | None = None,
+    archive_after_s: int | float = DEFAULT_ARCHIVE_AFTER_S,
+    archive_now: float | None = None,
+) -> CompactReport:
+    """Fold closed and dead segments, plus the existing sealed files, into one new sealed file.
+
+    A pass has two halves (decision D6):
+
+    1. **Archive.** For every sealed file at least ``archive_after_s`` old (NFS server time;
+       ``archive_now`` overrides the probe), move the inputs its manifest lists to ``archive/``,
+       then remove the manifest. Inputs stay readable until then, so a reader on a host whose
+       ``sealed/`` listing is cached never loses sight of a row.
+    2. **Seal.** Inputs still listed by a manifest are skipped. The rest (closed segments, dead
+       writers' segments, other sealed files) are read and written to one new sealed file (temp,
+       fsync, ``os.replace``, fsync ``sealed/``), then its manifest is written the same way.
+       With ``archive_after_s <= 0`` the archive half runs again at once.
+
+    A pass with nothing due and no segment to take changes nothing. A segment holding an
+    unreadable row stays in place; a sealed file holding one refuses the pass
+    (:class:`UnitIndexError`, nothing written). Torn lines in taken segments are dropped and
+    reported. ``dry_run`` reports the same decisions, archives nothing and writes nothing but the
+    server-time probe.
+    """
+    root = Path(root)
+    pass_runner = _PassRunner(runner)
+    liveness_now: list[float] = [] if now_server is None else [now_server]
+
+    def still_dead(p: Path) -> bool:
+        """Re-ask liveness for a trailer-less segment just before archiving it."""
+        if not liveness_now:
+            liveness_now.append(server_now(p.parent))
+        try:
+            v = segment_writer_dead(
+                p, grace_s=grace_s, now_server=liveness_now[0], runner=pass_runner
+            )
+        except FileNotFoundError:
+            return False
+        return v.dead
+
+    archived: list[str] = []
+    if not dry_run:
+        archived += _archive_due(
+            root,
+            _manifests(root, remove_orphans=True),
+            archive_after_s=archive_after_s,
+            archive_now=archive_now,
+            still_dead=still_dead,
+        )
+    pending = {p for m in _manifests(root).values() for p, _ in m.inputs}
+    segments = [p for p in _listing(root, SEGMENTS_DIRNAME) if p not in pending]
+    decisions = _decide(segments, grace_s=grace_s, now_server=now_server, runner=pass_runner)
+
+    taken: dict[Path, _Parsed] = {}
+    idents: dict[Path, _Ident] = {}
+
+    def read_with_ident(p: Path) -> tuple[bytes, _Ident | None]:
+        """Read, then stat; ``None`` ident when the file changed while it was being read."""
+        raw = _read_bytes(p)
+        ident = _ident(p.stat())
+        return raw, (ident if ident[0] == len(raw) else None)
+
+    left_unreadable: list[str] = []
+    final: list[SegmentDecision] = [
+        SegmentDecision(p.name, False, "already sealed; archive pending")
+        for p in sorted(pending)
+        if p.parent.name == SEGMENTS_DIRNAME
+    ]
+    for p, d in zip(segments, decisions, strict=True):
+        if not d.taken:
+            final.append(d)
+            continue
+        try:
+            raw, ident = read_with_ident(p)
+        except FileNotFoundError:
+            final.append(SegmentDecision(d.name, False, "vanished (moved by another compactor)"))
+            continue
+        if ident is None:
+            final.append(SegmentDecision(d.name, False, "changed while being read; next pass"))
+            continue
+        parsed = _parse(p, raw)
+        if parsed.unreadable:
+            left_unreadable.append(d.name)
+            final.append(
+                SegmentDecision(d.name, False, f"left in place: {parsed.unreadable[0].reason}")
+            )
+            continue
+        taken[p] = parsed
+        idents[p] = ident
+        final.append(d)
+
+    def report(**kw: Any) -> CompactReport:
+        return CompactReport(
+            dry_run=dry_run,
+            segments=tuple(final),
+            left_unreadable=tuple(left_unreadable),
+            scheduler_calls=pass_runner.calls,
+            archived=tuple(archived),
+            pending_archive=tuple(sorted(p.name for p in pending)),
+            **kw,
+        )
+
+    if not taken:
+        return report()
+
+    sealed_in: dict[Path, _Parsed] = {}
+    for p in _listing(root, SEALED_DIRNAME):
+        if p in pending:
+            continue  # already inside a newer sealed file that is waiting to archive it
+        try:
+            raw, ident = read_with_ident(p)
+        except FileNotFoundError:
+            continue  # archived by a concurrent compactor; its rows are in that one's output
+        if ident is None:
+            continue  # sealed files never change; skipping one only leaves duplicates
+        parsed = _parse(p, raw)
+        if parsed.unreadable or parsed.torn:
+            bad = (parsed.unreadable or parsed.torn)[0]
+            raise UnitIndexError(
+                f"refusing to compact {root}: sealed file {p.name} line {bad.line} is "
+                f"{bad.kind} ({bad.reason}); sealing now would archive it out of view"
+            )
+        sealed_in[p] = parsed
+        idents[p] = ident
+
+    rows = [r for p in (*sealed_in.values(), *taken.values()) for r in p.rows]
+    kept, collapsed, copies, conflicts = _collapse(rows)
+    torn = tuple(b for p in taken.values() for b in p.torn)
+    summary = dict(
+        sealed_inputs=tuple(p.name for p in sealed_in),
+        rows_in=len(rows),
+        rows_sealed=len(kept),
+        collapsed=collapsed,
+        copies=copies,
+        conflicts=tuple(conflicts),
+        torn=torn,
+    )
+    if dry_run:
+        return report(**summary)
+
+    sealed_dir = root / SEALED_DIRNAME
+    _ensure_dir(sealed_dir)
+    partials_removed = _sweep_partials(sealed_dir)
+    target = sealed_dir / f"{time.time_ns():020d}-{uuid.uuid4().hex[:8]}.jsonl"
+    _write_atomic(
+        target,
+        "".join(r.to_json_line() for r in kept).encode("utf-8"),
+        fault="sealed_tmp_written",
+    )
+    _fault("sealed_replaced")
+    manifest = {
+        "sealed": target.name,
+        "inputs": [
+            {
+                "path": f"{p.parent.name}/{p.name}",
+                "size": idents[p][0],
+                "ino": idents[p][1],
+                "mtime_ns": idents[p][2],
+            }
+            for p in (*sealed_in, *taken)
+        ],
+    }
+    manifest_path = sealed_dir / f"{target.stem}{MANIFEST_SUFFIX}"
+    _write_atomic(manifest_path, json.dumps(manifest, sort_keys=True).encode("utf-8"))
+    _fault("manifest_written")
+    if archive_after_s <= 0:
+        m = _load_manifest(root, manifest_path)
+        if m is not None:
+            archived += _archive_due(
+                root, {target: m}, archive_after_s=0, archive_now=None, still_dead=still_dead
+            )
+    return report(
+        **summary,
+        sealed_path=str(target),
+        partials_removed=partials_removed,
+    )
+
+
+def _sweep_partials(sealed_dir: Path) -> int:
+    """Remove sealed temp files a crashed compactor left, once older than ``PARTIAL_MAX_AGE_S``.
+
+    Ages use NFS server time. A live compactor's temp file exists for seconds, so the age bound
+    never touches one in flight; the temp holds no row that is not still in its inputs.
+    """
+    partials = list(sealed_dir.glob(".*.partial"))
+    if not partials:
+        return 0
+    now = server_now(sealed_dir)
+    removed = 0
+    for p in partials:
+        try:
+            if now - p.stat().st_mtime > PARTIAL_MAX_AGE_S:
+                p.unlink()
+                removed += 1
+        except FileNotFoundError:
+            continue
+    return removed

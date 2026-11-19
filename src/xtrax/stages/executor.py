@@ -98,7 +98,6 @@ import jax.numpy as jnp
 from xtrax.stages.boundaries import AxisBoundary
 from xtrax.tiling.strategy import ChunkedMap, Vmap
 from xtrax.transforms.map import _apply_size1, _is_size1_axis, chunked_map
-from xtrax.transforms.scan import safe_scan
 
 
 class ExecutorError(Exception):
@@ -307,7 +306,7 @@ def execute_scan_axis(
         y = _apply_step_boundary(y, boundary, with_index=with_index, index=index)
         return carry, y
 
-    final_carry, ys = safe_scan(_wrapped_transition, init, scan_xs)
+    final_carry, ys = jax.lax.scan(_wrapped_transition, init, scan_xs)
     return final_carry, _apply_fuse(ys, boundary)
 
 

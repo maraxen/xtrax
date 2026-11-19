@@ -13,6 +13,8 @@ xtrax's-own-classes, so a parallel tiling-library reimplementation with
 matching field names works here without conversion or inheritance.
 """
 
+import math
+
 from .types import (
     AxisDecisionLike,
     AxisStatsEntry,
@@ -60,13 +62,33 @@ def extract_plan_stats(plan: BatchPlanLike) -> PlanStatsDict:
     for decision in plan.decisions:
         # Build per-axis entry
         strategy_name = type(decision.strategy).__name__
+        raw_mem = getattr(decision, "memory_estimate_bytes", None)
+        sanitized_mem: int | None = None
+        if raw_mem is not None:
+            try:
+                val = float(raw_mem)
+                if math.isinf(val) or math.isnan(val):
+                    sign = (
+                        "+Infinity"
+                        if (math.isinf(val) and val > 0)
+                        else ("-Infinity" if math.isinf(val) else "NaN")
+                    )
+                    memory_warnings.append(
+                        f"Axis '{decision.spec.name}' memory estimate is unbounded ({sign})"
+                    )
+                    sanitized_mem = None
+                else:
+                    sanitized_mem = int(val)
+            except (ValueError, TypeError, OverflowError):
+                sanitized_mem = None
+
         axis_entry: AxisStatsEntry = {
             "name": decision.spec.name,
             "strategy": strategy_name,
             "cardinality": decision.spec.cardinality,
             "batch_size": decision.batch_size,
             "reasoning": decision.reasoning,
-            "memory_estimate_bytes": None,
+            "memory_estimate_bytes": sanitized_mem,
             "varying_inputs": list(getattr(decision.spec, "varying_inputs", ())),
         }
         axes.append(axis_entry)

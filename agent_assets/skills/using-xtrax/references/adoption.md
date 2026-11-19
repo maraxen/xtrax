@@ -7,11 +7,16 @@ Replace a local copy with the primitive below. Import paths are the ones the pac
 | Local copy | xtrax |
 |---|---|
 | Hand-rolled `safe_map` / `lax.map` chunking | `chunked_map(fn, xs, batch_size=...)` in `xtrax.transforms.map`; strategy `ChunkedMap(batch_size=...)` in `xtrax.tiling` |
+| Hand-rolled `safe_scan` or `xtrax.safe_scan` | `jax.lax.scan(fn, init, xs)` directly (`xtrax.safe_scan` is deprecated, #6107; guard `length == 0` at your entry boundary if empty schedules are invalid), or `axis_dispatch(Scan(...), ...)` / `make_axis_dispatch(Scan(...))` when strategy-dispatched |
 | Private length ladder | `BUCKET_LADDER` from `xtrax.export.rings`, then `select_bucket` / `bucketize` (`references/length-bucketing.md`) |
 | Hand-rolled scan or while carry | `CarrySpec` (`xtrax.tiling.carry`). `collect_outputs=True` plans `Scan`. `collect_outputs=False` plans `WhileCarry` |
 | Private device-budget / compile-memory math | `device_memory_budget` and `lowered_memory_estimate` in `xtrax.tiling.estimators` |
 | Hand-rolled jax2onnx call | `convert_to_onnx` (`references/onnx-standalone.md`) |
 | `np.unique` to build a `DedupSpec` | `synthesize_dedup_spec` (below) |
+| Per-unit completion stamp (`done.json`, `*.stamp.json`) with input and output sha256s | `write_unit_record` in `xtrax.pack` (`unit.json`), below |
+| Hand-rolled tar/zstd of a finished unit dir, or many small files against a file-count cap | `pack_unit` / `read_unit_member` in `xtrax.pack`, below |
+| A scan of unit dirs to find what is already done | `UnitJsonAdapter` in `xtrax.run.unit_index_adapters` |
+| A pre-write file-count (inode) quota check | `FileCapGuard` in `xtrax.fileguard` |
 
 ```python
 import jax
@@ -26,7 +31,7 @@ peak = lowered_memory_estimate(
 
 `device_memory_budget(fraction=0.9, device=None)` reads `device.memory_stats()["bytes_limit"]`. A device that does not report it raises `RuntimeError` (CPU does not). Pass an explicit `MemoryBudget` byte count in that case. `lowered_memory_estimate` lowers and compiles, then sums XLA's argument, output, and temp bytes. It raises `RuntimeError` when the backend returns no `memory_analysis()`.
 
-Verify: `src/xtrax/transforms/map.py:8-33`, `src/xtrax/tiling/strategy.py:66-69`, `src/xtrax/tiling/carry.py:23-55`, `src/xtrax/tiling/estimators.py:27-97`.
+Verify: `src/xtrax/transforms/map.py:9-34`, `src/xtrax/tiling/strategy.py:66-69`, `src/xtrax/tiling/carry.py:23-55`, `src/xtrax/tiling/estimators.py:27-97`.
 
 ## Alias lifetimes
 
@@ -35,6 +40,30 @@ Verify: `src/xtrax/transforms/map.py:8-33`, `src/xtrax/tiling/strategy.py:66-69`
 Migrate with the ast-grep rules in `codemods/safemap-to-chunkedmap/` (`rules.yml` for Python, `rename_markdown.py` for Markdown). See that directory's README and the CHANGELOG `[0.4.0a12]` Removed entry.
 
 Name-based strategy matching in `xtrax.stages.topology` and `xtrax.export.composer` still accepts the class name `"SafeMap"`, for a consumer's own duck-typed class of that name.
+
+`safe_scan` (`xtrax.safe_scan`, `xtrax.transforms.safe_scan`) is deprecated (`DeprecationWarning`, #6107): it neither chunked nor dispatched, only validating `length != 0` before `jax.lax.scan`. Call `jax.lax.scan(fn, init, xs)` directly (rewritten by `codemods/thin-wrappers-to-jax/rules.yml`), or use `axis_dispatch(Scan(...), ...)` / `make_axis_dispatch(Scan(...))` when strategy-dispatched.
+
+## Per-unit outputs: `unit.json` and packs
+
+A unit is one directory of outputs for one work item (a design, a seed, a cell). `xtrax.pack` commits it with a record and can later fold its loose files into two (`members.tar.zst` + `members.idx.json`) with random access to each member. Install `xtrax[pack]` for the `zstandard` codec. Without it, `compression.zstd` (Python 3.14) or the `zstd` CLI is used, and with none of them `CodecUnavailable` (an `OSError`) is raised.
+
+```python
+from xtrax.pack import pack_unit, read_unit_member, unit_content_digest, write_unit_record
+
+record = write_unit_record("units/d1", input_digest="0" * 64, run_id="run-1")
+pack_unit("units/d1")  # refuses (R-U1) unless the members still match record["content_digest"]
+scores = read_unit_member("units/d1", "fold/scores.json")  # loose or packed, sha256-checked
+digest = unit_content_digest("units/d1")  # the same before and after packing
+```
+
+- `write_unit_record` is written last and only once. A second call refuses (`R-U1`). Its `record_digest` equals `zarr_commit`'s over the same fields, so an index row keyed on it survives packing.
+- A consumer with its own stamp keeps it: pass `record_name="<stamp>.json"` and a `check(unit_dir, record, digest)` that raises `UnitPackRefused` when the unit is not complete. **Pass the same `record_name` to every call** (`is_packed`, `list_unit_members`, `read_unit_member`, `find_packed_unit`, `pack_sweep`). A call that defaults to `unit.json` sees a packed unit as loose and empty.
+- Packing holds a POSIX lock per unit. Where locks do not exclude other nodes (no lock support, NFS `local_lock=all|posix`, Lustre `localflock`), `pack_unit` raises `LockUnavailable` (an `OSError`; `local_only_lock_reason(path)` says why). `lock=False` skips the lock and is safe only when one packer per unit is guaranteed.
+- Packs written by alynxr's `unit_pack` read through `xtrax.pack`, and the reverse. New packs name `storage.schema = "xtrax.unit_pack/1"`; a reader should check `storage.format == PACK_FORMAT`, not the schema string.
+- On a cluster node without xtrax installed, `xtrax.pack.node_source()` returns the stdlib-only module (Python >= 3.9) to embed in the job script.
+- `UnitJsonAdapter` (`xtrax.run.unit_index_adapters`) indexes `unit.json` units, loose or packed, for `xtrax.run`'s unit index.
+
+Verify: `src/xtrax/pack/_node.py:424` (`write_unit_record`), `:884` (`pack_unit`), `:649` (`read_unit_member`), `:356` (`unit_content_digest`), `:811` (`local_only_lock_reason`), `:106-110` (`CodecUnavailable`, `LockUnavailable`), `src/xtrax/pack/__init__.py:78` (`node_source`), `src/xtrax/run/unit_index_adapters.py:298`.
 
 ## What xtrax does not provide
 
@@ -56,10 +85,13 @@ from xtrax.telemetry import LedgerUnavailableError, RunLedger
 from xtrax.telemetry.record import KIND_TRAIN
 
 assert issubclass(LedgerUnavailableError, RuntimeError)
-# RunLedger.open(run_id, *, kind=KIND_TRAIN, root=None, derived_from=None, context=None)
+# RunLedger.open(run_id, *, kind=KIND_TRAIN, root=None, derived_from=None, context=None,
+#                distributions=None)
 ```
 
-Verify: `src/xtrax/telemetry/ledger.py:64-71` and `:205-214`, `src/xtrax/engine/engine.py:33-52` and `:88-109`, `src/xtrax/cli/resume_verb.py:107-118`.
+To record which installed distribution a third-party package ran from, pass `distributions=["aminx"]` to `RunLedger.open` or set `XTRAX_LEDGER_DISTRIBUTIONS=aminx,proxide`. Each name lands in `row.provenance.distributions` as an `xtrax.provenance.resolve_distribution` record: version, install kind, PEP 610 VCS commit, wheel sha256 when the installer recorded one, RECORD sha256, the module file, and `module_in_dist` (`"false"` when a source or vendored copy shadows the installed one). Values the metadata does not state are `"unknown"`.
+
+Verify: `src/xtrax/telemetry/ledger.py:67-74` and `:208-220`, `src/xtrax/provenance.py` (`resolve_distribution`), `src/xtrax/engine/engine.py:33-52` and `:88-109`, `src/xtrax/cli/resume_verb.py:107-118`.
 
 ## Inference-only loops
 
@@ -68,6 +100,8 @@ An autoregressive, sampling, or other inference-only loop uses the while-loop ca
 `Scan` / `CarrySpec(collect_outputs=True)` / `JaxScanIterator` compile to `jax.lax.scan`. Use those when you differentiate through the loop. `WhileCarry` has no reverse-mode VJP rule.
 
 A 512-step autoregressive decode compiled as `lax.scan` took over 20 minutes of backend codegen on an L40S. The same loop as one `WhileOp` did not.
+
+The general JAX semantics (scan is reverse-mode differentiable, while_loop is not and can stop on a data-dependent condition, and both lower to a single `stablehlo.while` at `unroll=1`, so StableHLO size does not explain the codegen gap) are in jaxlint's `using-jax` skill.
 
 `fixed_step_count_cond(n)` treats the carry as a `(step_i, state)` tuple, or as an object with `.step_i`.
 
@@ -103,9 +137,9 @@ assert isinstance(planned.decisions[0].strategy, WhileCarry)
 
 `chunked_map` uses `jax.vmap` when `batch_size` is `None` or the leading axis is no longer than `batch_size`. Otherwise it calls `jax.lax.map(fn, xs, batch_size=batch_size)`, which is a scan. `ChunkedMapIterator` calls `chunked_map`. `axis_dispatch(ChunkedMap(...), ...)` does too.
 
-A mapped function that itself calls `lax.while_loop` is a scan containing a while. On SM120 (Blackwell) that nest hung compile for an hour on a cluster job. Current xtrax has no transform that lifts the inner while out of `lax.map`.
+A mapped function that itself calls `lax.while_loop` is a scan containing a while. On SM120 (Blackwell) that nest hung compile for an hour on a cluster job in July 2026 (aminx SLURM 18182309). Re-measured on 261025 at the same shape class on the same node type, it compiled as fast as `vmap` around the same while (20.4 s vs 21.8 s; aminx bathos run `c3c745a5`). Current xtrax has no transform that lifts the inner while out of `lax.map`. `xtrax.intent` does not emit the nest on a CUDA/ROCm backend: a `ChunkedMap` that would enclose a `StaticWhile` is moved back to `Vmap`, or refused with `UnsatisfiableContextError("scan_around_while")` (`src/xtrax/intent/_resolve.py:921-939`).
 
-Verify: `src/xtrax/transforms/map.py:28-33`, `src/xtrax/tiling/iterator.py:145-151`, `src/xtrax/tiling/dispatch.py:146-150`.
+Verify: `src/xtrax/transforms/map.py:29-34`, `src/xtrax/tiling/iterator.py:145-151`, `src/xtrax/tiling/dispatch.py:146-150`.
 
 ## Primitives consumers reimplement
 
@@ -175,7 +209,7 @@ grads, mean_loss = accumulate_grads(
 )
 ```
 
-Verify: `src/xtrax/training/grad.py:11-16`.
+Verify: `src/xtrax/training/grad.py:12-17`.
 
 ### `adamw_with_schedule` defaults
 
@@ -193,7 +227,7 @@ opt = adamw_with_schedule(1e-3, warmup_steps=10, total_steps=1000)
 
 Both defaults move a step relative to `optax.adamw(lr, weight_decay=wd)` with a constant learning rate and no mask. Measured on CPU, one step at peak lr `1e-2`, `weight_decay=0.1`, `warmup_steps=0`, constant grad `10`: the 1-D bias moved by `-0.00999993` under the default mask and by `-0.01099993` when every leaf was decayed. With `weight_decay=0`, a uniform grad scale left the Adam step unchanged (the scale cancels), and a second step at a different global norm moved the weights to `-0.00975518` with `clip_norm=1.0` versus `-0.00732416` with `clip_norm=None`.
 
-Verify: `src/xtrax/training/optim.py:10-22` and `:46-96`.
+Verify: `src/xtrax/training/optim.py:12-24` and `:46-96`.
 
 ### Inference CSE and memo
 

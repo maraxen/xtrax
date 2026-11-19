@@ -80,7 +80,7 @@ from xtrax.run.resolver import RuntimeBundle
 
 runtime = RuntimeBundle(
     iterator=my_axis_iterator,  # MapIterator or ScanIterator
-    model=my_model,             # eqx.Module
+    model=my_model,             # any pytree (an eqx.Module, a dict of arrays, ...)
 )
 ```
 
@@ -269,9 +269,9 @@ with sink_session(my_sink) as session:
     session.io_callback(value)
 ```
 
-Verify: `src/xtrax/stages/boundaries.py:84-98`, `src/xtrax/stages/session.py`
+Verify: `src/xtrax/stages/boundaries.py:84-99`, `src/xtrax/stages/session.py`
 
-**Invariant**: `AxisBoundary` fields are **all static** (`eqx.field(static=True)`). It has no dynamic leaves.
+**Invariant**: `AxisBoundary` fields are **all static** (`field(static=True)`). It has no dynamic leaves.
 
 Topology rules (ordered tap/sink + Vmap conflict; Scan on heterogeneous axis) are enforced at **plan-construction time** by `validate_plan_topology` (0.3.1+, see next section) — the pre-0.3.1 `make_inference_plan` gap is closed. The executor re-checks the Vmap+ordered case at execution time as defense-in-depth (`ExecutorError`).
 
@@ -350,7 +350,7 @@ Verify: `src/xtrax/stages/boundaries.py:32-82`
 
 #### StageBundle: Typed Bag of Optional Callable Stage Slots
 
-`StageBundle` is a pure container (`eqx.Module`, no `__call__`) — **subclass it** and declare fields; every field must be `Optional[Callable]`-shaped:
+`StageBundle` is a pure container (an `xtrax.Struct`, no `__call__`) — **subclass it** and declare fields; every field must be `Optional[Callable]`-shaped:
 
 ```python
 from collections.abc import Callable

@@ -5,7 +5,12 @@ from unittest import mock
 
 import pytest
 
-from xtrax.distributed.init import _reset_for_testing, init_dist, is_distributed
+from xtrax.distributed.init import _reset_for_testing
+
+# #6107 probe release: importing a deprecated name warns; these tests exercise the
+# unchanged behaviour, so the access is asserted once here.
+with pytest.deprecated_call(match="xtrax #6107"):
+    from xtrax.distributed.init import init_dist, is_distributed
 
 
 class TestInitDistIdempotency:
@@ -144,13 +149,10 @@ class TestInitDistSingleProcessFallback:
             # Should NOT have called jax.distributed.initialize
             mock_initialize.assert_not_called()
 
-    def test_single_process_marks_distributed_init(self):
-        """After init_dist with num_processes=1, dist should be marked initialized."""
+    def test_single_process_records_state_only(self):
+        """After init_dist with num_processes=1, is_distributed() is True (state only)."""
         init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=0)
-        # Verify via DataModule integration
-        from xtrax.data.module import _dist_initialized
-
-        assert _dist_initialized is True
+        assert is_distributed() is True
 
     def test_num_processes_gt_1_calls_jax_initialize(self):
         """With num_processes>1, should call jax.distributed.initialize."""
@@ -190,8 +192,8 @@ class TestInitDistParameterOrder:
         assert is_distributed() is True
 
 
-class TestInitDistIntegrationWithDataModule:
-    """Test that init_dist properly integrates with DataModule."""
+class TestInitDistDoesNotGateDataModule:
+    """DataModule(distributed=True) asks JAX (process_count), not init_dist (#6107)."""
 
     def setup_method(self):
         """Reset state before each test."""
@@ -201,22 +203,24 @@ class TestInitDistIntegrationWithDataModule:
         """Reset state after each test."""
         _reset_for_testing()
 
-    def test_init_dist_enables_distributed_datamodule(self):
-        """After init_dist, DataModule(distributed=True) should work."""
+    def test_single_process_init_dist_no_longer_enables_distributed_datamodule(self):
+        """A one-process init_dist() records state only; the guard still wants process_count > 1."""
         from xtrax.data.module import DataModule
 
         init_dist(coordinator_address="localhost:1234", num_processes=1, process_id=0)
+        module = DataModule(dataset=[], batch_size=32, num_epochs=1, seed=42, distributed=True)
+        with pytest.raises(RuntimeError, match="requires a multi-process JAX runtime"):
+            list(module.train_iter())
 
-        # This should not raise
-        module = DataModule(
-            dataset=[],
-            batch_size=32,
-            num_epochs=1,
-            seed=42,
-            distributed=True,
-        )
-        # train_iter should succeed (no RuntimeError about distributed init)
-        list(module.train_iter())
+    def test_multi_process_runtime_enables_distributed_datamodule(self, monkeypatch):
+        """With jax.process_count() > 1 the iterators proceed, with no init_dist at all."""
+        import jax
+
+        from xtrax.data.module import DataModule
+
+        monkeypatch.setattr(jax, "process_count", lambda: 2)
+        module = DataModule(dataset=[], batch_size=32, num_epochs=1, seed=42, distributed=True)
+        assert list(module.train_iter()) == []
 
 
 class TestResetForTesting:

@@ -6,11 +6,10 @@ xtrax provides a composable set of subpackages organized by functionality:
 - **Training**: Training loops and loss functions
 - **Data**: Data pipeline management
 - **Tiling**: Distributed batch management and remapping
-- **Sparse**: Sparse tensor operations and filtering
 - **Checkpoint**: Model checkpointing and serialization
 - **IO**: Input/output operations
 - **Distributed**: Multi-device and multi-node coordination
-- **Transforms**: JAX transformations with safety guarantees
+- **Transforms**: Chunked JAX map transformations (`chunked_map`; `safe_scan` is deprecated, #6107)
 - **Safety**: Numerically safe operations
 - **Stages**: Training stage management and fusion
 

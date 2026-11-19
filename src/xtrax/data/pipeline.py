@@ -195,22 +195,35 @@ def create_distributed_pipeline(
 ) -> Any:
     """Shard ``dataset`` across JAX processes and batch it.
 
-    The per-device batch size is ``global_batch_size // num_devices``.
+    Each process batches ``global_batch_size // jax.process_count()``
+    examples per step. ``num_devices`` is the number of devices this
+    process drives, so the per-process batch must split evenly across them.
     Examples are split with ``ShardByJaxProcess`` (or ``shard_options``)
     before shuffle, so each process sees a disjoint shard.
 
     Raises:
-        ValueError: ``global_batch_size`` is not divisible by ``num_devices``.
+        ValueError: ``global_batch_size`` is not divisible by
+            ``jax.process_count()``, or the per-process batch is not
+            divisible by ``num_devices``.
         ImportError: Grain is not installed (``xtrax[data]``).
     """
-    if global_batch_size % num_devices != 0:
+    import jax
+
+    process_count = jax.process_count()
+    if global_batch_size % process_count != 0:
         raise ValueError(
             f"create_distributed_pipeline: global_batch_size={global_batch_size} "
-            f"must be divisible by num_devices={num_devices}."
+            f"must be divisible by jax.process_count()={process_count}."
+        )
+    per_process_batch = global_batch_size // process_count
+    if per_process_batch % num_devices != 0:
+        raise ValueError(
+            f"create_distributed_pipeline: global_batch_size={global_batch_size} "
+            f"must be divisible by num_devices={num_devices} * process_count={process_count}."
         )
     return build_input_pipeline(
         dataset,
-        batch_size=global_batch_size // num_devices,
+        batch_size=per_process_batch,
         seed=seed,
         num_epochs=num_epochs,
         shuffle=shuffle,

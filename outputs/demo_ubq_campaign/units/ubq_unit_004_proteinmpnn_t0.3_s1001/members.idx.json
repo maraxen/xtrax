@@ -1,0 +1,22 @@
+{
+ "codec": "zstd",
+ "format": "tar.zst+frame-index/1",
+ "members": {
+  "scores.npy": {
+   "header_length": 512,
+   "length": 279,
+   "offset": 0,
+   "sha256": "27a0861a7d30d66448aab46ec0e118766a2eaf3b6bdea54177a07560e2739251",
+   "size": 256
+  },
+  "sequences.npy": {
+   "header_length": 512,
+   "length": 833,
+   "offset": 279,
+   "sha256": "8ca8321bd5d0a68469e93c8c2e75641ec0a996db795cd77d382dcbfb969b2c27",
+   "size": 4992
+  }
+ },
+ "packer": "xtrax.pack/1",
+ "schema": "xtrax.unit_pack_index/1"
+}

@@ -67,6 +67,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v3
         with:
@@ -76,7 +78,9 @@ jobs:
         run: uv tool install rust-just
 
       - name: Install dependencies
-        run: uv sync --extra dev --extra eda --extra io --extra data
+        # `pack` gives xtrax.pack in-process zstd here; the lean job above has no zstandard, so
+        # it runs the pack tests through the zstd CLI instead. Both codec paths stay tested.
+        run: uv sync --extra dev --extra eda --extra io --extra data --extra plugin --extra index --extra pack
 
       - name: Lint with ruff
         run: uv run ruff check .
@@ -87,7 +91,17 @@ jobs:
       - name: Type check with ty
         run: uv run ty check src/
 
+      - name: Changelog fragments & new module check
+        run: |
+          uv run python scripts/assemble_changelog.py --check
+          uv run python scripts/assemble_changelog.py --check-new-modules --base-ref origin/main
+
       - name: Tier1 tests with coverage gate
+        # tests/cli/test_plugin_snapshot.py runs under tier1 (tests/). Its drift
+        # check is enforced only on release PRs; feature PRs do not commit
+        # src/xtrax/agent_plugin.json. github.head_ref is empty on push events.
+        env:
+          XTRAX_ENFORCE_PLUGIN_SNAPSHOT: ${{ startsWith(github.head_ref, 'chore/release-') && '1' || '0' }}
         run: just audit-coverage-tier1
 
       - name: Tier2 EDA tests with coverage gate
@@ -112,19 +126,19 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install core + io + cli at their floors
+      - name: Install core + io + cli + training at their floors
         run: |
           uv venv .venv-floors
-          uv pip install --python .venv-floors/bin/python --resolution lowest-direct -e ".[io,cli]"
+          uv pip install --python .venv-floors/bin/python --resolution lowest-direct -e ".[io,cli,training]"
 
       - name: Every declared floor is exactly what got installed
-        run: .venv-floors/bin/python scripts/check_dependency_floors.py --extra io --extra cli
+        run: .venv-floors/bin/python scripts/check_dependency_floors.py --extra io --extra cli --extra training
 
       - name: Add test tooling without moving any floored package
         run: |
           uv pip freeze --python .venv-floors/bin/python | grep -E '^[A-Za-z0-9_.-]+==' > floors-constraints.txt
           uv pip install --python .venv-floors/bin/python -c floors-constraints.txt \
-            pytest pytest-asyncio jaxtyping beartype chex pyyaml
+            pytest pytest-asyncio equinox beartype chex pyyaml
 
       - name: Dependency-sensitive tests at the floors
         env:
@@ -132,9 +146,74 @@ jobs:
         run: |
           .venv-floors/bin/python -m pytest -q -o addopts="" -p no:cacheprovider \
             tests/checkpoint tests/training tests/engine tests/run tests/stages \
-            tests/tiling tests/inference tests/transforms tests/sparse \
+            tests/tiling tests/inference tests/transforms \
             tests/distributed tests/telemetry tests/data tests/cli \
             tests/scripts/test_check_dependency_floors.py
+
+  no-equinox:
+    # equinox is a dev-only dependency (equinox decoupling, step 5). Every other job
+    # syncs the dev extra and so has it installed, which would hide a stray
+    # `import equinox` under src/. This job installs the package without the dev extra
+    # (pytest and beartype only; tests/conftest.py installs a beartype import hook),
+    # asserts equinox is absent, and runs the gate files plus the dict-model training
+    # tests; the equinox-fixture tests in the latter skip through pytest.importorskip.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      - name: Install the package without the dev extra
+        run: |
+          uv venv .venv-noeqx
+          uv pip install --python .venv-noeqx/bin/python -e ".[training]" pytest pytest-asyncio beartype
+
+      - name: Equinox is absent from the environment
+        run: |
+          if .venv-noeqx/bin/python -c "import equinox" 2>/dev/null; then
+            echo "::error::equinox is importable in the no-equinox environment"
+            exit 1
+          fi
+
+      - name: No-equinox gates and dict-model tests
+        env:
+          OMP_NUM_THREADS: "4"
+        run: |
+          .venv-noeqx/bin/python -m pytest -q -o addopts="" -p no:cacheprovider -rs \
+            tests/test_no_equinox_training.py tests/test_no_equinox_sweep.py \
+            tests/training/test_struct_step3.py
+
+  node-py39:
+    # Node-embeddable cores (fileguard/_node.py, pack/_node.py, run/writer_liveness.py) must run under
+    # Python 3.9 on compute nodes (spec 261030, A8). Their standalone tests skip when no 3.9
+    # interpreter exists, so this job installs one and fails on any skip.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.13"
+
+      - name: Install the package and a Python 3.9 interpreter
+        run: |
+          uv venv .venv-node
+          uv pip install --python .venv-node/bin/python -e . pytest pytest-asyncio beartype
+          uv python install 3.9
+
+      - name: Standalone 3.9 runs (no skips allowed)
+        run: |
+          set -o pipefail
+          .venv-node/bin/python -m pytest -q -o addopts="" -p no:cacheprovider -rs \
+            tests/fileguard/test_node_standalone.py \
+            tests/pack/test_node_standalone.py \
+            tests/run/test_writer_liveness_standalone.py 2>&1 | tee node_py39.txt
+          if grep -q "SKIPPED" node_py39.txt; then
+            echo "::error::a Python 3.9 standalone test was skipped"
+            exit 1
+          fi
 
   controller-tests:
     # Deliberately NOT gated on the controller-changes path filter above, unlike
@@ -340,5 +419,10 @@ jobs:
               for entry in controller_entries[:20]:
                   print(f"  {entry}", file=sys.stderr)
               raise SystemExit(1)
+          # The packaged plugin snapshot is what `xtrax plugin` falls back to when
+          # installed from a wheel (no source checkout); it must ship.
+          with zipfile.ZipFile(wheel) as zf:
+              if "xtrax/agent_plugin.json" not in zf.namelist():
+                  raise SystemExit("xtrax/agent_plugin.json missing from wheel")
           print(f"wheel-smoke OK: {wheel.name} has no port/ or controller/ entries")
           PY

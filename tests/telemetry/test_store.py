@@ -84,11 +84,27 @@ def test_stored_blob_is_actually_compressed_and_readable_externally(tmp_path):
 
 
 def test_verify_detects_corruption(tmp_path):
+    """Tampered content that still decodes, under whichever codec the store chose."""
+    from xtrax.telemetry import store as store_mod
+
     store = BlobStore(tmp_path)
     sha, _ = store.put("original")
     assert store.verify(sha)
-    store.find(sha).write_bytes(gzip.compress(b"tampered", mtime=0))
+    path = store.find(sha)
+    compress, _ = store_mod._CODECS[path.suffix]
+    path.write_bytes(compress(b"tampered"))
     assert not store.verify(sha)
+
+
+def test_verify_detects_a_blob_that_does_not_decode(tmp_path):
+    from xtrax.telemetry.store import BlobCorrupt
+
+    store = BlobStore(tmp_path)
+    sha, _ = store.put("original")
+    store.find(sha).write_bytes(b"neither gzip nor zstd")
+    assert not store.verify(sha)
+    with pytest.raises(BlobCorrupt, match="does not decode"):
+        store.get(sha)
 
 
 def test_verify_is_false_for_a_missing_blob(tmp_path):

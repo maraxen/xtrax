@@ -2,8 +2,9 @@
 """Public dataclass field-shape diff gate CLI (#5090).
 
 Fails when a shipped public dataclass-like class loses, renames or retypes a field,
-loses a default, or gains a required field since the merge-base, and CHANGELOG.md's
-added lines do not name the class. See xtrax.devtools.gates.dataclass_shape_diff.
+loses a default, or gains a required field since the merge-base, and the added lines of
+CHANGELOG.md and changelog.d/*.md do not name the class.
+See xtrax.devtools.gates.dataclass_shape_diff.
 """
 
 from __future__ import annotations
@@ -40,11 +41,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     for change in result.changes:
         if change not in result.unacknowledged:
-            print(f"  acknowledged in CHANGELOG: {change.render()}")
+            print(f"  acknowledged in CHANGELOG/changelog.d: {change.render()}")
     if result.status == "fail":
         print(
-            "FAIL: public dataclass shape changed without a CHANGELOG.md entry naming the "
-            "class (consumers break on attribute access or construction):",
+            "FAIL: public dataclass shape changed without a CHANGELOG.md or changelog.d/ "
+            "entry naming the class (consumers break on attribute access or construction):",
             file=sys.stderr,
         )
         for change in result.unacknowledged:

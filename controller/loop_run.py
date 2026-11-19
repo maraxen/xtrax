@@ -150,7 +150,8 @@ three types originate anywhere in the call chain `run_campaign_loop` -> `run_mul
   `BathosTokenMissingError`, `StatsBatteryGateInputError`, `SeedGateInputError`,
   `DiversityQuotaInputError`, `CandidateStaticGateError`, and -- #4584 -- the evaluate
   adapter's `RawArtifactsUnavailableError`, raised when a candidate's bathos run did not
-  succeed), none of which is a `ValueError`/
+  succeed; since #5683 `run_multi_iteration_loop` catches a failed candidate run itself, so this
+  class only reaches here from scoring), none of which is a `ValueError`/
   `TimeoutError`/`CandidateHandoffFailure` subclass (all grepped and confirmed direct
   `Exception` subclasses) -- so `CandidateStaticGateError` falls to the same **uncaught
   exception** / `outcome_label="aborted"` bucket as the others in this list, with zero special-
@@ -169,24 +170,25 @@ uncaught branch at all. The same is true of a `CampaignNotApprovedError` (or eit
 the campaign-approval gate ([GW-03], see its own addendum above) -- it, too, fires before
 `campaign_create`, so it never reaches the categorized-vs-uncaught branch either.
 
-**Why this is NOT literal automatic retry-and-continue.** The AC's own phrase "error/retry policy"
-could mean "catch a per-candidate failure, retry that one candidate, and keep going" -- but that
-capability does not exist at the granularity this function operates at. `run_multi_iteration_loop`
-(LC-10, already merged, already tested -- see its own test suite's
-`TestExceptionPropagatesAndWatchdogStillCleanedUp`) deliberately propagates every
-`run_one_candidate_pass` exception immediately, aborting the *entire* multi-iteration run, not just
-one candidate; it has no per-candidate retry hook. Building genuine single-candidate retry would
-require either reopening LC-10's already-merged, already-tested contract (risking regressions this
-item has no mandate to make) or duplicating its iteration loop here (diverging from the one tested
-implementation). Retrying the *whole* multi-candidate run from scratch after a partial failure was
-also considered and rejected: it would re-dispatch already-succeeded candidates a second time under
-the same campaign, polluting bathos's own run history with duplicates -- worse than the failure it
-would be working around. This module's actual "policy" is therefore a **classification** policy:
-distinguish a known, documented dispatch-contract failure from a truly unexpected one, record that
-distinction in the campaign's own `outcome_label`/conclusion text (so a human or downstream tooling
-reviewing bathos campaign records can tell the two apart), and -- in both cases -- never swallow
-the original exception. Genuine per-candidate retry is left as an explicitly out-of-scope future
-capability for whichever item eventually grows `run_multi_iteration_loop` a retry hook.
+**Failed candidate runs (#5683).** A candidate whose bathos run exits non-zero is not a campaign
+failure of its own: `run_multi_iteration_loop` skips it and continues, and only halts after
+`max_consecutive_failures` (default 3) such candidates in a row. That halt is returned, not
+raised, as `termination_reason="consecutive_failures"`, and this module concludes it with
+`outcome_label="partial_failure"` (the same bucket as the dispatch-contract failures above) and a
+conclusion text naming the failed-candidate count. Its normal return path, which previously always
+concluded `"success"`, now concludes `"success"` only for `normal_completion` and
+`budget_exhausted`. In `confirmation` mode the first failed run still re-raises
+`RawArtifactsUnavailableError`, so it stays an uncaught exception concluded as `"aborted"`.
+
+**Retry policy (#5683).** A candidate whose bathos run fails is skipped, not retried: the loop
+records it and dispatches the next candidate, and halts only after `max_consecutive_failures`
+failures in a row. No candidate is ever re-dispatched. A retry of the whole multi-candidate run was
+considered and rejected, because it would re-dispatch candidates that already succeeded under the
+same campaign and duplicate bathos's run history. Every other exception still aborts the run at
+once, with no per-candidate retry, and is classified exactly as before: the dispatch-contract
+failures above are `partial_failure`, and everything else is `aborted`. This module records that
+distinction in the campaign's `outcome_label` and conclusion text, and never swallows the original
+exception.
 
 ## Never let a *secondary* conclude failure mask the *original* exception
 
@@ -458,6 +460,8 @@ def run_campaign_loop(
     candidate_target_path: Path | None = None,
     allow_fresh_start_despite_existing_lineage: bool = False,
     bootstrap_commit_sha: str | None = None,
+    max_consecutive_failures: int = 3,
+    probe_record_dir: Path | None = None,
     completeness_fn: Callable[..., None] = assert_evaluator_completeness,
     completeness_evaluator: Callable[..., dict[str, float]] = score_raw_artifacts,
     invariant_manifest: InvariantManifest,
@@ -560,6 +564,11 @@ def run_campaign_loop(
             fresh campaign's first accepted candidate (`read_best_so_far` returns `None`);
             callers needing the two inner values to diverge must call `run_one_candidate_pass`
             directly. See `run_multi_iteration_loop`'s own docstring for the full rationale.
+        max_consecutive_failures: forwarded to `run_multi_iteration_loop` (default 3, #5683): the
+            number of failed candidate runs in a row that halts the campaign as
+            `partial_failure`. Ignored in `confirmation` mode.
+        probe_record_dir: forwarded to `run_multi_iteration_loop` unchanged (opt-in ProbeRecord
+            directory, including rejected records for failed candidates).
         completeness_fn: injection seam -- the evaluator-completeness gate (#3076, T2-08, AC-11)
             invoked after frozen_context re-lock and strictly before `campaign_create`. Defaults
             to `assert_evaluator_completeness`. Called as
@@ -692,6 +701,8 @@ def run_campaign_loop(
             callable_name=callable_name,
             concrete_inputs=concrete_inputs,
             bootstrap_commit_sha=bootstrap_commit_sha,
+            max_consecutive_failures=max_consecutive_failures,
+            probe_record_dir=probe_record_dir,
         )
     except _CAUGHT_PER_CANDIDATE_FAILURE_TYPES as exc:
         _conclude_best_effort(
@@ -714,21 +725,41 @@ def run_campaign_loop(
         )
         raise
 
+    failed = len(loop_result.failed_candidates)
+    completed = len(loop_result.iterations)
+    counts = (
+        f"{failed} failed total, {completed} completed "
+        f"({loop_result.accepted_count} accepted, {loop_result.held_count} held)"
+    )
+    reason = loop_result.termination_reason
+    if reason == "consecutive_failures":
+        # #5683: halted by N consecutive failed candidate runs -- a caught, categorized failure.
+        outcome_label = "partial_failure"
+        summary = (
+            f"halted after {max_consecutive_failures} consecutive failed candidate run(s) "
+            f"({counts}), termination_reason={reason}"
+        )
+    elif reason == "all_candidates_failed":
+        # #5683: the candidate budget ran out with no completed pass -- never a "success".
+        outcome_label = "partial_failure"
+        summary = (
+            f"all {failed} candidate run(s) failed, none completed ({counts}), "
+            f"termination_reason={reason}"
+        )
+    else:
+        outcome_label = "success"
+        summary = f"completed {completed} candidate(s) ({counts}), termination_reason={reason}"
     conclusion = campaign_adapter.campaign_conclude(
         campaign_id,
-        "success",
-        conclusion=(
-            f"completed {len(loop_result.iterations)} candidate(s) "
-            f"({loop_result.accepted_count} accepted, {loop_result.held_count} held), "
-            f"termination_reason={loop_result.termination_reason}"
-        ),
+        outcome_label,
+        conclusion=summary,
     )
     on_loop_event(
         LoopEvent(
             task_id=resolved_task_id,
             kind="campaign_concluded",
             campaign_id=campaign_id,
-            outcome_label="success",
+            outcome_label=outcome_label,
         )
     )
     return CampaignLoopResult(

@@ -1,0 +1,436 @@
+# Spec: unit index, output packing and file-count guard (DRAFT v3)
+
+- **task_id**: `261030_xtrax-ledger-pack`
+- **status**: DRAFT v3. Two adversarial passes on 2026-10-30: v1 against the code (§8), and v2 by an independent challenger (§9). Owner decisions D1 to D6 are taken (§7). Built so far: `xtrax.fileguard`, `xtrax.run.writer_liveness`, the `zarr_commit` duplicate check and quarantine (§3.5), and in `xtrax.run.unit_index` (2026-11-03) the segment writer, read side, compaction, lookup, the `zarr_commit` record adapter, rebuild and the DuckDB view. **Built 2026-11-04:** `xtrax.pack` and the `unit.json` record (§3.2, §3.3), lifted from alynxr's `unit_pack.py` (alynxr PR #45, cd8e5a9) per the owner decision of 2026-11-03. The on-disk format is alynxr's (`tar.zst+frame-index/1`: one zstd frame per USTAR member, plus an offset index), so packs read across both implementations. A checked-in fixture written by alynxr's own file tests this. Departures from alynxr: the completion check is `content_digest` (overridable through `check=`/`record_name=`); index keys and `storage` names must be plain paths inside the unit; the sweep deletes only loose files that are byte-identical to the pack, and checks all of them first; symlinks and special files are refused (`R-U3`), not silently dropped; dotfiles are members. The codec is zstd (stdlib on 3.14, `zstandard`, or the `zstd` CLI, which Engaging compute nodes have: v1.4.4, quicktest job 27897324). This supersedes the gzip-default codec bullet below. GNU tar there is 1.30 with no `--zstd`, so extract with `zstd -dc | tar -x`. `UnitJsonAdapter` is in `xtrax.run.unit_index_adapters`. One packer per unit is enforced by a POSIX `lockf` lock (`members.tar.zst.lock`, removed when done). **V** (spike, quicktest array job 27899947, `scripts/probes/nfs_lockf_probe.py`, 2026-11-04): on Engaging home, scratch, pool and so3/002, all NFS v4.2 with `local_lock=none`, task 0 on node1600 took the lock and task 1 on node1602 got `EAGAIN` 15 s later while task 0 held it, so these locks exclude across nodes. Owner decision 2026-11-04: fail loudly, with an opt-out. A filesystem with no lock support, or with node-local locks (NFS `local_lock=all|posix`, Lustre `localflock`, read from `/proc/mounts`), raises `LockUnavailable` (an `OSError`). `pack_unit(lock=False)` is the explicit escape for a caller that guarantees one packer per unit. `zstandard` is the optional `xtrax[pack]` extra. The aminx done-marker v3 and alynxr fold-stats fragment adapters are built (`xtrax.run.unit_index_adapters`). Consumer adoption happens in the consumer repos (§5).
+- **consumers**: alynxr, aminx, aminx-ensemble, demistify, prolix
+- **origin**: owner request 2026-10-30 (upstream the alynxr provenance/consolidation design into xtrax).
+  Owner decisions already taken: (1) recon the five consumers first; (2) the index is **lock-free
+  per-writer segments**, not `flock`.
+
+Tags: **V** = read in code at the cited line in this session; **U** = unverified. Every U must be
+probed before it changes the design.
+
+## 1. Problem
+
+Each consumer builds its own unit record, completion marker and resume-by-input-hash. Only alynxr packs
+outputs, and only for search products. Only alynxr guards file count at run time. On Engaging scratch the
+binding limit is file count, not bytes: alynxr hit 1,000,000 files at about 46% of bytes. The inode cost
+comes from per-unit loose directories, and nothing consolidates them.
+
+What v1 got wrong: most of the "build" already exists in xtrax and alynxr (§2.2). The upstream work is
+mostly **lifting and closing gaps**, not new mechanisms.
+
+## 2. Recon facts
+
+### 2.1 Consumers
+
+| Consumer | Per-unit footprint | Completion record / resume | Packing | Inode guard | xtrax use |
+|---|---|---|---|---|---|
+| alynxr | fold unit: ~5 + 2R loose files (R U, A7); `fold.py:183`, `readers.py:44-45` | search: `product.json` per product. Fold stats: immutable Parquet parts + one fragment per part, derived `MANIFEST.json` (V, `fold_stats/layout.py:1-30`) | `pack_members`: search products only, `PACK_THRESHOLD = 64`, stdlib-only node module (V, `product_node.py:1-8,50,290`); fold-unit "Archive Stage B" not implemented (V, `fold_stats/readers.py:19-21`) | `FileCapGuard`: `lfs quota` on Lustre, `df -i` elsewhere, re-reads every 1000 files and **refuses mid-run** (V, `storage.py:1-10,270-330`); worker exit 5 (V, `fold_stats/worker.py`) | **yes**, lazily: `fold_stats/array_commit.py` commits array shards through `xtrax.run.zarr_commit` (V) |
+| aminx | one zarr store per campaign row + `.lock` + done marker + `.partial.<attempt>` (`host/campaign.py`, origin/main `ef8810c2`) | `O_EXCL` lease lock with CAS steal, 1800 s, or a `DistributedLockBackend`. Done marker `campaign_done_marker_v3`: `manifest_row_hash`, `input_hash`, `input_hash_components`, `content_digest_sha256` (= `xtrax.run.zarr_content_digest`), `attempt_id`, `producer` (V, `campaign.py:1015-1045`). Outcomes: reuse; legacy-v2 → quarantine + recompute; input-hash mismatch → quarantine + recompute; schema stale → invalidate + recompute; content mismatch → **raise** (V, `campaign.py:969-1012,1789-1880`) | none (U) | input dirs over 5000 files are not hashed (V, `campaign.py:65,820`); no output guard (U) | imports `xtrax.run` fsync/digest primitives (V) |
+| demistify | residue shards in one durable zarr store; phase5 grid ~144 files | `DurableShardSink` is **demistify's** class (`demistify/shard_sink.py`), wrapping `xtrax.run.ZarrStagingSink` `create_or_join` (V) | none | disk quota only (`phase0_preflight.py:35-39`) | `>=0.4.1b3` |
+| prolix | 1 json + optional 1 xtc per run | existence check only (`fit_bonded_hp4.py:257`) | none | none | `>=0.4.1b2` |
+| aminx-ensemble | stub code. Its epic spec §3.3 resumes per chunk through `ZarrStagingSink` `create_or_join` + `lookup`, **Stale/Corrupt raise**, and `chunk_size` keeps a store under 100,000 files (V, `aminx-ensemble/.praxia/docs/specs/261030_aminx-ensemble-epic.md` §3.3) | planned on `zarr_commit`, **not** on a separate ledger | not applicable (zarr keys, no loose dirs) | planned: stdlib `_resolve.py` / `_config.check_location`, which records inodes, group and setgid (epic §3.5) | planned |
+
+### 2.2 What xtrax and alynxr already provide (V)
+
+- `xtrax.run.zarr_commit`: staged, fsynced, renamed commit. The commit record (`input_digest`,
+  `content_digest`, `run_id`, `env`, `record_digest`) lives **inside the artifact** as the `xtrax.commit`
+  attr (`zarr_commit.py:34,364-377`). `lookup` returns `Reuse | Missing | Stale | Corrupt`
+  (`:460-512`), and `committed_keys` finds completions by walking the tree (`:515-550`).
+  **Gap:** `commit_key` returns `Duplicate` on the input digest alone and never compares content
+  (`:399-400`). alynxr patches that gap locally (`array_commit.py` header: lookup(verify) before every
+  write, a content compare on Duplicate, quarantine and never delete).
+- `xtrax.run.sink`: `SinkSpec` / `make_sink` / `ZarrStagingSink`, with a `create_or_join`
+  multi-writer durable mode (`sink.py:59-190`). This is the sink every zarr consumer already uses.
+- `xtrax.telemetry.{ledger,compact,store}`: **run-level** telemetry. `flock` JSONL segments
+  (`ledger.py:19-24,48-63`) are compacted into `sealed/` and moved to `archive/` (`compact.py:1-20`). The
+  dedup rule is last row per `(run_id, kind)` (`compact.py:78-90`). The blob store is content-addressed
+  over uncompressed bytes, uses a pluggable codec (gzip, or zstd only when `zstandard` is installed)
+  and has a population check (`store.py:1-35,60-75`). The CLI verb is `xtrax ledger`
+  (`cli/ledger_verb.py`). `resolve_root` falls back to a default path, `.xtrax/ledger`
+  (`ledger.py:162-167`). That conflicts with the derived-data-directory rule, so it must not be copied.
+- alynxr `fold_stats/layout.py`: an existing lock-free per-writer index. Each writer adds an immutable
+  part and then its own fragment (each by temp + `os.replace`). `MANIFEST.json` is derived and rebuilt
+  idempotently by anyone. Identity is logical (sorted rows, canonical JSON), not file bytes, because
+  Parquet bytes are not stable across pyarrow versions. R-S6 refuses one key with two logical hashes.
+  DuckDB is the read side (`table.py:349-360`).
+- Import weight: `import xtrax.telemetry.store` loads none of jax, zarr or equinox (V, probe this session).
+  The cluster node that runs alynxr's packer has **no xtrax installed** (V, `product_node.py:1-8`).
+
+## 3. Design
+
+Principle: **the artifact's own record is the source of truth; the index is derived** (owner decision
+D1, **decided 2026-10-30**). This is the rule alynxr's fold-stats store already follows, and it is the
+only reading that leaves no second completion state that can disagree with the first.
+
+### 3.1 Unit index (`xtrax.run.unit_index`)
+
+The name avoids `xtrax.ledger`, which collides with `xtrax.telemetry.ledger` and the `xtrax ledger`
+verb. The index is an **index** over per-unit commit records. It never certifies completion on its own.
+
+- **Truth.** A unit is complete when its artifact carries a verifying commit record. For a zarr unit,
+  that is `zarr_commit`'s `xtrax.commit` attr. For a non-zarr unit (a loose dir, a pack), it is a
+  `unit.json` record written last, by temp + `os.replace`, in the unit directory with the same fields
+  as `CommitRecord`. The record lives with the artifact, so it moves and packs with it.
+- **Record core vs. storage state (v3).** `record_digest` covers only the **immutable core**
+  (`input_digest`, `input_payload`, `meta`, `content_digest`, `run_id`, `env`, `committed_at`), the
+  same fields `zarr_commit._compute_record_digest` covers. Pack state (`pack`, `pack_sha256`,
+  `index_sha256`, `codec`) goes in a separate `storage` field outside the digest, so packing never
+  changes `record_digest`, and the index row stays valid.
+- **Record adapters (v3).** Not every consumer's record is a `CommitRecord`. `unit_index` reads records
+  through a small `RecordAdapter` protocol (`find(store) -> Iterator[(locator, CoreRecord)]`,
+  `read(locator) -> CoreRecord | reason`). Four adapters: `xtrax.commit` attr, `unit.json`, alynxr
+  fold-stats fragment, and aminx done marker v3. The aminx adapter maps `input_hash` → `input_digest`,
+  `content_digest_sha256` → `content_digest` and `attempt_id` → `run_id`. It leaves `env` null and
+  computes `record_digest` over the mapped core, marking the row `adapted = "aminx_done_marker_v3"`.
+  `Reuse.record` stays a `CommitRecord` for zarr units only. The index-level lookup returns its own
+  `IndexReuse(locator, core)`.
+- **Index rows.** One JSON row per record:
+  `{schema_version, store, locator, unit_key, input_digest, content_digest, record_digest, adapter,
+  writer_id, run_id, ts, reused_from}`. `store` is the store root's resolved path. `locator` is the
+  path relative to it, so a row names the artifact to open. `reused_from` is null, or the
+  `(store, locator, record_digest)` that a Reuse decision read. That satisfies the "record what was reused
+  from where" rule.
+- **Write order.** The record is committed first and the index row appended second. If a crash lands
+  between the two, the result is a record with no row. `rebuild` (below) adds the row back. Duplicates
+  between `rebuild` output and live segments are removed at read time (Read side).
+- **Segments.** `<root>/segments/<writer_id>.jsonl`, with `writer_id = <host>-<pid>-<SLURM_JOB_ID>-<SLURM_RESTART_COUNT>-<uuid8>`.
+  Requeue (alynxr `search.py:75-78`) and pid reuse therefore never share a segment. Each segment has a
+  single writer and is append-only, with `fsync` after each row (one row per finished unit), and
+  `fsync_directory` once when the segment is created. A torn last line is skipped on read and
+  reported, never repaired in place. On exit, a writer appends a `{"closed": true}` trailer.
+  The segment file count is bounded by **writers, not units, and not batches**. That is A2, now a
+  design property, but still probed: a 1e5-task array job is 1e5 segments until compaction, so
+  `unit_index` checks its own segment count against the file guard (3.4) before opening a new segment.
+  **Implemented as** the guard's `check(1)` in `SegmentWriter.open()`, before the segment exists: a
+  new segment is one new file against the user's file budget. No separate segment-count cap: it
+  would cost a full `readdir` of `segments/` on every writer open, which across a 1e5-task array is
+  the metadata load this spec exists to remove (2026-11-03).
+- **Lookup.** `lookup(store, unit_key, input_digest)` returns `Reuse | Missing | Stale | Corrupt`
+  (imported from `zarr_commit`, not redefined), plus `SchemaMismatch` for a record or row whose
+  `schema_version` is not current. Lookup always goes to the artifact's record through the row's
+  `locator`. The index only narrows which artifacts to open. The return value is a **classification
+  only**. What to do with it (aminx quarantines and recomputes; aminx-ensemble raises) stays with the
+  consumer.
+  **Implemented (2026-11-03)** as `lookup(index, store, unit_key, input_digest, verify=True,
+  adapters=None)`. `index` is a snapshot from `load_index(root)`, which reads the index once and
+  groups rows by `(store, unit_key)`, or a root that is read once for the call. A consumer resuming
+  N units reads the index once, not N times (A3 timed one stdlib read at up to 4.4 s). `Missing` and
+  `Corrupt` are `zarr_commit`'s. `Reuse` and `Stale` are not reused, because both carry a
+  `CommitRecord`, which a non-zarr record does not have. The index-level results are
+  `IndexReuse(store, locator, core)` and `IndexStale(store, locator, core)`, with `core` a
+  `CoreRecord(unit_key, input_digest, content_digest, record_digest, run_id)`. When a unit has
+  several rows (copies), any reusable copy wins; otherwise `Corrupt` beats `IndexStale`, which beats
+  `Missing`, with an adapter `SchemaMismatch` ranked between `Corrupt` and `IndexStale`. A row
+  whose `record_digest` no longer matches the artifact is classified from the artifact. A record
+  for another `unit_key` (a row pointing at the wrong locator), or a reuse claim for another input
+  digest, is `Corrupt`, never reuse. A row naming an adapter that is not registered raises
+  `UnitIndexError`. Stores are canonicalized (`~` expanded, relative paths refused,
+  `os.path.realpath`) in `make_row`, `SegmentWriter.append` and `lookup`, and schema-mismatch rows
+  are keyed the same way, so a store reached through a symlink finds the same rows. `make_row`
+  refuses a row `iter_rows` would drop; `rebuild` skips such records and lists them. Adapters
+  built: `ZarrCommitAdapter` (`xtrax.commit`; `unit_key` = `locator` = the key path; an illegal
+  key path is `Corrupt`), and in `xtrax.run.unit_index_adapters` `AminxDoneMarkerAdapter` (aminx
+  `campaign_done_marker_v3`; `unit_key` = `manifest_row_hash`, v2 markers are `SchemaMismatch`)
+  and `AlynxrFragmentAdapter` (alynxr `fold_stats_part/1` fragments; `unit_key` = `locator` = the
+  part path; verified by the part file's size and sha256). Both refuse a locator that is not a
+  plain relative path (`..`, absolute, `.`, empty part: `Corrupt`). The check is lexical: a
+  symlink inside the store is the owner's and is followed. A missing artifact follows each
+  consumer's own rule: aminx raises on a marker without its output (`campaign.py:996`,
+  7291397c), so the adapter says `Corrupt`; alynxr writes the part before its fragment, in
+  another directory, and treats a fragment without its part as not reusable and repairs it
+  (`layout.py` `reusable`, `write_part`), so the adapter says `Missing`, as `zarr_commit` does
+  for an artifact not visible yet (A1). Formats were read from each consumer's
+  `origin/main` on 2026-11-03. The `unit.json` adapter waits on the record format the lifted
+  packer brings (§3.3).
+- **Rebuild.** `rebuild(root, stores)` walks the records through the adapters and writes a derived
+  `rebuilt/index-<ts>.jsonl`. That is its own directory, never `sealed/` and never `segments/`. Anyone
+  can run it, and it is idempotent, following alynxr's derived-`MANIFEST.json` rule.
+  **Implemented (2026-11-03)** as `rebuild(root, [(store, adapter), ...])`, which writes
+  `rebuilt/index-<ns>-<uuid8>.jsonl` by temp + `os.replace`, and nothing when no store holds a
+  record. Repeated rebuilds add one file each and no rows, since reads deduplicate. Nothing prunes
+  older rebuilt files: moving or deleting index files outside the D6 archive path would reopen the
+  cross-host stale-listing window. Rebuilds are manual and rare, so the extra files are accepted;
+  pruning them is future work, gated on the same visibility rule.
+- **Compact.** Compaction takes only **closed** segments (trailer present), plus segments with no
+  trailer whose `writer_id` job is no longer in the scheduler and whose mtime is older than a stated
+  grace period. A segment with a live writer is never moved. The test is `xtrax.run.writer_liveness.segment_writer_dead` (stdlib only): a scheduler lookup that cannot be answered (UNKNOWN) never counts as "gone", and the mtime age uses NFS server time, default grace 300 s. A squeue that hangs to its timeout or raises `OSError` is UNKNOWN; A10 saw both on Engaging with a broken `SLURM_CONF`, and `test_raising_query_never_dead` pins them. Taken segments fold into `sealed/` and
+  are **moved** to `archive/`, never deleted. The dedup key is `(unit_key, input_digest)`, not
+  timestamp order:
+  - rows that agree on `content_digest` **and name the same `store` and `locator`** collapse to one
+    (the latest `ts`, then `record_digest`, wins). Rows with the same content at another location are
+    copies and are all kept, so no pointer to an existing artifact is dropped (D5);
+  - one `(unit_key, input_digest)` with two `content_digest`s is the R-S6 conflict, and **that pair** is
+    refused and listed, while compaction of every other key proceeds (no wedge). "Refused" means
+    never resolved: one row per content stays sealed and visible, and every pass lists the pair again;
+  - a new `input_digest` for the same `unit_key` is a legitimate recompute (aminx quarantine and
+    recompute). Both rows are kept, and the current one is the one whose artifact record verifies now.
+  Timestamps are informational.
+  **Implemented (2026-11-03, `xtrax.run.unit_index`, internal).** No compaction lock (the index has
+  none). Two compactors at once are safe because sealed and temp names are unique (`<ns>-<uuid8>`)
+  and each compactor moves to `archive/` only the files it read into its own sealed output; at
+  worst rows are duplicated, and the read side removes duplicates. Order: write the temp, fsync,
+  `os.replace`, fsync `sealed/`, then write `sealed/<stem>.inputs.json` (each input with its
+  `(size, inode, mtime_ns)` as read; `st_dev` is client-local and left out) the same way.
+  **Archiving is deferred (D6):** a later pass moves those inputs to `archive/` only once the
+  sealed file is `archive_after_s` old in NFS server time (default 180 s), then removes the
+  manifest. Inputs still listed by a manifest are neither taken nor folded again. An input stays
+  in place, and is taken again once its manifest is gone, when its identity differs from the
+  recorded one (it grew, or a reused writer id put another file at the path), or when it is a
+  segment with no trailer whose writer is no longer judged dead at archive time (an open
+  descriptor would follow the rename out of view). Archiving a sealed file whose identity matches
+  also archives the inputs of its own manifest, which it contains. Until then, every input stays readable, including rows a collapse dropped, and the
+  index holds about one extra compaction interval's worth of files (this counts against A3's
+  verified bound of 1e4 segments). A pass with nothing to archive and no segment to take writes
+  nothing. Reader rescans back off for about 64 s in total before giving up, so a reader whose cached
+  `segments/` listing still names an archived file waits for the listing to refresh. Directory
+  listings use `os.listdir` with an ESTALE retry; `Path.glob` would turn a failed listing into an
+  empty directory. An
+  unparseable line is torn: skipped, reported, and dropped by compaction (the record is the truth,
+  and rebuild restores the row). A parseable row with an unknown `schema_version` keeps its segment
+  in place, and one in a sealed file refuses the pass. A pass takes NFS server time once and caches
+  scheduler answers per job, and after the first query timeout or `OSError` it answers the rest
+  UNKNOWN, so a hung scheduler costs one timeout, not one per segment. The writer appends the
+  trailer on close (also when the body raises), on its own line even after a failed partial write.
+- **Root.** The location is resolved as: explicit argument > `XTRAX_UNIT_INDEX_ROOT` (`none` or empty
+  disables) > `[tool.xtrax]` in the nearest `pyproject.toml` > `${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml`
+  > off. There is no default path, and the resolver exposes which layer decided.
+- **Locks.** Mutual exclusion while a unit runs stays with the consumer (aminx's lease lock and
+  `DistributedLockBackend`). The index has no locks.
+- **Read side.** The canonical reader is `unit_index.iter_rows(root)`. It covers `segments/`,
+  `sealed/` and `rebuilt/`, skips and reports torn lines, and dedups on `(store, locator, record_digest)`.
+  The DuckDB view (an optional extra, `xtrax[index]`) is built from that same rule:
+  `read_json(..., format='newline_delimited', ignore_errors=true)` plus a `DISTINCT ON
+  (store, locator, record_digest)`. A test pins that the two readers agree, including on a torn-tail
+  fixture. DuckDB is not a core dependency, and it is never a writer.
+  Torn lines are reported by `iter_rows` only. DuckDB with `ignore_errors=false` is not a torn-line
+  detector: in A3 (run `ff246f5d`), 4-thread strict reads refused a torn tail in only 7 of 10 tries,
+  and a bare `count(*)` can skip parsing altogether. The agreement test therefore compares
+  deduplicated counts and never relies on a DuckDB error. A3 timed this view at 2.1 s worst case
+  over 1e6 rows and 1e4 segments on Engaging scratch. Cost follows file count, so the view stays in
+  budget only while compaction keeps the segment count bounded.
+  **Implemented (2026-11-03)** as `duckdb_view(root, con=None, name="unit_index")`, with `duckdb`
+  imported inside the function and `xtrax[index] = duckdb>=1.1`. The view keeps rows of the
+  current `schema_version` that have every required field set. It reads an explicit list of the
+  index files present when it is created, because a per-directory glob (as in A3) errors once
+  compaction empties a directory. So the view is a snapshot: create it again to see later files.
+  The agreement test fixture has torn lines, a schema-2 row, a trailer-only segment, a segment
+  and a sealed file holding the same rows (the deferred-archive state), an `.inputs.json`
+  manifest, and a rebuilt copy. Removing `DISTINCT ON` makes the test fail. Every field is read as
+  raw JSON and checked with `IndexRow.from_dict`'s type rules, since DuckDB's casts would admit a
+  boolean or string `ts`, a numeric string field or a short `reused_from`. Among copies of one read
+  key the view keeps the first file in scan order, then smallest `ts`, then `writer_id`. DuckDB
+  2.0 exposes no line number (`read_json` and `read_csv` refuse `file_row_number`; `read_text`
+  refuses a torn UTF-8 tail), so this equals `iter_rows`'s first-line copy only while a file's `ts`
+  never decreases. Otherwise the read-key set still agrees and only a duplicate copy's non-key
+  fields may differ, which `lookup` never trusts. The agreement test compares full rows.
+- **ESTALE.** Every reader of a file that a writer replaces with `os.replace` (sealed segments, index
+  files, unit records) retries the **whole** open-and-read on `ESTALE`, with a short bounded backoff,
+  and never reuses a file descriptor across the retry. A1 saw 77 `ESTALE` (home 74, pool 3, scratch
+  0) and no torn read. A new file can take up to ~30 s to become visible on another node (home/scratch
+  p95 14 s/8 s), so a reader treats "not there yet" as Missing, not Corrupt.
+
+### 3.2 Content identity that survives packing
+
+`content_digest` of a non-zarr unit = sha256 of canonical JSON `[[relpath, sha256(uncompressed bytes)], ...]`
+sorted by relpath. This is the same choice `telemetry/store.py` makes (addressing over uncompressed bytes)
+and the same check `product_node.read_member` applies. A unit therefore has the same digest whether it
+is loose or packed, and whichever codec or library version wrote the pack. The pack file's own sha256 only
+verifies a transfer (alynxr's identity rule). For zarr units, `content_digest` stays
+`zarr_content_digest`.
+
+**Member set (v3).** The members are every file in the unit directory **except** the record
+(`unit.json`), its temp files, and pack artefacts (the pack file, its index, `.partial`). The digest
+is therefore never circular. For a packed unit, `lookup(verify=True)` recomputes `content_digest` by
+reading each member through the pack index and hashing the uncompressed bytes. For a loose unit it
+reads the files. Both paths must give the same digest, and a test checks one unit both ways.
+
+### 3.3 Pack (`xtrax.pack`)
+
+- **Format.** The format is alynxr's existing one, generalized: USTAR tar, one compressed member per file,
+  `mtime=0`, and an offset index `{relpath: {offset, length, sha256_uncompressed, codec}}`. The order is
+  alynxr's five steps (`product_node.py:290-370`): write `.partial`; verify every member against the record;
+  `os.replace`; write the index and then the record's `storage` field (`pack`, `pack_sha256`,
+  `index_sha256`; outside `record_digest`, 3.1); delete the loose files last. At every step, a record
+  that names a pack names a verified pack, and a record without one means every loose file exists.
+- **Sweep after a crash (v3).** alynxr's `pack_members` returns early once `pack` is set
+  (`product_node.py:301-302`), so a crash after the record rewrite leaves the loose files forever and loses
+  the inode saving. `xtrax.pack` therefore has `pack_sweep(unit)`. When the record names a pack, it
+  verifies the pack against the index, and then deletes only loose files whose names are pack members.
+  `pack()` calls it on its early-return path. A crash-injection test kills the process after the record
+  rewrite and asserts that the next call removes the loose files.
+- **Member set and threshold (v3).** A pack threshold counts **files in the member set** (3.2), not
+  queries. alynxr's `PACK_THRESHOLD = 64` (`product_node.py:50,299`) counts queries in a search product,
+  but fold units are heterogeneous (~5 + 2R files). The threshold is a per-unit-class argument, and the
+  fold-unit value comes from A7.
+- **Node-embeddable core.** `xtrax/pack/_node.py` is stdlib-only, written in Python 3.9 syntax, and
+  imports nothing from xtrax. Two tests enforce this: an `ast` import check, which runs in normal CI,
+  and a standalone `-I` run under a 3.9 interpreter. The 3.9 test runs as its own CI job with
+  `uv python install 3.9`, because xtrax's own venv is >=3.13. Its source text is exported (`xtrax.pack.node_source()`) so that a renderer can embed it in
+  a cluster script, as alynxr does today. The library side (`xtrax.pack`) adds typed wrappers, the
+  reader, and refusals.
+- **Codec.** The codec registry is `telemetry/store.py`'s: gzip by default, and zstd only when `zstandard`
+  is importable. There is **no Python floor change**. Reads are suffix- or codec-field-agnostic. The node
+  core supports gzip only, because the stdlib on 3.9 has no zstd.
+- **Opt-in.** Consumers opt in per unit class. A unit whose record names a pack is read through
+  `xtrax.pack.read_member`. alynxr's fold ingest must learn to do this: today a packed unit fails as
+  "no completion stamp" (V, `fold_stats/readers.py:19-21`).
+- **Scope.** Pack applies to **loose-file units** only (alynxr fold units and search products, prolix
+  runs if wanted). For zarr consumers, file count is controlled by chunking (aminx-ensemble's
+  `chunk_size`) or by the zarr v3 sharding codec. Neither xtrax sink uses sharding today (V, grep). That
+  is a separate item (§6), not a pack.
+
+### 3.4 File guard (`xtrax.fileguard`)
+
+This lifts alynxr's `FileCapGuard` (`storage.py`) **with its semantics intact**:
+- Plan-time admission **and** in-run checks: re-read the real quota every `reread_every` files and
+  interpolate between reads. The guard refuses at the check before a write, and the process is never
+  killed mid-write. v1's "never mid-run" contradicted the code it generalized, and is withdrawn.
+- **Off Lustre (v3.1, from A9).** The per-user figure comes from the `quota -w -u` row whose device
+  matches the path's `df` device, and the `df -i` reading is kept as a separate `filesystem` scope.
+  On a shared NFS server `df -i` is the whole server, so it is never the per-user cap. A path with no
+  per-user row (Engaging scratch) emits `quota_limit_unknown` (scope `user`), so the guard is
+  visibly blind there and never quietly trusted. alynxr's `storage.py` has the same gap: it uses
+  `df -i` alone off Lustre.
+- **MIT ORCD report (v3.2).** On Engaging the per-user HOME/SCRATCH/POOL file counts come from
+  `~/orcd/.quota`, auto-detected (`orcd_dir="auto"`, `None` disables). A path maps to a space through
+  the `~/orcd` symlinks, and the longest root wins. Counts are rounded in the report, so the limit
+  is taken as a lower bound (rounded value minus half a unit) and usage as the exact `% Used` of it.
+  A report older than `orcd_max_age_s` (default 1 h), or one that is unreadable or unparseable, is
+  refused.
+- On Lustre, the per-user figure comes from `lfs quota`. When `lfs` cannot give it, the read is
+  refused, never replaced by `df -i` (which is filesystem-wide on Lustre). An unknown filesystem type is
+  refused.
+- The guard also records group quota and setgid inheritance of the target directory (global rule:
+  `so3_shared/marielle/` is setgid to a full-quota group).
+- Events go through an injectable emitter, defaulting to `logging`. `cisternal.emit_event` is used when
+  the `plugin` extra is installed. `storage.py` hard-imports cisternal, and xtrax must not, because
+  cisternal is only an optional extra here (`pyproject.toml:124`).
+- Concurrent jobs (v3): the guard is per process, so N jobs each interpolating `reread_every` files
+  can overshoot the cap by up to N × `reread_every`. `cap_fraction` (default 0.95 since 2026-10-30, owner: 0.80 was too low) is the slack. The
+  planner states N and checks `N × reread_every < (1 - cap_fraction) × files_limit`, and refuses at
+  plan time when it does not hold.
+- Quarantine directories (3.5) and `archive/` are counted. They are never deleted, so they are a
+  standing part of the user's file count.
+- A stdlib-only, node-embeddable check (`xtrax/fileguard/_node.py`) follows the same 3.9 rule as the
+  pack core. aminx-ensemble's `_resolve.check_location` then becomes a consumer of it rather than a
+  third copy.
+
+### 3.5 Close the `Duplicate` gap in `zarr_commit` (new, higher value than v1's ledger)
+
+On `ENOTEMPTY`/`EEXIST`, `commit_key` should compare the staged `content_digest` with the existing
+record's. When they differ, it **raises** the existing `CommitConflictError` with
+`reason="same input_digest, different content"`. It does not return a new type: `zarr_sink` types
+the outcome as `Committed | Duplicate` and already handles `CommitConflictError`
+(`zarr_sink.py:316-318,519,866-882`), so no call site changes shape. This is a behaviour change for a
+non-deterministic producer, which today gets `Duplicate` and would now get a raise. It therefore
+ships behind an argument, `commit_key(..., verify_duplicate=False)`, defaulting to off this minor and
+on next minor. `ZarrStagingSink` exposes the argument, and the release notes name the
+non-determinism case.
+
+`quarantine(store, key)` moves a key to `<store>.quarantine/<key>-<uuid8>` and never deletes it. It
+keeps alynxr's race handling (`array_commit.py`, quarantine section): after the move, it re-verifies
+the moved directory against its own record. If it verifies, a racing writer had committed a good key,
+so it renames the directory back and raises. These are lifted from alynxr's `array_commit.py`, which
+can then drop its local copy.
+
+## 4. Assumptions to probe (before build)
+
+Each probe whose number will be cited (A2, A3, A5, A7) runs under a committed bathos sidecar.
+
+| # | Assumption | Tag | Probe |
+|---|---|---|---|
+| A1 | `os.replace` of a sibling temp file is atomic on Engaging scratch, pool and home (all NFSv4) | **V (2026-11-02)**: bathos run `d47a983e-19eb-4000-8ba6-330313760a70`, pass | 3-node contention probe (`a1_replace_atomicity.sh`, 1 writer, 2 readers, 3 filesystems x 4 sizes) with an in-place-rewrite negative control per cell; torn reads must be 0 where the control fired, else inconclusive. Nonzero ESTALE adds a "reader retries the whole open+read" design row. Sidecar `a1_analyze.bth.toml`. **V, run 2026-11-02**: bathos run `d47a983e-19eb-4000-8ba6-330313760a70`, `outcome=pass` (analysis of Engaging job 27708472 at c73fe55; writer node1623, readers node1624 and node3112; raw logs `outputs/probes/a1/raw_27708472/`, result `outputs/probes/a1/a1.result.json`). All 12 cells qualified (2 reader hosts each, 6,274 to 2,757,697 qualifying reads per cell); **0 torn reads** in every cell while the in-place negative control tore 70,426 to 365,133 times per cell. **ESTALE 77** (home 74, 67 of them at 16 MiB; pool 3; scratch 0), so the reader-retry row applies: a reader that gets ESTALE on open or read retries the whole open+read. Report only: new-file visibility to a reader on another node has median ~2 ms on all three, but p95/max are 14 s/30 s on home and 8 s/27 s on scratch (pool max 5 ms); cross-node clock skew enters these | **pass: `os.replace` is safe for sealed segments and index files on all three; add ESTALE retry to readers** |
+| A2 | segment file count = writers per campaign; per consumer the count is < 1% of the units | U | model from §2.1 and one real campaign |
+| A3 | DuckDB `read_json` over segments + sealed at 1e6 rows returns in < 5 s | **V (2026-11-03)**: bathos run `ff246f5d-57bd-4bad-8945-f962159b7fb8`, pass. Engaging scratch, DuckDB 2.0.0, threads 4, fixture built on node3104 (job 27790069) and read on node2511 (job 27790386). Worst query, cold first run included: 2.12 s (`busy`: 1e4 segments + 9 sealed files, 10,010 files); `steady` (100 segments): 0.29 s. Controls held: exact dedup over planted duplicates, trailers and torn tails; the stdlib reader agrees. **Scope:** verified up to 1e4 segments. The 1e5-segment `uncompacted` layout ran on local disk only (19–86 s, run `a6a42e6f`), so read cost follows file count, and compaction is what keeps the view inside budget | `a3_duckdb_read.py` + `a3_analyze.bth.toml` |
+| A4 | DuckDB 2.0 reads the same files, and wheels exist for 3.13 and 3.14 | **V for 3.13** (2026-11-03): `duckdb` 2.0.0 installs from a wheel into the project's 3.13.12 venv, and the view's agreement test passes on it; A3 ran 2.0.0 on Engaging under 3.12. **3.14: U** | throwaway venv; does not block, since DuckDB is an optional read extra |
+| A5 | zstd beats gzip on real fold unit dirs by enough to matter. **No floor change either way.** | U | measure on fold unit dirs, with sidecar |
+| A6 | aminx done marker v3 carries `input_hash`, `content_digest_sha256`, `attempt_id`, `manifest_row_hash` | **V** for field names (aminx origin/main `ef8810c2`, `campaign.py:1015-1045`; the local aminx checkout is stale at v2) | — |
+| A6c | the aminx adapter (3.1) can rebuild index rows from a finished aminx campaign without a `CommitRecord` | U | run `rebuild` over one finished campaign; every marker yields a row |
+| A10 | compaction's "writer is dead" rule (trailer, or job gone + grace period) has no false positive under preemption and requeue | **V (2026-11-02)**: bathos run `306cbabb-ba56-4a48-ba8a-00a77b434b0a`, pass (first run `9040eb50` inconclusive) | requeue-injection test on Engaging (`a10_controller.py`; sidecar `a10_analyze.bth.toml`). The rule is three-state (`xtrax.run.writer_liveness`): the job is PRESENT if squeue lists it, ABSENT only if squeue says invalid id AND sacct positively reports a terminal state, else UNKNOWN; UNKNOWN is never dead. A writer without a job id is compacted only via its trailer. Naive rules run on the same inputs as controls; no naive false positive makes the run inconclusive. **Run 2026-11-02, inconclusive**: bathos run `9040eb50-e742-44cd-89de-2b80a94df290`, `outcome=inconclusive` (controller job 27708473 at c73fe55; it submitted W 27709328 and A 27709330 itself, so `sbatch` from a compute node works; raw `outputs/probes/a10/raw/`, result `outputs/probes/a10/a10.result.json`). 186 samples, 3 segments. Shipping false positives **0**; NAIVE_ERR made 1 (the instrument can see one); shipping marked every segment dead (missed 0); all five W phases covered; array job sampled; self-test passed. Coverage failed on one item only: **2 broken-query samples, pre-registered minimum 3.** Cause: with `SLURM_CONF=/nonexistent`, `squeue` on Engaging **hangs to the subprocess timeout** (`TimeoutExpired` on all 4 broken calls) rather than erroring, so a broken sample took ~50 s instead of 10 s and the ~100 s window held 2. A broken scheduler query therefore looks like a hang, and the rule must treat a timeout as UNKNOWN (it did: none of the shipping dead verdicts was a false positive). The zero is not citable until a re-run with the window sized by sample count, not seconds. **Re-run 2026-11-02, pass** (sidecar Amendment 1: controller only, `[outcomes]` and analyzer unchanged): bathos run `306cbabb-ba56-4a48-ba8a-00a77b434b0a`, `outcome=pass` (controller job 27727292 at b01f45b; W 27727403, A 27727404; raw `outputs/probes/a10/raw_r2/`, result `outputs/probes/a10/a10_r2.result.json`). 164 samples, 3 segments. Shipping false positives **0** (live 0, broken 0); NAIVE_ERR made 3, all under the broken query; NAIVE_NOGRACE 0; shipping marked every segment dead (missed 0); all five W phases covered; array job sampled; self-test passed; **4 broken-query samples**, all while restart 1 was alive (its last heartbeat came 186 s after the last broken sample). Shipping's 4 dead verdicts under the broken query were all the array segment, which had a closed trailer, so they were correct. This time the broken `squeue` reported an `OSError` instead of hanging; the rule returned UNKNOWN either way. Time to dead (shipping): trailer-closed segments 7.5 s and 10.3 s, the killed restart-0 segment 617 s (aged out of squeue, plus sacct terminal, plus the 300 s grace). Limits: one requeue, one array task, one scheduler-load sample | **pass: keep the three-state rule and the 300 s grace; treat a squeue timeout or OSError as UNKNOWN** |
+| A6b | demistify zarr internal file count per residue shard | U | measure one finished store |
+| A7 | a completed fold unit is large enough that a ~4-inode packed form pays | **V, production re-run (2026-11-02)**: bathos run `8fa50cd7-8a8f-41bf-b390-2b61d8ddeecb` (`scripts/experiments/a7_fold_unit_inodes.py`, sidecar amendment 2, pre-registered and committed before capture): `outcome=observed` (stage `exploration`), `tentative_outcome=pass`. Input: the owner-chosen glp1r production campaigns glp1r_d3 + glp1r_d0m, scaled down to the 20 lowest-sha256 unit names per arm (`scripts/experiments/a7_capture_sample.sh`, Engaging job 27692525; listing sha256 `19855263…6d3e5b`, `outputs/probes/a7/glp1r_sample_k20.listing.tsv`). 180 completed units over 9 arms and 6 engines (alphafold3, chai1, openfold3, boltz2, protenix2, intellifold2): **every unit is 25 inodes** (min = max), 4 models per unit, so a ~4-inode pack saves 84%. The footprint is fixed by alynxr's runner, not by the engine: 4 x (model CIF + scores JSON), PAE JSON, 3 plots, 2 a3m, unit/run/build/batch-input records, logs, config, citation, done marker, `fold/`. Caveats: no production ColabFold-AF2 batch exists, so these engines replace it; the file list of one unit of another batch was seen before the amendment (disclosed); exploration stage, so the verdict is tentative. Earlier provisional run `2fdc70d6` (g_m1 test campaigns, not blind): 21 inodes per unit. Per-task SLURM logs: decided D3, they live in a pool, outside units | **pass: build `xtrax.pack` for alynxr fold units (§3.3)** |
+| A8 | an Engaging compute node can run the 3.9-syntax `_node.py` cores | **V** (quicktest job 27379653, node1600, 2026-10-30): default `python3` is **3.6.8** (cannot import `dataclasses`); `/usr/bin/python3.11` and `python3.12` exist; no 3.9. alynxr already runs node code under a registered `tools.node_python` with a `>= 3.9` check (`search.py:287-295,666-676`), so embedders must do the same and never call bare `python3`. titanix not probed | — |
+| A9 | the guard can read the per-user file cap on Engaging scratch | **V, assumption false** (2026-10-30): `/orcd/scratch/orcd/011` and `/orcd/home/002` are **NFS**, not Lustre, and `lfs` is absent. Scratch `df -i` is the whole fstor018 server, not a per-user figure. `quota -w -u` reports a per-user row **only for home** (`nfs001.lb:/home`), none for scratch; the group has none. Receipts: quicktest job 27379653 (filesystem type, `lfs` absent) and two read-only login-node `quota`/`df` calls; not re-run under a sidecar, so no counts are cited here. alynxr's run outputs live on scratch (`~/orcd/scratch/alynxr_runs`) and on `/orcd/compute/so3/002`, so the guard is blind exactly where the spec targets. Resolution in 3.4 | **resolved 2026-10-30**: the per-partition caps (HOME, SCRATCH, POOL) are published per user in the root-written `~/orcd/.quota` (printed at login by `/etc/profile.d/orcd-quota.sh`, refreshed about every 10 min). The guard reads it (3.4). `/orcd/compute/so3/002` is in no report space and stays limit-unknown |
+
+## 5. Rollout
+
+1. Additive minor release. `zarr_commit`'s duplicate check ships off by default (§3.5). No floor changes.
+   Each consumer gets a stated floor.
+2. **alynxr fold units adopt first** (owner decision D2, decided 2026-10-30, §7). They are the only consumer
+   whose loose-file units are the measured inode problem, and they already have the pack format, the guard
+   and an xtrax dependency. Order within alynxr: fileguard (replace `storage.py`), pack + ingest-from-pack,
+   then the unit index.
+3. Then: aminx-ensemble adopts **fileguard only**. Its resume stays on `zarr_commit` as its own spec
+   designs. aminx maps done marker v3 into index rows (read only). demistify is read-only indexing over its
+   durable store. prolix adopts unit records + pack if it wants them.
+4. Each stage is tests-first, with a negative control per refusal: corrupt member, stale input digest,
+   schema mismatch, torn segment tail, two rows with the same `(unit_key, input_digest)` and different
+   content, a recompute row with a new input digest (must not wedge compaction), a crash after the pack
+   record rewrite (the sweep must remove the loose files), compaction with a live writer (must not
+   move the segment), a quarantine race (restore and raise), over-budget admission, concurrent-job
+   slack, Lustre without `lfs`, and a 3.9 standalone run of each `_node.py`.
+
+## 6. Out of scope
+
+Changing alynxr's logical-hash or R-S6 semantics. Making DuckDB a writer or a core dependency. Deleting
+archived segments or quarantined units. Quack as a backend (revisit after A4). Zarr v3 sharding codec
+for `ZarrStagingSink` (worth its own spec: it is the inode lever for zarr consumers). Merging run-level
+telemetry (`xtrax.telemetry`) or bathos's catalog into the unit index. The three keep separate concerns
+and join on `run_id`.
+
+## 7. Owner decisions (decided 2026-10-30)
+
+| # | Decision | Chosen | Rejected alternative |
+|---|---|---|---|
+| D1 | Is the index derived from per-artifact records, or the source of truth? | **derived**: one completion truth, crash-safe by rebuild | source of truth: a cheaper lookup, but a second completion state, plus a write-order and orphan rule to specify |
+| D2 | First adopter | **alynxr fold units**: the measured problem, with existing pack/guard code | aminx-ensemble: no legacy code, but its spec needs neither index nor pack |
+| D3 | Where do SLURM logs live? (decided 2026-11-02) | **a pool, not scratch or home**: on Engaging the personal pool, `/orcd/pool/007/maarxaru/slurm_logs/<project>/…`. A unit directory and its pack never contain SLURM logs, and the A7 count never counts them as units. The location is configuration (global derived-data rule: explicit argument > env var > `[tool.<name>]` > XDG config > the tool's current behavior), not a path in library code. The personal pool, not `so3_shared`, because `so3_shared/marielle/` is setgid to a group whose quota is full | logs inside the unit, packed with it (one less loose file per task, but a log is not unit content and is wanted before the pack exists); logs on scratch (counts against the binding 1.0M cap); logs under `~/projects/<p>/outputs/logs/slurm` (myxcel's current default: home is backed up and has the tightest file cap) |
+| D4 | Does the guard enforce a shared filesystem's `df -i`? (decided 2026-11-02) | **no**: on NFS, CIFS, Ceph, GPFS and similar (`is_shared_fs`), the `df -i` reading is recorded with `files_limit=None` and never refuses. The per-user caps come from `quota -w` and `~/orcd/.quota`; when neither gives a row the guard emits `quota_limit_unknown` and admits (flag, not refuse). Local filesystems still enforce `df -i`. alynxr embeds the stdlib-only `_node` module rather than taking xtrax as a core dependency | enforce it as a backstop (other users' files on a full server would refuse your writes); refuse when no per-user limit is readable (breaks machines with no quota tooling) |
+| D5 | Compaction: rows that agree on `(unit_key, input_digest, content_digest)` but name different `store`/`locator` (decided 2026-11-03) | **keep both**: collapse only rows that name the same store and locator; other locations are copies, kept and counted | collapse to one row per content (the spec's v3 wording): smaller sealed set, but the other copy's location drops out of the index until a rebuild |
+| D6 | When does compaction archive its inputs? (decided 2026-11-03, after a Cursor review of PR #260) | **a later pass, once the sealed file is `archive_after_s` old** (default 180 s = 3× the NFS `acdirmax` of 60 s). The manifest `sealed/<stem>.inputs.json` lists what to archive. Reason: an NFS client caches each directory's listing separately for up to `acdirmax`, so a reader whose `sealed/` listing predates the new sealed file, but whose `segments/` listing is fresh, would see neither copy of the rows (the regression test reproduced this on the earlier code). Engaging mount options were read on 2026-11-03 from `/proc/mounts` on the login node: no `actimeo` or `acdir*` option, so kernel defaults apply (**V** for the login node; compute nodes are assumed to match, **unverified**) | archive in the same pass, and have the reader wait out the cache window on any vanished file: simpler compaction, but reads can stall about 60 s, and a stale `sealed/` listing alone (nothing vanished) still hides rows |
+
+## 8. Adversarial review of v1 (2026-10-30)
+
+| # | Objection to v1 | Evidence | Resolution in v2 | Blocked v1? |
+|---|---|---|---|---|
+| 1 | Two completion truths: the ledger row vs the record in the artifact (`xtrax.commit` attr, aminx done marker, alynxr fragment). A crash between the artifact commit and the row write gives Missing over a finished artifact | `zarr_commit.py:364-386`; `campaign.py:1015-1045`; `layout.py:17-22` | index is derived (3.1); D1 | yes |
+| 2 | "temp + `os.replace` per sealed batch" bounds files by batches, not writers, so A2 is false as stated. Sealing per unit (the preemption rule) means one file per unit, which is the problem itself | spec v1 §3.1 vs A2 | single-writer append + fsync per row + torn-tail skip (3.1) | yes |
+| 3 | `writer_id` was undefined; a requeued job would reuse its predecessor's segment | alynxr `search.py:75-78,602` uses `SLURM_JOB_ID` + `SLURM_RESTART_COUNT` | `writer_id` includes job, restart, pid and uuid (3.1) | yes |
+| 4 | `xtrax.ledger` collides with `xtrax.telemetry.ledger`, the `xtrax ledger` verb, and identical dir names | `cli/ledger_verb.py:1-15`; `ledger.py:56-58` | renamed to `xtrax.run.unit_index`; outcome types imported from `zarr_commit` | yes |
+| 5 | The compaction dedup rule was unstated. Telemetry's "last row per key" is wrong across hosts with skewed clocks | `compact.py:78-90` | dedup by `unit_key`; conflicting content refused, R-S6 style (3.1) | yes |
+| 6 | Packing would turn every Reuse into Corrupt if `artifact_sha256` hashes loose files or pack bytes | `product_node.py:377-410`; `store.py:1-10`; `layout.py:24-29` | `content_digest` over uncompressed members (3.2) | yes |
+| 7 | `pack_members` is stdlib-only, Python 3.9, embedded in node scripts; an xtrax library module cannot run there | `product_node.py:1-8` | stdlib 3.9 `_node.py` core + `node_source()` (3.3) | yes |
+| 8 | "Refuses before the job, never mid-run" contradicts `FileCapGuard`, which re-reads and refuses mid-run. v1 also dropped the Lustre `lfs` rule and the cisternal coupling | `storage.py:1-10,270-330`; `worker.py` exit 5; `pyproject.toml:124` | semantics kept; Lustre rule kept; injectable emitter (3.4) | yes |
+| 9 | The closest prior art was missing: alynxr's fold-stats store already is a lock-free per-writer index with a derived manifest | `layout.py:1-30`; `table.py:349-360` | cited in 2.2; the design follows it | no |
+| 10 | alynxr's xtrax dependency was listed as "none"; it commits through `zarr_commit` | `array_commit.py` header | table corrected | no |
+| 11 | `DurableShardSink` was attributed to xtrax; it is demistify's | `demistify/shard_sink.py:1-10` | table corrected | no |
+| 12 | `commit_key` returns `Duplicate` on input digest alone; alynxr patches this locally | `zarr_commit.py:399-400`; `array_commit.py` header | upstream fix (3.5) | no |
+| 13 | aminx-ensemble as first adopter: its spec already resumes on `zarr_commit`, with Stale/Corrupt raising and a `chunk_size` file budget, so it needs neither ledger nor pack | epic §3.3, §3.5 | alynxr first; aminx-ensemble fileguard only (5); D2 | yes (rollout) |
+| 14 | "Same four outcomes" hides consumer policy. aminx has legacy-v2, schema-stale, quarantine-on-mismatch, and raise-on-content-mismatch | `campaign.py:969-1012,1789-1880` | classification only + `SchemaMismatch` (3.1) | no |
+| 15 | A5's "3.14 floor" contradicts "additive", and `store.py` already handles zstd as optional | `store.py:24-35,60-75`; `pyproject.toml:6` | no floor change (3.3, A5) | no |
+| 16 | The ledger root was unspecified; copying telemetry's default path breaks the derived-data rule | `ledger.py:162-167` | layered resolver, no default (3.1) | no |
+| 17 | A3, A5 and A7 produce cited numbers with no pre-registration | global bathos rule | sidecars required (4) | no |
+| 18 | The global "record what was reused from where" rule is not met | global preemption rule | `reused_from` field (3.1) | no |
+| 19 | A6 was tagged U but is readable | `campaign.py:1015-1045` | retagged V | no |
+
+## 9. Independent challenge of v2 (2026-10-30, Sonnet spec-challenger; evidence re-checked by the orchestrator)
+
+| # | Objection to v2 | Evidence | Resolution in v3 | Blocked v2? |
+|---|---|---|---|---|
+| C1 | Packing rewrites the record, which changes `record_digest` after the row exists. The member set for `content_digest` was undefined, so it could be circular | `product_node.py:353-361`; `zarr_commit.py:240-243,373` | the digest covers only the immutable core, with pack state in `storage`; the member set excludes the record and pack artefacts (3.1, 3.2) | yes |
+| C2 | aminx units are not `CommitRecord`s; `committed_keys` and `read_record` cannot find or rebuild them | aminx marker fields (origin/main `campaign.py:1015-1045`); `zarr_commit.py:202,343` | `RecordAdapter` with four adapters; A6 narrowed to field names; new A6c probe (3.1, 4) | yes |
+| C3 | A row had no artifact locator, and `lookup` took no store | spec v2 §3.1 | `store` + `locator` added to the row; `lookup(store, ...)` (3.1) | yes |
+| C4 | Compaction could move a live writer's segment. `rebuild` wrote into `sealed/`, and DuckDB does not dedup | `compact.py:1-20` | compact closed or dead segments only; `rebuilt/` directory; read-time dedup rule shared by both readers (3.1); A10 probe | yes |
+| C5 | Refusing on `unit_key` disagreement wedges compaction after a legitimate recompute | aminx quarantine-and-recompute (`campaign.py:1789-1880`) | dedup on `(unit_key, input_digest)`; conflicts are refused per pair, and other keys proceed (3.1) | yes |
+| C6 | Nothing finishes deleting loose files after a crash, because the early return skips deletion | `product_node.py:301-302,366` (re-read) | `pack_sweep` with a crash-injection test (3.3) | yes (inode goal) |
+| C7 | A new `Conflict` return would break `Committed \| Duplicate` call sites | `zarr_sink.py:316-318,519,866-882` (re-read) | raise `CommitConflictError(reason=...)` instead; non-determinism called out (3.5) | no |
+| C8 | `quarantine` omitted alynxr's post-move re-verify. Quarantine grows the inode count | `array_commit.py:89-91` and its quarantine section (re-read) | race handling kept; quarantine counted by the guard (3.4, 3.5) | no |
+| C9 | DuckDB `read_json` fails on a torn tail unless `ignore_errors` is set. Segment count can reach ~1e5 in large array jobs | spec v2 §3.1 | flags stated plus an agreement test; segment count goes through the guard (3.1) | no |
+| C10 | N per-process guards can overshoot the cap by N × `reread_every` | `storage.py:270-330` | plan-time slack check (3.4) | no |
+| C11 | Creating a segment did not fsync the directory | spec v2 §3.1 | `fsync_directory` on create (3.1) | no |
+| C12 | `PACK_THRESHOLD` counts queries, not fold-unit files. The 3.9 test had no interpreter | `product_node.py:50,299`; `pyproject.toml:6` | per-class threshold over the member set; separate 3.9 CI job (3.3) | no |
+
+The challenger read the stale local aminx checkout (v2 markers) and disputed A6. The orchestrator read aminx
+origin/main `ef8810c2`, so A6 stays V for field names only. C2's rebuild gap stands and is A6c.

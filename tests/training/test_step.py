@@ -6,10 +6,20 @@ import jax.numpy as jnp
 import optax
 import pytest
 
-from xtrax.safety.manager import SafetyManager
-from xtrax.training.step import SafetyTrainStep, create_train_step
+from xtrax.training.step import create_train_step
 from xtrax.training.trainer import Trainer
 from xtrax.training.types import ResumableState
+
+# #6107 probe release: the safety wrappers warn on access; these tests exercise their unchanged
+# behaviour, so the warning is asserted at the import and at each safety=True construction.
+with pytest.deprecated_call(match="xtrax #6107"):
+    from xtrax.safety.manager import SafetyManager
+    from xtrax.training.step import SafetyTrainStep
+
+
+def _safety_step(*args, **kwargs):
+    with pytest.deprecated_call(match="safety=True is deprecated|xtrax #6107"):
+        return create_train_step(*args, safety=True, **kwargs)
 
 
 # Fixtures
@@ -77,13 +87,13 @@ def test_create_train_step_no_safety_returns_trainer(loss_fn, optimizer):
 
 def test_create_train_step_with_safety_returns_safety_train_step(loss_fn, optimizer):
     """create_train_step(safety=True) returns SafetyTrainStep."""
-    step = create_train_step(loss_fn, optimizer, safety=True)
+    step = _safety_step(loss_fn, optimizer)
     assert isinstance(step, SafetyTrainStep)
 
 
 def test_safety_train_step_has_public_fields(loss_fn, optimizer):
     """SafetyTrainStep has PUBLIC .trainer and .safety_manager fields."""
-    step = create_train_step(loss_fn, optimizer, safety=True)
+    step = _safety_step(loss_fn, optimizer)
     assert hasattr(step, "trainer")
     assert hasattr(step, "safety_manager")
     assert isinstance(step.trainer, Trainer)
@@ -105,7 +115,7 @@ def test_trainer_step_interface(loss_fn, optimizer, batch, state):
 
 def test_safety_train_step_interface(loss_fn, optimizer, batch, state):
     """SafetyTrainStep.step returns (new_state, dict) with metrics["loss"]."""
-    step = create_train_step(loss_fn, optimizer, safety=True)
+    step = _safety_step(loss_fn, optimizer)
     new_state, metrics = step.step(state, batch)
 
     assert isinstance(new_state, ResumableState)
@@ -121,7 +131,7 @@ def test_safety_train_step_with_disabled_safety_delegates_to_trainer(
 ):
     """SafetyTrainStep with disabled safety delegates to trainer.step."""
     disabled_manager = SafetyManager(enabled=False, check_nans=False, check_infs=False)
-    step = create_train_step(loss_fn, optimizer, safety=True, safety_manager=disabled_manager)
+    step = _safety_step(loss_fn, optimizer, safety_manager=disabled_manager)
 
     # With disabled safety, should call trainer.step directly
     new_state, metrics = step.step(state, batch)
@@ -139,10 +149,9 @@ def test_safety_train_step_with_nan_loss_raises(simple_model, optimizer):
     def nan_loss(predictions, targets):
         return jnp.log(-1.0)  # produces NaN that checkify detects
 
-    step = create_train_step(
+    step = _safety_step(
         nan_loss,
         optimizer,
-        safety=True,
         safety_manager=SafetyManager(enabled=True, check_nans=True, check_infs=False),
     )
 
@@ -169,7 +178,7 @@ def test_safety_train_step_with_nan_loss_raises(simple_model, optimizer):
 def test_create_train_step_with_custom_safety_manager(loss_fn, optimizer):
     """create_train_step(safety=True, safety_manager=...) uses custom manager."""
     custom_manager = SafetyManager(enabled=True, check_nans=True, check_infs=True)
-    step = create_train_step(loss_fn, optimizer, safety=True, safety_manager=custom_manager)
+    step = _safety_step(loss_fn, optimizer, safety_manager=custom_manager)
 
     assert step.safety_manager is custom_manager
 
@@ -179,7 +188,7 @@ def test_trainer_and_safety_step_produce_same_loss_for_normal_batch(
 ):
     """Trainer and SafetyTrainStep produce the same loss for normal (non-NaN) batch."""
     trainer = create_train_step(loss_fn, optimizer, safety=False)
-    safe_step = create_train_step(loss_fn, optimizer, safety=True)
+    safe_step = _safety_step(loss_fn, optimizer)
 
     # Run both with the same state and batch
     _, trainer_metrics = trainer.step(state, batch)

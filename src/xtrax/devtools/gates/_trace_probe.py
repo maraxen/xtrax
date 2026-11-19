@@ -48,7 +48,14 @@ def _guard_for_trace_count(
     *,
     max_traces: int,
 ) -> Callable[..., Any]:
-    """Apply @jax.jit @chex.assert_max_traces when target is not already traced."""
+    """Apply @jax.jit @chex.assert_max_traces when target is not already traced.
+
+    A ``xtrax.model_jit`` function is already a jit boundary (chex cannot see that, since
+    the wrapper is a plain function), so it is returned as is and carries its own
+    ``chex.assert_max_traces`` inside, as an ``eqx.filter_jit`` kernel did.
+    """
+    if getattr(target, "_xtrax_model_jit", False):
+        return target
     try:
         return jax.jit(chex.assert_max_traces(n=max_traces)(target))
     except ValueError:

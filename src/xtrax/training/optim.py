@@ -2,9 +2,30 @@ from collections.abc import Callable
 from typing import Any
 
 import jax
-import optax
+
+try:
+    import optax
+
+    GradientTransformation = optax.GradientTransformation
+except ImportError:
+    optax = None  # type: ignore
+    GradientTransformation = Any
+
+from xtrax._renamed import Deprecated, deprecated_getattr
 
 PyTree = Any
+
+
+def require_optax() -> Any:
+    """Import optax or raise actionable ImportError pointing to xtrax[training]."""
+    try:
+        import optax
+
+        return optax
+    except ImportError as err:
+        raise ImportError(
+            "xtrax.training requires 'optax'. Install it with: pip install 'xtrax[training]'"
+        ) from err
 
 
 def no_bias_wd_mask(params: PyTree) -> PyTree:
@@ -23,9 +44,9 @@ def no_bias_wd_mask(params: PyTree) -> PyTree:
 
 
 def make_optimizer(
-    base: optax.GradientTransformation,
+    base: GradientTransformation,
     clip_norm: float | None = 1.0,
-) -> optax.GradientTransformation:
+) -> GradientTransformation:
     """Wrap a base optimizer with optional gradient clipping.
 
     Args:
@@ -38,9 +59,10 @@ def make_optimizer(
         The base optimizer (if clip_norm=None) or a chained optimizer with
         clipping first.
     """
+    optax_mod = require_optax()
     if clip_norm is None:
         return base
-    return optax.chain(optax.clip_by_global_norm(clip_norm), base)
+    return optax_mod.chain(optax_mod.clip_by_global_norm(clip_norm), base)
 
 
 def adamw_with_schedule(
@@ -53,7 +75,7 @@ def adamw_with_schedule(
     b2: float = 0.999,
     eps: float = 1e-8,
     wd_mask: Callable = no_bias_wd_mask,
-) -> optax.GradientTransformation:
+) -> GradientTransformation:
     """Create an AdamW optimizer with a cosine decay schedule and optional clipping.
 
     Args:
@@ -72,8 +94,9 @@ def adamw_with_schedule(
         A GradientTransformation combining warmup-cosine decay schedule, AdamW,
         and optional clipping.
     """
+    optax_mod = require_optax()
     # Create warmup_cosine_decay schedule with total_steps as decay_steps
-    schedule = optax.warmup_cosine_decay_schedule(
+    schedule = optax_mod.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=peak_lr,
         warmup_steps=warmup_steps,
@@ -82,7 +105,7 @@ def adamw_with_schedule(
     )
 
     # Create AdamW with the schedule and mask
-    base = optax.adamw(
+    base = optax_mod.adamw(
         learning_rate=schedule,
         weight_decay=weight_decay,
         b1=b1,
@@ -125,3 +148,15 @@ def partition_labels(
         lambda leaf: frozen_label if frozen_filter(leaf) else train_label,
         model,
     )
+
+
+# Deprecated in the #6107 probe release: warns on access, otherwise unchanged.
+_DEPRECATED = {
+    "partition_labels": Deprecated(
+        partition_labels,
+        "jax.tree.map(lambda leaf: frozen if f(leaf) else train, model), "
+        "the label tree for optax.partition",
+    ),
+}
+del partition_labels
+__getattr__ = deprecated_getattr(__name__, _DEPRECATED)

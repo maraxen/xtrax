@@ -1,21 +1,23 @@
 # Weekly run of every audit-* recipe that no other workflow reaches (#5001).
 #
-# 27 of this repo's 65 audit-* recipes are invoked by nothing. They are maintained
-# and they are green, in the sense that an unplugged smoke detector is silent. Three
-# were found broken in one week once someone ran them by hand: audit-jax-purity-gate
-# had a dead ruff path, audit-docs-build was corrupting the shared venv, and
-# audit-release-readiness had been red since 2026-07-02.
-#
 # The recipe list is DERIVED, not listed here -- scripts/audit_orphan_recipes.py
 # computes it from the Justfile's dependency graph and the `just` invocations in
 # these workflow files. Wire a recipe into CI and it leaves this run automatically;
 # add a new one and it joins automatically. There is nothing to keep in sync.
 #
-# PHASE 2 (#5002) -- THIS WORKFLOW GATES ON THE PINNED SET. Every recipe still runs
-# and is recorded, but a recipe listed in .github/audit_orphans_pinned.toml that
-# fails makes the job fail. The pinned set is what passed on the first four scheduled
-# runs; every orphan NOT pinned is named there with its reason. A new, unclassified
-# orphan is reported, not gated, until someone pins it.
+# GATING (#5002): every recipe listed in `pinned` in .github/audit_orphans_pinned.toml
+# gates the job -- a pinned recipe that does not PASS, including one that never ran,
+# fails it. Every other orphan still runs and is recorded in the job summary, but is not
+# gated. An orphan in neither `pinned` nor `[skipped]` is reported as UNCLASSIFIED.
+#
+# BUDGETS (#5710): `[timeouts]` in the pin file gives per-recipe budgets in seconds
+# (default 900). The recipe loop stops starting work 85 minutes after its step begins,
+# so the job-level `timeout-minutes: 90` cannot cancel the step before the Gate step runs.
+# A recipe that has no time left is recorded FAIL, never PASS.
+#
+# SKIPS (#5710): `[skipped]` in the pin file names orphans that need a tool the runner
+# may lack (praxia). They are recorded as SKIP, never PASS, unless `command -v praxia`
+# succeeds on the runner, in which case they run and are recorded like any other orphan.
 #
 # Read the run's job summary for the unpinned recipes' results.
 name: Audit Orphans
@@ -55,14 +57,29 @@ jobs:
         run: |
           set -uo pipefail
 
+          # Absolute deadline for the recipe loop (#5710 review). The job is capped at 90
+          # minutes; no recipe starts after 85 minutes, so the Gate step always reports.
+          deadline=$((SECONDS + 85 * 60))
+
           uv run python scripts/audit_orphan_recipes.py --format lines > /tmp/orphans.txt
+          uv run python scripts/audit_orphan_recipes.py --format skipped > /tmp/orphans-skipped.tsv
+
+          # [skipped] recipes run only if the tool they need is on the runner (#5710).
+          if command -v praxia >/dev/null 2>&1; then
+            echo "praxia is on the runner: running the [skipped] recipes too" >&2
+            cut -f1 /tmp/orphans-skipped.tsv >> /tmp/orphans.txt
+            : > /tmp/orphans-skipped.tsv
+          fi
+
           total=$(wc -l < /tmp/orphans.txt)
+          skipped_total=$(wc -l < /tmp/orphans-skipped.tsv)
 
           {
             echo "## Unreached audit recipes"
             echo
-            echo "\`$total\` recipes that no workflow invokes. Only recipes pinned in"
+            echo "\`$total\` recipes to run that no workflow invokes. Only recipes pinned in"
             echo "\`.github/audit_orphans_pinned.toml\` gate; see the gate step (#5002)."
+            echo "Recipes in its \`[skipped]\` table are recorded as SKIP and not run (#5710)."
             echo
             echo "| recipe | result | seconds |"
             echo "|---|---|---|"
@@ -70,6 +87,15 @@ jobs:
 
           passed=0
           failed=0
+          skipped=0
+
+          # Skipped recipes are recorded, never run, and never PASS.
+          while IFS=$'\t' read -r recipe reason; do
+            [ -n "$recipe" ] || continue
+            skipped=$((skipped + 1))
+            echo "| \`$recipe\` | SKIP: $reason | 0 |" >> "$GITHUB_STEP_SUMMARY"
+            printf '%s\tSKIP\n' "$recipe" >> /tmp/orphan-results.tsv
+          done < /tmp/orphans-skipped.tsv
 
           while read -r recipe; do
             [ -n "$recipe" ] || continue
@@ -82,14 +108,30 @@ jobs:
             # the whole report would be noise.
             uv sync --extra dev --extra eda --extra io --quiet
 
+            # Per-recipe budget from [timeouts] in the pin file (default 900 s). Read per
+            # recipe so a malformed file fails here, loudly.
+            budget=$(uv run python scripts/audit_orphan_recipes.py --timeout-for "$recipe") || exit 1
+
+            remaining=$((deadline - SECONDS))
             start=$SECONDS
-            if timeout 900 just "$recipe" < /dev/null > "/tmp/${recipe}.log" 2>&1; then
-              result="PASS"
-              passed=$((passed + 1))
-            else
-              status=$?
-              result="FAIL (exit $status)"
+            if [ "$remaining" -lt 1 ]; then
+              result="FAIL (not run: 85-minute step deadline reached)"
               failed=$((failed + 1))
+              echo "not run: the 85-minute step deadline was reached before this recipe" \
+                > "/tmp/${recipe}.log"
+            else
+              # Clamp to the time left: `timeout 0` would mean no timeout at all.
+              if [ "$budget" -gt "$remaining" ]; then
+                budget=$remaining
+              fi
+              if timeout "$budget" just "$recipe" < /dev/null > "/tmp/${recipe}.log" 2>&1; then
+                result="PASS"
+                passed=$((passed + 1))
+              else
+                status=$?
+                result="FAIL (exit $status)"
+                failed=$((failed + 1))
+              fi
             fi
             elapsed=$((SECONDS - start))
 
@@ -107,10 +149,10 @@ jobs:
 
           {
             echo
-            echo "**$passed passed, $failed failed** of $total."
+            echo "**$passed passed, $failed failed, $skipped skipped** of $((total + skipped_total))."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "$passed passed, $failed failed of $total"
+          echo "$passed passed, $failed failed, $skipped skipped of $((total + skipped_total))"
 
       - name: Gate on the pinned passing set (#5002)
         run: |

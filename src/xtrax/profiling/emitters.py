@@ -30,8 +30,9 @@ __provenance__ = {
 
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
+from typing import Any
 
-from xtrax.profiling.record import ProbeRecord
+from xtrax.profiling.record import ProbeRecord, capture_git_sha
 
 ATTRIBUTION_NAMED_SCOPE = "named_scope"
 ATTRIBUTION_OP_NAME = "op_name"
@@ -64,19 +65,29 @@ def emit_probe_record(
     scopes: dict[str, tuple[float, int] | None] | None = None,
     attribution_method: dict[str, str] | None = None,
     config: dict[str, str] | None = None,
+    git_sha: str | None = None,
+    repo_root: Path | None = None,
 ) -> ProbeRecord:
     """Construct, validate, write, and return a ProbeRecord in one call.
 
     Explicit-construction style per the contract (no decorator, no context
     manager): every argument remains visible at the call site. Provenance
-    fields (git_sha/timestamp/jax versions/xla_flags/device_kind) are left
-    to ProbeRecord's default_factories -- auto-captured on THIS machine;
-    tests that need synthetic provenance construct ProbeRecord directly.
+    fields (timestamp/jax versions/xla_flags/device_kind) are left to
+    ProbeRecord's default_factories -- auto-captured on THIS machine.
+
+    git_sha is resolved in this order: an explicit `git_sha` is used as-is;
+    else `repo_root` (if given) is passed to the git-sha capture, anchoring it
+    at that repository; else the default factory resolves from the cwd's
+    repository. Pass `repo_root` when the driver's cwd is not the repository
+    the measured code lives in.
 
     Raises ClaimValidityError on any contract violation (including the
     attribution-required-when-scopes rule); the record is written only after
     construction succeeded, so no invalid artifact can land on disk.
     """
+    if git_sha is None and repo_root is not None:
+        git_sha = capture_git_sha(repo_root)
+    provenance: dict[str, Any] = {} if git_sha is None else {"git_sha": git_sha}
     record = ProbeRecord(
         probe_id=probe_id,
         stage=stage,
@@ -86,6 +97,7 @@ def emit_probe_record(
         scopes=scopes,
         attribution_method=attribution_method,
         config=dict(config or {}),
+        **provenance,
     )
     record.write(path)
     return record

@@ -42,3 +42,4 @@ required = ["Documentation", "Changelog", "Repository"]
 # un-installable residue.
 [import_name_overrides]
 iree = ["iree-base-compiler", "iree-base-runtime"]
+vl_convert = ["vl-convert-python"]

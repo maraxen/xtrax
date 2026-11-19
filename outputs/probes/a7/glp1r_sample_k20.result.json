@@ -1,0 +1,30 @@
+{
+  "arms": [
+    "fold_campaigns/glp1r_d0m/alphafold3-7ef20e4cc6ce",
+    "fold_campaigns/glp1r_d0m/boltz2-fb38f3e5f40f",
+    "fold_campaigns/glp1r_d0m/chai1-79cd633f7af5",
+    "fold_campaigns/glp1r_d0m/intellifold2-cd52b07bc2d7",
+    "fold_campaigns/glp1r_d0m/openfold3-7b9080ec1eee",
+    "fold_campaigns/glp1r_d0m/protenix2-560f99499a7f",
+    "fold_campaigns/glp1r_d3/alphafold3-7ef20e4cc6ce",
+    "fold_campaigns/glp1r_d3/chai1-79cd633f7af5",
+    "fold_campaigns/glp1r_d3/openfold3-7b9080ec1eee"
+  ],
+  "control_ok": true,
+  "inode_saving_fraction_at_median": 0.84,
+  "listing": "outputs/probes/a7/glp1r_sample_k20.listing.tsv",
+  "listing_sha256": "1985526318346939f41b7a3d60ae69751d6fcc76a2a7d96a7d642ea1096d3e5b",
+  "max_inodes_per_unit": 25,
+  "median_inodes_per_unit": 25.0,
+  "median_models_per_unit": 4.0,
+  "min_inodes_per_unit": 25,
+  "n_arms": 9,
+  "n_unit_dirs_empty": 0,
+  "n_unit_dirs_total": 180,
+  "n_units": 180,
+  "negative_control_detected": true,
+  "packed_inodes_per_unit": 4,
+  "positive_control_ok": true,
+  "total_unit_inodes": 4500,
+  "unassigned_entries": 0
+}

@@ -12,11 +12,11 @@ min_chapter_bytes = 2500
 markers = [
   "Streaming Callbacks",
   "Checkpoint Persistence",
-  "from xtrax.io import BoundedCallbackHandler",
+  "from xtrax.engine.io import BoundedCallbackHandler",
   "from xtrax.checkpoint import",
   "xtrax.engine.io",
   "{autosummary}",
-  "{automodule} xtrax.io",
+  "{automodule} xtrax.engine.io",
   "{automodule} xtrax.checkpoint",
 ]
 
@@ -33,7 +33,7 @@ markers = [
 paths = ["src/xtrax/io/callbacks.py", "src/xtrax/engine/io.py"]
 
 [output_sink.doctest_markers]
-markers = ["from xtrax.io import BoundedCallbackHandler"]
+markers = ["from xtrax.engine.io import BoundedCallbackHandler"]
 
 [output_sink.reexport]
 source = "from xtrax.engine.io import BoundedCallbackHandler, async_indexed_stream"

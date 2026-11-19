@@ -11,7 +11,7 @@ MapIterator and ScanIterator are runtime_checkable Protocols defining the
 two fundamental iteration patterns: stateless (MapIterator) and carry-bearing
 (ScanIterator).
 
-Pattern 5 note: Concrete iterators are eqx.Module instances, NOT marked
+Pattern 5 note: Concrete iterators are xtrax.Struct instances, NOT marked
 @runtime_checkable. The protocols (MapIterator, ScanIterator) are the types
 that are @runtime_checkable; users check isinstance(concrete, Protocol).
 """
@@ -20,11 +20,12 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-import equinox as eqx
 import jax
 import jax.lax
 import jax.numpy as jnp
 
+from xtrax._tree import Struct, field
+from xtrax.tiling.carry import canonicalize_carry, validate_carry_transition
 from xtrax.transforms.map import _apply_size1, _is_size1_axis, chunked_map
 
 
@@ -90,7 +91,7 @@ class ScanIterator(Protocol):
         ...
 
 
-class VmapIterator(eqx.Module):
+class VmapIterator(Struct):
     """Iterate via jax.vmap — fully parallel.
 
     All elements are materialized and computed simultaneously. Use when
@@ -122,14 +123,14 @@ class VmapIterator(eqx.Module):
         return jax.vmap(fn, in_axes=in_axes)(xs)
 
 
-class ChunkedMapIterator(eqx.Module):
+class ChunkedMapIterator(Struct):
     """Iterate via chunked_map with tile chunking — memory-bounded, stateless.
 
     Elements are processed in tiles to avoid memory exhaustion and XLA
     loop construct issues. No carry state; elements are independent.
     """
 
-    tile: int = eqx.field(static=True)
+    tile: int = field(static=True)
 
     def __call__(
         self,
@@ -157,7 +158,7 @@ class ChunkedMapIterator(eqx.Module):
         return chunked_map(fn, xs, batch_size=self.tile)
 
 
-class JaxScanIterator(eqx.Module):
+class JaxScanIterator(Struct):
     """Iterate via jax.lax.scan — carry-bearing, sequential.
 
     Elements are processed sequentially with a carry value threading through.
@@ -179,7 +180,7 @@ class JaxScanIterator(eqx.Module):
         return jax.lax.scan(fn, init, xs, unroll=1)
 
 
-class WhileLoopIterator(eqx.Module):
+class WhileLoopIterator(Struct):
     """Iterate via jax.lax.while_loop -- carry-bearing, no output collection.
 
     Unlike JaxScanIterator, returns only the final carry (no `ys`) --
@@ -187,7 +188,7 @@ class WhileLoopIterator(eqx.Module):
     """
 
     def __call__(self, cond: Any, body: Any, init: Any) -> Any:
-        """Apply fn using jax.lax.while_loop.
+        """Apply fn using jax.lax.while_loop with carry canonicalization and validation.
 
         Args:
             cond: Callable(carry) -> bool (traced scalar continuation predicate).
@@ -198,10 +199,17 @@ class WhileLoopIterator(eqx.Module):
             final_carry: The carry after the loop's condition first fails.
 
         """
-        return jax.lax.while_loop(cond, body, init)
+        canonical_init = canonicalize_carry(init)
+
+        def safe_body(carry: Any) -> Any:
+            new_carry = body(carry)
+            validate_carry_transition(carry, new_carry)
+            return new_carry
+
+        return jax.lax.while_loop(cond, safe_body, canonical_init)
 
 
-class WhileLoopWithYsIterator(eqx.Module):
+class WhileLoopWithYsIterator(Struct):
     """``lax.while_loop`` that records each step's ``y`` in a fixed buffer.
 
     ``WhileLoopIterator`` returns only the final carry. This iterator's
@@ -225,7 +233,7 @@ class WhileLoopWithYsIterator(eqx.Module):
     Lowers to ``jax.lax.while_loop``.
     """
 
-    max_steps: int = eqx.field(static=True)
+    max_steps: int = field(static=True)
 
     def __call__(
         self,

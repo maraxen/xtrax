@@ -63,6 +63,11 @@ def test_the_executing_verbs_are_marked_recording(contract):
         assert contract["verbs"][verb] == "records"
 
 
+def test_profile_is_declared_a_probe(contract):
+    """profile executes user code to measure it and writes a ProbeRecord, not a ledger row."""
+    assert contract["verbs"]["profile"] == "probes"
+
+
 # --- the gate detects its own regressions -----------------------------------
 
 

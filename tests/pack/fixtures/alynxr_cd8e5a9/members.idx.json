@@ -1,0 +1,29 @@
+{
+ "codec": "zstd",
+ "format": "tar.zst+frame-index/1",
+ "members": {
+  "fold/alynxr_run.json": {
+   "header_length": 512,
+   "length": 110,
+   "offset": 0,
+   "sha256": "1c6c91228666cbca3e625c109f243bcd913b1e8c9532dfc3e41c1372d25e063d",
+   "size": 19
+  },
+  "fold/d1_scores.json": {
+   "header_length": 512,
+   "length": 105,
+   "offset": 110,
+   "sha256": "59b91191ae6d60c555eb745fc51290dbc215c2ed2b8984c28e01d6e5e017876b",
+   "size": 14
+  },
+  "query.fasta": {
+   "header_length": 512,
+   "length": 94,
+   "offset": 215,
+   "sha256": "84e42120cb42f55f2ae4112a17663cbeca4bea61406dc2d89314aa2f29201878",
+   "size": 9
+  }
+ },
+ "packer": "alynxr.unit_pack/1",
+ "schema": "alynxr.unit_pack_index/1"
+}
