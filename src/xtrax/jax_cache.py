@@ -598,16 +598,12 @@ def _zstd_decoder() -> Callable[[bytes], bytes] | None:
     in the WRITING process and zlib otherwise, and the filename does not say which, so the
     pruner must not assume its own codec matches the writer's.
     """
-    try:
-        from compression import zstd  # Python 3.14+
-
-        return zstd.decompress
+    try:  # optional modules, resolved by name so type checkers need not know them
+        return importlib.import_module("compression.zstd").decompress  # Python 3.14+
     except ImportError:
         pass
     try:
-        import zstandard
-
-        return zstandard.ZstdDecompressor().decompress
+        return importlib.import_module("zstandard").ZstdDecompressor().decompress
     except ImportError:
         return None
 
