@@ -24,6 +24,7 @@ from xtrax.jax_cache import (
     cache_dir_source,
     configure,
     host_cpu_fingerprint,
+    policy_source,
     resolve,
 )
 
@@ -33,6 +34,7 @@ _ALL_ENV = (
     ENV_MAX_BYTES,
     ENV_NAMESPACE,
     "XTRAX_JAX_CACHE_MIN_ENTRY_BYTES",
+    "XTRAX_JAX_CACHE",
     "JAX_COMPILATION_CACHE_DIR",
 )
 
@@ -73,7 +75,6 @@ def test_unset_is_off(proj) -> None:
 
 def test_explicit_argument_wins_over_everything(proj, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv(ENV_DIR, str(tmp_path / "env"))
-    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = "proj-cache"\n')
     _user_config(f'jax_compilation_cache_dir = "{tmp_path / "user"}"\n')
     assert cache_dir_source(tmp_path / "arg", start=proj) == (
         tmp_path / "arg",
@@ -81,27 +82,30 @@ def test_explicit_argument_wins_over_everything(proj, monkeypatch, tmp_path) -> 
     )
 
 
-def test_env_wins_over_project_and_user(proj, monkeypatch, tmp_path) -> None:
+def test_env_wins_over_user(proj, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv(ENV_DIR, str(tmp_path / "env"))
-    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = "proj-cache"\n')
     _user_config(f'jax_compilation_cache_dir = "{tmp_path / "user"}"\n')
     assert cache_dir_source(start=proj) == (tmp_path / "env", f"${ENV_DIR}")
 
 
-def test_project_wins_over_user_and_is_relative_to_its_file(proj, tmp_path) -> None:
+def test_a_directory_in_pyproject_is_refused(proj, tmp_path) -> None:
+    """Spec 261119: a committed pyproject is pushed to other machines; no machine path there."""
     _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = ".xtrax/jax_cache"\n')
     _user_config(f'jax_compilation_cache_dir = "{tmp_path / "user"}"\n')
-    directory, source = cache_dir_source(start=proj)
-    assert directory == proj / ".xtrax" / "jax_cache"
-    assert source == f"project config {proj / 'pyproject.toml'}"
+    with pytest.raises(JaxCacheConfigError, match="not allowed") as excinfo:
+        cache_dir_source(start=proj)
+    assert str(proj / "pyproject.toml") in str(excinfo.value)
+    with pytest.raises(JaxCacheConfigError, match="not allowed"):
+        configure(start=proj)
 
 
-def test_nearest_pyproject_decides_not_a_parent(proj) -> None:
-    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = "outer"\n')
+def test_nearest_pyproject_decides_the_policy_not_a_parent(proj) -> None:
+    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache = "off"\n')
     inner = proj / "sub"
     inner.mkdir()
-    _pyproject(inner, '[tool.xtrax]\njax_compilation_cache_dir = "inner"\n')
-    assert cache_dir_source(start=inner)[0] == inner / "inner"
+    _pyproject(inner, '[tool.xtrax]\njax_compilation_cache = "on"\n')
+    assert policy_source(start=inner) == ("on", f"project config {inner / 'pyproject.toml'}")
+    assert policy_source(start=proj)[0] == "off"
 
 
 def test_user_config_is_the_fallback(proj, tmp_path) -> None:
@@ -122,10 +126,9 @@ def test_tilde_and_vars_expand(proj, monkeypatch) -> None:
     assert cache_dir_source(start=proj)[0] == Path.home() / "jax"
 
 
-@pytest.mark.parametrize("value", ["none", "NONE", "", "  "])
+@pytest.mark.parametrize("value", ["none", "NONE", "", "  ", "off"])
 def test_env_none_or_empty_disables_and_overrides_files(proj, monkeypatch, tmp_path, value) -> None:
     monkeypatch.setenv(ENV_DIR, value)
-    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = "proj-cache"\n')
     _user_config(f'jax_compilation_cache_dir = "{tmp_path / "user"}"\n')
     directory, source = cache_dir_source(start=proj)
     assert directory is None
@@ -139,11 +142,16 @@ def test_explicit_none_disables_even_with_env(proj, monkeypatch, tmp_path) -> No
     assert cache_dir_source("", start=proj) == (None, "explicit argument (disabled)")
 
 
-def test_project_none_disables_and_overrides_user_config(proj, tmp_path) -> None:
-    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = "none"\n')
+def test_project_policy_off_overrides_a_user_config_directory(proj, tmp_path) -> None:
+    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache = "off"\n')
     _user_config(f'jax_compilation_cache_dir = "{tmp_path / "user"}"\n')
-    directory, source = cache_dir_source(start=proj)
-    assert directory is None and source.endswith("(disabled)")
+    setting = resolve(start=proj)
+    assert setting.enabled is False and setting.dir is None
+    assert setting.base_dir == tmp_path / "user"  # the placement is still recorded
+    assert (setting.policy, setting.policy_source) == (
+        "off",
+        f"project config {proj / 'pyproject.toml'}",
+    )
 
 
 def test_pyproject_without_the_key_falls_through_to_user_config(proj, tmp_path) -> None:
@@ -168,7 +176,7 @@ def test_malformed_user_file_raises_naming_it(proj) -> None:
 
 
 def test_non_string_directory_raises(proj) -> None:
-    _pyproject(proj, "[tool.xtrax]\njax_compilation_cache_dir = 7\n")
+    _user_config("jax_compilation_cache_dir = 7\n")
     with pytest.raises(JaxCacheConfigError, match="jax_compilation_cache_dir"):
         cache_dir_source(start=proj)
 
@@ -185,13 +193,10 @@ def test_malformed_file_is_not_silently_run_cold_by_configure(proj) -> None:
 def test_knobs_resolve_through_the_layers_and_record_sources(proj, monkeypatch) -> None:
     _pyproject(
         proj,
-        "[tool.xtrax]\n"
-        'jax_compilation_cache_dir = "c"\n'
-        "jax_cache_min_compile_time_secs = 2.5\n"
-        "jax_cache_max_size_bytes = 1000000\n",
+        "[tool.xtrax]\njax_cache_min_compile_time_secs = 2.5\njax_cache_max_size_bytes = 1000000\n",
     )
     monkeypatch.setenv(ENV_MIN_COMPILE_SECS, "0")
-    setting = resolve(start=proj, min_entry_size_bytes=10)
+    setting = resolve(proj / "c", start=proj, min_entry_size_bytes=10)
     assert setting.min_compile_time_secs == 0.0  # env beats the project file
     assert setting.max_size_bytes == 1_000_000
     assert setting.min_entry_size_bytes == 10
@@ -201,8 +206,7 @@ def test_knobs_resolve_through_the_layers_and_record_sources(proj, monkeypatch) 
 
 
 def test_unset_knobs_stay_none_so_jax_defaults_apply(proj) -> None:
-    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = "c"\n')
-    setting = resolve(start=proj)
+    setting = resolve(proj / "c", start=proj)
     assert (
         setting.min_compile_time_secs,
         setting.min_entry_size_bytes,
@@ -409,13 +413,31 @@ def test_idempotent_call_reapplies_when_jax_config_was_changed_elsewhere(
     assert jax.config.jax_compilation_cache_dir == str(proj / "a")
 
 
-def test_off_leaves_jaxs_own_setting_untouched(proj, restore_jax_state) -> None:
+def test_unconfigured_leaves_jaxs_own_setting_untouched(proj, restore_jax_state) -> None:
     jax.config.update("jax_compilation_cache_dir", str(proj / "set-by-jax-env"))
     setting = configure(start=proj)
-    assert setting.enabled is False
+    assert setting.enabled is False and not setting.configured
     assert jax.config.jax_compilation_cache_dir == str(proj / "set-by-jax-env")
-    assert configure("none", start=proj).enabled is False
-    assert jax.config.jax_compilation_cache_dir == str(proj / "set-by-jax-env")
+
+
+def test_configured_off_clears_jaxs_flag(proj, restore_jax_state) -> None:
+    """Spec 261119: a configured off is an action, not a no-op (else JAX's env value wins)."""
+    jax.config.update("jax_compilation_cache_dir", str(proj / "set-by-jax-env"))
+    setting = configure("none", start=proj)
+    assert setting.enabled is False and setting.configured
+    assert not jax.config.jax_compilation_cache_dir
+
+
+def test_off_after_start_resets_before_clearing(
+    proj, restore_jax_state, caplog, monkeypatch
+) -> None:
+    configure(proj / "a", start=proj, namespace="none")
+    resets = _pretend_cache_started(monkeypatch)
+    caplog.set_level(logging.WARNING, logger="xtrax.jax_cache")
+    configure("off", start=proj)
+    assert resets == ["reset"]
+    assert "turning it off" in caplog.text
+    assert not jax.config.jax_compilation_cache_dir
 
 
 def test_unwritable_directory_fails_loudly(proj, restore_jax_state) -> None:
@@ -463,14 +485,14 @@ def test_unexpanded_variable_raises_naming_the_layer(proj, monkeypatch) -> None:
         cache_dir_source("~nosuchuser_xtrax/jax", start=proj)
 
 
-def test_unexpanded_project_variable_names_the_pyproject(proj) -> None:
-    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = "$XTRAX_TEST_UNSET/c"\n')
-    with pytest.raises(JaxCacheConfigError, match="pyproject.toml"):
+def test_unexpanded_variable_in_user_config_names_it(proj) -> None:
+    config = _user_config('jax_compilation_cache_dir = "$XTRAX_TEST_UNSET/c"\n')
+    with pytest.raises(JaxCacheConfigError, match="unexpanded") as excinfo:
         resolve(start=proj)
+    assert str(config) in str(excinfo.value)
 
 
-def test_jax_env_variable_beats_project_and_user_files(proj, monkeypatch, tmp_path) -> None:
-    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache_dir = "proj-cache"\n')
+def test_jax_env_variable_beats_the_user_file(proj, monkeypatch, tmp_path) -> None:
     _user_config(f'jax_compilation_cache_dir = "{tmp_path / "user"}"\n')
     monkeypatch.setenv("JAX_COMPILATION_CACHE_DIR", str(tmp_path / "jaxenv"))
     assert cache_dir_source(start=proj) == (tmp_path / "jaxenv", "$JAX_COMPILATION_CACHE_DIR")
@@ -478,7 +500,7 @@ def test_jax_env_variable_beats_project_and_user_files(proj, monkeypatch, tmp_pa
     assert cache_dir_source(start=proj)[1] == f"${ENV_DIR}"  # xtrax's own variable is stronger
     monkeypatch.delenv(ENV_DIR)
     monkeypatch.setenv("JAX_COMPILATION_CACHE_DIR", "")  # empty means unset, not disabled
-    assert cache_dir_source(start=proj)[1].startswith("project config")
+    assert cache_dir_source(start=proj)[1].startswith("user config")
 
 
 @pytest.mark.parametrize("bad", ["nan", "inf", "-inf"])
@@ -726,13 +748,14 @@ def test_prune_scan_is_bounded_and_skips_symlinks(tmp_path) -> None:
     assert too_deep.exists() and victim.exists()
 
 
-def test_jax_env_none_is_a_directory_name_not_a_disable_word(proj, monkeypatch) -> None:
-    monkeypatch.setenv("JAX_COMPILATION_CACHE_DIR", "none")
+@pytest.mark.parametrize("word", ["none", "off", "OFF"])
+def test_jax_env_disable_word_disables(proj, monkeypatch, word) -> None:
+    """Spec 261119: JAX would write ./none; xtrax reads the word as off and clears the flag."""
+    monkeypatch.setenv("JAX_COMPILATION_CACHE_DIR", word)
     directory, source = cache_dir_source(start=proj)
-    assert source == "$JAX_COMPILATION_CACHE_DIR"
-    assert directory == Path.cwd() / "none"  # as JAX itself reads it
-    monkeypatch.setenv(ENV_DIR, "none")  # xtrax's own variable still disables
-    assert cache_dir_source(start=proj)[0] is None
+    assert directory is None
+    assert source == "$JAX_COMPILATION_CACHE_DIR (disabled)"
+    assert resolve(start=proj).configured
 
 
 def test_disabled_cache_gives_no_reuse(tmp_path) -> None:

@@ -9,31 +9,49 @@ compiled instead of starting cold. Call it once at process entry, before the fir
 
     jax_cache.configure()
 
-The directory is configuration and never a path baked into library code. Resolution order,
-first match wins (the rule of ``isochore.traj_cache.cache_root_source``):
+Two independent axes decide the cache (spec ``261119_compilation-cache-resolver``). WHERE is
+a fact about the machine; WHETHER is a fact about the project. The cache is on only when the
+policy is ``on`` and a directory resolves.
 
-1. ``path``, the explicit argument (``"none"`` or ``""`` disables);
-2. ``$XTRAX_JAX_CACHE_DIR`` if set at all (``none`` or empty disables and overrides files);
-3. ``$JAX_COMPILATION_CACHE_DIR`` if set and non-empty (JAX's own variable: an environment
-   variable beats a file). The value is taken as JAX takes it, so ``none`` there is a
-   directory named ``none``, not a disable word. xtrax applies its namespace under it, so an
-   existing flat JAX directory goes cold once;
-4. ``jax_compilation_cache_dir`` under ``[tool.xtrax]`` in the NEAREST ``pyproject.toml``
-   that has an ``[tool.xtrax]`` table at or above ``start`` (default: the current
-   directory);
-5. ``jax_compilation_cache_dir`` in ``${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml``;
-6. nothing: xtrax leaves the cache alone. JAX's own flag is never overridden by an unset or
-   disabled xtrax setting.
+Directory (placement), first match wins:
+
+1. ``path``, the explicit argument (``"none"``, ``"off"`` or ``""`` disables; a path also
+   turns the policy on for that call);
+2. ``$XTRAX_JAX_CACHE_DIR`` if set at all (``none``/``off``/empty disables and stops the
+   search);
+3. ``$JAX_COMPILATION_CACHE_DIR`` if set and non-empty (JAX's own variable, and what a
+   myxcel profile ``[env]`` injects on a cluster). ``none``/``off`` there disables: JAX itself
+   would take them as a relative directory and write ``./none``, so xtrax clears JAX's flag
+   instead. xtrax applies its namespace under the directory, so an existing flat JAX
+   directory goes cold once;
+4. ``jax_compilation_cache_dir`` in ``${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml``, one
+   per machine (laptop, workstation, cluster login node; a Slurm task under
+   ``--export=NONE`` still has ``HOME``, so it reads the same file);
+5. nothing.
+
+A ``jax_compilation_cache_dir`` under ``[tool.xtrax]`` in ``pyproject.toml`` is refused with
+``JaxCacheConfigError``: a committed file is pushed to other machines, where a path written
+on one names the wrong place.
+
+Policy (whether), first match wins: the explicit argument (a path means on, a disable word
+off), ``$XTRAX_JAX_CACHE`` (``on``/``off``), ``jax_compilation_cache = "on" | "off"`` under
+``[tool.xtrax]`` in the nearest ``pyproject.toml``, the same key in the user config, then
+``on``. A project's ``"off"`` therefore holds on every machine, including under an injected
+``$JAX_COMPILATION_CACHE_DIR``; ``$XTRAX_JAX_CACHE=on`` overrides it for one run.
+
+When neither axis is configured anywhere, xtrax leaves JAX untouched, including a
+``JAX_COMPILATION_CACHE_DIR`` the environment already set. A CONFIGURED off is applied: JAX's
+flag is cleared, after resetting its cache object if a compile already started it.
 
 Values expand ``~`` and ``$VARS``; a ``$VAR`` that is not set, or a ``~user`` that does not
 exist, raises ``JaxCacheConfigError`` naming the layer rather than becoming a literal
-directory. A relative path in a config file is relative to the directory of that file; a
+directory. A relative path in the user config is relative to the directory of that file; a
 relative explicit argument or environment value is relative to the current directory. A
 config file that exists but cannot be parsed raises ``ValueError`` naming it; xtrax never
-silently runs cold. Limitation: the ``pyproject.toml`` walk skips a nearer file that has no
-``[tool.xtrax]`` table, so a nested subproject without one inherits its parent's directory.
-Declare ``jax_compilation_cache_dir = "none"`` there to opt out. Adding a ``[tool.xtrax]``
-table to a project also ends the walk for every other ``xtrax.config`` key.
+silently runs cold. The ``pyproject.toml`` walk (policy and knobs) skips a nearer file that
+has no ``[tool.xtrax]`` table, so a nested subproject without one inherits its parent's
+policy. Adding a ``[tool.xtrax]`` table to a project also ends the walk for every other
+``xtrax.config`` key.
 
 Four more knobs follow the same layers (minus the JAX variable). Unset means "leave JAX's
 default". Each is a ``[tool.xtrax]`` key (also a top-level key of the user config), an
@@ -134,8 +152,10 @@ ENV_MIN_COMPILE_SECS = "XTRAX_JAX_CACHE_MIN_COMPILE_SECS"
 ENV_MIN_ENTRY_BYTES = "XTRAX_JAX_CACHE_MIN_ENTRY_BYTES"
 ENV_MAX_BYTES = "XTRAX_JAX_CACHE_MAX_BYTES"
 ENV_NAMESPACE = "XTRAX_JAX_CACHE_NAMESPACE"
+ENV_POLICY = "XTRAX_JAX_CACHE"
 
 KEY_DIR = "jax_compilation_cache_dir"
+KEY_POLICY = "jax_compilation_cache"
 KEY_MIN_COMPILE_SECS = "jax_cache_min_compile_time_secs"
 KEY_MIN_ENTRY_BYTES = "jax_cache_min_entry_size_bytes"
 KEY_MAX_BYTES = "jax_cache_max_size_bytes"
@@ -145,7 +165,7 @@ ENV_JAX_DIR = "JAX_COMPILATION_CACHE_DIR"
 
 NAMESPACES = ("auto", "none", "cpu-flags")
 
-_DISABLED = frozenset({"", "none"})
+_DISABLED = frozenset({"", "none", "off"})
 
 
 class JaxCacheConfigError(ValueError):
@@ -161,8 +181,10 @@ class CacheSetting:
     """What ``resolve``/``configure`` decided.
 
     ``dir`` is the directory JAX writes to (namespace applied), ``None`` when ``enabled`` is False.
-    ``base_dir`` is the configured directory before the namespace. ``source`` names the layer that
-    chose the directory. ``knob_sources`` names the layer for each knob that was set.
+    ``base_dir`` is the configured directory before the namespace; it is kept when the policy is
+    off, so a record shows an injected directory the project held off. ``source`` names the layer
+    that chose the directory, ``policy_source`` the layer that chose the policy.
+    ``knob_sources`` names the layer for each knob that was set.
     """
 
     dir: Path | None
@@ -174,6 +196,37 @@ class CacheSetting:
     min_entry_size_bytes: int | None = None
     max_size_bytes: int | None = None
     knob_sources: Mapping[str, str] = field(default_factory=dict)
+    policy: str = "on"
+    policy_source: str = "default"
+
+    @property
+    def configured(self) -> bool:
+        """Whether any layer configured the directory or the policy.
+
+        Returns:
+            False when nothing is configured anywhere; :func:`apply` then leaves JAX untouched.
+        """
+        return not (self.source == "unset" and self.policy_source == "default")
+
+    def as_record(self) -> dict[str, Any]:
+        """Convert the setting for run summaries and sidecars.
+
+        Returns:
+            A JSON-ready dict; paths become strings.
+        """
+        return {
+            "dir": None if self.dir is None else str(self.dir),
+            "base_dir": None if self.base_dir is None else str(self.base_dir),
+            "source": self.source,
+            "enabled": self.enabled,
+            "policy": self.policy,
+            "policy_source": self.policy_source,
+            "namespace": self.namespace,
+            "min_compile_time_secs": self.min_compile_time_secs,
+            "min_entry_size_bytes": self.min_entry_size_bytes,
+            "max_size_bytes": self.max_size_bytes,
+            "knob_sources": dict(self.knob_sources),
+        }
 
 
 def _expand(text: str, source: str) -> str:
@@ -201,13 +254,14 @@ def _layered(
     start: Path,
     *,
     also_env: str | None = None,
+    project: bool = True,
 ) -> tuple[Any, str, Path | None]:
     """``(raw value, source, declaring file)``; raw ``None`` means no layer set ``key``.
 
     The first layer that sets the key decides, even when its value is ``none`` or empty: the
     caller reads that as "disabled here", which differs from ``None`` ("nothing set").
     ``also_env`` names a second environment variable consulted after ``env_var``; an empty
-    value there counts as unset.
+    value there counts as unset. ``project=False`` skips the ``pyproject.toml`` layer.
     """
     if arg is not None:
         return arg, "explicit argument", None
@@ -215,7 +269,7 @@ def _layered(
         return os.environ[env_var], f"${env_var}", None
     if also_env is not None and os.environ.get(also_env, "").strip():
         return os.environ[also_env], f"${also_env}", None
-    found = _pyproject_value(APP, key, start)
+    found = _pyproject_value(APP, key, start) if project else None
     if found is not None:
         return found[0], f"project config {found[1]}", found[1]
     user = _user_config_path(APP)
@@ -238,19 +292,76 @@ def cache_dir_source(
     Pure: reads configuration only; never creates a directory and never imports JAX. The
     returned directory is the configured base, before the namespace segments ``configure``
     adds.
+
+    Raises:
+        JaxCacheConfigError: a ``pyproject.toml`` holds ``jax_compilation_cache_dir`` (a machine
+            path in a committed file), or a value is invalid.
     """
-    raw, source, origin = _layered(KEY_DIR, ENV_DIR, path, _start_dir(start), also_env=ENV_JAX_DIR)
+    start_dir = _start_dir(start)
+    in_project = _pyproject_value(APP, KEY_DIR, start_dir)
+    if in_project is not None:
+        raise JaxCacheConfigError(
+            f"project config {in_project[1]}: [tool.{APP}] {KEY_DIR!r} is not allowed. A committed "
+            f"pyproject.toml is pushed to other machines, so it must not hold a machine path. Set "
+            f"the directory in {_user_config_path(APP)}, ${ENV_DIR} or the cluster's myxcel "
+            f'profile [env]; keep only {KEY_POLICY} = "on" | "off" in pyproject.toml.'
+        )
+    raw, source, origin = _layered(
+        KEY_DIR, ENV_DIR, path, start_dir, also_env=ENV_JAX_DIR, project=False
+    )
     if raw is None:
         return None, source
     if isinstance(raw, Path):
+        if str(raw) in ("", "."):
+            raise JaxCacheConfigError(
+                f"{source}: Path('') and Path('.') are ambiguous; pass 'none' or an explicit path"
+            )
         raw = str(raw)
     if not isinstance(raw, str):
         raise JaxCacheConfigError(
             f'{source}: {KEY_DIR!r} must be a string path or "none", got {raw!r}'
         )
-    if _is_disabled(raw) and source != f"${ENV_JAX_DIR}":  # JAX reads its own "none" as a path
+    if _is_disabled(raw):
+        # Includes $JAX_COMPILATION_CACHE_DIR=none|off: JAX would read those as a relative
+        # directory and write ./none, so they disable here and apply() clears JAX's flag.
         return None, f"{source} (disabled)"
     return _absolute(raw, source, origin.parent if origin is not None else None), source
+
+
+def _parse_policy(raw: Any, source: str) -> str:
+    if isinstance(raw, bool):
+        return "on" if raw else "off"
+    if isinstance(raw, str):
+        token = raw.strip().lower()
+        if token == "on":
+            return "on"
+        if token in _DISABLED:
+            return "off"
+    raise JaxCacheConfigError(f'{source}: {KEY_POLICY!r} must be "on" or "off", got {raw!r}')
+
+
+def policy_source(
+    policy: str | bool | None = None, start: Path | str | None = None
+) -> tuple[str, str]:
+    """``(policy, which layer decided)`` for whether the cache is used at all.
+
+    Order: ``policy`` argument > ``$XTRAX_JAX_CACHE`` > ``jax_compilation_cache`` under
+    ``[tool.xtrax]`` > the same key in the user config > ``("on", "default")``. Pure.
+
+    Args:
+        policy: ``"on"``/``"off"`` (or a bool) to decide explicitly; None reads the layers.
+        start: Directory to walk upward from when looking for ``pyproject.toml``.
+
+    Returns:
+        ``("on" | "off", source)``.
+
+    Raises:
+        JaxCacheConfigError: any value other than on/off/none/empty.
+    """
+    raw, source, _ = _layered(KEY_POLICY, ENV_POLICY, policy, _start_dir(start))
+    if raw is None:
+        return "on", "default"
+    return _parse_policy(raw, source), source
 
 
 def _number_knob(
@@ -289,10 +400,31 @@ def resolve(
     min_entry_size_bytes: int | None = None,
     max_size_bytes: int | None = None,
     namespace: str | None = None,
+    policy: str | bool | None = None,
 ) -> CacheSetting:
-    """Resolve the cache setting without touching JAX or the filesystem."""
+    """Resolve the cache setting without touching JAX or the filesystem.
+
+    Args:
+        path: Explicit directory, or ``"none"``/``"off"``/``""`` to disable. A directory also
+            turns the policy on for this call unless ``policy`` says otherwise.
+        start: Directory to walk upward from when looking for ``pyproject.toml``.
+        min_compile_time_secs: See the module docstring.
+        min_entry_size_bytes: See the module docstring.
+        max_size_bytes: See the module docstring.
+        namespace: See the module docstring.
+        policy: ``"on"``/``"off"`` to decide whether the cache is used; None reads the layers.
+
+    Returns:
+        The resolved :class:`CacheSetting`; ``enabled`` only when a directory resolved and the
+        policy is on.
+    """
     start_dir = _start_dir(start)
     base, source = cache_dir_source(path, start_dir)
+    if policy is None and path is not None:
+        # The caller chose this run's cache explicitly; it outranks the project's policy.
+        pol, pol_source = ("on" if base is not None else "off"), "explicit argument"
+    else:
+        pol, pol_source = policy_source(policy, start_dir)
 
     knob_sources: dict[str, str] = {}
     min_secs, src = _number_knob(
@@ -340,16 +472,19 @@ def resolve(
             )
         knob_sources["namespace"] = ns_source
 
-    if base is None:
+    if base is None or pol == "off":
         return CacheSetting(
             dir=None,
             source=source,
             enabled=False,
+            base_dir=base,
             namespace=ns,
             min_compile_time_secs=min_secs,
             min_entry_size_bytes=min_entry,
             max_size_bytes=max_size,
             knob_sources=knob_sources,
+            policy=pol,
+            policy_source=pol_source,
         )
     return CacheSetting(
         dir=_namespaced(base, ns),
@@ -361,6 +496,8 @@ def resolve(
         min_entry_size_bytes=min_entry,
         max_size_bytes=max_size,
         knob_sources=knob_sources,
+        policy=pol,
+        policy_source=pol_source,
     )
 
 
@@ -453,6 +590,7 @@ def configure(
     min_entry_size_bytes: int | None = None,
     max_size_bytes: int | None = None,
     namespace: str | None = None,
+    policy: str | bool | None = None,
 ) -> CacheSetting:
     """Resolve the cache setting and apply it to JAX. Idempotent; safe before or after import.
 
@@ -463,8 +601,22 @@ def configure(
     warning; programs compiled earlier are not written retroactively. Calling again with the
     same resolved setting changes nothing.
 
-    When nothing configures a directory (or it is disabled) xtrax leaves JAX untouched,
-    including a ``JAX_COMPILATION_CACHE_DIR`` the environment already set.
+    When nothing configures the directory or the policy, xtrax leaves JAX untouched, including
+    a ``JAX_COMPILATION_CACHE_DIR`` the environment already set. A configured off (a disable
+    word in any directory layer, or policy ``off``) clears JAX's flag, resetting JAX's cache
+    object first when a compile already started it.
+
+    Args:
+        path: See :func:`resolve`.
+        start: See :func:`resolve`.
+        min_compile_time_secs: See :func:`resolve`.
+        min_entry_size_bytes: See :func:`resolve`.
+        max_size_bytes: See :func:`resolve`.
+        namespace: See :func:`resolve`.
+        policy: See :func:`resolve`.
+
+    Returns:
+        The applied :class:`CacheSetting`.
 
     Raises:
         ValueError: a configuration file is malformed or a value is invalid; the message
@@ -473,7 +625,6 @@ def configure(
         JaxCacheConfigError: ``max_size`` is set but the ``filelock`` package JAX needs for
             eviction is not installed.
     """
-    global _applied
     setting = resolve(
         path,
         start=start,
@@ -481,11 +632,58 @@ def configure(
         min_entry_size_bytes=min_entry_size_bytes,
         max_size_bytes=max_size_bytes,
         namespace=namespace,
+        policy=policy,
     )
+    return apply(setting)
+
+
+def prepare_directory(directory: Path) -> None:
+    """Create ``directory`` and prove it is writable, without touching JAX.
+
+    For a parent process that hands a resolved setting to workers: a bad path then fails in the
+    parent with a named error instead of as a broken worker pool.
+
+    Args:
+        directory: The resolved cache directory (``CacheSetting.dir``).
+
+    Raises:
+        JaxCacheDirError: the directory cannot be created or written.
+    """
+    _prepare_directory(directory)
+
+
+def apply(setting: CacheSetting) -> CacheSetting:
+    """Apply an already resolved setting to JAX without re-resolving. Idempotent.
+
+    Workers of a process pool call this with the setting their parent resolved, so a worker
+    never re-reads its own environment (an inherited ``JAX_COMPILATION_CACHE_DIR``) or cwd.
+
+    Args:
+        setting: A setting from :func:`resolve`.
+
+    Returns:
+        ``setting``, unchanged.
+
+    Raises:
+        JaxCacheDirError: the directory cannot be created or written.
+        JaxCacheConfigError: ``max_size`` is set but ``filelock`` is not installed.
+    """
+    global _applied
     with _LOCK:
         if not setting.enabled:
-            logger.info("xtrax JAX compilation cache: off (%s)", setting.source)
-            _note_jax_owned_cache()
+            if not setting.configured:
+                logger.info("xtrax JAX compilation cache: off (%s)", setting.source)
+                _note_jax_owned_cache()
+                return setting
+            if _applied != setting or _live_dir():
+                _clear_jax_cache_dir()
+                logger.info(
+                    "xtrax JAX compilation cache: off (directory: %s; policy: %s from %s)",
+                    setting.source,
+                    setting.policy,
+                    setting.policy_source,
+                )
+            _applied = setting
             return setting
         if _applied == setting and _live_dir() == str(setting.dir):
             return setting
@@ -526,6 +724,30 @@ def _live_dir() -> str | None:
     import jax
 
     return jax.config.jax_compilation_cache_dir
+
+
+def _clear_jax_cache_dir() -> None:
+    """Turn JAX's persistent cache off for this process.
+
+    Clearing the flag alone is not enough once a compile has built JAX's cache object: JAX
+    initialises it once and keeps writing to it (``jax/_src/compilation_cache.py``), so the
+    object is reset first.
+    """
+    import jax
+
+    existing = jax.config.jax_compilation_cache_dir
+    if not existing:
+        return
+    from jax._src import compilation_cache
+
+    if getattr(compilation_cache, "_cache", None) is not None:
+        logger.warning(
+            "JAX compilation cache was already in use at %s; turning it off and resetting JAX's "
+            "cache object (programs compiled before this call stay in that directory)",
+            existing,
+        )
+        compilation_cache.reset_cache()
+    jax.config.update("jax_compilation_cache_dir", None)
 
 
 def _note_jax_owned_cache() -> None:

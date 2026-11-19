@@ -237,12 +237,16 @@ def test_local_sequential_executor_cache_clearing_transitions(tmp_path: Path):
 
 def test_initialize_worker_process(tmp_path: Path):
     """Verify worker process initializer configures JAX compilation cache."""
+    from xtrax import jax_cache
+
     cache_dir = tmp_path / "test_jax_cache"
+    expected = jax_cache.resolve(str(cache_dir), start=tmp_path).dir
 
     with patch("jax.config.update") as mock_update:
         _initialize_worker_process(str(cache_dir))
-        mock_update.assert_any_call("jax_compilation_cache_dir", str(cache_dir))
-        mock_update.assert_any_call("jax_persistent_cache_min_compile_time_secs", 1.0)
+        # xtrax.jax_cache namespaces the directory (jaxlib-<version>) and leaves the
+        # min-compile-time threshold at JAX's default unless configured.
+        mock_update.assert_any_call("jax_compilation_cache_dir", str(expected))
 
 
 def _pool_rss_worker_fn(row: ManifestRow) -> dict[str, Any]:

@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from xtrax import jax_cache
 from xtrax.campaign.executors.protocol import CampaignSummary
 from xtrax.campaign.lease import (
     FileLock,
@@ -35,6 +36,7 @@ from xtrax.campaign.marker import (
     quarantine_output,
     validate_unit_done,
 )
+from xtrax.jax_cache import CacheSetting
 
 logger = logging.getLogger(__name__)
 
@@ -88,38 +90,25 @@ if TYPE_CHECKING:
     from xtrax.campaign.manifest import CampaignManifest, ManifestRow
 
 
-def _resolve_compilation_cache_dir(cache_dir: str | None) -> str | None:
-    """Resolve the JAX persistent compilation cache directory, or None for off.
+#: An executor's ``cache_dir``: a resolved :class:`~xtrax.jax_cache.CacheSetting`, an explicit
+#: directory, ``"off"``/``"none"``, or ``None`` (resolve from configuration; see
+#: :mod:`xtrax.jax_cache`).
+CacheArg = CacheSetting | str | Path | None
 
-    Order: explicit ``cache_dir`` > ``JAX_COMPILATION_CACHE_DIR`` (``none`` or empty
-    disables) > off. There is no default path: a cache is derived data and its location
-    is configuration, never a directory invented under the current working directory.
+
+def _cache_setting(cache: CacheArg) -> CacheSetting:
+    return cache if isinstance(cache, CacheSetting) else jax_cache.resolve(cache)
+
+
+def _initialize_worker_process(cache: CacheArg = None) -> None:
+    """Apply the JAX persistent compilation cache setting in this process.
+
+    Per Section 6.3.2 of SPEC-261105-CAMPAIGN-RUNNER, each spawned worker configures the cache
+    to amortize compilation across recycled workers. A :class:`CacheSetting` resolved in the
+    parent is applied as is, so the worker never re-resolves from its own environment or cwd;
+    anything else is resolved here (spec 261119).
     """
-    if cache_dir:
-        return cache_dir
-    env_value = os.environ.get("JAX_COMPILATION_CACHE_DIR")
-    if env_value is None or env_value.strip().lower() in ("", "none"):
-        return None
-    return env_value
-
-
-def _initialize_worker_process(cache_dir: str | None = None) -> None:
-    """Initialize worker process configuration for JAX persistent disk compilation cache.
-
-    Per Section 6.3.2 of SPEC-261105-CAMPAIGN-RUNNER, each spawned worker configures
-    jax_compilation_cache_dir to amortize compilation across recycled workers, but only
-    when a cache directory is configured (see ``_resolve_compilation_cache_dir``).
-    """
-    resolved_cache = _resolve_compilation_cache_dir(cache_dir)
-    if resolved_cache is None:
-        return
-    os.makedirs(resolved_cache, exist_ok=True)
-    try:
-        import jax
-    except ImportError:
-        return
-    jax.config.update("jax_compilation_cache_dir", resolved_cache)
-    jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+    jax_cache.apply(_cache_setting(cache))
 
 
 def _clean_memory(state: Any) -> None:
@@ -642,7 +631,7 @@ def _pool_worker_task(
     output_dir: str,
     lease_seconds: int,
     heartbeat_interval: float,
-    cache_dir: str | None,
+    cache_dir: CacheArg,
     resume_verify: ResumeVerify = "deep",
     owner_token_prefix: str | None = None,
 ) -> dict[str, Any]:
@@ -687,7 +676,7 @@ type _PoolTaskArgs = tuple[
     str,
     int,
     float,
-    str | None,
+    CacheArg,
     ResumeVerify,
 ]
 
@@ -726,10 +715,13 @@ class LocalSequentialExecutor:
         lease_seconds: int = 1800,
         heartbeat_interval: float = 60.0,
         resume_verify: ResumeVerify = "deep",
+        cache_dir: CacheArg = None,
     ) -> None:
         self.lease_seconds = lease_seconds
         self.heartbeat_interval = heartbeat_interval
         self.resume_verify = _validate_resume_verify(resume_verify)
+        self.cache_dir = cache_dir
+        self.cache_setting: CacheSetting | None = None
         self._cancelled_tasks: set[Any] = set()
         self._last_backend: str | None = None
         self._last_bucket: Any | None = None
@@ -751,6 +743,9 @@ class LocalSequentialExecutor:
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         check_output_paths(out_dir, manifest.rows)
+        # Units compile in this process (the campaign default, and every Slurm array task),
+        # so the cache setting is applied here, before the first unit (spec 261119).
+        self.cache_setting = jax_cache.apply(_cache_setting(self.cache_dir))
 
         target_indices = (
             list(row_indices) if row_indices is not None else list(range(len(manifest.rows)))
@@ -942,7 +937,7 @@ class LocalProcessPoolExecutor:
         *,
         max_workers: int | None = None,
         recycle_interval: int | None = 50,
-        cache_dir: str | None = None,
+        cache_dir: CacheArg = None,
         lease_seconds: int = 1800,
         heartbeat_interval: float = 60.0,
         resume_verify: ResumeVerify = "deep",
@@ -950,6 +945,7 @@ class LocalProcessPoolExecutor:
         self.max_workers = max_workers or max(1, (os.cpu_count() or 1) - 1)
         self.recycle_interval = recycle_interval
         self.cache_dir = cache_dir
+        self.cache_setting: CacheSetting | None = None
         self.lease_seconds = lease_seconds
         self.heartbeat_interval = heartbeat_interval
         self.resume_verify = _validate_resume_verify(resume_verify)
@@ -1012,12 +1008,21 @@ class LocalProcessPoolExecutor:
                 failures=[],
             )
 
+        # Resolve once in the parent and hand workers the whole setting, so a worker never
+        # re-resolves from its own env (an inherited JAX_COMPILATION_CACHE_DIR) or cwd. The
+        # directory is checked here because an initializer error surfaces only as
+        # BrokenProcessPool (spec 261119).
+        setting = _cache_setting(self.cache_dir)
+        if setting.dir is not None:
+            jax_cache.prepare_directory(setting.dir)
+        self.cache_setting = setting
+
         ctx = multiprocessing.get_context("spawn")
         pool = ProcessPoolExecutor(
             max_workers=self.max_workers,
             mp_context=ctx,
             initializer=_initialize_worker_process,
-            initargs=(self.cache_dir,),
+            initargs=(setting,),
             max_tasks_per_child=self.recycle_interval,
         )
         unfinished: dict[int, ManifestRow] = dict(pending_rows)
@@ -1036,7 +1041,7 @@ class LocalProcessPoolExecutor:
                         str(out_dir),
                         self.lease_seconds,
                         self.heartbeat_interval,
-                        self.cache_dir,
+                        setting,
                         self.resume_verify,
                         run_owner_prefix,
                     )

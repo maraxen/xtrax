@@ -240,6 +240,42 @@ def task_environment(
     return [python, "-P", "-c", _CLI_BOOTSTRAP], pythonpath, env, comments
 
 
+def compilation_cache_env(
+    compilation_cache: str | None,
+) -> tuple[dict[str, str], list[str]]:
+    """Cache variables to bake into an array script, and comment lines naming their source.
+
+    Policy is a project fact, so it is resolved at generation (``[tool.xtrax]
+    jax_compilation_cache`` or ``XTRAX_JAX_CACHE``) and baked when a layer set it: a task's cwd
+    may not see the project's pyproject. Placement is a machine fact: it is baked only when
+    passed explicitly; otherwise each task resolves it on its own node from
+    ``~/.config/xtrax/config.toml`` (``HOME`` is set under ``--export=NONE``; verified on
+    Engaging 261119).
+
+    Args:
+        compilation_cache: An absolute cluster directory, ``"off"``, or None.
+
+    Returns:
+        ``(env, comments)``.
+    """
+    from xtrax.jax_cache import ENV_DIR, ENV_POLICY, policy_source
+
+    if compilation_cache is not None:
+        token = compilation_cache.strip()
+        if token.lower() in ("", "none", "off"):
+            return {ENV_POLICY: "off"}, [f"{ENV_POLICY}: compilation_cache=off at generation"]
+        return (
+            {ENV_DIR: token, ENV_POLICY: "on"},
+            [f"{ENV_DIR}: compilation_cache passed at generation"],
+        )
+    policy, source = policy_source()
+    if source == "default":
+        return {}, ["JAX compilation cache: no policy set at generation; each task resolves it"]
+    return {ENV_POLICY: policy}, [
+        f"{ENV_POLICY}: decided by {source} at generation; the directory resolves on each node",
+    ]
+
+
 def _anchor_log_path(log_path: str, base_dir: str) -> str:
     """Return an absolute SLURM log path: absolute input is kept, relative is under ``base_dir``."""
     if Path(log_path).is_absolute():
@@ -279,6 +315,7 @@ class SlurmArrayExecutor:
         pythonpath: Sequence[str] | None = None,
         env: Mapping[str, str] | None = None,
         env_comments: Sequence[str] = (),
+        compilation_cache: str | None = None,
     ) -> None:
         """Configure the array script.
 
@@ -297,6 +334,10 @@ class SlurmArrayExecutor:
                 opt-out of the generating process.
             env_comments: Comment lines written above the exports, e.g. which layer
                 decided a baked value.
+            compilation_cache: JAX compilation cache for the tasks: an absolute directory
+                on the cluster, or ``"off"``. None bakes only the cache *policy* resolved
+                at generation (when a layer set one); each task resolves the directory on
+                its own node (spec 261119: placement is never baked from configuration).
 
         Raises:
             ValueError: If a resource value would break an ``#SBATCH`` directive, a
@@ -341,6 +382,16 @@ class SlurmArrayExecutor:
         self.pythonpath = tuple(pythonpath) if pythonpath is not None else None
         self.env = dict(env) if env is not None else None
         self.env_comments = tuple(line for c in env_comments for line in c.splitlines())
+        if compilation_cache is not None:
+            token = compilation_cache.strip()
+            if token.lower() not in ("", "none", "off") and not Path(token).is_absolute():
+                raise ValueError(
+                    f"compilation_cache must be an absolute cluster path or 'off', got "
+                    f"{compilation_cache!r}"
+                )
+            if "\n" in token or "\x00" in token:
+                raise ValueError("compilation_cache contains a newline or NUL")
+        self.compilation_cache = compilation_cache
         self.output_log = output_log
         self.error_log = error_log
         self.job_id = job_id
@@ -484,6 +535,10 @@ class SlurmArrayExecutor:
             launcher_words = d_launcher if launcher_words is None else launcher_words
             pythonpath = d_pythonpath if pythonpath is None else pythonpath
             env = d_env if env is None else env
+        cache_env, cache_comments = compilation_cache_env(self.compilation_cache)
+        # A caller-supplied env wins over the baked cache variables for the same name.
+        env = {**cache_env, **env}
+        comments = [*comments, *cache_comments]
         env_lines: list[str] = [f"# {line}" for line in [*comments, *self.env_comments]]
         env_lines += [f"export {key}={shlex.quote(val)}" for key, val in env.items()]
         if pythonpath:
