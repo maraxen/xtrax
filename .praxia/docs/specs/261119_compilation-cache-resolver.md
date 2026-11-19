@@ -5,7 +5,7 @@ status: draft
 task_id: 261119_compilation-cache-resolver
 date: '261119'
 backlog_ids: ''
-adversarial_review: ''
+adversarial_review: 'spec-challenger (sonnet) 261119 NEEDS_WORK -> B1-B3, S1-S7, N1 folded in; S5 resolved by descoping max size'
 ---
 # xtrax compilation-cache resolver
 
@@ -72,14 +72,18 @@ OFF = "off"   # explicit-off sentinel accepted by `explicit=`
 @dataclass(frozen=True)
 class CacheDecision:
     directory: Path | None      # None = caching off
-    source: str                 # "arg" | "env:XTRAX_COMPILATION_CACHE_DIR" | "env:JAX_COMPILATION_CACHE_DIR"
-                                # | "pyproject:<path>" | "user_config:<path>" | "off"
+    source: CacheSource         # Literal: "arg" | "env_xtrax" | "env_jax" | "pyproject" | "user_config" | "off"
+    source_path: Path | None    # file that decided (pyproject / user config), else None
     min_compile_secs: float
     min_compile_secs_source: str
 
 def resolve_compilation_cache(explicit: str | Path | None = None, *, start=None) -> CacheDecision
 def enable_compilation_cache(explicit=None, *, start=None, on_conflict="raise") -> CacheDecision
+def apply_decision(decision: CacheDecision, *, on_conflict="raise") -> CacheDecision  # no re-resolution; used by workers
 ```
+
+`source` values are a `Literal[...]` type, not free strings; the file path for the pyproject and
+user-config layers goes in a separate `source_path: Path | None` field.
 
 ### Resolution order (first match wins)
 
@@ -99,9 +103,16 @@ default. Layers 2-3 are handled by hand, **not** by `resolve_layered`'s env laye
 off. Layers 4-5 call `resolve_layered(APP, KEY_DIR, env_var=None, start=start, parse=_parse_dir)`
 (same split as `src/xtrax/cli/profile_dir.py:80-87`).
 
-Paths from env or config files must be absolute or `~`-prefixed; `$VARS` are expanded; a relative
-path raises `ValueError` naming the variable or file. A malformed TOML raises (inherited from
-`resolve_layered`). No default directory exists anywhere in library code.
+**Off sentinels, every layer:** `""`, `none`, `off` (any case, stripped) mean off, via one
+`_parse_dir` used for all layers (arg, both env vars, pyproject, user config). `explicit=Path("")`
+is off, not cwd.
+
+**Relative paths:** `XTRAX_COMPILATION_CACHE_DIR` and both config files must be absolute or
+`~`-prefixed (`$VARS` expanded); a relative value raises `ValueError` naming the variable or file.
+`JAX_COMPILATION_CACHE_DIR` keeps JAX's own semantics for compatibility (the current executor passes
+relative values through, `local.py:100-103`): a relative value resolves against cwd at resolution
+time and logs a WARNING. A malformed TOML raises (inherited from `resolve_layered`). No default
+directory exists anywhere in library code.
 
 `min_compile_secs`: explicit kwarg > `XTRAX_COMPILATION_CACHE_MIN_COMPILE_SECS` > `[tool.xtrax]` >
 user config > `1.0` (the executor's current value). Resolved by `resolve_layered` directly (a number
@@ -111,27 +122,58 @@ has no `none`-means-off ambiguity).
 
 - **On:** `mkdir -p`; set `jax_compilation_cache_dir` and
   `jax_persistent_cache_min_compile_time_secs`.
-- **Off is an action:** if JAX's flag is non-empty, set it to `None`. This fixes the `./none` defect
-  and makes "off from pyproject" win over an inherited `JAX_COMPILATION_CACHE_DIR`.
-- **Conflict (V2):** xtrax tracks the directory it last applied in a module global. If the cache is
-  already initialized (`jax._src.compilation_cache._cache_initialized`, or, if private access is
-  rejected in review, "xtrax applied a directory and a compile has since run") and the decision
-  differs, `on_conflict="raise"` (default) raises `RuntimeError` naming both paths;
-  `on_conflict="reset"` calls the public `reset_cache` (V3) then applies. Idempotent when the
-  decision matches.
-- Logs one INFO line: `compilation cache: <dir|off> (source: <source>)`. Returns the decision so
-  callers can write it into run records / bathos sidecars.
+- **Off is an action, but only pre-init:** if JAX's flag is non-empty, set it to `None`. This fixes
+  the `./none` defect and makes "off from pyproject" win over an inherited `JAX_COMPILATION_CACHE_DIR`.
+  Once the cache is initialized, clearing the flag does **not** stop writes
+  (`compilation_cache.py:245-246` returns early and the built `_cache` stays), so on→off after init is
+  a conflict like any other (below).
+- **Initialization state:** read `getattr(jax._src.compilation_cache, "_cache_initialized", None)`.
+  The public `is_initialized()` is deprecated and only reports `enable_compilation_cache`
+  (`compilation_cache.py:428-436`), so it is unusable. If the attribute is missing (renamed in a future
+  jax), log a WARNING and treat the state as "unknown, assume initialised". This catches a cache
+  initialised by JAX's import-time env var or by a consumer's direct `jax.config.update`, which an
+  xtrax-only bookkeeping heuristic would miss. A test pins the attribute's presence at the floor and
+  ceiling of the supported jax range (`pyproject.toml:7`: `>=0.10.2,<0.12`).
+- **Conflict (V2):** compare the new decision with the current JAX flag value, treating an empty flag
+  as off. A conflict exists only when the cache is initialised and the two differ, which covers
+  dir→other dir and dir→off. (off→dir never conflicts, because off never initialises.) Known limit: if
+  something changed the flag after init, the flag no longer names the live directory (V2), so the
+  error message says "flag value", not "live directory". When a conflict exists,
+  `on_conflict="raise"` (default) raises `RuntimeError` naming both values, and `on_conflict="reset"`
+  calls the public `reset_cache` (V3) and then applies, including applying off. Same decision:
+  idempotent and silent.
+- **Filesystem:** `mkdir(parents=True, exist_ok=True)` (concurrent workers race safely). If the path
+  exists as a non-directory or is unwritable, raise `ValueError` naming the path and source; never
+  silently degrade to off.
+- **Multi-process / multi-host:** JAX writes cache entries only from `process_id == 0`
+  (`compiler.py:835-838`); every process reads. In a multi-host job every host must resolve the same
+  shared directory, or only host 0's kernels are reusable. The resolver does not attempt to enforce
+  this; the docs page states it.
+- Logs one INFO line on first application (DEBUG on idempotent repeats): `compilation cache:
+  <dir|off> (source: <source>)`. Returns the decision so callers can write it into run records /
+  bathos sidecars.
 
 ### Worker processes
 
-Resolve **once in the parent**, then pass the resolved directory **or the `OFF` sentinel** to
-workers as `explicit`. Today `cache_dir: str | None` cannot tell "not given" from "off", so a parent
-that resolved off from `[tool.xtrax]` hands workers `None` and each worker falls back to the
-inherited `JAX_COMPILATION_CACHE_DIR`. Change `LocalPoolExecutor.cache_dir` to accept
-`str | Literal["off"] | None` and have `run()` resolve `None` to a concrete value before spawning;
-`_initialize_worker_process` calls `enable_compilation_cache(explicit=<resolved>)`, which also clears
-the worker's import-time JAX flag on off. The parent's `CacheDecision.source` is recorded once in
-the run summary.
+Resolve **once in the parent**, then pass the **whole resolved `CacheDecision`** (dir or off, plus
+`min_compile_secs`) to workers. It is a frozen, picklable dataclass. Today `cache_dir: str | None`
+cannot tell "not given" from "off", so a parent that resolved off from `[tool.xtrax]` hands workers
+`None` and each worker falls back to the inherited `JAX_COMPILATION_CACHE_DIR`. Passing only the
+directory would also let `min_compile_secs` re-resolve from the worker's own cwd and env.
+
+- `LocalPoolExecutor.cache_dir` accepts `str | Literal["off"] | None`. `run()` resolves it to a
+  `CacheDecision` before spawning.
+- New `apply_decision(decision)` applies a pre-resolved decision without re-resolving. It clears the
+  worker's import-time JAX flag on off.
+- The decision travels through `initargs` (`local.py:1019-1020`) **and** the per-task path
+  (`_PoolTaskArgs` / the imap wrapper, `local.py:690-706`), because `_pool_worker_task` re-runs worker
+  init on every task (`local.py:654`). The per-task call must be idempotent and silent (DEBUG). It
+  uses `on_conflict="raise"`, but the same decision never conflicts.
+- Workers are spawned (`local.py:1015`), so they re-import jax and re-read env (A9).
+- Errors in the initializer surface as `BrokenProcessPool`. The parent therefore validates the
+  directory (mkdir and writability) before spawning, so a bad path fails in the parent with a named
+  error.
+- The parent's `CacheDecision.source` is recorded once in the run summary.
 
 ### xtrax call sites
 
@@ -139,8 +181,9 @@ the run summary.
 |---|---|
 | `campaign/executors/local.py` | delete `_resolve_compilation_cache_dir`; use the module as above |
 | `cli/sweep_verb.py:162` | call `enable_compilation_cache()`. **Behaviour change, deliberate:** the verb goes from always-on (`.xtrax/jax_cache`) to off unless configured. The verb is deprecated (removal 0.6.0); its `CHANGELOG` entry says how to keep the old behaviour. |
-| `xtrax campaign run`, `xtrax run` CLIs | `--compilation-cache PATH|off`, passed as `explicit` |
-| `xtrax config show` (or the nearest existing introspection verb) | print the decision and its source |
+| `xtrax campaign run` | `--compilation-cache PATH\|off`, passed as `cache_dir` to the executor (resolved in `run()`) |
+| `xtrax run` (`cli/run_verb.py:run_run`) | `--compilation-cache PATH\|off`; `run_run` calls `enable_compilation_cache(explicit=…)` before building the engine |
+| introspection | no new verb (none exists in `cli/registry.py:44-57`). Both CLIs print the INFO decision line, and the decision (`dir`, `source`, `min_compile_secs`) is written into the run summary / record so it is visible after the fact |
 | library entry points (`engine`, `intent`) | **not** auto-enabled. Libraries do not mutate global JAX config on import; consumers call `enable_compilation_cache()` once at their entry point. |
 
 ### Consumers (follow-up, not this PR)
@@ -152,9 +195,10 @@ alynxr keeps `ALYNXR_COMPILATION_CACHE_DIR` and its registry field as feeders fo
 ### Storage
 
 The cache writes many small files. The machine-level config on Engaging must point at
-`/orcd/compute/so3/002/...`, not scratch (1,000,000-file cap). The docs page says so; size limits use
-JAX's own `jax_compilation_cache_max_size` (exposed as an optional `compilation_cache_max_size_bytes`
-key resolved like `min_compile_secs`). Entries are keyed by JAX on jax/jaxlib version, backend and
+`/orcd/compute/so3/002/...`, not scratch (1,000,000-file cap). The docs page says so. A size cap is
+out of scope here: callers who need one set JAX's own `jax_compilation_cache_max_size` directly. A
+later revision can add a layered `compilation_cache_max_size_bytes` key with its own source field and
+tests. Entries are keyed by JAX on jax/jaxlib version, backend and
 device kind, so one directory shared across projects on one machine is safe. Sharing a directory
 across machines with different GPUs is also safe but gives no reuse.
 
@@ -169,23 +213,38 @@ across machines with different GPUs is also safe but gives no reuse.
 | A5 | `reset_cache` is public in jax 0.11.1 | verified (`jax/experimental/compilation_cache/compilation_cache.py:15-17`) |
 | A6 | Threshold only gates writes | verified (`compiler.py:840`) |
 | A7 | `resolve_layered` env `none` skips layer | verified (`src/xtrax/config.py:188-191`) |
-| A8 | `_cache_initialized` stays a stable private name across supported jax versions | **unverified**; fallback heuristic specified above |
-| A9 | Spawned pool workers re-import jax and re-read env | **unverified for this executor**; T7 covers it |
+| A8 | `_cache_initialized` stays a stable private name across supported jax versions | **unverified** at the 0.10.2 floor; T9 pins it; missing ⇒ WARNING + assume initialised |
+| A9 | Spawned pool workers re-import jax and re-read env | verified (`local.py:1015`, spawn context) |
+| A11 | Clearing the flag after init does not stop writes | verified by code (`compilation_cache.py:245-246`); T6b tests it |
 | A10 | jax lower bound of xtrax exposes A5's module | **unverified**; check `pyproject.toml` floor during implementation |
 
 ## Tests (write red first where marked)
 
 - T1 resolution order: each layer wins over the ones below; source string correct; tmp `pyproject.toml`
   and `XDG_CONFIG_HOME`.
-- T2 env `none`/empty in either env var stops the search even when `[tool.xtrax]` sets a dir.
-- T3 relative path in env/config raises naming the source; malformed TOML raises.
+- T2 env `none`/empty/`off` in either env var stops the search even when `[tool.xtrax]` sets a dir;
+  `none`/`off` in pyproject and user config mean off; `explicit=Path("")` is off.
+- T3 relative path in `XTRAX_…` or a config file raises naming the source; relative
+  `JAX_COMPILATION_CACHE_DIR` resolves against cwd with a WARNING; malformed TOML raises; path that is
+  a file raises.
 - **T4 (red first)** subprocess with `JAX_COMPILATION_CACHE_DIR=none`, call `enable_compilation_cache()`,
-  compile; assert JAX flag is `None` and no `./none` under cwd. Fails on today's executor path.
+  compile (assert the jitted result, so a compile demonstrably ran); assert JAX flag is `None` and no
+  `./none` under cwd. Fails on today's executor path.
 - T5 subprocess: on, compile, assert entries appear in the resolved dir (min secs 0, min entry size -1).
 - T6 subprocess: enable A, compile, enable B → `RuntimeError`; with `on_conflict="reset"`, entries land in B.
-- T7 pool executor, parent resolves off from `[tool.xtrax]` while env `JAX_COMPILATION_CACHE_DIR` is a
-  real dir → workers write nothing there.
-- T8 sweep verb no longer creates `.xtrax/jax_cache` when unconfigured.
+- T6b subprocess: enable A, compile, enable off → `RuntimeError`; with `on_conflict="reset"`, a further
+  compile adds no entries to A.
+- T7 pool executor, all with `min_compile_secs=0` and min entry size -1: (a) positive control: parent
+  resolves a dir → entries appear; (b) parent resolves off from `[tool.xtrax]` while env
+  `JAX_COMPILATION_CACHE_DIR` points at a real dir → zero entries there; (c) the per-task re-init logs
+  at most one INFO line per worker.
+- T8 sweep verb no longer creates `.xtrax/jax_cache` when unconfigured, and `CHANGELOG.md` carries
+  the behaviour-change line.
+- T9 `jax._src.compilation_cache` has `_cache_initialized` (runs in CI against the resolved jax; the
+  floor is checked once in the implementation PR via `uv run --with jax==0.10.2`).
+- Import-boundary audits (`tests/audit/test_no_devtools_imports.py`,
+  `tests/audit/test_compiler_boundary_gate.py`, `tests/distribution/test_declared_vs_imported_deps.py`)
+  run narrowly after the module lands.
 
 Subprocess tests are CPU-only, narrow, and run with `-k` locally per `local-compute-limits`.
 
