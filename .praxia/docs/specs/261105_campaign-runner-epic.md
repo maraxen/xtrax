@@ -1,6 +1,6 @@
 ---
 title: xtrax.campaign runner implementation epic (EPIC-261105-CAMPAIGN-RUNNER)
-description: Track decomposition (T1-T5, GATE-01..11) for the campaign runner that shipped as PR #267; salvaged 261119 from an untracked worktree file as the historical record.
+description: 'Track decomposition (T1-T5, GATE-01..11) for the campaign runner that shipped as PR #267; salvaged 261119 from an untracked worktree file as the historical record.'
 status: implemented
 task_id: 261105_xtrax-campaign-runner
 date: '261105'
@@ -12,7 +12,7 @@ salvaged_by: 261119_branch-triage
 **Document ID**: `EPIC-261105-CAMPAIGN-RUNNER`  
 **Task ID**: `261105_xtrax-campaign-runner`  
 **Milestone**: P5 Implementation  
-**Governing Specification**: `docs/spec/261105_campaign_runner_spec.md` (APPROVED & CONVERGED)  
+**Governing Specification**: `.praxia/docs/specs/261105_campaign-runner-spec.md` (APPROVED & CONVERGED; originally `docs/spec/261105_campaign_runner_spec.md`)  
 **Author**: `teamwork_worker_p4_editor` (Specification Editor & Epic Creator)  
 **Status**: APPROVED & READY FOR P5 IMPLEMENTATION  
 **Date**: 2026-11-05  

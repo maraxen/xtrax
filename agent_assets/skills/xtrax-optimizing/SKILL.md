@@ -216,7 +216,7 @@ Load as needed -- do not read all up front:
   megakernel fusion (`pallas_bonded_and_nonbonded_nl_fused`, `MK-01`–`MK-49`),
   fused 2D-grid BAOAB + analytical SETTLE/RATTLE integrator kernels (`MK-46`),
   per-replica neighbor-list `rebuild_mask` early-exit & in-place aliasing (`MK-47`),
-  ragged-bucket ghost-atom filtering & 32-atom block pruning (`MK-48`),
+  ragged-bucket ghost-atom filtering & 32-atom block pruning,
   separable `(32, 16)` YZ-plane factorized SPME spread/gather & mixed-precision
   `float32`/`complex64` 3D FFTs (`MK-49`), runtime GPU architecture adaptation
   (`sm_80`/`sm_89`/`sm_90`/`sm_120`), and ground-truth A/B parity testing.

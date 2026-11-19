@@ -1,11 +1,18 @@
 ---
 title: xtrax.campaign runner specification (SPEC-261105-CAMPAIGN-RUNNER)
-description: Design specification for the distributed campaign runner that shipped as PR #267; salvaged 261119 from an untracked worktree file as the historical record.
+description: 'Design specification for the distributed campaign runner that shipped as PR #267; salvaged 261119 from an untracked worktree file as the historical record.'
 status: implemented
 task_id: 261105_xtrax-campaign-runner
 date: '261105'
 salvaged_by: 261119_branch-triage
 ---
+
+> **Post-ship notes (261119).** This is the 261105 design as written. The shipped code differs in these places:
+> - Canonical hashing lives in `src/xtrax/campaign/manifest.py` (`canonical_json_bytes`, line 75, which normalizes `-0.0`), not `src/xtrax/run/zarr_integrity.py`.
+> - `CampaignSpec` also has `parameters: dict[str, Any]` (`src/xtrax/campaign/spec.py`).
+> - Callables are rejected by `_check_no_callables` in `src/xtrax/campaign/spec.py` via `plan_campaign`; there is no `spec_partition.py`.
+> - Leases and done markers carry a fencing token (`fence` / `lease_fence`) since #3312: see `261108_campaign-lease-fencing-token.md`.
+> - The wheel `packages` entry is at `pyproject.toml:319`, and this file lives at `.praxia/docs/specs/`, not `docs/spec/`.
 # Formal Engineering Specification: `xtrax.campaign`
 ## Distributed Campaign Runner & Execution Engine
 

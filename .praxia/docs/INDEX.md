@@ -1,4 +1,4 @@
-# 261119-branch-triage-salvage Internal Docs
+# xtrax Internal Docs
 
 Superseded and archived docs: [HISTORY.md](HISTORY.md).
 
@@ -28,8 +28,8 @@ Superseded and archived docs: [HISTORY.md](HISTORY.md).
 - [261108_campaign-lease-fencing-token](specs/261108_campaign-lease-fencing-token.md) — Spec for a fencing token on xtrax campaign leases so a stalled holder cannot clobber a stealer's commit, abort cleanup or lock.
 - [261108_campaign-row-hash-output-locator](specs/261108_campaign-row-hash-output-locator.md) — Spec to bind a manifest row's output_locator to its hash without touching input_hash, so aminx parity (GATE-11) is unaffected.
 - [261106_campaign-eda-redesign](specs/261106_campaign-eda-redesign.md) — Formal technical specification for xtrax Campaign EDA, providing knob-faceted sink statistics across finished and running campaigns, typed domain plugins (aminx, demistify), vectorized cluster bootstrap uncertainty, storage format parity (loose vs packed), and neutral export artifacts, closing debts #3301, #3143, #3300, and demistify #830
-- [261105_campaign-runner-epic](specs/261105_campaign-runner-epic.md) — Track decomposition (T1-T5, GATE-01..11) for the campaign runner that shipped as PR
-- [261105_campaign-runner-spec](specs/261105_campaign-runner-spec.md) — Design specification for the distributed campaign runner that shipped as PR
+- [261105_campaign-runner-epic](specs/261105_campaign-runner-epic.md) — Track decomposition (T1-T5, GATE-01..11) for the campaign runner that shipped as PR #267; salvaged 261119 from an untracked worktree file as the historical record.
+- [261105_campaign-runner-spec](specs/261105_campaign-runner-spec.md) — Design specification for the distributed campaign runner that shipped as PR #267; salvaged 261119 from an untracked worktree file as the historical record.
 - [261030_ledger-pack-fileguard](specs/261030_ledger-pack-fileguard.md)
 - [261028_xtrax-eda-redesign](specs/261028_xtrax-eda-redesign.md) — Specification for redesigning xtrax.eda into a compiler-plan inspection engine using Vega-Lite canonical interchange, entry-point panel plugins, bitwise-deterministic JSON exports, progressive offline HTML dashboards, and strict isolation from maraxiom.eda
 - [261023_equinox-decoupling](specs/261023_equinox-decoupling.md) — Make xtrax depend only on jax/optax for its pytree layer, with one implementation and Equinox models and downstream eqx.field subclasses still working (Part 1 of the equinox/Pallas plan)
@@ -104,7 +104,6 @@ Superseded and archived docs: [HISTORY.md](HISTORY.md).
 
 ## Research
 - [261106_campaign_eda_prior_art_research](research/261106_campaign_eda_prior_art_research.md) — Research Note: Prior Art, Design Options, and Reference Implementations for xtrax Campaign EDA
-- [261030_xtrax-0-4-1b6-dependent-scope](research/261030_xtrax-0-4-1b6-dependent-scope.md) — Verified list of xtrax consumers across ~/projects, with pin ranges, removed-API hits and vendored copies, for the dependent-update debt items 3142 and 3143.
 - [261026_accumulate-grads-vs-optax-microbatching](research/261026_accumulate-grads-vs-optax-microbatching.md) — Pre-registered CPU parity probe: optax micro_grad MEAN matches xtrax accumulate_grads (f32 grad rel L2 7.4e-8, f64 1.7e-16) on mean-of-examples losses; 11 semantic differences listed, batch-coupled losses differ by 24%
 - [261023_pallas-block-sparse-spike](research/261023_pallas-block-sparse-spike.md) — Interpret-mode Pallas kernel: parity, custom_vjp grads, jit/vmap, dataclass config, export; Mosaic GPU export blocked on jax 0.11.1
 - [261020_hoist_invariant_cpu](research/data/261020_hoist_invariant_cpu.json)

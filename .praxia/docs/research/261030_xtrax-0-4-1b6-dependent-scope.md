@@ -1,13 +1,15 @@
 ---
 title: xtrax 0.4.1b6 dependent scope
 description: Verified list of xtrax consumers across ~/projects, with pin ranges, removed-API hits and vendored copies, for the dependent-update debt items 3142 and 3143.
-status: draft
+status: superseded
 task_id: 261030_xtrax-dependent-scope
 date: '261030'
 confidence: medium
 sources: 'scan of ~/projects/*/pyproject.toml and uv.lock, nested affigit/packages/* and mpnn_ext/external/*; CHANGELOG.md Removed sections for 0.4.0a12 and 0.4.1b5'
 ---
 # xtrax 0.4.1b6 dependent scope
+
+> **Snapshot as of 261030 (salvaged 261119).** The current release is 0.4.1b8. Debt 3142 shipped as the campaign runner (#267), and 3143 is covered by the completed `261106_campaign-eda-redesign.md` spec. The pin ranges and API hits below describe 0.4.1b6, not current state.
 
 Scope of the dependent-update work for xtrax 0.4.1b6, filed under debt 3142 (campaign execution) and 3143 (EDA visualization).
 

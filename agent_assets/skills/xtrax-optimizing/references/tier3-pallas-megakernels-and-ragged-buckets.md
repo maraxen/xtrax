@@ -1,6 +1,6 @@
 # Tier 3: Pallas Megakernels, Ragged Buckets, and Multi-GPU Optimization Playbook
 
-When scaling multi-replica (`N_MOLS` / `B`) and ragged-bucket (`N_ATOMS`, `N_WATERS`) physics or simulation loops (e.g., `prolix` molecular dynamics) on GPU, individual operator optimizations saturate once HBM bandwidth, kernel launch overhead, and ghost-atom padding dominate. This playbook codifies the end-to-end engineering patterns (`MK-01` through `MK-45`) proven across Blackwell (`sm_120`), Hopper (`sm_90`), Ada (`sm_89`), and Ampere (`sm_80`).
+When scaling multi-replica (`N_MOLS` / `B`) and ragged-bucket (`N_ATOMS`, `N_WATERS`) physics or simulation loops (e.g., `prolix` molecular dynamics) on GPU, individual operator optimizations saturate once HBM bandwidth, kernel launch overhead, and ghost-atom padding dominate. This playbook codifies the end-to-end engineering patterns (`MK-01` through `MK-49`) proven across Blackwell (`sm_120`), Hopper (`sm_90`), Ada (`sm_89`), and Ampere (`sm_80`).
 
 ---
 
@@ -68,7 +68,7 @@ Size bucketing (`ATOM_BUCKETS`, `WATER_BUCKETS`) prevents $O(K)$ XLA recompilati
 
 ---
 
-## 3. Composing Processes into Fused Megakernels (`MK-36`–`MK-45`)
+## 3. Composing Processes into Fused Megakernels (`MK-36`–`MK-49`)
 
 When `xtrax.profiling` shows that multiple small kernels or multi-pass reductions dominate step time, fuse them along the entity axis they share:
 
