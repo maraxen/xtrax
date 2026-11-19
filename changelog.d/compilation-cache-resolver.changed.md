@@ -1,0 +1,2 @@
+- `xtrax sweep` (deprecated) no longer writes `.xtrax/jax_cache` under the current directory. It uses the machine's configured cache directory when one exists and runs without a persistent cache otherwise. To keep the old location, set `XTRAX_COMPILATION_CACHE_DIR=$PWD/.xtrax/jax_cache`.
+- A `compilation_cache_dir` key under `[tool.xtrax]` in `pyproject.toml` is refused: a committed file is pushed to other machines, so it must not hold a machine path.

@@ -1,0 +1,2 @@
+- `JAX_COMPILATION_CACHE_DIR=none` (or `off`) no longer makes JAX write a cache into `./none/` under the current directory: xtrax entry points treat it as off and clear JAX's import-time flag before the first compile.
+- `xtrax campaign run` with the default `local-seq` executor, and every Slurm array task, now apply the cache decision. Before, only the pool executor did, so a project could not switch the cache off there.

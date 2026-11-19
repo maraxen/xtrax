@@ -72,6 +72,11 @@ class CampaignArgs:
     #: 'run' resume check: 'deep' (default) recomputes each completed store's content digest
     #: before reusing it; 'tier1' trusts the done marker and root metadata only (fast path).
     resume_verify: str = "deep"
+    #: JAX persistent compilation cache for 'run': a directory, or 'off'. Unset resolves
+    #: from XTRAX_COMPILATION_CACHE_DIR / JAX_COMPILATION_CACHE_DIR / ~/.config/xtrax and
+    #: [tool.xtrax] compilation_cache (see xtrax.compilation_cache). With executor 'slurm'
+    #: a directory must be absolute: it is the path on the cluster.
+    compilation_cache: str | None = None
     # SLURM array resources (executor 'slurm' only; any of them with a local executor is
     # refused). Unset means the SlurmArrayExecutor default, shown in brackets.
     #: --partition for each array task (one name or a comma-separated list) [none].
@@ -257,9 +262,13 @@ def _run_run(args: CampaignArgs) -> Any:
     # Instantiate chosen executor
     executor_kind = args.executor.lower()
     if executor_kind in ("local-seq", "local_seq", "sequential"):
-        executor = LocalSequentialExecutor(resume_verify=resume_mode)
+        executor = LocalSequentialExecutor(
+            resume_verify=resume_mode, cache_dir=args.compilation_cache
+        )
     elif executor_kind in ("local-pool", "local_pool", "pool"):
-        executor = LocalProcessPoolExecutor(resume_verify=resume_mode)
+        executor = LocalProcessPoolExecutor(
+            resume_verify=resume_mode, cache_dir=args.compilation_cache
+        )
     elif executor_kind in ("slurm", "slurm-array"):
         resources = {
             kw: getattr(args, name)
@@ -271,6 +280,7 @@ def _run_run(args: CampaignArgs) -> Any:
                 manifest_path=manifest_path.resolve(),
                 fn_spec=args.fn,
                 resume_verify=resume_mode,
+                compilation_cache=args.compilation_cache,
                 **resources,
             )
         except ValueError as exc:

@@ -1,7 +1,7 @@
 ---
 title: xtrax compilation-cache resolver
 description: One layered resolver for the JAX persistent compilation cache dir, used by every xtrax entry point and consumer
-status: draft
+status: implemented
 task_id: 261119_compilation-cache-resolver
 date: '261119'
 backlog_ids: ''
@@ -179,7 +179,16 @@ via `XTRAX_COMPILATION_CACHE=on`.
 
 - **Placement values** go through `_parse_dir`. `""`, `none` and `off` (any case, stripped) mean off;
   anything else is a path. It applies to the explicit argument, both directory env vars and the user
-  config. `explicit=Path("")` is off, not cwd.
+  config. `explicit=Path("")` raises `ValueError` (implementation finding: `Path("") == Path(".")`,
+  so the two cannot be told apart; pass `"off"` or an explicit path).
+
+**Unconfigured is a no-op (implementation finding).** When neither axis was configured anywhere
+(placement source `none` and policy source `default`), `apply_decision` leaves JAX's settings
+alone. Otherwise a consumer that set JAX's cache itself, such as aminx from `io.cache_path`, would
+have it cleared, or hit a conflict error, when it later ran an xtrax executor. A **configured** off
+is still applied actively; `JAX_COMPILATION_CACHE_DIR=none` counts as configured, which keeps the
+`./none` fix. `CacheDecision` also carries `placement`, the resolved placement before policy is
+applied, so records can show an injected directory that policy held off.
 - **Policy values** go through `_parse_policy`, case-insensitive:
   - `on` → on.
   - `off`, `none` and `""` → off.
@@ -269,20 +278,24 @@ round 2 found two xtrax paths that apply none today:
   instantiated at `:259`). It runs units in-process and never touches the cache. Fix: `run()` calls
   `enable_compilation_cache(cache_dir)` before the first unit. It takes the same
   `cache_dir: str | Literal["off"] | None` as the pool executor.
-- **xtrax Slurm array tasks.** The array script is generated on the submitting host, is meant to work
-  under `sbatch --export=NONE` (`src/xtrax/campaign/executors/slurm.py:210-231`), and exports only the
-  variables it bakes (`slurm.py:478-491`). Each task runs `xtrax campaign run --row-index`, which
-  takes the `LocalSequentialExecutor` path above, so the fix there covers application. Placement and
-  policy reach the task as follows:
-  - **Policy is baked.** The generator resolves policy on the submitting host, from the project's
-    pyproject plus any `XTRAX_COMPILATION_CACHE` override, and exports `XTRAX_COMPILATION_CACHE=on|off`
-    into the script.
-  - **Placement is never baked.** The generator runs on the laptop, so any directory it resolved
-    would be the laptop's. The task resolves placement on its own node: from
-    `~/.config/xtrax/config.toml` on that host, or from an env var the submission path really
-    delivers to the task.
-  - The generator gains an optional `compilation_cache_dir` parameter for a caller who knows the
-    remote path. It is exported as `XTRAX_COMPILATION_CACHE_DIR`.
+- **xtrax Slurm array tasks.** The array script is meant to work under `sbatch --export=NONE`
+  (`src/xtrax/campaign/executors/slurm.py:210-231`) and exports only the variables it bakes
+  (`slurm.py:478-491`). Each task runs `xtrax campaign run --row-index ... --executor local-seq`,
+  which takes the `LocalSequentialExecutor` path above, so the fix there covers application.
+  - **Correction from implementation:** the script bakes the generating interpreter's absolute path
+    (`task_environment`, `slurm.py:221`). So it is generated on the cluster, not on the laptop as
+    revision 4 said. The design is unchanged; the reason for not baking placement is the one below.
+  - **Policy is baked only when a layer set it.** The generator resolves policy from the project's
+    pyproject, or an `XTRAX_COMPILATION_CACHE` override, and exports `XTRAX_COMPILATION_CACHE=on|off`.
+    The task's cwd may not see that pyproject. A default policy is not baked, so a node's user config
+    can still decide.
+  - **Placement is never baked from configuration.** The generating shell's env is dropped under
+    `--export=NONE`. Baking its `JAX_COMPILATION_CACHE_DIR` would silently pin one shell's choice into
+    every task, and the node's own config is the authority. Each task resolves placement on its node,
+    from `~/.config/xtrax/config.toml`. **A20 is verified**: `HOME` is set under `--export=NONE`.
+  - `SlurmArrayExecutor(compilation_cache=...)` (CLI `--compilation-cache`) takes an absolute cluster
+    path, exported as `XTRAX_COMPILATION_CACHE_DIR` with policy on, or `off`, exported as
+    `XTRAX_COMPILATION_CACHE=off`. A relative path is refused.
   - **myxcel profile `[env]` does not reach these tasks** when the script is submitted with
     `--export=NONE`, because myxcel's injection lives in myxcel's own generated script. Docs state
     this. The remote user config is the reliable placement for xtrax arrays.
@@ -445,14 +458,14 @@ because policy and placement are separate axes. (Non-xtrax consumers opt out by 
 | A17 | Cache key covers jaxlib version, backend platform, device kind | verified (`jax/_src/cache_key.py:103,108,256,367`) |
 | A18 | `xtrax campaign run` defaults to `LocalSequentialExecutor`, which applies no cache decision | verified (`src/xtrax/cli/campaign_verb.py:68,259`) |
 | A19 | xtrax Slurm array scripts target `--export=NONE` and export only baked variables | verified (`src/xtrax/campaign/executors/slurm.py:210-231,478-491`) |
-| A20 | Under `--export=NONE`, a task still has `HOME` so `~/.config/xtrax/config.toml` resolves | **unverified**; Slurm sets HOME from the passwd entry in our experience, but probe with one quicktest array task before relying on it |
+| A20 | Under `--export=NONE`, a task still has `HOME` so `~/.config/xtrax/config.toml` resolves | **verified 261119** (Engaging `mit_quicktest` array job 29675457, tasks 0 and 1 on node1600: `SLURM_EXPORT_ENV=NONE`, `HOME=/home/maarxaru`, `XDG_CONFIG_HOME` unset, `~/.config` exists, `JAX_COMPILATION_CACHE_DIR` not inherited). Throwaway env probe, no finding cited beyond this row |
 
 ## Tests (write red first where marked)
 
 - T1 placement order and policy order, each independently: every layer wins over the ones below;
   source strings correct; tmp `pyproject.toml` and `XDG_CONFIG_HOME`.
 - T2 env `none`/empty/`off` in either placement env var stops the placement search even when the user
-  config sets a dir; `none`/`off` in the user config mean off; `explicit=Path("")` is off.
+  config sets a dir; `none`/`off` in the user config mean off; `explicit=Path("")` raises.
 - T1b cross-axis: `explicit=<path>` with pyproject `compilation_cache = "off"` → on at that path;
   `explicit=OFF` with every placement layer set → off.
 - T1c `_parse_policy`: `ON`/`Off`/`none`/`""` parse; `yes` / `1` / a path raise `ValueError` naming

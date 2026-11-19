@@ -32,6 +32,7 @@ from xtrax.campaign.manifest import plan_campaign
 from xtrax.campaign.spec import ArmSpec, CampaignSpec, ParamGrid
 from xtrax.cli.config import ConfigError, TrainConfig, load_config
 from xtrax.cli.run import generate_run_id, run_from_config
+from xtrax.compilation_cache import enable_compilation_cache
 
 # Initialize tyro at module level for entrypoint's lazy resolver to inject it
 tyro: Any = None
@@ -158,8 +159,9 @@ def run_sweep(args: SweepArgs) -> None:
     axes = _read_sweep_axes(args.config_path)
     paths, combinations = _sweep_grid(axes)
 
-    # 3. Configure JAX compilation cache
-    jax.config.update("jax_compilation_cache_dir", ".xtrax/jax_cache")
+    # 3. Configure JAX compilation cache from configuration (spec 261119). There is no
+    #    default directory any more: the machine's placement is used when one exists.
+    enable_compilation_cache()
 
     # 4. Determine sweep directory
     sweep_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
