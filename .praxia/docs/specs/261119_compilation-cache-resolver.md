@@ -89,6 +89,33 @@ def apply_decision(decision: CacheDecision, *, on_conflict="raise") -> CacheDeci
 `source` values are a `Literal[...]` type, not free strings; the file path for the pyproject and
 user-config layers goes in a separate `source_path: Path | None` field.
 
+### Separation of concerns (user-endorsed 261119)
+
+Every setting is classified by who owns it before it gets a home:
+
+| Kind | Example | Same on every machine? | Secret? | Home |
+|---|---|---|---|---|
+| Project policy | cache on/off, compile threshold, presets, uv venv mode | yes | no | committed: `[tool.xtrax]` in `pyproject.toml`, `myxcel.toml` |
+| Machine fact | `jax_cache` path, flash vs scratch tier, `remote_home`, node-specific `XLA_FLAGS` | no (shared across projects) | no | per host, outside any repo: the myxcel profile (`[uv]`, proposed `[env]`) for remotes myxcel drives; `~/.config/<tool>/config.toml` for the laptop and for runs outside myxcel |
+| Per-run override | `--compilation-cache off`, `XTRAX_COMPILATION_CACHE=on` | n/a | no | CLI flag or env var, recorded in the run record |
+| Secret | API tokens | n/a | yes | gitignored `.env` or keyring; never a myxcel profile `[env]` (exports are written into sbatch scripts on disk) |
+| Shell convenience | `direnv` loading `.env` | n/a | maybe | `.envrc`, local interactive use only; not a source of truth |
+
+Rules that follow:
+
+- **Library code reads only:** explicit > env > `[tool.<pkg>]` (policy) > `~/.config/<pkg>` (machine).
+  It never calls `load_dotenv`, because loading changes `os.environ` for the whole process behind the
+  caller's back. Only entry scripts may load a `.env`.
+- **`.env` is not for machine facts.** It is per checkout, so each worktree needs its own copy. It
+  has no layering and no source reporting. Batch jobs do not load it.
+- **myxcel pushes `.env` today.** No push exclude covers `.env` or `.envrc` (checked in both profiles
+  and in `myxcel/src/myxcel/rsync.py`), so a laptop `.env` reaches the cluster.
+- **myxcel's role:** it carries machine facts for remotes it drives into job env and records
+  `MYXCEL_*_SOURCE`. Project policy and secrets stay out of it.
+- **Why policy is a separate axis:** once myxcel has exported a value into env, a library cannot tell
+  a machine default from a deliberate per-job override. A committed project "off" therefore has to
+  resolve on its own axis to keep winning.
+
 ### Two axes: placement (where) and policy (whether)
 
 User decision 261119: **a committed `pyproject.toml` never holds a machine path.** myxcel pushes
