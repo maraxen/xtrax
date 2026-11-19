@@ -201,3 +201,21 @@ def test_traced_pair_index_in_range_passes_under_jit() -> None:
     out = jax.block_until_ready(jax.jit(run)(pairs))
     assert out.joint.shape == (1, 2, 3, 3)
     assert _status(out)[0] == 0
+
+
+@pytest.mark.parametrize("shift", [2**31, 2**31 + 1, -(2**31) - 2, 2**40 + 1, 5, -4])
+def test_large_shifts_follow_np_roll(shift: int) -> None:
+    """Review #277 (minor): shifts beyond int32 are reduced mod T before narrowing."""
+    xa = np.array([[0, 1, 2]], dtype=np.int64)
+    ca = encode_codes(xa, 3)
+    out = cooccurrence_counts(
+        ca,
+        ca.__class__(codes=ca.codes, n_categories=3),
+        shifts_a=np.array([[shift]], dtype=np.int64),
+        method="matmul",
+    )
+    rolled = np.roll(xa[0], shift)
+    expected = np.zeros((3, 3), dtype=np.int64)
+    for t in range(3):
+        expected[rolled[t], xa[0, t]] += 1
+    assert np.array_equal(np.asarray(out.joint)[0, 0, 0], expected)

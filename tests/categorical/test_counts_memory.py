@@ -393,3 +393,77 @@ def test_pairs_oracle_helper_agrees_with_dense_gather() -> None:
     part = _oracle_pairs(xa, 3, xa, 3, w, pairs)
     assert np.array_equal(part["joint"][:, 0], dense["joint"][:, 1, 0])
     assert np.array_equal(part["joint"][:, 1], dense["joint"][:, 0, 1])
+
+
+# --- Review #277 (major): scatter feasibility is judged at pair_tile=1 ---------------------
+
+_SCATTER_KW = dict(
+    n_replicates=1,
+    n_frames=128,
+    n_a=4,
+    k_a=8,
+    n_b=400,
+    k_b=8,
+    weight_itemsize=4,
+    code_itemsize=4,
+    method="scatter",
+    platform="cpu",
+)
+
+
+def _scatter_min_estimate(layout: str, n_pairs: int) -> int:
+    rb = 1 if layout == "dense" else _SCATTER_KW["n_a"]
+    blk = rb * _SCATTER_KW["n_b"] if layout == "dense" else n_pairs
+    return estimate_cooccurrence_bytes(
+        method="scatter",
+        n_replicates=1,
+        n_frames=128,
+        n_a=_SCATTER_KW["n_a"],
+        k_a=8,
+        n_b=_SCATTER_KW["n_b"],
+        k_b=8,
+        row_block=rb,
+        n_pairs_blk=blk,
+        t_chunk=128,
+        r_tile=1,
+        pair_tile=1,
+        weight_itemsize=4,
+        code_itemsize=4,
+        differentiable=False,
+        layout=layout,
+    )
+
+
+@pytest.mark.parametrize(("layout", "n_pairs"), [("dense", 1600), ("pairs", 1200)])
+def test_scatter_budget_above_minimum_plans_instead_of_raising(layout: str, n_pairs: int) -> None:
+    """A budget that holds the pair_tile=1 minimum must yield a plan that fits it."""
+    minimum = _scatter_min_estimate(layout, n_pairs)
+    budget = minimum + 1024
+    p = plan_cooccurrence(n_pairs=n_pairs, layout=layout, byte_budget=budget, **_SCATTER_KW)
+    assert p.estimate_bytes <= budget
+    assert p.pair_tile >= 1
+
+
+@pytest.mark.parametrize(("layout", "n_pairs"), [("dense", 1600), ("pairs", 1200)])
+def test_scatter_budget_below_minimum_still_raises(layout: str, n_pairs: int) -> None:
+    minimum = _scatter_min_estimate(layout, n_pairs)
+    with pytest.raises(BudgetInfeasibleError):
+        plan_cooccurrence(n_pairs=n_pairs, layout=layout, byte_budget=minimum - 1, **_SCATTER_KW)
+
+
+# --- Review #277 (nit): the GPU branch of select_method is pinned ----------------------------
+
+
+@pytest.mark.parametrize("platform", ["gpu", "cuda", "rocm"])
+def test_select_method_gpu_branch(platform: str) -> None:
+    from xtrax.categorical.plan import KK_CROSSOVER_GPU, select_method
+
+    k = int(np.floor(np.sqrt(KK_CROSSOVER_GPU)))
+    assert select_method("auto", "dense", 4, 4, k, k, platform) == ("matmul", "gpu_provisional")
+    big = KK_CROSSOVER_GPU + 1
+    assert select_method("auto", "dense", 4, 4, big, 1, platform) == ("scatter", "gpu_provisional")
+    # A pairs list shorter than the dense grid prefers scatter even for small K.
+    assert select_method("auto", "pairs", 2, 4, 2, 2, platform) == ("scatter", "gpu_provisional")
+    # A full-grid pairs list uses the dense rule's K test, but only dense gets matmul.
+    assert select_method("auto", "pairs", 4, 4, 2, 2, platform) == ("scatter", "gpu_provisional")
+    assert select_method("matmul", "dense", 4, 4, big, 1, platform) == ("matmul", "explicit")

@@ -401,13 +401,28 @@ def plan_cooccurrence(
     def default_pair_tile(row_block: int) -> int:
         return min(PAIR_TILE, pairs_per_block(row_block))
 
+    def feasibility_pair_tile(row_block: int) -> int:
+        """Pair tile at which steps 1-2 judge feasibility.
+
+        Scatter's pair_tile is searched in step 3, so steps 1-2 use its minimum (1).
+        Judging at the default (up to 256) rejected budgets that the pair_tile=1 plan
+        fits, then quoted that smaller minimum in the error (review of #277).
+
+        Args:
+            row_block: Candidate rows of ``codes_a`` per block.
+
+        Returns:
+            1 for scatter, else the default pair tile for ``row_block``.
+        """
+        return 1 if chosen == "scatter" else default_pair_tile(row_block)
+
     # (1) Largest row_block at r_tile=1, t_chunk=128.
     if layout == "dense":
         row_block = next(
             (
                 rb
                 for rb in range(n_a, 0, -1)
-                if estimate(rb, t_search, default_pair_tile(rb), 1) <= budget
+                if estimate(rb, t_search, feasibility_pair_tile(rb), 1) <= budget
             ),
             None,
         )
@@ -425,7 +440,8 @@ def plan_cooccurrence(
         (
             c
             for c in t_candidates
-            if c >= t_search and estimate(row_block, c, default_pair_tile(row_block), 1) <= budget
+            if c >= t_search
+            and estimate(row_block, c, feasibility_pair_tile(row_block), 1) <= budget
         ),
         None,
     )
@@ -445,7 +461,7 @@ def plan_cooccurrence(
                 for p in _power_of_two_candidates(min(_PAIR_TILE_MAX, blk))
                 if estimate(row_block, t_chunk, p, 1) <= budget
             ),
-            pair_tile,
+            1,
         )
 
     # (4) r_tile: 1 on CPU; largest fitting power of two on GPU.

@@ -61,9 +61,17 @@ from xtrax.categorical.plan import plan_cooccurrence, select_method  # verify: s
 
 #### Checks
 
-`check=True` (the default) enforces, under trace, with `eqx.error_if`: code range, non-negative
-weights, integer-valued float weights on the differentiable path, and total bounds. `check=False`
-skips them. Use it only for benchmarks, and only with inputs already known to be valid.
+`check=True` (the default) evaluates code range, non-negative weights, integer-valued float
+weights on the differentiable path, total bounds and the pair range on device, with no host
+callback, into `CooccurrenceCounts.status` (int32 per replicate, `STATUS_*` bits; 0 means valid).
+
+- Eager call (no traced input): a failure raises `ValueError` before the kernel runs.
+- Inside `jit`, `vmap` or `grad`: nothing raises. Return `status` (as an aux output under
+  `grad`) and check it, or call `counts.raise_if_invalid()` outside the trace. A replicate
+  with a nonzero status has undefined counts.
+
+`check=False` skips the checks (`status` is all 0). Use it only for benchmarks, and only with
+inputs already known to be valid.
 
 #### Memory
 

@@ -314,7 +314,7 @@ forbidden_modules = ["xtrax.inference"]
 [[tool.importlinter.contracts]]
 name = "categorical must not import inference, export, eda or devtools"
 # Spec 261015_exact-categorical-cooccurrence §2-3: xtrax.categorical is a generic
-# primitive. It imports only jax, equinox, jaxtyping, numpy and
+# primitive. It imports only jax, jaxtyping, numpy, xtrax._tree (Struct) and
 # xtrax.tiling.budget (BudgetInfeasibleError), so no domain-facing or dev-only
 # layer may leak into it.
 type = "forbidden"

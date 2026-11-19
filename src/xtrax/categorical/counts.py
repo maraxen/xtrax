@@ -346,13 +346,27 @@ def _scatter_block(
     return lax.map(one_replicate, (w_c, sa, sb), batch_size=r_tile)
 
 
-def _prepare_shifts(shifts: ArrayLike | None, n_vars: int, name: str) -> jax.Array | None:
-    """Return int32 shifts ``(R, P)``, or None when no shifts were given."""
+def _prepare_shifts(
+    shifts: ArrayLike | None, n_vars: int, name: str, n_frames: int
+) -> jax.Array | None:
+    """Return int32 shifts ``(R, P)`` reduced mod ``T``, or None when none were given.
+
+    The reduction happens in the input's own integer dtype, before narrowing to
+    int32, so a shift beyond the int32 range still follows ``np.roll``. Concrete
+    shifts are reduced in NumPy (``jnp.asarray`` of an int64 value would already
+    wrap with x64 off); traced wide shifts (x64 on) with ``jnp.mod``.
+    """
     if shifts is None:
         return None
-    s = jnp.asarray(shifts)
-    if not jnp.issubdtype(s.dtype, jnp.integer):
-        raise TypeError(f"{name} must be integer-valued, got dtype {s.dtype}")
+    if isinstance(shifts, jax.core.Tracer):
+        if not jnp.issubdtype(shifts.dtype, jnp.integer):
+            raise TypeError(f"{name} must be integer-valued, got dtype {shifts.dtype}")
+        s = jnp.mod(shifts, n_frames) if shifts.dtype.itemsize > 4 else shifts
+    else:
+        host = np.asarray(shifts)
+        if not np.issubdtype(host.dtype, np.integer):
+            raise TypeError(f"{name} must be integer-valued, got dtype {host.dtype}")
+        s = jnp.asarray(np.mod(host, n_frames).astype(np.int32))
     if s.ndim == 1:
         s = s[None, :]
     if s.ndim != 2 or s.shape[1] != n_vars:
@@ -493,9 +507,7 @@ def _prepare_float_weights(weights: ArrayLike | None, n_frames: int) -> jax.Arra
     return w.astype(jnp.float32)
 
 
-def _float_weight_status(
-    w: jax.Array, *, require_integral: bool, exact_bound: bool
-) -> jax.Array:
+def _float_weight_status(w: jax.Array, *, require_integral: bool, exact_bound: bool) -> jax.Array:
     """C2 and C3 for float32 weights, per replicate (spec §3.2).
 
     C2: ``w >= 0``, and with ``require_integral`` also ``w == round(w)``.
@@ -883,10 +895,10 @@ def cooccurrence_counts(
         raise ValueError("at least one frame is required")
     _check_static_sizes(pa, ka, pb, kb)
 
-    sa = _prepare_shifts(shifts_a, pa, "shifts_a")
+    sa = _prepare_shifts(shifts_a, pa, "shifts_a", n_frames)
     if self_layout and shifts_b is not None:
         raise ValueError("shifts_b must be None in the self layout; shifts_a applies to both sides")
-    sb = sa if self_layout else _prepare_shifts(shifts_b, pb, "shifts_b")
+    sb = sa if self_layout else _prepare_shifts(shifts_b, pb, "shifts_b", n_frames)
 
     diff = exact and differentiable
     if exact and not diff:
@@ -927,9 +939,7 @@ def cooccurrence_counts(
         status = jnp.zeros((n_rep,), dtype=jnp.int32)
     else:
         status = jnp.broadcast_to(status, (n_rep,))
-        traced = any(
-            isinstance(v, jax.core.Tracer) for v in (xa, xb, w, sa, sb, pair_a, pair_b)
-        )
+        traced = any(isinstance(v, jax.core.Tracer) for v in (xa, xb, w, sa, sb, pair_a, pair_b))
         if not traced:
             # Eager call: fail fast before launching the kernel. This reads back only
             # the input reductions above, not the counts.
