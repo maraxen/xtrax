@@ -72,11 +72,6 @@ class CampaignArgs:
     #: 'run' resume check: 'deep' (default) recomputes each completed store's content digest
     #: before reusing it; 'tier1' trusts the done marker and root metadata only (fast path).
     resume_verify: str = "deep"
-    #: JAX persistent compilation cache for 'run': a directory, or 'off'. Unset resolves
-    #: through xtrax.jax_cache (XTRAX_JAX_CACHE_DIR, JAX_COMPILATION_CACHE_DIR,
-    #: ~/.config/xtrax, and the [tool.xtrax] jax_compilation_cache on/off policy). With
-    #: executor 'slurm' a directory must be absolute: it is the path on the cluster.
-    compilation_cache: str | None = None
     # SLURM array resources (executor 'slurm' only; any of them with a local executor is
     # refused). Unset means the SlurmArrayExecutor default, shown in brackets.
     #: --partition for each array task (one name or a comma-separated list) [none].
@@ -93,6 +88,12 @@ class CampaignArgs:
     slurm_job_name: str | None = None
     #: Throttle: at most this many array tasks run at once (%N) [no limit].
     slurm_max_concurrent: int | None = None
+    # Appended last so existing fields keep their positions (audit-dataclass-shape-diff).
+    #: JAX persistent compilation cache for 'run': a directory, or 'off'. Unset resolves
+    #: through xtrax.jax_cache (XTRAX_JAX_CACHE_DIR, JAX_COMPILATION_CACHE_DIR,
+    #: ~/.config/xtrax, and the [tool.xtrax] jax_compilation_cache on/off policy). With
+    #: executor 'slurm' a directory must be absolute: it is the path on the cluster.
+    compilation_cache: str | None = None
 
 
 #: CampaignArgs SLURM field -> SlurmArrayExecutor keyword. Only fields that were set are
