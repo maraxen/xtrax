@@ -354,14 +354,16 @@ def _prepare_shifts(
     The reduction happens in the input's own integer dtype, before narrowing to
     int32, so a shift beyond the int32 range still follows ``np.roll``. Concrete
     shifts are reduced in NumPy (``jnp.asarray`` of an int64 value would already
-    wrap with x64 off); traced wide shifts (x64 on) with ``jnp.mod``.
+    wrap with x64 off); traced shifts with ``jnp.mod`` in their own dtype (this
+    covers uint32 values >= 2**31 as well as int64 under x64).
     """
     if shifts is None:
         return None
     if isinstance(shifts, jax.core.Tracer):
         if not jnp.issubdtype(shifts.dtype, jnp.integer):
             raise TypeError(f"{name} must be integer-valued, got dtype {shifts.dtype}")
-        s = jnp.mod(shifts, n_frames) if shifts.dtype.itemsize > 4 else shifts
+        # Always reduce in the input dtype: uint32 >= 2**31 would wrap if narrowed first.
+        s = jnp.mod(shifts, n_frames)
     else:
         host = np.asarray(shifts)
         if not np.issubdtype(host.dtype, np.integer):

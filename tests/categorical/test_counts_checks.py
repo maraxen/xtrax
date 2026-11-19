@@ -219,3 +219,25 @@ def test_large_shifts_follow_np_roll(shift: int) -> None:
     for t in range(3):
         expected[rolled[t], xa[0, t]] += 1
     assert np.array_equal(np.asarray(out.joint)[0, 0, 0], expected)
+
+
+@pytest.mark.parametrize("shift", [2**31, 2**31 + 1, 2**32 - 1, 4])
+def test_traced_uint32_shifts_follow_np_roll(shift: int) -> None:
+    """Re-review #277: a traced uint32 shift >= 2**31 is reduced mod T before narrowing.
+
+    T=3 does not divide 2**32, so narrowing first (wrapping to a negative int32)
+    would put the codes at a different offset than ``np.roll``.
+    """
+    xa = np.array([[0, 1, 2]], dtype=np.int64)
+    ca = encode_codes(xa, 3)
+    cb = ca.__class__(codes=ca.codes, n_categories=3)
+
+    def run(s):
+        return cooccurrence_counts(ca, cb, shifts_a=s, method="matmul")
+
+    out = jax.block_until_ready(jax.jit(run)(jnp.asarray(np.array([[shift]], dtype=np.uint32))))
+    rolled = np.roll(xa[0], shift)
+    expected = np.zeros((3, 3), dtype=np.int64)
+    for t in range(3):
+        expected[rolled[t], xa[0, t]] += 1
+    assert np.array_equal(np.asarray(out.joint)[0, 0, 0], expected)
