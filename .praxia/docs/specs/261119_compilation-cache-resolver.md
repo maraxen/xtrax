@@ -5,7 +5,7 @@ status: draft
 task_id: 261119_compilation-cache-resolver
 date: '261119'
 backlog_ids: ''
-adversarial_review: 'spec-challenger (sonnet) 261119 NEEDS_WORK -> B1-B3, S1-S7, N1 folded in; S5 resolved by descoping max size. Rev 3 (placement/policy split, myxcel [env] contract, shared jax_cache) not yet re-reviewed'
+adversarial_review: 'R1 spec-challenger (claude sonnet) 261119 NEEDS_WORK -> B1-B3, S1-S7, N1 folded in; S5 descoped (max size). R2 cursor headless reviewer via surface_dispatch 74de3d1a (admitted, containment agent_sandbox) on rev 3 NEEDS_WORK -> B1 (local-seq + slurm array never apply a decision), S1-S7, N1 all verified against code and folded in as rev 4; rev 4 not yet re-reviewed'
 ---
 # xtrax compilation-cache resolver
 
@@ -13,8 +13,13 @@ adversarial_review: 'spec-challenger (sonnet) 261119 NEEDS_WORK -> B1-B3, S1-S7,
 
 Any xtrax project, and any consumer of xtrax, uses the JAX persistent compilation cache the same
 way: one function decides the directory from layered configuration, applies it to JAX, and reports
-which layer decided. A project opts in with one line of `pyproject.toml`; a machine opts in with one
-line of `~/.config/xtrax/config.toml`; a job overrides with one env var.
+which layer decided (for both where and whether).
+
+- **A machine opts in** with one line of `~/.config/xtrax/config.toml`, or with its myxcel profile
+  `[env]` for jobs myxcel submits.
+- **A project opts out** with one line of `pyproject.toml` (`compilation_cache = "off"`).
+- **A run overrides either** with one env var or flag.
+- "Unconfigured" means no placement on that machine, so the cache is off.
 
 ## Current state (verified)
 
@@ -96,7 +101,8 @@ Every setting is classified by who owns it before it gets a home:
 | Kind | Example | Same on every machine? | Secret? | Home |
 |---|---|---|---|---|
 | Project policy | cache on/off, compile threshold, presets, uv venv mode | yes | no | committed: `[tool.xtrax]` in `pyproject.toml`, `myxcel.toml` |
-| Machine fact | `jax_cache` path, flash vs scratch tier, `remote_home`, node-specific `XLA_FLAGS` | no (shared across projects) | no | per host, outside any repo: the myxcel profile (`[uv]`, proposed `[env]`) for remotes myxcel drives; `~/.config/<tool>/config.toml` for the laptop and for runs outside myxcel |
+| Machine fact | `jax_cache` path, flash vs scratch tier, `remote_home` | no (shared across projects) | no | per host, outside any repo: the myxcel profile (`[uv]`, proposed `[env]`) for remotes myxcel drives; `~/.config/<tool>/config.toml` for the laptop and for runs outside myxcel |
+| Node-conditional flag | `XLA_FLAGS=--xla_gpu_shard_autotuning=false` on Blackwell nodes | no (varies per node in one job's partition) | no | myxcel's existing sbatch guard (`myxcel/src/myxcel/slurm.py:727-733`), which tests the node at run time; **not** profile `[env]`, which refuses `XLA_FLAGS` (`slurm.py:172`) |
 | Per-run override | `--compilation-cache off`, `XTRAX_COMPILATION_CACHE=on` | n/a | no | CLI flag or env var, recorded in the run record |
 | Secret | API tokens | n/a | yes | gitignored `.env` or keyring; never a myxcel profile `[env]` (exports are written into sbatch scripts on disk) |
 | Shell convenience | `direnv` loading `.env` | n/a | maybe | `.envrc`, local interactive use only; not a source of truth |
@@ -153,14 +159,35 @@ directly with `xtrax.config`'s TOML helpers (`_user_config_path`, `_read_toml`),
 5. Default `on` (so a machine placement alone turns the cache on for every project, which is the
    point of a shared machine cache).
 
-Consequence: a project that sets `compilation_cache = "off"` stays off on every machine, including
-under a myxcel-injected `JAX_COMPILATION_CACHE_DIR`. Since JAX reads that variable at import, "off"
-must actively clear the flag (already required below). Env still beats pyproject for a single run
+**Explicit argument across the axes:** `explicit=<path>` is both a placement and a policy-on. It
+overrides a pyproject `compilation_cache = "off"` for that call. `explicit=OFF` is a policy-off and
+wins over everything. T1b locks both cases.
+
+**What "project off" guarantees, and its limit.** A project that sets `compilation_cache = "off"`
+stays off in **every process that applies a decision before its first compile**. That covers every
+xtrax entry point listed under "Every compiling process applies a decision", including under a
+myxcel-injected `JAX_COMPILATION_CACHE_DIR`. JAX reads that variable at import
+(`jax/_src/config.py:906`), so "off" must actively clear the flag (required below).
+
+A process that never calls xtrax cannot be held to the project's policy: a plain JAX script, or
+alynxr before it adopts xtrax. Under an injected `JAX_COMPILATION_CACHE_DIR` it uses the cache. Such
+consumers opt out through their own env: a preset `env` setting `JAX_COMPILATION_CACHE_DIR=""`, or an
+`XTRAX_COMPILATION_CACHE=off` that they honour after adoption. Env still beats pyproject for one run
 via `XTRAX_COMPILATION_CACHE=on`.
 
-**Off sentinels, every layer:** `""`, `none`, `off` (any case, stripped) mean off, via one
-`_parse_dir` used for all layers (arg, both env vars, pyproject, user config). `explicit=Path("")`
-is off, not cwd.
+**Parsers, one per axis:**
+
+- **Placement values** go through `_parse_dir`. `""`, `none` and `off` (any case, stripped) mean off;
+  anything else is a path. It applies to the explicit argument, both directory env vars and the user
+  config. `explicit=Path("")` is off, not cwd.
+- **Policy values** go through `_parse_policy`, case-insensitive:
+  - `on` → on.
+  - `off`, `none` and `""` → off.
+  - Any other token raises `ValueError` naming the variable or file.
+
+  It applies to `XTRAX_COMPILATION_CACHE`, pyproject `compilation_cache` and user-config
+  `compilation_cache`.
+- A pyproject `compilation_cache_dir` is never parsed. It is refused, as stated above.
 
 **Relative paths:** `XTRAX_COMPILATION_CACHE_DIR` and the user config must be absolute or
 `~`-prefixed (`$VARS` expanded); a relative value raises `ValueError` naming the variable or file.
@@ -204,9 +231,11 @@ has no `none`-means-off ambiguity).
   (`compiler.py:835-838`); every process reads. In a multi-host job every host must resolve the same
   shared directory, or only host 0's kernels are reusable. The resolver does not attempt to enforce
   this; the docs page states it.
-- Logs one INFO line on first application (DEBUG on idempotent repeats): `compilation cache:
-  <dir|off> (source: <source>)`. Returns the decision so callers can write it into run records /
-  bathos sidecars.
+- Logs one INFO line on first application (DEBUG on idempotent repeats), naming **both axes**:
+  `compilation cache: <dir|off> (placement: <source>; policy: <on|off> from <policy_source>)`. A run
+  kept off by project policy while a directory was injected must be distinguishable from a run with
+  no placement at all. Returns the decision so callers can write it into run records / bathos
+  sidecars.
 
 ### Worker processes
 
@@ -228,14 +257,43 @@ directory would also let `min_compile_secs` re-resolve from the worker's own cwd
 - Errors in the initializer surface as `BrokenProcessPool`. The parent therefore validates the
   directory (mkdir and writability) before spawning, so a bad path fails in the parent with a named
   error.
-- The parent's `CacheDecision.source` is recorded once in the run summary.
+- The parent's whole `CacheDecision` (directory, source, policy, policy_source, min_compile_secs) is
+  recorded once in the run summary.
+
+### Every compiling process applies a decision
+
+The project-off guarantee holds only where a decision is applied before the first compile. Review
+round 2 found two xtrax paths that apply none today:
+
+- **`LocalSequentialExecutor`**, the default for `xtrax campaign run` (`src/xtrax/cli/campaign_verb.py:68`,
+  instantiated at `:259`). It runs units in-process and never touches the cache. Fix: `run()` calls
+  `enable_compilation_cache(cache_dir)` before the first unit. It takes the same
+  `cache_dir: str | Literal["off"] | None` as the pool executor.
+- **xtrax Slurm array tasks.** The array script is generated on the submitting host, is meant to work
+  under `sbatch --export=NONE` (`src/xtrax/campaign/executors/slurm.py:210-231`), and exports only the
+  variables it bakes (`slurm.py:478-491`). Each task runs `xtrax campaign run --row-index`, which
+  takes the `LocalSequentialExecutor` path above, so the fix there covers application. Placement and
+  policy reach the task as follows:
+  - **Policy is baked.** The generator resolves policy on the submitting host, from the project's
+    pyproject plus any `XTRAX_COMPILATION_CACHE` override, and exports `XTRAX_COMPILATION_CACHE=on|off`
+    into the script.
+  - **Placement is never baked.** The generator runs on the laptop, so any directory it resolved
+    would be the laptop's. The task resolves placement on its own node: from
+    `~/.config/xtrax/config.toml` on that host, or from an env var the submission path really
+    delivers to the task.
+  - The generator gains an optional `compilation_cache_dir` parameter for a caller who knows the
+    remote path. It is exported as `XTRAX_COMPILATION_CACHE_DIR`.
+  - **myxcel profile `[env]` does not reach these tasks** when the script is submitted with
+    `--export=NONE`, because myxcel's injection lives in myxcel's own generated script. Docs state
+    this. The remote user config is the reliable placement for xtrax arrays.
 
 ### xtrax call sites
 
 | Site | Change |
 |---|---|
-| `campaign/executors/local.py` | delete `_resolve_compilation_cache_dir`; use the module as above |
-| `cli/sweep_verb.py:162` | call `enable_compilation_cache()`. **Behaviour change, deliberate:** the verb goes from always-on (`.xtrax/jax_cache`) to off unless configured. The verb is deprecated (removal 0.6.0); its `CHANGELOG` entry says how to keep the old behaviour. |
+| `campaign/executors/local.py` | delete `_resolve_compilation_cache_dir`; pool executor as above; `LocalSequentialExecutor.run` calls `enable_compilation_cache` before the first unit |
+| `campaign/executors/slurm.py` | bake `XTRAX_COMPILATION_CACHE=<resolved policy>` into the array script; optional `compilation_cache_dir` → `XTRAX_COMPILATION_CACHE_DIR`; never bake a resolved local placement |
+| `cli/sweep_verb.py:162` | call `enable_compilation_cache()`. **Behaviour change, deliberate:** the verb stops writing `.xtrax/jax_cache` under cwd. It now uses the machine placement when one exists (policy default on), and is off when the machine has no placement. The verb is deprecated (removal 0.6.0); its `CHANGELOG` entry says this in those words and how to keep the old directory (`XTRAX_COMPILATION_CACHE_DIR=$PWD/.xtrax/jax_cache`). |
 | `xtrax campaign run` | `--compilation-cache PATH\|off`, passed as `cache_dir` to the executor (resolved in `run()`) |
 | `xtrax run` (`cli/run_verb.py:run_run`) | `--compilation-cache PATH\|off`; `run_run` calls `enable_compilation_cache(explicit=…)` before building the engine |
 | introspection | no new verb (none exists in `cli/registry.py:44-57`). Both CLIs print the INFO decision line, and the decision (`dir`, `source`, `min_compile_secs`) is written into the run summary / record so it is visible after the fact |
@@ -253,9 +311,17 @@ The cache writes many small files. The machine-level config on Engaging must poi
 `/orcd/compute/so3/002/...`, not scratch (1,000,000-file cap). The docs page says so. A size cap is
 out of scope here: callers who need one set JAX's own `jax_compilation_cache_max_size` directly. A
 later revision can add a layered `compilation_cache_max_size_bytes` key with its own source field and
-tests. Entries are keyed by JAX on jax/jaxlib version, backend and
-device kind, so one directory shared across projects on one machine is safe. Sharing a directory
-across machines with different GPUs is also safe but gives no reuse.
+tests. Entries are keyed by JAX on the jaxlib version, the backend platform and the device kind
+(verified: `jax/_src/cache_key.py:103,108,256,367`), so one directory shared across projects on one
+machine is safe from mismatched entries. Sharing a directory across machines with different GPUs is
+also safe but gives no reuse.
+
+**Trust.** Cache entries are serialized executables that JAX deserializes and runs. Anyone who can
+write the directory can plant code in every job that reads it. The shared `jax_cache` must therefore
+be writable only by you (mode `0700`, or `0750` for a group you would run code from). It must not sit
+under a setgid group-shared tree such as `so3_shared/` without checking the inherited group.
+`enable_compilation_cache` logs a WARNING when the resolved directory is group- or world-writable. It
+does not refuse, because some labs share caches on purpose.
 
 **Layout (user decision 261119): one shared directory per machine, named `jax_cache`.**
 
@@ -305,13 +371,27 @@ TRITON_CACHE_DIR = "/orcd/compute/so3/002/maarxaru/triton_cache"
 HF_HOME = "/orcd/compute/so3/002/maarxaru/hf"
 ```
 
-- **Precedence, lowest to highest:** profile `[env]` < project `[env_catalog]` < preset `env` <
-  invocation overrides. This follows the existing convention that the profile owns machine facts and
-  the project owns policy.
-- **One owner per name:** a name that a typed table also sets, such as `UV_CACHE_DIR` from `[uv]`,
-  raises `ConfigError` at profile load.
-- **Reserved names:** the reserved set, currently `XLA_FLAGS` (`slurm.py:172`), and every `MYXCEL_*`
-  name raise `ConfigError`.
+- **Precedence, lowest to highest (revised in review round 2):** project `[env_catalog]` < profile
+  `[env]` < preset `env` < invocation overrides.
+  - The machine fact beats the committed catalog for the same name. A committed `myxcel.toml` is
+    pushed to every remote, so a catalog path written on the laptop must not override the remote's
+    own placement. This is the same "committed files never hold machine paths" rule as `[tool.xtrax]`.
+  - Presets and invocation overrides stay above it, so a job can still opt out (for example
+    `JAX_COMPILATION_CACHE_DIR=""`).
+  - A name present in both the catalog and profile `[env]` logs a submit-time warning naming both
+    values.
+- **Names owned elsewhere are refused** at profile load with `ConfigError`:
+  - everything uv placement writes: `UV_CACHE_DIR`, `UV_LINK_MODE`, `UV_PROJECT_ENVIRONMENT`,
+    `MYXCEL_UV_READY`, `MYXCEL_UV_SOURCE` (`uv_placement.py`, and the scratch default at
+    `slurm.py:776-779`);
+  - the node-conditional reserved set, currently `XLA_FLAGS` (`slurm.py:172`). Node-conditional
+    flags stay with the sbatch guard;
+  - every other `MYXCEL_*` name.
+- **Secret-looking names are refused** at profile load. A name refuses when, uppercased, it equals or
+  ends with `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `CREDENTIALS`, or `_KEY`.
+  - Example: `HF_TOKEN` is refused, while `HF_HOME` is allowed.
+  - Reason: exported values are written into sbatch scripts on shared disk. The refusal message
+    points at the cluster's own keyring or env.
 - **Values:**
   - Strings only.
   - A leading `~` expands through `remote_home`, the same as `uv_placement._expand_remote`; it raises
@@ -319,8 +399,9 @@ HF_HOME = "/orcd/compute/so3/002/maarxaru/hf"
   - Values are exported `shlex`-quoted. There is no `$VAR` expansion, so a profile cannot smuggle in
     shell code.
 - **Provenance:**
-  - `MYXCEL_ENV_SOURCE=NAME=profile|project|preset,...` lists every name that came from or competed
-    with profile `[env]`, the same shape as `MYXCEL_UV_SOURCE`.
+  - `MYXCEL_ENV_SOURCE=NAME=profile|project|preset|invocation,...` lists every name that came from or
+    competed with profile `[env]`, the same shape as `MYXCEL_UV_SOURCE`. Invocation overrides get
+    their own label.
   - xtrax's `CacheDecision.source == "env_jax"` plus that variable together say which file decided.
 - **Byte-identical when unset:** a profile without `[env]` produces exactly today's script, the same
   guarantee `[uv]` makes.
@@ -361,6 +442,10 @@ because policy and placement are separate axes. (Non-xtrax consumers opt out by 
 | A14 | JAX's file cache writes entries atomically | **false** (verified by code): `LRUCache.put` writes in place with `write_bytes`, no temp+rename, and takes no lock unless `jax_compilation_cache_max_size` is set (`lru_cache.py:121-161`; default `-1`, `config.py:1657-1658`). See "Shared-filesystem safety" |
 | A15 | Treating `JAX_COMPILATION_CACHE_DIR=""` as off holds in JAX too (empty flag = no cache) | verified by code (`compilation_cache.py:250-251`: `if not path: return`) |
 | A16 | A torn or corrupt entry makes JAX warn and recompile, not crash | verified by code (`compiler.py:808-818`; `jax_raise_persistent_cache_errors` default False, `config.py:1490-1492`) |
+| A17 | Cache key covers jaxlib version, backend platform, device kind | verified (`jax/_src/cache_key.py:103,108,256,367`) |
+| A18 | `xtrax campaign run` defaults to `LocalSequentialExecutor`, which applies no cache decision | verified (`src/xtrax/cli/campaign_verb.py:68,259`) |
+| A19 | xtrax Slurm array scripts target `--export=NONE` and export only baked variables | verified (`src/xtrax/campaign/executors/slurm.py:210-231,478-491`) |
+| A20 | Under `--export=NONE`, a task still has `HOME` so `~/.config/xtrax/config.toml` resolves | **unverified**; Slurm sets HOME from the passwd entry in our experience, but probe with one quicktest array task before relying on it |
 
 ## Tests (write red first where marked)
 
@@ -368,6 +453,10 @@ because policy and placement are separate axes. (Non-xtrax consumers opt out by 
   source strings correct; tmp `pyproject.toml` and `XDG_CONFIG_HOME`.
 - T2 env `none`/empty/`off` in either placement env var stops the placement search even when the user
   config sets a dir; `none`/`off` in the user config mean off; `explicit=Path("")` is off.
+- T1b cross-axis: `explicit=<path>` with pyproject `compilation_cache = "off"` → on at that path;
+  `explicit=OFF` with every placement layer set → off.
+- T1c `_parse_policy`: `ON`/`Off`/`none`/`""` parse; `yes` / `1` / a path raise `ValueError` naming
+  the source.
 - T10 a `compilation_cache_dir` key under `[tool.xtrax]` raises `ValueError` naming the file.
 - T11 policy beats placement: `[tool.xtrax] compilation_cache = "off"` with `JAX_COMPILATION_CACHE_DIR`
   set → decision off, JAX flag cleared, no entries (subprocess); `XTRAX_COMPILATION_CACHE=on` then
@@ -377,7 +466,12 @@ because policy and placement are separate axes. (Non-xtrax consumers opt out by 
   a file raises.
 - **T4 (red first)** subprocess with `JAX_COMPILATION_CACHE_DIR=none`, call `enable_compilation_cache()`,
   compile (assert the jitted result, so a compile demonstrably ran); assert JAX flag is `None` and no
-  `./none` under cwd. Fails on today's executor path.
+  `./none` under cwd. Fails on today's executor path. Parametrized over `none`, `off` and `OFF`:
+  JAX treats each as a truthy relative path (`compilation_cache.py:250`), so each must be cleared.
+- T4b subprocess: `XTRAX_COMPILATION_CACHE_DIR=""` (placement off at layer 2) **and**
+  `JAX_COMPILATION_CACHE_DIR=<real dir>`. After enabling, the decision directory is `None`, **JAX's
+  flag is `None`**, and a compile writes no entries there. This catches an implementation that returns
+  off but leaves JAX's import-time flag set.
 - T5 subprocess: on, compile, assert entries appear in the resolved dir (min secs 0, min entry size -1).
 - T6 subprocess: enable A, compile, enable B → `RuntimeError`; with `on_conflict="reset"`, entries land in B.
 - T6b subprocess: enable A, compile, enable off → `RuntimeError`; with `on_conflict="reset"`, a further
@@ -386,8 +480,19 @@ because policy and placement are separate axes. (Non-xtrax consumers opt out by 
   resolves a dir → entries appear; (b) parent resolves off from `[tool.xtrax]` while env
   `JAX_COMPILATION_CACHE_DIR` points at a real dir → zero entries there; (c) the per-task re-init logs
   at most one INFO line per worker.
-- T8 sweep verb no longer creates `.xtrax/jax_cache` when unconfigured, and `CHANGELOG.md` carries
-  the behaviour-change line.
+- T7b `LocalSequentialExecutor`, same settings: pyproject off plus `JAX_COMPILATION_CACHE_DIR=<real dir>`
+  → zero entries; a positive control with policy on → entries appear. Red on today's code, which never
+  applies a decision on this path.
+- T7c Slurm array script: the generated script exports `XTRAX_COMPILATION_CACHE=<policy resolved at
+  generation>`, and exports **no** placement unless `compilation_cache_dir` was passed. Assert that
+  with a user-config placement set on the generating host, that path does not appear in the script.
+- T8 sweep verb, with `XTRAX_COMPILATION_CACHE_DIR`, `JAX_COMPILATION_CACHE_DIR` and `XTRAX_COMPILATION_CACHE`
+  unset and `XDG_CONFIG_HOME` pointing at an empty tmp dir: no `.xtrax/jax_cache` is created, JAX's
+  flag is `None`, and the run summary records placement `none`. With a user-config placement, entries
+  land there instead. `CHANGELOG.md` carries the behaviour-change line.
+- T12 decision record: a policy-off run under an injected placement logs and stores `policy: off`
+  with `policy_source: pyproject`, distinguishable from a no-placement run.
+- T13 group- or world-writable resolved directory → one WARNING naming the mode; `0700` → none.
 - T9 `jax._src.compilation_cache` has `_cache_initialized` (runs in CI against the resolved jax; the
   floor is checked once in the implementation PR via `uv run --with jax==0.10.2`).
 - Import-boundary audits (`tests/audit/test_no_devtools_imports.py`,
