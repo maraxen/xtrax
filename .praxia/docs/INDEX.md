@@ -1,4 +1,6 @@
-# eda-merge-251 Internal Docs
+# 261119-branch-triage-salvage Internal Docs
+
+Superseded and archived docs: [HISTORY.md](HISTORY.md).
 
 ## Daily
 
@@ -18,8 +20,16 @@
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [261110_track1_tooling_campaign_zarr](specs/261110_track1_tooling_campaign_zarr.md)
+- [261110_track2_consumer_adoption](specs/261110_track2_consumer_adoption.md)
+- [261110_track3_profiling_testing_observability](specs/261110_track3_profiling_testing_observability.md)
+- [261110_track4_tiling_composition_architecture](specs/261110_track4_tiling_composition_architecture.md)
+- [261109_pack-telemetry-seam-3300](specs/261109_pack-telemetry-seam-3300.md) — Specification addendum for Debt #3300: producer-side timing and compression telemetry in xtrax.pack._node, strict stdlib isolation, schema compatibility with alynxr reader parity, and consumer-side Q5 ingestion in xtrax.eda.campaign.telemetry
 - [261108_campaign-lease-fencing-token](specs/261108_campaign-lease-fencing-token.md) — Spec for a fencing token on xtrax campaign leases so a stalled holder cannot clobber a stealer's commit, abort cleanup or lock.
 - [261108_campaign-row-hash-output-locator](specs/261108_campaign-row-hash-output-locator.md) — Spec to bind a manifest row's output_locator to its hash without touching input_hash, so aminx parity (GATE-11) is unaffected.
+- [261106_campaign-eda-redesign](specs/261106_campaign-eda-redesign.md) — Formal technical specification for xtrax Campaign EDA, providing knob-faceted sink statistics across finished and running campaigns, typed domain plugins (aminx, demistify), vectorized cluster bootstrap uncertainty, storage format parity (loose vs packed), and neutral export artifacts, closing debts #3301, #3143, #3300, and demistify #830
+- [261105_campaign-runner-epic](specs/261105_campaign-runner-epic.md) — Track decomposition (T1-T5, GATE-01..11) for the campaign runner that shipped as PR
+- [261105_campaign-runner-spec](specs/261105_campaign-runner-spec.md) — Design specification for the distributed campaign runner that shipped as PR
 - [261030_ledger-pack-fileguard](specs/261030_ledger-pack-fileguard.md)
 - [261028_xtrax-eda-redesign](specs/261028_xtrax-eda-redesign.md) — Specification for redesigning xtrax.eda into a compiler-plan inspection engine using Vega-Lite canonical interchange, entry-point panel plugins, bitwise-deterministic JSON exports, progressive offline HTML dashboards, and strict isolation from maraxiom.eda
 - [261023_equinox-decoupling](specs/261023_equinox-decoupling.md) — Make xtrax depend only on jax/optax for its pytree layer, with one implementation and Equinox models and downstream eqx.field subclasses still working (Part 1 of the equinox/Pallas plan)
@@ -77,12 +87,23 @@
 ## Actuation Surfaces
 
 ## Audits
+- [261110_debt_burndown_swarm_audit](audits/261110_debt_burndown_swarm_audit.md)
+- [261109_three_pr_swarm_review](audits/261109_three_pr_swarm_review.md) — Three-PR Adversarial Swarm Code Review and Forensic Audit
+- [261106_campaign_eda_p2_spec_author_report](audits/261106_campaign_eda_p2_spec_author_report.md) — Formal technical specification author handoff delivering initial r1.0 spec, superseding 261028 Decision 1, mapping Q1-Q5 to data sources, and defining DomainPlugin protocol
+- [261106_campaign_eda_p3_spec_adjudication](audits/261106_campaign_eda_p3_spec_adjudication.md) — Review, defense, and adjudication of challenger findings for Campaign EDA specification (r1.0), articulating 18 concrete remediations (BLK-01..07, MAJ-01..08, MIN-01..03)
+- [261106_campaign_eda_p3_spec_adversarial_critique](audits/261106_campaign_eda_p3_spec_adversarial_critique.md) — Adversarial stress-test and critique of the Campaign EDA specification (r1.0), identifying 7 blockers, 8 majors, and 3 minors including cluster ratio bootstrap bias and demo small-sample deadlock
+- [261106_campaign_eda_p4_spec_revision](audits/261106_campaign_eda_p4_spec_revision.md) — Incorporation of all 18 adjudicated remediations into 261106_campaign-eda-redesign.md to achieve Revision 1.1 with zero open blockers and zero open majors
+- [261106_campaign_eda_p7_architecture_ergonomics_audit](audits/261106_campaign_eda_p7_architecture_ergonomics_audit.md) — Independent verification of DomainPlugin protocols, zero-copy array immutability, exception quarantine, test suites, and Vega-Lite/HTML progressive rendering
+- [261106_campaign_eda_p7_stats_performance_audit](audits/261106_campaign_eda_p7_stats_performance_audit.md) — Independent audit and mathematical verification of vectorized cluster ratio bootstrap, Best-of-N recurrence, small-sample guards, and Pareto frontier sorting
+- [261106_campaign_eda_p8_forensic_integrity_audit](audits/261106_campaign_eda_p8_forensic_integrity_audit.md) — Forensic code audit for hardcoded values, facade detection, boundary isolation, test and benchmark suite reproduction, and debt closure verification
+- [261106_campaign_eda_p8_victory_audit](audits/261106_campaign_eda_p8_victory_audit.md) — Final post-victory audit verifying timeline, integrity checks, and reproduction of test suites across xtrax, aminx, and demistify
 - [261026_xtrax-thin-wrapper-audit](audits/261026_xtrax-thin-wrapper-audit.md) — Every src/xtrax subpackage classified decision / domain-infra / thin-wrapper, with eqx usage, consumer call sites at origin/main, and a keep/deprecate/split call; shrinks the 19-class Equinox migration to 13 and corrects four spec assumptions.
 - [261024_intent-mvp-code-review-fixes](audits/261024_intent-mvp-code-review-fixes.md) — /code-review xhigh on PR #228 found 15 issues; 11 fixed in three waves plus one follow-up, re-review 12/12 resolved; 5 parked as backlog.
 - [261023_intent-mvp-final-review](audits/261023_intent-mvp-final-review.md) — Final whole-branch review outcome for the intent MVP: loop-in-map JVP bug fixed, two findings ruled float32 conditioning against float64 truth, re-review 4/4 resolved.
 - [260901_xtrax-export-webgpu-adversarial-findings](audits/260901_xtrax-export-webgpu-adversarial-findings.md) — Consolidated challenger + defender findings with orchestrator empirical verification
 
 ## Research
+- [261106_campaign_eda_prior_art_research](research/261106_campaign_eda_prior_art_research.md) — Research Note: Prior Art, Design Options, and Reference Implementations for xtrax Campaign EDA
 - [261030_xtrax-0-4-1b6-dependent-scope](research/261030_xtrax-0-4-1b6-dependent-scope.md) — Verified list of xtrax consumers across ~/projects, with pin ranges, removed-API hits and vendored copies, for the dependent-update debt items 3142 and 3143.
 - [261026_accumulate-grads-vs-optax-microbatching](research/261026_accumulate-grads-vs-optax-microbatching.md) — Pre-registered CPU parity probe: optax micro_grad MEAN matches xtrax accumulate_grads (f32 grad rel L2 7.4e-8, f64 1.7e-16) on mean-of-examples losses; 11 semantic differences listed, batch-coupled losses differ by 24%
 - [261023_pallas-block-sparse-spike](research/261023_pallas-block-sparse-spike.md) — Interpret-mode Pallas kernel: parity, custom_vjp grads, jit/vmap, dataclass config, export; Mosaic GPU export blocked on jax 0.11.1
@@ -134,6 +155,8 @@
 
 ## Archive
 - [handoffs_migrated_260828_001](archive/handoffs_migrated_260828_001.md)
+
+## Residue cards
 
 ## Misc
 
