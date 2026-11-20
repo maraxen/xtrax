@@ -88,6 +88,12 @@ class CampaignArgs:
     slurm_job_name: str | None = None
     #: Throttle: at most this many array tasks run at once (%N) [no limit].
     slurm_max_concurrent: int | None = None
+    # Appended last so existing fields keep their positions (audit-dataclass-shape-diff).
+    #: JAX persistent compilation cache for 'run': a directory, or 'off'. Unset resolves
+    #: through xtrax.jax_cache (XTRAX_JAX_CACHE_DIR, JAX_COMPILATION_CACHE_DIR,
+    #: ~/.config/xtrax, and the [tool.xtrax] jax_compilation_cache on/off policy). With
+    #: executor 'slurm' a directory must be absolute: it is the path on the cluster.
+    compilation_cache: str | None = None
 
 
 #: CampaignArgs SLURM field -> SlurmArrayExecutor keyword. Only fields that were set are
@@ -257,9 +263,13 @@ def _run_run(args: CampaignArgs) -> Any:
     # Instantiate chosen executor
     executor_kind = args.executor.lower()
     if executor_kind in ("local-seq", "local_seq", "sequential"):
-        executor = LocalSequentialExecutor(resume_verify=resume_mode)
+        executor = LocalSequentialExecutor(
+            resume_verify=resume_mode, cache_dir=args.compilation_cache
+        )
     elif executor_kind in ("local-pool", "local_pool", "pool"):
-        executor = LocalProcessPoolExecutor(resume_verify=resume_mode)
+        executor = LocalProcessPoolExecutor(
+            resume_verify=resume_mode, cache_dir=args.compilation_cache
+        )
     elif executor_kind in ("slurm", "slurm-array"):
         resources = {
             kw: getattr(args, name)
@@ -271,6 +281,7 @@ def _run_run(args: CampaignArgs) -> Any:
                 manifest_path=manifest_path.resolve(),
                 fn_spec=args.fn,
                 resume_verify=resume_mode,
+                compilation_cache=args.compilation_cache,
                 **resources,
             )
         except ValueError as exc:

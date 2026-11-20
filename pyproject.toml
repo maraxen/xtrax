@@ -274,6 +274,7 @@ source_modules = [
   "xtrax.eda",
   "xtrax.config",
   "xtrax.findings",
+  "xtrax.jax_cache",
   "xtrax.jaxlint_runner",
   "xtrax.tombstone",
   "xtrax.telemetry",

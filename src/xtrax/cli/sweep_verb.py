@@ -27,6 +27,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
+from xtrax import jax_cache
 from xtrax.campaign.executors.local import LocalSequentialExecutor, _resolve_output_path
 from xtrax.campaign.manifest import plan_campaign
 from xtrax.campaign.spec import ArmSpec, CampaignSpec, ParamGrid
@@ -158,8 +159,12 @@ def run_sweep(args: SweepArgs) -> None:
     axes = _read_sweep_axes(args.config_path)
     paths, combinations = _sweep_grid(axes)
 
-    # 3. Configure JAX compilation cache
-    jax.config.update("jax_compilation_cache_dir", ".xtrax/jax_cache")
+    # 3. Configure the JAX persistent compilation cache from project/user config (xtrax.jax_cache);
+    #    it is off unless a layer sets a directory.
+    try:
+        jax_cache.configure()
+    except (ValueError, OSError) as e:
+        raise SystemExit(f"JAX compilation cache: {e}") from e
 
     # 4. Determine sweep directory
     sweep_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -128,6 +128,55 @@ model = restored_state.model
 predictions = model(test_inputs)
 ```
 
+## Persistent Compilation Cache
+
+Call `xtrax.jax_cache.configure()` once at process entry, before the first `jax.jit`, so
+every process of a campaign reuses executables an earlier one compiled. `xtrax run` and
+`xtrax campaign run` (every executor, including each Slurm array task) do this for you and
+take `--compilation-cache PATH|off`.
+
+Where the cache lives is a fact about the machine; whether a project uses it is a fact about
+the project. They are configured separately:
+
+- **Directory** (first match wins): the `path` argument, `$XTRAX_JAX_CACHE_DIR`,
+  `$JAX_COMPILATION_CACHE_DIR`, then `${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml`.
+  `none`, `off` or empty in any of them disables. xtrax carries no default path, and a
+  directory in `pyproject.toml` is refused: a committed file is pushed to other machines.
+- **On/off** (first match wins): `$XTRAX_JAX_CACHE`, then `jax_compilation_cache` under
+  `[tool.xtrax]` in the nearest `pyproject.toml`, then the user config, else `on`. A
+  project's `off` holds even when a cluster profile injects `$JAX_COMPILATION_CACHE_DIR`.
+
+```toml
+# once per machine: ~/.config/xtrax/config.toml (laptop, workstation, cluster login node)
+jax_compilation_cache_dir = "/path/to/flash/jax_cache"
+```
+
+```toml
+# the consuming project's pyproject.toml: policy and knobs only, never a path
+[tool.xtrax]
+jax_compilation_cache = "on"                     # or "off" to opt this project out
+jax_cache_min_compile_time_secs = 2.0            # store only compiles that cost something
+jax_cache_max_size_bytes = 5_000_000_000         # LRU eviction (needs filelock)
+```
+
+```python
+from xtrax import jax_cache
+
+setting = jax_cache.configure()   # CacheSetting(dir, source, enabled, policy, ...)
+```
+
+`setting.source` and `setting.policy_source` name the deciding layers. With nothing
+configured anywhere, xtrax leaves JAX's own settings alone. A configured off clears JAX's flag
+(JAX would otherwise read `JAX_COMPILATION_CACHE_DIR=none` as a directory named `none`).
+On a Slurm cluster, put the directory on a flash tier without a file-count cap, writable only
+by you. JAX treats cache entries as trusted code. Entries go under `jaxlib-<version>/` inside the
+directory (JAX's key already includes the version, so this only makes pruning easy);
+`jax_cache_namespace = "cpu-flags"` adds a host-CPU-ISA segment for CPU executables shared
+across mixed nodes, and `"none"` uses the directory as given. JAX writes entries
+non-atomically, so a preempted write can leave a truncated entry; run
+`jax_cache.prune_corrupt()` between attempts. See the `xtrax.jax_cache` docstring for the
+knobs and file-count caveats.
+
 ## Documentation
 
 Full API docs, architecture guides, and advanced examples at [xtrax.readthedocs.io](https://xtrax.readthedocs.io).
