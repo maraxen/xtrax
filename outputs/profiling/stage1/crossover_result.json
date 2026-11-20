@@ -1,0 +1,9 @@
+{
+  "c_best": 256,
+  "controls_ok": true,
+  "frac_correct": 1.0,
+  "max_slowdown": 1.0,
+  "n_cells": 24,
+  "parity_ok": true,
+  "smoke": false
+}

@@ -1,0 +1,43 @@
+[metadata]
+title = "xtrax.categorical Stage-1 CPU crossover: matmul vs scatter for exact co-occurrence counts"
+created = "261015"
+schema_version = "0.3"
+
+[experiment]
+hypothesis = "On CPU, over the grid P in {80, 400} x K in {2, 4, 8, 12, 16, 32} x T in {1e4, 1e5} (24 dense cells, Ka*Kb = K^2), a single threshold c on Ka*Kb picks the faster of method='matmul' and method='scatter' (xtrax.categorical.cooccurrence_counts, int32 exact path) in at least 90% of cells, and in every cell the method chosen by the threshold is at most 1.5x slower than the faster one. The instrument is validated by controls: the selection routine, fed synthetic timings with one clean crossover, recovers that crossover and passes (positive); fed synthetic timings where the faster method alternates with K (no single threshold), it fails the 90% criterion (negative); and in the real run both methods return bit-identical int32 counts in every cell, so a speed difference is never a result difference."
+stage_name = "validation"
+novel = true
+
+[controls]
+positive_outcome = ["pass"]
+negative_outcome = ["fail_no_threshold", "instrument_invalid"]
+
+# Declaration ORDER is load-bearing: bathos takes the FIRST matching outcome.
+# instrument_invalid precedes everything: a broken instrument voids every other label.
+
+[outcomes.instrument_invalid]
+condition = "controls_ok = false OR parity_ok = false OR n_cells <> 24 OR smoke = true"
+decision = "A control failed, the two methods disagreed on counts, the grid was not fully measured, or this was a smoke run. No threshold from this run may be cited or written into KK_CROSSOVER_CPU."
+reasoning = "A speed comparison between methods that return different counts, or a selector that cannot fail, says nothing about which to prefer."
+is_residual = false
+
+[outcomes.pass]
+condition = "controls_ok = true AND parity_ok = true AND n_cells = 24 AND smoke = false AND frac_correct >= 0.9 AND max_slowdown <= 1.5"
+decision = "c_best becomes KK_CROSSOVER_CPU, cited by this run id; method_rule becomes 'cpu_measured'."
+reasoning = "One threshold picks the faster method in >= 90% of cells and never costs more than 1.5x."
+is_residual = false
+
+[outcomes.fail_no_threshold]
+condition = "controls_ok = true AND parity_ok = true AND n_cells = 24 AND smoke = false AND (frac_correct < 0.9 OR max_slowdown > 1.5)"
+decision = "No single threshold is adequate. method='auto' on CPU uses a (K, P) lookup table stored with this run id instead of a constant."
+reasoning = "The pre-registered fallback in spec section 9."
+is_residual = true
+
+[result_schema]
+n_cells = "int"
+smoke = "bool"
+controls_ok = "bool"
+parity_ok = "bool"
+c_best = "int"
+frac_correct = "float"
+max_slowdown = "float"

@@ -1,0 +1,350 @@
+{
+  "controls": {
+    "controls_ok": true,
+    "negative": {
+      "c_best": 4,
+      "frac_correct": 0.6666666666666666,
+      "max_slowdown": 2.0
+    },
+    "negative_ok": true,
+    "positive": {
+      "c_best": 64,
+      "frac_correct": 1.0,
+      "max_slowdown": 1.0
+    },
+    "positive_ok": true
+  },
+  "entries": [
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K2_T10000.json",
+      "cell_file_sha256": "7b7f93c736b31298be78bddf858858b95aaaa8103a2b24d9a0167640027d5d74",
+      "cell_id": "dense_P80_K2_T10000",
+      "config_sha256": "3c3ca824be5633c5ce14f487e3d609860b33f3066444244172f1d4b6e2591e1a",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K2_T100000.json",
+      "cell_file_sha256": "0ec076e05b621e193864384745909c5b8c30a5e97803f0e67857f3f492266a49",
+      "cell_id": "dense_P80_K2_T100000",
+      "config_sha256": "7105643603aa3effd411f56c5846a1d645be1a60e3bfc4695f71cff65a247eb2",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K4_T10000.json",
+      "cell_file_sha256": "1e6e224552accf65cd049054eebfba35c0360442c8261a7e49794da6be015b4e",
+      "cell_id": "dense_P80_K4_T10000",
+      "config_sha256": "b82249cc2fa52c95c2c7a119b434a0164c10dd4e29db6d976a226f85c55e4f8d",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K4_T100000.json",
+      "cell_file_sha256": "40e4565108c05d5dd434d847ac5a77082e45ebbd869545a07b68633cbe0b847d",
+      "cell_id": "dense_P80_K4_T100000",
+      "config_sha256": "9e4cbee990bcda4a1b1d40e0fe8924e1382d9e4d2778ffd343521572c16a3dbd",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K8_T10000.json",
+      "cell_file_sha256": "69a970ffcaa9562130cc35e206d8e5d347c9b9a39477908ac55ff8ed66d78a4d",
+      "cell_id": "dense_P80_K8_T10000",
+      "config_sha256": "361109d109030bbd3f049ff20c57dd9f8669727b48977d5a4356c1f27e6841bc",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K8_T100000.json",
+      "cell_file_sha256": "ed510bc6d4fec360f1b552d54e3078a40f308bd798665ca4cda318354a017a99",
+      "cell_id": "dense_P80_K8_T100000",
+      "config_sha256": "392e21d182e395518fc60b84017438b3589acda5f38c93a5bd3d4ed873247d40",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K12_T10000.json",
+      "cell_file_sha256": "0191ff263e99e02baf325ca1a818a705887d8b4bed38a022860764e7b3c9e03d",
+      "cell_id": "dense_P80_K12_T10000",
+      "config_sha256": "874031b6cd0c1b1f368c653619e35e685eaa994fc3fdb13a38a8f7a43e2f243e",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K12_T100000.json",
+      "cell_file_sha256": "0f2a79e4a9638bc102470c01434a6c7d718936a56f3f29f2db1cd2c1bad79489",
+      "cell_id": "dense_P80_K12_T100000",
+      "config_sha256": "ca0a93df96261f3df1d7135a798f2c0c1f2a944aa1940104d7c96c57ecdae480",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K16_T10000.json",
+      "cell_file_sha256": "582c71d830921a8f141895b3881e16a97b769051960774460c0975016db646b9",
+      "cell_id": "dense_P80_K16_T10000",
+      "config_sha256": "57df448fc8b98cc4849d94576b38359cecf4349dff54cdb9d8209b9492057bd3",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K16_T100000.json",
+      "cell_file_sha256": "7d7aacbc59dc1b41d38979cd0b7232d89711edcf89f92ce994211d27502b9eb2",
+      "cell_id": "dense_P80_K16_T100000",
+      "config_sha256": "14210860a760f89f807fe69df618e91be85899665322d02038de51aaf7daa303",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K32_T10000.json",
+      "cell_file_sha256": "6068577a045eed19a125edd99acaaa7a4a52fe6784abca4a8648d7e73d932cb7",
+      "cell_id": "dense_P80_K32_T10000",
+      "config_sha256": "007384df4ad32ff13114de78b2d75f7e4207a3db2f08d1c496b26d2fcfc28f3d",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P80_K32_T100000.json",
+      "cell_file_sha256": "842e77f30f7ce81264ef1ea51de98c9c4c8886932bd35751029a020853fd9a8c",
+      "cell_id": "dense_P80_K32_T100000",
+      "config_sha256": "3edfd0f7140173343880bf8b5674667e02f34fb7b3ce352e9b8372418e29bb49",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K2_T10000.json",
+      "cell_file_sha256": "2e1f7a223741e9cf2538695e76d6068e85cc9b46e0a426cbbf2c0074f3dfc56b",
+      "cell_id": "dense_P400_K2_T10000",
+      "config_sha256": "dd128e9a5351a9608e8c651d0e184f46c337c64b38587492b62d5e088d8d4382",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K2_T100000.json",
+      "cell_file_sha256": "65ac4f620400ea37e86be35050198bc9834a420831b741353961dccf9d29fcd9",
+      "cell_id": "dense_P400_K2_T100000",
+      "config_sha256": "4fe96f67afa62324ed250e6eb0008403d27f25e29ca5a22e4a09a54f7f5d57d3",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K4_T10000.json",
+      "cell_file_sha256": "0b9b3595a042980d27288df732541e37cd95762cef0c957b830e682e7540473f",
+      "cell_id": "dense_P400_K4_T10000",
+      "config_sha256": "16d94ea9dcd9e863ce3adc2e62651d565f8024cc89b96551ebe7e2dcdd738e0d",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K4_T100000.json",
+      "cell_file_sha256": "ebab374c4fa5540dbc4d5a7ec5bdb62788aa556062459586029c8eef1fa12ff4",
+      "cell_id": "dense_P400_K4_T100000",
+      "config_sha256": "6eae7c6c38ceb2ce3943825f8e287b6bd98115cc4c593a38677b0c5aaa85d610",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K8_T10000.json",
+      "cell_file_sha256": "3c16ac649462b89a0d3b31623b457349a01a66875312dbd9f0482c275c425cdc",
+      "cell_id": "dense_P400_K8_T10000",
+      "config_sha256": "f0d91251cfab022145b410c097f71732266b5f3b2c462d54585c0c944609932b",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K8_T100000.json",
+      "cell_file_sha256": "6589294680feaa3a861d3a4dbc2439f258839b597627d9fe721754ed599a4d74",
+      "cell_id": "dense_P400_K8_T100000",
+      "config_sha256": "ab7f234e5a89c2ea175f1e02742c44885615f0444dbcecf2464bfbefa91d9281",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K12_T10000.json",
+      "cell_file_sha256": "fb7a46e4ae88ad9bd498bc693abb403616bd78d80d66a659adbe89f356564138",
+      "cell_id": "dense_P400_K12_T10000",
+      "config_sha256": "8c3f17d1c0e96560998df6d39755208c230451a790ce3cba6331305da0377054",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K12_T100000.json",
+      "cell_file_sha256": "fdb0e139ce016be6c44ee03f7abac2cc1cff2abd7c7a03f93106beaa621ccffa",
+      "cell_id": "dense_P400_K12_T100000",
+      "config_sha256": "7e6f13fcb1391b27cba9b915eee526fb945cc0c0d72beec7feabd6e748b16fe3",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K16_T10000.json",
+      "cell_file_sha256": "17e50a9beaa96325aac3d8fb46671e03f5f77db87cf68abf5b4f202a2d362d9d",
+      "cell_id": "dense_P400_K16_T10000",
+      "config_sha256": "0183397137ac7293274a5c88d257435af5fe74b2f088473fe4286086e9519f29",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K16_T100000.json",
+      "cell_file_sha256": "ee0a4fe515060d6ed1d0b8f59390ada08db233cc5520c210a4dceb262d0e8cc1",
+      "cell_id": "dense_P400_K16_T100000",
+      "config_sha256": "b8d1d36452cc630b8dff0e3786d2c00fc9a89dc2ee482e6ddc1b7f0bb6ea5906",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K32_T10000.json",
+      "cell_file_sha256": "d03a345404dc2f1faee4ac7536f24f9686f3ca9b55b48f98e47226dca4173653",
+      "cell_id": "dense_P400_K32_T10000",
+      "config_sha256": "25a0632009392163e099daa26d2b9afccae9533aa7ea205399e6424b1cde7d65",
+      "detail": "",
+      "status": "measured"
+    },
+    {
+      "cell_file": "/home/marielle/projects/xtrax/.claude/worktrees/categorical-cooccurrence/outputs/profiling/stage1/crossover_cells/dense_P400_K32_T100000.json",
+      "cell_file_sha256": "8509d43f6aa8fb1201e2a1199ebabe350fd82c28bd5cd72523a48c5905bf17d4",
+      "cell_id": "dense_P400_K32_T100000",
+      "config_sha256": "9e636b47f1a4ef4298d01b522268e1c15b43dd5f330d45c43241d2aaa476f07b",
+      "detail": "",
+      "status": "measured"
+    }
+  ],
+  "grid": [
+    [
+      80,
+      2,
+      10000
+    ],
+    [
+      80,
+      2,
+      100000
+    ],
+    [
+      80,
+      4,
+      10000
+    ],
+    [
+      80,
+      4,
+      100000
+    ],
+    [
+      80,
+      8,
+      10000
+    ],
+    [
+      80,
+      8,
+      100000
+    ],
+    [
+      80,
+      12,
+      10000
+    ],
+    [
+      80,
+      12,
+      100000
+    ],
+    [
+      80,
+      16,
+      10000
+    ],
+    [
+      80,
+      16,
+      100000
+    ],
+    [
+      80,
+      32,
+      10000
+    ],
+    [
+      80,
+      32,
+      100000
+    ],
+    [
+      400,
+      2,
+      10000
+    ],
+    [
+      400,
+      2,
+      100000
+    ],
+    [
+      400,
+      4,
+      10000
+    ],
+    [
+      400,
+      4,
+      100000
+    ],
+    [
+      400,
+      8,
+      10000
+    ],
+    [
+      400,
+      8,
+      100000
+    ],
+    [
+      400,
+      12,
+      10000
+    ],
+    [
+      400,
+      12,
+      100000
+    ],
+    [
+      400,
+      16,
+      10000
+    ],
+    [
+      400,
+      16,
+      100000
+    ],
+    [
+      400,
+      32,
+      10000
+    ],
+    [
+      400,
+      32,
+      100000
+    ]
+  ],
+  "grid_size": 24,
+  "impl_sha256": "a2ed37a85a93454c6d5f66460158abf945ad4e0494c4c77d2a1c8568110fa452",
+  "jax_version": "0.11.1",
+  "probe_id": "stage1_categorical_crossover",
+  "result": {
+    "c_best": 256,
+    "controls_ok": true,
+    "frac_correct": 1.0,
+    "max_slowdown": 1.0,
+    "n_cells": 24,
+    "parity_ok": true,
+    "smoke": false
+  },
+  "reused_cells": 0,
+  "script_sha256": "438354cdb5bdf4760aa6283bb4f38649b1fdb178da4240ada3eea5e905437842",
+  "smoke": false,
+  "written_utc": "2026-10-15T21:11:16.407138+00:00"
+}
