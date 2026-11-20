@@ -1,0 +1,5 @@
+2026-10-15 13:11:07,032 INFO jax._src.xla_bridge: Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+2026-10-15 13:11:07,033 WARNING jax._src.xla_bridge: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
+2026-10-15 13:11:10,977 INFO prof_stage1_categorical_crossover: dense_P80_K32_T10000 matmul: median 0.501620 s
+2026-10-15 13:11:13,947 INFO prof_stage1_categorical_crossover: dense_P80_K32_T10000 scatter: median 0.375710 s
+2026-10-15 13:11:13,953 INFO prof_stage1_categorical_crossover: dense_P80_K32_T10000 parity_ok=True

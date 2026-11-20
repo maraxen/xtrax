@@ -1,7 +1,7 @@
 ---
 name: using-xtrax
 description: "Use when writing a padding or bucketing loop for variable-length inputs, a chunked vmap or lax.map over a large batch, a memory-budgeted batch plan, an ONNX or StableHLO export, a resumable training loop, or zarr output sinks. Also when a TOML file should drive train or resume, when batch axes are inferred from a typed function, or when a hand-written Pallas kernel should sit beside a plain-JAX reference. Also when per-unit output directories need a completion record or packing into one seekable archive. The library is xtrax."
-when_to_use: 'Triggers: padding or bucketing loop for variable-length sequences before a JIT step, chunked vmap or lax.map over a large batch, memory-budgeted batching / batch plan that must fit a device budget, ONNX or StableHLO export of a JAX pipeline, resumable training loop / resume training from a checkpoint, zarr output sink / staged zarr writes, TOML file that should launch or resume a training run, infer batch axes from a typed function signature, compose batching primitives into your own CLI, hand-written Pallas kernel beside a plain-JAX reference / replace a use_pallas flag or interpret= switch with xtrax.op, per-unit completion stamp or done.json with sha256s, pack a finished unit directory / many small files under a file-count cap, replace a local unit_pack or tar.zst packer.'
+when_to_use: 'Triggers: exact weighted co-occurrence / contingency counts over categorical codes (xtrax.categorical), padding or bucketing loop for variable-length sequences before a JIT step, chunked vmap or lax.map over a large batch, memory-budgeted batching / batch plan that must fit a device budget, ONNX or StableHLO export of a JAX pipeline, resumable training loop / resume training from a checkpoint, zarr output sink / staged zarr writes, TOML file that should launch or resume a training run, infer batch axes from a typed function signature, compose batching primitives into your own CLI, hand-written Pallas kernel beside a plain-JAX reference / replace a use_pallas flag or interpret= switch with xtrax.op, per-unit completion stamp or done.json with sha256s, pack a finished unit directory / many small files under a file-count cap, replace a local unit_pack or tar.zst packer.'
 ---
 # using-xtrax
 
@@ -309,6 +309,9 @@ Choose your task:
 15. **Migrate a dependent project onto xtrax.pack, xtrax.eda or campaign tooling with an agent swarm**  
    → Use the `xtrax-consumer-adoption` skill
 
+16. **Exact weighted co-occurrence / contingency counts over categorical codes (xtrax.categorical)**  
+   → Read `references/categorical.md`
+
 ---
 
 ## TIER-2: Deep Reference
@@ -329,6 +332,7 @@ TIER-2 content lives in `references/` — one file per layer, loaded on demand v
 | Adoption | `references/adoption.md` | — | local-copy replacement, SafeMap alias removal, safe_scan deprecation (#6107), limits, telemetry fail-closed, WhileCarry, ChunkedMap/while_loop, duplicated primitives, per-unit `unit.json` records and packs (xtrax.pack), file-count guard |
 | Standalone ONNX | `references/onnx-standalone.md` | — | convert_to_onnx vs jax2onnx, find_onnx_rng_ops, verify_native_parity, rings, divergence |
 | Intent | `references/intent.md` | — | xtrax.intent: Context, compile, loop, map, Plan, overrides, hazards, errors |
+| Categorical | `references/categorical.md` | — | xtrax.categorical: exact int32 co-occurrence counts, dtype contract, CPU crossover (KK_CROSSOVER_CPU=256), shifts, checks, memory planning |
 | Kernel seam | `references/op.md` | — | xtrax.op: reference + per-backend kernels, selection rules, static args by closure, custom_jvp/custom_vjp derivatives, kernel_parity tests, interpret-mode GPU hazards |
 
 Use the Workflow Index above to pick which file(s) a given task needs — most tasks need one, some (e.g. tiled inference) need two. Don't load a reference file speculatively; load it when the task actually reaches that layer.

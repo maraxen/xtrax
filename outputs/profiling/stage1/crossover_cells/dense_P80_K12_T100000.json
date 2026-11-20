@@ -1,0 +1,49 @@
+{
+  "backend": "cpu",
+  "cell_id": "dense_P80_K12_T100000",
+  "completed_utc": "2026-10-15T20:10:30.286696+00:00",
+  "config": {
+    "K": 12,
+    "P": 80,
+    "T": 100000,
+    "cell_id": "dense_P80_K12_T100000",
+    "impl_sha256": "a2ed37a85a93454c6d5f66460158abf945ad4e0494c4c77d2a1c8568110fa452",
+    "jax_version": "0.11.1",
+    "layout": "dense",
+    "methods": [
+      "matmul",
+      "scatter"
+    ],
+    "script_sha256": "438354cdb5bdf4760aa6283bb4f38649b1fdb178da4240ada3eea5e905437842",
+    "seed": 20261015,
+    "trials": 5,
+    "warmup": 2
+  },
+  "config_sha256": "ca0a93df96261f3df1d7135a798f2c0c1f2a944aa1940104d7c96c57ecdae480",
+  "median_matmul_s": 0.8818627090658993,
+  "median_scatter_s": 2.0997311018873006,
+  "output_dtype": "int32",
+  "output_shape": [
+    1,
+    80,
+    80,
+    12,
+    12
+  ],
+  "parity_mismatch_count": 0,
+  "parity_ok": true,
+  "times_matmul_s": [
+    0.8219351680018008,
+    0.8818627090658993,
+    0.8357383119873703,
+    0.8867599149234593,
+    0.9201578658539802
+  ],
+  "times_scatter_s": [
+    2.0044532211031765,
+    2.0728218290023506,
+    2.1993571899365634,
+    2.1386742000468075,
+    2.0997311018873006
+  ]
+}
