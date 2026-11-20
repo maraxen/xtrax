@@ -97,7 +97,15 @@ CacheArg = CacheSetting | str | Path | None
 
 
 def _cache_setting(cache: CacheArg) -> CacheSetting:
-    return cache if isinstance(cache, CacheSetting) else jax_cache.resolve(cache)
+    if isinstance(cache, CacheSetting):
+        return cache
+    if cache is None:
+        # No cache argument: keep what this process already applied (a caller's
+        # jax_cache.configure(path)), and resolve from configuration only when nothing has.
+        applied = jax_cache.current()
+        if applied is not None:
+            return applied
+    return jax_cache.resolve(cache)
 
 
 def _initialize_worker_process(cache: CacheArg = None) -> None:
@@ -1009,12 +1017,11 @@ class LocalProcessPoolExecutor:
             )
 
         # Resolve once in the parent and hand workers the whole setting, so a worker never
-        # re-resolves from its own env (an inherited JAX_COMPILATION_CACHE_DIR) or cwd. The
-        # directory is checked here because an initializer error surfaces only as
-        # BrokenProcessPool (spec 261119).
+        # re-resolves from its own env (an inherited JAX_COMPILATION_CACHE_DIR) or cwd. Every
+        # check apply() makes (directory, filelock) runs here because an initializer error
+        # surfaces only as BrokenProcessPool (spec 261119).
         setting = _cache_setting(self.cache_dir)
-        if setting.dir is not None:
-            jax_cache.prepare_directory(setting.dir)
+        jax_cache.validate(setting)
         self.cache_setting = setting
 
         ctx = multiprocessing.get_context("spawn")

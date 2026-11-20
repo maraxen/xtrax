@@ -195,7 +195,8 @@ class CacheSetting:
     min_compile_time_secs: float | None = None
     min_entry_size_bytes: int | None = None
     max_size_bytes: int | None = None
-    knob_sources: Mapping[str, str] = field(default_factory=dict)
+    # Excluded from the hash (a dict is unhashable) but still compared.
+    knob_sources: Mapping[str, str] = field(default_factory=dict, hash=False)
     policy: str = "on"
     policy_source: str = "default"
 
@@ -204,9 +205,20 @@ class CacheSetting:
         """Whether any layer configured the directory or the policy.
 
         Returns:
-            False when nothing is configured anywhere; :func:`apply` then leaves JAX untouched.
+            False when nothing is configured anywhere.
         """
         return not (self.source == "unset" and self.policy_source == "default")
+
+    @property
+    def explicitly_off(self) -> bool:
+        """Whether a layer turned the cache off, rather than no directory being configured.
+
+        Returns:
+            True for policy ``off`` or a disable word in a directory layer. Only then does
+            :func:`apply` clear JAX's own flag; a policy ``on`` with no directory leaves JAX
+            untouched.
+        """
+        return self.policy == "off" or self.source.endswith("(disabled)")
 
     def as_record(self) -> dict[str, Any]:
         """Convert the setting for run summaries and sidecars.
@@ -364,6 +376,35 @@ def policy_source(
     return _parse_policy(raw, source), source
 
 
+#: ``(CacheSetting field, pyproject/user-config key, env var, type, minimum, error label)``.
+_NUMBER_KNOBS: tuple[tuple[str, str, str, Callable[[Any], Any], float, str], ...] = (
+    (
+        "min_compile_time_secs",
+        KEY_MIN_COMPILE_SECS,
+        ENV_MIN_COMPILE_SECS,
+        float,
+        0.0,
+        "must be a number of seconds",
+    ),
+    (
+        "min_entry_size_bytes",
+        KEY_MIN_ENTRY_BYTES,
+        ENV_MIN_ENTRY_BYTES,
+        int,
+        -1,
+        "must be an integer byte count (-1 disables the size restriction)",
+    ),
+    (
+        "max_size_bytes",
+        KEY_MAX_BYTES,
+        ENV_MAX_BYTES,
+        int,
+        -1,
+        "must be an integer byte count (-1 is unlimited)",
+    ),
+)
+
+
 def _number_knob(
     key: str,
     env_var: str,
@@ -390,6 +431,59 @@ def _number_knob(
     if value < minimum:
         raise JaxCacheConfigError(f"{source}: {key!r} must be >= {minimum:g}, got {raw!r}")
     return value, source
+
+
+def _namespace_source(namespace: str | None, start: Path) -> tuple[str, str | None]:
+    raw_ns, ns_source, _ = _layered(KEY_NAMESPACE, ENV_NAMESPACE, namespace, start)
+    if raw_ns is None or (isinstance(raw_ns, str) and raw_ns.strip() == ""):
+        return "auto", None
+    ns = str(raw_ns).strip().lower()
+    if ns not in NAMESPACES:
+        raise JaxCacheConfigError(
+            f"{ns_source}: {KEY_NAMESPACE!r} must be one of {NAMESPACES}, got {raw_ns!r}"
+        )
+    return ns, ns_source
+
+
+def _carried(source: str | None) -> bool:
+    return source is not None and (
+        source.startswith("$XTRAX_") or source.startswith("project config")
+    )
+
+
+def portable_env(start: Path | str | None = None) -> dict[str, tuple[str, str]]:
+    """Cache variables the project or the ``$XTRAX_JAX_CACHE*`` environment set, to carry over.
+
+    For a job script generated here and run elsewhere, such as a Slurm array task whose cwd may
+    not see the project's ``pyproject.toml``. The policy and the knobs are carried when the
+    environment or the project set them. The directory and anything from the user config are
+    facts about this machine, so the other machine resolves them for itself. Pure.
+
+    Args:
+        start: Directory to walk upward from when looking for ``pyproject.toml``.
+
+    Returns:
+        ``{environment variable: (validated value, source)}``.
+
+    Raises:
+        JaxCacheConfigError: a carried value is invalid.
+    """
+    start_dir = _start_dir(start)
+    carried: dict[str, tuple[str, str]] = {}
+    pol, src = policy_source(None, start_dir)
+    if _carried(src):
+        carried[ENV_POLICY] = (pol, src)
+    for _, key, env_var, kind, minimum, label in _NUMBER_KNOBS:
+        value, knob_src = _number_knob(
+            key, env_var, None, start_dir, kind=kind, minimum=minimum, label=label
+        )
+        if value is not None and knob_src is not None and _carried(knob_src):
+            carried[env_var] = (str(value), knob_src)
+    ns, ns_src = _namespace_source(None, start_dir)
+    if _carried(ns_src):
+        assert ns_src is not None
+        carried[ENV_NAMESPACE] = (ns, ns_src)
+    return carried
 
 
 def resolve(
@@ -427,49 +521,25 @@ def resolve(
         pol, pol_source = policy_source(policy, start_dir)
 
     knob_sources: dict[str, str] = {}
-    min_secs, src = _number_knob(
-        KEY_MIN_COMPILE_SECS,
-        ENV_MIN_COMPILE_SECS,
-        min_compile_time_secs,
-        start_dir,
-        kind=float,
-        minimum=0.0,
-        label="must be a number of seconds",
-    )
-    if src:
-        knob_sources["min_compile_time_secs"] = src
-    min_entry, src = _number_knob(
-        KEY_MIN_ENTRY_BYTES,
-        ENV_MIN_ENTRY_BYTES,
-        min_entry_size_bytes,
-        start_dir,
-        kind=int,
-        minimum=-1,
-        label="must be an integer byte count (-1 disables the size restriction)",
-    )
-    if src:
-        knob_sources["min_entry_size_bytes"] = src
-    max_size, src = _number_knob(
-        KEY_MAX_BYTES,
-        ENV_MAX_BYTES,
-        max_size_bytes,
-        start_dir,
-        kind=int,
-        minimum=-1,
-        label="must be an integer byte count (-1 is unlimited)",
-    )
-    if src:
-        knob_sources["max_size_bytes"] = src
+    explicit = {
+        "min_compile_time_secs": min_compile_time_secs,
+        "min_entry_size_bytes": min_entry_size_bytes,
+        "max_size_bytes": max_size_bytes,
+    }
+    knobs: dict[str, Any] = {}
+    for name, key, env_var, kind, minimum, label in _NUMBER_KNOBS:
+        value, src = _number_knob(
+            key, env_var, explicit[name], start_dir, kind=kind, minimum=minimum, label=label
+        )
+        knobs[name] = value
+        if src:
+            knob_sources[name] = src
+    min_secs = knobs["min_compile_time_secs"]
+    min_entry = knobs["min_entry_size_bytes"]
+    max_size = knobs["max_size_bytes"]
 
-    raw_ns, ns_source, _ = _layered(KEY_NAMESPACE, ENV_NAMESPACE, namespace, start_dir)
-    if raw_ns is None or (isinstance(raw_ns, str) and raw_ns.strip() == ""):
-        ns = "auto"
-    else:
-        ns = str(raw_ns).strip().lower()
-        if ns not in NAMESPACES:
-            raise JaxCacheConfigError(
-                f"{ns_source}: {KEY_NAMESPACE!r} must be one of {NAMESPACES}, got {raw_ns!r}"
-            )
+    ns, ns_source = _namespace_source(namespace, start_dir)
+    if ns_source is not None:
         knob_sources["namespace"] = ns_source
 
     if base is None or pol == "off":
@@ -652,6 +722,49 @@ def prepare_directory(directory: Path) -> None:
     _prepare_directory(directory)
 
 
+def _check_filelock(setting: CacheSetting) -> None:
+    if (
+        setting.max_size_bytes is not None
+        and setting.max_size_bytes != -1
+        and importlib.util.find_spec("filelock") is None
+    ):
+        raise JaxCacheConfigError(
+            "jax_cache_max_size_bytes needs the 'filelock' package (JAX's LRU eviction); "
+            "install filelock or leave the size limit unset"
+        )
+
+
+def validate(setting: CacheSetting) -> None:
+    """Run the checks :func:`apply` makes before it touches JAX, without touching JAX.
+
+    For a parent process that hands a resolved setting to workers: a bad setting then fails in
+    the parent with a named error instead of as a broken worker pool. A disabled setting passes.
+
+    Args:
+        setting: A setting from :func:`resolve`.
+
+    Raises:
+        JaxCacheConfigError: ``max_size`` is set but ``filelock`` is not installed.
+        JaxCacheDirError: the directory cannot be created or written.
+    """
+    if not setting.enabled:
+        return
+    assert setting.dir is not None
+    _check_filelock(setting)
+    _prepare_directory(setting.dir)
+
+
+def current() -> CacheSetting | None:
+    """Return the setting :func:`configure` or :func:`apply` last applied in this process.
+
+    Returns:
+        The setting, or None when neither has run. An executor given no cache argument reuses
+        it, so it does not undo a setting its caller already chose.
+    """
+    with _LOCK:
+        return _applied
+
+
 def apply(setting: CacheSetting) -> CacheSetting:
     """Apply an already resolved setting to JAX without re-resolving. Idempotent.
 
@@ -671,9 +784,12 @@ def apply(setting: CacheSetting) -> CacheSetting:
     global _applied
     with _LOCK:
         if not setting.enabled:
-            if not setting.configured:
-                logger.info("xtrax JAX compilation cache: off (%s)", setting.source)
-                _note_jax_owned_cache()
+            if not setting.explicitly_off:
+                # No directory resolved and nothing said off: JAX's own settings stay.
+                if _applied != setting:
+                    logger.info("xtrax JAX compilation cache: off (%s)", setting.source)
+                    _note_jax_owned_cache()
+                _applied = setting
                 return setting
             if _applied != setting or _live_dir():
                 _clear_jax_cache_dir()
@@ -688,15 +804,7 @@ def apply(setting: CacheSetting) -> CacheSetting:
         if _applied == setting and _live_dir() == str(setting.dir):
             return setting
         assert setting.dir is not None
-        if (
-            setting.max_size_bytes is not None
-            and setting.max_size_bytes != -1
-            and importlib.util.find_spec("filelock") is None
-        ):
-            raise JaxCacheConfigError(
-                "jax_cache_max_size_bytes needs the 'filelock' package (JAX's LRU eviction); "
-                "install filelock or leave the size limit unset"
-            )
+        _check_filelock(setting)
         _prepare_directory(setting.dir)
         _apply_to_jax(setting)
         _applied = setting
@@ -925,11 +1033,12 @@ def prune_corrupt(
 
     if directory is None:
         setting = resolve()
-        if setting.dir is None:
+        if setting.base_dir is None:
             raise JaxCacheConfigError(
                 f"no JAX compilation cache is configured ({setting.source}); pass a directory"
             )
-        root = setting.dir
+        # Pruning is maintenance on existing files, so a policy off does not block it.
+        root = setting.dir or _namespaced(setting.base_dir, setting.namespace)
         trusted = True
     else:
         root = Path(directory)

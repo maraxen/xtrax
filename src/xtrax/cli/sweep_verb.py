@@ -161,7 +161,10 @@ def run_sweep(args: SweepArgs) -> None:
 
     # 3. Configure the JAX persistent compilation cache from project/user config (xtrax.jax_cache);
     #    it is off unless a layer sets a directory.
-    jax_cache.configure()
+    try:
+        jax_cache.configure()
+    except (ValueError, OSError) as e:
+        raise SystemExit(f"JAX compilation cache: {e}") from e
 
     # 4. Determine sweep directory
     sweep_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

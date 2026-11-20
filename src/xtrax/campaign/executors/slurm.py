@@ -245,9 +245,10 @@ def compilation_cache_env(
 ) -> tuple[dict[str, str], list[str]]:
     """Cache variables to bake into an array script, and comment lines naming their source.
 
-    Policy is a project fact, so it is resolved at generation (``[tool.xtrax]
-    jax_compilation_cache`` or ``XTRAX_JAX_CACHE``) and baked when a layer set it: a task's cwd
-    may not see the project's pyproject. Placement is a machine fact: it is baked only when
+    Policy and knobs are project facts, so they are resolved at generation and baked when the
+    project's ``[tool.xtrax]`` or an ``XTRAX_JAX_CACHE*`` variable set them: a task's cwd may
+    not see the project's pyproject (:func:`xtrax.jax_cache.portable_env`). The generating
+    machine's user config is not baked. Placement is a machine fact: it is baked only when
     passed explicitly; otherwise each task resolves it on its own node from
     ``~/.config/xtrax/config.toml`` (``HOME`` is set under ``--export=NONE``; verified on
     Engaging 261119).
@@ -258,22 +259,27 @@ def compilation_cache_env(
     Returns:
         ``(env, comments)``.
     """
-    from xtrax.jax_cache import ENV_DIR, ENV_POLICY, policy_source
+    from xtrax.jax_cache import ENV_DIR, ENV_POLICY, portable_env
 
+    if compilation_cache is not None and compilation_cache.strip().lower() in ("", "none", "off"):
+        return {ENV_POLICY: "off"}, [f"{ENV_POLICY}: compilation_cache=off at generation"]
+    env: dict[str, str] = {}
+    comments: list[str] = []
+    for name, (value, source) in portable_env().items():
+        env[name] = value
+        comments.append(f"{name}: decided by {source} at generation")
     if compilation_cache is not None:
-        token = compilation_cache.strip()
-        if token.lower() in ("", "none", "off"):
-            return {ENV_POLICY: "off"}, [f"{ENV_POLICY}: compilation_cache=off at generation"]
-        return (
-            {ENV_DIR: token, ENV_POLICY: "on"},
-            [f"{ENV_DIR}: compilation_cache passed at generation"],
+        env[ENV_DIR] = compilation_cache.strip()
+        env[ENV_POLICY] = "on"
+        comments = [c for c in comments if not c.startswith(f"{ENV_POLICY}:")]
+        comments.append(f"{ENV_DIR}: compilation_cache passed at generation")
+    elif not env:
+        comments.append(
+            "JAX compilation cache: no project setting at generation; each task resolves it"
         )
-    policy, source = policy_source()
-    if source == "default":
-        return {}, ["JAX compilation cache: no policy set at generation; each task resolves it"]
-    return {ENV_POLICY: policy}, [
-        f"{ENV_POLICY}: decided by {source} at generation; the directory resolves on each node",
-    ]
+    else:
+        comments.append("JAX compilation cache: the directory resolves on each node")
+    return env, comments
 
 
 def _anchor_log_path(log_path: str, base_dir: str) -> str:

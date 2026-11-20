@@ -368,3 +368,140 @@ def test_xtrax_pyproject_holds_no_cache_directory() -> None:
     data = tomllib.loads((root / "pyproject.toml").read_text())
     assert "jax_compilation_cache_dir" not in data.get("tool", {}).get("xtrax", {})
     assert jax_cache.KEY_DIR == "jax_compilation_cache_dir"
+
+
+# ---------------------------------------------------------------- review fixes (PR #278)
+
+
+@pytest.fixture
+def jax_flag_restored() -> Any:
+    """Restore JAX's cache directory flag and cache object after an in-process configure."""
+    import jax
+    from jax.experimental.compilation_cache import compilation_cache
+
+    saved = jax.config.jax_compilation_cache_dir
+    yield jax
+    jax.config.update("jax_compilation_cache_dir", saved)
+    compilation_cache.reset_cache()
+
+
+def test_policy_on_without_a_directory_leaves_jax_alone(
+    work: Path, tmp_path: Path, jax_flag_restored: Any
+) -> None:
+    """A project's "on" never turns off a cache the user's own code set; its "off" does."""
+    jax = jax_flag_restored
+    own = str(tmp_path / "own")
+    jax.config.update("jax_compilation_cache_dir", own)
+    _pyproject(work, 'jax_compilation_cache = "on"\n')
+    setting = jax_cache.configure(start=work)
+    assert setting.configured and not setting.enabled and not setting.explicitly_off
+    assert jax.config.jax_compilation_cache_dir == own
+
+    _pyproject(work, 'jax_compilation_cache = "off"\n')
+    assert jax_cache.configure(start=work).explicitly_off
+    assert jax.config.jax_compilation_cache_dir is None
+
+
+def test_sequential_executor_keeps_the_callers_setting(
+    work: Path, tmp_path: Path, jax_flag_restored: Any
+) -> None:
+    """An executor given no cache argument keeps what the caller configured in this process."""
+    from tests.campaign.executors.test_local import _create_mock_manifest
+    from xtrax.campaign.executors.local import LocalSequentialExecutor
+
+    jax = jax_flag_restored
+    _user_config(f'jax_compilation_cache_dir = "{tmp_path / "user"}"\n')
+    chosen = jax_cache.configure(tmp_path / "chosen")
+    executor = LocalSequentialExecutor()
+    executor.run(
+        _create_mock_manifest(num_rows=1, campaign_id="jc_keep"),
+        lambda row: {"v": 1.0},
+        output_dir=str(tmp_path / "out"),
+    )
+    assert executor.cache_setting == chosen
+    assert jax.config.jax_compilation_cache_dir == str(chosen.dir)
+
+
+def test_pool_refuses_a_missing_filelock_in_the_parent(
+    work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A size limit without filelock raises the named error before any worker starts."""
+    from tests.campaign.executors.test_local import _create_mock_manifest
+    from xtrax.campaign.executors.local import LocalProcessPoolExecutor
+
+    real = jax_cache.importlib.util.find_spec
+
+    def no_filelock(name: str, *args: Any, **kwargs: Any) -> Any:
+        return None if name == "filelock" else real(name, *args, **kwargs)
+
+    monkeypatch.setattr(jax_cache.importlib.util, "find_spec", no_filelock)
+    setting = resolve(tmp_path / "c", start=work, max_size_bytes=10**9)
+    with pytest.raises(JaxCacheConfigError, match="filelock"):
+        LocalProcessPoolExecutor(max_workers=1, cache_dir=setting).run(
+            _create_mock_manifest(num_rows=1, campaign_id="jc_fl"),
+            _pool_cache_unit,
+            output_dir=str(tmp_path / "out"),
+        )
+
+
+def test_slurm_script_carries_project_knobs_not_user_config(work: Path, tmp_path: Path) -> None:
+    """Project knobs reach array tasks; the generating machine's user config does not."""
+    from tests.campaign.executors.test_slurm import _create_slurm_manifest, _write_manifest_file
+    from xtrax.campaign.executors.slurm import SlurmArrayExecutor
+
+    manifest = _create_slurm_manifest(num_rows=2)
+    mfile = _write_manifest_file(tmp_path, manifest)
+
+    def script() -> str:
+        return SlurmArrayExecutor().generate_script(
+            manifest=manifest,
+            output_dir=tmp_path / "out",
+            manifest_path=mfile,
+            fn_spec="mypkg.units:predict",
+        )
+
+    _user_config('jax_compilation_cache = "off"\njax_cache_min_compile_time_secs = 9\n')
+    text = script()
+    assert f"export {ENV_POLICY}=" not in text
+    assert ENV_MIN_COMPILE_SECS not in text
+
+    _pyproject(
+        work,
+        "jax_cache_min_compile_time_secs = 30\n"
+        "jax_cache_max_size_bytes = 5000000000\n"
+        'jax_cache_namespace = "cpu-flags"\n',
+    )
+    text = script()
+    assert f"export {ENV_MIN_COMPILE_SECS}=30.0" in text
+    assert "export XTRAX_JAX_CACHE_MAX_BYTES=5000000000" in text
+    assert "export XTRAX_JAX_CACHE_NAMESPACE=cpu-flags" in text
+    assert f"export {ENV_POLICY}=" not in text
+
+
+def test_prune_corrupt_works_while_the_policy_is_off(
+    work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pruning a configured directory does not depend on this project using the cache."""
+    base = tmp_path / "shared"
+    monkeypatch.setenv(ENV_DIR, str(base))
+    monkeypatch.setenv(ENV_POLICY, "off")
+    root = jax_cache._namespaced(base, resolve().namespace)
+    root.mkdir(parents=True)
+    bad = root / f"jit_f-{'a' * 64}-cache"
+    bad.write_bytes(b"\x00not a compressed entry")
+    assert jax_cache.prune_corrupt(min_age_secs=0) == [bad]
+    assert not bad.exists()
+
+
+def test_setting_is_hashable_and_unconfigured_apply_logs_once(
+    work: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A frozen setting with knob sources hashes; repeated unconfigured applies stay quiet."""
+    monkeypatch.setenv(ENV_MIN_COMPILE_SECS, "2")
+    assert hash(resolve()) == hash(resolve())
+    monkeypatch.delenv(ENV_MIN_COMPILE_SECS)
+    caplog.set_level("INFO", logger="xtrax.jax_cache")
+    unconfigured = resolve()
+    for _ in range(3):
+        jax_cache.apply(unconfigured)
+    assert sum("compilation cache: off" in r.getMessage() for r in caplog.records) == 1

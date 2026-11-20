@@ -77,6 +77,17 @@ def _jax_global_flags_unchanged():
         pytest.fail(f"this test left global JAX flags changed ({diff}); restored")
 
 
+@pytest.fixture(autouse=True)
+def _jax_cache_applied_cleared():
+    """Start and end each test with no applied xtrax.jax_cache setting: an executor given no
+    cache argument reuses the process's applied setting, which must not leak between tests."""
+    from xtrax import jax_cache
+
+    jax_cache._applied = None
+    yield
+    jax_cache._applied = None
+
+
 def pytest_configure(config: pytest.Config) -> None:
     del config
     global _SESSION_JAX_FLAGS
