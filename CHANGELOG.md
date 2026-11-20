@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- new entries: add a file under changelog.d/ -->
 
+## [0.4.1b9] - 2026-11-20
+
+### Added
+
+- **`xtrax.categorical`: exact categorical co-occurrence counts** (Stage 1 of
+  spec `261015_exact-categorical-cooccurrence`, debt #2750). `cooccurrence_counts`
+  returns exact int32 weighted contingency tables (joint, marginals, total) over
+  compact categorical codes, with batched replicates (`(R, T)` weights), circular
+  per-variable shifts that follow `np.roll` for any integer shift, a dense, pairs
+  or self layout, and frame-tiled `matmul` and `scatter` methods. Totals above
+  2**24 stay exact on the integer path. `differentiable=True` adds a `custom_vjp`
+  over float32 weights, with reverse mode only. `strategy="float"` is the float
+  path. `check=True` evaluates code range, weight sign and integrality, total
+  bounds and pair range on device into `CooccurrenceCounts.status` (`STATUS_*`
+  bits, no host callback): an eager call raises `ValueError`, and under
+  `jit`/`vmap`/`grad` the bits are returned and `raise_if_invalid()` raises outside
+  the trace. `plan_cooccurrence` returns the tile plan the kernel executes; a
+  scatter budget is judged feasible at `pair_tile=1`. `iter_cooccurrence_row_blocks`
+  streams row blocks. The package imports only jax, jaxtyping, numpy,
+  `xtrax._tree` and `xtrax.tiling.budget` (no equinox); an import-linter contract
+  forbids inference, export, eda and devtools imports. Method selection on CPU is
+  measured: `auto` picks matmul when `Ka*Kb <= 256` and scatter above it
+  (`KK_CROSSOVER_CPU = 256`, from bathos run
+  `e1f92621-7f8f-41d9-85f2-a16209f3345f`, which replaced the provisional value 64).
+  GPU selection is still provisional.
+- `xtrax.jax_cache`: one configurable persistent JAX compilation cache. Two axes resolve independently. The directory comes from the explicit argument, `$XTRAX_JAX_CACHE_DIR`, `$JAX_COMPILATION_CACHE_DIR`, then `jax_compilation_cache_dir` in `${XDG_CONFIG_HOME:-~/.config}/xtrax/config.toml` (`none`, `off` or empty disables in any layer). Whether to use it comes from `$XTRAX_JAX_CACHE`, then `jax_compilation_cache = "on" | "off"` under `[tool.xtrax]` in the nearest `pyproject.toml`, then the user config, else on. A directory under `[tool.xtrax]` is refused: a committed pyproject is pushed to other machines. There is no default path in library code. `cache_dir_source()`, `policy_source()` and `resolve()` report which layer decided without touching JAX; `configure()` (= `apply(resolve(...))`) returns `CacheSetting(dir, source, enabled, policy, policy_source, ...)`, is idempotent, logs the deciding layers at INFO, and never initialises the JAX backend. With nothing configured it leaves JAX's settings alone; a configured off clears JAX's flag, resetting its cache object first when a compile already started it. A malformed config file raises `ValueError` naming it, an unexpanded `$VAR` or `~` in a path raises `JaxCacheConfigError` naming the layer, and an unwritable directory raises `JaxCacheDirError`. Knobs `jax_cache_min_compile_time_secs`, `jax_cache_min_entry_size_bytes`, `jax_cache_max_size_bytes` (needs `filelock`) and `jax_cache_namespace` map to JAX's persistent-cache flags. Entries go under `jaxlib-<version>/` by default (JAX's key already includes the version, so this costs no hits and eases pruning); `namespace = "cpu-flags"` adds a host-CPU-ISA segment, `"none"` uses the directory as given. JAX's CPU cache key already carries an accelerator fingerprint that an independent probe found to change with the target ISA, so no CPU segment is applied by default; that evidence is indirect and awaits a fingerprint comparison on two cluster node types. `prune_corrupt()` deletes entries that no longer decompress, which JAX's non-atomic writes can leave after a preempted job.
+- `xtrax run` and `xtrax campaign run` take `--compilation-cache PATH|off`. `LocalSequentialExecutor` and `LocalProcessPoolExecutor` take `cache_dir` as a directory, `"off"`, or a resolved `CacheSetting`; the pool resolves once in the parent and hands workers the whole setting, and both record it as `executor.cache_setting`. `SlurmArrayExecutor(compilation_cache=...)` bakes an absolute cluster directory or `off`; otherwise the array script bakes only a configured policy (`XTRAX_JAX_CACHE`), never a directory, and each task resolves the directory on its own node.
+
+### Changed
+
+- `xtrax sweep` (deprecated) no longer hard-codes `jax_compilation_cache_dir = ".xtrax/jax_cache"`; it calls `xtrax.jax_cache.configure()`. Behaviour change: the sweep uses the machine's configured directory (`$XTRAX_JAX_CACHE_DIR`, `$JAX_COMPILATION_CACHE_DIR` or `~/.config/xtrax/config.toml`) and runs without a persistent cache when none is set; entries live in a `jaxlib-<version>/` subdirectory. To keep the old location, set `XTRAX_JAX_CACHE_DIR=$PWD/.xtrax/jax_cache` and `XTRAX_JAX_CACHE_NAMESPACE=none`.
+
+### Deprecated
+
+- `safe_scan` (`xtrax.safe_scan`, `xtrax.transforms.safe_scan`) -> `jax.lax.scan(fn, init, xs)` directly, or `xtrax.tiling.axis_dispatch(Scan(...), ...)` / `make_axis_dispatch(Scan(...))` when strategy-dispatched. `"safe"` was a misnomer for a zero-length guard that neither chunks nor dispatches; `codemods/thin-wrappers-to-jax/` rewrites call sites (#6107).
+
+### Fixed
+
+- `xtrax campaign run` with the default `local-seq` executor, and every Slurm array task, now apply the JAX compilation cache setting before the first unit. Before, only the pool executor configured the cache, so a project could not turn it off there and those runs ignored the configured directory.
+- `JAX_COMPILATION_CACHE_DIR=none` (or `off`) no longer makes JAX write a cache into `./none/` under the current directory: xtrax entry points read it as off and clear JAX's import-time flag before the first compile. The pool executor's old resolver returned off for `none` but left JAX's flag set.
+- A project's `jax_compilation_cache = "on"` with no directory configured on the machine leaves JAX's own cache setting alone; only an explicit off (policy `off`, or `none`/`off` in a directory layer) clears it.
+- Executors given no cache argument keep the setting the calling process already applied with `jax_cache.configure()`, instead of resolving again and undoing it.
+- `local-pool` checks `filelock` for `jax_cache_max_size_bytes` in the parent (`jax_cache.validate()`), so a missing package fails with the named error instead of `BrokenProcessPool`.
+- Slurm array scripts carry the project's cache knobs (`jax_cache_min_compile_time_secs`, `jax_cache_max_size_bytes`, `jax_cache_min_entry_size_bytes`, `jax_cache_namespace`) as `XTRAX_JAX_CACHE_*` variables, and no longer carry policy taken from the generating machine's user config (`jax_cache.portable_env()`).
+- `jax_cache.prune_corrupt()` prunes the configured directory while the policy is off; `xtrax sweep` reports cache configuration errors as a one-line exit; `CacheSetting` is hashable; repeated unconfigured applies log once.
+
 ## [0.4.1b8] - 2026-11-11
 
 ### Added
