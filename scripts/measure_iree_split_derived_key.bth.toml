@@ -1,0 +1,54 @@
+[experiment]
+hypothesis = """
+iree-org/iree#24927 (nested jax.random.split feeding a draw, with a second draw
+live, under vmap, silently miscompiled) was fixed upstream AFTER the 3.11.0
+stable release (PyPI upload 2026-03-19), which is what the issue was measured on.
+
+Pre-registered predictions, one run per IREE build, jax 0.11.1 held fixed:
+  * iree-base-* 3.11.0 (latest stable)          -> "reproduces"  (positive control:
+    if this comes back "fixed", the harness or environment differs from the
+    2026-09-12 measurement and NO conclusion about the nightlies may be drawn)
+  * iree-base-* 3.12.0rc20260806 (the build the
+    upstream re-tester reported as matching XLA) -> "fixed"
+  * iree-base-* 3.12.0rc20260925 (latest nightly
+    on 2026-09-29)                               -> "fixed"
+
+Negative controls M2 (single-level split), M3 (no second draw), M4 (extra raw
+read) and M5b (constant sort) must agree with eager JAX on every build; if any
+diverges the outcome is "inconclusive" and M1 must not be reported for that build.
+"""
+stage_name = "validation"
+novel = true
+
+[outcomes.fixed]
+decision = "report the build as fixed upstream"
+reasoning = "M1 and M5a exact with every negative control holding means the nested-split miscompile no longer fires on this build"
+condition = "controls_hold AND NOT reproduces AND m1_agree AND m5a_agree"
+is_residual = false
+
+[outcomes.reproduces]
+decision = "report the build as still affected"
+reasoning = "M1 diverges while M2/M3/M4/M5b stay exact: the same narrow defect as filed on 2026-09-12"
+condition = "controls_hold AND reproduces"
+is_residual = false
+
+[outcomes.inconclusive]
+decision = "do not report M1 for this build; re-reduce first"
+reasoning = "a negative control diverged, or M1 and M5a (the same nested draw with and without a sort) disagree with each other, so no verdict on this build is interpretable"
+condition = "NOT controls_hold OR m1_agree <> m5a_agree"
+is_residual = true
+
+[result_schema]
+iree_base_compiler_version = "str"
+iree_base_runtime_version = "str"
+jax_version = "str"
+jaxlib_version = "str"
+m1_agree = "bool"
+m2_agree = "bool"
+m3_agree = "bool"
+m4_agree = "bool"
+m5a_agree = "bool"
+m5b_agree = "bool"
+reproduces = "bool"
+controls_hold = "bool"
+unvmapped_ran = "bool"
