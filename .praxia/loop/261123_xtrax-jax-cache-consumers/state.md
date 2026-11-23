@@ -14,3 +14,10 @@
 Spec: .praxia/docs/specs/261123_jax-cache-consumer-migration.md. Gate P2: CONVERGED after 4 rounds (R1 6 MAJOR, R2 2, R3 1, R4 0), log in spec section 8. Extra debts: xtrax #3560 (docstring). Implementers: Haiku x3 dispatched (dsp_67beee05c9300b3a aminx, dsp_0f4151d83a9afbd2 demistify, dsp_4890178511b0c950 aminx-ensemble).
 
 Next (owner): mark PRs ready and merge; then resolve xtrax debt #3527. Open: #3553 #3554 #3555 #3556 #3557 #3560.
+
+## Closed 2026-11-23
+
+Merged by owner instruction: maraxen/aminx#303 → main (23ce7456, CI green on 3762f043 after update-branch),
+maraxen/demistify#113 → main (1537dbd6), maraxen/aminx-ensemble#57 → epic/aminx-ensemble (8f4814ab).
+Cursor surface reviews (dispatches e20b8015, f234741d, a58abc77) admitted; findings verified and acted on before merge.
+xtrax debt #3527 resolved. Open follow-ups: #3553 #3554 #3555 #3556 #3557 #3560.
