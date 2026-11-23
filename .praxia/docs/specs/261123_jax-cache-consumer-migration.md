@@ -100,8 +100,9 @@ for derived-data configuration. The PR body states this. No lazy per-command con
 5. **Tests**:
    - Autouse fixture in `tests/conftest.py` (or the touched files' conftest), per test:
      monkeypatch `XDG_CONFIG_HOME` and `HOME` to `tmp_path` subdirs so `~/.config/xtrax/config.toml`
-     on the host is invisible (R2 N1); `monkeypatch.chdir(tmp_path)` so no ancestor `pyproject.toml`
-     sets a policy; delete `XTRAX_JAX_CACHE*` and `JAX_COMPILATION_CACHE_DIR`; then
+     on the host is invisible (R2 N1); **no `chdir` in the autouse fixture** (R3 N3: demistify
+     `tests/test_gaff2_checker.py:98-99` and aminx-ensemble `tests/aflf/test_config_default.py:14` rely on
+     the repo-root cwd, whose `pyproject.toml` has no `[tool.xtrax]`); delete `XTRAX_JAX_CACHE*` and `JAX_COMPILATION_CACHE_DIR`; then
      `jax.config.update("jax_compilation_cache_dir", None)` explicitly (JAX read the env at import, so
      unsetting the variable does not clear the flag; the CI env at `ci.yml:112` sets it). Teardown:
      `jax._src.compilation_cache.reset_cache()`, `xtrax.jax_cache._applied = None`, restore the saved
@@ -112,7 +113,8 @@ for derived-data configuration. The PR body states this. No lazy per-command con
    - New entry-point tests, one per entry (cli, campaign, mcp): the entry modules call through the
      module attribute (`from xtrax import jax_cache; jax_cache.configure()`) so a monkeypatched
      `xtrax.jax_cache.configure` spy is seen; the aminx MCP test uses `pytest.importorskip` for the
-     agent extra. Monkeypatch the spy, stub the dispatched app/server so nothing runs, call `main`, assert the spy ran once
+     agent extra. Only the new entry-point, real-effect, off and fail-loud tests also
+     `monkeypatch.chdir(tmp_path)`. Monkeypatch the spy, stub the dispatched app/server so nothing runs, call `main`, assert the spy ran once
      **before** the stub. Control: deleting the call turns each red.
    - Real-effect test (one, on `cli.main`): `XTRAX_JAX_CACHE_DIR=<tmp>` → live dir is `<tmp>/jaxlib-<ver>`
      **and** that directory exists on disk.
@@ -197,3 +199,5 @@ changes, and what CI does not cover (cluster runs: first job per cache dir is co
   user config, cwd and the import-time JAX flag; N2 → A5 and 5.2 reworded (env var is layer 3, namespaced),
   xtrax docstring bug filed as #3560. MINORs accepted: module-attribute calls for spies, importorskip for
   the agent extra, a fail-loud test, on-disk check in the real-effect test.
+- R3 (same challenger): N1, N2 resolved; 1 new MAJOR accepted: N3 → `chdir` moved out of the autouse
+  fixture into the new tests only (cwd-dependent existing tests cited).
