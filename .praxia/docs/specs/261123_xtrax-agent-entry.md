@@ -88,7 +88,11 @@ telemetry threads start.
 
 **`run_cli(app, argv)`** is the console-script entry:
 - `start(...)`, then `return app(list(sys.argv[1:] if argv is None else argv), **(app_kwargs or {}))`.
-- It wraps **only the `start()` call** (never the dispatch) and catches `(ValueError, OSError)`.
+- `start()` is composed of two private stages, `_configure_stage(**cache_kwargs)` (returns the
+  `CacheSetting`) then `_telemetry_stage(telemetry, init_kwargs)`. `run_cli` calls them separately and
+  wraps **only `_configure_stage`** (never telemetry, never the dispatch) in a catch of
+  `(ValueError, OSError)`, so an `OSError` or `ValueError` from `cisternal.init` (an unwritable `log_dir`,
+  bad `init_kwargs`) stays a traceback and is never reported as a cache error (R3 N5).
   `JaxCacheConfigError` subclasses `ValueError` and `JaxCacheDirError` subclasses `OSError`
   (`jax_cache.py:171,175`), and a malformed config file raises a plain `ValueError` (R2 N1). It prints
   `<prog>: jax cache configuration error: <exc>` to stderr, where `prog` is the app's first name, else
@@ -101,8 +105,8 @@ telemetry threads start.
   (`cyclopts/core.py:2801`, verified in demistify's lock), so `run_cli` *returns* the command's value only
   with `app_kwargs={"result_action": "return_value"}`; by default it exits like a console script should.
 
-**`serve(server)`** = `start(...)` then `server.run(**(run_kwargs or {}))`, with the same two error
-conversions around `start()` only (`SystemExit(2)` / `SystemExit(1)`).
+**`serve(server)`** = the same two stages then `server.run(**(run_kwargs or {}))`, with the same two
+conversions: exit 2 around `_configure_stage` only, exit 1 for `MissingExtraError` from `_telemetry_stage`.
 
 `start()` itself converts nothing: it is the library API. A caller that uses it directly, such as a
 consumer with its own CLI runner (aminx's typer `run_cli`), gets the raw `ValueError`/`OSError`/
@@ -151,7 +155,9 @@ real call.
 - **Cache error → exit 2:** a `configure` spy raising `JaxCacheDirError` gives `SystemExit(2)`; stderr names
   the program; nothing is dispatched; `cisternal.init` is not called. The same holds with the **real**
   `configure` and a malformed `$XDG_CONFIG_HOME/xtrax/config.toml`, which raises a plain `ValueError`
-  (R2 N1). Control: an app that itself raises `ValueError` still gives a traceback, not exit 2.
+  (R2 N1). Controls: an app that itself raises `ValueError` still gives a traceback, not exit 2; and a
+  `cisternal.init` spy raising `OSError` (and, separately, `ValueError`) propagates as a traceback, with no
+  "jax cache" text in stderr and no `SystemExit(2)` (R3 N5).
 - **Missing cisternal → exit 1:** patch `builtins.__import__` so `import cisternal` raises
   `ModuleNotFoundError("…", name="cisternal")`, and assert in the test that this raised error has that
   `.name`. The result is exit 1 with `xtrax[plugin]` in stderr and nothing dispatched. The patch is used
@@ -209,3 +215,6 @@ process) before per-repo implementations land. Per-repo specs pin `xtrax[plugin]
   accepted: N2 (`start()` raw-error docstring), N3 (positive control writes logs to tmp), N4
   (`__import__` patch with an asserted `.name`; cisternal is in the dev group). A7: cyclopts verified;
   FastMCP `run` is still unverified (duck-typed).
+- R3 (same challenger): N1 resolved. One new MAJOR, N5, accepted: the exit-2 catch covered `cisternal.init`
+  too. `start()` is now two private stages, and `run_cli`/`serve` catch around the configure stage only.
+  Control tests added.
