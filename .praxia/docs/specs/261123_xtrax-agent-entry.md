@@ -54,7 +54,8 @@ Non-goals:
 | A4 | `cisternal.wire(server, app=None, *, registry, expected, cli_contract, ...)` registers tools; it does not install middleware | verified | cisternal `registration/wired.py:408`; aminx installs `CisternalMiddleware` itself |
 | A5 | cisternal requires `cyclopts>=4.18,<6` and `fastmcp>=4` | verified | cisternal `pyproject.toml:23-28` |
 | A6 | `xtrax.jax_cache.configure()` raises `JaxCacheConfigError`/`JaxCacheDirError` on bad config or dir, `ValueError` on a malformed config file, and leaves JAX untouched when no layer is set | verified | `src/xtrax/jax_cache.py` (0.4.1b9; docstring fix xtrax#283) |
-| A7 | a cyclopts `App` is called `app(tokens, **kw)` with kwargs such as `exit_on_error`, `print_error` and `result_action`; FastMCP `server.run(**kw)` takes transport arguments | verified for call sites; cyclopts and FastMCP defaults **unverified** (the implementer reads cyclopts `App.__call__` and FastMCP `run` in the locked versions) | demistify `cli_support.py:226-257`; aminx-ensemble `cli.py:10-14` |
+| A7 | a cyclopts `App` is called `app(tokens, **kw)` (`print_error`, `exit_on_error`, `result_action`, …), and its default result action `"print_non_int_sys_exit"` exits; FastMCP `server.run(**kw)` takes transport arguments | cyclopts verified (R2); FastMCP `run` signature **unverified**, but the passthrough is duck-typed | cyclopts `core.py:1884-1898,2801` (demistify venv); demistify `cli_support.py:226-257`; aminx-ensemble `cli.py:10-14` |
+| A12 | `xtrax[plugin]` (cisternal) is in xtrax's dev group, so tier-1 tests see cisternal installed | verified | `pyproject.toml:146-153` |
 | A8 | a new `src/xtrax/*` module needs a `changelog.d` fragment; CI runs `assemble_changelog.py --check-new-modules --base-ref origin/main` | verified | `.github/workflows/ci.yml:94-97`; `scripts/assemble_changelog.py:206-304` |
 | A9 | `tests/test_import_isolation.py` lists xtrax modules (sorted; `tests/distribution/test_sorted_registries.py`), and a new module is added there | verified (challenger R1 C8c) | `tests/test_import_isolation.py:19-41` |
 | A10 | xtrax requires Python >=3.13, so the py39 node-core audits and the `__future__` ban do not apply to this module | verified | `pyproject.toml:6`; node-core audits target `xtrax` node cores only |
@@ -87,16 +88,25 @@ telemetry threads start.
 
 **`run_cli(app, argv)`** is the console-script entry:
 - `start(...)`, then `return app(list(sys.argv[1:] if argv is None else argv), **(app_kwargs or {}))`.
-- It catches `JaxCacheConfigError`/`JaxCacheDirError` from `start` and prints
-  `<prog>: jax cache configuration error: <exc>` to stderr. `prog` is the app's first name, else the
-  `sys.argv[0]` basename. It then raises `SystemExit(2)`, demistify's convention.
+- It wraps **only the `start()` call** (never the dispatch) and catches `(ValueError, OSError)`.
+  `JaxCacheConfigError` subclasses `ValueError` and `JaxCacheDirError` subclasses `OSError`
+  (`jax_cache.py:171,175`), and a malformed config file raises a plain `ValueError` (R2 N1). It prints
+  `<prog>: jax cache configuration error: <exc>` to stderr, where `prog` is the app's first name, else
+  the `sys.argv[0]` basename, then raises `SystemExit(2)`, demistify's convention. Wrapping only
+  `start()` keeps an app's own `ValueError`s as tracebacks.
 - It catches `MissingExtraError`, prints its message and raises `SystemExit(1)`, the plugin-verb convention.
 - Everything else propagates. Exit codes from the app itself are the app's or `app_kwargs`'s business:
   demistify-style strictness is `app_kwargs={"exit_on_error": False, "print_error": True}` plus the
-  consumer's own wrapper.
+  consumer's own wrapper. cyclopts' default `result_action` is `"print_non_int_sys_exit"`
+  (`cyclopts/core.py:2801`, verified in demistify's lock), so `run_cli` *returns* the command's value only
+  with `app_kwargs={"result_action": "return_value"}`; by default it exits like a console script should.
 
 **`serve(server)`** = `start(...)` then `server.run(**(run_kwargs or {}))`, with the same two error
-conversions (`SystemExit(2)` / `SystemExit(1)`).
+conversions around `start()` only (`SystemExit(2)` / `SystemExit(1)`).
+
+`start()` itself converts nothing: it is the library API. A caller that uses it directly, such as a
+consumer with its own CLI runner (aminx's typer `run_cli`), gets the raw `ValueError`/`OSError`/
+`MissingExtraError`. The module docstring says so (R2 N2).
 
 `telemetry=False` skips cisternal entirely: no import, no init. That is for a consumer whose CLI runner
 already owns telemetry (aminx's typer `run_cli`) or for scripts.
@@ -139,19 +149,25 @@ real call.
 - **Order:** spies record `["configure", "cisternal.init", "dispatch"]` for `run_cli` and `serve`. Control:
   swapping the two calls in the module turns it red.
 - **Cache error → exit 2:** a `configure` spy raising `JaxCacheDirError` gives `SystemExit(2)`; stderr names
-  the program; nothing is dispatched; `cisternal.init` is not called.
-- **Missing cisternal → exit 1:** make `import cisternal` raise `ModuleNotFoundError(name="cisternal")` (patch
-  `builtins.__import__` or insert a `None` entry in `sys.modules`). The result is exit 1 with `xtrax[plugin]`
-  in stderr and nothing dispatched.
+  the program; nothing is dispatched; `cisternal.init` is not called. The same holds with the **real**
+  `configure` and a malformed `$XDG_CONFIG_HOME/xtrax/config.toml`, which raises a plain `ValueError`
+  (R2 N1). Control: an app that itself raises `ValueError` still gives a traceback, not exit 2.
+- **Missing cisternal → exit 1:** patch `builtins.__import__` so `import cisternal` raises
+  `ModuleNotFoundError("…", name="cisternal")`, and assert in the test that this raised error has that
+  `.name`. The result is exit 1 with `xtrax[plugin]` in stderr and nothing dispatched. The patch is used
+  rather than `sys.modules["cisternal"] = None`, whose error `.name` is not guaranteed (R2 N4).
 - **Broken dependency inside cisternal:** a `ModuleNotFoundError(name="fastmcp")` propagates unchanged and is
   not relabelled.
 - **`telemetry=False`:** in a subprocess, call `xtrax.agent.start(telemetry=False)` (with `configure`
   neutralised by env: `XTRAX_JAX_CACHE_DIR=none`) and assert `"cisternal" not in sys.modules` afterwards.
   The positive control is the same subprocess with `telemetry=True` showing `"cisternal" in sys.modules`.
-  It runs only where cisternal is installed; skip with a reason otherwise.
+  It passes `init_kwargs={"log_dir": <tmp>}` so the real `cisternal.init` never writes `~/.cisternal/logs`
+  (R2 N3). cisternal is in the dev group (A12), so this runs in tier-1. It skips with a reason only where
+  cisternal is absent.
 - **Passthrough:** `cache_kwargs` reach `configure` unchanged, `init_kwargs` reach `init`, `app_kwargs` reach
-  `app(...)`, `run_kwargs` reach `run(...)`; `start()` returns configure's value; `run_cli` returns the app's
-  return value; `argv=None` uses `sys.argv[1:]`.
+  `app(...)`, `run_kwargs` reach `run(...)`; `start()` returns configure's value; `argv=None` uses `sys.argv[1:]`.
+  `run_cli` returns the app's value when given a stub callable or a real cyclopts app with
+  `app_kwargs={"result_action": "return_value"}`. A real cyclopts app with defaults exits (A7).
 - **Import lightness:** in a subprocess with cisternal, cyclopts and fastmcp installed (positive control:
   assert they import there), `import xtrax.agent` leaves all three out of `sys.modules`.
 - **Isolation:** any test that reaches the real `configure` sets `XDG_CONFIG_HOME` to an empty tmp dir,
@@ -188,3 +204,8 @@ process) before per-repo implementations land. Per-repo specs pin `xtrax[plugin]
   - C9: tags corrected; py39 audit out of scope.
   - C10: §7 added.
   - Side finding: demistify `main` configured twice after #111 and #113 merged independently, with 3 tests failing; fixed in demistify#114.
+- R2 (same challenger): C1-C6 resolved. One new MAJOR, N1, accepted: `run_cli`/`serve` wrap only `start()` and
+  catch `(ValueError, OSError)`, because a malformed config is a plain `ValueError`; a test was added. MINORs
+  accepted: N2 (`start()` raw-error docstring), N3 (positive control writes logs to tmp), N4
+  (`__import__` patch with an asserted `.name`; cisternal is in the dev group). A7: cyclopts verified;
+  FastMCP `run` is still unverified (duck-typed).
