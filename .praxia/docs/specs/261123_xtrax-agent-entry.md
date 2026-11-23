@@ -1,6 +1,6 @@
 ---
 title: 'xtrax.agent: one startup for consumer CLI and MCP entry points'
-description: 'Shared core for debts #3553-#3555: a small xtrax helper that runs cisternal.init() and xtrax.jax_cache.configure() in one fixed order, then dispatches a cyclopts app or a FastMCP server; per-repo specs build on it.'
+description: 'Shared core for debts #3553-#3555: a small xtrax helper that runs xtrax.jax_cache.configure() then cisternal.init() in one fixed order, then dispatches a cyclopts app or a FastMCP server; per-repo specs build on it.'
 status: draft
 task_id: 261123_xtrax-entrypoint-cli-mcp
 date: '261123'
@@ -11,106 +11,180 @@ adversarial_review: ''
 
 
 task_id: `261123_xtrax-entrypoint-cli-mcp` · shared core for debts **#3553** (denxity), **#3554** (aminx-lm),
-**#3555** (prolix). #3556 (alynxr) does not use it: alynxr's CLI/MCP are already cisternal-wired and its
-own process compiles no JAX (recon dsp_32d4ef3f508f25a9). Owner decision 2026-11-23: "small xtrax helper".
+**#3555** (prolix). #3556 (alynxr) does not use it: alynxr's CLI/MCP are already cisternal-wired, and its
+own process compiles no JAX. Its only compile site is the ColabFold probe, which imports only the standard
+library under ColabFold's interpreter (`probes/colabfold_run.py:28-39`). Owner decision 2026-11-23: "small xtrax helper".
 
 ## 1. Problem
 
-Three consumers already expose a CLI and/or an MCP server built on cisternal (`@cisternal.tool` +
-`cisternal.wire(server, app, ...)`), and each hand-rolls the process start differently:
+Consumers that expose a CLI and/or an MCP server on cisternal (`@cisternal.tool` + `cisternal.wire`)
+hand-roll the process start, each differently (all read at current `origin/main` / integration branch):
 
-| Project | Entry | Startup order today |
+| Project | Entry | Startup today |
 |---|---|---|
-| demistify | `demistify.cli:main` | `cisternal.init()` → `jax_cache.configure()` → `run_app(app, argv)` |
-| aminx | `aminx.cli:main` | `jax_cache.configure()` → `run_cli(app)` (typer, telemetry inside) |
-| aminx | `aminx.agent.mcp:main` | `require_agent_extra()` → `cisternal.init()` → `jax_cache.configure()` → `build_server().run()` |
-| aminx-ensemble | `aminx_ensemble.cli:main` | `jax_cache.configure()` → `app(argv, result_action=...)` (no `cisternal.init`) |
-| aminx-ensemble | `aminx_ensemble.mcp:main` | `jax_cache.configure()` → `server.run()` (no `cisternal.init`) |
+| demistify | `demistify.cli:main` | `configure_jax_cache()` (`jax_cache.configure()` + log); `JaxCacheConfigError`/`JaxCacheDirError` → stderr `demistify: jax cache configuration error: …` + `SystemExit(2)`; then `cisternal.init()`; then `run_app(app, argv)` (cli.py:1024-1037; jax_cache_setup.py:18-35). `run_app` calls `app(tokens, exit_on_error=False, print_error=True)` and maps `CycloptsError` → exit 2 (cli_support.py:226-257). A duplicate bare `configure()` from #113 is being removed in demistify#114. |
+| aminx | `aminx.cli:main` | `jax_cache.configure()` → `run_cli(app)` (typer; telemetry inside run_cli) |
+| aminx | `aminx.agent.mcp:main` | `require_agent_extra()` → `cisternal.init()` → `jax_cache.configure()` → `build_server().run()`; `build_server` installs `CisternalMiddleware` |
+| aminx-ensemble | `cli:main` / `mcp:main` | `jax_cache.configure()` → `app(argv, result_action="return_value")` / `server.run()`; no `cisternal.init` |
 
-Four more entry points are about to be written (denxity, aminx-lm, prolix CLI + MCP). Without a shared
-start they will drift the same way: telemetry sometimes not initialised, cache configured before or
-after telemetry, missing-extra errors worded differently.
+The most deliberate precedent (demistify #111) configures the cache first, so a cache misconfiguration
+becomes a usage error (exit 2) before telemetry starts. Three more projects (denxity, aminx-lm, prolix)
+are about to write CLI and MCP entry points; without a shared start they will drift the same way.
 
-## 2. Goal
+## 2. Goal and scope
 
-One xtrax function family that every consumer entry point calls, which (in a fixed order) initialises
-cisternal telemetry, applies the persistent JAX compilation cache, and dispatches to a cyclopts app or a
-FastMCP server. xtrax stays JAX-focused: cisternal stays optional and is imported only when called.
+One small xtrax module that every consumer entry point calls. In a fixed order it applies the persistent
+JAX compilation cache, initialises cisternal telemetry, and dispatches to a cyclopts app or a FastMCP
+server. Cache errors become a clean CLI error. xtrax stays JAX-focused: cisternal is optional and is
+imported only when telemetry is requested.
 
-Non-goals: no tool registry, no `wire()` wrapper, no CLI framework in xtrax; no change to cisternal; no
-migration of aminx/demistify/aminx-ensemble in this spec (follow-up, optional).
+Non-goals:
+- No tool registry, `wire()` wrapper, `CliContract` default or plugin manifest in xtrax. Those stay in each project (see §7).
+- No change to cisternal.
+- No migration of aminx, demistify or aminx-ensemble here. That is an optional follow-up.
+- No MCP middleware: installing `CisternalMiddleware` stays the consumer's job, as aminx does in `build_server`.
 
 ## 3. Assumptions
 
 | # | Claim | Tag | Evidence |
 |---|---|---|---|
-| A1 | xtrax already has an optional `plugin` extra = `cisternal>=0.1.7` and a lazy-import + install-hint pattern for it | verified | `pyproject.toml:118-136`; `src/xtrax/cli/plugin_verb.py:22-35` |
-| A2 | `cisternal.init(log_dir=None, ..., level=None)` is idempotent | verified | cisternal 0.1.11 `src/cisternal/__init__.py:88-121` |
-| A3 | `cisternal.wire(server, app=None, *, registry, expected, cli_contract, ...)` registers tools on a FastMCP server and a cyclopts app; it is the consumer's job, not this helper's | verified | cisternal `registration/wired.py:408` |
-| A4 | cisternal requires `cyclopts>=4.18,<6` and `fastmcp>=4` | verified | cisternal `pyproject.toml:23-28` |
-| A5 | `xtrax.jax_cache.configure()` resolves and applies the cache, fails loudly on malformed config, and leaves JAX untouched when no layer is set | verified | `src/xtrax/jax_cache.py` (0.4.1b9; docstring fix in xtrax#283) |
-| A6 | consumers call a cyclopts app as `app(argv)` / `app(argv, result_action="return_value")` and a FastMCP server as `server.run()` | verified | aminx-ensemble `cli.py:10-14`, `mcp.py:1212-1214`; demistify `cli.py:1021-1029` |
-| A7 | a new module under `src/xtrax/` needs a `changelog.d` fragment (CI "Changelog fragments & new module check") | verified | `.github/workflows/ci.yml:94` |
-| A8 | a module imported by `import xtrax` must not import cisternal, cyclopts or fastmcp eagerly | verified (rule) | `plugin_verb.py` docstring; `import xtrax` stays light |
-| A9 | consumers will depend on the release that ships this (next xtrax beta after 0.4.1b9) | unverified | needs an xtrax release; per-repo specs pin `>=` that version |
+| A1 | xtrax has an optional `plugin` extra `cisternal>=0.1.7`, and a lazy-import + install-hint pattern (prints, exits 1) | verified | `pyproject.toml:136`; `src/xtrax/cli/plugin_verb.py:22-35` |
+| A2 | `cisternal.init(log_dir, max_bytes, backup_count, exporters, heartbeat_interval, level)` is idempotent; the first call's settings win except `level` | verified | cisternal 0.1.11 `__init__.py:88-121` |
+| A3 | `cisternal.init` starts a queue-listener thread and a heartbeat daemon thread; cisternal declares `fork` unsupported (use spawn/forkserver) | verified (challenger R1 C6) | cisternal `telemetry/pipeline.py:9-10,127,450-461` |
+| A4 | `cisternal.wire(server, app=None, *, registry, expected, cli_contract, ...)` registers tools; it does not install middleware | verified | cisternal `registration/wired.py:408`; aminx installs `CisternalMiddleware` itself |
+| A5 | cisternal requires `cyclopts>=4.18,<6` and `fastmcp>=4` | verified | cisternal `pyproject.toml:23-28` |
+| A6 | `xtrax.jax_cache.configure()` raises `JaxCacheConfigError`/`JaxCacheDirError` on bad config or dir, `ValueError` on a malformed config file, and leaves JAX untouched when no layer is set | verified | `src/xtrax/jax_cache.py` (0.4.1b9; docstring fix xtrax#283) |
+| A7 | a cyclopts `App` is called `app(tokens, **kw)` with kwargs such as `exit_on_error`, `print_error` and `result_action`; FastMCP `server.run(**kw)` takes transport arguments | verified for call sites; cyclopts and FastMCP defaults **unverified** (the implementer reads cyclopts `App.__call__` and FastMCP `run` in the locked versions) | demistify `cli_support.py:226-257`; aminx-ensemble `cli.py:10-14` |
+| A8 | a new `src/xtrax/*` module needs a `changelog.d` fragment; CI runs `assemble_changelog.py --check-new-modules --base-ref origin/main` | verified | `.github/workflows/ci.yml:94-97`; `scripts/assemble_changelog.py:206-304` |
+| A9 | `tests/test_import_isolation.py` lists xtrax modules (sorted; `tests/distribution/test_sorted_registries.py`), and a new module is added there | verified (challenger R1 C8c) | `tests/test_import_isolation.py:19-41` |
+| A10 | xtrax requires Python >=3.13, so the py39 node-core audits and the `__future__` ban do not apply to this module | verified | `pyproject.toml:6`; node-core audits target `xtrax` node cores only |
+| A11 | consumers depend on the xtrax release that ships this (next beta after 0.4.1b9) | unverified | release is the owner's process |
 
 ## 4. Design
 
-New module `src/xtrax/agent.py` (public, not imported by `xtrax/__init__.py`):
+New public module `src/xtrax/agent.py`. It is not imported by `xtrax/__init__.py` and imports nothing
+from cisternal, cyclopts or fastmcp at module level.
 
 ```python
-def start(*, telemetry: bool = True, **cache_kwargs) -> jax_cache.CacheSetting
-def run_cli(app, argv=None, *, telemetry: bool = True, **cache_kwargs)
-def serve(server, *, telemetry: bool = True, **cache_kwargs) -> None
+def start(*, telemetry: bool = True, init_kwargs: Mapping[str, Any] | None = None,
+          **cache_kwargs: Any) -> jax_cache.CacheSetting
+def run_cli(app, argv: Sequence[str] | None = None, *, telemetry: bool = True,
+            init_kwargs=None, app_kwargs: Mapping[str, Any] | None = None, **cache_kwargs) -> Any
+def serve(server, *, telemetry: bool = True, init_kwargs=None,
+          run_kwargs: Mapping[str, Any] | None = None, **cache_kwargs) -> None
 ```
 
-- `start()` is the whole contract: (1) if `telemetry`, import cisternal lazily and call `cisternal.init()`
-  — if cisternal is missing, raise `ImportError` with the same install-hint wording style as
-  `plugin_verb._MISSING_EXTRA` naming the `plugin` extra; (2) call `jax_cache.configure(**cache_kwargs)`
-  and return its `CacheSetting`. Telemetry first, so a cache configuration error is raised after
-  telemetry is up (cisternal records process start). Errors propagate; nothing is caught.
-- `run_cli(app, argv)` = `start(...)` then `return app(argv)` (cyclopts semantics; `argv=None` → `sys.argv[1:]`
-  as cyclopts does). The helper does not translate exit codes; usage errors exit as cyclopts decides.
-- `serve(server)` = `start(...)` then `server.run()` (stdio default, FastMCP semantics).
-- `telemetry=False` skips cisternal entirely (for a consumer that runs telemetry inside its own CLI
-  runner, e.g. aminx's typer `run_cli`).
-- `cache_kwargs` pass straight to `jax_cache.configure` (e.g. `path=` for an explicit override); no
-  defaults are added here, so the namespace and policy rules stay xtrax.jax_cache's.
-- Duck-typed: no `isinstance` on cyclopts/FastMCP, so neither is imported by `xtrax.agent`.
+**`start()`**, the ordering contract:
+1. `setting = jax_cache.configure(**cache_kwargs)`. Errors propagate.
+2. If `telemetry`: import cisternal lazily. A `ModuleNotFoundError` with `e.name == "cisternal"` becomes
+   `MissingExtraError` (an `ImportError` subclass), whose message names `xtrax[plugin]` and matches
+   `plugin_verb._MISSING_EXTRA` in style. Any other import failure, such as a broken fastmcp inside
+   cisternal, propagates unchanged. Then call `cisternal.init(**(init_kwargs or {}))`.
+3. Return `setting`.
 
-Packaging: no new extra; document that `xtrax.agent` with `telemetry=True` needs `xtrax[plugin]`.
-`changelog.d/<slug>.added.md` fragment. Module docstring explains when to use which function, with one
-example each for a cyclopts CLI and a FastMCP server, and the ordering guarantee.
+Cache first follows demistify #111: a cache misconfiguration is a usage error and is reported before
+telemetry threads start.
+
+**`run_cli(app, argv)`** is the console-script entry:
+- `start(...)`, then `return app(list(sys.argv[1:] if argv is None else argv), **(app_kwargs or {}))`.
+- It catches `JaxCacheConfigError`/`JaxCacheDirError` from `start` and prints
+  `<prog>: jax cache configuration error: <exc>` to stderr. `prog` is the app's first name, else the
+  `sys.argv[0]` basename. It then raises `SystemExit(2)`, demistify's convention.
+- It catches `MissingExtraError`, prints its message and raises `SystemExit(1)`, the plugin-verb convention.
+- Everything else propagates. Exit codes from the app itself are the app's or `app_kwargs`'s business:
+  demistify-style strictness is `app_kwargs={"exit_on_error": False, "print_error": True}` plus the
+  consumer's own wrapper.
+
+**`serve(server)`** = `start(...)` then `server.run(**(run_kwargs or {}))`, with the same two error
+conversions (`SystemExit(2)` / `SystemExit(1)`).
+
+`telemetry=False` skips cisternal entirely: no import, no init. That is for a consumer whose CLI runner
+already owns telemetry (aminx's typer `run_cli`) or for scripts.
+
+`cache_kwargs` pass unchanged to `jax_cache.configure` (e.g. `path=`). No defaults are added, so
+namespace and policy stay xtrax.jax_cache's rules.
+
+Duck-typed: no `isinstance` on cyclopts or FastMCP types.
+
+**Documented constraints** (module docstring):
+- With `telemetry=True`, the process runs cisternal threads, and cisternal declares `fork` unsupported.
+  Consumers that use `multiprocessing` must use `spawn`/`forkserver` (denxity's harness already spawns;
+  prolix to check).
+- `telemetry=True` needs `xtrax[plugin]`, which pulls cisternal, cyclopts>=4.18,<6 and fastmcp>=4.
+  Adopting the helper in a project that never initialised telemetry (aminx-ensemble today) adds that
+  dependency and starts telemetry threads. That is intended for agent-facing entry points, and the
+  project can opt out with `telemetry=False`.
+
+Packaging: no new extra. Add a `changelog.d/<slug>.added.md` fragment and add `xtrax.agent` to
+`tests/test_import_isolation.py` in sorted order.
 
 ## 5. Old vs new (for consumers that adopt it)
 
 | Concern | Hand-rolled today | With `xtrax.agent` |
 |---|---|---|
+| order | varies | `jax_cache.configure` → `cisternal.init` → dispatch |
 | telemetry init | sometimes missing (aminx-ensemble) | always, unless `telemetry=False` |
-| order | varies | `cisternal.init` → `jax_cache.configure` → dispatch |
-| missing cisternal | project-specific error or none | `ImportError` naming `xtrax[plugin]` |
-| cache override | each passes its own args | `**cache_kwargs` to `configure` |
+| cache misconfig | traceback (aminx, aminx-ensemble) or exit 2 (demistify) | stderr line + exit 2 |
+| missing cisternal | project-specific | stderr hint naming `xtrax[plugin]` + exit 1 |
+| app/server options | hand-written | `app_kwargs` / `run_kwargs` passthrough |
+| telemetry options | `cisternal.init(...)` | `init_kwargs` |
 
-## 6. Tests (in `tests/`, xtrax's tier-1 coverage floor applies)
+## 6. Tests (`tests/test_agent.py`; tier-1 coverage floor applies)
 
-- Order: monkeypatch `cisternal.init`, `xtrax.jax_cache.configure` and a stub app/server; `run_cli` and
-  `serve` record `["cisternal.init", "configure", "dispatch"]`. Control: reordering in the module turns it red.
-- `telemetry=False` never imports cisternal (assert `"cisternal" not in sys.modules` after a fresh
-  import in a subprocess, or patch `importlib.import_module` to raise).
-- Missing cisternal with `telemetry=True` → `ImportError` mentioning `xtrax[plugin]` and nothing dispatched.
-- `cache_kwargs` reach `configure` unchanged; the returned value of `start()` is configure's return.
-- `run_cli` returns the app's return value; `argv` passes through.
-- A configure error propagates and nothing is dispatched.
-- `import xtrax` and `import xtrax.agent` do not import cisternal, cyclopts or fastmcp (subprocess check).
-- Isolation: tests that reach the real `configure` set `XDG_CONFIG_HOME` to an empty tmp dir, clear
-  `XTRAX_JAX_CACHE*`, and restore JAX's flag and `jax_cache._applied`.
+Each patch targets the name `xtrax.agent` looks up: the module attribute `xtrax.jax_cache.configure`,
+and `cisternal.init` via the imported module. Agent code calls `jax_cache.configure(...)` and
+`cisternal.init(...)` through module attributes, never a `from`-imported function, so a spy sees the
+real call.
 
-## 7. Delivery
+- **Order:** spies record `["configure", "cisternal.init", "dispatch"]` for `run_cli` and `serve`. Control:
+  swapping the two calls in the module turns it red.
+- **Cache error → exit 2:** a `configure` spy raising `JaxCacheDirError` gives `SystemExit(2)`; stderr names
+  the program; nothing is dispatched; `cisternal.init` is not called.
+- **Missing cisternal → exit 1:** make `import cisternal` raise `ModuleNotFoundError(name="cisternal")` (patch
+  `builtins.__import__` or insert a `None` entry in `sys.modules`). The result is exit 1 with `xtrax[plugin]`
+  in stderr and nothing dispatched.
+- **Broken dependency inside cisternal:** a `ModuleNotFoundError(name="fastmcp")` propagates unchanged and is
+  not relabelled.
+- **`telemetry=False`:** in a subprocess, call `xtrax.agent.start(telemetry=False)` (with `configure`
+  neutralised by env: `XTRAX_JAX_CACHE_DIR=none`) and assert `"cisternal" not in sys.modules` afterwards.
+  The positive control is the same subprocess with `telemetry=True` showing `"cisternal" in sys.modules`.
+  It runs only where cisternal is installed; skip with a reason otherwise.
+- **Passthrough:** `cache_kwargs` reach `configure` unchanged, `init_kwargs` reach `init`, `app_kwargs` reach
+  `app(...)`, `run_kwargs` reach `run(...)`; `start()` returns configure's value; `run_cli` returns the app's
+  return value; `argv=None` uses `sys.argv[1:]`.
+- **Import lightness:** in a subprocess with cisternal, cyclopts and fastmcp installed (positive control:
+  assert they import there), `import xtrax.agent` leaves all three out of `sys.modules`.
+- **Isolation:** any test that reaches the real `configure` sets `XDG_CONFIG_HOME` to an empty tmp dir,
+  clears `XTRAX_JAX_CACHE*` and `JAX_COMPILATION_CACHE_DIR`, and restores JAX's flag and `jax_cache._applied`.
+
+## 7. What each per-repo spec still owns
+
+This helper is about a dozen lines of glue. It does not by itself give denxity, aminx-lm or prolix a CLI.
+Each per-repo spec must decide:
+- **Operations:** the operations, with their I/O contract. denxity has no file I/O today; prolix's long runs are job-submitted.
+- **Tools:** the `@cisternal.tool` functions and their registry name.
+- **Wiring:** `wire(server, app, registry=..., expected=[...], cli_contract=...)`, including a `CliContract` (demistify uses `BASE_CONTRACT`, `cli.py:1013`).
+- **Packaging:** console scripts and the `agent`/`plugin` extras; `agent_plugin.json` and skills.
+- **Middleware:** `CisternalMiddleware` on the FastMCP server.
+- **Tests:** an `EXPECTED_TOOLS` registry parity test, and a host-config-isolating test fixture (the #3527 lesson).
+- **Process start:** `spawn`/`forkserver` where the project forks.
+
+## 8. Delivery
 
 Branch `feat/261123-xtrax-agent-entry`, one PR to xtrax `main`, then an xtrax beta release (owner's
-release process) before the per-repo implementations land. Per-repo specs (denxity, aminx-lm, prolix)
-reference this module and pin `xtrax[plugin]>=<that release>`.
+process) before per-repo implementations land. Per-repo specs pin `xtrax[plugin]>=<that release>`.
 
-## 8. Review log
+## 9. Review log
 
-(pending)
+- R1 (spec-challenger, Sonnet, dsp_8c2c814b58f64f97): 0 FATAL, 6 MAJOR, 4 MINOR; all accepted.
+  - C1: demistify's real order is configure → init with exit 2; the order is flipped and the conversion added.
+  - C2: `app_kwargs`.
+  - C3: `ModuleNotFoundError` name check, exit 1.
+  - C4: cost documented.
+  - C5: `init_kwargs`.
+  - C6: fork constraint documented.
+  - C7: `run_kwargs`; middleware is the consumer's job.
+  - C8: tests fixed (spy targets, positive controls, import-isolation registry).
+  - C9: tags corrected; py39 audit out of scope.
+  - C10: §7 added.
+  - Side finding: demistify `main` configured twice after #111 and #113 merged independently, with 3 tests failing; fixed in demistify#114.
