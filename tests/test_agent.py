@@ -240,7 +240,11 @@ _PROBE = textwrap.dedent(
 
 
 def _run_probe(tmp_path: Path, telemetry: bool, init_kwargs: dict) -> str:
-    env = dict(os.environ)
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not (k.startswith("XTRAX_JAX_CACHE") or k == "JAX_COMPILATION_CACHE_DIR")
+    }
     env["XTRAX_JAX_CACHE_DIR"] = "none"
     env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
     code = _PROBE.format(telemetry=telemetry, init_kwargs=init_kwargs)
@@ -343,3 +347,53 @@ def test_import_agent_loads_no_optional_stack():
         timeout=300,
     )
     assert ctrl.returncode == 0, ctrl.stderr
+
+
+# ---- audit follow-ups: start() converts nothing; serve() converts like run_cli
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [jax_cache.JaxCacheDirError("cannot create /nope"), jax_cache.JaxCacheConfigError("bad")],
+)
+def test_start_raises_cache_errors_unconverted(rec, exc):
+    rec.configure_exc = exc
+    with pytest.raises(type(exc)):
+        agent.start()
+    assert rec.events == ["configure"]
+
+
+def test_serve_cache_error_exits_2_and_skips_run(rec, capsys):
+    rec.configure_exc = jax_cache.JaxCacheDirError("cannot create /nope")
+    with pytest.raises(SystemExit) as info:
+        agent.serve(StubServer(rec))
+    assert info.value.code == 2
+    assert "jax cache configuration error: cannot create /nope" in capsys.readouterr().err
+    assert rec.events == ["configure"]
+
+
+def test_serve_missing_cisternal_exits_1_with_hint(rec, monkeypatch, capsys):
+    _block_cisternal(monkeypatch)
+    with pytest.raises(SystemExit) as info:
+        agent.serve(StubServer(rec))
+    assert info.value.code == 1
+    assert "xtrax[plugin]" in capsys.readouterr().err
+    assert "dispatch" not in rec.events
+
+
+def test_run_cli_passes_cache_and_init_kwargs(rec):
+    agent.run_cli(
+        StubApp(rec),
+        [],
+        init_kwargs={"level": 10},
+        app_kwargs={"result_action": "return_value"},
+        path="/somewhere",
+    )
+    assert rec.configure_kwargs == {"path": "/somewhere"}
+    assert rec.init_kwargs == {"level": 10}
+
+
+def test_serve_passes_cache_and_init_kwargs(rec):
+    agent.serve(StubServer(rec), init_kwargs={"level": 20}, namespace="none")
+    assert rec.configure_kwargs == {"namespace": "none"}
+    assert rec.init_kwargs == {"level": 20}
