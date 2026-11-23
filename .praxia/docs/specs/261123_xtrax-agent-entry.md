@@ -54,7 +54,7 @@ Non-goals:
 | A4 | `cisternal.wire(server, app=None, *, registry, expected, cli_contract, ...)` registers tools; it does not install middleware | verified | cisternal `registration/wired.py:408`; aminx installs `CisternalMiddleware` itself |
 | A5 | cisternal requires `cyclopts>=4.18,<6` and `fastmcp>=4` | verified | cisternal `pyproject.toml:23-28` |
 | A6 | `xtrax.jax_cache.configure()` raises `JaxCacheConfigError`/`JaxCacheDirError` on bad config or dir, `ValueError` on a malformed config file, and leaves JAX untouched when no layer is set | verified | `src/xtrax/jax_cache.py` (0.4.1b9; docstring fix xtrax#283) |
-| A7 | a cyclopts `App` is called `app(tokens, **kw)` (`print_error`, `exit_on_error`, `result_action`, …), and by default it exits: an int return becomes the exit code, any other return is printed and exits 0, and a parse/usage error exits **1** (the default's name varies by version: `"print_non_int_sys_exit"` in 4.25.3, `"print_non_int_return_int_as_exit_code"` in 4.21.1; behavior identical, probed 261123); FastMCP `server.run(**kw)` takes transport arguments | cyclopts verified (R2); FastMCP `run` signature **unverified**, but the passthrough is duck-typed | cyclopts `core.py:1884-1898,2801` (demistify venv); demistify `cli_support.py:226-257`; aminx-ensemble `cli.py:10-14` |
+| A7 | a cyclopts `App` is called `app(tokens, **kw)` (`print_error`, `exit_on_error`, `result_action`, …), and by default it exits: an int return becomes the exit code, any other return is printed and exits 0, and a parse/usage error exits **1 on cyclopts 4.x but 2 on 5.x** (probed 4.21.1/4.25.3 -> 1, 5.5.2 -> 2), so a consumer that needs a fixed usage code maps `CycloptsError` itself, demistify convention (the default's name varies by version: `"print_non_int_sys_exit"` in 4.25.3, `"print_non_int_return_int_as_exit_code"` in 4.21.1; behavior identical, probed 261123); FastMCP `server.run(**kw)` takes transport arguments | cyclopts verified (R2); FastMCP `run` signature **unverified**, but the passthrough is duck-typed | cyclopts `core.py:1884-1898,2801` (demistify venv); demistify `cli_support.py:226-257`; aminx-ensemble `cli.py:10-14` |
 | A12 | `xtrax[plugin]` (cisternal) is in xtrax's dev group, so tier-1 tests see cisternal installed | verified | `pyproject.toml:146-153` |
 | A8 | a new `src/xtrax/*` module needs a `changelog.d` fragment; CI runs `assemble_changelog.py --check-new-modules --base-ref origin/main` | verified | `.github/workflows/ci.yml:94-97`; `scripts/assemble_changelog.py:206-304` |
 | A9 | `tests/test_import_isolation.py` lists xtrax modules (sorted; `tests/distribution/test_sorted_registries.py`), and a new module is added there | verified (challenger R1 C8c) | `tests/test_import_isolation.py:19-41` |
@@ -103,8 +103,8 @@ telemetry threads start.
 - It catches `MissingExtraError`, prints its message and raises `SystemExit(1)`, the plugin-verb convention.
 - Everything else propagates. Exit codes from the app itself are the app's or `app_kwargs`'s business:
   demistify-style strictness is `app_kwargs={"exit_on_error": False, "print_error": True}` plus the
-  consumer's own wrapper. cyclopts' default `result_action` exits (int return = exit code; usage error = exit 1, so it never
-  collides with the cache-error exit 2; probed on cyclopts 4.21.1 and 4.25.3, see A7), so `run_cli` *returns* the command's value only
+  consumer's own wrapper. cyclopts' default `result_action` exits (int return = exit code; the usage-error code is version-dependent, 1 on 4.x and 2 on 5.x,
+  so consumers pin it with a `CycloptsError` -> 2 wrapper; see A7), so `run_cli` *returns* the command's value only
   with `app_kwargs={"result_action": "return_value"}`; by default it exits like a console script should.
 
 **`serve(server)`** = the same two stages then `server.run(**(run_kwargs or {}))`, with the same two
