@@ -72,6 +72,11 @@ so every project reads the same layers: explicit argument > `$XTRAX_JAX_CACHE_DI
 
 ## 4. Design per ADOPT project
 
+**Lock rule (all three, amended in P3):** after `uv lock --upgrade-package xtrax`, no package other than
+xtrax may change **version** or be added/removed. Marker re-simplification on unchanged versions
+(uv rewrites `marker = ...` on e.g. `jaxlib`, `jax-cuda12-plugin`, `cuda-pathfinder` after a new
+resolution) is accepted; list it in the PR body.
+
 Rule for all three: call `configure()` **once at the start of every console entry point** (CLI and MCP),
 before any compile, never at import time in library code. Do not pass `namespace` (owner: `auto`).
 
@@ -140,7 +145,12 @@ for derived-data configuration. The PR body states this. No lazy per-command con
 
 ### 4.3 aminx-ensemble (`xtrax[io,data]>=0.4.1b6,<0.5` → `>=0.4.1b9,<0.5`)
 
-1. Pin floor `pyproject.toml:11` (and the unpinned `xtrax[eda]` at `:58` stays as is); `uv lock --upgrade-package xtrax`;
+1. **Pin crosses xtrax 0.4.1b8, which removed `optax` and `orbax-checkpoint` from xtrax's core
+   dependencies** (`v0.4.1b8:pyproject.toml`). aminx-ensemble's `src/aminx_ensemble/ebm/training.py:126`
+   imports `optax` at module level, but the `ebm` extra (`pyproject.toml:21-24`) declares only
+   `orbax-checkpoint`; add `"optax>=0.2.3"` to the `ebm` extra. (`aflf`/`afrw` already declare optax;
+   `ebm`/`bioemu` already declare orbax.) aminx and demistify are already on b8 and declare what they import.
+   Pin floor `pyproject.toml:11` (and the unpinned `xtrax[eda]` at `:58` stays as is); `uv lock --upgrade-package xtrax`;
    commit `uv.lock` (`scripts/remote/with_env.sh` runs `uv sync --frozen`). Expect a `DeprecationWarning`
    from `src/aminx_ensemble/ebm/_tiling.py:16,98` (`xtrax.safe_scan`); out of scope, noted in the PR.
 2. Entry points: `src/aminx_ensemble/cli.py:10` `main()` before dispatching `app`; `src/aminx_ensemble/mcp.py:1212`
@@ -201,3 +211,6 @@ changes, and what CI does not cover (cluster runs: first job per cache dir is co
   the agent extra, a fail-loud test, on-disk check in the real-effect test.
 - R3 (same challenger): N1, N2 resolved; 1 new MAJOR accepted: N3 → `chdir` moved out of the autouse
   fixture into the new tests only (cwd-dependent existing tests cited).
+- P3 amendment (orchestrator, after implementer stop on lock diff, dsp_4890178511b0c950): lock rule
+  reworded to versions-only; aminx-ensemble `ebm` extra gains `optax>=0.2.3` because the b6→b9 jump crosses
+  xtrax b8's removal of optax/orbax from core dependencies.
