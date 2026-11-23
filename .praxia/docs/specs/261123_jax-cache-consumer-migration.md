@@ -41,7 +41,7 @@ so every project reads the same layers: explicit argument > `$XTRAX_JAX_CACHE_DI
 | A2 | 0.4.1b9 requires `jax>=0.10.2,<0.12`; compatible with all three ADOPT repos | verified | `v0.4.1b9:pyproject.toml` deps; aminx/aminx-ensemble `jax>=0.11.2,<0.12`, demistify `jax>=0.10.2,<0.11` |
 | A3 | b8→b9 has no removals; only deprecation is `safe_scan` (DeprecationWarning) | verified | `v0.4.1b9:CHANGELOG.md` §0.4.1b9 |
 | A4 | `configure()` works on jax 0.10.2 (demistify's lock): private `compilation_cache._cache` and `reset_cache` exist; after-compile switch resets; `none` clears | verified (throwaway spike, pass/fail only) | uv isolated env jax/jaxlib 0.10.2 + xtrax 0.4.1b9: entries under `jaxlib-0.10.2/`, reset logged, live dir `None` after off |
-| A5 | With nothing configured, `configure()` leaves JAX untouched (incl. an env `JAX_COMPILATION_CACHE_DIR`) | verified | `jax_cache.py:786-793` |
+| A5 | When no layer sets a directory or a policy, `configure()` leaves JAX untouched. A non-empty `$JAX_COMPILATION_CACHE_DIR` **is** a layer (3) and is namespaced; the xtrax docstring (`jax_cache.py:42-43`) says otherwise and is wrong (xtrax debt #3560) | verified (R2 N2) | `jax_cache.py:282-283`, `:786-793` |
 | A6 | An explicit `path` outranks a project `policy = "off"` | verified | `jax_cache.py:517-519` |
 | A7 | Disable words apply only to `str`; a `Path("none")` is a directory named `none` | verified | `jax_cache.py:295-296` |
 | A8 | Default namespace writes under `<dir>/jaxlib-<ver>`; one cold run per previously flat dir | verified | `jax_cache.py:617-623`; owner chose `auto` 2026-11-23 |
@@ -98,17 +98,26 @@ for derived-data configuration. The PR body states this. No lazy per-command con
    (or both are off), else `"jax.config (not set by xtrax jax_cache)"`. Same three keys, no schema bump.
    Remove the TODO.
 5. **Tests**:
-   - Autouse fixture in `tests/conftest.py` (or the touched files' conftest): save and restore
-     `jax.config.jax_compilation_cache_dir`, set `xtrax.jax_cache._applied = None`, call
-     `jax._src.compilation_cache.reset_cache()` on teardown, and clear `XTRAX_JAX_CACHE*` /
-     `JAX_COMPILATION_CACHE_DIR` via monkeypatch so the CI env (`ci.yml:112`) cannot leak in.
+   - Autouse fixture in `tests/conftest.py` (or the touched files' conftest), per test:
+     monkeypatch `XDG_CONFIG_HOME` and `HOME` to `tmp_path` subdirs so `~/.config/xtrax/config.toml`
+     on the host is invisible (R2 N1); `monkeypatch.chdir(tmp_path)` so no ancestor `pyproject.toml`
+     sets a policy; delete `XTRAX_JAX_CACHE*` and `JAX_COMPILATION_CACHE_DIR`; then
+     `jax.config.update("jax_compilation_cache_dir", None)` explicitly (JAX read the env at import, so
+     unsetting the variable does not clear the flag; the CI env at `ci.yml:112` sets it). Teardown:
+     `jax._src.compilation_cache.reset_cache()`, `xtrax.jax_cache._applied = None`, restore the saved
+     flag value. No test assumes the flag started at None without this fixture.
    - `tests/host/test_prep_cache.py`: expected dir is `cache_dir / f"jaxlib-{importlib.metadata.version('jaxlib')}"`.
      Replace the blanket `except Exception: pass` so a `JaxCacheDirError` / `JaxCacheConfigError` re-raises
      (catch only the mocking-induced error type, or assert on the cache before the failing call).
-   - New entry-point tests, one per entry (cli, campaign, mcp): monkeypatch `xtrax.jax_cache.configure`
-     with a spy, stub the dispatched app/server so nothing runs, call `main`, assert the spy ran once
+   - New entry-point tests, one per entry (cli, campaign, mcp): the entry modules call through the
+     module attribute (`from xtrax import jax_cache; jax_cache.configure()`) so a monkeypatched
+     `xtrax.jax_cache.configure` spy is seen; the aminx MCP test uses `pytest.importorskip` for the
+     agent extra. Monkeypatch the spy, stub the dispatched app/server so nothing runs, call `main`, assert the spy ran once
      **before** the stub. Control: deleting the call turns each red.
-   - Real-effect test (one, on `cli.main`): `XTRAX_JAX_CACHE_DIR=<tmp>` → live dir is `<tmp>/jaxlib-<ver>`.
+   - Real-effect test (one, on `cli.main`): `XTRAX_JAX_CACHE_DIR=<tmp>` → live dir is `<tmp>/jaxlib-<ver>`
+     **and** that directory exists on disk.
+   - Fail-loud test: write a malformed `config.toml` under the patched `XDG_CONFIG_HOME/xtrax/` →
+     `cli.main` raises `ValueError` naming the file.
      Off test: pre-set `jax.config.update("jax_compilation_cache_dir", <other tmp>)`, set
      `XTRAX_JAX_CACHE_DIR=none`, call `main` → live dir is `None`. This goes red if the call is deleted
      (the pre-set dir would remain), so the control is real.
@@ -155,7 +164,7 @@ for derived-data configuration. The PR body states this. No lazy per-command con
 
 | Case | Before | After |
 |---|---|---|
-| nothing configured on the machine | JAX default (an env `JAX_COMPILATION_CACHE_DIR` used flat by JAX) | JAX untouched (A5); env var still used **flat** by JAX itself |
+| no layer sets a directory or policy (no env var, no user config, no `[tool.xtrax]` policy) | JAX default | JAX untouched (A5) |
 | `$XTRAX_JAX_CACHE_DIR` or user config set | ignored | `<dir>/jaxlib-<ver>`; mkdir + 4 KiB write probe on **every** invocation, including planning and `--help` |
 | `$JAX_COMPILATION_CACHE_DIR=<dir>` (myxcel, aminx CI `ci.yml:112`, `with_env.sh:205`, sbatch scripts) | JAX uses `<dir>` flat | xtrax reads it as layer 3 → `<dir>/jaxlib-<ver>`; first job per dir cold once |
 | `$JAX_COMPILATION_CACHE_DIR=none` | JAX writes `./none` | off; flag cleared |
@@ -184,3 +193,7 @@ changes, and what CI does not cover (cluster runs: first job per cache dir is co
   "fail loudly" (owner's hard rule), documented rather than made lazy. MINOR: A11 resolved; explicit vs
   `$XTRAX_JAX_CACHE=off` added to 5.1; library-caller note in 4.1.3; per-repo lock checks + committed locks;
   A20 pool; prolix viewer_server noted in A16.
+- R2 (same challenger): all six R1 MAJOR resolved; 0 FATAL; 2 new MAJOR accepted: N1 → fixture isolates
+  user config, cwd and the import-time JAX flag; N2 → A5 and 5.2 reworded (env var is layer 3, namespaced),
+  xtrax docstring bug filed as #3560. MINORs accepted: module-attribute calls for spies, importorskip for
+  the agent extra, a fail-loud test, on-disk check in the real-effect test.
