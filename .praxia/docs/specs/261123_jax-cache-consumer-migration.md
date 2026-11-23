@@ -54,7 +54,7 @@ so every project reads the same layers: explicit argument > `$XTRAX_JAX_CACHE_DI
 | A15 | alynxr runs no `jit` in `src/`; its ColabFold probe runs under a foreign interpreter without xtrax | verified | `git grep jax.jit src/` empty; `fold.py:264` `Install.python`; `probes/colabfold_run.py` has no xtrax import |
 | A16 | denxity, aminx-lm, prolix define no `[project.scripts]` (prolix has a runnable `viewer_server.py`, not a console entry; tracked in #3555) | verified | `origin/main:pyproject.toml` |
 | A17 | aminx and aminx-ensemble also ship MCP console entries that run JAX in-process | verified (R1 M1) | aminx `pyproject.toml:40` → `agent/mcp.py:61`, `sample` tool `agent/tools.py:288`; aminx-ensemble `pyproject.toml:63` → `mcp.py:1212`, `run_ensemble` `:956` |
-| A18 | demistify hashes xtrax `tiling/`, `transforms/`, `intent/`, `profiling/`, `safety/` and the `safe_scan` module into `code_fingerprint`; b8→b9 changes `transforms/scan.py`, `transforms/__init__.py`, `tiling/dispatch.py`, so stores written under b8 raise `ShardStaleError` on resume | verified (R1 M2) | `src/demistify/shard_identity.py:166-187`; `git diff --stat v0.4.1b8 v0.4.1b9`; owner: bump anyway, warn in PR (2026-11-23) |
+| A18 | demistify hashes xtrax `tiling/`, `transforms/`, `intent/`, `profiling/`, `safety/` and the `safe_scan` module into `code_fingerprint`; b8→b9 changes `transforms/scan.py`, `transforms/__init__.py`, `tiling/dispatch.py`, so a b8-written store is not reused: `code_fingerprint` is in the store identity (`shard_identity.py:396`); an explicit store path raises `ShardStoreMismatch` (`pipeline.py:1088-1092`), `path="auto"` opens a new store with only a warning (`shard_sink.py:1040`) (corrected in P5 review of demistify#113) | verified (R1 M2) | `src/demistify/shard_identity.py:166-187`; `git diff --stat v0.4.1b8 v0.4.1b9`; owner: bump anyway, warn in PR (2026-11-23) |
 | A19 | `configure()` walks every ancestor `pyproject.toml` from cwd for policy/knobs; a malformed one raises | verified (R1 M6) | `xtrax/config.py:326-352` |
 | A20 | aminx `training/dataloading/preprocess.py:259` `mp.Pool` workers parse structures (numpy/msgpack); not a compile site | verified by reading; implementer re-greps the worker for `jit` | `preprocess.py:17-35,72,259` |
 
@@ -141,7 +141,7 @@ for derived-data configuration. The PR body states this. No lazy per-command con
 3. Tests: the spy test, the real-effect test and the pre-set-then-`none` off test from 4.1.5, on
    `demistify.cli.main` with `run_app` stubbed; same autouse isolation fixture.
 4. **PR body must state A18**: durable stores written under xtrax b8 refuse to resume after this lands
-   (`ShardStaleError` from the fingerprint); finish or restart them.
+   (see A18 for the exact failure mode); finish or restart them.
 
 ### 4.3 aminx-ensemble (`xtrax[io,data]>=0.4.1b6,<0.5` → `>=0.4.1b9,<0.5`)
 
@@ -214,3 +214,7 @@ changes, and what CI does not cover (cluster runs: first job per cache dir is co
 - P3 amendment (orchestrator, after implementer stop on lock diff, dsp_4890178511b0c950): lock rule
   reworded to versions-only; aminx-ensemble `ebm` extra gains `optax>=0.2.3` because the b6→b9 jump crosses
   xtrax b8's removal of optax/orbax from core dependencies.
+- P5 (PR review): aminx#303 R1 1 MAJOR (host user config leaked into existing entry-point and subprocess
+  tests) → suite-wide autouse `XDG_CONFIG_HOME` redirect + opt-in strict fixture; demistify#113 R1 1 MAJOR
+  (wrong exception named for stale stores) → A18 and PR body corrected; aminx-ensemble#57 R1 no BLOCKER/MAJOR
+  (mcp real-effect test added). Round 2 dispatched for #303 and #113.

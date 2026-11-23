@@ -2,9 +2,9 @@
 
 | Item | Verdict | Branch | Base | PR | Status |
 |---|---|---|---|---|---|
-| aminx | ADOPT | feat/261123-jax-cache-configure | origin/main 12e20f66 | - | implementing |
-| demistify | ADOPT | feat/261123-jax-cache-configure | origin/main 462ca48 | - | implementing |
-| aminx-ensemble | ADOPT | feat/261123-jax-cache-configure | origin/epic/aminx-ensemble 359e41a0 | - | implementing |
+| aminx | ADOPT | feat/261123-jax-cache-configure | origin/main 12e20f66 | maraxen/aminx#303 (draft) | P5 round 2 |
+| demistify | ADOPT | feat/261123-jax-cache-configure | origin/main 462ca48 | maraxen/demistify#113 (draft; repo has no CI) | P5 round 2 |
+| aminx-ensemble | ADOPT | feat/261123-jax-cache-configure | origin/epic/aminx-ensemble 359e41a0 | maraxen/aminx-ensemble#57 (draft) | P5 R1 clean; CI blocked by GitHub billing |
 | alynxr | NOT-APPLICABLE | - | - | - | debt #3556 filed |
 | denxity | NOT-APPLICABLE | - | - | - | debt #3553 filed |
 | aminx-lm | NOT-APPLICABLE | - | - | - | debt #3554 filed |
