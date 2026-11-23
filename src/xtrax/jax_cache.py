@@ -267,6 +267,7 @@ def _layered(
     *,
     also_env: str | None = None,
     project: bool = True,
+    empty_env_unset: bool = False,
 ) -> tuple[Any, str, Path | None]:
     """``(raw value, source, declaring file)``; raw ``None`` means no layer set ``key``.
 
@@ -274,10 +275,11 @@ def _layered(
     caller reads that as "disabled here", which differs from ``None`` ("nothing set").
     ``also_env`` names a second environment variable consulted after ``env_var``; an empty
     value there counts as unset. ``project=False`` skips the ``pyproject.toml`` layer.
+    ``empty_env_unset`` makes an empty or blank ``env_var`` count as unset too.
     """
     if arg is not None:
         return arg, "explicit argument", None
-    if env_var in os.environ:
+    if env_var in os.environ and not (empty_env_unset and not os.environ[env_var].strip()):
         return os.environ[env_var], f"${env_var}", None
     if also_env is not None and os.environ.get(also_env, "").strip():
         return os.environ[also_env], f"${also_env}", None
@@ -297,7 +299,10 @@ def _is_disabled(value: Any) -> bool:
 
 
 def cache_dir_source(
-    path: Path | str | None = None, start: Path | str | None = None
+    path: Path | str | None = None,
+    start: Path | str | None = None,
+    *,
+    tolerate_legacy: bool = False,
 ) -> tuple[Path | None, str]:
     """``(configured directory or None, which layer decided)``; see the module docstring.
 
@@ -305,13 +310,37 @@ def cache_dir_source(
     returned directory is the configured base, before the namespace segments ``configure``
     adds.
 
+    A ``pyproject.toml`` that still holds ``jax_compilation_cache_dir`` is refused, unless
+    the caller chose explicitly: a ``path`` argument, ``$XTRAX_JAX_CACHE_DIR``,
+    ``$JAX_COMPILATION_CACHE_DIR`` or ``tolerate_legacy`` (set by ``resolve`` when the policy
+    is explicitly off by argument or ``$XTRAX_JAX_CACHE``). The key is then ignored and a
+    warning names it.
+
     Raises:
         JaxCacheConfigError: a ``pyproject.toml`` holds ``jax_compilation_cache_dir`` (a machine
-            path in a committed file), or a value is invalid.
+            path in a committed file) and no explicit choice overrides it, or a value is invalid.
     """
     start_dir = _start_dir(start)
     in_project = _pyproject_value(APP, KEY_DIR, start_dir)
+    overridden = False
     if in_project is not None:
+        overridden = (
+            tolerate_legacy
+            or path is not None
+            or ENV_DIR in os.environ
+            or bool(os.environ.get(ENV_JAX_DIR, "").strip())
+        )
+        if overridden:
+            logger.warning(
+                "ignoring [tool.%s] %s in %s: a machine path in a committed pyproject.toml is "
+                "no longer read; move it to %s or $%s",
+                APP,
+                KEY_DIR,
+                in_project[1],
+                _user_config_path(APP),
+                ENV_DIR,
+            )
+    if in_project is not None and not overridden:
         raise JaxCacheConfigError(
             f"project config {in_project[1]}: [tool.{APP}] {KEY_DIR!r} is not allowed. A committed "
             f"pyproject.toml is pushed to other machines, so it must not hold a machine path. Set "
@@ -352,13 +381,22 @@ def _parse_policy(raw: Any, source: str) -> str:
     raise JaxCacheConfigError(f'{source}: {KEY_POLICY!r} must be "on" or "off", got {raw!r}')
 
 
+def _explicit_policy_off(policy: str | bool | None) -> bool:
+    """True when the ``policy`` argument or a non-empty ``$XTRAX_JAX_CACHE`` says off."""
+    if policy is not None:
+        return _parse_policy(policy, "explicit argument") == "off"
+    raw = os.environ.get(ENV_POLICY, "").strip()
+    return bool(raw) and _parse_policy(raw, f"${ENV_POLICY}") == "off"
+
+
 def policy_source(
     policy: str | bool | None = None, start: Path | str | None = None
 ) -> tuple[str, str]:
     """``(policy, which layer decided)`` for whether the cache is used at all.
 
     Order: ``policy`` argument > ``$XTRAX_JAX_CACHE`` > ``jax_compilation_cache`` under
-    ``[tool.xtrax]`` > the same key in the user config > ``("on", "default")``. Pure.
+    ``[tool.xtrax]`` > the same key in the user config > ``("on", "default")``. Pure. An empty
+    ``$XTRAX_JAX_CACHE`` counts as unset (use ``none`` or ``off`` to disable).
 
     Args:
         policy: ``"on"``/``"off"`` (or a bool) to decide explicitly; None reads the layers.
@@ -370,7 +408,9 @@ def policy_source(
     Raises:
         JaxCacheConfigError: any value other than on/off/none/empty.
     """
-    raw, source, _ = _layered(KEY_POLICY, ENV_POLICY, policy, _start_dir(start))
+    raw, source, _ = _layered(
+        KEY_POLICY, ENV_POLICY, policy, _start_dir(start), empty_env_unset=True
+    )
     if raw is None:
         return "on", "default"
     return _parse_policy(raw, source), source
@@ -513,7 +553,7 @@ def resolve(
         policy is on.
     """
     start_dir = _start_dir(start)
-    base, source = cache_dir_source(path, start_dir)
+    base, source = cache_dir_source(path, start_dir, tolerate_legacy=_explicit_policy_off(policy))
     if policy is None and path is not None:
         # The caller chose this run's cache explicitly; it outranks the project's policy.
         pol, pol_source = ("on" if base is not None else "off"), "explicit argument"
@@ -623,8 +663,34 @@ def _namespaced(base: Path, namespace: str) -> Path:
     return versioned
 
 
-def _prepare_directory(directory: Path) -> None:
-    """Create ``directory`` and prove it is writable; warn when others can write to it."""
+def _warn_untrusted_base(base: Path) -> None:
+    """Warn when the configured base directory lets others replace the cache beneath it."""
+    try:
+        info = base.stat()
+    except OSError:
+        return
+    if info.st_mode & stat.S_IWOTH:
+        logger.warning(
+            "JAX compilation cache base directory %s is world-writable; JAX treats cache "
+            "contents as trusted code, so anyone who can write there can pre-create or replace "
+            "the cache directory beneath it",
+            base,
+        )
+    elif hasattr(os, "getuid") and info.st_uid not in (os.getuid(), 0):
+        logger.warning(
+            "JAX compilation cache base directory %s is owned by another user (uid %d); JAX "
+            "treats cache contents as trusted code, so its owner can replace the cache beneath it",
+            base,
+            info.st_uid,
+        )
+
+
+def _prepare_directory(directory: Path, base_dir: Path | None = None) -> None:
+    """Create ``directory`` and prove it is writable; warn when others can write to it.
+
+    ``base_dir`` is the configured directory above xtrax's namespace segments; its mode and
+    owner are checked too, because a loose base undoes a tight leaf.
+    """
     try:
         directory.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=directory, prefix=".xtrax_write_probe_") as probe:
@@ -636,6 +702,8 @@ def _prepare_directory(directory: Path) -> None:
             f"JAX compilation cache directory {directory} is not writable ({exc}); "
             f"fix the path or disable the cache with {ENV_DIR}=none"
         ) from exc
+    if base_dir is not None and base_dir != directory:
+        _warn_untrusted_base(base_dir)
     if mode & stat.S_IWOTH:
         logger.warning(
             "JAX compilation cache directory %s is world-writable; JAX treats cache contents as "
@@ -707,7 +775,7 @@ def configure(
     return apply(setting)
 
 
-def prepare_directory(directory: Path) -> None:
+def prepare_directory(directory: Path, base_dir: Path | None = None) -> None:
     """Create ``directory`` and prove it is writable, without touching JAX.
 
     For a parent process that hands a resolved setting to workers: a bad path then fails in the
@@ -715,11 +783,13 @@ def prepare_directory(directory: Path) -> None:
 
     Args:
         directory: The resolved cache directory (``CacheSetting.dir``).
+        base_dir: The configured directory before the namespace (``CacheSetting.base_dir``);
+            when given, its mode and owner are checked too.
 
     Raises:
         JaxCacheDirError: the directory cannot be created or written.
     """
-    _prepare_directory(directory)
+    _prepare_directory(directory, base_dir)
 
 
 def _check_filelock(setting: CacheSetting) -> None:
@@ -805,7 +875,7 @@ def apply(setting: CacheSetting) -> CacheSetting:
             return setting
         assert setting.dir is not None
         _check_filelock(setting)
-        _prepare_directory(setting.dir)
+        _prepare_directory(setting.dir, setting.base_dir)
         _apply_to_jax(setting)
         _applied = setting
         logger.info(
@@ -875,14 +945,18 @@ def _apply_to_jax(setting: CacheSetting) -> None:
     # jax._src is private; xtrax pins jax < 0.12 and the tests exercise these names.
     from jax._src import compilation_cache
 
-    started = getattr(compilation_cache, "_cache", None) is not None
+    # Also true when init ran with no directory (flag cleared or init failed): JAX then
+    # never re-reads the flag until the cache object is reset.
+    started = getattr(compilation_cache, "_cache", None) is not None or bool(
+        getattr(compilation_cache, "_cache_initialized", False)
+    )
     previous_max = _applied.max_size_bytes if _applied is not None else None
-    if started and existing and existing != new_dir:
+    if started and existing != new_dir:
         logger.warning(
             "JAX compilation cache was already in use at %s; switching to %s and resetting "
             "JAX's cache object (programs compiled before this call are not written to the "
             "new directory)",
-            existing,
+            existing or "(no directory)",
             new_dir,
         )
         compilation_cache.reset_cache()
@@ -1051,12 +1125,15 @@ def prune_corrupt(
         )
     now = time.time()
     zstd_decode = _zstd_decoder()
-    corrupt = [
-        entry
-        for entry in entries
-        if not (min_age_secs > 0 and now - entry.stat().st_mtime < min_age_secs)
-        and not _classify_entry(entry.read_bytes(), zstd_decode)
-    ]
+    corrupt: list[Path] = []
+    for entry in entries:
+        try:
+            if min_age_secs > 0 and now - entry.stat().st_mtime < min_age_secs:
+                continue
+            if not _classify_entry(entry.read_bytes(), zstd_decode):
+                corrupt.append(entry)
+        except FileNotFoundError:
+            continue  # deleted concurrently (another pruner or eviction)
     if not dry_run:
         for entry in corrupt:
             entry.unlink(missing_ok=True)

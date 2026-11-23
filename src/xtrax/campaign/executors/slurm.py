@@ -269,6 +269,11 @@ def compilation_cache_env(
         env[name] = value
         comments.append(f"{name}: decided by {source} at generation")
     if compilation_cache is not None:
+        if not Path(compilation_cache.strip()).is_absolute():
+            raise ValueError(
+                f"compilation_cache={compilation_cache!r} must be an absolute directory or "
+                "'off': a relative path would resolve against each task's working directory"
+            )
         env[ENV_DIR] = compilation_cache.strip()
         env[ENV_POLICY] = "on"
         comments = [c for c in comments if not c.startswith(f"{ENV_POLICY}:")]
