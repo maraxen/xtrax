@@ -20,6 +20,8 @@ Superseded and archived docs: [HISTORY.md](HISTORY.md).
 - [260610_xtrax-packaging-dag](plans/260610_xtrax-packaging-dag.md)
 
 ## Specs
+- [261123_jax-cache-consumer-migration](specs/261123_jax-cache-consumer-migration.md) — Per-project verdicts, call sites, pin plan, namespace decision and verification for moving aminx, demistify and aminx-ensemble onto xtrax.jax_cache.configure(); NOT-APPLICABLE evidence for denxity, aminx-lm, prolix, alynxr.
+- [261119_compilation-cache-resolver](specs/261119_compilation-cache-resolver.md) — One layered resolver for the JAX persistent compilation cache dir, used by every xtrax entry point and consumer
 - [261110_track1_tooling_campaign_zarr](specs/261110_track1_tooling_campaign_zarr.md)
 - [261110_track2_consumer_adoption](specs/261110_track2_consumer_adoption.md)
 - [261110_track3_profiling_testing_observability](specs/261110_track3_profiling_testing_observability.md)
