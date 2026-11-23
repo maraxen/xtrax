@@ -7,9 +7,12 @@ Use ``run_cli`` for a cyclopts console script, ``serve`` for a FastMCP server, a
 when the consumer owns its own dispatch (for example a typer runner that starts telemetry
 itself, or a script; pass ``telemetry=False`` there).
 
-    # cyclopts
+    # cyclopts console script: cyclopts exits with the command's status by default
     def main() -> None:
-        agent.run_cli(app, app_kwargs={"result_action": "return_value"})
+        agent.run_cli(app)
+
+    # in tests or library callers, get the command's return value instead of exiting
+    result = agent.run_cli(app, ["fit", "x.npz"], app_kwargs={"result_action": "return_value"})
 
     # FastMCP
     def main() -> None:
