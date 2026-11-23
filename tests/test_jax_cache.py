@@ -763,3 +763,109 @@ def test_disabled_cache_gives_no_reuse(tmp_path) -> None:
     first = _run_child(tmp_path, **env)
     second = _run_child(tmp_path, **env)
     assert first["hits"] == second["hits"] == 0
+
+
+# ---------------------------------------------------------------- post-merge follow-ups (261123)
+
+_LEGACY = '[tool.xtrax]\njax_compilation_cache_dir = ".xtrax/jax_cache"\n'
+
+
+def test_legacy_pyproject_dir_is_ignored_with_a_warning_when_the_caller_chose(
+    proj, tmp_path, monkeypatch, caplog
+) -> None:
+    """An explicit path, env var or off beats the refused key (it warns, never raises)."""
+    _pyproject(proj, _LEGACY)
+    caplog.set_level(logging.WARNING, logger="xtrax.jax_cache")
+    setting = resolve(tmp_path / "arg", start=proj)
+    assert setting.dir is not None and setting.source == "explicit argument"
+    assert "jax_compilation_cache_dir" in caplog.text and "ignoring" in caplog.text
+    assert resolve("off", start=proj).enabled is False
+    assert resolve(policy="off", start=proj).enabled is False
+    monkeypatch.setenv(ENV_DIR, str(tmp_path / "env"))
+    assert resolve(start=proj).source == f"${ENV_DIR}"
+    monkeypatch.delenv(ENV_DIR)
+    monkeypatch.setenv("XTRAX_JAX_CACHE", "off")
+    assert resolve(start=proj).enabled is False
+    monkeypatch.delenv("XTRAX_JAX_CACHE")
+    with pytest.raises(JaxCacheConfigError, match="not allowed"):
+        resolve(start=proj)
+
+
+# ---- empty $XTRAX_JAX_CACHE is unset; none/off still disable
+
+
+def test_empty_policy_env_is_unset_not_off(proj, monkeypatch) -> None:
+    monkeypatch.setenv("XTRAX_JAX_CACHE", "")
+    assert policy_source(start=proj) == ("on", "default")
+    _pyproject(proj, '[tool.xtrax]\njax_compilation_cache = "off"\n')
+    assert policy_source(start=proj)[0] == "off"  # falls through to the project layer
+    monkeypatch.setenv("XTRAX_JAX_CACHE", "  ")
+    assert policy_source(start=proj)[0] == "off"
+
+
+@pytest.mark.parametrize("word", ["none", "off", "OFF"])
+def test_disable_words_in_policy_env_still_disable(proj, monkeypatch, word) -> None:
+    monkeypatch.setenv("XTRAX_JAX_CACHE", word)
+    assert policy_source(start=proj) == ("off", "$XTRAX_JAX_CACHE")
+
+
+# ---- reset when the flag was cleared but JAX's cache object was initialised
+
+
+def test_apply_resets_a_started_cache_whose_flag_was_cleared(
+    proj, restore_jax_state, caplog, monkeypatch
+) -> None:
+    from jax._src import compilation_cache
+
+    resets = []
+    monkeypatch.setattr(compilation_cache, "_cache_initialized", True, raising=False)
+    monkeypatch.setattr(compilation_cache, "reset_cache", lambda: resets.append(1))
+    jax.config.update("jax_compilation_cache_dir", None)
+    caplog.set_level(logging.WARNING, logger="xtrax.jax_cache")
+    configure(proj / "cache", start=proj, namespace="none")
+    assert resets == [1]
+    assert "already in use" in caplog.text
+
+
+# ---- prune tolerates entries deleted concurrently
+
+
+def test_prune_skips_entries_deleted_while_scanning(tmp_path, monkeypatch) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    gone = _entry(cache, "jit_gone", b"")
+    bad = _entry(cache, "jit_bad", _good_zlib()[:10])
+    real_read = Path.read_bytes
+
+    def racing_read(self: Path) -> bytes:
+        if self == gone:
+            self.unlink()
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", racing_read)
+    assert jax_cache.prune_corrupt(cache, min_age_secs=0) == [bad]
+
+
+# ---- the configured base directory is checked, not only the leaf
+
+
+def test_world_writable_base_directory_warns(proj, restore_jax_state, caplog) -> None:
+    base = proj / "shared"
+    base.mkdir()
+    base.chmod(0o777)
+    caplog.set_level(logging.WARNING, logger="xtrax.jax_cache")
+    configure(base, start=proj)  # the namespaced leaf xtrax creates is 0o755
+    assert "base directory" in caplog.text and "world-writable" in caplog.text
+
+
+# ---- slurm: a relative explicit path is refused
+
+
+def test_slurm_refuses_a_relative_compilation_cache_path() -> None:
+    from xtrax.campaign.executors.slurm import compilation_cache_env
+
+    with pytest.raises(ValueError, match="absolute"):
+        compilation_cache_env("rel/cache")
+    env, _ = compilation_cache_env("/orcd/x/cache")
+    assert env[ENV_DIR] == "/orcd/x/cache"
+    assert compilation_cache_env("off")[0] == {"XTRAX_JAX_CACHE": "off"}
