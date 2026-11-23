@@ -39,9 +39,11 @@ off), ``$XTRAX_JAX_CACHE`` (``on``/``off``), ``jax_compilation_cache = "on" | "o
 ``on``. A project's ``"off"`` therefore holds on every machine, including under an injected
 ``$JAX_COMPILATION_CACHE_DIR``; ``$XTRAX_JAX_CACHE=on`` overrides it for one run.
 
-When neither axis is configured anywhere, xtrax leaves JAX untouched, including a
-``JAX_COMPILATION_CACHE_DIR`` the environment already set. A CONFIGURED off is applied: JAX's
-flag is cleared, after resetting its cache object if a compile already started it.
+When no layer sets a directory or a policy, xtrax leaves JAX untouched. A non-empty
+``JAX_COMPILATION_CACHE_DIR`` is directory layer 3: under the default policy ``on`` it is
+applied, namespaced under ``jaxlib-<ver>/``, so a flat cache directory set that way goes cold
+once. A CONFIGURED off is applied: JAX's flag is cleared, after resetting its cache object if a
+compile already started it.
 
 Values expand ``~`` and ``$VARS``; a ``$VAR`` that is not set, or a ``~user`` that does not
 exist, raises ``JaxCacheConfigError`` naming the layer rather than becoming a literal
@@ -739,8 +741,10 @@ def configure(
     warning; programs compiled earlier are not written retroactively. Calling again with the
     same resolved setting changes nothing.
 
-    When nothing configures the directory or the policy, xtrax leaves JAX untouched, including
-    a ``JAX_COMPILATION_CACHE_DIR`` the environment already set. A configured off (a disable
+    When no layer sets a directory or a policy, xtrax leaves JAX untouched. A non-empty
+    ``JAX_COMPILATION_CACHE_DIR`` is directory layer 3: under the default policy ``on`` it is
+    applied, namespaced under ``jaxlib-<ver>/``, so a flat cache directory set that way goes
+    cold once. A configured off (a disable
     word in any directory layer, or policy ``off``) clears JAX's flag, resetting JAX's cache
     object first when a compile already started it.
 

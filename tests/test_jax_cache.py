@@ -244,6 +244,18 @@ def test_bad_namespace_is_rejected(proj) -> None:
 # ---------------------------------------------------------------- namespace
 
 
+def test_jax_env_alone_is_layer_3_and_gets_the_jaxlib_namespace(
+    proj, monkeypatch, tmp_path
+) -> None:
+    # Layer 3 alone: the default policy applies the directory, namespaced.
+    flat = tmp_path / "jaxenv"
+    monkeypatch.setenv("JAX_COMPILATION_CACHE_DIR", str(flat))
+    setting = resolve(start=proj)
+    assert setting.enabled is True
+    assert setting.source == "$JAX_COMPILATION_CACHE_DIR"
+    assert setting.dir == flat / f"jaxlib-{jax_cache._jaxlib_version()}"
+
+
 def test_default_namespace_is_the_jaxlib_version_only(proj) -> None:
     setting = resolve(tmp := proj / "base", start=proj)
     assert setting.base_dir == tmp
