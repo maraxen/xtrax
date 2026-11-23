@@ -1,7 +1,7 @@
 ---
 title: 'xtrax.agent: one startup for consumer CLI and MCP entry points'
 description: 'Shared core for debts #3553-#3555: a small xtrax helper that runs xtrax.jax_cache.configure() then cisternal.init() in one fixed order, then dispatches a cyclopts app or a FastMCP server; per-repo specs build on it.'
-status: draft
+status: converged
 task_id: 261123_xtrax-entrypoint-cli-mcp
 date: '261123'
 backlog_ids: ''
@@ -93,6 +93,8 @@ telemetry threads start.
   wraps **only `_configure_stage`** (never telemetry, never the dispatch) in a catch of
   `(ValueError, OSError)`, so an `OSError` or `ValueError` from `cisternal.init` (an unwritable `log_dir`,
   bad `init_kwargs`) stays a traceback and is never reported as a cache error (R3 N5).
+  `start()` itself is exactly `_configure_stage(...)` then `_telemetry_stage(...)` (the same two functions
+  `run_cli`/`serve` call), so the order test and the stage split cannot drift (R4 MINOR).
   `JaxCacheConfigError` subclasses `ValueError` and `JaxCacheDirError` subclasses `OSError`
   (`jax_cache.py:171,175`), and a malformed config file raises a plain `ValueError` (R2 N1). It prints
   `<prog>: jax cache configuration error: <exc>` to stderr, where `prog` is the app's first name, else
@@ -218,3 +220,4 @@ process) before per-repo implementations land. Per-repo specs pin `xtrax[plugin]
 - R3 (same challenger): N1 resolved. One new MAJOR, N5, accepted: the exit-2 catch covered `cisternal.init`
   too. `start()` is now two private stages, and `run_cli`/`serve` catch around the configure stage only.
   Control tests added.
+- R4 (same challenger): N5 resolved; no FATAL/MAJOR. **Converged.** MINOR applied (`start()` reuses the two stages).
