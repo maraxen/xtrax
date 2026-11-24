@@ -21,7 +21,14 @@ SHAPES = "x=(64,128)f32"
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch, tmp_path):
     """No ambient resolver layers: no env var, empty user config, cwd outside the repo."""
-    monkeypatch.delenv("XTRAX_PROFILE_DIR", raising=False)
+    for env_name in (
+        "XTRAX_PROFILE_DIR",
+        "CISTERNAL_TELEMETRY_LOG_DIR",
+        "CISTERNAL_LOG_DIR",
+        "BTH_LOG_DIR",
+        "CTXP_LOG_DIR",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.chdir(tmp_path)
 
@@ -591,3 +598,588 @@ def test_check_negative_exec_per_element_exits_2(capsys, tmp_path):
     code, _, err = _run(capsys, fn=None, shapes=None, extent_axis=None, check=str(record))
     assert code == 2
     assert "negative" in err
+
+
+# --- --compare / --triage / --telemetry-summary ----------------------------
+
+
+def _write_full_record(
+    path,
+    *,
+    probe_id="xtrax-profile:mod:step",
+    git_sha="a" * 40,
+    total_step_seconds=1.0,
+    config_extra=None,
+    metrics_extra=None,
+):
+    from xtrax.profiling.emitters import emit_probe_record
+
+    cfg = {
+        "fn": "mod:step",
+        "step_time_basis": "batch",
+        "non_degeneracy_status": "pass",
+        "corruption_control_status": "pass",
+    }
+    if config_extra:
+        cfg.update(config_extra)
+    met = {
+        "n_executions": 10.0,
+        "n_compilations": 0.0,
+        "n_jit_traces": 10.0,
+        "total_step_seconds": total_step_seconds,
+        "wall_mad_seconds": 0.005,
+        "wall_iqr_seconds": 0.01,
+        "peak_vram_bytes": 1024.0,
+        "output_l2_norm": 3.0,
+        "parity_rel_err": 1e-6,
+        "corruption_rel_err": 0.5,
+        "work_active_count": 100.0,
+    }
+    if metrics_extra:
+        met.update(metrics_extra)
+    return emit_probe_record(
+        path=path,
+        probe_id=probe_id,
+        stage=1,
+        n_atoms=64,
+        platform="cpu",
+        metrics=met,
+        config=cfg,
+        git_sha=git_sha,
+    )
+
+
+def test_compare_keep_ratchet_hold_fixed_and_bypass(capsys, tmp_path):
+    p_base = tmp_path / "base.json"
+    p_cand = tmp_path / "cand.json"
+    p_noise = tmp_path / "noise.json"
+    p_drift = tmp_path / "drift.json"
+    ptr = tmp_path / "ptr.json"
+    rej_dir = tmp_path / "rejected"
+
+    _write_full_record(p_base, git_sha="a" * 40, total_step_seconds=1.0)
+    _write_full_record(p_cand, git_sha="b" * 40, total_step_seconds=0.5)
+    _write_full_record(p_noise, git_sha="c" * 40, total_step_seconds=0.495)
+    _write_full_record(
+        p_drift,
+        git_sha="d" * 40,
+        total_step_seconds=0.5,
+        config_extra={"extra_knob": "changed"},
+    )
+
+    code, out, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_base), str(p_cand)),
+        ratchet_pointer=str(ptr),
+    )
+    assert code == 0
+    assert "status | keep" in out
+    assert ptr.is_file()
+
+    # Default inferred hold-fixed rejects extra_knob drift -> exit 2
+    code_drift, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_base), str(p_drift)),
+    )
+    assert code_drift == 2
+
+    # --bypass-hold-fixed caps KEEP at ADVISORY_ONLY -> exit 1
+    code_byp, out_byp, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_base), str(p_drift)),
+        bypass_hold_fixed=True,
+    )
+    assert code_byp == 1
+    assert "advisory_only" in out_byp
+
+    # --rejected-dir writes sidecar on REVERT_NOISE -> exit 1
+    code_noise, out_noise, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_cand), str(p_noise)),
+        ratchet_pointer=str(ptr),
+        rejected_dir=str(rej_dir),
+    )
+    assert code_noise == 1
+    assert "revert_noise" in out_noise
+    assert len(list(rej_dir.glob("*.verdict.json"))) == 1
+
+    # Opt-out of corruption control when record has not_measured status
+    p_nocorr = tmp_path / "nocorr.json"
+    _write_full_record(
+        p_nocorr,
+        git_sha="e" * 40,
+        total_step_seconds=0.5,
+        config_extra={"corruption_control_status": "not_measured"},
+        metrics_extra={"total_step_seconds": 0.5},
+    )
+    # Remove corruption_rel_err to simulate unmeasured corruption control
+    import json
+
+    raw = json.loads(p_nocorr.read_text())
+    del raw["metrics"]["corruption_rel_err"]
+    p_nocorr.write_text(json.dumps(raw))
+    code_nc, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_base), str(p_nocorr)),
+        require_corruption_control=False,
+    )
+    assert code_nc == 0
+
+
+def test_triage_compare_and_telemetry_summary_core(capsys, tmp_path):
+    import json
+
+    p_triage = tmp_path / "prod_triage.json"
+    _write_full_record(
+        p_triage,
+        git_sha="a" * 40,
+        total_step_seconds=1.0,
+        metrics_extra={"active_work_ratio": 0.10, "ctas_per_atomic_target": 128.0},
+    )
+    code_t, out_t, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        triage=str(p_triage),
+    )
+    assert code_t == 1
+    assert "shadow_subject_key: probe:" in out_t
+    assert "spatial_dead_work" in out_t
+    assert "atomic_contention" in out_t
+
+    p_clean = tmp_path / "clean.json"
+    _write_full_record(p_clean, git_sha="f" * 40, total_step_seconds=1.0)
+    code_t0, out_t0, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        triage=str(p_clean),
+        target_missed=True,
+    )
+    assert code_t0 == 0
+    assert "- none" in out_t0
+
+    # --from-triage-probe + --triage-category validation works across all 4 categories
+    p_cand = tmp_path / "cand.json"
+    _write_full_record(p_cand, git_sha="b" * 40, total_step_seconds=0.5)
+    for cat in (
+        "atomic_contention",
+        "xtrax.triage.register_spill_pressure",
+        "spatial_dead_work",
+        "fp64_pipe_saturation",
+    ):
+        code_c, _, _ = _run(
+            capsys,
+            fn=None,
+            shapes=None,
+            extent_axis=None,
+            compare=(str(p_triage), str(p_cand)),
+            from_triage_probe=str(p_triage),
+            triage_category=cat,
+        )
+        assert code_c == 0
+
+    code_bad_cat, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_triage), str(p_cand)),
+        from_triage_probe=str(p_triage),
+        triage_category="invalid_cat",
+    )
+    assert code_bad_cat == 2
+
+    # --telemetry-summary works on pure synthetic JSONL + .verdict.json without cisternal
+    log_dir = tmp_path / "synthetic_logs"
+    log_dir.mkdir()
+    (log_dir / "events.host.jsonl").write_text(
+        json.dumps({"name": "xtrax.profile.measure", "ts": 1.0, "fields": {"exit_code": 0}}) + "\n",
+        encoding="utf-8",
+    )
+    code_sum0, out_sum0, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        telemetry_summary=True,
+        telemetry_log_dir=str(log_dir),
+    )
+    assert code_sum0 == 0
+    assert "Algedonic Signals" in out_sum0
+
+    # Two unclassified slowdowns fire TRIAGE_GAP -> exit 1
+    with (log_dir / "events.host.jsonl").open("a", encoding="utf-8") as handle:
+        for ts in (2.0, 3.0):
+            handle.write(
+                json.dumps(
+                    {
+                        "name": "xtrax.profile.triage",
+                        "ts": ts,
+                        "fields": {"unclassified_slowdown": True},
+                    }
+                )
+                + "\n"
+            )
+    code_sum1, out_sum1, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        telemetry_summary=True,
+        telemetry_log_dir=str(log_dir),
+    )
+    assert code_sum1 == 1
+    assert "triage_gap" in out_sum1
+
+
+def test_triage_compare_live_cisternal_shadow_roundtrip(capsys, tmp_path):
+    pytest.importorskip("cisternal.shadow")
+    from xtrax.telemetry.profiling_events import read_telemetry_events
+
+    log_dir = tmp_path / "telemetry"
+    p_triage = tmp_path / "prod_triage.json"
+    _write_full_record(
+        p_triage,
+        git_sha="a" * 40,
+        total_step_seconds=1.0,
+        metrics_extra={"active_work_ratio": 0.10, "ctas_per_atomic_target": 128.0},
+    )
+    code_t, out_t, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        triage=str(p_triage),
+        telemetry_log_dir=str(log_dir),
+    )
+    assert code_t == 1
+    assert "shadow_subject_key: probe:" in out_t
+
+    events = read_telemetry_events(log_dir)
+    assert any(ev["name"] == "shadow.verdict" for ev in events)
+
+    # Targeted feedback across all 4 provisional rules
+    p_cand = tmp_path / "cand.json"
+    _write_full_record(p_cand, git_sha="b" * 40, total_step_seconds=0.5)
+    for cat in (
+        "atomic_contention",
+        "xtrax.triage.register_spill_pressure",
+        "spatial_dead_work",
+        "fp64_pipe_saturation",
+    ):
+        code_c, _, _ = _run(
+            capsys,
+            fn=None,
+            shapes=None,
+            extent_axis=None,
+            compare=(str(p_triage), str(p_cand)),
+            from_triage_probe=str(p_triage),
+            triage_category=cat,
+            telemetry_log_dir=str(log_dir),
+        )
+        assert code_c == 0
+
+    events_after = read_telemetry_events(log_dir)
+    label_events = [ev for ev in events_after if ev["name"] == "shadow.label"]
+    labeled = {ev["fields"]["feature"] for ev in label_events}
+    assert all(ev["fields"]["label"] is True for ev in label_events)
+    assert labeled == {
+        "xtrax.triage.atomic_contention",
+        "xtrax.triage.register_spill_pressure",
+        "xtrax.triage.spatial_dead_work",
+        "xtrax.triage.fp64_pipe_saturation",
+    }
+
+    # Regression feedback emits label=False; ADVISORY_ONLY skips shadow.label emission
+    p_reg = tmp_path / "reg.json"
+    _write_full_record(p_reg, git_sha="c" * 40, total_step_seconds=2.0)
+    code_reg, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_triage), str(p_reg)),
+        from_triage_probe=str(p_triage),
+        triage_category="spatial_dead_work",
+        telemetry_log_dir=str(log_dir),
+    )
+    assert code_reg == 1
+
+    p_dirty = tmp_path / "dirty.json"
+    _write_full_record(p_dirty, git_sha="d" * 40 + "-dirty", total_step_seconds=0.5)
+    code_adv, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_triage), str(p_dirty)),
+        allow_dirty=True,
+        from_triage_probe=str(p_triage),
+        triage_category="atomic_contention",
+        telemetry_log_dir=str(log_dir),
+    )
+    assert code_adv == 1
+
+    labels_final = [ev for ev in read_telemetry_events(log_dir) if ev["name"] == "shadow.label"]
+    assert len(labels_final) == len(label_events) + 1
+    assert labels_final[-1]["fields"]["label"] is False
+    assert labels_final[-1]["fields"]["feature"] == "xtrax.triage.spatial_dead_work"
+
+    # --telemetry-summary on clean log + warm-up shadow gates returns exit 0
+    code_sum0, out_sum0, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        telemetry_summary=True,
+        telemetry_log_dir=str(log_dir),
+    )
+    assert code_sum0 == 0
+    assert "Algedonic Signals" in out_sum0
+
+    # Trigger --target-missed twice to fire TRIAGE_GAP algedonic signal -> exit 1
+    p_clean = tmp_path / "clean.json"
+    _write_full_record(p_clean, git_sha="f" * 40, total_step_seconds=1.0)
+    for _ in range(2):
+        code_tm, _, _ = _run(
+            capsys,
+            fn=None,
+            shapes=None,
+            extent_axis=None,
+            triage=str(p_clean),
+            target_missed=True,
+            telemetry_log_dir=str(log_dir),
+        )
+        assert code_tm == 0
+
+    code_sum1, out_sum1, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        telemetry_summary=True,
+        telemetry_log_dir=str(log_dir),
+    )
+    assert code_sum1 == 1
+    assert "triage_gap" in out_sum1
+
+
+def test_cross_mode_validation_errors_exit_2(capsys, tmp_path):
+    p = tmp_path / "r.json"
+    _write_full_record(p, git_sha="a" * 40)
+
+    # Zero modes active
+    code, _, err = _run(capsys, fn=None, shapes=None, extent_axis=None)
+    assert code == 2
+    assert "exactly one" in err
+
+    # Two modes active
+    code2, _, err2 = _run(
+        capsys, fn=None, shapes=None, extent_axis=None, check=str(p), telemetry_summary=True
+    )
+    assert code2 == 2
+    assert "exactly one" in err2
+
+    # --target-missed outside --triage
+    code3, _, _ = _run(capsys, fn=VMAP, target_missed=True)
+    assert code3 == 2
+
+    # --telemetry-summary with nonexistent log dir -> exit 2
+    code4, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        telemetry_summary=True,
+        telemetry_log_dir=str(tmp_path / "missing_dir"),
+    )
+    assert code4 == 2
+
+    # Corrupt JSONL inside log dir -> exit 2
+    bad_dir = tmp_path / "bad_logs"
+    bad_dir.mkdir()
+    (bad_dir / "events.h.1.jsonl").write_text("{corrupt\n")
+    code5, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        telemetry_summary=True,
+        telemetry_log_dir=str(bad_dir),
+    )
+    assert code5 == 2
+
+    # Unpaired --from-triage-probe without --triage-category -> exit 2
+    code6, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p), str(p)),
+        from_triage_probe=str(p),
+    )
+    assert code6 == 2
+
+    # Empty or whitespace --primary-metric -> exit 2
+    for blank in ("", "   "):
+        code_pm, _, err_pm = _run(
+            capsys,
+            fn=None,
+            shapes=None,
+            extent_axis=None,
+            compare=(str(p), str(p)),
+            primary_metric=blank,
+        )
+        assert code_pm == 2
+        assert "--primary-metric cannot be empty" in err_pm
+
+
+def test_compare_hold_fixed_parity_and_error_paths(capsys, tmp_path):
+    p_base = tmp_path / "base.json"
+    p_cand = tmp_path / "cand.json"
+    _write_full_record(p_base, git_sha="a" * 40, total_step_seconds=1.0)
+    _write_full_record(p_cand, git_sha="b" * 40, total_step_seconds=0.5)
+
+    # Valid explicit --hold-fixed key -> PASS (exit 0)
+    code_ok, out_ok, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_base), str(p_cand)),
+        hold_fixed="fn",
+    )
+    assert code_ok == 0
+    assert "keep" in out_ok
+
+    # Empty token inside --hold-fixed -> exit 2
+    code_empty, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_base), str(p_cand)),
+        hold_fixed=",",
+    )
+    assert code_empty == 2
+
+    # Mutually exclusive --hold-fixed + --bypass-hold-fixed -> exit 2
+    code_conflict, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_base), str(p_cand)),
+        hold_fixed="fn",
+        bypass_hold_fixed=True,
+    )
+    assert code_conflict == 2
+
+    # --no-require-parity caps verdict at ADVISORY_ONLY (exit 1)
+    code_adv, out_adv, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_base), str(p_cand)),
+        require_parity=False,
+    )
+    assert code_adv == 1
+    assert "advisory_only" in out_adv
+
+    # Combining --no-require-parity with --max-rel-err -> exit 2
+    code_pconflict, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_base), str(p_cand)),
+        require_parity=False,
+        max_rel_err=1e-4,
+    )
+    assert code_pconflict == 2
+
+    # Unreadable JSON in --compare -> exit 2
+    bad_json = tmp_path / "broken.json"
+    bad_json.write_text("{not valid json")
+    code_bad_cmp, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(bad_json), str(p_cand)),
+    )
+    assert code_bad_cmp == 2
+
+    # --compare with --rejected-dir writes sidecar on non-promotable verdict
+    rej_dir = tmp_path / "rejected"
+    rej_dir.mkdir()
+    code_rej, out_rej, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_base), str(p_cand)),
+        require_parity=False,
+        rejected_dir=str(rej_dir),
+    )
+    assert code_rej == 1
+    assert "sidecar" in out_rej
+    assert any(rej_dir.glob("*.verdict.json"))
+
+
+def test_triage_and_telemetry_summary_edge_errors(capsys, tmp_path):
+    bad_json = tmp_path / "bad_triage.json"
+    bad_json.write_text("{not valid")
+    code_tbad, _, _ = _run(capsys, fn=None, shapes=None, extent_axis=None, triage=str(bad_json))
+    assert code_tbad == 2
+
+    p_valid = tmp_path / "valid.json"
+    _write_full_record(p_valid, git_sha="a" * 40, total_step_seconds=1.0)
+    code_prec_bad, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        triage=str(p_valid),
+        precision_baseline=str(p_valid),
+    )
+    assert code_prec_bad == 2
+
+    code_rej_missing, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        telemetry_summary=True,
+        rejected_dir=str(tmp_path / "no_such_rej"),
+    )
+    assert code_rej_missing == 2
+
+    # With cwd=tmp_path and XDG_CONFIG_HOME isolated, no log/rejected dirs resolve -> exit 2
+    code_none, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        telemetry_summary=True,
+    )
+    assert code_none == 2

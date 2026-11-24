@@ -77,6 +77,27 @@ class TestImportIsolation:
             if saved is not None:
                 sys.modules["xtrax.cli"] = saved
 
+    def test_entrypoint_and_profile_verb_do_not_import_tyro_bathos_or_cisternal(self):
+        """CLI entrypoint and profile_verb stay tyro/bathos/cisternal-free at module import."""
+        import subprocess
+        from pathlib import Path
+
+        src_dir = Path(__file__).resolve().parents[2] / "src"
+        code = (
+            "import sys; "
+            "import xtrax.cli.entrypoint, xtrax.cli.profile_verb; "
+            "leaks = [m for m in ('tyro', 'bathos', 'cisternal') if m in sys.modules]; "
+            "assert not leaks, f'CLI entrypoint imported {leaks}'"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            env={"PYTHONPATH": str(src_dir), "PATH": "/usr/bin:/bin"},
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+
 
 # ---------------------------------------------------------------------------
 # Public surface — load_fn/CLIError/CLIImportError are stable, downstream-importable
