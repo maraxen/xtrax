@@ -18,6 +18,7 @@ import pytest
 # order (enforced by tests/distribution/test_sorted_registries.py).
 _PACKAGES = [
     "xtrax._tree",
+    "xtrax.agent",
     "xtrax.categorical",
     "xtrax.config",
     "xtrax.data.module",
