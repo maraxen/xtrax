@@ -16,11 +16,7 @@ Verify-paths (house convention): every rule below cites the module that owns
 it. When this skill and the code disagree, the code wins -- then update this
 skill.
 
-Scope boundary: this skill is the **diagnostic** you reach for when a parity
-gate has already failed. The orchestration of a whole port -- oracle sealing,
-jaxtyping contracts, the graded T1..T5 parity gate, port-repair cycles -- is
-`agent_assets/workflows/port_validation.yaml` (`p3_parity`). That workflow
-tells you parity failed; this skill tells you where.
+Scope boundary: **L0–L3** below apply to full-model checkpoint ports (paired with `agent_assets/workflows/port_validation.yaml` `p3_parity`); for single-kernel Pallas/Triton `REJECT_PARITY` regressions, use the dedicated **K0–K3** Pallas ladder further down.
 
 ## Non-Negotiables
 
@@ -124,6 +120,19 @@ For capture *inside* a forward pass rather than at an axis boundary, the
 `AxisBoundary` mechanism does not reach -- call the same shim `io_callback` at
 the point of interest and stage into the same sink. `AxisBoundary` gives you
 per-axis hooks only (`src/xtrax/stages/executor.py` executes one axis).
+
+## Single-Kernel Pallas `REJECT_PARITY` Escalation Ladder (`K0`–`K3`)
+
+Use this ladder (instead of the full-model checkpoint ladder `L0–L3`) whenever
+`compare_probe_pair` returns `REJECT_PARITY` or a fused Pallas/Triton kernel
+diverges numerically from its plain-JAX reference:
+
+| rung | diagnostic question | tool / mechanism | catches |
+|---|---|---|---|
+| **K0 dispatch & contract** | Did the Pallas kernel actually execute (not silent fallback), and do dtypes, scaling constants, and negative corruption controls agree? | `assert_kernel_ran`, `build_probe_parity_payload(..., rel=1e-4)` | silent XLA fallback, constant/unit mismatch, vacuous all-zero/NaN checks |
+| **K1 interpret vs GPU Triton** | Does the same kernel pass under `interpret=True` on CPU and diverge only on GPU (`not interpret`)? | CPU `interpret=True` vs GPU `ptx`/`num_stages` check (`MK-43`/`MK-52`) | Triton/LLVM pipelining (`num_stages >= 2`), un-aliased `jnp.pad` buffers, unary `-` on constants (`lax.neg_p`), race conditions in `atomic_add` |
+| **K2 work & batch bisection** | Did `work_active_count` drop, or does divergence appear only for `B > 1` or padded buckets? | `work_active_count` check + `B=1` vs `B=2` + `compact` vs `padded` bucket bisect (`MK-31`/`MK-57`) | silently skipped off-diagonal tiles (`BUG-TRITON-ATOM1`), `BatchTracer` box fallback, broken Morton inverse permutation |
+| **K3 VJP & control parity** | Does forward pass agree while `jax.grad` / `@jax.custom_vjp` diverges or hides dropped parameter cotangents? | `vjp_parity` + `require_vjp_controls_red` (`xtrax.testing.kernel_parity`) | missing residual fields, dropped parameter gradients (`charges`/`sigmas`/`epsilons`), missing inverse scatter in `bwd` |
 
 ## Citing the result
 

@@ -8,7 +8,8 @@ code disagree, the code wins.
 
 Caller-supplied (the semantic content): `probe_id`, `stage`, `n_atoms`,
 `platform` ("cpu" | "gpu"), `metrics`, `scopes`, `config`,
-`attribution_method`.
+`attribution_method`, plus optional multi-replica/ragged-bucket metadata
+(`num_replicas`, `replica_id`, `bucket_index`, `bucket_capacity`).
 
 Auto-captured at construction via default_factory (overridable explicitly --
 e.g. synthetic test fixtures): `git_sha`, `timestamp`, `x64_enabled`,
@@ -74,6 +75,29 @@ causes so the fix message is actionable.
 `CONTRACT_VERSION` bumps follow the dataclass bump rule: adding/removing a
 field with a default_factory = MAJOR (old records unreadable); anything else
 = MINOR/PATCH. The prolix->xtrax port changed no field set and kept "3.0".
+Closed-loop comparison, dual-pass PTX/diag metadata, and optional `bathos` IDs
+keep `CONTRACT_VERSION = "3.0"` intact by storing continuous telemetry in
+`metrics` and discrete metadata (`step_time_basis`, `diagnostic_mode`,
+`non_degeneracy_status`, `corruption_control_status`, `bathos_run_id`) in `config`.
+
+## Diagnostic Isolation & Cross-Commit Ratchet Contract
+
+- **`claims.py` `END_TO_END` Diagnostic Refusal**: Any `ProbeRecord` with
+  `config.get("diagnostic_mode", "none") not in ("", "none")` (e.g. `"cmdbuf_off"`)
+  is rejected from `ClaimClass.END_TO_END` (`assert_claim_supported`). Diagnostic
+  records may back `TERM_RANKING` when explicitly passed to `render_report([diag_path])`,
+  while glob discovery skips `.diag.json` and `.verdict.json` (`report.py`).
+- **`compare.py` (`compare_probe_pair`, `update_baseline_pointer`)**: Evaluates
+  Steps 0-6 fail-closed: parameter validation -> 11-field environment unanimity +
+  `step_time_basis` + `hold_fixed_config` -> strict hex/dirty SHA gate ->
+  `_check_present_failure_witnesses` + `ParityContract` (non-degeneracy, active
+  negative control red check, work retention ratio >= `0.99`) -> zero-recompile +
+  dispatch growth -> GPU VRAM ceiling -> MAD (`1.4826`) / IQR (`0.7413`) noise
+  floor (`total_step_seconds` only). `allow_dirty=True` and `require_parity=False`
+  cap passing runs at `ADVISORY_ONLY` (`promotable=False`).
+- **`kernel_probe.py` (`compute_precision_ratio`)**: Requires matching stage/env/SHA,
+  `mixed_record.x64_enabled is True`, and explicit `config["precision"] == "single"` vs
+  `"mixed"` whenever `single_record.x64_enabled is True` or `"precision"` is set.
 
 `from_json` rejects records whose major version differs from the running
 contract BEFORE inspecting fields, so version skew is never misdiagnosed as

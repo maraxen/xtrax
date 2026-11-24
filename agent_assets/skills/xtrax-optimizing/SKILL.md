@@ -24,16 +24,27 @@ Scope doc: `.praxia/docs/specs/260825_jax-optimizing-skill-scope.md`.
 
 1. Classify first, change second. Every optimization is Tier 1, 2, or 3 before
    any edit; never mix tiers in one measured candidate.
-2. Baseline record first, candidate record second, same git sha, same machine.
-   No baseline = nothing to compare = nothing to keep.
+2. Same-commit paired configs vs cross-commit ratchet: for within-commit comparisons
+   on one `git_sha`, use `paired_configs`; across kernel edits (`sha_A -> sha_B`),
+   compare clean SHAs via `xtrax.profiling.compare.compare_probe_pair` (`--compare`).
+   No baseline = nothing to compare = nothing to keep (`allow_dirty=True` and
+   `require_parity=False` cap passing results at `ADVISORY_ONLY`, never `KEEP`).
 3. A change without a supporting record is reverted, not argued for.
-   `ClaimValidityError` on an unsupported keep-claim is the contract working
-   (`xtrax.profiling.claims.assert_claim_supported`).
+   `ClaimValidityError` on an unsupported keep-claim or a non-promotable
+   `DeltaVerdict` is the contract working.
 4. Never hand-write record JSON; emit via `emit_probe_record`
    (`src/xtrax/profiling/emitters.py`). Never widen a guard to make a claim
    pass.
-5. Tier-3 candidates that could alter numerics carry a parity metric in-record;
-   the stage-1 one-hot driver gates emission on it outright.
+5. Tier-3 candidates carry a non-degenerate, negative-controlled parity payload
+   (`xtrax.testing.kernel_parity.build_probe_parity_payload` / `evaluate_kernel_parity_for_probe`)
+   and preserve baseline `work_active_count` (`>= 0.99`).
+6. **Mandatory Algedonic Stop Conditions**: Run `xtrax profile --telemetry-summary`
+   before each cycle. Halt immediately and escalate via `algedonic-escalation` if
+   `instrument_degraded` fires, `>= 3` consecutive `REVERT_NOISE` results occur,
+   any `parity_escape` occurs, or any urge arises to bypass gates via
+   `--no-require-parity` / `--bypass-hold-fixed`. Log repeated unclassified
+   slowdowns (`triage_gap`) to tracker `staging`/`ideas` with their paired `.diag.json`
+   fixture before adding new triage rules.
 
 ## Tier Taxonomy (classify here, then follow the row)
 
@@ -204,6 +215,10 @@ Tier exemplars, each shipped WITH its measured driver:
 
 Load as needed -- do not read all up front:
 
+- **`references/kernel-optimization-loop.md`** -- closed-loop observe -> triage ->
+  hypothesize -> implement -> verify -> ratchet workflow, telemetry/shadow calibration,
+  and GPU bottleneck playbooks (`#fp64-pipe-saturation`, `#register-spill-pressure`,
+  `#atomic-contention`).
 - **`references/measurement-protocol.md`** -- preregistration format,
   paired-probe recipes per tier, claim-class mapping, keep/revert procedure.
 - **`references/tier1-host-boundary.md`** -- callback cost accounting,
@@ -213,10 +228,8 @@ Load as needed -- do not read all up front:
 - **`references/tier3-composition.md`** -- strategy swaps, on-the-fly
   encoding, donate/remat, parity gating.
 - **`references/tier3-pallas-megakernels-and-ragged-buckets.md`** -- Pallas
-  megakernel fusion (`pallas_bonded_and_nonbonded_nl_fused`, `MK-01`–`MK-49`),
-  fused 2D-grid BAOAB + analytical SETTLE/RATTLE integrator kernels (`MK-46`),
-  per-replica neighbor-list `rebuild_mask` early-exit & in-place aliasing (`MK-47`),
-  ragged-bucket ghost-atom filtering & 32-atom block pruning,
-  separable `(32, 16)` YZ-plane factorized SPME spread/gather & mixed-precision
-  `float32`/`complex64` 3D FFTs (`MK-49`), runtime GPU architecture adaptation
-  (`sm_80`/`sm_89`/`sm_90`/`sm_120`), and ground-truth A/B parity testing.
+  megakernel fusion (`pallas_bonded_and_nonbonded_nl_fused`, `MK-01`–`MK-64`),
+  Morton $32 \times 32$ tile-pairs (`MK-51`/`MK-60`/`MK-62`), fused BAOAB + SETTLE/RATTLE
+  + Philox-2x32 (`MK-46`/`MK-50`/`MK-55`/`MK-58`), smooth non-cubic SPME + 2-step RESPA
+  (`MK-49`/`MK-59`/`MK-62`), congeneric `stride=0` topology deduplication (`MK-64`),
+  runtime GPU architecture adaptation (`sm_80`/`sm_89`/`sm_90`/`sm_120`), and ground-truth A/B parity testing.

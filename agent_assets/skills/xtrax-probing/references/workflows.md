@@ -115,5 +115,51 @@ STRUCTURAL grade even with healthy traces and correct Compiled.as_text()
 HLO dumps. CPU traces join fine; the gap is GPU-executor event naming.
 Candidate directions: sub-scope granularity below fusion boundaries,
 non-fused wrapper ops around measured regions, or an executor-thunk ->
-HLO-instruction mapping from the XLA runtime. Until then, treat GPU records
-as dispatch/structural evidence only.
+HLO-instruction mapping from the XLA runtime. Until then, use dual-pass
+subprocess isolation (`probe_kernel_dual_pass` below) on GPU so `triton:<kernel>`
+and `op_name` rows attribute without command-buffer collapse.
+
+## 6. Dual-Pass GPU Probe, Triage, Compare Ratchet, & Shadow Calibration
+
+1. **Dual-Pass GPU Capture (`xtrax.profiling.kernel_probe.probe_kernel_dual_pass`)**:
+   - Pass A runs in isolated `cmdbuf=on` subprocess (`diagnostic_mode="none"`)
+     producing an immutable Stage-2 `prod` record (stamping `diag_skipped_reason`
+     before construction when `run_diag=False` or no importable `fn_spec` exists).
+   - Pass B runs `_diag_worker --mode diag` with `--xla_gpu_enable_command_buffer=""`,
+     normalizing scopes by `1.0 / n_steady`.
+   - Pass C runs optional `_diag_worker --mode ptx` under a fresh `TemporaryDirectory`
+     capturing `.ptx`, `.cubin`-winning Triton dumps, and `ptxas --verbose`
+     physical register/spill counts, writing ONE `.diag.json` record once.
+2. **Triage (`xtrax profile --triage`)**:
+   ```bash
+   xtrax profile --triage prod.json --diag prod.diag.json \
+       --precision-baseline single.json --telemetry-log-dir outputs/telemetry
+   ```
+   Prints `shadow_subject_key: probe:<slug>:<sha12>:<digest12>` and emits M1
+   `xtrax.profile.triage` + `shadow.verdict` records for all 4 provisional rules
+   (pass `--target-missed` when a target slipped without firing any rule).
+3. **Cross-Commit Compare & Shadow Feedback (`xtrax profile --compare`)**:
+   ```bash
+   xtrax profile --compare base.json cand.json \
+       --ratchet-pointer outputs/profiling/baseline.ptr.json \
+       --rejected-dir outputs/profiling/rejected \
+       --from-triage-probe prod.json \
+       --triage-category register_spill_pressure \
+       --telemetry-log-dir outputs/telemetry
+   ```
+   Emits targeted `shadow.label` feedback only on terminal non-advisory
+   verdicts (`KEEP -> True`; `REVERT_*`/`REJECT_{PARITY,DISPATCH,VRAM} -> False`;
+   skips `REJECT_UNVERIFIABLE` and `ADVISORY_ONLY`).
+4. **Isolation Attestation, Pre-Cycle Summary, & Algedonic Escalation**:
+   ```bash
+   uv run python -c "from xtrax.telemetry.profiling_events import attest_triage_shadow_isolation; print(attest_triage_shadow_isolation('outputs/telemetry'))"
+   cisternal shadow check audit/shadow/triage_register_spill_pressure.toml --records-dir outputs/telemetry
+   xtrax profile --telemetry-summary --telemetry-log-dir outputs/telemetry --rejected-dir outputs/profiling/rejected
+   ```
+   If `--telemetry-summary` exits `1` (`instrument_degraded`, `noise_floor_blown`,
+   `guardrail_erosion`, `parity_escape`, `heuristic_miscalibrated`, or `triage_gap`),
+   STOP immediately and return to the dispatcher following `algedonic-escalation`.
+5. **Optional `bathos` Integration**:
+   - Export `BTH_RUN_ID` / `BTH_CAMPAIGN_ID` so `emit_probe_record` stamps them in
+     `config`, serialize flat outcomes via `probe_record_to_bathos_metrics`, and query
+     catalog runs from `controller.profiling_bathos.resolve_bathos_provenance`.
