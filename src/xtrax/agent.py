@@ -33,8 +33,6 @@ starts cisternal threads. cisternal does not support ``fork``, so use ``spawn`` 
 cisternal, cyclopts or fastmcp at module level.
 """
 
-from __future__ import annotations
-
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
