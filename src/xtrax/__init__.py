@@ -1,4 +1,4 @@
-__version__ = "0.4.1b10"
+__version__ = "0.4.1b11"
 
 # Public names are kept in plain sorted() order (enforced by
 # tests/distribution/test_sorted_registries.py) so parallel PRs that add a name
