@@ -172,7 +172,7 @@ def _check_invariants(result: UnitProbeResult) -> None:
         total = result.device_seconds_per_unit + result.host_seconds_per_unit
         assert abs(total - result.traced_seconds_per_unit) < 1e-6
     metrics = result.as_metrics()
-    assert set(metrics) == {
+    expected_keys = {
         "n_executions",
         "n_compilations",
         "n_jit_traces",
@@ -180,7 +180,12 @@ def _check_invariants(result: UnitProbeResult) -> None:
         "compile_seconds",
         "device_seconds",
         "host_seconds",
+        "wall_mad_seconds",
+        "wall_iqr_seconds",
     }
+    if result.peak_vram_bytes is not None:
+        expected_keys.add("peak_vram_bytes")
+    assert set(metrics) == expected_keys
     for value in metrics.values():
         assert isinstance(value, float)
         assert math.isfinite(value)
@@ -258,3 +263,147 @@ def test_dispatch_counts_field_matches_per_unit_and_defaults_empty():
         host_seconds_per_unit=0.0,
     )
     assert bare.dispatch_counts == {}
+    assert bare.wall_mad_seconds == 0.0
+    assert bare.wall_iqr_seconds == 0.0
+    assert bare.peak_vram_bytes is None
+
+
+def test_wall_dispersion_stats_and_iqr_threshold():
+    import statistics
+
+    from xtrax.profiling.unit_probe import _compute_wall_stats
+
+    med1, mad1, iqr1 = _compute_wall_stats([0.5])
+    assert med1 == pytest.approx(0.5)
+    assert mad1 == 0.0
+    assert iqr1 == 0.0
+
+    med2, mad2, iqr2 = _compute_wall_stats([1.0, 3.0])
+    assert med2 == pytest.approx(2.0)
+    assert mad2 == pytest.approx(1.0)
+    assert iqr2 == 0.0
+
+    med3, mad3, iqr3 = _compute_wall_stats([1.0, 2.0, 5.0])
+    assert med3 == pytest.approx(2.0)
+    assert mad3 == pytest.approx(1.0)
+    assert iqr3 == 0.0  # must NOT substitute max-min range when n_wall < 4
+
+    walls5 = [1.0, 2.0, 3.0, 4.0, 10.0]
+    med5, mad5, iqr5 = _compute_wall_stats(walls5)
+    q1, _, q3 = statistics.quantiles(walls5, n=4)
+    assert med5 == pytest.approx(3.0)
+    assert mad5 == pytest.approx(1.0)
+    assert iqr5 == pytest.approx(q3 - q1)
+
+
+def test_peak_vram_bytes_capture_and_failure_containment():
+    import jax
+
+    from xtrax.profiling.unit_probe import _capture_peak_vram_bytes
+
+    class _FakeGpu:
+        platform = "gpu"
+
+        def __init__(self, peak: int | None, *, boom: bool = False) -> None:
+            self._peak = peak
+            self._boom = boom
+
+        def memory_stats(self):
+            if self._boom:
+                raise RuntimeError("stats failed")
+            return {"peak_bytes_in_use": self._peak}
+
+    class _Leaf:
+        def __init__(self, dev):
+            self._dev = dev
+
+        def devices(self):
+            return {self._dev}
+
+    peak = _capture_peak_vram_bytes(_Leaf(_FakeGpu(123456)), (), {}, jax)
+    assert peak == 123456
+
+    assert _capture_peak_vram_bytes(_Leaf(_FakeGpu(0, boom=True)), (), {}, jax) is None
+
+    res = UnitProbeResult(
+        n_steady=1,
+        warmup_compile_count=0,
+        warmup_compile_seconds=0.0,
+        steady_compile_count=0,
+        executions_per_unit=1.0,
+        jit_traces_per_unit=0.0,
+        wall_seconds_per_unit=0.1,
+        traced_seconds_per_unit=0.1,
+        device_seconds_per_unit=0.05,
+        host_seconds_per_unit=0.05,
+        peak_vram_bytes=65536,
+    )
+    m = res.as_metrics()
+    assert m["peak_vram_bytes"] == 65536.0
+    assert isinstance(m["peak_vram_bytes"], float)
+
+
+def test_devices_and_peak_vram_edge_cases_and_trace_dir(tmp_path, monkeypatch):
+    import jax
+    import jax.numpy as jnp
+
+    from xtrax.profiling.unit_probe import (
+        _capture_peak_vram_bytes,
+        _devices_from_leaf,
+        _read_gpu_peak_bytes,
+    )
+
+    class _FakeGpu:
+        platform = "gpu"
+
+        def __init__(self, stats):
+            self._stats = stats
+
+        def memory_stats(self):
+            return self._stats
+
+    class _LeafDevsRaisesThenCallableDev:
+        def devices(self):
+            raise RuntimeError("no devices()")
+
+        def device(self):
+            return _FakeGpu({"peak_bytes_in_use": 4096.0})
+
+    class _LeafCallableDevRaises:
+        def device(self):
+            raise RuntimeError("no device()")
+
+    class _LeafAttrDev:
+        device = _FakeGpu({"peak_bytes_in_use": 8192})
+
+    assert len(_devices_from_leaf(_LeafDevsRaisesThenCallableDev())) == 1
+    assert _devices_from_leaf(_LeafCallableDevRaises()) == []
+    assert len(_devices_from_leaf(_LeafAttrDev())) == 1
+
+    assert _read_gpu_peak_bytes(_FakeGpu(None)) is None
+    assert _read_gpu_peak_bytes(_FakeGpu({"peak_bytes_in_use": True})) is None
+    assert _read_gpu_peak_bytes(_FakeGpu({"peak_bytes_in_use": -5})) is None
+    assert _read_gpu_peak_bytes(_FakeGpu({"peak_bytes_in_use": 2048})) == 2048
+
+    # Falls back from empty output to args/kwargs GPU device.
+    assert _capture_peak_vram_bytes(None, (_LeafAttrDev(),), {}, jax) == 8192
+
+    # Falls back to jax.devices() when neither out nor args carry GPU leaves, and survives error.
+    monkeypatch.setattr(jax, "devices", lambda: [_FakeGpu({"peak_bytes_in_use": 1024})])
+    assert _capture_peak_vram_bytes(None, (), {}, jax) == 1024
+
+    def _boom_devices():
+        raise RuntimeError("devices failed")
+
+    monkeypatch.setattr(jax, "devices", _boom_devices)
+    assert _capture_peak_vram_bytes(None, (), {}, jax) is None
+
+    res = probe_unit(
+        lambda x: x + 1.0,
+        (jnp.zeros((4,)),),
+        n_steady=1,
+        n_wall=1,
+        trace_dir=tmp_path,
+    )
+    assert res.n_steady == 1
+    assert any(p.name.startswith("unit_probe_") for p in tmp_path.iterdir())

@@ -219,6 +219,20 @@ def paired_configs(
     return pairs
 
 
+def _reject_diagnostic_end_to_end(sources: list["ProbeRecord"]) -> None:
+    """Reject diagnostic (e.g. cmdbuf=off) records from END_TO_END claims."""
+    bad = [
+        f"{r.probe_id!r} (diagnostic_mode={r.config.get('diagnostic_mode')!r})"
+        for r in sources
+        if r.config.get("diagnostic_mode", "none") not in ("", "none")
+    ]
+    if bad:
+        raise ClaimValidityError(
+            "END_TO_END claims cannot cite diagnostic records "
+            f"(cmdbuf=off distorts step timing): {', '.join(bad)}"
+        )
+
+
 def assert_claim_supported(
     records: list["ProbeRecord"],
     claim: ClaimClass,
@@ -268,6 +282,7 @@ def assert_claim_supported(
             )
 
     if claim is ClaimClass.END_TO_END:
+        _reject_diagnostic_end_to_end(sources)
         if target_n_atoms is None and not allow_no_target:
             raise ClaimValidityError(
                 "END_TO_END claim must declare target_n_atoms, or pass "

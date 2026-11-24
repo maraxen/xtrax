@@ -29,7 +29,10 @@ What the numbers mean, all per unit (steady calls divided by ``n_steady``):
   not separate Python from C++ dispatch reliably, so they are not split.
 
 CPU timings are CPU-relative only: they rank and compare units on the same
-machine and do not predict accelerator wall time.
+machine and do not predict accelerator wall time. On GPU, ``peak_vram_bytes``
+reads XLA's process-lifetime ``peak_bytes_in_use`` high-water mark, so exact
+per-unit VRAM isolation requires subprocess execution (see
+``xtrax.profiling.kernel_probe.probe_kernel_dual_pass``).
 
 jax is imported lazily inside the functions, so importing this module stays
 free of jax (the ``xtrax.profiling`` leaf contract).
@@ -74,6 +77,15 @@ class UnitProbeResult:
             ``n_compilations`` here counts trace events, which is a different
             source from ``steady_compile_count``. Empty when constructed
             directly.
+        wall_mad_seconds: Median absolute deviation of untraced wall timings
+            (``0.0`` when ``n_wall < 2``).
+        wall_iqr_seconds: Interquartile range (``q3 - q1``) of untraced wall
+            timings via ``statistics.quantiles(..., n=4)`` (``0.0`` when
+            ``n_wall < 4``).
+        peak_vram_bytes: Maximum GPU ``peak_bytes_in_use`` reported by device
+            ``memory_stats()``, or ``None`` on CPU / unavailable stats. Note
+            that XLA's ``peak_bytes_in_use`` is a process-lifetime high-water
+            mark; exact per-unit isolation requires subprocess execution.
     """
 
     n_steady: int
@@ -87,6 +99,9 @@ class UnitProbeResult:
     device_seconds_per_unit: float
     host_seconds_per_unit: float
     dispatch_counts: dict[str, int] = field(default_factory=dict)
+    wall_mad_seconds: float = 0.0
+    wall_iqr_seconds: float = 0.0
+    peak_vram_bytes: int | None = None
 
     def executions_per_element(self, cardinality: int) -> float:
         """Executions per unit divided by the scale-axis cardinality.
@@ -107,10 +122,11 @@ class UnitProbeResult:
 
         Keys: ``n_executions``, ``n_compilations`` (steady compiles per unit),
         ``n_jit_traces``, ``total_step_seconds`` (untraced median wall),
-        ``compile_seconds`` (warm-up compile seconds), ``device_seconds`` and
-        ``host_seconds``.
+        ``compile_seconds`` (warm-up compile seconds), ``device_seconds``,
+        ``host_seconds``, ``wall_mad_seconds``, ``wall_iqr_seconds``, and
+        ``peak_vram_bytes`` (omitted when ``peak_vram_bytes`` is ``None``).
         """
-        return {
+        metrics: dict[str, float] = {
             "n_executions": float(self.executions_per_unit),
             "n_compilations": float(self.steady_compile_count) / self.n_steady,
             "n_jit_traces": float(self.jit_traces_per_unit),
@@ -118,7 +134,100 @@ class UnitProbeResult:
             "compile_seconds": float(self.warmup_compile_seconds),
             "device_seconds": float(self.device_seconds_per_unit),
             "host_seconds": float(self.host_seconds_per_unit),
+            "wall_mad_seconds": float(self.wall_mad_seconds),
+            "wall_iqr_seconds": float(self.wall_iqr_seconds),
         }
+        if self.peak_vram_bytes is not None:
+            metrics["peak_vram_bytes"] = float(self.peak_vram_bytes)
+        return metrics
+
+
+def _compute_wall_stats(walls: list[float]) -> tuple[float, float, float]:
+    """Return ``(median, mad, iqr)`` seconds over untraced wall timings."""
+    wall_median = float(statistics.median(walls))
+    wall_mad = (
+        float(statistics.median([abs(w - wall_median) for w in walls])) if len(walls) >= 2 else 0.0
+    )
+    if len(walls) >= 4:
+        q1, _, q3 = statistics.quantiles(walls, n=4)
+        wall_iqr = max(0.0, float(q3 - q1))
+    else:
+        wall_iqr = 0.0
+    return wall_median, wall_mad, wall_iqr
+
+
+def _devices_from_leaf(leaf: Any) -> list[Any]:
+    """Extract attached JAX device handles from a single pytree leaf."""
+    devs_fn = getattr(leaf, "devices", None)
+    if callable(devs_fn):
+        try:
+            leaf_devs = devs_fn()
+        except Exception:
+            leaf_devs = None
+        if leaf_devs is not None:
+            return list(leaf_devs)
+    dev_attr = getattr(leaf, "device", None)
+    if callable(dev_attr):
+        try:
+            dev = dev_attr()
+        except Exception:
+            dev = None
+        return [dev] if dev is not None else []
+    return [dev_attr] if dev_attr is not None else []
+
+
+def _extract_leaf_devices(tree: Any, jax_mod: Any) -> list[Any]:
+    """Collect devices attached to leaves of ``tree``."""
+    found: list[Any] = []
+    for leaf in jax_mod.tree_util.tree_leaves(tree):
+        found.extend(_devices_from_leaf(leaf))
+    return found
+
+
+def _read_gpu_peak_bytes(dev: Any) -> int | None:
+    """Return ``peak_bytes_in_use`` from a GPU device handle, or ``None``."""
+    try:
+        stats = dev.memory_stats()
+    except Exception:
+        return None
+    if not isinstance(stats, dict):
+        return None
+    raw_peak = stats.get("peak_bytes_in_use")
+    if not isinstance(raw_peak, bool) and isinstance(raw_peak, int | float) and raw_peak >= 0:
+        return int(raw_peak)
+    return None
+
+
+def _capture_peak_vram_bytes(
+    out: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    jax_mod: Any,
+) -> int | None:
+    """Query GPU ``peak_bytes_in_use`` across execution devices.
+
+    Note that XLA ``peak_bytes_in_use`` reflects the process-lifetime device
+    high-water mark rather than a single isolated kernel invocation.
+    """
+    candidates = _extract_leaf_devices(out, jax_mod)
+    if not any(getattr(dev, "platform", None) == "gpu" for dev in candidates):
+        candidates = _extract_leaf_devices((args, kwargs), jax_mod)
+    if not any(getattr(dev, "platform", None) == "gpu" for dev in candidates):
+        try:
+            candidates = list(jax_mod.devices()[:1])
+        except Exception:
+            candidates = []
+
+    seen: set[int] = set()
+    peaks: list[int] = []
+    for dev in candidates:
+        if getattr(dev, "platform", None) != "gpu" or id(dev) in seen:
+            continue
+        seen.add(id(dev))
+        peak = _read_gpu_peak_bytes(dev)
+        if peak is not None:
+            peaks.append(peak)
+    return max(peaks) if peaks else None
 
 
 def probe_unit(
@@ -165,11 +274,13 @@ def probe_unit(
         call()
 
     walls: list[float] = []
+    last_out: Any = None
     for _ in range(n_wall):
         t0 = time.perf_counter()
-        call()
+        last_out = call()
         walls.append(time.perf_counter() - t0)
-    wall_median = float(statistics.median(walls))
+    wall_median, wall_mad, wall_iqr = _compute_wall_stats(walls)
+    peak_vram_bytes = _capture_peak_vram_bytes(last_out, args, call_kwargs, jax)
 
     trace_kwargs: dict[str, Any] = {"create_perfetto_trace": True}
     if hasattr(jax.profiler, "ProfileOptions"):
@@ -211,4 +322,7 @@ def probe_unit(
         device_seconds_per_unit=device_per_unit,
         host_seconds_per_unit=host_per_unit,
         dispatch_counts=dict(counts),
+        wall_mad_seconds=wall_mad,
+        wall_iqr_seconds=wall_iqr,
+        peak_vram_bytes=peak_vram_bytes,
     )

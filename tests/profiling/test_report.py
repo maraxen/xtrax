@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from xtrax.profiling.claims import ClaimValidityError
+from xtrax.profiling.claims import ClaimClass, ClaimValidityError, assert_claim_supported
 from xtrax.profiling.record import ProbeRecord
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "records"
@@ -96,3 +96,48 @@ def test_default_discovery_root_is_repository_root_not_cwd(monkeypatch, tmp_path
         f"_DEFAULT_DISCOVERY_ROOT resolved to {rep._DEFAULT_DISCOVERY_ROOT}, "
         "which is not the repository root"
     )
+
+
+def test_discovery_skips_verdict_and_diag_globs_while_explicit_renders_diag(tmp_path):
+    from xtrax.profiling.emitters import emit_probe_record
+    from xtrax.profiling.report import discover_records, render_report
+
+    emit_probe_record(
+        path=tmp_path / "prod.json",
+        probe_id="prod",
+        stage=2,
+        n_atoms=1000,
+        platform="gpu",
+        device_kind="h200",
+        git_sha="a" * 40,
+        metrics={"total_step_seconds": 0.5},
+        scopes={"a": (0.2, 1), "b": (0.3, 1)},
+        attribution_method={"a": "op_name", "b": "op_name"},
+    )
+    diag_path = tmp_path / "prod.diag.json"
+    emit_probe_record(
+        path=diag_path,
+        probe_id="prod:diag",
+        stage=2,
+        n_atoms=1000,
+        platform="gpu",
+        device_kind="h200",
+        git_sha="a" * 40,
+        metrics={"total_step_seconds": 0.8},
+        scopes={"k1": (0.5, 1), "k2": (0.3, 1)},
+        attribution_method={"k1": "op_name", "k2": "op_name"},
+        config={"diagnostic_mode": "cmdbuf_off"},
+    )
+    (tmp_path / "rejected.verdict.json").write_text('{"status": "revert_noise"}')
+
+    discovered = discover_records([tmp_path])
+    assert [r.probe_id for r in discovered] == ["prod"]
+
+    explicit = discover_records([diag_path])
+    assert [r.probe_id for r in explicit] == ["prod:diag"]
+
+    table = render_report([diag_path])
+    assert "k1" in table and "k2" in table
+
+    with pytest.raises(ClaimValidityError, match="diagnostic"):
+        assert_claim_supported(explicit, ClaimClass.END_TO_END, allow_no_target=True)
