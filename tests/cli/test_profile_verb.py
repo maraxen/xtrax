@@ -1051,6 +1051,10 @@ def test_cross_mode_validation_errors_exit_2(capsys, tmp_path):
         assert code_pm == 2
         assert "--primary-metric cannot be empty" in err_pm
 
+    # --higher-is-better outside --compare -> exit 2
+    code_hib, _, _ = _run(capsys, fn=VMAP, higher_is_better=True)
+    assert code_hib == 2
+
 
 def test_compare_hold_fixed_parity_and_error_paths(capsys, tmp_path):
     p_base = tmp_path / "base.json"
@@ -1069,6 +1073,34 @@ def test_compare_hold_fixed_parity_and_error_paths(capsys, tmp_path):
     )
     assert code_ok == 0
     assert "keep" in out_ok
+
+    # --higher-is-better inverts primary_metric direction for throughput metrics
+    p_tp_base = tmp_path / "tp_base.json"
+    p_tp_fast = tmp_path / "tp_fast.json"
+    p_tp_slow = tmp_path / "tp_slow.json"
+    _write_full_record(p_tp_base, git_sha="a" * 40, metrics_extra={"throughput": 100.0})
+    _write_full_record(p_tp_fast, git_sha="b" * 40, metrics_extra={"throughput": 120.0})
+    _write_full_record(p_tp_slow, git_sha="c" * 40, metrics_extra={"throughput": 80.0})
+    code_tp_ok, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_tp_base), str(p_tp_fast)),
+        primary_metric="throughput",
+        higher_is_better=True,
+    )
+    assert code_tp_ok == 0
+    code_tp_reg, _, _ = _run(
+        capsys,
+        fn=None,
+        shapes=None,
+        extent_axis=None,
+        compare=(str(p_tp_base), str(p_tp_slow)),
+        primary_metric="throughput",
+        higher_is_better=True,
+    )
+    assert code_tp_reg == 1
 
     # Empty token inside --hold-fixed -> exit 2
     code_empty, _, _ = _run(

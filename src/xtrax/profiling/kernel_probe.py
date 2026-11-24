@@ -563,9 +563,9 @@ def _run_ptxas_on_files(
     ptx_paths: list[Path],
     arch: str,
     ptxas_bin: str,
-) -> tuple[dict[str, PtxasKernelStats], list[str]]:
+) -> tuple[dict[tuple[Path, str], PtxasKernelStats], list[str]]:
     """Run ``ptxas --verbose`` across unique PTX files and collect warnings."""
-    parsed: dict[str, PtxasKernelStats] = {}
+    parsed: dict[tuple[Path, str], PtxasKernelStats] = {}
     warnings: list[str] = []
     for ptx_path in ptx_paths:
         try:
@@ -583,7 +583,8 @@ def _run_ptxas_on_files(
         if proc.returncode != 0:
             warnings.append(f"ptxas failed on {ptx_path.name} (exit {proc.returncode})")
             continue
-        parsed.update(parse_ptxas_verbose(combined))
+        for k_name, k_stat in parse_ptxas_verbose(combined).items():
+            parsed[(ptx_path, k_name)] = k_stat
     return parsed, warnings
 
 
@@ -599,7 +600,7 @@ class _PassCArtifacts:
 def _resolve_ptxas_stats(
     filtered: list[tuple[PtxKernelStats, Path, bool]],
     compute_capability: str | None,
-) -> tuple[dict[str, PtxasKernelStats], list[str]]:
+) -> tuple[dict[tuple[Path, str], PtxasKernelStats], list[str]]:
     """Locate ``ptxas`` and compile unique PTX files for register/spill stats."""
     if not filtered or not compute_capability:
         return {}, []
@@ -681,7 +682,7 @@ def collect_pass_c_ptx_stats(
     used_ptxas = False
     used_triton = False
     for stat, path, is_triton in filtered:
-        pa = ptxas_stats.get(stat.kernel_name)
+        pa = ptxas_stats.get((path, stat.kernel_name))
         tm = _lookup_triton_meta(
             path,
             is_triton=is_triton,
@@ -689,7 +690,9 @@ def collect_pass_c_ptx_stats(
             triton_metas=triton_metas,
         )
         used_ptxas = used_ptxas or pa is not None
-        used_triton = used_triton or tm is not None
+        used_triton = used_triton or (
+            tm is not None and (tm.n_spills is not None or tm.n_regs is not None)
+        )
         enriched.append(_enrich_ptx_stat(stat, pa, tm))
 
     spill_source = (
@@ -713,7 +716,6 @@ def _worker_cmd(
     inputs_spec: str | None,
     scale: int | None,
     shapes: str | None,
-    extent_axis: str | None,
     n_steady: int,
     n_wall: int,
     known_labels: frozenset[str],
@@ -741,8 +743,6 @@ def _worker_cmd(
         cmd.extend(["--scale", str(scale)])
     if shapes is not None:
         cmd.extend(["--shapes", shapes])
-    if extent_axis is not None:
-        cmd.extend(["--extent-axis", extent_axis])
     if known_labels:
         cmd.extend(["--known-labels-json", json.dumps(sorted(known_labels))])
     return cmd
@@ -776,7 +776,6 @@ def _run_pass_a(
     inputs_spec: str | None,
     scale: int | None,
     shapes: str | None,
-    extent_axis: str | None,
     n_steady: int,
     n_wall: int,
     prod_path: Path,
@@ -799,7 +798,6 @@ def _run_pass_a(
                 inputs_spec=inputs_spec,
                 scale=scale,
                 shapes=shapes,
-                extent_axis=extent_axis,
                 n_steady=n_steady,
                 n_wall=n_wall,
                 known_labels=frozenset(),
@@ -862,7 +860,6 @@ def _run_pass_c_in_temp(
     inputs_spec: str | None,
     scale: int | None,
     shapes: str | None,
-    extent_axis: str | None,
     pass_b: dict[str, Any],
 ) -> tuple[_PassCArtifacts, str]:
     """Run optional cold PTX/Triton dump pass and collect compiler resource stats."""
@@ -892,7 +889,6 @@ def _run_pass_c_in_temp(
         inputs_spec=inputs_spec,
         scale=scale,
         shapes=shapes,
-        extent_axis=extent_axis,
         n_steady=1,
         n_wall=1,
         known_labels=frozenset(),
@@ -1004,6 +1000,8 @@ def probe_kernel_dual_pass(
     prod_cfg = dict(config or {})
     prod_cfg["diagnostic_mode"] = "none"
     prod_cfg.setdefault("step_time_basis", "batch")
+    if extent_axis is not None:
+        prod_cfg.setdefault("extent_axis", extent_axis)
     if pre_skip is not None:
         prod_cfg["diag_skipped_reason"] = pre_skip
 
@@ -1020,7 +1018,6 @@ def probe_kernel_dual_pass(
             inputs_spec=inputs_spec,
             scale=scale,
             shapes=shapes,
-            extent_axis=extent_axis,
             n_steady=n_steady,
             n_wall=n_wall,
             prod_path=eff_prod_path,
@@ -1045,8 +1042,6 @@ def probe_kernel_dual_pass(
     assert fn_spec is not None
     sub_env = dict(os.environ)
     _apply_parent_gpu_preallocate(sub_env, isolate_passes=isolate_passes)
-    if prod_path is None:
-        sub_env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
     with tempfile.TemporaryDirectory(prefix="xtrax_diag_") as tmp_root_str:
         tmp_root = Path(tmp_root_str)
@@ -1062,7 +1057,6 @@ def probe_kernel_dual_pass(
             inputs_spec=inputs_spec,
             scale=scale,
             shapes=shapes,
-            extent_axis=extent_axis,
             n_steady=n_steady,
             n_wall=n_wall,
             known_labels=known_labels,
@@ -1092,7 +1086,6 @@ def probe_kernel_dual_pass(
                 inputs_spec=inputs_spec,
                 scale=scale,
                 shapes=shapes,
-                extent_axis=extent_axis,
                 pass_b=pass_b,
             )
 

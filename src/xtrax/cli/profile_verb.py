@@ -181,6 +181,8 @@ class ProfileArgs:
         target_missed: Flag Missed optimization target on ``--triage`` telemetry.
         telemetry_summary: Read telemetry logs/sidecars and report algedonic signals.
         telemetry_log_dir: Explicit telemetry JSONL log directory override.
+        higher_is_better: Treat higher ``--primary-metric`` values as improvements
+            in ``--compare`` mode.
     """
 
     fn: str | None = None
@@ -216,6 +218,7 @@ class ProfileArgs:
     target_missed: bool = False
     telemetry_summary: bool = False
     telemetry_log_dir: str | None = None
+    higher_is_better: bool = False
 
 
 @dataclass
@@ -298,6 +301,7 @@ def _validate_cross_mode_flags(args: ProfileArgs, mode: str) -> None:
             args.ratchet_pointer is not None,
             args.from_triage_probe is not None,
             args.triage_category is not None,
+            args.higher_is_better,
         )
     )
     if mode != "compare" and compare_used:
@@ -585,6 +589,7 @@ def _run_compare_mode(args: ProfileArgs) -> int:
             candidate,
             hold_fixed_config=hold_fixed_config,
             primary_metric=primary_metric,
+            lower_is_better=not args.higher_is_better,
             parity=parity,
             require_parity=args.require_parity,
             min_speedup=args.min_speedup if args.min_speedup is not None else 1.03,

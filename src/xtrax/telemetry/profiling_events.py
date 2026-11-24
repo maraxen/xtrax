@@ -74,6 +74,13 @@ _HARD_BLOCK_PREFIXES = frozenset(
         "recall_lower_bound_deficit",
     }
 )
+_EROSION_REASONS = frozenset(
+    {
+        "parity_gate_bypassed",
+        "hold_fixed_bypassed",
+        "dirty_git_sha_advisory_only",
+    }
+)
 
 
 class TelemetryReadError(ValueError):
@@ -930,16 +937,20 @@ def _detect_noise_streak(
     )
 
 
+def _is_erosion_compare_row(row: dict[str, Any]) -> bool:
+    """Return True if a compare event or verdict sidecar bypassed a guardrail."""
+    if bool(row.get("bypass_parity") or row.get("bypass_hold_fixed") or row.get("allow_dirty")):
+        return True
+    reasons = row.get("reasons")
+    return isinstance(reasons, list | tuple) and bool(_EROSION_REASONS.intersection(reasons))
+
+
 def _detect_guardrail_erosion(
     norm_events: list[tuple[int, str, float, dict[str, Any]]],
     compare_rows: list[dict[str, Any]],
     thresholds: AlgedonicThresholds,
 ) -> AlgedonicSignal | None:
-    erosion_count = sum(
-        1
-        for r in compare_rows
-        if bool(r.get("bypass_parity") or r.get("bypass_hold_fixed") or r.get("allow_dirty"))
-    )
+    erosion_count = sum(1 for r in compare_rows if _is_erosion_compare_row(r))
     optout_count = sum(1 for r in compare_rows if bool(r.get("bypass_corruption")))
     n_compare = len(compare_rows)
     n_cli = sum(1 for _i, name, _t, _f in norm_events if name in _CLI_INVOCATION_EVENTS)

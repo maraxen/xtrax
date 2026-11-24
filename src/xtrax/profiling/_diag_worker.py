@@ -363,7 +363,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inputs", default=None)
     parser.add_argument("--scale", type=int, default=None)
     parser.add_argument("--shapes", default=None)
-    parser.add_argument("--extent-axis", default=None)
     parser.add_argument("--n-steady", type=int, default=3)
     parser.add_argument("--n-wall", type=int, default=5)
     parser.add_argument("--known-labels-json", default="[]")

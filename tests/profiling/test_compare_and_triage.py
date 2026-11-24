@@ -1087,6 +1087,31 @@ def test_compare_comprehensive_guard_branches(tmp_path):
     assert (
         compare_probe_pair(
             b,
+            _rec(
+                git_sha=SHA_B,
+                metrics={"total_step_seconds": 0.5},
+                config={"vjp_parity_status": "not_measured"},
+            ),
+            hold_fixed_config=(),
+        ).status
+        is VerdictStatus.KEEP
+    )
+    assert (
+        compare_probe_pair(
+            b,
+            _rec(
+                git_sha=SHA_B,
+                metrics={"total_step_seconds": 0.5, "parity_vjp_rel_err": 0.0},
+                config={"vjp_parity_status": "not_measured"},
+            ),
+            hold_fixed_config=(),
+            parity=ParityContract(max_vjp_rel_err=1e-3),
+        ).status
+        is VerdictStatus.REJECT_PARITY
+    )
+    assert (
+        compare_probe_pair(
+            b,
             _rec(git_sha=SHA_B, metrics={"total_step_seconds": 0.5}),
             hold_fixed_config=(),
             parity=ParityContract(require_export_ok=True),
@@ -1435,6 +1460,37 @@ def test_kernel_probe_ptx_dual_pass_and_precision_errors(tmp_path, monkeypatch):
     os_parsed, os_warns = kp._run_ptxas_on_files([t_dump / "k_a.ptx"], "sm_89", "/fake/ptxas")
     assert os_parsed == {} and any("invocation error" in w.lower() for w in os_warns)
 
+    # Same .entry name across two distinct PTX specializations retains separate ptxas stats;
+    # Triton metadata containing only 'shared' does not claim spill_source='triton_meta'.
+    t_dup = tmp_path / "tdup"
+    t_dup.mkdir()
+    (t_dup / "k_a.ptx").write_text(".entry k_same() { .reg .f32 %f<4>; ret; }")
+    (t_dup / "k_b.ptx").write_text(".entry k_same() { .reg .f32 %f<8>; ret; }")
+
+    def _ptxas_per_file(cmd, **_kw):
+        regs = 48 if str(cmd[-1]).endswith("k_a.ptx") else 64
+        log = (
+            "ptxas info : Compiling entry function 'k_same' for 'sm_89'\n"
+            f"ptxas info : Used {regs} registers, 0 bytes smem\n"
+        )
+        return _FakeProc(0, log)
+
+    monkeypatch.setattr(kp, "find_ptxas", lambda: "/fake/ptxas")
+    monkeypatch.setattr(kp.subprocess, "run", _ptxas_per_file)
+    art_dup = collect_pass_c_ptx_stats(
+        t_dup, tmp_path / "empty_c", tmp_path / "empty_x", compute_capability="8.9"
+    )
+    assert sorted(s.phys_regs for s in art_dup.stats if s.phys_regs is not None) == [48, 64]
+
+    t_shared = tmp_path / "tshared"
+    t_shared.mkdir()
+    (t_shared / "k_sh.ptx").write_text(".entry k_sh() { .reg .f32 %f<2>; ret; }")
+    (t_shared / "k_sh.json").write_text(json.dumps({"name": "k_sh", "shared": 128}))
+    art_shared = collect_pass_c_ptx_stats(
+        t_shared, tmp_path / "empty_c", tmp_path / "empty_x", compute_capability="bad_cc"
+    )
+    assert art_shared.spill_source == "ptx_only"
+
     # _apply_parent_gpu_preallocate honors user override and injects false when parent has jax
     env_empty: dict[str, str] = {}
     monkeypatch.setitem(sys.modules, "jax", jax)
@@ -1447,9 +1503,11 @@ def test_kernel_probe_ptx_dual_pass_and_precision_errors(tmp_path, monkeypatch):
 
     # Exercise mocked Pass A isolated + Pass B + Pass C + hlo_attribution_skipped end-to-end
     worker_envs: list[dict[str, str]] = []
+    worker_cmds: list[list[str]] = []
     monkeypatch.delenv("XLA_PYTHON_CLIENT_PREALLOCATE", raising=False)
 
     def _mock_worker(cmd, *, env):
+        worker_cmds.append(list(cmd))
         worker_envs.append(dict(env))
         res_file = Path(cmd[cmd.index("--result-json") + 1])
         mode_val = cmd[cmd.index("--mode") + 1]
@@ -1513,6 +1571,29 @@ def test_kernel_probe_ptx_dual_pass_and_precision_errors(tmp_path, monkeypatch):
     assert worker_envs and all(
         e.get("XLA_PYTHON_CLIENT_PREALLOCATE") == "false" for e in worker_envs
     )
+    assert all("--extent-axis" not in c for c in worker_cmds)
+
+    worker_envs.clear()
+    worker_cmds.clear()
+    monkeypatch.setenv("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
+    mocked_explicit_env = probe_kernel_dual_pass(
+        lambda x: x,
+        (jnp.zeros((2,)),),
+        probe_id="mock-explicit-env",
+        n_atoms=4,
+        stage=1,
+        fn_spec="m:f",
+        shapes="x=(2,)f32",
+        extent_axis="x",
+        prod_path=None,
+        diag_dir=tmp_path / "mock_diags_2",
+        isolate_passes=True,
+    )
+    assert mocked_explicit_env.prod_record.config["extent_axis"] == "x"
+    assert worker_envs and all(
+        e.get("XLA_PYTHON_CLIENT_PREALLOCATE") == "true" for e in worker_envs
+    )
+    assert all("--extent-axis" not in c for c in worker_cmds)
     monkeypatch.undo()
 
     # probe_kernel_dual_pass skip modes & subprocess failure/success mocking

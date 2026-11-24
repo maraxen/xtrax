@@ -683,6 +683,26 @@ def test_detect_algedonic_signals_all_six_positive_and_negative_controls(tmp_pat
     ]
     assert detect_algedonic_signals(ok_rate_events, verdicts=[], shadow_checks=[]) == []
 
+    # Sidecar-only GUARDRAIL_EROSION via verdict reasons without compare JSONL events
+    sidecar_erosion = detect_algedonic_signals(
+        [],
+        verdicts=[
+            {
+                "candidate_probe_id": "c1",
+                "status": "advisory_only",
+                "reasons": ["parity_gate_bypassed"],
+            },
+            {
+                "candidate_probe_id": "c2",
+                "status": "advisory_only",
+                "reasons": ["hold_fixed_bypassed"],
+            },
+        ],
+        shadow_checks=[],
+    )
+    assert [s.kind for s in sidecar_erosion] == [AlgedonicSignalKind.GUARDRAIL_EROSION]
+    assert sidecar_erosion[0].evidence["erosion_bypass_count"] == 2
+
 
 def test_read_rotation_ordering_errors_and_append_algedonic_finding(tmp_path):
     rot_dir = tmp_path / "rot"

@@ -454,8 +454,10 @@ def _check_scalar_parity_bounds(
         if not (0.0 <= val <= ceiling):
             return f"{key}={val:.6g} exceeds limit {ceiling:.6g}"
     vjp_status = candidate.config.get("vjp_parity_status")
-    if vjp_status is not None and vjp_status != "pass":
-        return f"vjp_parity_status={vjp_status!r} != 'pass'"
+    if vjp_status is not None:
+        allowed = ("pass",) if eff_parity.max_vjp_rel_err is not None else ("pass", "not_measured")
+        if vjp_status not in allowed:
+            return f"vjp_parity_status={vjp_status!r} not in {allowed!r}"
     return None
 
 
