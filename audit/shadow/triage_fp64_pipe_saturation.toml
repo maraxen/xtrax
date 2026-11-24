@@ -1,0 +1,27 @@
+[feature]
+name = "xtrax.triage.fp64_pipe_saturation"
+description = "Mixed/FP64 throughput drop due to 1:64 FP64:FP32 pipe ratio or residual float64 virtual registers"
+version = "0.1.0"
+
+[ladder]
+current_stage = "shadow"
+
+[shadow]
+traffic_fraction = 1.0
+writes_isolated = true
+writes_isolated_enforced_by = "tests/telemetry/test_profiling_events.py::test_triage_shadow_writes_isolated"
+
+[scoring]
+positive_label = true
+
+[promotion]
+target_stage = "advisory"
+min_verdicts = 20
+min_labels = 10
+allowed_label_sources = ["frozen_gold", "owner_confirmed", "at_work"]
+min_precision = 0.70
+min_precision_lower_bound = 0.50
+max_fp_rate = 0.25
+isolation_violations_max = 0
+threshold_basis = "provisional_gpu_heuristic: mixed/single >= 1.35x AND (low-FP64 GPU OR ptx_f64_vregs_max > 0)"
+feature_version = "0.1.0"

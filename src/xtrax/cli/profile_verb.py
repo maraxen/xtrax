@@ -44,6 +44,7 @@ raised (freshness is unknown, so the record cannot pass). ``--check`` and ``--fn
 are mutually exclusive.
 """
 
+import dataclasses
 import math
 import re
 import subprocess
@@ -63,16 +64,66 @@ from xtrax.profiling.claims import (
     _reject_unverifiable_git_sha,
     assert_claim_supported,
 )
+from xtrax.profiling.compare import (
+    DeltaVerdict,
+    ParityContract,
+    VerdictStatus,
+    compare_probe_pair,
+    update_baseline_pointer,
+)
 from xtrax.profiling.emitters import emit_probe_record
 from xtrax.profiling.fit import FitCheck, fit_precheck
 from xtrax.profiling.loop_scaling import extent_scaling_report
-from xtrax.profiling.record import ProbeRecord
+from xtrax.profiling.record import ProbeRecord, capture_device_kind
 from xtrax.profiling.rules import EXEC_PER_ELEMENT_FLAG, THRESHOLD_STATUS, steady_state_flags
+from xtrax.profiling.triage import BottleneckFinding, triage_probe_bundle
 from xtrax.profiling.unit_probe import UnitProbeResult, probe_unit
+from xtrax.telemetry.profiling_events import (
+    PROVISIONAL_TRIAGE_CATEGORIES,
+    TelemetryReadError,
+    _resolve_layers_2_to_4,
+    collect_triage_shadow_checks,
+    detect_algedonic_signals,
+    emit_check_telemetry,
+    emit_compare_telemetry,
+    emit_measure_telemetry,
+    emit_not_measured_telemetry,
+    emit_triage_shadow_label,
+    emit_triage_shadow_verdicts,
+    emit_triage_telemetry,
+    make_triage_subject_key,
+    profiling_telemetry_session,
+    read_rejected_verdicts,
+    read_telemetry_events,
+    resolve_triage_subject_key,
+)
 
 EXIT_PASS = 0
 EXIT_FLAGGED = 1
 EXIT_NOT_MEASURED = 2
+
+_EXEMPT_DIFF_CONFIG_KEYS = frozenset(
+    {
+        "probe_id",
+        "bathos_run_id",
+        "bathos_campaign_id",
+        "paired_prod_probe_id",
+        "diagnostic_mode",
+        "diag_skipped_reason",
+        "diag_n_steady",
+        "ptx_capture_status",
+        "ptx_spill_source",
+        "ptx_dedup_count",
+        "ptx_filter_status",
+        "hlo_attribution_skipped",
+        "step_time_basis",
+        "non_degeneracy_status",
+        "corruption_control_status",
+        "export_guardrail_status",
+        "vjp_parity_status",
+        "parity_nonfinite_metrics",
+    }
+)
 
 
 class _NotMeasured(Exception):
@@ -109,6 +160,29 @@ class ProfileArgs:
         check: Path of a ProbeRecord to check instead of measuring. Flags: ``--check``.
         sha: Revision the ``check`` record must match (``HEAD``, a sha, ...). Only with
             ``check``. Flags: ``--sha``.
+        compare: Pair of ``(baseline_path, candidate_path)`` ProbeRecords to compare.
+        triage: Production ProbeRecord path to classify for bottlenecks.
+        diag: Paired diagnostic ``cmdbuf_off`` ProbeRecord path for ``--triage``.
+        precision_baseline: Single-precision baseline ProbeRecord path for ``--triage``.
+        primary_metric: Metric in ``ProbeRecord.metrics`` compared by ``--compare``.
+        require_parity: Require parity, non-degeneracy, and corruption checks on ``--compare``.
+        require_corruption_control: Require corruption negative control to turn red.
+        max_rel_err: Relative error ceiling override for ``--compare``.
+        max_vjp_rel_err: VJP relative error ceiling override for ``--compare``.
+        min_work_retention_ratio: Minimum candidate/baseline active-work ratio.
+        allow_dirty: Permit ``-dirty`` git SHAs on ``--compare`` (caps verdict at advisory).
+        min_speedup: Minimum relative improvement threshold for ``--compare``.
+        hold_fixed: Comma-separated ``ProbeRecord.config`` keys required to match.
+        bypass_hold_fixed: Waive inferred hold-fixed config checks (caps verdict at advisory).
+        ratchet_pointer: Baseline ratchet JSON path updated on ``KEEP`` verdicts.
+        rejected_dir: Directory where non-promotable ``.verdict.json`` sidecars are written.
+        from_triage_probe: Triaged ProbeRecord or subject key for shadow feedback labeling.
+        triage_category: Target provisional rule category paired with ``--from-triage-probe``.
+        target_missed: Flag Missed optimization target on ``--triage`` telemetry.
+        telemetry_summary: Read telemetry logs/sidecars and report algedonic signals.
+        telemetry_log_dir: Explicit telemetry JSONL log directory override.
+        higher_is_better: Treat higher ``--primary-metric`` values as improvements
+            in ``--compare`` mode.
     """
 
     fn: str | None = None
@@ -123,12 +197,35 @@ class ProfileArgs:
     target_extent: int | None = None
     check: str | None = None
     sha: str | None = None
+    compare: tuple[str, str] | None = None
+    triage: str | None = None
+    diag: str | None = None
+    precision_baseline: str | None = None
+    primary_metric: str | None = None
+    require_parity: bool = True
+    require_corruption_control: bool = True
+    max_rel_err: float | None = None
+    max_vjp_rel_err: float | None = None
+    min_work_retention_ratio: float | None = None
+    allow_dirty: bool = False
+    min_speedup: float | None = None
+    hold_fixed: str | None = None
+    bypass_hold_fixed: bool = False
+    ratchet_pointer: str | None = None
+    rejected_dir: str | None = None
+    from_triage_probe: str | None = None
+    triage_category: str | None = None
+    target_missed: bool = False
+    telemetry_summary: bool = False
+    telemetry_log_dir: str | None = None
+    higher_is_better: bool = False
 
 
 @dataclass
 class _Measurement:
     fn: str
     platform: str
+    device_kind: str | None
     extent_axis: str
     cardinality: int
     result: UnitProbeResult
@@ -143,98 +240,549 @@ class _Measurement:
     extrapolation_lines: list[str] = field(default_factory=list)
 
 
-def run_profile(args: ProfileArgs) -> None:
-    """Execute the profile verb, print a markdown report, and exit with the verdict code.
-
-    Raises:
-        SystemExit: Always, with code 0, 1 or 2 (see module docstring).
-    """
-    if (args.fn is None) == (args.check is None):
-        _not_measured("give exactly one of --fn or --check")
-    if args.sha is not None and args.check is None:
-        _not_measured("--sha is only valid with --check")
+def _active_mode_name(args: ProfileArgs) -> str:
+    """Validate that exactly one CLI mode is active and return its canonical name."""
+    active: list[str] = []
+    if args.fn is not None:
+        active.append("fn")
     if args.check is not None:
-        _check_record(args)
+        active.append("check")
+    if args.compare is not None:
+        active.append("compare")
+    if args.triage is not None:
+        active.append("triage")
+    if args.telemetry_summary:
+        active.append("telemetry_summary")
+    if len(active) != 1:
+        _not_measured(
+            "give exactly one of --fn, --check, --compare, --triage, or --telemetry-summary"
+        )
+    return active[0]
 
+
+def _validate_cross_mode_flags(args: ProfileArgs, mode: str) -> None:
+    """Reject flags incompatible with ``mode`` before executing work."""
+    if args.sha is not None and mode != "check":
+        _not_measured("--sha is only valid with --check", mode=mode, reason_code="invalid_flag")
+    measure_only = (
+        args.shapes,
+        args.inputs,
+        args.extent_axis,
+        args.scale,
+        args.n_units,
+        args.target_extent,
+        args.out,
+    )
+    if mode != "fn" and any(v is not None for v in measure_only):
+        _not_measured(
+            "--shapes/--inputs/--extent-axis/--scale/--n-units/--target-extent/--out "
+            "are only valid with --fn",
+            mode=mode,
+            reason_code="invalid_flag",
+        )
+    if args.rejected_dir is not None and mode not in ("compare", "telemetry_summary"):
+        _not_measured(
+            "--rejected-dir is only valid with --compare or --telemetry-summary",
+            mode=mode,
+            reason_code="invalid_flag",
+        )
+    compare_used = any(
+        (
+            args.primary_metric is not None,
+            not args.require_parity,
+            not args.require_corruption_control,
+            args.max_rel_err is not None,
+            args.max_vjp_rel_err is not None,
+            args.min_work_retention_ratio is not None,
+            args.allow_dirty,
+            args.min_speedup is not None,
+            args.hold_fixed is not None,
+            args.bypass_hold_fixed,
+            args.ratchet_pointer is not None,
+            args.from_triage_probe is not None,
+            args.triage_category is not None,
+            args.higher_is_better,
+        )
+    )
+    if mode != "compare" and compare_used:
+        _not_measured(
+            "compare-only flags were provided without --compare",
+            mode=mode,
+            reason_code="invalid_flag",
+        )
+    triage_used = any(
+        (args.diag is not None, args.precision_baseline is not None, args.target_missed)
+    )
+    if mode != "triage" and triage_used:
+        _not_measured(
+            "--diag/--precision-baseline/--target-missed are only valid with --triage",
+            mode=mode,
+            reason_code="invalid_flag",
+        )
+
+
+def _execute_profile_mode(args: ProfileArgs) -> int:
+    """Run the validated profile mode inside a telemetry session and return exit code."""
+    mode = _active_mode_name(args)
+    _validate_cross_mode_flags(args, mode)
+    if mode == "check":
+        return _check_record(args)
+    if mode == "compare":
+        return _run_compare_mode(args)
+    if mode == "triage":
+        return _run_triage_mode(args)
+    if mode == "telemetry_summary":
+        return _run_telemetry_summary_mode(args)
+    return _run_measure_mode(args)
+
+
+def _run_measure_mode(args: ProfileArgs) -> int:
+    """Execute standard `--fn` measurement mode."""
+    t_start = time.perf_counter()
     try:
         resolved, source = resolve_profile_dir(args.out)
     except ValueError as exc:
-        _not_measured(f"profile dir configuration is malformed: {exc}")
+        _not_measured(f"profile dir configuration is malformed: {exc}", mode="fn")
 
     try:
         measurement = _measure(args)
     except _NotMeasured as exc:
         if exc.fit_line is not None:
             print(exc.fit_line)
-        _not_measured(str(exc))
+        _not_measured(str(exc), mode="fn")
     except Exception as exc:  # noqa: BLE001 - any failure to measure is exit 2, never exit 1
-        # Exit 1 means a flag or a stale record. An uncaught exception would exit 1
-        # through the interpreter, so every failure in the measure path lands here.
-        _not_measured(f"measurement raised {type(exc).__name__}: {exc}")
+        _not_measured(f"measurement raised {type(exc).__name__}: {exc}", mode="fn")
 
     if resolved is not None:
         try:
             record_path = _write_record(resolved, measurement, args)
         except Exception as exc:  # noqa: BLE001 - any write failure must surface as exit 2
-            _not_measured(f"measured, but the ProbeRecord was not written: {exc}")
+            _not_measured(
+                f"measured, but the ProbeRecord was not written: {exc}",
+                mode="fn",
+                reason_code="write_failed",
+            )
         record_line = f"record: {record_path}"
     else:
         record_line = "record: not written"
 
     flagged = bool(measurement.flags)
     code = EXIT_FLAGGED if flagged else EXIT_PASS
+    duration_ms = (time.perf_counter() - t_start) * 1000.0
+    emit_measure_telemetry(
+        measurement.fn,
+        measurement.platform,
+        measurement.device_kind,
+        cardinality=measurement.cardinality,
+        n_flags=len(measurement.flags),
+        exit_code=code,
+        duration_ms=duration_ms,
+    )
     print(_render(measurement, args, resolved, source, record_line, code))
+    return code
+
+
+def run_profile(args: ProfileArgs) -> None:
+    """Execute the profile verb, print a markdown report, and exit with the verdict code.
+
+    Raises:
+        SystemExit: Always, with code 0, 1 or 2.
+    """
+    with profiling_telemetry_session(
+        log_dir=args.telemetry_log_dir,
+        emit_events=not args.telemetry_summary,
+    ):
+        code = _execute_profile_mode(args)
     raise SystemExit(code)
 
 
-def _not_measured(reason: str) -> NoReturn:
+def _not_measured(
+    reason: str,
+    *,
+    mode: str = "profile",
+    reason_code: str = "not_measured",
+) -> NoReturn:
+    emit_not_measured_telemetry(mode, reason_code, reason)
     print("verdict: could not measure (exit 2)")
     print(f"reason: {reason}", file=sys.stderr)
     raise SystemExit(EXIT_NOT_MEASURED)
 
 
+# --- --compare / --triage / --telemetry-summary ----------------------------
+
+
+def _resolve_compare_hold_fixed(
+    args: ProfileArgs,
+    baseline: ProbeRecord,
+    candidate: ProbeRecord,
+) -> tuple[str, ...]:
+    if args.bypass_hold_fixed and args.hold_fixed is not None:
+        _not_measured(
+            "--hold-fixed and --bypass-hold-fixed are mutually exclusive",
+            mode="compare",
+            reason_code="invalid_flag",
+        )
+    if args.bypass_hold_fixed:
+        return ()
+    if args.hold_fixed is not None:
+        raw_tokens = args.hold_fixed.split(",")
+        tokens = tuple(tok.strip() for tok in raw_tokens)
+        if not tokens or any(tok == "" for tok in tokens):
+            _not_measured(
+                "--hold-fixed must be a non-empty comma-separated list of keys, "
+                f"got {args.hold_fixed!r}",
+                mode="compare",
+                reason_code="invalid_flag",
+            )
+        return tokens
+    shared_keys = set(baseline.config) | set(candidate.config)
+    return tuple(sorted(shared_keys - _EXEMPT_DIFF_CONFIG_KEYS))
+
+
+def _resolve_triage_feedback_target(args: ProfileArgs) -> tuple[str, str] | None:
+    if (args.from_triage_probe is None) != (args.triage_category is None):
+        _not_measured(
+            "--from-triage-probe and --triage-category must be supplied together",
+            mode="compare",
+            reason_code="invalid_flag",
+        )
+    if args.from_triage_probe is None or args.triage_category is None:
+        return None
+    norm_cat = args.triage_category.strip().removeprefix("xtrax.triage.")
+    if norm_cat not in PROVISIONAL_TRIAGE_CATEGORIES:
+        _not_measured(
+            f"unknown --triage-category {args.triage_category!r}; "
+            f"expected one of {PROVISIONAL_TRIAGE_CATEGORIES}",
+            mode="compare",
+            reason_code="invalid_flag",
+        )
+    try:
+        subject_key = resolve_triage_subject_key(args.from_triage_probe)
+    except Exception as exc:  # noqa: BLE001 - unreadable target maps to exit 2
+        _not_measured(
+            f"could not resolve --from-triage-probe {args.from_triage_probe!r}: {exc}",
+            mode="compare",
+            reason_code="invalid_input",
+        )
+    return subject_key, norm_cat
+
+
+def _build_compare_parity(args: ProfileArgs) -> ParityContract | None:
+    if not args.require_parity:
+        if any(
+            (
+                not args.require_corruption_control,
+                args.max_rel_err is not None,
+                args.max_vjp_rel_err is not None,
+                args.min_work_retention_ratio is not None,
+            )
+        ):
+            _not_measured(
+                "--no-require-parity cannot be combined with parity threshold overrides or "
+                "--no-require-corruption-control",
+                mode="compare",
+                reason_code="invalid_flag",
+            )
+        return None
+    defaults = ParityContract()
+    try:
+        return ParityContract(
+            max_rel_err=defaults.max_rel_err if args.max_rel_err is None else args.max_rel_err,
+            max_vjp_rel_err=args.max_vjp_rel_err,
+            require_corruption_control=args.require_corruption_control,
+            min_work_retention_ratio=(
+                defaults.min_work_retention_ratio
+                if args.min_work_retention_ratio is None
+                else args.min_work_retention_ratio
+            ),
+        )
+    except ClaimValidityError as exc:
+        _not_measured(f"invalid parity contract flags: {exc}", mode="compare")
+
+
+def _render_compare_report(verdict: DeltaVerdict, written_sidecar: Path | None) -> str:
+    title = (
+        f"## xtrax profile --compare: "
+        f"`{verdict.baseline_probe_id}` vs `{verdict.candidate_probe_id}`"
+    )
+    lines = [
+        title,
+        "",
+        "| field | value |",
+        "|---|---|",
+        f"| status | {verdict.status.value} |",
+        f"| promotable | {verdict.promotable} |",
+        f"| primary_metric | {verdict.primary_metric} |",
+        f"| baseline_value | {verdict.baseline_value} |",
+        f"| candidate_value | {verdict.candidate_value} |",
+        f"| speedup_x | {verdict.speedup_x} |",
+        f"| noise_floor_x | {verdict.noise_floor_x} |",
+        "",
+        "### Reasons",
+    ]
+    lines += [f"- {r}" for r in verdict.reasons] or ["- none"]
+    if written_sidecar is not None:
+        lines.extend(["", f"ratchet/sidecar: {written_sidecar}"])
+    return "\n".join(lines)
+
+
+def _persist_compare_ratchet(
+    args: ProfileArgs,
+    verdict: DeltaVerdict,
+    cand_path: str,
+) -> Path | None:
+    """Update baseline ratchet pointer on promotion or write rejected verdict sidecar."""
+    if verdict.promotable and args.ratchet_pointer is not None:
+        try:
+            return update_baseline_pointer(
+                args.ratchet_pointer,
+                verdict,
+                cand_path,
+                rejected_dir=args.rejected_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 - chain mismatch is exit 2
+            _not_measured(f"baseline ratchet error: {exc}", mode="compare")
+    if not verdict.promotable and args.rejected_dir is not None:
+        try:
+            ptr = args.ratchet_pointer or str(Path(args.rejected_dir) / "_unused.pointer.json")
+            return update_baseline_pointer(
+                ptr,
+                verdict,
+                cand_path,
+                rejected_dir=args.rejected_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 - write error is exit 2
+            _not_measured(f"could not write rejected verdict sidecar: {exc}", mode="compare")
+    return None
+
+
+def _resolve_compare_primary_metric(args: ProfileArgs) -> str:
+    """Resolve and validate ``--primary-metric`` for ``--compare`` mode."""
+    if args.primary_metric is None:
+        return "total_step_seconds"
+    metric = args.primary_metric.strip()
+    if not metric:
+        _not_measured(
+            "--primary-metric cannot be empty",
+            mode="compare",
+            reason_code="invalid_flag",
+        )
+    return metric
+
+
+def _run_compare_mode(args: ProfileArgs) -> int:
+    assert args.compare is not None
+    base_path, cand_path = args.compare
+    feedback = _resolve_triage_feedback_target(args)
+    try:
+        baseline = ProbeRecord.read(base_path)
+        candidate = ProbeRecord.read(cand_path)
+    except Exception as exc:  # noqa: BLE001 - unreadable JSON maps to exit 2
+        _not_measured(f"could not read ProbeRecord for --compare: {exc}", mode="compare")
+
+    hold_fixed_config = _resolve_compare_hold_fixed(args, baseline, candidate)
+    parity = _build_compare_parity(args)
+    primary_metric = _resolve_compare_primary_metric(args)
+    try:
+        verdict = compare_probe_pair(
+            baseline,
+            candidate,
+            hold_fixed_config=hold_fixed_config,
+            primary_metric=primary_metric,
+            lower_is_better=not args.higher_is_better,
+            parity=parity,
+            require_parity=args.require_parity,
+            min_speedup=args.min_speedup if args.min_speedup is not None else 1.03,
+            allow_dirty=args.allow_dirty,
+        )
+    except ClaimValidityError as exc:
+        _not_measured(f"invalid --compare configuration: {exc}", mode="compare")
+
+    if args.bypass_hold_fixed:
+        new_status = (
+            VerdictStatus.ADVISORY_ONLY if verdict.status is VerdictStatus.KEEP else verdict.status
+        )
+        verdict = dataclasses.replace(
+            verdict,
+            status=new_status,
+            promotable=False,
+            reasons=(*verdict.reasons, "hold_fixed_bypassed"),
+        )
+
+    written_sidecar = _persist_compare_ratchet(args, verdict, cand_path)
+    if feedback is not None and verdict.status not in (
+        VerdictStatus.REJECT_UNVERIFIABLE,
+        VerdictStatus.ADVISORY_ONLY,
+    ):
+        subject_key, norm_cat = feedback
+        label_val = verdict.status is VerdictStatus.KEEP
+        emit_triage_shadow_label(subject_key, norm_cat, label_val, label_source="at_work")
+
+    emit_compare_telemetry(
+        verdict,
+        bypass_parity=not args.require_parity,
+        bypass_corruption=not args.require_corruption_control,
+        bypass_hold_fixed=args.bypass_hold_fixed,
+        allow_dirty=args.allow_dirty,
+    )
+    print(_render_compare_report(verdict, written_sidecar))
+    if verdict.status is VerdictStatus.REJECT_UNVERIFIABLE:
+        return EXIT_NOT_MEASURED
+    is_promoted = verdict.status is VerdictStatus.KEEP and verdict.promotable
+    return EXIT_PASS if is_promoted else EXIT_FLAGGED
+
+
+def _run_triage_mode(args: ProfileArgs) -> int:
+    assert args.triage is not None
+    try:
+        prod = ProbeRecord.read(args.triage)
+        diag = ProbeRecord.read(args.diag) if args.diag is not None else None
+        prec = (
+            ProbeRecord.read(args.precision_baseline)
+            if args.precision_baseline is not None
+            else None
+        )
+    except Exception as exc:  # noqa: BLE001 - unreadable JSON maps to exit 2
+        _not_measured(f"could not read ProbeRecord for --triage: {exc}", mode="triage")
+
+    precision_pair = (prec, prod) if prec is not None else None
+    try:
+        findings: list[BottleneckFinding] = triage_probe_bundle(
+            prod, diag=diag, precision_pair=precision_pair
+        )
+    except ClaimValidityError as exc:
+        _not_measured(f"invalid triage bundle: {exc}", mode="triage")
+
+    subject_key = make_triage_subject_key(prod)
+    emit_triage_telemetry(prod, findings, diag=diag, target_missed=args.target_missed)
+    emit_triage_shadow_verdicts(prod, findings)
+
+    lines = [
+        f"## xtrax profile --triage: `{prod.probe_id}`",
+        "",
+        f"shadow_subject_key: {subject_key}",
+        "",
+        "### Bottlenecks",
+    ]
+    if findings:
+        for item in findings:
+            lines.append(
+                f"- [{item.severity}] {item.category.value}: {item.summary} "
+                f"(ref: {item.playbook_ref})"
+            )
+    else:
+        lines.append("- none")
+    print("\n".join(lines))
+    return EXIT_FLAGGED if findings else EXIT_PASS
+
+
+def _resolve_summary_inputs(args: ProfileArgs) -> tuple[Path | None, Path | None]:
+    """Validate and resolve telemetry log and rejected-verdict directories."""
+    resolved_log_dir: Path | None
+    if args.telemetry_log_dir is not None:
+        resolved_log_dir = Path(args.telemetry_log_dir)
+        if not resolved_log_dir.is_dir():
+            _not_measured(
+                f"--telemetry-log-dir does not exist: {resolved_log_dir}",
+                mode="telemetry_summary",
+            )
+    else:
+        resolved_log_dir = _resolve_layers_2_to_4()
+
+    rejected_dir: Path | None = None
+    if args.rejected_dir is not None:
+        rejected_dir = Path(args.rejected_dir)
+        if not rejected_dir.is_dir():
+            _not_measured(
+                f"--rejected-dir does not exist: {rejected_dir}",
+                mode="telemetry_summary",
+            )
+
+    if resolved_log_dir is None and rejected_dir is None:
+        _not_measured(
+            "no telemetry log dir (Layers 1-4) or --rejected-dir resolved",
+            mode="telemetry_summary",
+        )
+    return resolved_log_dir, rejected_dir
+
+
+def _run_telemetry_summary_mode(args: ProfileArgs) -> int:
+    resolved_log_dir, rejected_dir = _resolve_summary_inputs(args)
+
+    try:
+        events = read_telemetry_events(resolved_log_dir) if resolved_log_dir is not None else []
+        verdicts = read_rejected_verdicts(rejected_dir) if rejected_dir is not None else []
+        shadow_checks = collect_triage_shadow_checks(resolved_log_dir)
+    except (TelemetryReadError, Exception) as exc:  # noqa: BLE001 - corrupt inputs -> exit 2
+        _not_measured(f"telemetry summary failed: {exc}", mode="telemetry_summary")
+
+    signals = detect_algedonic_signals(events, verdicts=verdicts, shadow_checks=shadow_checks)
+    lines = [
+        "## xtrax profile --telemetry-summary",
+        "",
+        f"- events_read: {len(events)}",
+        f"- rejected_verdicts_read: {len(verdicts)}",
+        f"- shadow_gates_evaluated: {len(shadow_checks)}",
+        "",
+        "### Algedonic Signals",
+    ]
+    if signals:
+        for sig in signals:
+            lines.append(f"- [{sig.severity}] {sig.kind.value}: {sig.summary}")
+    else:
+        lines.append("- none")
+    print("\n".join(lines))
+    return EXIT_FLAGGED if signals else EXIT_PASS
+
+
 # --- --check (X9) ----------------------------------------------------------
 
 
-def _check_record(args: ProfileArgs) -> NoReturn:
+def _validate_check_metrics(record: ProbeRecord) -> tuple[float, float, float]:
+    """Validate required numeric metrics on a ``--check`` ProbeRecord."""
+    values: dict[str, float] = {}
+    for name in ("n_executions", "exec_per_element", "n_compilations"):
+        value = record.metrics.get(name)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            _not_measured(f"record lacks the numeric metric {name}", mode="check")
+        if float(value) < 0:
+            _not_measured(
+                f"record metric {name} is negative ({float(value)}); not a measurement",
+                mode="check",
+            )
+        values[name] = float(value)
+    if values["n_executions"] == 0:
+        _not_measured("record shows zero executions; not a measurement", mode="check")
+    if record.n_atoms <= 0:
+        _not_measured(f"record n_atoms must be > 0, got {record.n_atoms}", mode="check")
+    expected_exec = values["n_executions"] / record.n_atoms
+    if not math.isclose(values["exec_per_element"], expected_exec, rel_tol=1e-6, abs_tol=1e-12):
+        _not_measured(
+            "record metrics are inconsistent: exec_per_element "
+            f"{values['exec_per_element']} != n_executions / n_atoms = {expected_exec} "
+            f"(n_executions {values['n_executions']}, n_atoms {record.n_atoms})",
+            mode="check",
+        )
+    return values["n_executions"], values["exec_per_element"], values["n_compilations"]
+
+
+def _check_record(args: ProfileArgs) -> int:
     path = args.check or ""
     try:
         record = ProbeRecord.read(path)
     except Exception as exc:  # noqa: BLE001 - any unreadable record is exit 2
-        _not_measured(f"could not read ProbeRecord {path!r}: {type(exc).__name__}: {exc}")
+        _not_measured(
+            f"could not read ProbeRecord {path!r}: {type(exc).__name__}: {exc}",
+            mode="check",
+        )
 
     try:
         assert_claim_supported([record], ClaimClass.DISPATCH_COUNT)
         _reject_unverifiable_git_sha([record], ClaimClass.DISPATCH_COUNT)
     except ClaimValidityError as exc:
-        _not_measured(f"record cannot back a dispatch check: {exc}")
+        _not_measured(f"record cannot back a dispatch check: {exc}", mode="check")
 
-    values: dict[str, float] = {}
-    for name in ("n_executions", "exec_per_element", "n_compilations"):
-        value = record.metrics.get(name)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            _not_measured(f"record lacks the numeric metric {name}")
-        values[name] = float(value)
-    for name, value in values.items():
-        if value < 0:
-            _not_measured(f"record metric {name} is negative ({value}); not a measurement")
-    if values["n_executions"] == 0:
-        _not_measured("record shows zero executions; not a measurement")
-    n_executions = values["n_executions"]
-    exec_per_element = values["exec_per_element"]
-    n_compilations = values["n_compilations"]
-
-    # run_profile writes exec_per_element = n_executions / n_atoms; a record that
-    # disagrees with itself was edited or corrupted, and cannot back a verdict.
-    if record.n_atoms <= 0:
-        _not_measured(f"record n_atoms must be > 0, got {record.n_atoms}")
-    expected_exec = n_executions / record.n_atoms
-    if not math.isclose(exec_per_element, expected_exec, rel_tol=1e-6, abs_tol=1e-12):
-        _not_measured(
-            "record metrics are inconsistent: exec_per_element "
-            f"{exec_per_element} != n_executions / n_atoms = {expected_exec} "
-            f"(n_executions {n_executions}, n_atoms {record.n_atoms})"
-        )
+    n_executions, exec_per_element, n_compilations = _validate_check_metrics(record)
 
     stale: list[str] = []
     if args.sha is None:
@@ -243,7 +791,7 @@ def _check_record(args: ProfileArgs) -> NoReturn:
         try:
             resolved = _resolve_sha(args.sha)
         except _NotMeasured as exc:
-            _not_measured(str(exc))
+            _not_measured(str(exc), mode="check")
         record_full = _full_record_sha(record.git_sha)
         sha_line = f"--sha {args.sha} resolves to {resolved}"
         if record_full != resolved:
@@ -257,7 +805,8 @@ def _check_record(args: ProfileArgs) -> NoReturn:
     if args.sha is None and not findings:
         _not_measured(
             "no --sha given, so freshness is unknown and the record cannot pass; "
-            "pass --sha <rev> to check freshness"
+            "pass --sha <rev> to check freshness",
+            mode="check",
         )
     labels = []
     if stale:
@@ -265,6 +814,7 @@ def _check_record(args: ProfileArgs) -> NoReturn:
     if flags:
         labels.append("FLAGGED")
     code = EXIT_FLAGGED if findings else EXIT_PASS
+    emit_check_telemetry(path, code, stale=bool(stale), n_flags=len(flags))
     verdict = ", ".join(labels) if labels else "PASS"
     lines = [
         f"## xtrax profile --check: `{path}`",
@@ -284,7 +834,7 @@ def _check_record(args: ProfileArgs) -> NoReturn:
     lines += [f"- {finding}" for finding in findings] or ["- none"]
     lines += ["", f"verdict: {verdict} (exit {code})"]
     print("\n".join(lines))
-    raise SystemExit(code)
+    return code
 
 
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
@@ -383,6 +933,7 @@ def _measure(args: ProfileArgs) -> _Measurement:
     scaling_lines = _scaling_lines(fn, make_args, cardinality, args)
 
     platform = jax.default_backend()
+    device_kind = capture_device_kind()
     metrics: dict[str, float] = dict(result.as_metrics())
     metrics["exec_per_element"] = float(exec_per_element)
     if args.target_extent is not None:
@@ -396,6 +947,7 @@ def _measure(args: ProfileArgs) -> _Measurement:
     return _Measurement(
         fn=args.fn or "",
         platform=platform,
+        device_kind=device_kind,
         extent_axis=args.extent_axis,
         cardinality=cardinality,
         result=result,

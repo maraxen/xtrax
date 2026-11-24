@@ -591,17 +591,18 @@ def load_trace_events(trace_dir: str | Path) -> list[dict[str, Any]]:
     return events
 
 
-def hlo_text_for(jitted: Any, *args: Any) -> str:
+def hlo_text_for(jitted: Any, *args: Any, **kwargs: Any) -> str:
     """Compiled HLO text for a ``jax.jit`` or ``eqx.filter_jit`` function.
 
-    ``jax.jit(...).lower(*args).compile()`` has ``as_text()``. Equinox's
-    ``Compiled`` wrapper does not; the JAX compiled object lives on
+    ``jax.jit(...).lower(*args, **kwargs).compile()`` has ``as_text()``.
+    Equinox's ``Compiled`` wrapper does not; the JAX compiled object lives on
     ``.compiled``. An object that exposes neither raises ``TypeError``.
     Returning ``None`` would drop scope attribution with no signal.
 
     Args:
-        jitted: A jitted callable with ``.lower(*args).compile()``.
-        *args: Arguments to lower against (the shapes the executable saw).
+        jitted: A jitted callable with ``.lower(*args, **kwargs).compile()``.
+        *args: Positional arguments to lower against (the shapes the executable saw).
+        **kwargs: Keyword arguments forwarded to ``.lower(*args, **kwargs)``.
 
     Returns:
         The compiled module's HLO text.
@@ -616,7 +617,7 @@ def hlo_text_for(jitted: Any, *args: Any) -> str:
             f"cannot extract HLO text from {type(jitted).__name__}: "
             "expected a jax.jit or eqx.filter_jit callable with .lower()"
         )
-    compiled = lower(*args).compile()
+    compiled = lower(*args, **kwargs).compile()
     as_text = getattr(compiled, "as_text", None)
     if callable(as_text):
         return as_text()

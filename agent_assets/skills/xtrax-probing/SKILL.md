@@ -194,17 +194,60 @@ uv run python scripts/audit_profiling_contract.py
 ```
 
 Claim-gated bottleneck report over `outputs/profiling/stage*/*.json`:
-`scripts/prof_report.py` style entry via `xtrax.profiling.report`.
+`python -m xtrax.profiling.report` (from `xtrax.profiling.report`). Note that
+glob discovery ignores `.diag.json` and `.verdict.json`, while explicit
+`render_report([diag_path])` renders diagnostic `cmdbuf=off` traces for
+`TERM_RANKING` without allowing them into `END_TO_END` claims (`claims.py`).
+
+## Closed-Loop Cross-Commit Verification, Dual-Pass GPU Probe, & Triage
+
+- **Cross-commit ratchet (`xtrax.profiling.compare`, `--compare`)**: Compare a
+  clean baseline commit (`sha_A`) against a candidate commit (`sha_B`) via
+  `xtrax profile --compare base.json cand.json --ratchet-pointer ptr.json --rejected-dir outputs/profiling/rejected`.
+  Exit `0` ONLY on `KEEP` (`promotable=True`); `1` on `ADVISORY_ONLY`,
+  `REVERT_REGRESSION`, `REVERT_NOISE`, `REJECT_PARITY`, `REJECT_DISPATCH`,
+  `REJECT_VRAM`; `2` on `REJECT_UNVERIFIABLE` or malformed/chained inputs.
+- **Multi-pass GPU probe (`xtrax.profiling.kernel_probe.probe_kernel_dual_pass`)**:
+  Pairs isolated Pass A (`cmdbuf=on`, `diagnostic_mode="none"`) with isolated
+  Pass B (`cmdbuf=off`, `diagnostic_mode="cmdbuf_off"`, `1/n_steady` normalized
+  scopes) and optional Pass C PTX/`ptxas --verbose`/Triton register & spill
+  telemetry. Also exposes `compute_precision_ratio(single, mixed)`.
+- **Deterministic triage (`xtrax.profiling.triage`, `--triage`)**: Classifies
+  `prod` (+ `--diag`, `--precision-baseline`) across 6 rules (`RECOMPILE_DRIFT`,
+  `HOST_BOUNDARY_SYNC`, `FP64_PIPE_SATURATION`, `SPATIAL_DEAD_WORK`,
+  `REGISTER_SPILL_PRESSURE`, `ATOMIC_CONTENTION`) and prints `shadow_subject_key`.
+- **Optional `bathos` correlation (`emitters.py`, `controller/profiling_bathos.py`)**:
+  `emit_probe_record` stamps `BTH_RUN_ID`/`BTH_CAMPAIGN_ID` from env with zero
+  `bathos` imports in `src/xtrax/`; `probe_record_to_bathos_metrics` formats flat
+  outcomes; `controller/profiling_bathos.py` queries `bathos.query.get_run`.
+- **Operational telemetry, shadow calibration, & algedonic stop (`src/xtrax/telemetry/profiling_events.py`)**:
+  Pass `--telemetry-log-dir DIR` to record M1 events (`xtrax.profile.*`) and
+  `shadow.verdict` records for the 4 provisional GPU heuristics; feed closed-loop
+  ground truth back via `--from-triage-probe <probe.json|subject_key> --triage-category <cat>`
+  (pass `--target-missed` during `--triage` when a speedup target was missed
+  without triggering a rule). Inspect health before every cycle via:
+  ```bash
+  xtrax profile --telemetry-summary --telemetry-log-dir DIR --rejected-dir outputs/profiling/rejected
+  cisternal shadow check audit/shadow/triage_fp64_pipe_saturation.toml --records-dir DIR
+  ```
+  (Pass the explicit `audit/shadow/triage_<cat>.toml` path to `cisternal shadow check`
+  because filenames differ from the `xtrax.triage.<cat>` feature names.)
+  **Algedonic Stop & Pre-Cycle Observe Protocol**: Before proposing a new kernel
+  optimization, run `--telemetry-summary`. If any algedonic signal fires
+  (`instrument_degraded`, `noise_floor_blown`, `guardrail_erosion`,
+  `parity_escape`, `heuristic_miscalibrated`, `triage_gap`), halt the optimization
+  cycle and escalate directly to the dispatcher per `algedonic-escalation`.
 
 ## Additional Resources
 
 Load as needed -- do not read both up front:
 
 - **`references/contract.md`** -- full ProbeRecord field/guard reference,
-  claim rules with verify-paths, contract-versioning bump rule.
-- **`references/workflows.md`** -- step-by-step workflows (drivers, bench
-  declarations, gate/controller wiring), plus the ClaimValidityError
-  catalogue: message -> cause -> fix.
+  claim rules with verify-paths, cross-commit comparison contract, and
+  contract-versioning bump rule.
+- **`references/workflows.md`** -- step-by-step workflows (drivers, dual-pass GPU
+  probe, CLI `--compare`/`--triage`/`--telemetry-summary`, shadow gate checks,
+  `bathos` tagging), plus the `ClaimValidityError` catalogue.
 
 Acting on a measurement -- deciding what to optimize and what evidence each
 class of change owes -- is the `xtrax-optimizing` skill's job (three-tier

@@ -31,7 +31,9 @@ from xtrax.profiling.claims import (
 )
 from xtrax.profiling.record import ProbeRecord
 
-_SKIP_SUFFIXES = ("_summary.json",)
+_DISCOVERY_SKIP_SUFFIXES = ("_summary.json", ".verdict.json", ".diag.json")
+_EXPLICIT_SKIP_SUFFIXES = ("_summary.json", ".verdict.json")
+_SKIP_SUFFIXES = _DISCOVERY_SKIP_SUFFIXES
 _SKIP_NAMES = {"coverage.json"}
 
 # D6 of the upstream scope doc: prolix resolved the default discovery root
@@ -65,21 +67,22 @@ def discover_records(
     root: Path | None = None,
 ) -> list[ProbeRecord]:
     """Load ProbeRecords from explicit paths or outputs/profiling/stage*/*.json."""
+    candidates: list[tuple[Path, bool]] = []
     if paths:
-        files = []
-        for p in paths:
-            p = Path(p)
+        for raw in paths:
+            p = Path(raw)
             if p.is_dir():
-                files.extend(sorted(p.glob("*.json")))
+                candidates.extend((item, True) for item in sorted(p.glob("*.json")))
             else:
-                files.append(p)
+                candidates.append((p, False))
     else:
         base = (root or _DEFAULT_DISCOVERY_ROOT) / "outputs" / "profiling"
-        files = sorted(base.glob("stage*/*.json"))
+        candidates = [(item, True) for item in sorted(base.glob("stage*/*.json"))]
     records: list[ProbeRecord] = []
     skipped: list[tuple[Path, Exception]] = []
-    for path in files:
-        if path.name in _SKIP_NAMES or path.name.endswith(_SKIP_SUFFIXES):
+    for path, from_glob in candidates:
+        skip_suffixes = _DISCOVERY_SKIP_SUFFIXES if from_glob else _EXPLICIT_SKIP_SUFFIXES
+        if path.name in _SKIP_NAMES or path.name.endswith(skip_suffixes):
             continue
         try:
             records.append(ProbeRecord.read(path))

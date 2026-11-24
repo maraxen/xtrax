@@ -380,7 +380,7 @@ wheels = [
 
 [[package]]
 name = "cisternal"
-version = "0.1.7"
+version = "0.1.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cyclopts" },
@@ -389,9 +389,9 @@ dependencies = [
     { name = "opentelemetry-api" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/df/0d/b897a6d4a9c234f38a3ee375787c5bef5d7d5e469ede4c891436593a12c9/cisternal-0.1.7.tar.gz", hash = "sha256:a34308cc5c4ccf97d14e708f1983eab8ba3013d3f8c049b8047bd8369573ced8", size = 590045, upload-time = "2026-11-10T22:31:46.342Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/48/e9/f59d200307c0e7b857ba4ef094ddbb88ad0c37e96b95c49a81a83ac5d33b/cisternal-0.1.11.tar.gz", hash = "sha256:0a034575d2aa9d5c434fb33868147a7673aee4232681ae8155ea51aeb02b972f", size = 625530, upload-time = "2026-11-19T18:28:00.044Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ce/f9/e14f5fe0251cd40f171b70f11f233bff6d443c90bd34b5a63e7e541edd4a/cisternal-0.1.7-py3-none-any.whl", hash = "sha256:50bcd8adbf95d71acb2ece7ac4f870e8f0fc7155daa752918ce0274502482c34", size = 365653, upload-time = "2026-11-10T22:31:44.922Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/b1/67164f437aeb974098f8f765fd4d88b6a1c7dfbaf302ddcbc4d675bb541b/cisternal-0.1.11-py3-none-any.whl", hash = "sha256:737db776ffd51b88ba87dc24c7e38e625e38e2e3833608e6b65a595264aa25c4", size = 385586, upload-time = "2026-11-19T18:27:58.151Z" },
 ]
 
 [[package]]
@@ -4473,8 +4473,8 @@ requires-dist = [
     { name = "beartype", marker = "extra == 'dev'", specifier = ">=0.18.0" },
     { name = "chex", marker = "extra == 'all'", specifier = ">=0.1.86" },
     { name = "chex", marker = "extra == 'dev'", specifier = ">=0.1.86" },
-    { name = "cisternal", marker = "extra == 'all'", specifier = ">=0.1.7" },
-    { name = "cisternal", marker = "extra == 'plugin'", specifier = ">=0.1.7" },
+    { name = "cisternal", marker = "extra == 'all'", specifier = ">=0.1.8" },
+    { name = "cisternal", marker = "extra == 'plugin'", specifier = ">=0.1.8" },
     { name = "complexipy", marker = "extra == 'all'", specifier = ">=5.6.1" },
     { name = "complexipy", marker = "extra == 'dev'", specifier = ">=5.6.1" },
     { name = "duckdb", marker = "extra == 'all'", specifier = ">=1.1" },
